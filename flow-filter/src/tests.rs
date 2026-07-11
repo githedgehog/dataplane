@@ -446,7 +446,7 @@ fn test_flow_filter_table_overlap_cases() {
     // doesn't matter for the test.
     let overlay = Overlay::new(vpc_table, peering_table);
     assert!(matches!(
-        overlay.validate(),
+        overlay.clone().validate(),
         Err(ConfigError::OverlappingPrefixes(_, _))
     ));
     let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
@@ -672,7 +672,8 @@ fn test_flow_filter_table_from_overlay() {
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -756,7 +757,8 @@ fn test_flow_filter_table_check_send_from_default() {
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -801,7 +803,10 @@ fn test_flow_filter_table_check_default_to_default() {
     // We don't validate because overlapping prefixes actually make the config invalid; but it
     // doesn't matter for the test.
     let overlay = Overlay::new(vpc_table, peering_table);
-    assert!(matches!(overlay.validate(), Err(ConfigError::Forbidden(_))));
+    assert!(matches!(
+        overlay.clone().validate(),
+        Err(ConfigError::Forbidden(_))
+    ));
     let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
 
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
@@ -884,7 +889,10 @@ fn test_flow_filter_table_check_nat_requirements() {
     // We don't validate because overlapping prefixes actually make the config invalid; but it
     // doesn't matter for the test.
     let overlay = Overlay::new(vpc_table, peering_table);
-    assert!(matches!(overlay.validate(), Err(ConfigError::Forbidden(_))));
+    assert!(matches!(
+        overlay.clone().validate(),
+        Err(ConfigError::Forbidden(_))
+    ));
     let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
 
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
@@ -998,7 +1006,8 @@ fn test_flow_filter_table_check_masquerade_plus_port_forwarding() {
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -1202,7 +1211,8 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -1329,7 +1339,8 @@ fn test_flow_filter_protocol_any_port_forwarding() {
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -1485,7 +1496,8 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -1712,7 +1724,8 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
@@ -1829,7 +1842,8 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         ))
         .unwrap();
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);

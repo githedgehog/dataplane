@@ -2,12 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use crate::ConfigError;
-use crate::external::overlay::vpcpeering::ValidatedExpose;
+use crate::external::overlay::vpcpeering::VpcExpose;
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet};
 
 pub fn check_private_prefixes_dont_overlap(
-    expose_left: &ValidatedExpose,
-    expose_right: &ValidatedExpose,
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
 ) -> Result<(), ConfigError> {
     if port_forwarding_with_distinct_l4_protocols(expose_left, expose_right) {
         return Ok(());
@@ -22,8 +22,8 @@ pub fn check_private_prefixes_dont_overlap(
 // - expose_left.as_range / expose_right.ips
 // - expose_left.ips      / expose_right.ips
 pub fn check_public_prefixes_dont_overlap(
-    expose_left: &ValidatedExpose,
-    expose_right: &ValidatedExpose,
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
 ) -> Result<(), ConfigError> {
     if port_forwarding_with_distinct_l4_protocols(expose_left, expose_right) {
         return Ok(());
@@ -34,8 +34,8 @@ pub fn check_public_prefixes_dont_overlap(
 // If the two expose blocks have port forwarding set up, one for TCP and one for UDP, then there is
 // no overlap.
 fn port_forwarding_with_distinct_l4_protocols(
-    expose_left: &ValidatedExpose,
-    expose_right: &ValidatedExpose,
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
 ) -> bool {
     expose_left.has_port_forwarding()
         && expose_right.has_port_forwarding()

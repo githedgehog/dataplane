@@ -28,7 +28,7 @@ pub mod utils;
 pub use display::ConfigSummary;
 pub use errors::{ConfigError, ConfigResult, stringify};
 pub use external::{ExternalConfig, GenId};
-pub use gwconfig::{GwConfigMeta, ValidatedGwConfig};
+pub use gwconfig::{GwConfig, GwConfigMeta};
 pub use internal::InternalConfig;
 pub use internal::device::DeviceConfig;
 

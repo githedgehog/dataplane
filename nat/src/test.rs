@@ -11,9 +11,9 @@ use crate::portfw::{PortForwarder, PortFwTableWriter};
 use crate::static_nat::NatTablesWriter;
 use crate::static_nat::setup::build_nat_configuration;
 use concurrency::sync::Arc;
+use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
-use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::FlowLookup;
 use flow_entry::flow_table::FlowTable;
 use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
@@ -65,7 +65,7 @@ fn build_packet(
 }
 
 fn setup_masq_pipeline(
-    overlay: &ValidatedOverlay,
+    overlay: &Overlay,
 ) -> (
     DynPipeline<TestBuffer>,
     Arc<FlowTable>,
@@ -185,7 +185,8 @@ async fn test_nat_combination_static_masquerade() {
             "default".into(),
         ))
         .unwrap();
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
 
     // Build pipeline
     //
@@ -295,7 +296,8 @@ async fn test_nat_combination_static_portfw() {
             "default".into(),
         ))
         .unwrap();
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
 
     // Build pipeline
     //
@@ -416,7 +418,8 @@ async fn test_nat_combination_static_masq_icmp_error() {
             "default".into(),
         ))
         .unwrap();
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
 
     // Build pipeline
     //
@@ -544,7 +547,8 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
             "default".into(),
         ))
         .unwrap();
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    overlay.validate().unwrap();
 
     // Build pipeline
     //

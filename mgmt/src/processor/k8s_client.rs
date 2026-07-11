@@ -173,7 +173,7 @@ impl K8sClient {
         let callback = Arc::from(callback);
 
         // infinite loop
-        watch_gateway_agent_crd(&k8s_client2.hostname, callback.clone()).await;
+        watch_gateway_agent_crd(&k8s_client2.hostname, callback.clone()).await
     }
 
     pub async fn k8s_start_status_update(&self, status_update_interval: &std::time::Duration) {

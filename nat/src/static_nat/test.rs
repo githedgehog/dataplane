@@ -17,7 +17,7 @@ use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
 use config::internal::routing::bgp::BgpConfig;
 use config::internal::routing::vrf::VrfConfig;
-use config::{ExternalConfig, ValidatedGwConfig};
+use config::{ExternalConfig, GwConfig};
 
 use crate::StaticNat;
 use crate::static_nat::setup::build_nat_configuration;
@@ -256,14 +256,18 @@ fn build_context() -> NatTables {
 
     let mut nat_table = NatTables::new();
 
+    let mut peering1_v = peering1.clone();
+    peering1_v.validate().unwrap();
     let mut vni_table1 = PerVniTable::new();
     vni_table1
-        .add_peering(&peering1.validate().unwrap(), vni2)
+        .add_peering(&peering1_v, vni2)
         .expect("Failed to build NAT tables");
 
+    let mut peering2_v = peering2.clone();
+    peering2_v.validate().unwrap();
     let mut vni_table2 = PerVniTable::new();
     vni_table2
-        .add_peering(&peering2.validate().unwrap(), vni1)
+        .add_peering(&peering2_v, vni1)
         .expect("Failed to build NAT tables");
 
     nat_table.add_table(vni_table1, vni1);
@@ -372,7 +376,7 @@ fn test_nat_icmp_error_msg_static_44() {
 }
 
 #[allow(clippy::too_many_lines)]
-fn build_sample_config() -> ValidatedGwConfig {
+fn build_sample_config() -> GwConfig {
     fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
         manifest.add_expose(expose);
     }
@@ -555,7 +559,7 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     let overlay = Overlay::new(vpc_table, peering_table);
 
-    build_gwconfig_from_overlay(overlay).validate().unwrap()
+    GwConfig::from_external(build_gwconfig_from_overlay(overlay)).unwrap()
 }
 
 // Use the provided overlay with some default configuration to build a valid `ExternalConfig`. This
@@ -785,7 +789,7 @@ fn test_full_config() {
 fn build_gwconfig_from_exposes(
     exposes_left: Vec<VpcExpose>,
     exposes_right: Vec<VpcExpose>,
-) -> ValidatedGwConfig {
+) -> GwConfig {
     fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
         manifest.add_expose(expose);
     }
@@ -810,9 +814,7 @@ fn build_gwconfig_from_exposes(
 
     let overlay = Overlay::new(vpc_table, peering_table);
 
-    build_gwconfig_from_overlay(overlay.clone())
-        .validate()
-        .unwrap()
+    GwConfig::from_external(build_gwconfig_from_overlay(overlay.clone())).unwrap()
 }
 
 fn check_packet_with_ports(

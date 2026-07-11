@@ -6,18 +6,18 @@
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwTableError};
 use config::ConfigError;
-use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc, ValidatedVpcTable};
-use config::external::overlay::vpcpeering::ValidatedExpose;
+use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
+use config::external::overlay::vpcpeering::VpcExpose;
 use lpm::prefix::L4Protocol;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
-fn port_fw_proto(expose: &ValidatedExpose) -> L4Protocol {
+fn port_fw_proto(expose: &VpcExpose) -> L4Protocol {
     expose.nat().unwrap_or_else(|| unreachable!()).proto
 }
 
 fn expose_to_portfw_rule(
-    expose: &ValidatedExpose,
+    expose: &VpcExpose,
     proto: NextHeader,
     src_vpc: VpcDiscriminant,
     dst_vpc: VpcDiscriminant,
@@ -59,9 +59,9 @@ fn expose_to_portfw_rule(
     )
 }
 fn vpc_port_fw_peering(
-    vpc_table: &ValidatedVpcTable,
+    vpc_table: &VpcTable,
     dst_vpc: VpcDiscriminant,
-    peering: &ValidatedPeering,
+    peering: &Peering,
 ) -> Result<Vec<PortFwEntry>, PortFwTableError> {
     let mut rules = vec![];
     for expose in peering.local().port_forwarding_exposes() {
@@ -87,10 +87,7 @@ fn vpc_port_fw_peering(
     }
     Ok(rules)
 }
-fn vpc_port_fw(
-    vpc_table: &ValidatedVpcTable,
-    vpc: &ValidatedVpc,
-) -> Result<Vec<PortFwEntry>, PortFwTableError> {
+fn vpc_port_fw(vpc_table: &VpcTable, vpc: &Vpc) -> Result<Vec<PortFwEntry>, PortFwTableError> {
     let mut collected = vec![];
     let dst_vpc = VpcDiscriminant::from_vni(vpc.vni());
     for peering in vpc.peerings() {
@@ -101,7 +98,7 @@ fn vpc_port_fw(
 }
 
 pub fn build_port_forwarding_configuration(
-    vpc_table: &ValidatedVpcTable,
+    vpc_table: &VpcTable,
 ) -> Result<Vec<PortFwEntry>, ConfigError> {
     let mut ruleset = vec![];
     for vpc in vpc_table.values() {

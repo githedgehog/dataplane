@@ -38,7 +38,7 @@ mod test {
         peering_table.add(peering).unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        overlay.validate().map(|_| ())
+        overlay.clone().validate()
     }
 
     // Helper: build an Overlay from three VPCs and two peerings, then validate it
@@ -59,7 +59,7 @@ mod test {
         peering_table.add(peering2).unwrap();
 
         let overlay: Overlay = Overlay::new(vpc_table, peering_table);
-        overlay.validate().map(|_| ())
+        overlay.clone().validate()
     }
 
     // ==================================================================================
@@ -72,7 +72,7 @@ mod test {
     #[test]
     fn test_empty_expose_rejected() {
         let expose = VpcExpose::empty();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}"
@@ -83,7 +83,7 @@ mod test {
     #[test]
     fn test_empty_ips_with_nonempty_nots_rejected() {
         let expose = VpcExpose::empty().not("10.0.1.0/24".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}"
@@ -99,7 +99,7 @@ mod test {
             .ip("10.0.0.0/16".into())
             .not_as("2.0.1.0/24".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}"
@@ -113,7 +113,7 @@ mod test {
             .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/24".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}"
@@ -127,7 +127,7 @@ mod test {
     #[ignore = "TODO: validation for reserved IPs not yet implemented"]
     fn test_reserved_ipv4_zero_rejected() {
         let expose = VpcExpose::empty().ip("0.0.0.0/32".into());
-        assert!(expose.validate().is_err());
+        assert!(expose.clone().validate().is_err());
     }
 
     // Reserved IP ::/128 in ips should be rejected
@@ -135,7 +135,7 @@ mod test {
     #[ignore = "TODO: validation for reserved IPs not yet implemented"]
     fn test_reserved_ipv6_zero_rejected() {
         let expose = VpcExpose::empty().ip("::/128".into());
-        assert!(expose.validate().is_err());
+        assert!(expose.clone().validate().is_err());
     }
 
     // Reserved IP 255.255.255.255/32 in as_range should be rejected
@@ -146,7 +146,7 @@ mod test {
             .ip("10.0.0.1/32".into())
             .as_range("255.255.255.255/32".into())
             .unwrap();
-        assert!(expose.validate().is_err());
+        assert!(expose.clone().validate().is_err());
     }
 
     // Multicast prefix 224.0.0.0/4 in ips should be rejected
@@ -154,7 +154,7 @@ mod test {
     #[ignore = "TODO: validation for multicast prefixes not yet implemented"]
     fn test_multicast_prefix_rejected() {
         let expose = VpcExpose::empty().ip("224.0.0.0/4".into());
-        assert!(expose.validate().is_err());
+        assert!(expose.clone().validate().is_err());
     }
 
     // Loopback prefix 127.0.0.0/8 in ips should be rejected
@@ -162,14 +162,14 @@ mod test {
     #[ignore = "TODO: validation for loopback prefixes not yet implemented"]
     fn test_loopback_prefix_rejected() {
         let expose = VpcExpose::empty().ip("127.0.0.0/8".into());
-        assert!(expose.validate().is_err());
+        assert!(expose.clone().validate().is_err());
     }
 
     // Port 0 in port range should be rejected
     #[test]
     fn test_port_zero_rejected() {
         let expose = VpcExpose::empty().ip(prefix_with_ports("10.0.0.0/24", 0, 80));
-        assert!(expose.validate().is_err());
+        assert!(expose.clone().validate().is_err());
     }
 
     // --- 0.0.0.0/0 and ::/0 prefixes ---
@@ -181,14 +181,14 @@ mod test {
     #[test]
     fn test_root_v4_in_ips_passes() {
         let expose = VpcExpose::empty().ip("0.0.0.0/0".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Root prefix ::/0 in ips is legal (IPv6 variant)
     #[test]
     fn test_root_v6_in_ips_passes() {
         let expose = VpcExpose::empty().ip("::/0".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Root prefix 0.0.0.0/0 in as_range is legal
@@ -200,7 +200,7 @@ mod test {
             .ip("10.0.0.0/8".into())
             .as_range("0.0.0.0/0".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Root prefix 0.0.0.0/0 in nots is rejected - not illegal per-se, but excludes all available
@@ -210,7 +210,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/8".into())
             .not("0.0.0.0/0".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::ExcludedAllPrefixes(_))),
             "{result:?}"
@@ -228,7 +228,7 @@ mod test {
             .unwrap()
             .not_as("0.0.0.0/0".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::ExcludedAllPrefixes(_))),
             "{result:?}"
@@ -243,7 +243,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .ip("1::/64".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::InconsistentIpVersion(_))),
             "{result:?}"
@@ -260,7 +260,7 @@ mod test {
             .ip("10.0.0.0/16".into())
             .as_range("1::/112".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::InconsistentIpVersion(_))),
             "{result:?}"
@@ -276,7 +276,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .ip("10.0.0.0/17".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Overlapping prefixes within as_range are allowed, should be merged internally
@@ -291,7 +291,7 @@ mod test {
             .unwrap()
             .as_range("10.0.0.0/17".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
         // TODO: Can we merge the two overlapping prefixes?
     }
 
@@ -303,7 +303,7 @@ mod test {
             .ip("10.0.0.0/8".into())
             .not("10.0.0.0/16".into())
             .not("10.0.0.0/17".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Overlapping prefixes within not_as are allowed, should be merged internally
@@ -320,7 +320,7 @@ mod test {
             .unwrap()
             .not_as("10.0.0.0/17".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Overlapping prefixes in ips with distinct port ranges passes
@@ -329,7 +329,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .ip(prefix_with_ports("10.0.0.0/24", 443, 443));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Overlapping prefixes in ips with overlapping port ranges passes
@@ -338,7 +338,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // --- Exclusion prefixes ---
@@ -349,7 +349,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .not("8.0.0.0/24".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Out-of-range exclusion prefix for as_range is legal (but we should warn about it)
@@ -363,7 +363,7 @@ mod test {
             .unwrap()
             .not_as("8.0.0.0/24".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Exclusion prefix for ips with partial overlap (not fully contained) is valid (but we should
@@ -382,7 +382,7 @@ mod test {
             .ip("20.0.0.0/16".into())
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/8".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Exclusion prefix for ips with partial overlap (not fully contained), when using port ranges,
@@ -399,7 +399,7 @@ mod test {
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(1500, 2500).unwrap()),
             ));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Exclusion prefix for as_range with partial overlap (not fully contained) is valid (but we
@@ -424,7 +424,7 @@ mod test {
             .unwrap()
             .not_as("10.0.0.0/8".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Exclusion prefix for as_range with partial overlap (not fully contained) is valid (but we
@@ -446,7 +446,7 @@ mod test {
                 Some(PortRange::new(1500, 2500).unwrap()),
             ))
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Excluding all prefixes in ips is rejected
@@ -456,7 +456,7 @@ mod test {
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/17".into())
             .not("10.0.128.0/17".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert_eq!(
             result,
             Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone()))),
@@ -477,7 +477,7 @@ mod test {
             .unwrap()
             .not_as("10.0.128.0/17".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert_eq!(
             result,
             Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone()))),
@@ -497,7 +497,7 @@ mod test {
             .not("10.0.1.0/24".into())
             .as_range("2.0.0.0/24".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert_eq!(
             result,
             Err(ConfigError::MismatchedPrefixSizes(
@@ -519,7 +519,7 @@ mod test {
             .ip(prefix_with_ports("10.0.0.2/32", 80, 80))
             .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}"
@@ -536,7 +536,7 @@ mod test {
             .not(prefix_with_ports("10.0.0.1/32", 80, 80))
             .as_range(prefix_with_ports("2.0.0.0/31", 8080, 8080))
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}",
@@ -552,7 +552,7 @@ mod test {
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .as_range(prefix_with_ports("2.0.0.0/25", 8080, 8080))
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::MismatchedPrefixSizes(_, _))),
             "{result:?}",
@@ -571,7 +571,7 @@ mod test {
 
         // ranges are normalized to `None`. So a check on start would be skipped without the validate
         assert!(expose.ips.iter().all(|p| p.ports().is_none()));
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(result.is_err_and(|e| matches!(e, ConfigError::Forbidden(_))));
     }
 
@@ -584,7 +584,7 @@ mod test {
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .as_range("2.0.0.0/24".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
             "{result:?}"
@@ -595,7 +595,7 @@ mod test {
     #[test]
     fn test_default_expose_with_ips_rejected() {
         let expose = VpcExpose::empty().set_default().ip("10.0.0.0/16".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");
 
         let expose = VpcExpose::empty()
@@ -604,11 +604,11 @@ mod test {
             .unwrap()
             .as_range("10.0.0.0/16".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");
 
         let expose = VpcExpose::empty().set_default().not("10.0.0.0/16".into());
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");
 
         let expose = VpcExpose::empty()
@@ -617,7 +617,7 @@ mod test {
             .unwrap()
             .not_as("10.0.0.0/16".into())
             .unwrap();
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");
     }
 
@@ -627,7 +627,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .ip("10.1.0.0/16".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // Valid expose with ips + as_range + nots + not_as passes
@@ -642,7 +642,7 @@ mod test {
             .unwrap()
             .not_as("2.0.1.0/24".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
     }
 
     // ==================================================================================
@@ -655,7 +655,7 @@ mod test {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/16".into()));
         manifest.add_expose(VpcExpose::empty().ip("10.1.0.0/16".into()));
-        assert!(manifest.validate().is_ok());
+        assert!(manifest.clone().validate().is_ok());
     }
 
     // Two no-NAT exposes with overlapping ips rejected
@@ -664,7 +664,7 @@ mod test {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/16".into()));
         manifest.add_expose(VpcExpose::empty().ip("10.0.1.0/24".into()));
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -684,7 +684,7 @@ mod test {
                 .as_range("2.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -704,7 +704,7 @@ mod test {
                 .as_range("2.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -724,7 +724,7 @@ mod test {
                 .as_range("2.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -744,7 +744,7 @@ mod test {
                 .as_range("2.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -764,7 +764,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -784,7 +784,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -811,7 +811,7 @@ mod test {
                 .as_range("2.1.0.0/16".into())
                 .unwrap(),
         );
-        assert!(manifest.validate().is_ok());
+        assert!(manifest.clone().validate().is_ok());
     }
 
     // Two static NAT exposes with overlapping ips rejected
@@ -834,7 +834,7 @@ mod test {
                 .as_range("3.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -861,7 +861,7 @@ mod test {
                 .as_range("2.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -888,7 +888,7 @@ mod test {
                 .as_range("3.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -915,7 +915,7 @@ mod test {
                 .as_range("2.0.0.0/16".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -942,7 +942,7 @@ mod test {
                 .as_range(prefix_with_ports("3.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -969,7 +969,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -996,7 +996,7 @@ mod test {
                 .as_range("3.0.0.0/24".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -1023,7 +1023,7 @@ mod test {
                 .as_range("2.0.1.0/24".into())
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -1050,7 +1050,7 @@ mod test {
                 .as_range(prefix_with_ports("3.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -1077,7 +1077,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        let result = manifest.validate();
+        let result = manifest.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::OverlappingPrefixes(_, _))),
             "{result:?}",
@@ -1104,7 +1104,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 9090, 9090))
                 .unwrap(),
         );
-        assert!(manifest.validate().is_ok());
+        assert!(manifest.clone().validate().is_ok());
     }
 
     // Masquerade + port forwarding overlap where masquerade contains port forwarding passes
@@ -1129,7 +1129,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        assert!(manifest.validate().is_ok());
+        assert!(manifest.clone().validate().is_ok());
     }
 
     // Masquerade + port forwarding partial overlap passes
@@ -1154,7 +1154,7 @@ mod test {
                 .as_range(prefix_with_ports("3.0.0.0/24", 8080, 8080))
                 .unwrap(),
         );
-        assert!(manifest.validate().is_ok());
+        assert!(manifest.clone().validate().is_ok());
     }
 
     // ==================================================================================
@@ -1424,7 +1424,7 @@ mod test {
         peering_table.add(peering2).unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        let result = overlay.validate();
+        let result = overlay.clone().validate();
         assert!(
             matches!(result, Err(ConfigError::DuplicateVpcPeerings(_))),
             "{result:?}",
@@ -1571,12 +1571,12 @@ mod test {
         // A default expose cannot have nat field set at all
         let expose = VpcExpose::empty().set_default();
         // Verify default alone is valid
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Default with NAT should fail
         let expose = VpcExpose::empty().set_default().make_static_nat().unwrap();
 
-        let result = expose.validate();
+        let result = expose.clone().validate();
         assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");
     }
 

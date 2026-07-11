@@ -23,7 +23,7 @@ use crate::routingdb::RoutingDb;
 use chrono::Local;
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs, RouteProtocol};
 use concurrency::sync::Arc;
-use config::{ConfigSummary, GwConfigMeta, ValidatedGwConfig};
+use config::{ConfigSummary, GwConfig, GwConfigMeta};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
@@ -384,7 +384,7 @@ fn show_provider(
     CliResponse::from_request_ok(request, data)
 }
 
-fn show_config(request: CliRequest, config: Option<&Arc<ValidatedGwConfig>>) -> CliResponse {
+fn show_config(request: CliRequest, config: Option<&Arc<GwConfig>>) -> CliResponse {
     let Some(config) = config else {
         return CliResponse::from_request_ok(request, "No configuration is applied".to_string());
     };

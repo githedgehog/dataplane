@@ -3,9 +3,9 @@
 
 //! Dataplane configuration model: vpc routing
 
-use crate::ConfigError;
-use crate::external::ValidatedPeering;
-use crate::external::overlay::vpcpeering::ValidatedExpose;
+use crate::external::overlay::vpc::Peering;
+use crate::external::overlay::vpcpeering::VpcExpose;
+use crate::{ConfigError, ConfigResult};
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::vxlan::Vni;
 use ordermap::OrderMap;
@@ -19,8 +19,8 @@ pub enum ExposeAction {
     Forward,
     Default,
 }
-impl From<&ValidatedExpose> for ExposeAction {
-    fn from(expose: &ValidatedExpose) -> Self {
+impl From<&VpcExpose> for ExposeAction {
+    fn from(expose: &VpcExpose) -> Self {
         if expose.has_masquerade() {
             return ExposeAction::Masquerade;
         } else if expose.has_port_forwarding() {
@@ -35,7 +35,7 @@ impl From<&ValidatedExpose> for ExposeAction {
 }
 
 /// A type representing a route to a remote vpc
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VpcRoute {
     dst: PrefixWithOptionalPorts, // destination(s) this route applies to
     dstvpc: String,               // destination VPC
@@ -46,7 +46,7 @@ pub struct VpcRoute {
 
 /// A type representing a set of routes to the same destination.
 /// This type is currently not public
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct VpcRouteSet(Vec<VpcRoute>);
 impl VpcRouteSet {
     #[must_use]
@@ -109,7 +109,7 @@ impl VpcRoute {
 /// For any destination `PrefixWithOptionalPorts`, this table can keep
 /// a collection of `VpcRoute`s in the form of a `VpcRouteSet`. Routes to
 /// the same destination are kept together in a `VpcRouteSet`.
-#[derive(Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct VpcRouteTable {
     table: OrderMap<PrefixWithOptionalPorts, VpcRouteSet>,
 }
@@ -126,8 +126,8 @@ impl VpcRouteTable {
     }
 
     #[must_use]
-    /// Build a `VpcRouteTable` from the set of `ValidatedPeering` of a VPC
-    pub fn build(peerings: &Vec<ValidatedPeering>) -> Self {
+    /// Build a `VpcRouteTable` from the (validated) peerings of a VPC
+    pub fn build(peerings: &[Peering]) -> Self {
         let mut rt = VpcRouteTable::new();
         for peering in peerings {
             for expose in peering.remote().valexp() {
@@ -153,7 +153,7 @@ impl VpcRouteTable {
         rt
     }
 
-    /// Consume and validate a `VpcRouteTable`
+    /// Validate a `VpcRouteTable`
     ///
     /// # Errors
     ///
@@ -162,7 +162,7 @@ impl VpcRouteTable {
     ///   2) destinations cannot overlap except if they are masqueraded or a default
     ///   3) overlapping destinations, when allowed, must use the same gateway group
     ///
-    pub fn validate(self) -> Result<Self, ConfigError> {
+    pub fn validate(&self) -> ConfigResult {
         let all_routes: Vec<&VpcRoute> = self.table.values().flat_map(VpcRouteSet::iter).collect();
         for (i, &route) in all_routes.iter().enumerate() {
             for &other in &all_routes[i + 1..] {
@@ -183,6 +183,6 @@ impl VpcRouteTable {
                 }
             }
         }
-        Ok(self)
+        Ok(())
     }
 }
