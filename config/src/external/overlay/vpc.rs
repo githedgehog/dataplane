@@ -14,7 +14,7 @@ use tracing::{debug, error, warn};
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
 
-use crate::external::overlay::acl::{Acl, ValidatedAcl};
+use crate::external::overlay::acl::Acl;
 
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::external::overlay::vpcrouting::VpcRouteTable;
@@ -59,13 +59,9 @@ impl Peering {
         self.remote.validate()?;
         self.validate_nat_combinations()?;
 
-        // FIXME: we don't store validated acl -- this is an artifact of rebasing
-        // the acl branch on the validated types removal
-        let acl = if let Some(acl) = &self.acl {
-            Some(acl.validate(&self.local, &self.remote)?)
-        } else {
-            None
-        };
+        if let Some(acl) = &mut self.acl {
+            acl.validate(&self.local, &self.remote)?;
+        }
         Ok(())
     }
 

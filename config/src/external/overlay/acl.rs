@@ -5,6 +5,7 @@
 
 use super::vpcpeering::VpcManifest;
 use crate::ConfigError;
+use crate::ConfigResult;
 use crate::utils::normalize;
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use tracing::debug;
@@ -69,7 +70,7 @@ impl AclPattern {
         }
     }
 
-    fn validate(mut self) -> Result<ValidatedAclPattern, ConfigError> {
+    fn validate(&mut self) -> Result<(), ConfigError> {
         if !self.validate_ports() {
             return Err(ConfigError::InvalidAcl(format!(
                 "Protocol {:?} does not support port matching",
@@ -84,11 +85,7 @@ impl AclPattern {
         }
         normalize(&mut self.src);
         normalize(&mut self.dst);
-        Ok(ValidatedAclPattern {
-            src: self.src,
-            dst: self.dst,
-            proto: self.proto,
-        })
+        Ok(())
     }
 }
 
@@ -177,31 +174,135 @@ impl AclRule {
         }
     }
 
-    fn validate(
-        self,
+    fn validate_pattern_coverage(
+        name: &str,
+        prefixes_acl: &mut PrefixPortsSet,
+        prefixes_manifest: &PrefixPortsSet,
+    ) -> Result<(), ConfigError> {
+        // If the list of prefixes is empty, it means we match all prefixes from the manifest.
+        if prefixes_acl.is_empty() {
+            *prefixes_acl = prefixes_manifest.clone();
+            return Ok(());
+        }
+
+        // If the ACL prefixes don't match any of the manifest prefixes, reject it.
+        let intersection = prefixes_acl.intersection_prefixes_and_ports(prefixes_manifest);
+        if intersection.is_empty() {
+            return Err(ConfigError::InvalidAcl(format!(
+                "ACL rule '{name}' has a 'match' that does not match any traffic in the manifest: {prefixes_acl:?} vs {prefixes_manifest:?}",
+            )));
+        }
+
+        // If some addresses/ports covered by the ACL fall outside of the scope of the manifest, log
+        // a message, and restrict the ACL to the manifest scope.
+        if intersection.total_prefixes_size() != prefixes_acl.total_prefixes_size() {
+            debug!(
+                "ACL rule '{name}' has a 'match' that doesn't fully covers the manifest traffic: {prefixes_acl:?} vs {prefixes_manifest:?}",
+            );
+            *prefixes_acl = intersection;
+        }
+        Ok(())
+    }
+
+    // This function assumes that validate_from_to has already been called, so exactly one of
+    // from/to matches manifest_left/manifest_right
+    fn manifest_from<'a>(
+        &self,
+        manifest_left: &'a VpcManifest,
+        manifest_right: &'a VpcManifest,
+    ) -> &'a VpcManifest {
+        if self.from == manifest_left.name() {
+            manifest_left
+        } else {
+            manifest_right
+        }
+    }
+
+    // This function assumes that validate_from_to has already been called, so exactly one of
+    // from/to matches manifest_left/manifest_right
+    fn manifest_to<'a>(
+        &self,
+        manifest_left: &'a VpcManifest,
+        manifest_right: &'a VpcManifest,
+    ) -> &'a VpcManifest {
+        if self.to == manifest_left.name() {
+            manifest_left
+        } else {
+            manifest_right
+        }
+    }
+
+    fn manifest_coverage_set(
+        manifest: &VpcManifest,
+        is_v4: bool,
+        is_public: bool,
+    ) -> PrefixPortsSet {
+        if manifest.has_default_expose() {
+            [PrefixWithOptionalPorts::from(if is_v4 {
+                Prefix::root_v4()
+            } else {
+                Prefix::root_v6()
+            })]
+            .into()
+        } else if is_public {
+            manifest.all_public_ips()
+        } else {
+            manifest.all_ips()
+        }
+    }
+
+    /// Materialize "any address within the peering, restricted to these ports" entries into
+    /// concrete prefixes, one per port range per prefix advertised by `manifest_prefixes`.
+    fn expand_any_ports(manifest_prefixes: &PrefixPortsSet, ports: &[PortRange]) -> PrefixPortsSet {
+        ports
+            .iter()
+            .flat_map(|port| {
+                manifest_prefixes
+                    .iter()
+                    .map(move |p| PrefixWithOptionalPorts::new(p.prefix(), Some(*port)))
+            })
+            .collect()
+    }
+
+    fn validate_patterns_coverage(
+        &mut self,
         manifest_left: &VpcManifest,
         manifest_right: &VpcManifest,
-    ) -> Result<ValidatedAclRule, ConfigError> {
-        self.validate_from_to(manifest_left, manifest_right)?;
-        let src_any_ports = self.pattern.src_any_ports.clone();
-        let dst_any_ports = self.pattern.dst_any_ports.clone();
-        let pattern = self.pattern.validate()?;
-        let mut validated_rule = ValidatedAclRule {
-            name: self.name,
-            from: self.from,
-            to: self.to,
-            action: self.action,
-            pattern,
-            scope: self.scope,
-            log: self.log,
+    ) -> Result<(), ConfigError> {
+        // A default-only manifest's is_v4()/is_v6() are always false, so fall back to the other side
+        let is_v4 = if manifest_left.is_default_only() {
+            manifest_right.is_v4()
+        } else {
+            manifest_left.is_v4()
         };
-        validated_rule.validate_patterns_coverage(
-            manifest_left,
-            manifest_right,
-            &src_any_ports,
-            &dst_any_ports,
-        )?;
-        Ok(validated_rule)
+
+        let src_any_ports = &self.pattern.src_any_ports;
+        let dst_any_ports = &self.pattern.dst_any_ports;
+
+        let manifest_from = self.manifest_from(manifest_left, manifest_right);
+        let src_set = Self::manifest_coverage_set(manifest_from, is_v4, false);
+        let any = Self::expand_any_ports(&src_set, src_any_ports);
+        self.pattern.src = self.pattern.src.union_prefixes_and_ports(&any);
+        Self::validate_pattern_coverage(&self.name, &mut self.pattern.src, &src_set)?;
+
+        let manifest_to = self.manifest_to(manifest_left, manifest_right);
+        let dst_set = Self::manifest_coverage_set(manifest_to, is_v4, true);
+        let any = Self::expand_any_ports(&dst_set, dst_any_ports);
+        self.pattern.dst = self.pattern.dst.union_prefixes_and_ports(&any);
+        Self::validate_pattern_coverage(&self.name, &mut self.pattern.dst, &dst_set)?;
+
+        Ok(())
+    }
+
+    fn validate(
+        &mut self,
+        manifest_left: &VpcManifest,
+        manifest_right: &VpcManifest,
+    ) -> Result<(), ConfigError> {
+        self.validate_from_to(manifest_left, manifest_right)?;
+        self.pattern.validate()?;
+        self.validate_patterns_coverage(manifest_left, manifest_right)?;
+        Ok(())
     }
 }
 
@@ -340,7 +441,6 @@ impl ValidatedAclRule {
         } else {
             manifest_left.is_v4()
         };
-
         let manifest_from = self.manifest_from(manifest_left, manifest_right);
         let src_set = Self::manifest_coverage_set(manifest_from, is_v4, false);
         let any = Self::expand_any_ports(&src_set, src_any_ports);
@@ -401,20 +501,15 @@ impl Acl {
     ///
     /// Returns an error if any of the rules are invalid, or if there are duplicate rule names.
     pub fn validate(
-        &self,
+        &mut self,
         manifest_left: &VpcManifest,
         manifest_right: &VpcManifest,
-    ) -> Result<ValidatedAcl, ConfigError> {
+    ) -> ConfigResult {
         self.validate_rules_names()?;
-        let rules = self
-            .rules
-            .iter()
-            .map(|rule| rule.clone().validate(manifest_left, manifest_right))
-            .collect::<Result<_, _>>()?;
-        Ok(ValidatedAcl {
-            rules,
-            default_action: self.default,
-        })
+        for rule in &mut self.rules {
+            rule.validate(manifest_left, manifest_right)?;
+        }
+        Ok(())
     }
 }
 
@@ -625,7 +720,7 @@ mod validation_tests {
     #[test]
     fn test_acl_duplicate_rule_names_rejected() {
         let (left, right) = manifests();
-        let acl = Acl {
+        let mut acl = Acl {
             default: AclAction::Deny,
             rules: vec![
                 rule("dup", "VPC-1", "VPC-2", AclAction::Allow, match_all()),
@@ -643,7 +738,7 @@ mod validation_tests {
     #[test]
     fn test_acl_distinct_rule_names_passes() {
         let (left, right) = manifests();
-        let acl = Acl {
+        let mut acl = Acl {
             default: AclAction::Deny,
             rules: vec![
                 rule("forward1", "VPC-1", "VPC-2", AclAction::Allow, match_all()),
@@ -959,12 +1054,12 @@ mod validation_tests {
             AclProtoMatch::Tcp,
         );
         p.dst_any_ports = vec![PortRange::new(443, 443).unwrap()];
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
 
-        let validated_rule = rule.validate(&left, &right).expect("should validate");
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        rule.validate(&left, &right).expect("should validate");
         assert_eq!(
-            validated_rule.pattern().dst(),
-            &PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            rule.pattern.dst,
+            PrefixPortsSet::from([PrefixWithOptionalPorts::new(
                 Prefix::root_v4(),
                 Some(PortRange::new(443, 443).unwrap())
             )])
@@ -1009,7 +1104,7 @@ mod validation_tests {
                 rule("return", "VPC-2", "VPC-1", AclAction::Allow, match_all()),
             ],
         };
-        let acl = acl.validate(&left, &right).expect("should validate");
+        let mut acl = acl.validate(&left, &right).expect("should validate");
         assert_eq!(acl.default_action(), AclAction::Deny);
         assert_eq!(acl.rules().len(), 2);
     }
