@@ -446,7 +446,7 @@ mod validation_tests {
 
     // Helper: validate a single rule against the standard peering, returning the (possibly
     // completed/restricted) rule on success
-    fn validate_rule(mut rule: AclRule) -> Result<(), ConfigError> {
+    fn validate_rule(rule: &mut AclRule) -> Result<(), ConfigError> {
         let (left, right) = manifests();
         rule.validate(&left, &right)
     }
@@ -467,21 +467,21 @@ mod validation_tests {
     // Explicit from/to naming the two peering sides passes
     #[test]
     fn test_acl_from_to_explicit_passes() {
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, match_all());
-        assert!(validate_rule(rule).is_ok());
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, match_all());
+        assert!(validate_rule(&mut rule).is_ok());
     }
 
     // Explicit from/to with the sides swapped passes
     #[test]
     fn test_acl_from_to_swapped_passes() {
-        let rule = rule("r", "VPC-2", "VPC-1", AclAction::Allow, match_all());
-        assert!(validate_rule(rule).is_ok());
+        let mut rule = rule("r", "VPC-2", "VPC-1", AclAction::Allow, match_all());
+        assert!(validate_rule(&mut rule).is_ok());
     }
 
     #[test]
     fn test_acl_to_blank_rejected() {
-        let rule = rule("r", "VPC-1", "", AclAction::Allow, match_all());
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "", AclAction::Allow, match_all());
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -490,8 +490,8 @@ mod validation_tests {
 
     #[test]
     fn test_acl_from_blank_rejected() {
-        let rule = rule("r", "", "VPC-2", AclAction::Allow, match_all());
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "", "VPC-2", AclAction::Allow, match_all());
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -501,8 +501,8 @@ mod validation_tests {
     // Omitting both "from" and "to" is rejected
     #[test]
     fn test_acl_both_from_and_to_empty_rejected() {
-        let rule = rule("r", "", "", AclAction::Allow, match_all());
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "", "", AclAction::Allow, match_all());
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -512,8 +512,8 @@ mod validation_tests {
     // A "from" value that is not one of the peering's two VPCs is rejected
     #[test]
     fn test_acl_unknown_from_rejected() {
-        let rule = rule("r", "VPC-X", "VPC-2", AclAction::Allow, match_all());
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-X", "VPC-2", AclAction::Allow, match_all());
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -523,8 +523,8 @@ mod validation_tests {
     // A "to" value that is not one of the peering's two VPCs is rejected
     #[test]
     fn test_acl_unknown_to_rejected() {
-        let rule = rule("r", "VPC-1", "VPC-X", AclAction::Allow, match_all());
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-X", AclAction::Allow, match_all());
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -534,8 +534,8 @@ mod validation_tests {
     // Using identical "to" and "from" values is rejected
     #[test]
     fn test_acl_to_from_equal_rejected() {
-        let rule = rule("r", "VPC-1", "VPC-1", AclAction::Allow, match_all());
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-1", AclAction::Allow, match_all());
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -591,8 +591,8 @@ mod validation_tests {
             [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
             AclProtoMatch::Tcp,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        assert!(validate_rule(rule).is_ok());
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(&mut rule).is_ok());
     }
 
     // UDP with port matching passes
@@ -603,8 +603,8 @@ mod validation_tests {
             [prefix_with_ports("10.1.0.0/24", 53, 53)].into(),
             AclProtoMatch::Udp,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        assert!(validate_rule(rule).is_ok());
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(&mut rule).is_ok());
     }
 
     // ICMP with port matching is rejected (ICMP has no ports)
@@ -615,8 +615,8 @@ mod validation_tests {
             [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
             AclProtoMatch::Icmp,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -631,8 +631,8 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Other(47),
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -647,8 +647,8 @@ mod validation_tests {
             [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -663,8 +663,8 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Icmp,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        assert!(validate_rule(rule).is_ok());
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(&mut rule).is_ok());
     }
 
     // Unknown protocol without ports passes
@@ -675,8 +675,8 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Other(47),
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        assert!(validate_rule(rule).is_ok());
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(&mut rule).is_ok());
     }
 
     // =============================================================================================
@@ -691,8 +691,8 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -707,8 +707,8 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24", "2001:db8::/64"]),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -723,8 +723,8 @@ mod validation_tests {
             prefixes(&["2001:db8::/64"]),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -739,10 +739,10 @@ mod validation_tests {
     // empty sets are filled in with the manifests' prefixes
     #[test]
     fn test_acl_empty_match_covers_manifest() {
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, match_all());
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/16"]));
-        assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/16"]));
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, match_all());
+        validate_rule(&mut rule).expect("should validate");
+        assert_eq!(rule.pattern.src, prefixes(&["10.0.0.0/16"]));
+        assert_eq!(rule.pattern.dst, prefixes(&["10.1.0.0/16"]));
     }
 
     // A src that does not intersect the from-side's addresses is rejected (can never match)
@@ -753,8 +753,8 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -769,8 +769,8 @@ mod validation_tests {
             prefixes(&["192.168.0.0/24"]),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -786,10 +786,10 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Any,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let validated = validate_rule(rule).expect("should validate");
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        validate_rule(&mut rule).expect("should validate");
         // 10.0.0.0/8 is clamped to VPC-1's 10.0.0.0/16
-        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/16"]));
+        assert_eq!(rule.pattern.src, prefixes(&["10.0.0.0/16"]));
     }
 
     // A fully-specified, in-range rule passes unchanged
@@ -800,10 +800,10 @@ mod validation_tests {
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Tcp,
         );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/24"]));
-        assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/24"]));
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        validate_rule(&mut rule).expect("should validate");
+        assert_eq!(rule.pattern.src, prefixes(&["10.0.0.0/24"]));
+        assert_eq!(rule.pattern.dst, prefixes(&["10.1.0.0/24"]));
     }
 
     // =============================================================================================
@@ -816,9 +816,9 @@ mod validation_tests {
     fn test_acl_any_address_any_port_covers_manifest() {
         let mut p = match_all();
         p.src_any_ports = vec![]; // no explicit ports: empty src == "match everything"
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/16"]));
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        validate_rule(&mut rule).expect("should validate");
+        assert_eq!(rule.pattern.src, prefixes(&["10.0.0.0/16"]));
     }
 
     // A match entry with neither cidr nor vpcSubnet, but with ports set, matches any address
@@ -831,14 +831,14 @@ mod validation_tests {
             AclProtoMatch::Tcp,
         );
         p.src_any_ports = vec![PortRange::new(443, 443).unwrap()];
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let validated = validate_rule(rule).expect("should validate");
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        validate_rule(&mut rule).expect("should validate");
         assert_eq!(
-            validated.pattern.src,
+            rule.pattern.src,
             [prefix_with_ports("10.0.0.0/16", 443, 443)].into()
         );
         // dst was left fully unrestricted (empty, no any_ports): still "match everything".
-        assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/16"]));
+        assert_eq!(rule.pattern.dst, prefixes(&["10.1.0.0/16"]));
     }
 
     // A protocol that doesn't support ports (e.g. ICMP) rejects an "any address" port-restricted
@@ -851,8 +851,8 @@ mod validation_tests {
             AclProtoMatch::Icmp,
         );
         p.src_any_ports = vec![PortRange::new(443, 443).unwrap()];
-        let icmp_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p.clone());
-        let result = validate_rule(icmp_rule);
+        let mut icmp_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p.clone());
+        let result = validate_rule(&mut icmp_rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -860,8 +860,8 @@ mod validation_tests {
 
         // same thing for numeric protocols
         p.proto = AclProtoMatch::Other(46);
-        let num_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(num_rule);
+        let mut num_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(&mut num_rule);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
@@ -884,7 +884,6 @@ mod validation_tests {
             AclProtoMatch::Tcp,
         );
         p.dst_any_ports = vec![PortRange::new(443, 443).unwrap()];
-
         let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
         rule.validate(&left, &right).expect("should validate");
         assert_eq!(
@@ -917,7 +916,7 @@ mod validation_tests {
     #[test]
     fn test_acl_multiple_rules_passes() {
         let (left, right) = manifests();
-        let acl = Acl {
+        let mut acl = Acl {
             default: AclAction::Deny,
             rules: vec![
                 rule(
@@ -934,7 +933,7 @@ mod validation_tests {
                 rule("return", "VPC-2", "VPC-1", AclAction::Allow, match_all()),
             ],
         };
-        let mut acl = acl.validate(&left, &right).expect("should validate");
+        acl.validate(&left, &right).expect("should validate");
         assert_eq!(acl.default_action(), AclAction::Deny);
         assert_eq!(acl.rules().len(), 2);
     }

@@ -673,29 +673,27 @@ mod test {
         )
         .unwrap();
 
-        let left = VpcManifest::with_exposes(
+        let mut left = VpcManifest::with_exposes(
             "VPC-1",
             vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::from(
                 "10.0.0.0/24".parse::<LpmPrefix>().unwrap(),
             ))],
-        )
-        .validate()
-        .unwrap();
-        let right = VpcManifest::with_exposes(
+        );
+        left.validate().unwrap();
+
+        let mut right = VpcManifest::with_exposes(
             "VPC-2",
             vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::from(
                 "10.1.0.0/24".parse::<LpmPrefix>().unwrap(),
             ))],
-        )
-        .validate()
-        .unwrap();
+        );
+        right.validate().unwrap();
 
-        let acl = Acl::new(AclAction::Deny, vec![converted_rule])
-            .validate(&left, &right)
-            .unwrap();
+        let mut acl = Acl::new(AclAction::Deny, vec![converted_rule]);
+        acl.validate(&left, &right).unwrap();
         assert_eq!(
-            acl.rules()[0].pattern().src(),
-            &PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+            acl.rules()[0].pattern.src,
+            PrefixPortsSet::from([PrefixWithOptionalPorts::new(
                 "10.0.0.0/24".parse::<LpmPrefix>().unwrap(),
                 Some(PortRange::new(443, 443).unwrap()),
             )])
