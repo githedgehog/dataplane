@@ -271,7 +271,11 @@ impl AfIpv4Ucast {
         self.networks.push(network);
     }
     pub fn add_networks(&mut self, networks: impl IntoIterator<Item = Prefix>) {
-        self.networks.extend(networks);
+        for net in networks {
+            if !self.networks.contains(&net) {
+                self.add_network(net);
+            }
+        }
     }
 }
 impl AfIpv6Ucast {
@@ -293,7 +297,11 @@ impl AfIpv6Ucast {
         self.networks.push(network);
     }
     pub fn add_networks(&mut self, networks: impl IntoIterator<Item = Prefix>) {
-        self.networks.extend(networks);
+        for net in networks {
+            if !self.networks.contains(&net) {
+                self.add_network(net);
+            }
+        }
     }
 }
 impl AfL2vpnEvpn {

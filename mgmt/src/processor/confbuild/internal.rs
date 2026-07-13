@@ -145,10 +145,19 @@ impl VpcRoutingConfigIpv4 {
             self.import_plists.push(plist);
         }
 
-        /* advertise */
-        let nets = rmanifest.valexp().iter().flat_map(|e| e.adv_prefixes());
+        /* remote prefixes on this peering */
+        let mut nets: Vec<Prefix> = rmanifest
+            .valexp()
+            .iter()
+            .flat_map(|e| e.adv_prefixes())
+            .collect();
 
-        self.adv_nets.extend(nets);
+        /* sort and remove duplicates */
+        nets.sort_unstable();
+        nets.dedup();
+
+        /* list of advertised prefixes */
+        self.adv_nets.extend(nets.clone());
 
         /* build adv prefix list and route-map */
         let mut adv_plist = PrefixList::new(
@@ -156,13 +165,10 @@ impl VpcRoutingConfigIpv4 {
             IpVer::V4,
             Some(vpc.adv_plist_desc(rmanifest.name())),
         );
-        for expose in rmanifest.valexp() {
-            let prefixes = expose.adv_prefixes().into_iter();
-            let plists = prefixes.map(|p| {
-                PrefixListEntry::new(PrefixListAction::Permit, PrefixListPrefix::Prefix(p), None)
-            });
-            adv_plist.add_entries(plists)?;
-        }
+        let pl_entries = nets.iter().map(|p| {
+            PrefixListEntry::new(PrefixListAction::Permit, PrefixListPrefix::Prefix(*p), None)
+        });
+        adv_plist.add_entries(pl_entries)?;
         self.adv_plist.push(adv_plist);
 
         /* create adv route-map entry matching prefixes and adding communities */
