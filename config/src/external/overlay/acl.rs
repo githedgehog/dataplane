@@ -18,7 +18,7 @@ pub enum AclAction {
     Deny,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AclProtoMatch {
     Tcp,
     Udp,
@@ -127,8 +127,8 @@ impl ValidatedAclPattern {
     }
 
     #[must_use]
-    pub fn proto(&self) -> &AclProtoMatch {
-        &self.proto
+    pub fn proto(&self) -> AclProtoMatch {
+        self.proto
     }
 }
 
