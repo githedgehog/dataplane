@@ -1,0 +1,29 @@
+[package]
+name = "dataplane-acl-filter"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+acl = { workspace = true }
+concurrency = { workspace = true }
+config = { workspace = true }
+dpdk = { workspace = true }
+lookup = { workspace = true }
+lpm = { workspace = true }
+match-action = { workspace = true, features = ["derive"] }
+net = { workspace = true }
+pipeline = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The reference (linear-scan) ACL backend is the differential-test oracle and drives the fast,
+# EAL-free semantic suite. It is `cfg(test)`-gated in the source, so it is never part of a
+# production build; this dev-dep just makes `acl::reference` available to test builds.
+acl = { workspace = true, features = ["reference"] }
+config = { workspace = true, features = ["testing"] }
+dpdk = { workspace = true, features = ["test"] }
+lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["builder"] }
+tracing-test = { workspace = true, features = [] }
