@@ -7,9 +7,11 @@ version.workspace = true
 
 [dependencies]
 acl = { workspace = true }
+common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
+indenter = { workspace = true }
 lookup = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true, features = ["derive"] }

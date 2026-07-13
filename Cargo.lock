@@ -1240,6 +1240,7 @@ name = "dataplane-acl-filter"
 version = "0.22.0"
 dependencies = [
  "dataplane-acl",
+ "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-dpdk",
@@ -1248,6 +1249,7 @@ dependencies = [
  "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
+ "indenter",
  "tracing",
  "tracing-test",
 ]
