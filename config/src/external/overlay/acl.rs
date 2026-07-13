@@ -426,6 +426,11 @@ impl Acl {
         manifest_left: &ValidatedManifest,
         manifest_right: &ValidatedManifest,
     ) -> Result<ValidatedAcl, ConfigError> {
+        if self.rules.is_empty() {
+            return Err(ConfigError::InvalidAcl(
+                "ACL list must contain at least one rule".to_string(),
+            ));
+        }
         self.validate_rules_names()?;
         let rules = self
             .rules
@@ -632,6 +637,25 @@ mod validation_tests {
     fn test_acl_to_from_equal_rejected() {
         let rule = rule("r", "VPC-1", "VPC-1", AclAction::Allow, match_all());
         let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // =============================================================================================
+    // Empty ACL is rejected
+    // =============================================================================================
+
+    // Empty ACL is rejected
+    #[test]
+    fn test_acl_empty_list_rejected() {
+        let (left, right) = manifests();
+        let acl = Acl {
+            default: AclAction::Deny,
+            rules: vec![],
+        };
+        let result = acl.validate(&left, &right);
         assert!(
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
