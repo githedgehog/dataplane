@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
+    use acl_filter::AclFilterContextWriter;
     use config::external::communities::PriorityCommunityTable;
     use config::external::gwgroup::GwGroup;
     use config::external::gwgroup::GwGroupMember;
@@ -455,6 +456,9 @@ pub mod test {
         /* create FlowFilterTable for flow filtering */
         let flowfilterw = FlowFilterTableWriter::new();
 
+        /* create AclFilterContext for ACL filtering */
+        let aclfilterw = AclFilterContextWriter::new();
+
         /* create port forwarding table */
         let portfw_w = PortFwTableWriter::new();
 
@@ -476,6 +480,7 @@ pub mod test {
             nattablesw,
             natallocatorw,
             flowfilterw,
+            aclfilterw,
             portfw_w,
             vpc_stats_store,
             dp_status_r,

@@ -12,6 +12,7 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
+use acl_filter::{AclFilter, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
 
@@ -42,6 +43,7 @@ where
     pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
     pub flowfiltertablesw: FlowFilterTableWriter,
+    pub aclfiltertablesw: AclFilterContextWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
@@ -66,6 +68,8 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let flow_table = Arc::new(FlowTable::default());
     let flowfiltertablesw = FlowFilterTableWriter::new();
     let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
+    let aclfiltertablesw = AclFilterContextWriter::new();
+    let aclfiltertablesr_factory = aclfiltertablesw.get_reader_factory();
     let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let nattabler_factory = nattablesw.get_reader_factory();
@@ -110,6 +114,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", stats_w.clone());
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
+        let acl_filter = AclFilter::new("acl-filter", aclfiltertablesr_factory.handle());
         let icmp_error_handler = IcmpErrorHandler::new(flow_table_clone.clone());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table_clone.clone());
         let portfw = PortForwarder::new(
@@ -128,6 +133,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(icmp_error_handler)
             .add_stage(flow_lookup)
             .add_stage(flow_filter)
+            .add_stage(acl_filter)
             .add_stage(static_nat)
             .add_stage(portfw)
             .add_stage(masquerade)
@@ -146,6 +152,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         nattablesw,
         natallocatorw,
         flowfiltertablesw,
+        aclfiltertablesw,
         stats,
         vpc_stats_store,
         portfw_w,

@@ -3,6 +3,8 @@
 
 //! Configuration processor
 
+use acl_filter::AclFilterContext;
+use acl_filter::AclFilterContextWriter;
 use concurrency::sync::Arc;
 use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
@@ -94,6 +96,9 @@ pub struct ConfigProcessorParams {
 
     // writer for flow filter table
     pub flowfilterw: FlowFilterTableWriter,
+
+    // writer for ACL filter tables
+    pub aclfilterw: AclFilterContextWriter,
 
     // writer for port forwarding table
     pub portfw_w: PortFwTableWriter,
@@ -498,6 +503,26 @@ fn update_stats_vpc_mappings(
     pairs
 }
 
+fn apply_flow_filtering_config(
+    overlay: &ValidatedOverlay,
+    flowfilterw: &mut FlowFilterTableWriter,
+) -> ConfigResult {
+    let flow_filter_table = FlowFilterTable::build_from_overlay(overlay)?;
+    flowfilterw.update_flow_filter_table(flow_filter_table);
+    debug!("Successfully updated flow-filter table");
+    Ok(())
+}
+
+fn apply_acl_filter_config(
+    overlay: &ValidatedOverlay,
+    aclfilterw: &mut AclFilterContextWriter,
+) -> ConfigResult {
+    let acl_filter_context = AclFilterContext::try_from(overlay)?;
+    aclfilterw.store(acl_filter_context);
+    debug!("Successfully updated acl-filter tables");
+    Ok(())
+}
+
 /// Update the Nat tables for static NAT
 fn apply_static_nat_config(
     vpc_table: &ValidatedVpcTable,
@@ -520,16 +545,6 @@ fn apply_masquerade_config(
     let nat_config = MasqueradeConfig::new(vpc_table, genid).set_randomize(true);
     natallocatorw.update_nat_allocator(nat_config, flow_table);
     debug!("Updated masquerade NAT allocator");
-}
-
-fn apply_flow_filtering_config(
-    overlay: &ValidatedOverlay,
-    flowfilterw: &mut FlowFilterTableWriter,
-) -> ConfigResult {
-    let flow_filter_table = FlowFilterTable::build_from_overlay(overlay)?;
-    flowfilterw.update_flow_filter_table(flow_filter_table);
-    debug!("Successfully updated flow-filter table");
-    Ok(())
 }
 
 fn apply_port_forwarding_config(
@@ -583,6 +598,7 @@ impl ConfigProcessor {
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
+        let aclfilterw = &mut self.proc_params.aclfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
         let flow_table = &self.proc_params.flow_table;
 
@@ -619,22 +635,27 @@ impl ConfigProcessor {
         /* get vrf interfaces from kernel and build a hashmap keyed by name */
         let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
+        let overlay = config.external().overlay();
+
+        /* apply flow filtering config */
+        apply_flow_filtering_config(overlay, flowfilterw)?;
+
+        /* apply ACL filter config */
+        apply_acl_filter_config(overlay, aclfilterw)?;
+
         /* apply static NAT config */
-        apply_static_nat_config(config.external().overlay().vpc_table(), nattablesw)?;
+        apply_static_nat_config(overlay.vpc_table(), nattablesw)?;
 
         /* apply masquerade config */
         apply_masquerade_config(
-            config.external().overlay().vpc_table(),
+            overlay.vpc_table(),
             flow_table.as_ref(),
             natallocatorw,
             genid,
         );
 
-        /* apply flow filtering config */
-        apply_flow_filtering_config(config.external().overlay(), flowfilterw)?;
-
         /* apply port-forwarding config */
-        apply_port_forwarding_config(config.external().overlay().vpc_table(), portfw_w)?;
+        apply_port_forwarding_config(overlay.vpc_table(), portfw_w)?;
 
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(&config, vpcmapw);

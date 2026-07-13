@@ -12,6 +12,7 @@ default = []
 loom = ["concurrency/loom"]
 
 [dependencies]
+acl-filter = { workspace = true }
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }
 arrayvec = { workspace = true }
