@@ -201,7 +201,7 @@ strum = { version = "0.28.0", default-features = false, features = [] }
 strum_macros = { version = "0.28.0", default-features = false, features = [] }
 syn = { version = "2.0.118", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
-thread_local = { version = "1.1.9", default-features = false, features = [] }
+thread_local = { version = "1.1.10", default-features = false, features = [] }
 # Exception to the "no workspace-wide features" rule above.  `tokio/parking_lot` is
 # not an additive feature in the usual sense -- it picks the lock implementation
 # tokio uses internally for its runtime.  Production builds already pull
