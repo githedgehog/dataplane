@@ -242,6 +242,18 @@ impl ValidatedAclRule {
         self.action
     }
 
+    /// Name of the VPC the rule applies traffic *from* (matches one of the peering's two VPCs).
+    #[must_use]
+    pub fn from(&self) -> &str {
+        &self.from
+    }
+
+    /// Name of the VPC the rule applies traffic *to* (matches one of the peering's two VPCs).
+    #[must_use]
+    pub fn to(&self) -> &str {
+        &self.to
+    }
+
     #[must_use]
     pub fn pattern(&self) -> &ValidatedAclPattern {
         &self.pattern
