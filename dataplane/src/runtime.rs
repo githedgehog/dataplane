@@ -294,6 +294,7 @@ pub fn main() {
                     nattablesw: setup.nattablesw,
                     natallocatorw: setup.natallocatorw,
                     flowfilterw: setup.flowfiltertablesw,
+                    aclfilterw: setup.aclfiltertablesw,
                     portfw_w: setup.portfw_w,
                     vpc_stats_store: setup.vpc_stats_store,
                     dp_status_r: dp_status.clone(),
