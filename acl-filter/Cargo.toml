@@ -20,6 +20,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 config = { workspace = true, features = ["testing"] }
+flow-entry = { workspace = true }
+flow-filter = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
+nat = { workspace = true }
 net = { workspace = true, features = ["builder"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tracing-test = { workspace = true, features = [] }

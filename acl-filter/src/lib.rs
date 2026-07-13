@@ -18,6 +18,9 @@ mod access;
 mod context;
 mod display;
 
+#[cfg(test)]
+mod tests;
+
 pub use access::{
     AclFilterContext, AclFilterContextReader, AclFilterContextReaderFactory, AclFilterContextWriter,
 };

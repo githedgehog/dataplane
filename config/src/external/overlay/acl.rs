@@ -392,7 +392,7 @@ pub struct Acl {
 
 impl Acl {
     #[must_use]
-    pub(crate) fn new(default: AclAction, rules: Vec<AclRule>) -> Self {
+    pub fn new(default: AclAction, rules: Vec<AclRule>) -> Self {
         Self { default, rules }
     }
 
