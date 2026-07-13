@@ -2,6 +2,7 @@
 
 members = [
     "acl",
+    "acl-filter",
     "args",
     "cli",
     "common",
@@ -66,6 +67,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 
 # Internal
 acl = { path = "./acl", package = "dataplane-acl", features = [] }
+acl-filter = { path = "./acl-filter", package = "dataplane-acl-filter", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
@@ -272,6 +274,11 @@ package = "dataplane-acl"
 # unit tests run fine outside the miri profile.
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
+
+[workspace.metadata.package.acl-filter]
+package = "dataplane-acl-filter"
+miri = true
+wasm = false # miss
 
 [workspace.metadata.package.args]
 package = "dataplane-args"

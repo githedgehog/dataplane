@@ -1235,6 +1235,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-acl-filter"
+version = "0.22.0"
+dependencies = [
+ "dataplane-acl",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-lookup",
+ "dataplane-lpm",
+ "dataplane-match-action",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-args"
 version = "0.22.0"
 dependencies = [
