@@ -13,6 +13,9 @@ use tracing::{debug, error, warn};
 
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
+
+use crate::external::overlay::acl::Acl;
+
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::external::overlay::vpcrouting::VpcRouteTable;
 use crate::internal::interfaces::interface::InterfaceConfigTable;
@@ -32,6 +35,7 @@ pub struct Peering {
     pub remote_id: VpcId,    /* Id of peer */
     pub remote_vni: Vni,     /* Vni of peer -- should be vpc discriminant in future */
     pub gwgroup: String,     /* gateway group serving this peering */
+    pub acl: Option<Acl>,    /* optional ACL for this peering */
 }
 
 impl Peering {
@@ -51,10 +55,14 @@ impl Peering {
                 "A default expose cannot be peered with another default expose",
             ));
         }
-
         self.local.validate()?;
         self.remote.validate()?;
-        self.validate_nat_combinations()
+        self.validate_nat_combinations()?;
+
+        if let Some(acl) = &mut self.acl {
+            acl.validate(&self.local, &self.remote)?;
+        }
+        Ok(())
     }
 
     /// FOR TESTS ONLY. Fake validation for a VPC peering.
@@ -79,6 +87,7 @@ impl Peering {
             remote_id: self.remote_id.clone(),
             remote_vni: self.remote_vni,
             gwgroup: self.gwgroup.clone(),
+            acl: None,
         }
     }
 
@@ -110,6 +119,20 @@ impl Peering {
     #[must_use]
     pub fn gwgroup(&self) -> &String {
         &self.gwgroup
+    }
+
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        // This is a validated object, we checked at validation time that both manifests use the
+        // same IP version, so we only need to look at one of them.
+        //
+        // We also know that at least one of the manifests has a non-default expose, so we can
+        // always tell the IP version in use from one of them.
+        if self.local.is_default_only() {
+            self.remote.is_v4()
+        } else {
+            self.local.is_v4()
+        }
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {
@@ -233,6 +256,7 @@ impl Vpc {
                     remote_id: remote_vpc.vpcid.clone(),
                     remote_vni: remote_vpc.vni,
                     gwgroup: p.gwgroup.clone(),
+                    acl: p.acl.clone(),
                 }
             })
             .collect();
@@ -310,6 +334,7 @@ impl Vpc {
                     remote_id: peering.remote_id.clone(),
                     remote_vni: peering.remote_vni,
                     gwgroup: peering.gwgroup.clone(),
+                    acl: None,
                 }
             })
             .collect::<Vec<_>>();

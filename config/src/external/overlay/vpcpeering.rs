@@ -3,9 +3,10 @@
 
 //! Dataplane configuration model: vpc peering
 
+use crate::external::overlay::acl::Acl;
 use crate::utils::{
     check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
-    merge_contiguous_prefixes, merge_overlapping_prefixes,
+    normalize,
 };
 use concurrency::sync::LazyLock;
 use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
@@ -302,23 +303,13 @@ impl VpcExpose {
         // TODO: We can loosen this restriction in the future. When we do, some additional
         //       considerations might be required to validate independently the IPv4 and the IPv6
         //       prefixes and exclusion prefixes in the rest of this function.
-        let mut is_ipv4_opt = None;
-        for prefixes in [
+        if !PrefixPortsSet::have_consistent_ip_version(&[
             &self.ips,
             &self.nots,
             self.as_range_or_empty(),
             self.not_as_or_empty(),
-        ] {
-            if prefixes.iter().any(|p| {
-                if let Some(is_ipv4) = is_ipv4_opt {
-                    p.prefix().is_ipv4() != is_ipv4
-                } else {
-                    is_ipv4_opt = Some(p.prefix().is_ipv4());
-                    false
-                }
-            }) {
-                return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
-            }
+        ]) {
+            return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
         }
 
         // Port 0 is not allowed in the exposed ranges. We do not check the excluded ranges here,
@@ -358,11 +349,9 @@ impl VpcExpose {
         // Apply exclusion prefixes. `collapse_prefixes` folds `nots`/`not_as` into `ips`/`as_range`
         // and clears the exclusion sets, so `self` becomes exclusion-prefix-free.
         collapse_prefixes(self);
-        merge_overlapping_prefixes(&mut self.ips);
-        merge_contiguous_prefixes(&mut self.ips);
+        normalize(&mut self.ips);
         if let Some(nat) = &mut self.nat {
-            merge_overlapping_prefixes(&mut nat.as_range);
-            merge_contiguous_prefixes(&mut nat.as_range);
+            normalize(&mut nat.as_range);
         }
 
         // Ensure we don't exclude all of the allowed prefixes
@@ -623,7 +612,7 @@ impl VpcManifest {
 
     #[must_use]
     pub fn default_expose(&self) -> Option<&VpcExpose> {
-        self.exposes.iter().find(|expose| expose.default)
+        self.exposes.iter().find(|expose| expose.is_default())
     }
 
     /// FOR TESTS ONLY. Fake validation for the manifest.
@@ -657,6 +646,11 @@ impl VpcManifest {
         &self.exposes
     }
 
+    #[must_use]
+    pub fn has_default_expose(&self) -> bool {
+        self.valexp().iter().any(VpcExpose::is_default)
+    }
+
     fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &VpcExpose>
     where
         F: FnMut(&&VpcExpose) -> bool,
@@ -686,6 +680,31 @@ impl VpcManifest {
 
     pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
+    }
+
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        self.valexp().iter().any(VpcExpose::is_v4)
+    }
+
+    #[must_use]
+    pub fn is_v6(&self) -> bool {
+        self.valexp().iter().any(VpcExpose::is_v6)
+    }
+
+    #[must_use]
+    pub fn is_default_only(&self) -> bool {
+        self.valexp().len() == 1 && self.valexp().first().is_some_and(VpcExpose::is_default)
+    }
+
+    #[must_use]
+    pub fn is_v4_or_default(&self) -> bool {
+        self.is_default_only() || self.is_v4()
+    }
+
+    #[must_use]
+    pub fn is_v6_or_default(&self) -> bool {
+        self.is_default_only() || self.is_v6()
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {
@@ -754,6 +773,24 @@ impl VpcManifest {
         }
         Ok(())
     }
+
+    #[must_use]
+    pub fn all_ips(&self) -> PrefixPortsSet {
+        self.valexp()
+            .iter()
+            .fold(PrefixPortsSet::new(), |acc, valexp| {
+                acc.union_prefixes_and_ports(valexp.ips())
+            })
+    }
+
+    #[must_use]
+    pub fn all_public_ips(&self) -> PrefixPortsSet {
+        self.valexp()
+            .iter()
+            .fold(PrefixPortsSet::new(), |acc, valexp| {
+                acc.union_prefixes_and_ports(valexp.public_ips())
+            })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -762,6 +799,7 @@ pub struct VpcPeering {
     pub left: VpcManifest,  /* manifest for one side of the peering */
     pub right: VpcManifest, /* manifest for the other side */
     pub gwgroup: String,    /* name of gateway group */
+    pub acl: Option<Acl>,   /* optional peering-scoped ACL */
 }
 impl VpcPeering {
     #[must_use]
@@ -771,6 +809,7 @@ impl VpcPeering {
             left,
             right,
             gwgroup,
+            acl: None,
         }
     }
 
@@ -783,6 +822,7 @@ impl VpcPeering {
             left,
             right,
             gwgroup: "default".to_string(),
+            acl: None,
         }
     }
 
