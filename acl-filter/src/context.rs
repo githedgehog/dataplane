@@ -161,7 +161,7 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 type RuleBackend = Erased;
 
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-struct IpsPortsTuple<I> {
+pub(super) struct IpsPortsTuple<I> {
     #[exact]
     src_vni: u32,
     #[exact]
@@ -232,7 +232,7 @@ impl<I> IpsPortsTuple<I> {
 }
 
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-struct IpsProtoTuple<I> {
+pub(super) struct IpsProtoTuple<I> {
     #[exact]
     src_vni: u32,
     #[exact]
@@ -281,7 +281,7 @@ impl<I> IpsProtoTuple<I> {
     }
 }
 
-trait Wildcardable {
+pub(super) trait Wildcardable {
     fn wildcard() -> Prefix;
 }
 
@@ -379,10 +379,10 @@ pub(super) struct LookupResult {
 }
 
 #[derive(Debug, Clone)]
-struct PeeringAclTables<T, U> {
-    tcp: ReferenceTable<T, LookupResult>,
-    udp: ReferenceTable<T, LookupResult>,
-    other: ReferenceTable<U, LookupResult>,
+pub(super) struct PeeringAclTables<T, U> {
+    pub(super) tcp: ReferenceTable<T, LookupResult>,
+    pub(super) udp: ReferenceTable<T, LookupResult>,
+    pub(super) other: ReferenceTable<U, LookupResult>,
 }
 
 impl<T, U> Default for PeeringAclTables<T, U>
@@ -418,9 +418,9 @@ where
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct AclTables {
-    v4: PeeringAclTables<IpsPortsTuple<Ipv4Addr>, IpsProtoTuple<Ipv4Addr>>,
-    v6: PeeringAclTables<IpsPortsTuple<Ipv6Addr>, IpsProtoTuple<Ipv6Addr>>,
-    default_actions: HashMap<(Vni, Vni), AclAction>,
+    pub(super) v4: PeeringAclTables<IpsPortsTuple<Ipv4Addr>, IpsProtoTuple<Ipv4Addr>>,
+    pub(super) v6: PeeringAclTables<IpsPortsTuple<Ipv6Addr>, IpsProtoTuple<Ipv6Addr>>,
+    pub(super) default_actions: HashMap<(Vni, Vni), AclAction>,
 }
 
 impl From<PeeringAclRuleSet> for AclTables {
