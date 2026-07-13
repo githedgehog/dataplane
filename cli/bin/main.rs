@@ -37,7 +37,7 @@ fn ask_user(question: &str) -> bool {
     let mut answer = String::new();
     loop {
         println!("{question}");
-        answer.truncate(0);
+        answer.clear();
         let _ = stdin().read_line(&mut answer);
         if let Some('\n') = answer.chars().next_back() {
             answer.pop();
