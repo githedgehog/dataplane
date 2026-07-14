@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![cfg(feature = "reference")]
+
 pub mod dyn_table;
 pub mod table;
 

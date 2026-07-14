@@ -4,6 +4,13 @@
 
 use core::marker::PhantomData;
 
+// The classifier is immutable after build and shared read-only across pipeline workers; it is not
+// a synchronization point that the concurrency model checkers need to observe. It must be
+// `std::sync::Arc` (not `concurrency::sync::Arc`) because loom/shuttle's `Arc` does not implement
+// `CoerceUnsized`, so `Arc::new(concrete)` cannot coerce to `Arc<dyn DynClassifier>` under those
+// backends. See `acl/src/dpdk/dyn_table.rs` for the coercion site.
+use std::sync::Arc; // nosemgrep: rust-no-direct-std-sync-import
+
 use arrayvec::ArrayVec;
 use lookup::Lookup;
 use match_action::MatchKey;
@@ -26,11 +33,12 @@ const ZEROS: [u8; MAX_USER_KEY_BYTES] = [0u8; MAX_USER_KEY_BYTES];
 /// packed at the runtime `layout.stride`, so a single `DpdkAclLookup<K, A>`
 /// covers any key shape -- including generic keys such as
 /// `DpdkAclLookup<MyKey<Ip, Port>, A>`.
+#[derive(Clone)]
 pub struct DpdkAclLookup<K, A>
 where
     K: MatchKey,
 {
-    classifier: Box<dyn DynClassifier>,
+    classifier: Arc<dyn DynClassifier>,
     actions: Vec<A>,
     layout: DpdkLayout,
     _key: PhantomData<fn(K)>,
@@ -50,7 +58,7 @@ where
     /// calls below sound (see `development/code/unsafe-code.md` -- `unsafe` used
     /// only to build a safe abstraction with local reasoning).
     pub fn new(
-        classifier: Box<dyn DynClassifier>,
+        classifier: Arc<dyn DynClassifier>,
         actions: Vec<A>,
         layout: DpdkLayout,
     ) -> Result<Self, StrideTooSmall> {
@@ -114,9 +122,7 @@ where
         for i in 0..keys.len() {
             let _ = ptrs.try_push(arena[i * stride..].as_ptr());
         }
-        let mut results: ArrayVec<u32, MAX_BATCH> = ArrayVec::new();
-        let mut results: ArrayVec<u32, MAX_BATCH> =
-            std::std::iter::repeat_n(0, keys.len()).collect();
+        let mut results: ArrayVec<u32, MAX_BATCH> = std::iter::repeat_n(0, keys.len()).collect();
         // SAFETY: every pointer addresses `stride >= min_input_size` valid
         // bytes (invariant established in `new`), packed contiguously above.
         unsafe {

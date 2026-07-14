@@ -6,7 +6,10 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-acl = { workspace = true }
+# `reference` is now a non-default feature of `acl` (the crate defaults to the
+# dpdk backend). acl-filter's tables are still built on the reference backend
+# during the switch to dpdk, so enable it explicitly alongside the default dpdk.
+acl = { workspace = true, features = ["reference"] }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
