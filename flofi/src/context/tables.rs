@@ -1,387 +1,569 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Context table build (Routes)
+//! Context table build (Routes).
+//!
+//! The routing decision is a two-stage ACL lookup, one stage per direction, over
+//! four wide tables: `{remote, local} x {v4, v6}`. Source VPC, destination VPC and
+//! L4 protocol are carried as *key fields* (exact / mask), not as separate
+//! per-VPC / per-protocol tables, so a single classifier call (and, later, a
+//! single batched call) resolves a heterogeneous batch. See
+//! `flofi/docs/two-table-redesign.md`.
+//!
+//! - Stage 1 (`remote`): match the destination against every peer's public
+//!   prefixes, scoped to the source VPC, yielding a [`Verdict`] (dst VPC + dst NAT).
+//! - Stage 2 (`local`): using that dst VPC, match the source against that peering's
+//!   private prefixes, yielding the source NAT mode.
+//!
+//! A "default" (catch-all) expose lowers to a lowest-priority `/0` rule, so
+//! longest-prefix-match (encoded as `priority = prefix_len + 1`) handles it
+//! uniformly.
 
 use super::NatRequirement;
+use acl::dpdk::dyn_table::predicate_to_chunks;
+use acl::dpdk::install::install_table;
+use acl::dpdk::lookup::DpdkAclLookup;
+use acl::dpdk::lookup::MAX_BATCH;
+use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
+#[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
 use config::external::overlay::ValidatedOverlay;
-use config::external::overlay::vpc::ValidatedPeering;
+use dpdk::acl::{CategoryMask, Priority};
+#[cfg(test)]
 use lookup::Lookup;
 use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::L4Protocol;
-use match_action::{Erased, FieldPredicate, FixedSize, MatchKey, RangeSpec};
+use match_action::{
+    Erased, ExactSpec, FieldPredicate, FixedSize, MaskSpec, MatchKey, PrefixSpec, RangeSpec,
+};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
-use std::collections::HashMap;
+#[cfg(test)]
+use std::cmp::Reverse;
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
 use tracing::debug;
 
 type NatMode = Option<NatRequirement>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A resolved route: destination VPC, destination NAT mode, source NAT mode. All `Copy`, so batch
+/// results can be extracted and the context guard dropped before packet metadata is mutated.
+pub(crate) type Route = (VpcDiscriminant, NatMode, NatMode);
+
+/// One packet's routing question, IP-version-agnostic (partitioned by version inside
+/// [`PeeringTables::lookup_batch`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LookupInput {
+    pub(crate) src_vpcd: VpcDiscriminant,
+    pub(crate) src_ip: IpAddr,
+    pub(crate) dst_ip: IpAddr,
+    pub(crate) proto: NextHeader,
+    pub(crate) ports: Option<(u16, u16)>,
+}
+
+/// Result of a stage-1 (remote/destination) match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Verdict {
     pub(super) nat_mode: NatMode,
     pub(super) dst_vpcd: VpcDiscriminant,
 }
 
-/// Backend-neutral source rule: carries the raw match ingredients (prefix +
-/// port range) plus the already-resolved action. Lowering into ACL field
-/// predicates is deferred to the table-build step (see `TwoTupleKey` /
-/// `SingletonKey`), so the choice of backend lives at a single site rather than
-/// being baked in here at the front of the pipeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PeeringPrefixInfo<V> {
+/// A single IP-version's batched query (already lowered: proto byte + `u32` VNI + concrete addr).
+struct Query<I> {
+    src_vpcd: u32,
+    proto: u8,
+    src_ip: I,
+    dst_ip: I,
+    src_port: u16,
+    dst_port: u16,
+}
+
+// IP protocol numbers. flofi only ever emits rules for TCP, UDP, or "any" (see
+// `L4Protocol`), so a non-TCP/UDP packet only ever needs to match an any-proto
+// (mask 0x00) rule -- any sentinel byte other than TCP/UDP works for it.
+const PROTO_TCP: u8 = 6;
+const PROTO_UDP: u8 = 17;
+const PROTO_OTHER: u8 = 0;
+
+const PORT_WILDCARD: RangeSpec<u16> = RangeSpec::new(0, u16::MAX);
+
+/// Lower a config L4 protocol to a `(value, mask)` bitmask predicate:
+/// a specific protocol matches exactly (`mask 0xff`); "any" wildcards (`mask 0x00`).
+fn proto_mask(proto: L4Protocol) -> (u8, u8) {
+    match proto {
+        L4Protocol::Tcp => (PROTO_TCP, 0xff),
+        L4Protocol::Udp => (PROTO_UDP, 0xff),
+        L4Protocol::Any => (0, 0x00),
+    }
+}
+
+/// Map a packet's next-header to the proto key byte (inverse of `proto_mask`).
+fn proto_byte(next_header: NextHeader) -> u8 {
+    match next_header {
+        NextHeader::TCP => PROTO_TCP,
+        NextHeader::UDP => PROTO_UDP,
+        _ => PROTO_OTHER,
+    }
+}
+
+/// A `VpcDiscriminant` as the `u32` carried in an exact key field.
+fn vpcd_u32(vpcd: VpcDiscriminant) -> u32 {
+    match vpcd {
+        VpcDiscriminant::VNI(vni) => vni.as_u32(),
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Keys.
+//
+// `proto` is first because rte_acl requires a one-byte first field; a `#[mask]` byte satisfies that
+// (it lowers to the same `Bitmask` field type as `#[exact]`). VNIs are exact `u32` fields.
+
+/// Stage-1 key: "which peer does this destination belong to, for this source VPC?"
+#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
+pub(super) struct RemoteKey<I> {
+    #[mask]
+    proto: u8,
+    #[exact]
+    src_vpcd: u32,
+    #[prefix]
+    dst_ip: I,
+    #[range]
+    dst_port: u16,
+}
+
+/// Stage-2 key: "is this source allowed to reach that peer, and with what source NAT?"
+#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
+pub(super) struct LocalKey<I> {
+    #[mask]
+    proto: u8,
+    #[exact]
+    src_vpcd: u32,
+    #[exact]
+    dst_vpcd: u32,
+    #[prefix]
+    src_ip: I,
+    #[range]
+    src_port: u16,
+}
+
+// -------------------------------------------------------------------------------------------------
+// Backend selection.
+//
+// Every rule is lowered once to backend-neutral `FieldPredicate`s (via the `Erased` backend); each
+// backend then consumes those. `Reference` is the linear-scan differential oracle (no EAL);
+// `Dpdk` is the production, batchable rte_acl backend. This is the single place the backend choice
+// lives.
+
+/// The backend used to build the production context: the batchable rte_acl backend. Requires EAL
+/// to be initialized (done once in `dataplane::main`). The reference backend is not compiled into
+/// production builds (it is `cfg(test)`-gated).
+pub(super) const PRODUCTION_BACKEND: Backend = Backend::Dpdk;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Backend {
+    Dpdk,
+    #[cfg(test)]
+    Reference,
+}
+
+/// One backend-neutral, already-lowered rule: priority, field predicates, action.
+struct NeutralRule<A> {
+    priority: u32,
+    fields: Vec<FieldPredicate>,
+    action: A,
+}
+
+/// A built table. The `Dpdk` variant is production (and exposes `lookup_batch` for the batched
+/// fast path); `Reference` is the test/opt-in linear-scan oracle; `Empty` matches nothing.
+#[allow(clippy::large_enum_variant)] // backend reprs differ in size; boxing would add a hot-path indirection
+pub(super) enum AnyTable<K: MatchKey, A> {
+    /// No rules: every lookup misses. Used for the default context and zero-rule tables (avoids
+    /// asking rte_acl to build an empty context).
+    Empty,
+    Dpdk(DpdkAclLookup<K, A>),
+    #[cfg(test)]
+    Reference(ReferenceTable<K, A>),
+}
+
+impl<K: MatchKey, A> AnyTable<K, A> {
+    // Single-key lookup: only the test oracle uses it (production runs `lookup_batch`).
+    #[cfg(test)]
+    fn lookup(&self, key: &K) -> Option<&A> {
+        match self {
+            AnyTable::Empty => None,
+            AnyTable::Dpdk(table) => table.lookup(key),
+            AnyTable::Reference(table) => table.lookup(key),
+        }
+    }
+
+    /// Classify a batch of keys (`keys.len() <= MAX_BATCH`, `out.len() == keys.len()`), writing one
+    /// result per key. The `Dpdk` backend does this in a single rte_acl call; the others loop.
+    fn lookup_batch<'a>(&'a self, keys: &[K], out: &mut [Option<&'a A>]) {
+        match self {
+            AnyTable::Empty => out.iter_mut().for_each(|slot| *slot = None),
+            AnyTable::Dpdk(table) => table
+                .lookup_batch(keys, out)
+                .expect("caller chunks to MAX_BATCH with a matching output length"),
+            #[cfg(test)]
+            AnyTable::Reference(table) => {
+                for (key, slot) in keys.iter().zip(out.iter_mut()) {
+                    *slot = table.lookup(key);
+                }
+            }
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        match self {
+            AnyTable::Empty => 0,
+            AnyTable::Dpdk(table) => table.actions().len(),
+            #[cfg(test)]
+            AnyTable::Reference(table) => table.len(),
+        }
+    }
+
+    /// The reference-backend rules, for display; `None` for the (opaque) rte_acl / empty tables.
+    #[cfg(test)]
+    pub(super) fn reference_rules(&self) -> Option<&[RefRule<A>]> {
+        match self {
+            AnyTable::Reference(table) => Some(table.rules()),
+            _ => None,
+        }
+    }
+}
+
+impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            AnyTable::Empty => "empty",
+            AnyTable::Dpdk(_) => "dpdk",
+            #[cfg(test)]
+            AnyTable::Reference(_) => "reference",
+        };
+        write!(f, "AnyTable::{kind}({} rules)", self.len())
+    }
+}
+
+static TABLE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A process-unique rte_acl context name (rte_acl rejects duplicate names).
+fn table_name(base: &str) -> String {
+    format!("flofi_{base}_{}", TABLE_SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Build one table from backend-neutral rules using the selected backend.
+fn build_table<K: MatchKey, A>(
+    backend: Backend,
+    base_name: &str,
+    rules: Vec<NeutralRule<A>>,
+) -> Result<AnyTable<K, A>, String> {
+    match backend {
+        Backend::Dpdk => {
+            // A zero-rule table matches nothing; represent it as `Empty` rather than asking
+            // rte_acl to build an empty context.
+            if rules.is_empty() {
+                return Ok(AnyTable::Empty);
+            }
+            let specs = K::field_specs();
+            let max = NonZero::new(u32::try_from(rules.len()).unwrap_or(u32::MAX)).unwrap();
+            let mut specs_out = Vec::with_capacity(rules.len());
+            for rule in rules {
+                let chunks: Vec<AclFieldChunks> = rule
+                    .fields
+                    .iter()
+                    .zip(specs)
+                    .map(|(pred, spec)| predicate_to_chunks(pred, spec.size))
+                    .collect();
+                let priority =
+                    Priority::new(i32::try_from(rule.priority).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())?;
+                specs_out.push(
+                    RuleSpec::<K, A>::new(
+                        priority,
+                        CategoryMask::new(1).map_err(|e| e.to_string())?,
+                        chunks,
+                        rule.action,
+                    )
+                    .map_err(|e| e.to_string())?,
+                );
+            }
+            install_table::<K, A>(&table_name(base_name), max, specs_out)
+                .map(AnyTable::Dpdk)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(test)]
+        Backend::Reference => {
+            // The reference backend is first-match on insertion order; sort descending by priority
+            // so first-match reproduces rte_acl's highest-priority-wins (longest-prefix-match).
+            let mut rules = rules;
+            rules.sort_by_key(|r| Reverse(r.priority));
+            let rules = rules
+                .into_iter()
+                .map(|r| RefRule::new(r.fields, r.action))
+                .collect();
+            Ok(AnyTable::Reference(ReferenceTable::new(rules)))
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Rule accumulation.
+//
+// Walk the overlay once, emitting each expose prefix as a rule into the correct
+// `{remote, local} x {v4, v6}` bucket. The IP version is taken from each concrete prefix; defaults
+// (which carry no prefix) use the peering's version.
+
+/// Lower a stage-1 (remote) rule into the v4 or v6 bucket according to its prefix.
+#[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
+fn emit_remote(
+    v4: &mut Vec<NeutralRule<Verdict>>,
+    v6: &mut Vec<NeutralRule<Verdict>>,
+    src_vpcd: u32,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
-    action: V,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PeeringEndsContext<V> {
-    tcp: Vec<PeeringPrefixInfo<V>>,
-    udp: Vec<PeeringPrefixInfo<V>>,
-    other: Vec<PeeringPrefixInfo<V>>,
-    has_default: bool,
-}
-
-impl<V> Default for PeeringEndsContext<V> {
-    fn default() -> Self {
-        Self {
-            tcp: Vec::new(),
-            udp: Vec::new(),
-            other: Vec::new(),
-            has_default: false,
-        }
-    }
-}
-
-impl<V: Clone> PeeringEndsContext<V> {
-    fn insert(&mut self, rule: PeeringPrefixInfo<V>, proto: L4Protocol) {
-        match proto {
-            L4Protocol::Tcp => self.tcp.push(rule),
-            L4Protocol::Udp => self.udp.push(rule),
-            L4Protocol::Any => {
-                self.tcp.push(rule.clone());
-                self.udp.push(rule.clone());
-                self.other.push(rule);
+    (proto_value, proto_mask): (u8, u8),
+    action: Verdict,
+) {
+    let priority = u32::from(ip_range.length()) + 1;
+    match ip_range {
+        Prefix::IPV4(prefix) => {
+            let fields = RemoteKeyRule::<Ipv4Addr> {
+                proto: MaskSpec::from((proto_value, proto_mask)),
+                src_vpcd: ExactSpec::new(src_vpcd),
+                dst_ip: PrefixSpec::from(prefix),
+                dst_port: port_range,
             }
+            .into_backend_fields::<Erased>();
+            v4.push(NeutralRule {
+                priority,
+                fields,
+                action,
+            });
         }
-    }
-}
-
-impl PeeringEndsContext<NatMode> {
-    fn local_end(peering: &ValidatedPeering) -> Self {
-        let mut ends = Self::default();
-        for local_expose in peering
-            .local()
-            .valexp()
-            .iter()
-            .filter(|expose| expose.can_init_connection())
-        {
-            for local_prefix in local_expose.ips() {
-                let proto = local_expose.nat_proto().unwrap_or(L4Protocol::Any);
-                let rule = PeeringPrefixInfo {
-                    ip_range: local_prefix.prefix(),
-                    port_range: local_prefix.into(),
-                    action: NatRequirement::from_expose(local_expose),
-                };
-                ends.insert(rule, proto);
+        Prefix::IPV6(prefix) => {
+            let fields = RemoteKeyRule::<Ipv6Addr> {
+                proto: MaskSpec::from((proto_value, proto_mask)),
+                src_vpcd: ExactSpec::new(src_vpcd),
+                dst_ip: PrefixSpec::from(prefix),
+                dst_port: port_range,
             }
+            .into_backend_fields::<Erased>();
+            v6.push(NeutralRule {
+                priority,
+                fields,
+                action,
+            });
         }
-        ends.has_default = peering.local().has_default_expose();
-        ends
     }
 }
 
-impl PeeringEndsContext<Verdict> {
-    fn add_remote_end(&mut self, remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) {
-        for remote_expose in peering
-            .remote()
-            .valexp()
-            .iter()
-            .filter(|expose| expose.can_receive_connection())
-        {
-            for remote_prefix in remote_expose.public_ips() {
-                let proto = remote_expose.nat_proto().unwrap_or(L4Protocol::Any);
-                let rule = PeeringPrefixInfo {
-                    ip_range: remote_prefix.prefix(),
-                    port_range: remote_prefix.into(),
-                    action: Verdict {
-                        nat_mode: NatRequirement::from_expose(remote_expose),
-                        dst_vpcd: remote_vpcd,
-                    },
-                };
-                self.insert(rule, proto);
+/// Lower a stage-2 (local) rule into the v4 or v6 bucket according to its prefix.
+#[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
+fn emit_local(
+    v4: &mut Vec<NeutralRule<NatMode>>,
+    v6: &mut Vec<NeutralRule<NatMode>>,
+    src_vpcd: u32,
+    dst_vpcd: u32,
+    ip_range: Prefix,
+    port_range: RangeSpec<u16>,
+    (proto_value, proto_mask): (u8, u8),
+    action: NatMode,
+) {
+    let priority = u32::from(ip_range.length()) + 1;
+    match ip_range {
+        Prefix::IPV4(prefix) => {
+            let fields = LocalKeyRule::<Ipv4Addr> {
+                proto: MaskSpec::from((proto_value, proto_mask)),
+                src_vpcd: ExactSpec::new(src_vpcd),
+                dst_vpcd: ExactSpec::new(dst_vpcd),
+                src_ip: PrefixSpec::from(prefix),
+                src_port: port_range,
             }
+            .into_backend_fields::<Erased>();
+            v4.push(NeutralRule {
+                priority,
+                fields,
+                action,
+            });
         }
-        self.has_default |= peering.remote().has_default_expose();
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct VpcContext {
-    local_ends: HashMap<VpcDiscriminant, PeeringEndsContext<NatMode>>,
-    remote_ends: PeeringEndsContext<Verdict>,
-    default_remote_vpcd: Option<VpcDiscriminant>,
-}
-
-impl VpcContext {
-    fn insert(&mut self, remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) {
-        self.local_ends
-            .insert(remote_vpcd, PeeringEndsContext::local_end(peering));
-        self.remote_ends.add_remote_end(remote_vpcd, peering);
-    }
-}
-
-// -------------------------------------------------------------------------------------------------
-// Backend lowering layer.
-//
-// This is where source rules are lowered into ACL field predicates
-// (`into_backend_fields::<RuleBackend>()`). Switching the reference backend for a hardware backend
-// means changing `RuleBackend` here (and the table types in `PeeringEndsTables`).
-
-type RuleBackend = Erased;
-
-#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(super) struct TwoTuple<I> {
-    #[prefix]
-    ip_range: I,
-    #[range]
-    port_range: u16,
-}
-
-impl<I> TwoTuple<I> {
-    fn new(ip: I, port: Option<u16>) -> Self {
-        Self {
-            ip_range: ip,
-            port_range: port.unwrap_or(0),
-        }
-    }
-
-    fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>> {
-        match ip_range {
-            Prefix::IPV4(ip_range) => Some(
-                TwoTupleRule {
-                    ip_range: ip_range.into(),
-                    port_range,
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-            Prefix::IPV6(ip_range) => Some(
-                TwoTupleRule {
-                    ip_range: ip_range.into(),
-                    port_range,
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
+        Prefix::IPV6(prefix) => {
+            let fields = LocalKeyRule::<Ipv6Addr> {
+                proto: MaskSpec::from((proto_value, proto_mask)),
+                src_vpcd: ExactSpec::new(src_vpcd),
+                dst_vpcd: ExactSpec::new(dst_vpcd),
+                src_ip: PrefixSpec::from(prefix),
+                src_port: port_range,
+            }
+            .into_backend_fields::<Erased>();
+            v6.push(NeutralRule {
+                priority,
+                fields,
+                action,
+            });
         }
     }
 }
 
-#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(super) struct Singleton<I> {
-    #[prefix]
-    ip_range: I,
+#[derive(Default)]
+struct RuleSet {
+    remote_v4: Vec<NeutralRule<Verdict>>,
+    remote_v6: Vec<NeutralRule<Verdict>>,
+    local_v4: Vec<NeutralRule<NatMode>>,
+    local_v6: Vec<NeutralRule<NatMode>>,
 }
 
-impl<I> From<TwoTuple<I>> for Singleton<I> {
-    fn from(tuple: TwoTuple<I>) -> Self {
-        Self {
-            ip_range: tuple.ip_range,
-        }
-    }
-}
-
-impl<I> Singleton<I> {
-    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
-        match ip_range {
-            Prefix::IPV4(ip_range) => Some(
-                SingletonRule {
-                    ip_range: ip_range.into(),
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-            Prefix::IPV6(ip_range) => Some(
-                SingletonRule {
-                    ip_range: ip_range.into(),
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-        }
-    }
-}
-
-// Lower rules into a two-field (prefix + port) table.
-fn build_two_tuple<T: FixedSize, V>(
-    rules: Vec<PeeringPrefixInfo<V>>,
-) -> ReferenceTable<TwoTuple<T>, V> {
-    let rules = rules
-        .into_iter()
-        .filter_map(|rule| {
-            Some(RefRule::new(
-                TwoTuple::<T>::predicates(rule.ip_range, rule.port_range)?,
-                rule.action,
-            ))
-        })
-        .collect();
-    ReferenceTable::new(rules)
-}
-
-// Lower rules into a single-field (prefix only) table, dropping the port predicate.
-fn build_singleton<U: FixedSize, V>(
-    rules: Vec<PeeringPrefixInfo<V>>,
-) -> ReferenceTable<Singleton<U>, V> {
-    let rules = rules
-        .into_iter()
-        .filter_map(|rule| {
-            Some(RefRule::new(
-                Singleton::<U>::predicates(rule.ip_range)?,
-                rule.action,
-            ))
-        })
-        .collect();
-    ReferenceTable::new(rules)
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct PeeringEndsTables<T, U, V> {
-    pub(super) tcp: ReferenceTable<T, V>,
-    pub(super) udp: ReferenceTable<T, V>,
-    pub(super) other: ReferenceTable<U, V>,
-    pub(super) has_default: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct VpcTable<T, U> {
-    pub(super) local_ends: HashMap<VpcDiscriminant, PeeringEndsTables<T, U, NatMode>>,
-    pub(super) remote_ends: PeeringEndsTables<T, U, Verdict>,
-    pub(super) default_remote_vpcd: Option<VpcDiscriminant>,
-}
-
-impl<T, U> From<VpcContext> for VpcTable<TwoTuple<T>, Singleton<U>>
-where
-    T: FixedSize,
-    U: FixedSize,
-{
-    fn from(context: VpcContext) -> Self {
-        let mut local_ends = HashMap::new();
-        for (remote_vpcd, ends) in context.local_ends {
-            local_ends.insert(
-                remote_vpcd,
-                PeeringEndsTables {
-                    tcp: build_two_tuple::<T, _>(ends.tcp),
-                    udp: build_two_tuple::<T, _>(ends.udp),
-                    other: build_singleton::<U, _>(ends.other),
-                    has_default: ends.has_default,
-                },
-            );
-        }
-        let remote_ends = PeeringEndsTables {
-            tcp: build_two_tuple::<T, _>(context.remote_ends.tcp),
-            udp: build_two_tuple::<T, _>(context.remote_ends.udp),
-            other: build_singleton::<U, _>(context.remote_ends.other),
-            has_default: context.remote_ends.has_default,
-        };
-        Self {
-            local_ends,
-            remote_ends,
-            default_remote_vpcd: context.default_remote_vpcd,
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub(super) struct PeeringTables {
-    pub(super) v4: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>>,
-    pub(super) v6: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>>,
-}
-
-impl From<&ValidatedOverlay> for PeeringTables {
-    fn from(overlay: &ValidatedOverlay) -> Self {
-        let mut tables = Self::default();
+impl RuleSet {
+    fn from_overlay(overlay: &ValidatedOverlay) -> Self {
+        let mut rules = Self::default();
         for vpc in overlay.vpc_table().values() {
-            let mut vpc_context_v4 = VpcContext::default();
-            let mut vpc_context_v6 = VpcContext::default();
-            let local_vpcd = VpcDiscriminant::VNI(vpc.vni());
+            let src_vpcd = vpcd_u32(VpcDiscriminant::VNI(vpc.vni()));
             for peering in vpc.peerings() {
                 let remote_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
-                if peering.is_v4() {
-                    vpc_context_v4.insert(remote_vpcd, peering);
-                    if peering.remote().has_default_expose() {
-                        vpc_context_v4.default_remote_vpcd = Some(remote_vpcd);
+                let remote_u32 = vpcd_u32(remote_vpcd);
+                let default_ip = || {
+                    if peering.is_v4() {
+                        Prefix::root_v4()
+                    } else {
+                        Prefix::root_v6()
                     }
-                } else {
-                    vpc_context_v6.insert(remote_vpcd, peering);
-                    if peering.remote().has_default_expose() {
-                        vpc_context_v6.default_remote_vpcd = Some(remote_vpcd);
+                };
+
+                // Stage 1: peer's public prefixes -> Verdict{dst VPC, dst NAT}. Masquerade
+                // destinations cannot receive connections, so they are excluded here.
+                for expose in peering
+                    .remote()
+                    .valexp()
+                    .iter()
+                    .filter(|expose| expose.can_receive_connection())
+                {
+                    let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
+                    let action = Verdict {
+                        nat_mode: NatRequirement::from_expose(expose),
+                        dst_vpcd: remote_vpcd,
+                    };
+                    for prefix in expose.public_ips() {
+                        emit_remote(
+                            &mut rules.remote_v4,
+                            &mut rules.remote_v6,
+                            src_vpcd,
+                            prefix.prefix(),
+                            prefix.into(),
+                            proto,
+                            action,
+                        );
                     }
                 }
-            }
-            if !vpc_context_v4.local_ends.is_empty() {
-                tables.v4.insert(local_vpcd, VpcTable::from(vpc_context_v4));
-            }
-            if !vpc_context_v6.local_ends.is_empty() {
-                tables.v6.insert(local_vpcd, VpcTable::from(vpc_context_v6));
+                if peering.remote().has_default_expose() {
+                    emit_remote(
+                        &mut rules.remote_v4,
+                        &mut rules.remote_v6,
+                        src_vpcd,
+                        default_ip(),
+                        PORT_WILDCARD,
+                        (0, 0x00),
+                        Verdict {
+                            nat_mode: None,
+                            dst_vpcd: remote_vpcd,
+                        },
+                    );
+                }
+
+                // Stage 2: source's private prefixes -> source NAT mode. Port-forwarding sources
+                // cannot initiate connections, so they are excluded here.
+                for expose in peering
+                    .local()
+                    .valexp()
+                    .iter()
+                    .filter(|expose| expose.can_init_connection())
+                {
+                    let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
+                    let action = NatRequirement::from_expose(expose);
+                    for prefix in expose.ips() {
+                        emit_local(
+                            &mut rules.local_v4,
+                            &mut rules.local_v6,
+                            src_vpcd,
+                            remote_u32,
+                            prefix.prefix(),
+                            prefix.into(),
+                            proto,
+                            action,
+                        );
+                    }
+                }
+                if peering.local().has_default_expose() {
+                    emit_local(
+                        &mut rules.local_v4,
+                        &mut rules.local_v6,
+                        src_vpcd,
+                        remote_u32,
+                        default_ip(),
+                        PORT_WILDCARD,
+                        (0, 0x00),
+                        None,
+                    );
+                }
             }
         }
-        tables
+        rules
     }
 }
 
 // -------------------------------------------------------------------------------------------------
-// Lookup logic
+// The four tables.
 
-impl<T, U, V> PeeringEndsTables<T, U, V>
-where
-    T: MatchKey + Clone,
-    U: MatchKey + From<T>,
-{
-    fn lookup(&self, proto: NextHeader, tuple: &T) -> Option<&V> {
-        match proto {
-            NextHeader::TCP => self.tcp.lookup(tuple),
-            NextHeader::UDP => self.udp.lookup(tuple),
-            _ => self.other.lookup(&U::from(tuple.clone())),
+pub(super) struct PeeringTables {
+    pub(super) remote_v4: AnyTable<RemoteKey<Ipv4Addr>, Verdict>,
+    pub(super) local_v4: AnyTable<LocalKey<Ipv4Addr>, NatMode>,
+    pub(super) remote_v6: AnyTable<RemoteKey<Ipv6Addr>, Verdict>,
+    pub(super) local_v6: AnyTable<LocalKey<Ipv6Addr>, NatMode>,
+}
+
+impl Default for PeeringTables {
+    fn default() -> Self {
+        Self {
+            remote_v4: AnyTable::Empty,
+            local_v4: AnyTable::Empty,
+            remote_v6: AnyTable::Empty,
+            local_v6: AnyTable::Empty,
         }
     }
 }
 
-impl<T, U> VpcTable<T, U>
-where
-    T: MatchKey + Clone,
-    U: MatchKey + From<T>,
-{
-    fn lookup(
-        &self,
-        proto: NextHeader,
-        src_tuple: &T,
-        dst_tuple: &T,
-    ) -> Option<(Verdict, NatMode)> {
-        let remote_end_verdict =
-            self.remote_ends
-                .lookup(proto, dst_tuple)
-                .cloned()
-                .or_else(|| {
-                    self.default_remote_vpcd.map(|dst_vpcd| Verdict {
-                        nat_mode: None,
-                        dst_vpcd,
-                    })
-                })?;
-        let local_table = self.local_ends.get(&remote_end_verdict.dst_vpcd)?;
-        let local_end_nat_mode =
-            local_table
-                .lookup(proto, src_tuple)
-                .copied()
-                .or(if local_table.has_default {
-                    Some(None)
-                } else {
-                    None
-                })?;
-        Some((remote_end_verdict, local_end_nat_mode))
+impl fmt::Debug for PeeringTables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PeeringTables")
+            .field("remote_v4", &self.remote_v4)
+            .field("local_v4", &self.local_v4)
+            .field("remote_v6", &self.remote_v6)
+            .field("local_v6", &self.local_v6)
+            .finish()
     }
 }
 
 impl PeeringTables {
+    /// Build the four tables from a validated overlay using `backend`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend build error (only the `Dpdk` backend can fail; `Reference` is infallible).
+    pub(super) fn build(overlay: &ValidatedOverlay, backend: Backend) -> Result<Self, String> {
+        let rules = RuleSet::from_overlay(overlay);
+        Ok(Self {
+            remote_v4: build_table(backend, "remote_v4", rules.remote_v4)?,
+            local_v4: build_table(backend, "local_v4", rules.local_v4)?,
+            remote_v6: build_table(backend, "remote_v6", rules.remote_v6)?,
+            local_v6: build_table(backend, "local_v6", rules.local_v6)?,
+        })
+    }
+
+    // Single-key lookup: the readable per-packet oracle used by tests; production runs
+    // `lookup_batch`. The differential test cross-checks the two against each other.
+    #[cfg(test)]
     pub(super) fn lookup(
         &self,
         src_vpcd: VpcDiscriminant,
@@ -394,30 +576,156 @@ impl PeeringTables {
         Option<NatRequirement>,
         Option<NatRequirement>,
     )> {
+        let proto = proto_byte(proto);
+        let src = vpcd_u32(src_vpcd);
         let (src_port, dst_port) = ports.unzip();
-        let result = match (src_ip, dst_ip) {
-            (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => self.v4.get(&src_vpcd).and_then(|table| {
-                table.lookup(
+        let src_port = src_port.unwrap_or(0);
+        let dst_port = dst_port.unwrap_or(0);
+
+        match (src_ip, dst_ip) {
+            (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
+                let verdict = self.remote_v4.lookup(&RemoteKey {
                     proto,
-                    &TwoTuple::new(src_ip, src_port),
-                    &TwoTuple::new(dst_ip, dst_port),
-                )
-            }),
-            (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => self.v6.get(&src_vpcd).and_then(|table| {
-                table.lookup(
+                    src_vpcd: src,
+                    dst_ip,
+                    dst_port,
+                })?;
+                let nat_mode = self.local_v4.lookup(&LocalKey {
                     proto,
-                    &TwoTuple::new(src_ip, src_port),
-                    &TwoTuple::new(dst_ip, dst_port),
-                )
-            }),
+                    src_vpcd: src,
+                    dst_vpcd: vpcd_u32(verdict.dst_vpcd),
+                    src_ip,
+                    src_port,
+                })?;
+                Some((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+            }
+            (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
+                let verdict = self.remote_v6.lookup(&RemoteKey {
+                    proto,
+                    src_vpcd: src,
+                    dst_ip,
+                    dst_port,
+                })?;
+                let nat_mode = self.local_v6.lookup(&LocalKey {
+                    proto,
+                    src_vpcd: src,
+                    dst_vpcd: vpcd_u32(verdict.dst_vpcd),
+                    src_ip,
+                    src_port,
+                })?;
+                Some((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+            }
             _ => {
                 debug!(
                     "Source and destination IP versions do not match: src_ip={src_ip:?}, dst_ip={dst_ip:?}",
                 );
                 None
             }
-        };
-        result.map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
+        }
+    }
+
+    /// Batched form of [`lookup`](Self::lookup): resolve one [`Route`] per input into `out`
+    /// (`out.len() == inputs.len()`). Inputs are partitioned by IP version into per-version index
+    /// lists (packets are never reordered), and each version runs the two-pass lookup in
+    /// `MAX_BATCH`-sized rte_acl calls. IP-version mismatches resolve to `None` (as in `lookup`).
+    pub(crate) fn lookup_batch(&self, inputs: &[LookupInput], out: &mut [Option<Route>]) {
+        debug_assert_eq!(inputs.len(), out.len());
+
+        let mut v4_idx: Vec<usize> = Vec::new();
+        let mut v4_q: Vec<Query<Ipv4Addr>> = Vec::new();
+        let mut v6_idx: Vec<usize> = Vec::new();
+        let mut v6_q: Vec<Query<Ipv6Addr>> = Vec::new();
+
+        for (i, input) in inputs.iter().enumerate() {
+            out[i] = None;
+            let proto = proto_byte(input.proto);
+            let src_vpcd = vpcd_u32(input.src_vpcd);
+            let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
+            match (input.src_ip, input.dst_ip) {
+                (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
+                    v4_idx.push(i);
+                    v4_q.push(Query {
+                        src_vpcd,
+                        proto,
+                        src_ip,
+                        dst_ip,
+                        src_port,
+                        dst_port,
+                    });
+                }
+                (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
+                    v6_idx.push(i);
+                    v6_q.push(Query {
+                        src_vpcd,
+                        proto,
+                        src_ip,
+                        dst_ip,
+                        src_port,
+                        dst_port,
+                    });
+                }
+                _ => { /* version mismatch: leave `out[i] = None` */ }
+            }
+        }
+
+        lookup_versioned(&self.remote_v4, &self.local_v4, &v4_q, &v4_idx, out);
+        lookup_versioned(&self.remote_v6, &self.local_v6, &v6_q, &v6_idx, out);
+    }
+}
+
+/// The two-pass batched lookup for one IP version. `queries[k]` corresponds to output slot
+/// `out[idx[k]]`. Runs in `MAX_BATCH`-sized rte_acl calls: stage 1 (destination -> [`Verdict`]),
+/// then stage 2 (source -> source NAT) over the stage-1 hits only.
+fn lookup_versioned<I: FixedSize + Copy>(
+    remote: &AnyTable<RemoteKey<I>, Verdict>,
+    local: &AnyTable<LocalKey<I>, NatMode>,
+    queries: &[Query<I>],
+    idx: &[usize],
+    out: &mut [Option<Route>],
+) where
+    RemoteKey<I>: MatchKey,
+    LocalKey<I>: MatchKey,
+{
+    for (q_chunk, i_chunk) in queries.chunks(MAX_BATCH).zip(idx.chunks(MAX_BATCH)) {
+        // Stage 1: destination -> Verdict.
+        let remote_keys: Vec<RemoteKey<I>> = q_chunk
+            .iter()
+            .map(|q| RemoteKey {
+                proto: q.proto,
+                src_vpcd: q.src_vpcd,
+                dst_ip: q.dst_ip,
+                dst_port: q.dst_port,
+            })
+            .collect();
+        let mut verdicts: Vec<Option<&Verdict>> = vec![None; q_chunk.len()];
+        remote.lookup_batch(&remote_keys, &mut verdicts);
+
+        // Stage 2: for the hits only, source -> source NAT.
+        let mut local_keys: Vec<LocalKey<I>> = Vec::new();
+        let mut hit_pos: Vec<usize> = Vec::new();
+        for (pos, verdict) in verdicts.iter().enumerate() {
+            if let Some(verdict) = verdict {
+                let q = &q_chunk[pos];
+                local_keys.push(LocalKey {
+                    proto: q.proto,
+                    src_vpcd: q.src_vpcd,
+                    dst_vpcd: vpcd_u32(verdict.dst_vpcd),
+                    src_ip: q.src_ip,
+                    src_port: q.src_port,
+                });
+                hit_pos.push(pos);
+            }
+        }
+        let mut nat_modes: Vec<Option<&NatMode>> = vec![None; local_keys.len()];
+        local.lookup_batch(&local_keys, &mut nat_modes);
+
+        // Scatter results back to the caller's output positions. A stage-2 miss stays `None`.
+        for (hit, &pos) in hit_pos.iter().enumerate() {
+            if let Some(nat_mode) = nat_modes[hit] {
+                let verdict = verdicts[pos].unwrap_or_else(|| unreachable!("hit_pos tracks Some"));
+                out[i_chunk[pos]] = Some((verdict.dst_vpcd, verdict.nat_mode, *nat_mode));
+            }
+        }
     }
 }
 
@@ -426,69 +734,27 @@ impl PeeringTables {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
-    use lpm::prefix::Prefix;
-    use std::net::Ipv4Addr;
 
-    fn info(ip: &str, action: NatMode) -> PeeringPrefixInfo<NatMode> {
-        PeeringPrefixInfo {
-            ip_range: Prefix::from(ip),
-            port_range: RangeSpec::new(0, u16::MAX),
-            action,
-        }
+    #[test]
+    fn proto_mask_and_byte_roundtrip() {
+        assert_eq!(proto_mask(L4Protocol::Tcp), (PROTO_TCP, 0xff));
+        assert_eq!(proto_mask(L4Protocol::Udp), (PROTO_UDP, 0xff));
+        assert_eq!(proto_mask(L4Protocol::Any), (0, 0x00));
+        assert_eq!(proto_byte(NextHeader::TCP), PROTO_TCP);
+        assert_eq!(proto_byte(NextHeader::UDP), PROTO_UDP);
+        assert_eq!(proto_byte(NextHeader::ICMP), PROTO_OTHER);
     }
 
     #[test]
-    fn singleton_drops_the_port_field() {
-        let tuple = TwoTuple::new(Ipv4Addr::new(10, 0, 0, 1), Some(8080));
-        let singleton = Singleton::from(tuple.clone());
-        assert_eq!(singleton.ip_range, tuple.ip_range);
+    fn remote_key_has_four_fields_local_has_five() {
+        assert_eq!(RemoteKey::<Ipv4Addr>::N, 4);
+        assert_eq!(LocalKey::<Ipv4Addr>::N, 5);
     }
 
     #[test]
-    fn two_tuple_lowers_to_prefix_and_port_predicates() {
-        let preds = TwoTuple::<Ipv4Addr>::predicates(
-            Prefix::from("10.0.0.0/24"),
-            RangeSpec::new(0, u16::MAX),
-        )
-        .unwrap();
-        assert_eq!(preds.len(), 2);
-    }
-
-    #[test]
-    fn singleton_lowers_to_a_single_prefix_predicate() {
-        let preds = Singleton::<Ipv4Addr>::predicates(Prefix::from("10.0.0.0/24")).unwrap();
-        assert_eq!(preds.len(), 1);
-    }
-
-    #[test]
-    fn any_protocol_fans_out_to_all_tables() {
-        let mut ctx = PeeringEndsContext::<NatMode>::default();
-        ctx.insert(info("10.0.0.0/24", None), L4Protocol::Any);
-        assert_eq!(ctx.tcp.len(), 1);
-        assert_eq!(ctx.udp.len(), 1);
-        assert_eq!(ctx.other.len(), 1);
-    }
-
-    #[test]
-    fn tcp_protocol_populates_only_the_tcp_table() {
-        let mut ctx = PeeringEndsContext::<NatMode>::default();
-        ctx.insert(info("10.0.0.0/24", None), L4Protocol::Tcp);
-        assert_eq!(ctx.tcp.len(), 1);
-        assert!(ctx.udp.is_empty());
-        assert!(ctx.other.is_empty());
-    }
-
-    #[test]
-    fn build_two_tuple_table_matches_on_prefix() {
-        let table: ReferenceTable<TwoTuple<Ipv4Addr>, NatMode> =
-            build_two_tuple(vec![info("10.0.0.0/24", Some(NatRequirement::Static))]);
-        assert_eq!(
-            table.lookup(&TwoTuple::new(Ipv4Addr::new(10, 0, 0, 5), Some(1234))),
-            Some(&Some(NatRequirement::Static)),
-        );
-        assert_eq!(
-            table.lookup(&TwoTuple::new(Ipv4Addr::new(11, 0, 0, 5), Some(1234))),
-            None,
-        );
+    fn default_tables_are_empty() {
+        let tables = PeeringTables::default();
+        assert_eq!(tables.remote_v4.len(), 0);
+        assert_eq!(tables.local_v6.len(), 0);
     }
 }

@@ -8,7 +8,9 @@ use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
+#[cfg(test)]
 use net::ip::NextHeader;
+#[cfg(test)]
 use net::packet::VpcDiscriminant;
 
 mod display;
@@ -16,9 +18,10 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-use tables::PeeringTables;
+pub(crate) use tables::{LookupInput, Route};
+use tables::{PRODUCTION_BACKEND, PeeringTables};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct FlofiContext {
     routes: PeeringTables,
 }
@@ -27,14 +30,25 @@ impl TryFrom<&ValidatedOverlay> for FlofiContext {
     type Error = ConfigError;
 
     fn try_from(overlay: &ValidatedOverlay) -> Result<Self, Self::Error> {
-        let route_lookup_tables_map = PeeringTables::from(overlay);
-        Ok(Self {
-            routes: route_lookup_tables_map,
-        })
+        let routes =
+            PeeringTables::build(overlay, PRODUCTION_BACKEND).map_err(ConfigError::FailureApply)?;
+        Ok(Self { routes })
     }
 }
 
 impl FlofiContext {
+    /// Build a context using the reference backend, for tests that want the fast, EAL-free oracle
+    /// (production goes through `TryFrom`, which uses the rte_acl backend).
+    #[cfg(test)]
+    pub(crate) fn for_test(overlay: &ValidatedOverlay) -> Self {
+        let routes = PeeringTables::build(overlay, tables::Backend::Reference)
+            .expect("reference backend build is infallible");
+        Self { routes }
+    }
+
+    /// Single-key route lookup: the readable per-packet oracle used by tests. Production uses
+    /// [`lookup_route_batch`](Self::lookup_route_batch).
+    #[cfg(test)]
     pub(crate) fn lookup_route(
         &self,
         src_vpcd: VpcDiscriminant,
@@ -48,6 +62,12 @@ impl FlofiContext {
         Option<NatRequirement>,
     )> {
         self.routes.lookup(src_vpcd, src_ip, dst_ip, proto, ports)
+    }
+
+    /// Resolve one [`Route`] per input into `out` (`out.len() == inputs.len()`).
+    /// See [`tables::PeeringTables::lookup_batch`].
+    pub(crate) fn lookup_route_batch(&self, inputs: &[LookupInput], out: &mut [Option<Route>]) {
+        self.routes.lookup_batch(inputs, out);
     }
 }
 

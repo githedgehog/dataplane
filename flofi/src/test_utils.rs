@@ -6,6 +6,8 @@
 //! routing-context tests (`context::tests`) and the end-to-end NF tests
 //! (`crate::tests`).
 
+#![cfg(test)]
+
 use crate::context::FlofiContext;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -139,9 +141,9 @@ pub(crate) fn overlay(vpcs: &[(&str, u32)], peerings: Vec<VpcPeering>) -> Valida
         .unwrap()
 }
 
-/// Build a flofi context from a set of VPCs and peerings.
+/// Build a flofi context (reference backend: fast, EAL-free) from a set of VPCs and peerings.
 pub(crate) fn context(vpcs: &[(&str, u32)], peerings: Vec<VpcPeering>) -> FlofiContext {
-    FlofiContext::try_from(&overlay(vpcs, peerings)).unwrap()
+    FlofiContext::for_test(&overlay(vpcs, peerings))
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![doc = include_str!("../README.md")]
+
 use concurrency::sync::Arc;
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
 use net::FlowKey;
@@ -21,11 +23,31 @@ mod tests;
 pub use context::{
     FlofiContext, FlofiContextReader, FlofiContextReaderFactory, FlofiContextWriter,
 };
+use context::{LookupInput, Route};
 
 pub struct Flofi {
     name: String,
     tables: FlofiContextReader,
     pipeline_data: Arc<PipelineData>,
+}
+
+/// Outcome of phase A (`classify`) for one packet.
+enum Classification {
+    /// Handled in place via active flow state; no table lookup needed.
+    Bypassed,
+    /// Drop the packet with this reason (no IP header / no source VPC).
+    Drop(DoneReason),
+    /// Needs a table lookup; carries the query and any attached flow summary (for phase C).
+    Lookup {
+        input: LookupInput,
+        flow_summary: Option<FlowSummary>,
+    },
+}
+
+/// A packet awaiting phase C: its index in the burst and the flow summary from phase A.
+struct WorkItem {
+    idx: usize,
+    flow_summary: Option<FlowSummary>,
 }
 
 impl Flofi {
@@ -37,45 +59,106 @@ impl Flofi {
         }
     }
 
-    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
-        let nfi = &self.name;
+    /// Process a whole burst in three phases so the (only batchable) part -- the ACL lookup -- is
+    /// pooled into batched rte_acl calls:
+    ///
+    /// - A (`classify`, per packet): passthrough / flow-bypass / drop, or gather a [`LookupInput`].
+    /// - B (batched): one two-pass lookup for the burst; results are `Copy` so the context guard is
+    ///   dropped before any packet is mutated.
+    /// - C (`apply_route`, per packet): stamp the destination + NAT flags, or drop on a miss.
+    fn process_burst<Buf: PacketBufferMut>(&mut self, burst: &mut [Packet<Buf>]) {
         let genid = self.pipeline_data.genid();
 
+        let mut inputs: Vec<LookupInput> = Vec::new();
+        let mut work: Vec<WorkItem> = Vec::new();
+        for (idx, packet) in burst.iter_mut().enumerate() {
+            if packet.is_done() || !packet.meta().is_overlay() || packet.meta().dst_vpcd.is_some() {
+                continue;
+            }
+            match self.classify(packet, genid) {
+                Classification::Bypassed => {}
+                Classification::Drop(reason) => packet.done(reason),
+                Classification::Lookup {
+                    input,
+                    flow_summary,
+                } => {
+                    work.push(WorkItem { idx, flow_summary });
+                    inputs.push(input);
+                }
+            }
+        }
+        if inputs.is_empty() {
+            return;
+        }
+
+        let mut routes: Vec<Option<Route>> = vec![None; inputs.len()];
+        {
+            let tables = self.tables.load();
+            tables.lookup_route_batch(&inputs, &mut routes);
+        }
+
+        for (item, route) in work.iter().zip(routes) {
+            self.apply_route(
+                &mut burst[item.idx],
+                route,
+                item.flow_summary.as_ref(),
+                genid,
+            );
+        }
+    }
+
+    /// Phase A: decide what a single overlay packet needs. Tags bypass packets in place; returns
+    /// the [`LookupInput`] (plus any attached flow summary, which phase C needs) otherwise.
+    fn classify<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        genid: i64,
+    ) -> Classification {
+        let nfi = &self.name;
         let attached_flow = FlowSummary::from_meta(packet.meta());
         if let Some(flow_summary) = attached_flow.as_ref() {
             // Bypass flow-filter if packet has up-to-date active flow-info
             if let Some(dst_vpcd) = self.dst_vpcd_from_valid_flow(flow_summary, genid) {
                 Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow_summary);
-                return;
+                return Classification::Bypassed;
             }
         }
 
         let Some(net) = packet.try_ip() else {
             debug!("{nfi}: No IP headers found, dropping packet");
-            packet.done(DoneReason::NotIp);
-            return;
+            return Classification::Drop(DoneReason::NotIp);
         };
-
         let Some(src_vpcd) = packet.meta().src_vpcd else {
             debug!("{nfi}: Missing source VPC discriminant, dropping packet");
-            packet.done(DoneReason::Unroutable);
-            return;
+            return Classification::Drop(DoneReason::Unroutable);
         };
 
-        let src_ip = net.src_addr();
-        let dst_ip = net.dst_addr();
-        let proto = net.next_header();
-        let ports = packet.try_transport().and_then(|t| {
-            t.src_port()
-                .map(NonZero::get)
-                .zip(t.dst_port().map(NonZero::get))
-        });
+        let input = LookupInput {
+            src_vpcd,
+            src_ip: net.src_addr(),
+            dst_ip: net.dst_addr(),
+            proto: net.next_header(),
+            ports: packet.try_transport().and_then(|t| {
+                t.src_port()
+                    .map(NonZero::get)
+                    .zip(t.dst_port().map(NonZero::get))
+            }),
+        };
+        Classification::Lookup {
+            input,
+            flow_summary: attached_flow,
+        }
+    }
 
-        let route = self
-            .tables
-            .load()
-            .lookup_route(src_vpcd, src_ip, dst_ip, proto, ports);
-
+    /// Phase C: apply a resolved route (or drop on a miss) to a single packet.
+    fn apply_route<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        route: Option<Route>,
+        flow_summary: Option<&FlowSummary>,
+        genid: i64,
+    ) {
+        let nfi = &self.name;
         let Some((dst_vpcd, dst_nat_mode, src_nat_mode)) = route else {
             debug!("{nfi}: Could not determine destination VPC, dropping packet");
             packet.invalidate_flows();
@@ -103,7 +186,7 @@ impl Flofi {
         // lacks the NAT context and state to do so. Therefore, it should not upgrade flow to newer
         // gen ids. However, it can (and must) invalidate flows in some cases, because no other
         // network function will do it otherwise.
-        if self.should_invalidate_flow(packet.meta(), dst_vpcd, genid, attached_flow.as_ref()) {
+        if self.should_invalidate_flow(packet.meta(), dst_vpcd, genid, flow_summary) {
             packet.invalidate_flows();
         }
     }
@@ -233,12 +316,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Flofi {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.meta().is_overlay() && packet.meta().dst_vpcd.is_none() {
-                self.process_packet(&mut packet);
-            }
-            packet.enforce()
-        })
+        // The driver hands us one bounded rx burst per poll and collects our whole output, so
+        // materializing the burst here is safe (not an unbounded stream) and lets us pool the ACL
+        // lookups into batched rte_acl calls (see `process_burst`).
+        let mut burst: Vec<Packet<Buf>> = input.collect();
+        self.process_burst(&mut burst);
+        burst.into_iter().filter_map(Packet::enforce)
     }
 
     fn set_data(&mut self, data: Arc<PipelineData>) {

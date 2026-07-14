@@ -1,190 +1,177 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Display implementations for context tables.
+//! Display implementations for the routing context tables.
+//!
+//! In production (rte_acl backend) the rules are baked into an opaque classifier, so only a rule
+//! count is shown per table. In test / `reference`-feature builds the reference backend keeps the
+//! rules, so the field predicates + action are rendered in full.
 
-use super::tables::{PeeringEndsTables, PeeringTables, Verdict, VpcTable};
-use crate::NatRequirement;
-use acl::reference::table::ReferenceTable;
-use common::cliprovider::{CliSource, Heading};
-use indenter::indented;
-use match_action::{FieldPredicate, MatchKey};
-use net::packet::VpcDiscriminant;
-use std::collections::{BTreeMap, HashMap};
-use std::fmt::{self, Display, Formatter, Write};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use super::tables::PeeringTables;
+use common::cliprovider::CliSource;
 
 impl CliSource for PeeringTables {}
 
-impl Display for PeeringTables {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        Heading("Routing context").fmt(f)?;
-
-        writeln!(f, "IPv4 peering tables:")?;
-        fmt_vpc_tables(f, &self.v4)?;
-
-        writeln!(f, "IPv6 peering tables:")?;
-        fmt_vpc_tables(f, &self.v6)?;
-        Ok(())
+impl crate::NatRequirement {
+    fn label(self) -> &'static str {
+        match self {
+            crate::NatRequirement::Static => "static",
+            crate::NatRequirement::Masquerade => "masquerade",
+            crate::NatRequirement::PortForwarding => "port-forwarding",
+        }
     }
 }
 
-// Collect into a `BTreeMap` to get a deterministic order when dumping the
-// entries, as the underlying `HashMap` has no stable iteration order
-fn fmt_vpc_tables<T: MatchKey, U: MatchKey>(
-    f: &mut Formatter<'_>,
-    tables: &HashMap<VpcDiscriminant, VpcTable<T, U>>,
-) -> fmt::Result {
-    if tables.is_empty() {
-        return writeln!(f, "  (none)");
+impl std::fmt::Display for crate::NatRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
     }
-    for (src_vpcd, table) in tables.iter().collect::<BTreeMap<_, _>>() {
-        writeln!(f, "  source VPC {src_vpcd}:")?;
-        write!(indented(f).with_str("    "), "{table}")?;
-        writeln!(f)?;
-    }
-    Ok(())
 }
 
-impl<T: MatchKey, U: MatchKey> Display for VpcTable<T, U> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "local ends:")?;
-        if self.local_ends.is_empty() {
-            writeln!(f, "  (none)")?;
-        } else {
-            for (remote_vpcd, ends) in self.local_ends.iter().collect::<BTreeMap<_, _>>() {
-                writeln!(f, "  for remote VPC {remote_vpcd}:")?;
-                write!(indented(f).with_str("    "), "{ends}")?;
+// -------------------------------------------------------------------------------------------------
+// Production (rte_acl / opaque): a one-line summary per table.
+
+#[cfg(not(test))]
+mod render {
+    use super::PeeringTables;
+    use common::cliprovider::Heading;
+    use std::fmt::{self, Display, Formatter};
+
+    impl Display for PeeringTables {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            Heading("Routing context (flow filter)").fmt(f)?;
+            writeln!(f, "remote v4: {} rules", self.remote_v4.len())?;
+            writeln!(f, "local  v4: {} rules", self.local_v4.len())?;
+            writeln!(f, "remote v6: {} rules", self.remote_v6.len())?;
+            writeln!(f, "local  v6: {} rules", self.local_v6.len())
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Test / `reference` builds: full per-rule rendering when the reference backend holds the rules.
+
+#[cfg(test)]
+mod render {
+    use super::super::tables::{AnyTable, Verdict};
+    use super::PeeringTables;
+    use crate::NatRequirement;
+    use common::cliprovider::Heading;
+    use indenter::indented;
+    use match_action::{FieldPredicate, MatchKey};
+    use std::fmt::{self, Display, Formatter, Write};
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    impl Display for PeeringTables {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            Heading("Routing context (flow filter)").fmt(f)?;
+            writeln!(f, "remote v4 (destination -> dst VPC + dst NAT):")?;
+            write!(indented(f).with_str("  "), "{}", Table(&self.remote_v4))?;
+            writeln!(f, "local v4 (source -> src NAT):")?;
+            write!(indented(f).with_str("  "), "{}", Table(&self.local_v4))?;
+            writeln!(f, "remote v6 (destination -> dst VPC + dst NAT):")?;
+            write!(indented(f).with_str("  "), "{}", Table(&self.remote_v6))?;
+            writeln!(f, "local v6 (source -> src NAT):")?;
+            write!(indented(f).with_str("  "), "{}", Table(&self.local_v6))
+        }
+    }
+
+    struct Table<'a, K: MatchKey, A>(&'a AnyTable<K, A>);
+
+    impl<K: MatchKey, A: ActionDisplay> Display for Table<'_, K, A> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            let Some(rules) = self.0.reference_rules() else {
+                return writeln!(f, "({} rules)", self.0.len());
+            };
+            if rules.is_empty() {
+                return writeln!(f, "(no rules)");
             }
-        }
-        writeln!(f, "remote ends:")?;
-        write!(indented(f).with_str("  "), "{}", self.remote_ends)?;
-        match &self.default_remote_vpcd {
-            Some(vpcd) => writeln!(f, "default remote VPC: {vpcd}"),
-            None => writeln!(f, "default remote VPC: -"),
-        }
-    }
-}
-
-impl<T: MatchKey, U: MatchKey, V: ActionDisplay> Display for PeeringEndsTables<T, U, V> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "TCP:")?;
-        write!(indented(f).with_str("  "), "{}", Rules(&self.tcp))?;
-        writeln!(f, "UDP:")?;
-        write!(indented(f).with_str("  "), "{}", Rules(&self.udp))?;
-        writeln!(f, "other:")?;
-        write!(indented(f).with_str("  "), "{}", Rules(&self.other))?;
-        writeln!(f, "has default expose: {}", self.has_default)
-    }
-}
-
-// Display wrapper around a reference table. The table itself lives in the `acl` crate, so we cannot
-// implement `Display` for it directly.
-struct Rules<'a, K, A>(&'a ReferenceTable<K, A>);
-
-impl<K: MatchKey, A: ActionDisplay> Display for Rules<'_, K, A> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let table = self.0;
-        if table.is_empty() {
-            return writeln!(f, "(no rules)");
-        }
-        for rule in table.rules() {
-            let mut first = true;
-            for pred in rule.fields() {
-                if first {
-                    first = false;
-                } else {
-                    write!(f, ", ")?;
+            for rule in rules {
+                for (i, pred) in rule.fields().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    fmt_predicate(f, pred)?;
                 }
-                fmt_predicate(f, pred)?;
+                write!(f, " -> ")?;
+                rule.action().fmt_action(f)?;
+                writeln!(f)?;
             }
-            write!(f, " -> ")?;
-            rule.action().fmt_action(f)?;
-            writeln!(f)?;
+            Ok(())
         }
-        Ok(())
     }
-}
 
-// Render a single ACL field predicate
-fn fmt_predicate(f: &mut Formatter<'_>, pred: &FieldPredicate) -> fmt::Result {
-    if let Some((bytes, len)) = pred.as_prefix() {
-        match bytes.len() {
-            4 => write!(
-                f,
-                "{}/{len}",
-                Ipv4Addr::from(<[u8; 4]>::try_from(bytes).unwrap())
-            ),
-            16 => write!(
-                f,
-                "{}/{len}",
-                Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap())
-            ),
-            _ => write!(f, "{bytes:02x?}/{len}"),
-        }
-    } else if let Some((min, max)) = pred.as_range() {
-        let (Some(lo), Some(hi)) = (read_u16(min), read_u16(max)) else {
-            return write!(f, "range {min:02x?}..={max:02x?}");
-        };
-        if lo == 0 && hi == u16::MAX {
-            write!(f, "ports *")
-        } else if lo == hi {
-            write!(f, "port {lo}")
+    fn fmt_predicate(f: &mut Formatter<'_>, pred: &FieldPredicate) -> fmt::Result {
+        if let Some((bytes, len)) = pred.as_prefix() {
+            match bytes.len() {
+                4 => write!(
+                    f,
+                    "{}/{len}",
+                    Ipv4Addr::from(<[u8; 4]>::try_from(bytes).unwrap())
+                ),
+                16 => write!(
+                    f,
+                    "{}/{len}",
+                    Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap())
+                ),
+                _ => write!(f, "{bytes:02x?}/{len}"),
+            }
+        } else if let Some((min, max)) = pred.as_range() {
+            let (Some(lo), Some(hi)) = (read_u16(min), read_u16(max)) else {
+                return write!(f, "range {min:02x?}..={max:02x?}");
+            };
+            if lo == 0 && hi == u16::MAX {
+                write!(f, "ports *")
+            } else if lo == hi {
+                write!(f, "port {lo}")
+            } else {
+                write!(f, "ports {lo}..={hi}")
+            }
+        } else if let Some(bytes) = pred.as_exact() {
+            write!(f, "{bytes:02x?}")
+        } else if let Some((value, mask)) = pred.as_mask() {
+            if mask.iter().all(|&b| b == 0) {
+                write!(f, "*")
+            } else {
+                write!(f, "{value:02x?}/{mask:02x?}")
+            }
         } else {
-            write!(f, "ports {lo}..={hi}")
+            Ok(())
         }
-    } else if let Some(bytes) = pred.as_exact() {
-        write!(f, "{bytes:02x?}")
-    } else if let Some((value, mask)) = pred.as_mask() {
-        write!(f, "{value:02x?}/{mask:02x?}")
-    } else {
-        Ok(())
     }
-}
 
-fn read_u16(bytes: &[u8]) -> Option<u16> {
-    if let [hi, lo] = bytes {
-        Some(u16::from_be_bytes([*hi, *lo]))
-    } else {
-        None
+    fn read_u16(bytes: &[u8]) -> Option<u16> {
+        if let [hi, lo] = bytes {
+            Some(u16::from_be_bytes([*hi, *lo]))
+        } else {
+            None
+        }
     }
-}
 
-// The action carried by a reference table rule. Use a dedicated trait
-// (rather than `Display`) because one of the action types is the bare alias
-// `Option<NatRequirement>`, for which we cannot implement `Display`.
-trait ActionDisplay {
-    fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result;
-}
-
-impl ActionDisplay for Verdict {
-    fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}, NAT: ", self.dst_vpcd)?;
-        fmt_nat_mode(f, &self.nat_mode)
+    // Dedicated trait (rather than `Display`) because one action type is the alias
+    // `Option<NatRequirement>`, for which we cannot implement `Display`.
+    trait ActionDisplay {
+        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result;
     }
-}
 
-impl ActionDisplay for Option<NatRequirement> {
-    fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "NAT: ")?;
-        fmt_nat_mode(f, self)
+    impl ActionDisplay for Verdict {
+        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "{}, NAT: ", self.dst_vpcd)?;
+            fmt_nat_mode(f, &self.nat_mode)
+        }
     }
-}
 
-fn fmt_nat_mode(f: &mut Formatter<'_>, nat: &Option<NatRequirement>) -> fmt::Result {
-    match nat {
-        Some(nat) => write!(f, "{nat}"),
-        None => write!(f, "-"),
+    impl ActionDisplay for Option<NatRequirement> {
+        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "NAT: ")?;
+            fmt_nat_mode(f, self)
+        }
     }
-}
 
-impl Display for NatRequirement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            NatRequirement::Static => "static",
-            NatRequirement::Masquerade => "masquerade",
-            NatRequirement::PortForwarding => "port-forwarding",
-        };
-        f.write_str(label)
+    fn fmt_nat_mode(f: &mut Formatter<'_>, nat: &Option<NatRequirement>) -> fmt::Result {
+        match nat {
+            Some(nat) => write!(f, "{nat}"),
+            None => write!(f, "-"),
+        }
     }
 }

@@ -489,3 +489,163 @@ fn ipv6_lookup() {
         None,
     );
 }
+
+// -------------------------------------------------------------------------------------------------
+// Differential: the rte_acl (Dpdk) backend must agree with the reference oracle on every probe.
+// This validates the wide-key encoding and the prefix-length priority scheme against real rte_acl.
+
+#[test]
+#[dpdk::with_eal]
+fn reference_and_dpdk_backends_agree() {
+    use super::tables::{Backend, PeeringTables};
+    use net::ip::NextHeader;
+    use std::net::IpAddr;
+
+    // v4 peering (vpc1<->vpc2, with source static-NAT, a plain dst and a default dst) and a v6
+    // peering (vpc1<->vpc3) so all four tables are populated in both directions.
+    let ov = overlay(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                (
+                    "vpc1",
+                    vec![
+                        expose("1.0.0.0/24"),
+                        expose_static("2.0.0.0/24", "20.0.0.0/24"),
+                    ],
+                ),
+                ("vpc2", vec![expose("5.0.0.0/24"), expose_default()]),
+            ),
+            peering(
+                "vpc1-to-vpc3",
+                ("vpc1", vec![expose("2001:db8::/32")]),
+                ("vpc3", vec![expose("2001:db9::/32")]),
+            ),
+        ],
+    );
+
+    let reference = PeeringTables::build(&ov, Backend::Reference).expect("reference build");
+    let dpdk = PeeringTables::build(&ov, Backend::Dpdk).expect("dpdk build");
+
+    // (src vni, src ip, dst ip, protocol, optional (src, dst) ports)
+    type Probe = (u32, IpAddr, IpAddr, NextHeader, Option<(u16, u16)>);
+    let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+    let probes: &[Probe] = &[
+        // v4 hits, NAT variants, protocol variants, default expose, and misses.
+        (
+            100,
+            ip("1.0.0.5"),
+            ip("5.0.0.10"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ),
+        (
+            100,
+            ip("1.0.0.5"),
+            ip("5.0.0.10"),
+            NextHeader::UDP,
+            Some((1234, 5678)),
+        ),
+        (100, ip("1.0.0.5"), ip("5.0.0.10"), NextHeader::ICMP, None),
+        (
+            100,
+            ip("2.0.0.5"),
+            ip("5.0.0.10"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ),
+        (
+            100,
+            ip("1.0.0.5"),
+            ip("99.0.0.10"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ), // default dst
+        (
+            100,
+            ip("9.9.9.9"),
+            ip("5.0.0.10"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ), // src miss
+        (
+            100,
+            ip("1.0.0.5"),
+            ip("6.6.6.6"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ), // caught by default
+        (
+            999,
+            ip("1.0.0.5"),
+            ip("5.0.0.10"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ), // unknown src vpc
+        // v6 hit + miss.
+        (
+            100,
+            ip("2001:db8::1"),
+            ip("2001:db9::1"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ),
+        (
+            100,
+            ip("2001:db8::1"),
+            ip("2001:dba::1"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ),
+        // mixed IP version.
+        (
+            100,
+            ip("1.0.0.5"),
+            ip("2001:db9::1"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ),
+    ];
+
+    for &(vni, src_ip, dst_ip, proto, ports) in probes {
+        let src_vpcd = vpcd(vni);
+        assert_eq!(
+            reference.lookup(src_vpcd, src_ip, dst_ip, proto, ports),
+            dpdk.lookup(src_vpcd, src_ip, dst_ip, proto, ports),
+            "backends disagree on {src_ip} -> {dst_ip} ({proto:?}) from vni {vni}",
+        );
+    }
+
+    // Batched lookup must agree with the single-lookup oracle AND across backends. Repeat the
+    // probes past MAX_BATCH so the per-version chunking (32) runs multiple rte_acl calls.
+    use super::tables::LookupInput;
+    let inputs: Vec<LookupInput> = std::iter::repeat_n(probes, 5)
+        .flatten()
+        .map(|&(vni, src_ip, dst_ip, proto, ports)| LookupInput {
+            src_vpcd: vpcd(vni),
+            src_ip,
+            dst_ip,
+            proto,
+            ports,
+        })
+        .collect();
+    assert!(inputs.len() > 32, "want a multi-chunk batch");
+
+    let mut ref_out = vec![None; inputs.len()];
+    let mut dpdk_out = vec![None; inputs.len()];
+    reference.lookup_batch(&inputs, &mut ref_out);
+    dpdk.lookup_batch(&inputs, &mut dpdk_out);
+    assert_eq!(ref_out, dpdk_out, "batched backends disagree");
+
+    for (i, input) in inputs.iter().enumerate() {
+        let single = reference.lookup(
+            input.src_vpcd,
+            input.src_ip,
+            input.dst_ip,
+            input.proto,
+            input.ports,
+        );
+        assert_eq!(ref_out[i], single, "batched != single at index {i}");
+    }
+}

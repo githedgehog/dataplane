@@ -632,3 +632,76 @@ fn context_writer_hot_swaps_routing() {
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
     assert_eq!(out.meta().dst_vpcd, None);
 }
+
+// -------------------------------------------------------------------------------------------------
+// Batched processing: a burst larger than MAX_BATCH (exercises per-version chunking), and a mixed
+// v4/v6 burst (exercises the version partition + output-order preservation).
+
+#[test]
+fn burst_larger_than_max_batch_is_processed() {
+    let (mut flofi, _) = make_flofi(source_nat_context());
+    // 40 packets (> MAX_BATCH = 32): even indices routed to vpc2, odd indices filtered.
+    let packets: Vec<_> = (0..40)
+        .map(|i| {
+            let dst = if i % 2 == 0 { "5.0.0.10" } else { "9.9.9.9" };
+            packet(
+                Some(vpcd(100)),
+                build_tcp_packet(v4("1.0.0.5"), v4(dst), 1234, 5678),
+            )
+        })
+        .collect();
+    let out: Vec<_> = flofi.process(packets.into_iter()).collect();
+    // `enforce` marks (does not drop) filtered packets, so all 40 come out in order: even indices
+    // routed to vpc2, odd indices marked Filtered.
+    assert_eq!(out.len(), 40);
+    for (i, pkt) in out.iter().enumerate() {
+        if i % 2 == 0 {
+            assert!(!pkt.is_done(), "{:?}", pkt.get_done());
+            assert_eq!(pkt.meta().dst_vpcd, Some(vpcd(200)));
+        } else {
+            assert_eq!(pkt.get_done(), Some(DoneReason::Filtered));
+        }
+    }
+}
+
+#[test]
+fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
+    let ctx = context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("1.0.0.0/24")]),
+                ("vpc2", vec![expose("5.0.0.0/24")]),
+            ),
+            peering(
+                "vpc1-to-vpc3",
+                ("vpc1", vec![expose("2001:db8::/32")]),
+                ("vpc3", vec![expose("2001:db9::/32")]),
+            ),
+        ],
+    );
+    let (mut flofi, _) = make_flofi(ctx);
+    // Interleave v4 (-> vpc2) and v6 (-> vpc3). Nothing is dropped, so output order == input order.
+    let packets: Vec<_> = (0..8)
+        .map(|i| {
+            if i % 2 == 0 {
+                packet(
+                    Some(vpcd(100)),
+                    build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+                )
+            } else {
+                packet(
+                    Some(vpcd(100)),
+                    build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:db9::1"), 1234, 5678),
+                )
+            }
+        })
+        .collect();
+    let out: Vec<_> = flofi.process(packets.into_iter()).collect();
+    assert_eq!(out.len(), 8);
+    for (i, pkt) in out.iter().enumerate() {
+        let expected = if i % 2 == 0 { vpcd(200) } else { vpcd(300) };
+        assert_eq!(pkt.meta().dst_vpcd, Some(expected), "packet {i}");
+    }
+}
