@@ -38,6 +38,12 @@ pub enum TcpPortError {
 }
 
 impl TcpPort {
+    /// The smallest possible [`TcpPort`]
+    pub const MIN: Self = TcpPort::new(NonZero::<u16>::MIN);
+
+    /// The largest possible [`TcpPort`]
+    pub const MAX: Self = TcpPort::new(NonZero::<u16>::MAX);
+
     /// Create a [`TcpPort`].
     #[must_use]
     pub const fn new(port: NonZero<u16>) -> TcpPort {
