@@ -1226,6 +1226,7 @@ dependencies = [
  "arrayvec",
  "bolero",
  "criterion",
+ "dataplane-acl",
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-lookup",
