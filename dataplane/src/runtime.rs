@@ -166,6 +166,22 @@ pub fn main() {
     };
     init_logging(&args, &gwname);
 
+    // Initialize a minimal EAL as early as possible. The flofi flow-filter builds rte_acl
+    // classifiers when configuration is applied (which happens before any packet driver starts),
+    // and rte_acl needs the EAL memory subsystem up. These are the lightweight, classifier-only
+    // args (no hugepages / no PCI). NOTE: there can be only one `rte_eal_init` per process, so the
+    // real DPDK datapath driver (currently `todo!()`) must eventually take over EAL ownership with
+    // device-appropriate args rather than adding a second init. The guard is held for the life of
+    // the process.
+    let _eal = dpdk::eal::init([
+        "--no-huge",
+        "--no-pci",
+        "--in-memory",
+        "--no-telemetry",
+        "--no-shconf",
+        "--iova-mode=va",
+    ]);
+
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
