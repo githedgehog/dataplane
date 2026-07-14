@@ -410,6 +410,9 @@ pub mod test {
     #[n_vm::in_vm]
     #[tokio::test]
     async fn test_sample_config() {
+        // Applying the config builds the rte_acl-backed flofi context, which needs the EAL up.
+        let _eal = dpdk::test_support::start_eal();
+
         get_trace_ctl()
             .setup_from_string("cpi=debug,mgmt=debug,routing=debug")
             .unwrap();

@@ -57,6 +57,7 @@ tracing-test = { workspace = true }
 
 [dev-dependencies]
 # internal
+dpdk = { workspace = true, features = ["test"] } # EAL for tests that build the rte_acl-backed flofi context
 fixin = { workspace = true }
 id = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
