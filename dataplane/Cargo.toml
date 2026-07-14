@@ -19,6 +19,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 axum-server = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
+dpdk = { workspace = true }
 dyn-iter = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
