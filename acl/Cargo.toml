@@ -6,8 +6,9 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = []
+default = ["dpdk"]
 dpdk = ["dep:dpdk"]
+reference = []
 
 [dependencies]
 arrayvec = { workspace = true, default-features = true }
@@ -19,6 +20,10 @@ net = { workspace = true, features = [] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Enable the `reference` backend for this crate's own tests and benches. It is a non-default
+# feature (production links only the rte_acl backend), but the integration tests and benches
+# differential-test against it, so make it available whenever test/bench targets are built.
+dataplane-acl = { path = ".", features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 criterion = { workspace = true, features = ["cargo_bench_support"] }
 dpdk = { workspace = true, features = ["test"] }
