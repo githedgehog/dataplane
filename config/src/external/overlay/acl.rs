@@ -22,7 +22,6 @@ pub enum AclAction {
 pub enum AclProtoMatch {
     Tcp,
     Udp,
-    Icmp,
     Other(u8),
     #[default]
     Any,
@@ -76,7 +75,7 @@ impl AclPattern {
     fn validate_ports(&self) -> bool {
         match self.proto {
             AclProtoMatch::Tcp | AclProtoMatch::Udp => true,
-            AclProtoMatch::Other(_) | AclProtoMatch::Icmp | AclProtoMatch::Any => {
+            AclProtoMatch::Other(_) | AclProtoMatch::Any => {
                 !self.src.uses_ports()
                     && !self.dst.uses_ports()
                     && self.src_any_ports.is_empty()
@@ -722,22 +721,6 @@ mod validation_tests {
         assert!(validate_rule(rule).is_ok());
     }
 
-    // ICMP with port matching is rejected (ICMP has no ports)
-    #[test]
-    fn test_acl_icmp_with_ports_rejected() {
-        let p = pattern(
-            prefixes(&["10.0.0.0/24"]),
-            [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
-            AclProtoMatch::Icmp,
-        );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        let result = validate_rule(rule);
-        assert!(
-            matches!(result, Err(ConfigError::InvalidAcl(_))),
-            "{result:?}"
-        );
-    }
-
     // A numeric protocol with port matching is rejected
     #[test]
     fn test_acl_other_proto_with_ports_rejected() {
@@ -768,18 +751,6 @@ mod validation_tests {
             matches!(result, Err(ConfigError::InvalidAcl(_))),
             "{result:?}"
         );
-    }
-
-    // ICMP without ports passes
-    #[test]
-    fn test_acl_icmp_without_ports_passes() {
-        let p = pattern(
-            prefixes(&["10.0.0.0/24"]),
-            prefixes(&["10.1.0.0/24"]),
-            AclProtoMatch::Icmp,
-        );
-        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
-        assert!(validate_rule(rule).is_ok());
     }
 
     // Unknown protocol without ports passes
@@ -963,7 +934,7 @@ mod validation_tests {
         let mut p = pattern(
             PrefixPortsSet::new(),
             PrefixPortsSet::new(),
-            AclProtoMatch::Icmp,
+            AclProtoMatch::Other(1),
         );
         p.src_any_ports = vec![PortRange::new(443, 443).unwrap()];
         let icmp_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p.clone());
