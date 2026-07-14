@@ -243,3 +243,100 @@ fn derive_accepts_explicit_where_clause() {
         src: PrefixSpec::new(Ipv4Addr::UNSPECIFIED, 0),
     };
 }
+
+// A marker type that deliberately does NOT implement `FixedSize`, used to prove
+// that a phantom-only generic parameter is not forced to be `FixedSize`.
+#[allow(dead_code)]
+struct NotFixed;
+
+#[test]
+fn phantom_data_field_is_excluded_from_key_layout() {
+    use core::marker::PhantomData;
+
+    // `PhantomData` fields are auto-detected (no attribute required).
+    #[derive(MatchKey)]
+    #[allow(dead_code)]
+    struct Tagged {
+        #[exact]
+        port: u16,
+        _marker: PhantomData<NotFixed>,
+    }
+
+    // The phantom field contributes nothing to N, KEY_SIZE, offsets, or specs.
+    assert_eq!(Tagged::N, 1);
+    assert_eq!(Tagged::KEY_SIZE, 2);
+    let specs = Tagged::field_specs();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].name, "port");
+    assert_eq!(specs[0].kind, FieldKind::Exact);
+
+    let key = Tagged {
+        port: 0x1234,
+        _marker: PhantomData,
+    };
+    assert_eq!(key.as_key(), 0x1234u16.to_be_bytes());
+
+    // The rule still carries the phantom field (constructed trivially) and matches
+    // only on the real field.
+    let rule = TaggedRule {
+        port: ExactSpec::new(0x1234u16),
+        _marker: PhantomData,
+    };
+    assert!(rule.accepts(&key));
+    assert!(!rule.accepts(&Tagged {
+        port: 9,
+        _marker: PhantomData,
+    }));
+}
+
+#[test]
+fn phantom_attribute_marks_non_phantomdata_markers() {
+    use core::marker::PhantomData;
+
+    #[derive(MatchKey)]
+    #[allow(dead_code)]
+    struct Explicit {
+        #[phantom]
+        _tag: NotFixedTag,
+        #[range]
+        port: u16,
+    }
+
+    #[allow(dead_code)]
+    struct NotFixedTag;
+
+    assert_eq!(Explicit::N, 1);
+    assert_eq!(Explicit::KEY_SIZE, 2);
+
+    // In the rule the bare marker is represented as `PhantomData`, so it needs no
+    // value even though the key struct field holds a real `NotFixedTag`.
+    let _rule = ExplicitRule {
+        port: RangeSpec::from(1..=10),
+        _tag: PhantomData,
+    };
+}
+
+#[test]
+fn phantom_only_generic_param_is_not_bounded_fixed_size() {
+    use core::marker::PhantomData;
+
+    // `Addr` is used by a match field, so the derive bounds it `FixedSize`.
+    // `M` is used only by the phantom field, so it must be left unbounded --
+    // instantiating with `NotFixed` (which is not `FixedSize`) must compile.
+    #[derive(MatchKey)]
+    #[allow(dead_code)]
+    struct Mixed<Addr, M> {
+        #[prefix]
+        addr: Addr,
+        #[phantom]
+        _marker: PhantomData<M>,
+    }
+
+    assert_eq!(<Mixed<Ipv4Addr, NotFixed>>::N, 1);
+    assert_eq!(<Mixed<Ipv4Addr, NotFixed>>::KEY_SIZE, 4);
+
+    let _rule = MixedRule::<Ipv4Addr, NotFixed> {
+        addr: PrefixSpec::new(Ipv4Addr::new(10, 0, 0, 0), 8),
+        _marker: PhantomData,
+    };
+}
