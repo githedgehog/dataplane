@@ -486,11 +486,15 @@ mod failing_repros {
 mod tests {
     use super::*;
     use crate::dpdk::install::install_table;
+    use crate::dpdk::lookup::DpdkAclLookup;
+    use crate::dpdk::rule::{Dpdk, RuleSpec};
     use crate::dpdk_table_alias;
-    use core::net::Ipv4Addr;
+    use core::net::{Ipv4Addr, Ipv6Addr};
     use dpdk::acl::{CategoryMask, Priority};
     use lookup::Lookup;
-    use match_action::{Erased, ExactSpec, MatchKey, PrefixSpec, RangeSpec};
+    use match_action::{Erased, ExactSpec, MaskSpec, MatchKey, PrefixSpec, RangeSpec};
+    use std::hint::black_box;
+    use std::time::Instant;
 
     #[derive(MatchKey, Debug, Clone, Copy)]
     struct FiveTuple {
@@ -653,6 +657,336 @@ mod tests {
         ) {
             Err(DynInstallError::EmptySpecs) => {}
             other => panic!("expected EmptySpecs, got {:?}", other.err()),
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // SPIKE: de-risk the flow-filter two-table redesign field encoding. Proves an rte_acl key can
+    // carry proto as a #[mask] field (any = mask 0x00) plus one or two #[exact] u32 VNI fields
+    // alongside prefix + range, for both IPv4 and IPv6, and that lookup / lookup_batch classify
+    // correctly. proto is FIRST because rte_acl requires a 1-byte first field.
+
+    #[derive(MatchKey, Debug, Clone, Copy)]
+    struct RemoteKey<I> {
+        #[mask]
+        proto: u8,
+        #[exact]
+        src_vpcd: u32,
+        #[prefix]
+        dst_ip: I,
+        #[range]
+        dst_port: u16,
+    }
+
+    #[derive(MatchKey, Debug, Clone, Copy)]
+    struct LocalKey<I> {
+        #[mask]
+        proto: u8,
+        #[exact]
+        src_vpcd: u32,
+        #[exact]
+        dst_vpcd: u32,
+        #[prefix]
+        src_ip: I,
+        #[range]
+        src_port: u16,
+    }
+
+    #[test]
+    #[dpdk::with_eal]
+    #[allow(clippy::too_many_lines)]
+    fn flow_filter_two_table_key_shapes_build_and_classify() {
+        let any = || MaskSpec::from((0u8, 0u8));
+        let proto = |p: u8| MaskSpec::from((p, 0xffu8));
+        let anyport = || RangeSpec::new(0u16, u16::MAX);
+        let cat = || CategoryMask::new(1).unwrap();
+        let prio = |p: i32| Priority::new(p).unwrap();
+
+        // ---- Stage 1 (remote/destination), IPv4. Highest priority wins. ----
+        //   P3: TCP, src_vpcd=100, dst 6.0.0.0/24 :80   -> 0x11
+        //   P2: any, src_vpcd=100, dst 5.0.0.0/24 :*    -> 0xAA
+        //   P1: any, src_vpcd=100, dst 0.0.0.0/0  :*    -> 0xDD  (default-peer catch-all == default_remote_vpcd)
+        let remote_v4: DpdkAclLookup<RemoteKey<Ipv4Addr>, u32> = install_table(
+            &unique_name("flow_filter_remote_v4"),
+            NonZero::new(8).unwrap(),
+            vec![
+                RuleSpec::<RemoteKey<Ipv4Addr>, u32>::new(
+                    prio(3),
+                    cat(),
+                    RemoteKeyRule {
+                        proto: proto(6),
+                        src_vpcd: ExactSpec::new(100),
+                        dst_ip: PrefixSpec::new(Ipv4Addr::new(6, 0, 0, 0), 24),
+                        dst_port: RangeSpec::exact(80),
+                    }
+                    .into_backend_fields::<Dpdk>(),
+                    0x11,
+                )
+                .unwrap(),
+                RuleSpec::<RemoteKey<Ipv4Addr>, u32>::new(
+                    prio(2),
+                    cat(),
+                    RemoteKeyRule {
+                        proto: any(),
+                        src_vpcd: ExactSpec::new(100),
+                        dst_ip: PrefixSpec::new(Ipv4Addr::new(5, 0, 0, 0), 24),
+                        dst_port: anyport(),
+                    }
+                    .into_backend_fields::<Dpdk>(),
+                    0xAA,
+                )
+                .unwrap(),
+                RuleSpec::<RemoteKey<Ipv4Addr>, u32>::new(
+                    prio(1),
+                    cat(),
+                    RemoteKeyRule {
+                        proto: any(),
+                        src_vpcd: ExactSpec::new(100),
+                        dst_ip: PrefixSpec::new(Ipv4Addr::UNSPECIFIED, 0),
+                        dst_port: anyport(),
+                    }
+                    .into_backend_fields::<Dpdk>(),
+                    0xDD,
+                )
+                .unwrap(),
+            ],
+        )
+        .expect("install remote_v4");
+
+        let k = |proto_: u8, vpcd: u32, ip: &str, port: u16| RemoteKey::<Ipv4Addr> {
+            proto: proto_,
+            src_vpcd: vpcd,
+            dst_ip: ip.parse().unwrap(),
+            dst_port: port,
+        };
+        // any-proto rule matches UDP into 5.0.0.0/24
+        assert_eq!(remote_v4.lookup(&k(17, 100, "5.0.0.9", 1234)), Some(&0xAA));
+        // TCP-specific rule wins for 6.0.0.0/24:80
+        assert_eq!(remote_v4.lookup(&k(6, 100, "6.0.0.9", 80)), Some(&0x11));
+        // UDP to 6.0.0.9:80 -> masked TCP rule excludes it; 6/24 not in 5/24 -> default catch-all
+        assert_eq!(remote_v4.lookup(&k(17, 100, "6.0.0.9", 80)), Some(&0xDD));
+        // TCP to 6.0.0.9:81 -> port miss on P3; falls to default
+        assert_eq!(remote_v4.lookup(&k(6, 100, "6.0.0.9", 81)), Some(&0xDD));
+        // wrong src_vpcd -> exact field excludes every rule (no /0 for vpcd 999) -> miss
+        assert_eq!(remote_v4.lookup(&k(17, 999, "5.0.0.9", 1234)), None);
+
+        // batched lookup agrees with single lookup
+        let keys = [
+            k(17, 100, "5.0.0.9", 1),
+            k(6, 100, "6.0.0.9", 80),
+            k(17, 999, "5.0.0.9", 1),
+        ];
+        let mut out: [Option<&u32>; 3] = [None; 3];
+        remote_v4.lookup_batch(&keys, &mut out).expect("batch");
+        assert_eq!(out, [Some(&0xAA), Some(&0x11), None]);
+
+        // ---- Stage 2 (local/source), IPv4: TWO exact u32 fields (src_vpcd + dst_vpcd) ----
+        let local_v4: DpdkAclLookup<LocalKey<Ipv4Addr>, u32> = install_table(
+            &unique_name("flow_filter_local_v4"),
+            NonZero::new(4).unwrap(),
+            vec![
+                RuleSpec::<LocalKey<Ipv4Addr>, u32>::new(
+                    prio(1),
+                    cat(),
+                    LocalKeyRule {
+                        proto: any(),
+                        src_vpcd: ExactSpec::new(100),
+                        dst_vpcd: ExactSpec::new(200),
+                        src_ip: PrefixSpec::new(Ipv4Addr::new(1, 0, 0, 0), 24),
+                        src_port: anyport(),
+                    }
+                    .into_backend_fields::<Dpdk>(),
+                    0x55,
+                )
+                .unwrap(),
+            ],
+        )
+        .expect("install local_v4");
+        let lk = |dst_vpcd: u32| LocalKey::<Ipv4Addr> {
+            proto: 6,
+            src_vpcd: 100,
+            dst_vpcd,
+            src_ip: "1.0.0.9".parse().unwrap(),
+            src_port: 1234,
+        };
+        assert_eq!(local_v4.lookup(&lk(200)), Some(&0x55));
+        // dst_vpcd mismatch -> the second exact field discriminates -> miss
+        assert_eq!(local_v4.lookup(&lk(201)), None);
+
+        // ---- IPv6 variants (16-byte prefix; LocalKey<Ipv6Addr> uses 8 rte_acl field defs) ----
+        let remote_v6: DpdkAclLookup<RemoteKey<Ipv6Addr>, u32> = install_table(
+            &unique_name("flow_filter_remote_v6"),
+            NonZero::new(4).unwrap(),
+            vec![
+                RuleSpec::<RemoteKey<Ipv6Addr>, u32>::new(
+                    prio(1),
+                    cat(),
+                    RemoteKeyRule {
+                        proto: any(),
+                        src_vpcd: ExactSpec::new(100),
+                        dst_ip: PrefixSpec::new("2001:db9::".parse::<Ipv6Addr>().unwrap(), 32),
+                        dst_port: anyport(),
+                    }
+                    .into_backend_fields::<Dpdk>(),
+                    0x66,
+                )
+                .unwrap(),
+            ],
+        )
+        .expect("install remote_v6");
+        assert_eq!(
+            remote_v6.lookup(&RemoteKey::<Ipv6Addr> {
+                proto: 6,
+                src_vpcd: 100,
+                dst_ip: "2001:db9::1".parse().unwrap(),
+                dst_port: 1234,
+            }),
+            Some(&0x66),
+        );
+
+        let local_v6: DpdkAclLookup<LocalKey<Ipv6Addr>, u32> = install_table(
+            &unique_name("flow_filter_local_v6"),
+            NonZero::new(4).unwrap(),
+            vec![
+                RuleSpec::<LocalKey<Ipv6Addr>, u32>::new(
+                    prio(1),
+                    cat(),
+                    LocalKeyRule {
+                        proto: any(),
+                        src_vpcd: ExactSpec::new(100),
+                        dst_vpcd: ExactSpec::new(200),
+                        src_ip: PrefixSpec::new("2001:db8::".parse::<Ipv6Addr>().unwrap(), 32),
+                        src_port: anyport(),
+                    }
+                    .into_backend_fields::<Dpdk>(),
+                    0x77,
+                )
+                .unwrap(),
+            ],
+        )
+        .expect("install local_v6");
+        assert_eq!(
+            local_v6.lookup(&LocalKey::<Ipv6Addr> {
+                proto: 6,
+                src_vpcd: 100,
+                dst_vpcd: 200,
+                src_ip: "2001:db8::5".parse().unwrap(),
+                src_port: 1234,
+            }),
+            Some(&0x77),
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    type Rules = Vec<RuleSpec<RemoteKey<Ipv4Addr>, u32>>;
+
+    // Current RSS (not the monotonic VmHWM). NB: rte_acl allocates its context from the EAL
+    // heap (hugepages), which may not move VmRSS much -- so RSS is a soft signal; the reliable
+    // capacity signal is an ENOMEM `Err` from the build.
+    fn rss_kb() -> i64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|v| v.parse().ok())
+            })
+            .unwrap_or(0)
+    }
+
+    // Characterization probe for the flow-filter two-table capacity gate. Finds where rte_acl build
+    // cost / memory explodes, to inform the config-layer rule-count limit. Two rule shapes on the
+    // real RemoteKey: `disjoint` (distinct /24s, one VPC, any proto/port -- models a config-legal
+    // table) vs `overlapping` (shared /24, nested overlapping port ranges, one VPC -- adversarial;
+    // the shape config MUST forbid). NOTE: runs against the debug DPDK sysroot, so absolute ms are
+    // not production numbers -- the curve SHAPE and the OOM point are the signal.
+    //
+    // Run explicitly:
+    //
+    //   cargo test -p dataplane-acl --features dpdk,reference --lib flow_filter_build_capacity_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "characterization probe; run with --ignored --nocapture"]
+    #[dpdk::with_eal]
+    fn flow_filter_build_capacity_probe() {
+        let disjoint = |n: usize| -> Rules {
+            (0..n)
+                .map(|i| {
+                    let a = u8::try_from((i >> 8) & 0xff).unwrap();
+                    let b = u8::try_from(i & 0xff).unwrap();
+                    RuleSpec::new(
+                        Priority::new(25).unwrap(), // /24 -> len+1; constant here (rules are disjoint)
+                        CategoryMask::new(1).unwrap(),
+                        RemoteKeyRule::<Ipv4Addr> {
+                            proto: MaskSpec::from((0u8, 0u8)),
+                            src_vpcd: ExactSpec::new(100),
+                            dst_ip: PrefixSpec::new(Ipv4Addr::new(10, a, b, 0), 24),
+                            dst_port: RangeSpec::new(0, u16::MAX),
+                        }
+                        .into_backend_fields::<Dpdk>(),
+                        u32::try_from(i).unwrap_or(u32::MAX),
+                    )
+                    .unwrap()
+                })
+                .collect()
+        };
+
+        // Adversarial: sliding, pairwise-overlapping port windows on ONE shared /24, one VPC.
+        // Distinct rules (no dedup), non-suffix ranges -> forces rte_acl range->prefix expansion,
+        // the shape config MUST forbid. Windows step by 1 so consecutive rules overlap heavily.
+        let overlapping = |n: usize| -> Rules {
+            (0..n)
+                .map(|i| {
+                    let lo = u16::try_from(i % 63000).unwrap();
+                    let hi = lo.saturating_add(2000).max(lo + 1);
+                    RuleSpec::new(
+                        Priority::new(i32::try_from(i + 1).unwrap_or(i32::MAX)).unwrap(),
+                        CategoryMask::new(1).unwrap(),
+                        RemoteKeyRule::<Ipv4Addr> {
+                            proto: MaskSpec::from((0u8, 0u8)),
+                            src_vpcd: ExactSpec::new(100),
+                            dst_ip: PrefixSpec::new(Ipv4Addr::new(10, 0, 0, 0), 24), // shared prefix
+                            dst_port: RangeSpec::new(lo, hi), // sliding overlapping window
+                        }
+                        .into_backend_fields::<Dpdk>(),
+                        u32::try_from(i).unwrap_or(u32::MAX),
+                    )
+                    .unwrap()
+                })
+                .collect()
+        };
+
+        let counts = [64usize, 256, 1024, 4096, 16384, 65536];
+        #[allow(clippy::type_complexity)]
+        let gens: [(&str, Box<dyn Fn(usize) -> Rules>); 2] = [
+            ("disjoint", Box::new(disjoint)),
+            ("overlapping", Box::new(overlapping)),
+        ];
+
+        println!("\n=== flow_filter RemoteKey<Ipv4Addr> build capacity (debug dpdk sysroot) ===");
+        for (label, make) in &gens {
+            for &n in &counts {
+                let rules = make(n);
+                let max = NonZero::new(u32::try_from(n).unwrap()).unwrap();
+                let rss_before = rss_kb();
+                let t = Instant::now();
+                let res: Result<DpdkAclLookup<RemoteKey<Ipv4Addr>, u32>, _> =
+                    install_table(&unique_name("cap"), max, rules);
+                let dt = t.elapsed().as_secs_f64() * 1e3;
+                match res {
+                    Ok(tbl) => {
+                        let d_rss = rss_kb() - rss_before;
+                        println!(
+                            "{label:12} n={n:6}  build={dt:9.2} ms  rss_delta={d_rss:+7} kB  ok"
+                        );
+                        drop(black_box(tbl));
+                    }
+                    Err(e) => {
+                        println!("{label:12} n={n:6}  build={dt:9.2} ms  FAILED: {e}");
+                        break;
+                    }
+                }
+            }
         }
     }
 }
