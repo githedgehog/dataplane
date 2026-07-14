@@ -374,6 +374,7 @@ pub struct Icmp4Timestamp {
 /// This enum mirrors the protocol-level `ICMPv4` type/code space using
 /// native Rust types.  No etherparse types appear in the public API.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Icmp4Type {
     /// Destination Unreachable (type 3).
     DestUnreachable(Icmp4DestUnreachable),
