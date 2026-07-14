@@ -11,6 +11,12 @@ pub struct ExactSpec<T: FixedSize> {
     pub value: T,
 }
 
+impl<T: FixedSize> From<T> for ExactSpec<T> {
+    fn from(value: T) -> Self {
+        ExactSpec { value }
+    }
+}
+
 impl<T: FixedSize> ExactSpec<T> {
     #[must_use]
     pub const fn new(value: T) -> Self {
@@ -51,6 +57,24 @@ impl<T: FixedSize> RuleField for PrefixSpec<T> {
 pub struct MaskSpec<T: FixedSize> {
     pub value: T,
     pub mask: T,
+}
+
+impl<T: FixedSize> From<(T, T)> for MaskSpec<T> {
+    fn from(value: (T, T)) -> Self {
+        Self {
+            value: value.0,
+            mask: value.1,
+        }
+    }
+}
+
+impl<T: FixedSize> From<(&T, &T)> for MaskSpec<T> {
+    fn from(value: (&T, &T)) -> Self {
+        Self {
+            value: *value.0,
+            mask: *value.1,
+        }
+    }
 }
 
 impl<T: FixedSize> MaskSpec<T> {

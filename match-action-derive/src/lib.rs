@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::collections::HashSet;
+
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::quote;
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
+use quote::{ToTokens, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Field, Fields, GenericParam, Ident, TypeParamBound,
+    Attribute, Data, DeriveInput, Field, Fields, GenericParam, Ident, Type, TypeParamBound,
     parse_macro_input, parse_quote, spanned::Spanned,
 };
 fn match_action_crate_path() -> TokenStream2 {
@@ -54,7 +56,7 @@ impl Kind {
     }
 }
 
-#[proc_macro_derive(MatchKey, attributes(prefix, mask, range, exact))]
+#[proc_macro_derive(MatchKey, attributes(prefix, mask, range, exact, phantom))]
 pub fn derive_match_key(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand(&input) {
@@ -67,21 +69,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let crate_path = match_action_crate_path();
     let key_ident = &input.ident;
     let key_vis = &input.vis;
-    let mut generics = input.generics.clone();
-    let fixed_size_bound: TypeParamBound = parse_quote!(#crate_path::FixedSize);
-    for param in &mut generics.params {
-        if let GenericParam::Type(tp) = param {
-            tp.bounds.push(fixed_size_bound.clone());
-        }
-    }
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let is_generic = input
         .generics
         .params
         .iter()
         .any(|p| matches!(p, GenericParam::Type(_) | GenericParam::Const(_)));
 
-    let fields = match &input.data {
+    let all_fields = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(named) => &named.named,
             Fields::Unnamed(_) => {
@@ -105,16 +99,48 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
+    // Partition fields into match fields (which drive the key layout, specs, and
+    // rule) and phantom fields. A phantom field carries a compile-time constraint
+    // only -- it is zero-sized at runtime and contributes nothing to the key.
+    let mut fields: Vec<&Field> = Vec::new();
+    let mut kinds: Vec<Kind> = Vec::new();
+    let mut phantom_fields: Vec<&Field> = Vec::new();
+    for field in all_fields {
+        match parse_field_role(field)? {
+            FieldRole::Match(kind) => {
+                fields.push(field);
+                kinds.push(kind);
+            }
+            FieldRole::Phantom => phantom_fields.push(field),
+        }
+    }
+
     if fields.is_empty() {
         return Err(syn::Error::new(
             input.span(),
-            "MatchKey derive requires at least one field",
+            "MatchKey derive requires at least one match field (fields carrying \
+             #[phantom] or of type PhantomData do not count)",
         ));
     }
-    let kinds: Vec<Kind> = fields
-        .iter()
-        .map(parse_field_kind)
-        .collect::<syn::Result<_>>()?;
+
+    // Only bound the type parameters actually used by a match field with
+    // `FixedSize`. Parameters used solely by phantom fields keep whatever
+    // compile-time constraint the author wrote and must not be forced to be
+    // `FixedSize` -- forcing it would defeat the point of a phantom marker.
+    let mut match_param_idents: HashSet<String> = HashSet::new();
+    for field in &fields {
+        collect_idents(field.ty.to_token_stream(), &mut match_param_idents);
+    }
+    let mut generics = input.generics.clone();
+    let fixed_size_bound: TypeParamBound = parse_quote!(#crate_path::FixedSize);
+    for param in &mut generics.params {
+        if let GenericParam::Type(tp) = param
+            && match_param_idents.contains(&tp.ident.to_string())
+        {
+            tp.bounds.push(fixed_size_bound.clone());
+        }
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let n = fields.len();
     let n_literal = syn::Index::from(n);
@@ -205,6 +231,30 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #crate_path::#spec<#ty>: #crate_path::IsUniversal
         });
     }
+    // Phantom fields are carried through to the rule verbatim so that any generic
+    // parameter used solely by a phantom field still appears in the rule struct
+    // (otherwise it would be an unused-parameter error). They are constructed with
+    // `PhantomData` and never participate in matching.
+    let rule_phantom_fields: Vec<TokenStream2> = phantom_fields
+        .iter()
+        .map(|field| {
+            let name = field
+                .ident
+                .as_ref()
+                .ok_or_else(|| syn::Error::new(field.span(), "unnamed field"))?;
+            let ty = &field.ty;
+            // Represent the field as `PhantomData<..>` in the rule: this consumes
+            // any generic parameter the field referenced while staying `Copy`,
+            // `Clone`, and `Debug` regardless of the marker's own bounds (a bare
+            // marker type would otherwise fail the derives below). A field that is
+            // already `PhantomData` is kept verbatim to avoid double-wrapping.
+            if is_phantom_data_type(ty) {
+                Ok(quote! { pub #name: #ty })
+            } else {
+                Ok(quote! { pub #name: ::core::marker::PhantomData<#ty> })
+            }
+        })
+        .collect::<syn::Result<_>>()?;
     let as_key_impl = if is_generic {
         quote! {}
     } else {
@@ -262,7 +312,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
         #[derive(::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
         #key_vis struct #rule_ident #generics {
-            #(#rule_fields),*
+            #(#rule_fields,)*
+            #(#rule_phantom_fields,)*
         }
         impl #impl_generics #rule_ident #ty_generics #where_clause {
             pub fn into_backend_fields<__MaB>(self) -> ::std::vec::Vec<<__MaB as #crate_path::Backend>::Field>
@@ -295,9 +346,33 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     Ok(expanded)
 }
-fn parse_field_kind(field: &Field) -> syn::Result<Kind> {
+/// The role a struct field plays in the derived key.
+enum FieldRole {
+    /// A real match field, contributing bytes and a rule column.
+    Match(Kind),
+    /// A compile-time-only marker: zero-sized at runtime, skipped everywhere but
+    /// the rule struct (where it keeps its generic parameter alive).
+    Phantom,
+}
+
+/// True if `ty` is spelled as `PhantomData<..>` (in any path form).
+fn is_phantom_data_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty
+        && let Some(seg) = tp.path.segments.last()
+    {
+        return seg.ident == "PhantomData";
+    }
+    false
+}
+
+fn parse_field_role(field: &Field) -> syn::Result<FieldRole> {
+    let mut has_phantom_attr = false;
     let mut found: Option<(Kind, &Attribute)> = None;
     for attr in &field.attrs {
+        if attr.path().is_ident("phantom") {
+            has_phantom_attr = true;
+            continue;
+        }
         let kind = if attr.path().is_ident("prefix") {
             Some(Kind::Prefix)
         } else if attr.path().is_ident("mask") {
@@ -320,5 +395,30 @@ fn parse_field_kind(field: &Field) -> syn::Result<Kind> {
             found = Some((k, attr));
         }
     }
-    Ok(found.map_or(Kind::Exact, |(k, _)| k))
+    if has_phantom_attr || is_phantom_data_type(&field.ty) {
+        if let Some((_, attr)) = found {
+            return Err(syn::Error::new(
+                attr.span(),
+                "match-flavor attribute on a phantom field; phantom fields \
+                 (marked #[phantom] or of type PhantomData) carry no runtime data \
+                 and cannot be matched on",
+            ));
+        }
+        return Ok(FieldRole::Phantom);
+    }
+    Ok(FieldRole::Match(found.map_or(Kind::Exact, |(k, _)| k)))
+}
+
+/// Collect every identifier appearing in `tokens` into `out`. Used to discover
+/// which generic type parameters a match field's type actually references.
+fn collect_idents(tokens: TokenStream2, out: &mut HashSet<String>) {
+    for tt in tokens {
+        match tt {
+            TokenTree::Ident(id) => {
+                out.insert(id.to_string());
+            }
+            TokenTree::Group(g) => collect_idents(g.stream(), out),
+            _ => {}
+        }
+    }
 }
