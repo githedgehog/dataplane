@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 #![allow(unsafe_code)]
 
+use concurrency::sync::Arc;
 use core::num::NonZero;
 
 use dpdk::acl::{
@@ -259,7 +260,7 @@ pub(crate) fn dispatch_build_classifier<A>(
     layout: &DpdkLayout,
     rules: Vec<DynRuleSpec<A>>,
     max_rules: NonZero<u32>,
-) -> Result<(Box<dyn DynClassifier>, Vec<A>), DynInstallError> {
+) -> Result<(Arc<dyn DynClassifier>, Vec<A>), DynInstallError> {
     const _: () = assert!(
         MAX_FIELDS == 64,
         "MAX_FIELDS changed; regenerate the dispatch_match literal list",
@@ -291,7 +292,7 @@ fn build_classifier_n<const N: usize, A>(
     layout: &DpdkLayout,
     rules: Vec<DynRuleSpec<A>>,
     max_rules: NonZero<u32>,
-) -> Result<(Box<dyn DynClassifier>, Vec<A>), DynInstallError> {
+) -> Result<(Arc<dyn DynClassifier>, Vec<A>), DynInstallError> {
     debug_assert_eq!(N, layout.field_defs.len());
     let field_defs: [FieldDef; N] = core::array::from_fn(|i| layout.field_defs[i]);
     let build_cfg = AclBuildConfig::<N>::new(1, field_defs, 0)?;
@@ -327,12 +328,12 @@ fn build_classifier_n<const N: usize, A>(
         });
     }
 
-    Ok((Box::new(built), actions))
+    Ok((Arc::new(built), actions))
 }
 #[allow(dead_code)]
 const _PAD: fn() -> AclField = padding_field;
 pub struct DynDpdkLookup<A> {
-    classifier: Box<dyn DynClassifier>,
+    classifier: Arc<dyn DynClassifier>,
     actions: Vec<A>,
     layout: DpdkLayout,
     user_field_sizes: Vec<usize>,

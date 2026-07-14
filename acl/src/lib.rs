@@ -26,6 +26,7 @@
 
 #[cfg(feature = "dpdk")]
 pub mod dpdk;
+#[cfg(feature = "reference")]
 pub mod reference;
 #[cfg(feature = "dpdk")]
 #[macro_export]

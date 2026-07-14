@@ -6,8 +6,9 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = []
+default = ["dpdk"]
 dpdk = ["dep:dpdk"]
+reference = []
 
 [dependencies]
 arrayvec = { workspace = true, default-features = true }
