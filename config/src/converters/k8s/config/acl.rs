@@ -8,6 +8,7 @@ use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsAclRulesScope,
 };
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
+use net::ip::NextHeader;
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::expose::parse_port_ranges;
@@ -45,11 +46,17 @@ fn parse_proto(proto: Option<&str>) -> Result<AclProtoMatch, FromK8sConversionEr
     match proto {
         "tcp" => Ok(AclProtoMatch::Tcp),
         "udp" => Ok(AclProtoMatch::Udp),
-        other => other.parse::<u8>().map(AclProtoMatch::Other).map_err(|_| {
-            FromK8sConversionError::InvalidData(format!(
-                "ACL protocol '{other}': expected \"tcp\", \"udp\", or a numeric protocol"
-            ))
-        }),
+        other => {
+            let number = other.parse::<u8>();
+            match number {
+                Ok(n) if n == NextHeader::TCP.as_u8() => Ok(AclProtoMatch::Tcp),
+                Ok(n) if n == NextHeader::UDP.as_u8() => Ok(AclProtoMatch::Udp),
+                Ok(n) => Ok(AclProtoMatch::Other(n)),
+                Err(_) => Err(FromK8sConversionError::InvalidData(format!(
+                    "ACL protocol '{other}': expected \"tcp\", \"udp\", or a numeric protocol"
+                ))),
+            }
+        }
     }
 }
 
@@ -367,6 +374,10 @@ mod test {
         assert_eq!(parse_proto(Some("tcp")).unwrap(), AclProtoMatch::Tcp);
         assert_eq!(parse_proto(Some("udp")).unwrap(), AclProtoMatch::Udp);
         assert_eq!(parse_proto(Some("47")).unwrap(), AclProtoMatch::Other(47));
+        // Numeric TCP/UDP protocol numbers normalize to the dedicated variants (not Other), so
+        // they route to the TCP/UDP tables in the dataplane rather than the generic proto table.
+        assert_eq!(parse_proto(Some("6")).unwrap(), AclProtoMatch::Tcp);
+        assert_eq!(parse_proto(Some("17")).unwrap(), AclProtoMatch::Udp);
         assert!(parse_proto(Some("bogus")).is_err());
         // "icmp" is not supported yet
         assert!(parse_proto(Some("icmp")).is_err());
