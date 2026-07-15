@@ -1316,6 +1316,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-k8s-intf",
  "dataplane-lpm",
+ "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
