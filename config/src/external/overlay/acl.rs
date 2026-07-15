@@ -7,6 +7,8 @@ use super::vpcpeering::ValidatedManifest;
 use crate::ConfigError;
 use crate::utils::normalize;
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
+use match_action::RangeSpec;
+use net::ip::NextHeader;
 use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -24,6 +26,20 @@ pub enum AclProtoMatch {
     Other(u8),
     #[default]
     Any,
+}
+
+const TCP: u8 = NextHeader::TCP.as_u8();
+const UDP: u8 = NextHeader::UDP.as_u8();
+
+impl From<AclProtoMatch> for RangeSpec<u8> {
+    fn from(proto: AclProtoMatch) -> Self {
+        match proto {
+            AclProtoMatch::Tcp => RangeSpec::new(TCP, TCP),
+            AclProtoMatch::Udp => RangeSpec::new(UDP, UDP),
+            AclProtoMatch::Other(p) => RangeSpec::new(p, p),
+            AclProtoMatch::Any => RangeSpec::new(0, u8::MAX),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

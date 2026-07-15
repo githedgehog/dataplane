@@ -68,7 +68,7 @@ impl NextHeader {
 
     /// Return the [`NextHeader`] represented as a `u8`
     #[must_use]
-    pub fn as_u8(&self) -> u8 {
+    pub const fn as_u8(&self) -> u8 {
         self.0.0
     }
 
