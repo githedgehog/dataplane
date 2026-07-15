@@ -15,8 +15,9 @@ testing = []
 common = { workspace = true }
 concurrency = { workspace = true }
 k8s-intf = { workspace = true }
-net = { workspace = true }
 lpm = { workspace = true }
+match-action = { workspace = true }
+net = { workspace = true }
 
 # external
 arc-swap = { workspace = true }
