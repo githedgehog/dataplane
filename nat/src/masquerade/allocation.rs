@@ -25,14 +25,14 @@ pub enum AllocatorError {
     UnsupportedProtocol(NextHeader),
     #[error("missing VPC discriminant")]
     MissingDiscriminant,
-    #[error("unsupported VPC discriminant type")]
-    UnsupportedDiscriminant,
     // Something has gone wrong, but user input or packet input are not responsible.
     // We hit an implementation bug.
     #[error("internal issue: {0}")]
     InternalIssue(String),
-    #[error("new NAT session creation denied")]
+    #[error("masquerade session creation denied")]
     Denied,
+    #[error("no pool found")]
+    NoPoolFound,
 }
 
 impl From<&AllocatorError> for DoneReason {
@@ -44,10 +44,9 @@ impl From<&AllocatorError> for DoneReason {
             | AllocatorError::NoFreePort(_) => DoneReason::NatOutOfResources,
             AllocatorError::PortAllocationFailed(_)
             | AllocatorError::PortReservationFailed(_)
-            | AllocatorError::MissingDiscriminant
-            | AllocatorError::UnsupportedDiscriminant => DoneReason::NatFailure,
+            | AllocatorError::MissingDiscriminant => DoneReason::NatFailure,
             AllocatorError::InternalIssue(_) => DoneReason::InternalFailure,
-            AllocatorError::Denied => DoneReason::Filtered,
+            AllocatorError::Denied | AllocatorError::NoPoolFound => DoneReason::Filtered,
         }
     }
 }

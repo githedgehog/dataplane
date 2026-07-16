@@ -74,7 +74,7 @@ use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use tracectl::trace_target;
 trace_target!("nat-allocation", LevelFilter::ERROR, &["masquerade"]);
@@ -95,16 +95,16 @@ pub use port_alloc::AllocatedPort;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
-    dst_id: VpcDiscriminant,
+    dst_vpcd: VpcDiscriminant,
     addr: I,
     addr_range_end: I,
 }
 
 impl<I: NatIp> PoolTableKey<I> {
-    fn new(protocol: NextHeader, dst_id: VpcDiscriminant, addr: I, addr_range_end: I) -> Self {
+    fn new(protocol: NextHeader, dst_vpcd: VpcDiscriminant, addr: I, addr_range_end: I) -> Self {
         Self {
             protocol,
-            dst_id,
+            dst_vpcd,
             addr,
             addr_range_end,
         }
@@ -132,7 +132,7 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         match self.0.range(..=key).next_back() {
             Some((k, v))
                 if k.addr_range_end >= key.addr
-                    && k.dst_id == key.dst_id
+                    && k.dst_vpcd == key.dst_vpcd
                     && k.protocol == key.protocol =>
             {
                 Some(v)
@@ -144,10 +144,10 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     fn get_entry(
         &self,
         protocol: NextHeader,
-        dst_id: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
         addr: I,
     ) -> Option<&alloc::IpAllocator<J>> {
-        let key = PoolTableKey::new(protocol, dst_id, addr, max_range::<I>());
+        let key = PoolTableKey::new(protocol, dst_vpcd, addr, max_range::<I>());
         self.get(&key)
     }
 
@@ -335,11 +335,10 @@ impl NatAllocator {
         ip: Ipv4Addr,
         port: NatPort,
     ) -> Result<AllocatedPort<Ipv4Addr>, AllocatorError> {
-        debug!("Re-reserving {ip} port/Id {port} for {protocol}, dst_vpcd: {dst_vpcd}");
-        let pool = self
-            .pools_src44
-            .get_entry(protocol, dst_vpcd, src_ip)
-            .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
+        let Some(pool) = self.pools_src44.get_entry(protocol, dst_vpcd, src_ip) else {
+            warn!("No pool found for proto:{protocol} dst-vpcd:{dst_vpcd} and src:{src_ip}");
+            return Err(AllocatorError::NoPoolFound);
+        };
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
         pool.reserve(ip, port)
@@ -353,11 +352,10 @@ impl NatAllocator {
         ip: Ipv6Addr,
         port: NatPort,
     ) -> Result<AllocatedPort<Ipv6Addr>, AllocatorError> {
-        debug!("Re-reserving {ip} port/Id {port} for {protocol}, dst_vpcd: {dst_vpcd}");
-        let pool = self
-            .pools_src66
-            .get_entry(protocol, dst_vpcd, src_ip)
-            .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
+        let Some(pool) = self.pools_src66.get_entry(protocol, dst_vpcd, src_ip) else {
+            warn!("No pool found for proto:{protocol} dst-vpcd:{dst_vpcd} and src:{src_ip}");
+            return Err(AllocatorError::NoPoolFound);
+        };
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
         pool.reserve(ip, port)
@@ -373,6 +371,7 @@ impl NatAllocator {
         ip: IpAddr,
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
+        debug!("Re-reserving {ip} {protocol}:{port}, dst_vpcd:{dst_vpcd}");
         let mut allocation = match (src_ip, ip) {
             (IpAddr::V4(src), IpAddr::V4(allocated)) => self
                 .reserve_ipv4_port(protocol, dst_vpcd, src, allocated, port)
