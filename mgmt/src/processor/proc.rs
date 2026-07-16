@@ -22,7 +22,7 @@ use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwCon
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
-use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
+use flow_filter_legacy::{FlowFilterTable, FlowFilterTableWriter};
 use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
