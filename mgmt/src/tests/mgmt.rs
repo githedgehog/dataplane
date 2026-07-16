@@ -43,7 +43,7 @@ pub mod test {
     use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
-    use flow_filter::FlowFilterTableWriter;
+    use flow_filter_legacy::FlowFilterTableWriter;
     use nat::masquerade::NatAllocatorWriter;
     use nat::portfw::PortFwTableWriter;
     use nat::static_nat::NatTablesWriter;

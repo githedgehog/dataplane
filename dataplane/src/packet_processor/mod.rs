@@ -14,7 +14,7 @@ use concurrency::sync::Arc;
 
 use acl_filter::{AclFilter, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterTableWriter};
+use flow_filter_legacy::{FlowFilter, FlowFilterTableWriter};
 
 use nat::masquerade::NatAllocatorWriter;
 use nat::portfw::{PortForwarder, PortFwTableWriter};

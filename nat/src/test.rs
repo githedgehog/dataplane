@@ -16,7 +16,7 @@ use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, 
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::FlowLookup;
 use flow_entry::flow_table::FlowTable;
-use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
+use flow_filter_legacy::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
 use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::eth::mac::Mac;

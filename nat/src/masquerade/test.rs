@@ -15,7 +15,7 @@ use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use config::{ConfigError, GenId};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
+use flow_filter_legacy::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
 use net::flows::FlowStatus;
