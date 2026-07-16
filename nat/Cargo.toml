@@ -38,7 +38,7 @@ shuttle = { workspace = true, optional = true }
 # internal
 config = { workspace = true, features = ["testing"] }
 fixin = { workspace = true }
-flow-filter = { workspace = true }
+flow-filter-legacy = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }

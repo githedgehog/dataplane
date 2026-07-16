@@ -1198,7 +1198,7 @@ dependencies = [
  "dataplane-config",
  "dataplane-dpdk",
  "dataplane-flow-entry",
- "dataplane-flow-filter",
+ "dataplane-flow-filter-legacy",
  "dataplane-id",
  "dataplane-lifecycle",
  "dataplane-mgmt",
@@ -1257,7 +1257,7 @@ dependencies = [
  "dataplane-config",
  "dataplane-dpdk",
  "dataplane-flow-entry",
- "dataplane-flow-filter",
+ "dataplane-flow-filter-legacy",
  "dataplane-lookup",
  "dataplane-lpm",
  "dataplane-match-action",
@@ -1443,7 +1443,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dataplane-flow-filter"
+name = "dataplane-flow-filter-legacy"
 version = "0.23.0"
 dependencies = [
  "bitflags 2.13.1",
@@ -1654,7 +1654,7 @@ dependencies = [
  "dataplane-config",
  "dataplane-dpdk",
  "dataplane-flow-entry",
- "dataplane-flow-filter",
+ "dataplane-flow-filter-legacy",
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-k8s-intf",
@@ -1700,7 +1700,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-flow-entry",
- "dataplane-flow-filter",
+ "dataplane-flow-filter-legacy",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
