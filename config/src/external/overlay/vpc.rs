@@ -72,32 +72,6 @@ impl Peering {
 
         Ok(valid_peering_candidate)
     }
-
-    /// FOR TESTS ONLY. Fake validation for a VPC peering.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_validated_peering_for_tests(&self) -> ValidatedPeering {
-        let (fake_local, fake_remote) = unsafe {
-            (
-                self.local.fake_valid_manifest_for_tests(),
-                self.remote.fake_valid_manifest_for_tests(),
-            )
-        };
-        ValidatedPeering {
-            name: self.name.clone(),
-            local: fake_local,
-            remote: fake_remote,
-            remote_id: self.remote_id.clone(),
-            remote_vni: self.remote_vni,
-            gwgroup: self.gwgroup.clone(),
-            acl: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -349,49 +323,6 @@ impl Vpc {
         };
         Ok(validated_vpc)
     }
-
-    /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_validated_vpc_for_tests(&self) -> ValidatedVpc {
-        let fake_validated_peerings = self
-            .peerings
-            .iter()
-            .map(|peering| {
-                let (fake_local, fake_remote) = unsafe {
-                    (
-                        peering.local.fake_valid_manifest_for_tests(),
-                        peering.remote.fake_valid_manifest_for_tests(),
-                    )
-                };
-                ValidatedPeering {
-                    name: peering.name.clone(),
-                    local: fake_local,
-                    remote: fake_remote,
-                    remote_id: peering.remote_id.clone(),
-                    remote_vni: peering.remote_vni,
-                    gwgroup: peering.gwgroup.clone(),
-                    acl: None,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let not_validated_rt = VpcRouteTable::build(&fake_validated_peerings);
-
-        ValidatedVpc {
-            name: self.name.clone(),
-            id: self.id.clone(),
-            vni: self.vni,
-            interfaces: self.interfaces.clone(),
-            peerings: fake_validated_peerings,
-            route_table: not_validated_rt,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -551,27 +482,6 @@ impl VpcTable {
             vpcs: validated_vpcs,
             ids: self.ids.clone(),
         })
-    }
-
-    /// FOR TESTS ONLY. Fake validation for the VPC table.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub(crate) unsafe fn fake_validated_vpc_table_for_tests(&self) -> ValidatedVpcTable {
-        let fake_validated_vpcs = unsafe {
-            self.vpcs
-                .iter()
-                .map(|(name, vpc)| (name.clone(), vpc.fake_validated_vpc_for_tests()))
-                .collect()
-        };
-        ValidatedVpcTable {
-            vpcs: fake_validated_vpcs,
-            ids: self.ids.clone(),
-        }
     }
 }
 

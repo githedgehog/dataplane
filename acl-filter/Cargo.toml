@@ -26,7 +26,6 @@ tracing = { workspace = true }
 # EAL-free semantic suite. It is `cfg(test)`-gated in the source, so it is never part of a
 # production build; this dev-dep just makes `acl::reference` available to test builds.
 acl = { workspace = true, features = ["reference"] }
-config = { workspace = true, features = ["testing"] }
 dpdk = { workspace = true, features = ["test"] }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
