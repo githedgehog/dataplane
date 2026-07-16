@@ -478,18 +478,6 @@ impl VpcExpose {
 
         Ok(collapsed_expose)
     }
-
-    /// FOR TESTS ONLY
-    #[cfg(feature = "testing")]
-    #[must_use]
-    #[allow(unsafe_code)]
-    unsafe fn fake_validated_expose(&self) -> ValidatedExpose {
-        ValidatedExpose {
-            default: self.default,
-            ips: self.ips.clone(),
-            nat: self.nat.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -711,26 +699,6 @@ impl VpcManifest {
     #[must_use]
     pub fn default_expose(&self) -> Option<&VpcExpose> {
         self.exposes.iter().find(|expose| expose.default)
-    }
-
-    /// FOR TESTS ONLY. Fake validation for the manifest.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_valid_manifest_for_tests(&self) -> ValidatedManifest {
-        let mut fake_valid_manifest = ValidatedManifest {
-            name: self.name.clone(),
-            valexp: Vec::new(),
-        };
-        for expose in &self.exposes {
-            let fake_valid_expose = unsafe { expose.fake_validated_expose() };
-            fake_valid_manifest.valexp.push(fake_valid_expose);
-        }
-        fake_valid_manifest
     }
 }
 
