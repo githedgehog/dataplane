@@ -858,7 +858,7 @@ mod end_to_end {
     use config::external::overlay::ValidatedOverlay;
 
     use flow_entry::flow_table::{FlowLookup, FlowTable};
-    use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
+    use flow_filter_legacy::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
     use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
     use nat::portfw::{PortForwarder, PortFwTableWriter};
     use nat::static_nat::NatTablesWriter;

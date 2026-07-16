@@ -1,5 +1,5 @@
 [package]
-name = "dataplane-flow-filter"
+name = "dataplane-flow-filter-legacy"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
