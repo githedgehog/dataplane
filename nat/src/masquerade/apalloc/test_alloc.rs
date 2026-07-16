@@ -212,7 +212,7 @@ mod std_tests {
                 .pools_src44
                 .0
                 .keys()
-                .all(|k| k.dst_id == vpcd2() || k.dst_id == vpcd1())
+                .all(|k| k.dst_vpcd == vpcd2() || k.dst_vpcd == vpcd1())
         );
         // One entry for each ".ip()" from the VPCExpose objects,
         // after exclusion ranges have been applied

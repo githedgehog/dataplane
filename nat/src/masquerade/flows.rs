@@ -65,11 +65,11 @@ fn re_reserve_ip_and_port(
     let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
     let src_ip = *flow_key.src_ip();
     let port_u16 = port.as_u16();
-    debug!("Attempting to reserve {ip} {port_u16} {proto}...");
+    debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
     match new_allocator.reserve_port(proto, dst_vpcd, src_ip, ip, port) {
         Ok(alloc) => {
-            debug!("Successfully re-reserved ip {ip} port {port_u16}");
+            debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
             let mut guard = flow_info.locked.write();
             let nat_state = guard.nat_state.as_mut().ok_or(())?;
             let nat_state = nat_state
@@ -77,11 +77,11 @@ fn re_reserve_ip_and_port(
                 .unwrap_or_else(|| unreachable!());
             debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
             nat_state.set_allocation(alloc);
-            debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
+            debug!("Successfully associated ip {ip}, {proto}:{port_u16} to flow {flow_key}");
             Ok(())
         }
         Err(e) => {
-            error!("Failed to reserve {ip} {port_u16}: {e}");
+            error!("Failed to re-reserve {ip}, {proto}:{port_u16} for flow {flow_key}: {e}");
             Err(())
         }
     }

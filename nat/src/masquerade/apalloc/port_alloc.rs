@@ -384,10 +384,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // get a policy-oriented error rather than a misleading resource-exhaustion error from the
         // pre-excluded low-port blocks.
         if self.exclude_wellknown_ports && port.as_u16() < IANA_WELLKNOWN_PORT_LIMIT {
-            debug!(
-                "Explicit reservation for well-known port {} denied by allocator policy",
-                port.as_u16()
-            );
+            debug!("Explicit reservation for well-known port {port} denied by allocator policy");
             return Err(AllocatorError::Denied);
         }
         let block = self.find_block_for_port(ip, port)?;

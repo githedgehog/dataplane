@@ -58,7 +58,7 @@ where
         write!(
             f,
             "{} | dest VPC: {}, for IPs: [ {} .. {} ]",
-            self.protocol, self.dst_id, self.addr, self.addr_range_end
+            self.protocol, self.dst_vpcd, self.addr, self.addr_range_end
         )
     }
 }
