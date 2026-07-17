@@ -261,10 +261,7 @@ impl StatelessNat {
         let nfi = self.name();
 
         // Get source and destination IP addresses
-        let Some((src_addr, dst_addr)) = packet
-            .ip_source()
-            .and_then(|src| packet.ip_destination().map(|dst| (src, dst)))
-        else {
+        let Some((src_addr, dst_addr)) = packet.ip_source().zip(packet.ip_destination()) else {
             error!("{nfi}: Failed to get IP addresses!");
             return Err(StatelessNatError::NoIpHeader);
         };
