@@ -8,8 +8,6 @@ use crate::masquerade::state::MasqueradeState;
 
 use config::GenId;
 use flow_entry::flow_table::{FlowTable, FlowTableReadGuard};
-use lpm::prefix::IpRangeWithPorts;
-use lpm::prefix::PrefixWithOptionalPorts;
 use net::FlowKey;
 use net::flows::ExtractMut;
 use net::flows::ExtractRef;
@@ -107,40 +105,61 @@ pub(crate) fn check_masquerading_flow(
     let src_vpcd = flow_key.src_vpcd().unwrap_or_else(|| unreachable!());
 
     debug!("Checking flow {}", flow_info.logfmt());
-
     let Some(nat_peering) = config.get_peering(src_vpcd, dst_vpcd) else {
-        debug!("Invalidating flow: there's no longer a peering {src_vpcd} -- {dst_vpcd}");
+        debug!("Invalidating flow: there is no longer a peering for {src_vpcd} -- {dst_vpcd}");
         flow_info.invalidate_pair();
         return;
     };
+    debug!("Found peering between {src_vpcd} and {dst_vpcd}...");
 
     // We've found a peering with masquerade between the VPCs that this flow is exchanged.
     // Check if such a peering has ANY expose with masquerading that includes the address currently
-    // used to masquerade the flow.
-    debug!("Peering exists between {src_vpcd} and {dst_vpcd}");
-    if nat_peering.peering.local().valexp().iter().any(|e| {
-        e.has_masquerade()
-            && e.nat().is_some_and(|enat| {
-                enat.as_range
-                    .iter()
-                    .any(|pfx| pfx.covers(&PrefixWithOptionalPorts::new(ip.into(), None)))
-            })
-    }) {
-        debug!("Flow uses an address compatible with the peering {src_vpcd} -- {dst_vpcd}");
-        // Flow uses an ip address that is compatible with a masquerading expose in the current configuration
-        // So, we should continue serving the flow. To do so, we:
-        //    1) allocate the address and port in the new allocator to prevent it from using it for other flows and
-        //    2) link the flow to the new object representing the ip/port so that it gets released when the flow is terminated.
-        //
-        // If either of those fails, we invalidate the flow. On success, we upgrade the flow to the new gen id.
-        if re_reserve_ip_and_port(allocator, flow_info, ip, port).is_ok() {
-            debug!("Upgrading flow {} to gen id {genid}...", flow_info.logfmt());
-            flow_info.set_genid_pair(genid);
-        } else {
-            flow_info.invalidate_pair();
+    // used to masquerade the flow (ip) and if the originator of the flow (src_ip) is still allowed
+    // over the peering.
+    let src_ip = flow_key.src_ip(); // source of flow
+    let mut compatible_expose_found = false;
+    let mut alloced_ip_valid = false;
+    for expose in nat_peering.peering.local().valexp() {
+        if let Some(nat) = expose.nat()
+            && nat.is_masquerade()
+            && nat.as_range.iter().any(|pfx| pfx.prefix().covers_addr(&ip))
+        {
+            debug!("Masquerading ip {ip} is allowed over peering {src_vpcd} -- {dst_vpcd}");
+            alloced_ip_valid = true;
+            if expose
+                .ips()
+                .iter()
+                .any(|pfx| pfx.prefix().covers_addr(src_ip))
+            {
+                debug!("Flow source {src_ip} is still included in expose");
+                compatible_expose_found = true;
+                break;
+            }
         }
+    }
+
+    if !alloced_ip_valid {
+        debug!("Masquerade ip {ip} is no longer allowed over peering {src_vpcd} -- {dst_vpcd}");
+        flow_info.invalidate_pair();
+        return;
+    }
+    if !compatible_expose_found {
+        debug!("Flow is no longer valid for masquerading between {src_vpcd} -- {dst_vpcd}");
+        flow_info.invalidate_pair();
+        return;
+    }
+
+    // Flow uses an ip address that is compatible with a masquerading expose in the current configuration and the source of
+    // the masqueraded flow is still allowed over the peering.
+    // So, we should continue serving the flow. To do so, we:
+    //    1) allocate the address and port in the new allocator to prevent it from using it for other flows and
+    //    2) link the flow to the new object representing the ip/port so that it gets released when the flow is terminated.
+    //
+    // If either of those fails, we invalidate the flow. On success, we upgrade the flow to the new gen id.
+    if re_reserve_ip_and_port(allocator, flow_info, ip, port).is_ok() {
+        debug!("Upgrading flow {} to gen id {genid}...", flow_info.logfmt());
+        flow_info.set_genid_pair(genid);
     } else {
-        debug!("Can no longer use ip {ip} to masquerade between {src_vpcd} and {dst_vpcd}");
         flow_info.invalidate_pair();
     }
 }
