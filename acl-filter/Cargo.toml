@@ -6,13 +6,11 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-# `reference` is now a non-default feature of `acl` (the crate defaults to the
-# dpdk backend). acl-filter's tables are still built on the reference backend
-# during the switch to dpdk, so enable it explicitly alongside the default dpdk.
-acl = { workspace = true, features = ["reference"] }
+acl = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
+dpdk = { workspace = true }
 indenter = { workspace = true }
 lookup = { workspace = true }
 lpm = { workspace = true }
@@ -22,7 +20,12 @@ pipeline = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# The reference (linear-scan) ACL backend is the differential-test oracle and drives the fast,
+# EAL-free semantic suite. It is `cfg(test)`-gated in the source, so it is never part of a
+# production build; this dev-dep just makes `acl::reference` available to test builds.
+acl = { workspace = true, features = ["reference"] }
 config = { workspace = true, features = ["testing"] }
+dpdk = { workspace = true, features = ["test"] }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }

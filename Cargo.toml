@@ -277,8 +277,8 @@ wasm = false # hopeless + pointless
 
 [workspace.metadata.package.acl-filter]
 package = "dataplane-acl-filter"
-miri = true
-wasm = false # miss
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.args]
 package = "dataplane-args"

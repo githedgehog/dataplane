@@ -1245,6 +1245,7 @@ dependencies = [
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-dpdk",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
  "dataplane-lookup",

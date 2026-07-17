@@ -3,26 +3,19 @@
 
 //! Display implementations for the ACL filter context.
 //!
-//! The ACL rules are stored in the context after being lowered into positional field predicates
-//! (see [`crate::context`]), so the human-readable field values are reconstructed here from the raw
-//! bytes of each predicate. This relies on the field layout of the `AclKey` match key defined in
-//! `context.rs`:
+//! In production (rte_acl backend) the rules are baked into an opaque classifier, so only a rule
+//! count is shown per table. In test / `reference` builds the reference backend keeps the rules, so
+//! each rule's field predicates and action are rendered in full by decoding the positional field
+//! layout of the `AclKey` match key defined in `context.rs`:
 //!
 //!    - `AclKey`: proto, src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port
-//!
-//! If that layout changes, the decoding below must be updated accordingly.
 
 use common::cliprovider::{CliSource, Heading};
-use indenter::indented;
 
 use std::fmt::{self, Display, Write};
-use std::net::{Ipv4Addr, Ipv6Addr};
-
-use acl::reference::table::ReferenceTable;
-use match_action::{FieldPredicate, MatchKey};
 
 use crate::AclFilterContext;
-use crate::context::{AclTables, LookupResult};
+use crate::context::AclTables;
 
 impl CliSource for AclFilterContext {}
 
@@ -33,47 +26,64 @@ impl Display for AclFilterContext {
     }
 }
 
+/// Dump the peering default actions, sorted for a deterministic rendering. Shared by both the
+/// production (count-only) and test (full) table renderings.
+fn fmt_default_actions<W: Write>(w: &mut W, tables: &AclTables) -> fmt::Result {
+    writeln!(w, "default actions:")?;
+    let mut w = indenter::indented(w).with_str("  ");
+    if tables.default_actions.is_empty() {
+        return writeln!(w, "(none)");
+    }
+    let mut defaults: Vec<_> = tables.default_actions.iter().collect();
+    defaults.sort_by_key(|((src, dst), _)| (src.as_u32(), dst.as_u32()));
+    for ((src, dst), action) in defaults {
+        writeln!(w, "VPC {src} -> VPC {dst}: {action:?}")?;
+    }
+    Ok(())
+}
+
+// -------------------------------------------------------------------------------------------------
+// Production (rte_acl / opaque): a rule count per table.
+
+#[cfg(not(test))]
 impl Display for AclTables {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "IPv4:")?;
-        {
-            let mut w = indented(f).with_str("  ");
-            fmt_ref_table(&mut w, &self.v4)?;
-        }
-
-        writeln!(f, "IPv6:")?;
-        {
-            let mut w = indented(f).with_str("  ");
-            fmt_ref_table(&mut w, &self.v6)?;
-        }
-
-        writeln!(f, "default actions:")?;
-        let mut w = indented(f).with_str("  ");
-        if self.default_actions.is_empty() {
-            writeln!(w, "(none)")?;
-        } else {
-            // Sort for a deterministic dump.
-            let mut defaults: Vec<_> = self.default_actions.iter().collect();
-            defaults.sort_by_key(|((src, dst), _)| (src.as_u32(), dst.as_u32()));
-            for ((src, dst), action) in defaults {
-                writeln!(w, "VPC {src} -> VPC {dst}: {action:?}")?;
-            }
-        }
-        Ok(())
+        writeln!(f, "IPv4: {} rules", self.v4.len())?;
+        writeln!(f, "IPv6: {} rules", self.v6.len())?;
+        fmt_default_actions(f, self)
     }
 }
 
-/// Format a single reference table as a numbered list of rules. The decoding reads each rule's
-/// predicates by position, following the `AclKey` layout in `context.rs`:
-/// proto, src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port.
-fn fmt_ref_table<W: Write, K: MatchKey>(
+// -------------------------------------------------------------------------------------------------
+// Test / `reference` builds: full per-rule rendering from the reference backend.
+
+#[cfg(test)]
+impl Display for AclTables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use indenter::indented;
+        writeln!(f, "IPv4:")?;
+        fmt_ref_table(&mut indented(f).with_str("  "), &self.v4)?;
+        writeln!(f, "IPv6:")?;
+        fmt_ref_table(&mut indented(f).with_str("  "), &self.v6)?;
+        fmt_default_actions(f, self)
+    }
+}
+
+/// Format a single table as a numbered list of rules, decoding each rule's predicates by position
+/// (`AclKey` layout: proto, src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port).
+#[cfg(test)]
+fn fmt_ref_table<W: Write, K: match_action::MatchKey>(
     w: &mut W,
-    table: &ReferenceTable<K, LookupResult>,
+    table: &crate::context::AnyTable<K, crate::context::LookupResult>,
 ) -> fmt::Result {
-    if table.is_empty() {
+    let Some(rules) = table.reference_rules() else {
+        // rte_acl / empty tables are opaque; fall back to a count.
+        return writeln!(w, "({} rules)", table.len());
+    };
+    if rules.is_empty() {
         return writeln!(w, "(none)");
     }
-    for (idx, rule) in table.rules().iter().enumerate() {
+    for (idx, rule) in rules.iter().enumerate() {
         let fields = rule.fields();
         let result = rule.action();
         let proto = decode_proto(fields.first());
@@ -94,8 +104,9 @@ fn fmt_ref_table<W: Write, K: MatchKey>(
 }
 
 /// Decode a VNI stored as a 4-byte big-endian exact-match predicate.
-fn decode_vni(predicate: Option<&FieldPredicate>) -> String {
-    match predicate.and_then(FieldPredicate::as_exact) {
+#[cfg(test)]
+fn decode_vni(predicate: Option<&match_action::FieldPredicate>) -> String {
+    match predicate.and_then(match_action::FieldPredicate::as_exact) {
         Some([a, b, c, d]) => u32::from_be_bytes([*a, *b, *c, *d]).to_string(),
         _ => "?".to_string(),
     }
@@ -103,8 +114,10 @@ fn decode_vni(predicate: Option<&FieldPredicate>) -> String {
 
 /// Decode an IP prefix stored as a prefix-match predicate (4 bytes for IPv4, 16 bytes for IPv6,
 /// plus a prefix length).
-fn decode_prefix(predicate: Option<&FieldPredicate>) -> String {
-    match predicate.and_then(FieldPredicate::as_prefix) {
+#[cfg(test)]
+fn decode_prefix(predicate: Option<&match_action::FieldPredicate>) -> String {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    match predicate.and_then(match_action::FieldPredicate::as_prefix) {
         Some(([a, b, c, d], len)) => format!("{}/{len}", Ipv4Addr::new(*a, *b, *c, *d)),
         Some((bytes, len)) if bytes.len() == 16 => {
             let mut octets = [0u8; 16];
@@ -117,8 +130,9 @@ fn decode_prefix(predicate: Option<&FieldPredicate>) -> String {
 
 /// Decode an IP protocol stored as a 1-byte bitmask predicate. A zero mask (wildcard) renders as
 /// `any`, a full mask as the single protocol number.
-fn decode_proto(predicate: Option<&FieldPredicate>) -> String {
-    match predicate.and_then(FieldPredicate::as_mask) {
+#[cfg(test)]
+fn decode_proto(predicate: Option<&match_action::FieldPredicate>) -> String {
+    match predicate.and_then(match_action::FieldPredicate::as_mask) {
         Some(([value], [mask])) => {
             if *mask == 0 {
                 "any".to_string()
@@ -134,8 +148,9 @@ fn decode_proto(predicate: Option<&FieldPredicate>) -> String {
 
 /// Decode a port range stored as a pair of 2-byte big-endian range bounds. A full range renders as
 /// `*`, an exact match as the single port.
-fn decode_ports(predicate: Option<&FieldPredicate>) -> String {
-    match predicate.and_then(FieldPredicate::as_range) {
+#[cfg(test)]
+fn decode_ports(predicate: Option<&match_action::FieldPredicate>) -> String {
+    match predicate.and_then(match_action::FieldPredicate::as_range) {
         Some(([lo_hi, lo_lo], [hi_hi, hi_lo])) => {
             let lo = u16::from_be_bytes([*lo_hi, *lo_lo]);
             let hi = u16::from_be_bytes([*hi_hi, *hi_lo]);

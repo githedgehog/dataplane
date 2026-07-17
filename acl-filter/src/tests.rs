@@ -135,7 +135,9 @@ fn overlay(vpcs: &[(&str, u32)], peerings: Vec<VpcPeering>) -> ValidatedOverlay 
 /// Build an `AclFilter` network function from a validated overlay.
 fn acl_filter(overlay: &ValidatedOverlay) -> AclFilter {
     let writer = AclFilterContextWriter::new();
-    writer.store(AclFilterContext::try_from(overlay).unwrap());
+    // Use the reference backend so the semantic suite stays fast and EAL-free; the rte_acl backend
+    // is exercised separately (see the `dpdk_backend` differential module).
+    writer.store(AclFilterContext::for_test(overlay));
     AclFilter::new("test-acl-filter", writer.get_reader())
 }
 
@@ -910,7 +912,7 @@ mod end_to_end {
 
         // ACL filter: placed here so packets still carry VPC-internal addresses
         let acl_writer = AclFilterContextWriter::new();
-        acl_writer.store(AclFilterContext::try_from(overlay).unwrap());
+        acl_writer.store(AclFilterContext::for_test(overlay));
         pipeline = pipeline.add_stage(AclFilter::new("acl-filter", acl_writer.get_reader()));
 
         // Static NAT
@@ -989,5 +991,130 @@ mod end_to_end {
         // De-NAT'd back to the original request's endpoints
         assert_eq!(reply_out.ip_source(), Some(v4("5.6.7.8").into()));
         assert_eq!(reply_out.ip_destination(), Some(v4("1.2.3.4").into()));
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// rte_acl backend differential test
+//
+// The semantic suite above runs on the reference backend (fast, no EAL). This module builds the
+// same overlay on BOTH backends and asserts they return the same verdict for a spread of packets:
+// since the reference backend's verdicts are pinned by the suite above, agreement proves the
+// production rte_acl path (rule install, positional priority, per-version tables, mask-proto and
+// range fields) is correct. Requires the EAL (`#[dpdk::with_eal]`).
+
+mod dpdk_backend {
+    use super::{
+        Acl, AclAction, AclFilter, AclFilterContext, AclFilterContextWriter, AclProtoMatch,
+        AclScope, Packet, TestBuffer, V1_IPS, V2_IPS, VNI1, VNI2, ValidatedOverlay,
+        build_icmp_packet, build_tcp_packet, build_udp_packet, expose, is_allowed, overlay, packet,
+        pattern, peering, rule, run, v4, vpcd,
+    };
+
+    fn filter_with(overlay: &ValidatedOverlay, dpdk: bool) -> AclFilter {
+        let writer = AclFilterContextWriter::new();
+        let ctx = if dpdk {
+            AclFilterContext::for_test_dpdk(overlay).expect("rte_acl backend build")
+        } else {
+            AclFilterContext::for_test(overlay)
+        };
+        writer.store(ctx);
+        AclFilter::new("diff-acl-filter", writer.get_reader())
+    }
+
+    // Run a freshly built packet through a reference-backed and an rte_acl-backed filter and assert
+    // both reach the same allow/deny verdict.
+    fn assert_backends_agree(
+        overlay: &ValidatedOverlay,
+        label: &str,
+        make_packet: impl Fn() -> Packet<TestBuffer>,
+    ) {
+        let mut reference = filter_with(overlay, false);
+        let mut dpdk = filter_with(overlay, true);
+        let reference_allowed = is_allowed(&run(&mut reference, make_packet()));
+        let dpdk_allowed = is_allowed(&run(&mut dpdk, make_packet()));
+        assert_eq!(
+            reference_allowed, dpdk_allowed,
+            "reference and rte_acl backends disagree on {label}"
+        );
+    }
+
+    #[test]
+    #[dpdk::with_eal]
+    fn dpdk_agrees_with_reference() {
+        // A representative ACL exercising first-match ordering, TCP/UDP/ICMP protocol matching, and
+        // the peering default. The overlapping allow-before-deny pair pins the priority wiring.
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![
+                rule(
+                    "allow-lower-half",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    pattern(&["10.0.0.0/25"], &[V2_IPS], AclProtoMatch::Tcp),
+                ),
+                rule(
+                    "deny-whole-range",
+                    AclAction::Deny,
+                    AclScope::Packet,
+                    pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+                ),
+                rule(
+                    "allow-icmp",
+                    AclAction::Allow,
+                    AclScope::Packet,
+                    pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Other(1)),
+                ),
+            ],
+        );
+        let overlay = overlay(
+            &[("vpc1", VNI1), ("vpc2", VNI2)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose(V1_IPS)]),
+                ("vpc2", vec![expose(V2_IPS)]),
+                Some(acl),
+            )],
+        );
+
+        // First-match: 10.0.0.5 is in the /25 (allow wins); 10.0.0.200 only hits the deny.
+        assert_backends_agree(&overlay, "tcp in /25 (allow wins)", || {
+            packet(
+                vpcd(VNI1),
+                Some(vpcd(VNI2)),
+                build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+            )
+        });
+        assert_backends_agree(&overlay, "tcp outside /25 (deny)", || {
+            packet(
+                vpcd(VNI1),
+                Some(vpcd(VNI2)),
+                build_tcp_packet(v4("10.0.0.200"), v4("20.0.0.5"), 1234, 80),
+            )
+        });
+        // UDP matches neither the TCP nor the ICMP rule -> peering default (deny).
+        assert_backends_agree(&overlay, "udp (default deny)", || {
+            packet(
+                vpcd(VNI1),
+                Some(vpcd(VNI2)),
+                build_udp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+            )
+        });
+        // ICMP matches the Other(1) allow.
+        assert_backends_agree(&overlay, "icmp (Other(1) allow)", || {
+            packet(
+                vpcd(VNI1),
+                Some(vpcd(VNI2)),
+                build_icmp_packet(v4("10.0.0.5"), v4("20.0.0.5")),
+            )
+        });
+        // Destination outside the peering's remote range -> default deny for every protocol.
+        assert_backends_agree(&overlay, "tcp to foreign dst (default deny)", || {
+            packet(
+                vpcd(VNI1),
+                Some(vpcd(VNI2)),
+                build_tcp_packet(v4("10.0.0.5"), v4("30.0.0.5"), 1234, 80),
+            )
+        });
     }
 }

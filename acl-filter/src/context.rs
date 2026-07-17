@@ -4,15 +4,25 @@
 //! Context table build (ACLs)
 
 use super::PacketSummary;
+use acl::dpdk::dyn_table::predicate_to_chunks;
+use acl::dpdk::install::install_table;
+use acl::dpdk::lookup::DpdkAclLookup;
+use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
+#[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
+use concurrency::sync::atomic::{AtomicU64, Ordering};
+use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
+use dpdk::acl::{CategoryMask, Priority};
 use lookup::Lookup;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MaskSpec, MatchKey, RangeSpec};
 use net::vxlan::Vni;
 use std::collections::HashMap;
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::num::NonZero;
 use tracing::error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,13 +146,11 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Backend lowering layer.
+// Key and rule lowering.
 //
-// This is where source rules are lowered into ACL field predicates
-// (`into_backend_fields::<RuleBackend>()`). Switching the reference backend for a hardware backend
-// means changing `RuleBackend` here (and the table types in `AclTables`).
-
-type RuleBackend = Erased;
+// Every rule is lowered once to backend-neutral `FieldPredicate`s (via the `Erased` backend). The
+// selected backend (see `Backend`) then consumes those: `Dpdk` converts them to rte_acl fields at
+// build time; `Reference` (test only) matches them directly.
 
 /// A single ACL match key: protocol, VPC pair, address pair, and port pair.
 ///
@@ -195,9 +203,9 @@ impl<I> AclKey<I> {
     }
 }
 
-/// Lower a single rule to backend field predicates for the concrete IP version of its prefixes.
-/// Returns `None` if the source and destination prefixes disagree on IP version, which the config
-/// validation already rules out for a well-formed peering.
+/// Lower a single rule to backend-neutral field predicates for the concrete IP version of its
+/// prefixes. Returns `None` if the source and destination prefixes disagree on IP version, which
+/// the config validation already rules out for a well-formed peering.
 fn rule_predicates(
     proto: AclProtoMatch,
     src_vni: Vni,
@@ -219,7 +227,7 @@ fn rule_predicates(
                 src_port_range,
                 dst_port_range,
             }
-            .into_backend_fields::<RuleBackend>(),
+            .into_backend_fields::<Erased>(),
         ),
         (Prefix::IPV6(src_ip_range), Prefix::IPV6(dst_ip_range)) => Some(
             AclKeyRule {
@@ -231,7 +239,7 @@ fn rule_predicates(
                 src_port_range,
                 dst_port_range,
             }
-            .into_backend_fields::<RuleBackend>(),
+            .into_backend_fields::<Erased>(),
         ),
         _ => None,
     }
@@ -253,15 +261,15 @@ impl Wildcardable for Ipv6Addr {
     }
 }
 
-// Lower a set of rules (already grouped by IP version) into a single table. A missing prefix or
-// port range becomes the wildcard for that field.
-fn build_acl_table<T: FixedSize + Wildcardable>(
+/// Lower all rules for one IP version into `(predicates, action)` pairs, preserving order (which is
+/// the precedence). A missing prefix or port range becomes the wildcard for that field.
+fn lower_rules<T: FixedSize + Wildcardable>(
     rules: &[PeeringAclRule],
-) -> ReferenceTable<AclKey<T>, LookupResult> {
-    let rules = rules
+) -> Vec<(Vec<FieldPredicate>, LookupResult)> {
+    rules
         .iter()
         .filter_map(|rule| {
-            Some(RefRule::new(
+            Some((
                 rule_predicates(
                     rule.proto,
                     rule.src_vni,
@@ -280,8 +288,142 @@ fn build_acl_table<T: FixedSize + Wildcardable>(
                 },
             ))
         })
-        .collect();
-    ReferenceTable::new(rules)
+        .collect()
+}
+
+// -------------------------------------------------------------------------------------------------
+// Backend selection.
+
+/// Backend used to build the production context: the rte_acl classifier. It requires the EAL to be
+/// initialized (done once in `dataplane::main`). The reference backend is `cfg(test)`-gated and is
+/// never compiled into production builds.
+pub(super) const PRODUCTION_BACKEND: Backend = Backend::Dpdk;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Backend {
+    Dpdk,
+    #[cfg(test)]
+    Reference,
+}
+
+/// A built ACL table for one IP version.
+///
+/// `Empty` matches nothing -- used for the default context and any zero-rule table, so we never
+/// ask rte_acl to build an empty context. `Dpdk` is the production rte_acl classifier. `Reference`
+/// is the `cfg(test)` linear-scan oracle that drives the fast, EAL-free semantic suite.
+#[allow(clippy::large_enum_variant)] // test only
+pub(super) enum AnyTable<K: MatchKey, A> {
+    Empty,
+    Dpdk(DpdkAclLookup<K, A>),
+    #[cfg(test)]
+    Reference(ReferenceTable<K, A>),
+}
+
+impl<K: MatchKey, A> AnyTable<K, A> {
+    /// Single-key lookup -- the per-packet production path (acl-filter classifies one packet at a
+    /// time rather than in batches).
+    fn lookup(&self, key: &K) -> Option<&A> {
+        match self {
+            AnyTable::Empty => None,
+            AnyTable::Dpdk(table) => table.lookup(key),
+            #[cfg(test)]
+            AnyTable::Reference(table) => table.lookup(key),
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        match self {
+            AnyTable::Empty => 0,
+            AnyTable::Dpdk(table) => table.actions().len(),
+            #[cfg(test)]
+            AnyTable::Reference(table) => table.len(),
+        }
+    }
+
+    /// The reference-backend rules, for the full CLI dump; `None` for the (opaque) rte_acl and
+    /// empty tables.
+    #[cfg(test)]
+    pub(super) fn reference_rules(&self) -> Option<&[RefRule<A>]> {
+        match self {
+            AnyTable::Reference(table) => Some(table.rules()),
+            _ => None,
+        }
+    }
+}
+
+impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            AnyTable::Empty => "empty",
+            AnyTable::Dpdk(_) => "dpdk",
+            #[cfg(test)]
+            AnyTable::Reference(_) => "reference",
+        };
+        write!(f, "AnyTable::{kind}({} rules)", self.len())
+    }
+}
+
+static TABLE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A process-unique rte_acl context name. rte_acl rejects duplicate names, and a hot-swap briefly
+/// keeps the old and new contexts alive at once, so the name must be unique across the process.
+fn table_name(base: &str) -> String {
+    format!("acl_{base}_{}", TABLE_SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Build one table for the selected backend from rules in precedence (insertion) order.
+fn build_table<K: MatchKey, A>(
+    backend: Backend,
+    base_name: &str,
+    rules: Vec<(Vec<FieldPredicate>, A)>,
+) -> Result<AnyTable<K, A>, String> {
+    match backend {
+        Backend::Dpdk => {
+            // A zero-rule table matches nothing; represent it as `Empty` rather than asking
+            // rte_acl to build an empty context.
+            if rules.is_empty() {
+                return Ok(AnyTable::Empty);
+            }
+            let n = rules.len();
+            let max = NonZero::new(u32::try_from(n).unwrap_or(u32::MAX))
+                .ok_or_else(|| "zero-rule table reached the dpdk builder".to_string())?;
+            let specs = K::field_specs();
+            let mut rule_specs = Vec::with_capacity(n);
+            for (i, (fields, action)) in rules.into_iter().enumerate() {
+                // Positional first-match: the first matching rule wins. rte_acl returns the
+                // highest-priority match, so priority descends with insertion index (rule 0 gets
+                // the highest priority). Distinct priorities keep the outcome deterministic.
+                let priority_value = i32::try_from(n - i).map_err(|e| e.to_string())?;
+                let priority = Priority::new(priority_value).map_err(|e| e.to_string())?;
+                let chunks: Vec<AclFieldChunks> = fields
+                    .iter()
+                    .zip(specs)
+                    .map(|(pred, spec)| predicate_to_chunks(pred, spec.size))
+                    .collect();
+                let spec = RuleSpec::<K, A>::new(
+                    priority,
+                    CategoryMask::new(1).map_err(|e| e.to_string())?,
+                    chunks,
+                    action,
+                )
+                .map_err(|e| e.to_string())?;
+                rule_specs.push(spec);
+            }
+            install_table::<K, A>(&table_name(base_name), max, rule_specs)
+                .map(AnyTable::Dpdk)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(test)]
+        Backend::Reference => {
+            // The reference backend is first-match on insertion order, which is exactly the
+            // precedence we want -- no priority sort needed.
+            let rules = rules
+                .into_iter()
+                .map(|(fields, action)| RefRule::new(fields, action))
+                .collect();
+            Ok(AnyTable::Reference(ReferenceTable::new(rules)))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -291,36 +433,37 @@ pub(super) struct LookupResult {
     pub(super) scope: AclScope,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct AclTables {
-    pub(super) v4: ReferenceTable<AclKey<Ipv4Addr>, LookupResult>,
-    pub(super) v6: ReferenceTable<AclKey<Ipv6Addr>, LookupResult>,
+    pub(super) v4: AnyTable<AclKey<Ipv4Addr>, LookupResult>,
+    pub(super) v6: AnyTable<AclKey<Ipv6Addr>, LookupResult>,
     pub(super) default_actions: HashMap<(Vni, Vni), AclAction>,
 }
 
 impl Default for AclTables {
     fn default() -> Self {
         Self {
-            v4: ReferenceTable::empty(),
-            v6: ReferenceTable::empty(),
+            v4: AnyTable::Empty,
+            v6: AnyTable::Empty,
             default_actions: HashMap::new(),
         }
     }
 }
 
-impl From<PeeringAclRuleSet> for AclTables {
-    fn from(context: PeeringAclRuleSet) -> Self {
-        Self {
-            v4: build_acl_table(&context.v4),
-            v6: build_acl_table(&context.v6),
-            default_actions: context.default_actions,
-        }
-    }
-}
-
-impl From<&ValidatedOverlay> for AclTables {
-    fn from(overlay: &ValidatedOverlay) -> Self {
-        PeeringAclRuleSet::from(overlay).into()
+impl AclTables {
+    pub(super) fn build(overlay: &ValidatedOverlay, backend: Backend) -> Result<Self, ConfigError> {
+        let ruleset = PeeringAclRuleSet::from(overlay);
+        let v4 =
+            build_table::<AclKey<Ipv4Addr>, _>(backend, "v4", lower_rules::<Ipv4Addr>(&ruleset.v4))
+                .map_err(ConfigError::FailureApply)?;
+        let v6 =
+            build_table::<AclKey<Ipv6Addr>, _>(backend, "v6", lower_rules::<Ipv6Addr>(&ruleset.v6))
+                .map_err(ConfigError::FailureApply)?;
+        Ok(Self {
+            v4,
+            v6,
+            default_actions: ruleset.default_actions,
+        })
     }
 }
 

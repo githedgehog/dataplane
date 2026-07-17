@@ -3,13 +3,13 @@
 
 //! Read and write handles for the ACL filter context.
 
-use crate::context::AclTables;
+use crate::context::{AclTables, PRODUCTION_BACKEND};
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct AclFilterContext {
     pub(super) acls: AclTables,
 }
@@ -18,7 +18,27 @@ impl TryFrom<&ValidatedOverlay> for AclFilterContext {
     type Error = ConfigError;
 
     fn try_from(overlay: &ValidatedOverlay) -> Result<Self, Self::Error> {
-        let acls = AclTables::from(overlay);
+        let acls = AclTables::build(overlay, PRODUCTION_BACKEND)?;
+        Ok(Self { acls })
+    }
+}
+
+#[cfg(test)]
+impl AclFilterContext {
+    /// Build a context using the reference backend, for tests that want the fast, EAL-free oracle.
+    /// Production goes through [`TryFrom`], which uses the rte_acl backend.
+    pub(crate) fn for_test(overlay: &ValidatedOverlay) -> Self {
+        use crate::context::Backend;
+        let acls = AclTables::build(overlay, Backend::Reference)
+            .expect("reference backend build is infallible");
+        Self { acls }
+    }
+
+    /// Build a context using the rte_acl backend, for the differential test that exercises the
+    /// production classifier. Requires the EAL to be initialized (`#[dpdk::with_eal]`).
+    pub(crate) fn for_test_dpdk(overlay: &ValidatedOverlay) -> Result<Self, ConfigError> {
+        use crate::context::Backend;
+        let acls = AclTables::build(overlay, Backend::Dpdk)?;
         Ok(Self { acls })
     }
 }
