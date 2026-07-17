@@ -5,13 +5,12 @@
 //!
 //! The ACL rules are stored in the context after being lowered into positional field predicates
 //! (see [`crate::context`]), so the human-readable field values are reconstructed here from the raw
-//! bytes of each predicate. This relies on the field layout of the match keys defined in
+//! bytes of each predicate. This relies on the field layout of the `AclKey` match key defined in
 //! `context.rs`:
 //!
-//!    - `IpsPortsTuple`: src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port (TCP/UDP tables)
-//!    - `IpsProtoTuple`: src_vni, dst_vni, proto, src_ip, dst_ip             (the "other" table)
+//!    - `AclKey`: proto, src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port
 //!
-//! If those layouts change, the decoding below must be updated accordingly.
+//! If that layout changes, the decoding below must be updated accordingly.
 
 use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
@@ -39,17 +38,13 @@ impl Display for AclTables {
         writeln!(f, "IPv4:")?;
         {
             let mut w = indented(f).with_str("  ");
-            fmt_ref_table(&mut w, "TCP", &self.v4.tcp, Layout::Ports)?;
-            fmt_ref_table(&mut w, "UDP", &self.v4.udp, Layout::Ports)?;
-            fmt_ref_table(&mut w, "other", &self.v4.other, Layout::Proto)?;
+            fmt_ref_table(&mut w, &self.v4)?;
         }
 
         writeln!(f, "IPv6:")?;
         {
             let mut w = indented(f).with_str("  ");
-            fmt_ref_table(&mut w, "TCP", &self.v6.tcp, Layout::Ports)?;
-            fmt_ref_table(&mut w, "UDP", &self.v6.udp, Layout::Ports)?;
-            fmt_ref_table(&mut w, "other", &self.v6.other, Layout::Proto)?;
+            fmt_ref_table(&mut w, &self.v6)?;
         }
 
         writeln!(f, "default actions:")?;
@@ -68,57 +63,32 @@ impl Display for AclTables {
     }
 }
 
-/// The positional field layout of the reference table being dumped, so the decoding below reads
-/// the right predicate for each column.
-#[derive(Clone, Copy)]
-enum Layout {
-    /// `IpsPortsTuple` (TCP/UDP tables): src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port.
-    Ports,
-    /// `IpsProtoTuple` (the "other" table): src_vni, dst_vni, proto, src_ip, dst_ip.
-    Proto,
-}
-
-/// Format a single reference table as a labelled, numbered list of rules indented under that label.
+/// Format a single reference table as a numbered list of rules. The decoding reads each rule's
+/// predicates by position, following the `AclKey` layout in `context.rs`:
+/// proto, src_vni, dst_vni, src_ip, dst_ip, src_port, dst_port.
 fn fmt_ref_table<W: Write, K: MatchKey>(
     w: &mut W,
-    label: &str,
     table: &ReferenceTable<K, LookupResult>,
-    layout: Layout,
 ) -> fmt::Result {
-    writeln!(w, "{label}:")?;
-    let mut w = indented(w).with_str("  ");
     if table.is_empty() {
         return writeln!(w, "(none)");
     }
     for (idx, rule) in table.rules().iter().enumerate() {
         let fields = rule.fields();
         let result = rule.action();
-        let src_vni = decode_vni(fields.first());
-        let dst_vni = decode_vni(fields.get(1));
+        let proto = decode_proto(fields.first());
+        let src_vni = decode_vni(fields.get(1));
+        let dst_vni = decode_vni(fields.get(2));
+        let src_ip = decode_prefix(fields.get(3));
+        let dst_ip = decode_prefix(fields.get(4));
+        let src_ports = decode_ports(fields.get(5));
+        let dst_ports = decode_ports(fields.get(6));
         let log = if result.log { ", log" } else { "" };
-        match layout {
-            Layout::Ports => {
-                let src_ip = decode_prefix(fields.get(2));
-                let dst_ip = decode_prefix(fields.get(3));
-                let src_ports = decode_ports(fields.get(4));
-                let dst_ports = decode_ports(fields.get(5));
-                writeln!(
-                    w,
-                    "[{idx}] VPC {src_vni} -> VPC {dst_vni} | src {src_ip}:{src_ports} | dst {dst_ip}:{dst_ports} | {:?} ({:?}{log})",
-                    result.action, result.scope
-                )?;
-            }
-            Layout::Proto => {
-                let proto = decode_proto(fields.get(2));
-                let src_ip = decode_prefix(fields.get(3));
-                let dst_ip = decode_prefix(fields.get(4));
-                writeln!(
-                    w,
-                    "[{idx}] VPC {src_vni} -> VPC {dst_vni} | proto {proto} | src {src_ip} | dst {dst_ip} | {:?} ({:?}{log})",
-                    result.action, result.scope
-                )?;
-            }
-        }
+        writeln!(
+            w,
+            "[{idx}] VPC {src_vni} -> VPC {dst_vni} | proto {proto} | src {src_ip}:{src_ports} | dst {dst_ip}:{dst_ports} | {:?} ({:?}{log})",
+            result.action, result.scope
+        )?;
     }
     Ok(())
 }
@@ -145,17 +115,17 @@ fn decode_prefix(predicate: Option<&FieldPredicate>) -> String {
     }
 }
 
-/// Decode an IP protocol number stored as a 1-byte range. A full range renders as `any`, an exact
-/// match as the single protocol number.
+/// Decode an IP protocol stored as a 1-byte bitmask predicate. A zero mask (wildcard) renders as
+/// `any`, a full mask as the single protocol number.
 fn decode_proto(predicate: Option<&FieldPredicate>) -> String {
-    match predicate.and_then(FieldPredicate::as_range) {
-        Some(([lo], [hi])) => {
-            if *lo == 0 && *hi == u8::MAX {
+    match predicate.and_then(FieldPredicate::as_mask) {
+        Some(([value], [mask])) => {
+            if *mask == 0 {
                 "any".to_string()
-            } else if lo == hi {
-                lo.to_string()
+            } else if *mask == u8::MAX {
+                value.to_string()
             } else {
-                format!("{lo}-{hi}")
+                format!("{value}&{mask:#04x}")
             }
         }
         _ => "?".to_string(),
@@ -184,7 +154,7 @@ fn decode_ports(predicate: Option<&FieldPredicate>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{decode_ports, decode_prefix, decode_proto, decode_vni};
-    use match_action::{Erased, ExactSpec, IntoBackendField, PrefixSpec, RangeSpec};
+    use match_action::{Erased, ExactSpec, IntoBackendField, MaskSpec, PrefixSpec, RangeSpec};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -223,14 +193,14 @@ mod tests {
     }
 
     #[test]
-    fn decode_proto_handles_any_exact_and_range() {
-        let any = IntoBackendField::<Erased>::into_backend_field(RangeSpec::new(0u8, u8::MAX));
+    fn decode_proto_handles_any_and_exact() {
+        let any = IntoBackendField::<Erased>::into_backend_field(MaskSpec::new(0u8, 0u8));
         assert_eq!(decode_proto(Some(&any)), "any");
 
-        let exact = IntoBackendField::<Erased>::into_backend_field(RangeSpec::new(1u8, 1u8));
-        assert_eq!(decode_proto(Some(&exact)), "1");
+        let tcp = IntoBackendField::<Erased>::into_backend_field(MaskSpec::new(6u8, u8::MAX));
+        assert_eq!(decode_proto(Some(&tcp)), "6");
 
-        let range = IntoBackendField::<Erased>::into_backend_field(RangeSpec::new(1u8, 132u8));
-        assert_eq!(decode_proto(Some(&range)), "1-132");
+        let udp = IntoBackendField::<Erased>::into_backend_field(MaskSpec::new(17u8, u8::MAX));
+        assert_eq!(decode_proto(Some(&udp)), "17");
     }
 }

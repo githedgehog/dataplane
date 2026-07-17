@@ -7,7 +7,7 @@ use super::vpcpeering::ValidatedManifest;
 use crate::ConfigError;
 use crate::utils::normalize;
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
-use match_action::RangeSpec;
+use match_action::MaskSpec;
 use net::ip::NextHeader;
 use tracing::debug;
 
@@ -30,13 +30,18 @@ pub enum AclProtoMatch {
 const TCP: u8 = NextHeader::TCP.as_u8();
 const UDP: u8 = NextHeader::UDP.as_u8();
 
-impl From<AclProtoMatch> for RangeSpec<u8> {
+/// Lower a protocol match to a `(value, mask)` bitmask predicate on the 1-byte protocol key field.
+/// A specific protocol matches exactly (`mask 0xff`); `Any` wildcards the field (`mask 0x00`), so a
+/// single key field expresses "any protocol" without fanning rules across per-protocol tables. This
+/// is also what lets the protocol byte be the rte_acl-mandated 1-byte first field (a `#[mask]` byte
+/// lowers to the same `Bitmask` field type as `#[exact]`).
+impl From<AclProtoMatch> for MaskSpec<u8> {
     fn from(proto: AclProtoMatch) -> Self {
         match proto {
-            AclProtoMatch::Tcp => RangeSpec::new(TCP, TCP),
-            AclProtoMatch::Udp => RangeSpec::new(UDP, UDP),
-            AclProtoMatch::Other(p) => RangeSpec::new(p, p),
-            AclProtoMatch::Any => RangeSpec::new(0, u8::MAX),
+            AclProtoMatch::Tcp => MaskSpec::new(TCP, u8::MAX),
+            AclProtoMatch::Udp => MaskSpec::new(UDP, u8::MAX),
+            AclProtoMatch::Other(p) => MaskSpec::new(p, u8::MAX),
+            AclProtoMatch::Any => MaskSpec::new(0, 0),
         }
     }
 }

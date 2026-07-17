@@ -9,11 +9,9 @@ use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
 use lookup::Lookup;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
-use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MatchKey, RangeSpec};
-use net::ip::NextHeader;
+use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MaskSpec, MatchKey, RangeSpec};
 use net::vxlan::Vni;
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::error;
 
@@ -34,13 +32,12 @@ struct PeeringAclRule {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct PeeringAclRuleSet {
-    tcp_v4: Vec<PeeringAclRule>,
-    udp_v4: Vec<PeeringAclRule>,
-    other_v4: Vec<PeeringAclRule>,
-
-    tcp_v6: Vec<PeeringAclRule>,
-    udp_v6: Vec<PeeringAclRule>,
-    other_v6: Vec<PeeringAclRule>,
+    // All rules for a given IP version live in one ordered list. The protocol is carried in the key
+    // (a `#[mask]` byte), so there is no per-protocol table split and no need to duplicate an
+    // `Any`-protocol rule across protocols. Insertion order is preserved, which is what gives
+    // first-match precedence at lookup time.
+    v4: Vec<PeeringAclRule>,
+    v6: Vec<PeeringAclRule>,
 
     default_actions: HashMap<(Vni, Vni), AclAction>,
 }
@@ -96,24 +93,11 @@ impl PeeringAclRuleSet {
         template_rule.dst_ip_range = dst.map(|pwop| pwop.prefix());
         template_rule.src_port_range = src.and_then(|pwop| pwop.ports().map(|p| p.into()));
         template_rule.dst_port_range = dst.and_then(|pwop| pwop.ports().map(|p| p.into()));
-        match (template_rule.proto, template_rule.is_ipv4) {
-            (AclProtoMatch::Tcp, true) => self.tcp_v4.push(template_rule),
-            (AclProtoMatch::Udp, true) => self.udp_v4.push(template_rule),
-            (AclProtoMatch::Other(_), true) => self.other_v4.push(template_rule),
-            (AclProtoMatch::Any, true) => {
-                self.udp_v4.push(template_rule.clone());
-                self.tcp_v4.push(template_rule.clone());
-                self.other_v4.push(template_rule);
-            }
-
-            (AclProtoMatch::Tcp, false) => self.tcp_v6.push(template_rule),
-            (AclProtoMatch::Udp, false) => self.udp_v6.push(template_rule),
-            (AclProtoMatch::Other(_), false) => self.other_v6.push(template_rule),
-            (AclProtoMatch::Any, false) => {
-                self.udp_v6.push(template_rule.clone());
-                self.tcp_v6.push(template_rule.clone());
-                self.other_v6.push(template_rule);
-            }
+        // The protocol is a key field (not a table selector), so a rule only splits by IP version.
+        if template_rule.is_ipv4 {
+            self.v4.push(template_rule);
+        } else {
+            self.v6.push(template_rule);
         }
     }
 }
@@ -156,12 +140,25 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 //
 // This is where source rules are lowered into ACL field predicates
 // (`into_backend_fields::<RuleBackend>()`). Switching the reference backend for a hardware backend
-// means changing `RuleBackend` here (and the table types in `PeeringEndsTables`).
+// means changing `RuleBackend` here (and the table types in `AclTables`).
 
 type RuleBackend = Erased;
 
+/// A single ACL match key: protocol, VPC pair, address pair, and port pair.
+///
+/// `proto` is a `#[mask]` byte on purpose. rte_acl requires the first field to be a single byte,
+/// and a bitmask byte both satisfies that and lets one field express either an exact protocol
+/// (`mask 0xff`) or "any protocol" (`mask 0x00`). Carrying the protocol in the key -- rather than
+/// in the table identity -- collapses what used to be six per-protocol tables into one table per
+/// IP version, and removes the need to duplicate an `Any` rule across protocols.
+///
+/// Ports are only meaningful for TCP/UDP; config validation forbids port matching on other
+/// protocols, so non-TCP/UDP rules always carry a wildcard port range and a portless packet looks
+/// up with port `0`.
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(super) struct IpsPortsTuple<I> {
+pub(super) struct AclKey<I> {
+    #[mask]
+    proto: u8,
     #[exact]
     src_vni: u32,
     #[exact]
@@ -176,8 +173,9 @@ pub(super) struct IpsPortsTuple<I> {
     dst_port_range: u16,
 }
 
-impl<I> IpsPortsTuple<I> {
+impl<I> AclKey<I> {
     fn new(
+        proto: u8,
         src_vni: Vni,
         dst_vni: Vni,
         src_ip: I,
@@ -186,6 +184,7 @@ impl<I> IpsPortsTuple<I> {
         dst_port: Option<u16>,
     ) -> Self {
         Self {
+            proto,
             src_vni: src_vni.as_u32(),
             dst_vni: dst_vni.as_u32(),
             src_ip_range: src_ip,
@@ -194,90 +193,47 @@ impl<I> IpsPortsTuple<I> {
             dst_port_range: dst_port.unwrap_or(0),
         }
     }
-
-    fn predicates(
-        src_vni: Vni,
-        dst_vni: Vni,
-        src_ip_range: Prefix,
-        dst_ip_range: Prefix,
-        src_port_range: RangeSpec<u16>,
-        dst_port_range: RangeSpec<u16>,
-    ) -> Option<Vec<FieldPredicate>> {
-        match (src_ip_range, dst_ip_range) {
-            (Prefix::IPV4(src_ip_range), Prefix::IPV4(dst_ip_range)) => Some(
-                IpsPortsTupleRule {
-                    src_vni: ExactSpec::new(src_vni.as_u32()),
-                    dst_vni: ExactSpec::new(dst_vni.as_u32()),
-                    src_ip_range: src_ip_range.into(),
-                    dst_ip_range: dst_ip_range.into(),
-                    src_port_range,
-                    dst_port_range,
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-            (Prefix::IPV6(src_ip_range), Prefix::IPV6(dst_ip_range)) => Some(
-                IpsPortsTupleRule {
-                    src_vni: ExactSpec::new(src_vni.as_u32()),
-                    dst_vni: ExactSpec::new(dst_vni.as_u32()),
-                    src_ip_range: src_ip_range.into(),
-                    dst_ip_range: dst_ip_range.into(),
-                    src_port_range,
-                    dst_port_range,
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-            _ => None,
-        }
-    }
 }
 
-#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-pub(super) struct IpsProtoTuple<I> {
-    #[exact]
-    src_vni: u32,
-    #[exact]
-    dst_vni: u32,
-    // A range so a single rule can match one protocol (when user specifies a numerical protocol),
-    // or any protocol. For the lookup, the packet obviously supplies its single protocol number.
-    #[range]
-    proto: u8,
-    #[prefix]
-    src_ip_range: I,
-    #[prefix]
-    dst_ip_range: I,
-}
-
-impl<I> IpsProtoTuple<I> {
-    fn predicates(
-        src_vni: Vni,
-        dst_vni: Vni,
-        proto: AclProtoMatch,
-        src_ip_range: Prefix,
-        dst_ip_range: Prefix,
-    ) -> Option<Vec<FieldPredicate>> {
-        match (src_ip_range, dst_ip_range) {
-            (Prefix::IPV4(src_ip_range), Prefix::IPV4(dst_ip_range)) => Some(
-                IpsProtoTupleRule {
-                    src_vni: ExactSpec::new(src_vni.as_u32()),
-                    dst_vni: ExactSpec::new(dst_vni.as_u32()),
-                    proto: proto.into(),
-                    src_ip_range: src_ip_range.into(),
-                    dst_ip_range: dst_ip_range.into(),
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-            (Prefix::IPV6(src_ip_range), Prefix::IPV6(dst_ip_range)) => Some(
-                IpsProtoTupleRule {
-                    src_vni: ExactSpec::new(src_vni.as_u32()),
-                    dst_vni: ExactSpec::new(dst_vni.as_u32()),
-                    proto: proto.into(),
-                    src_ip_range: src_ip_range.into(),
-                    dst_ip_range: dst_ip_range.into(),
-                }
-                .into_backend_fields::<RuleBackend>(),
-            ),
-            _ => None,
-        }
+/// Lower a single rule to backend field predicates for the concrete IP version of its prefixes.
+/// Returns `None` if the source and destination prefixes disagree on IP version, which the config
+/// validation already rules out for a well-formed peering.
+fn rule_predicates(
+    proto: AclProtoMatch,
+    src_vni: Vni,
+    dst_vni: Vni,
+    src_ip_range: Prefix,
+    dst_ip_range: Prefix,
+    src_port_range: RangeSpec<u16>,
+    dst_port_range: RangeSpec<u16>,
+) -> Option<Vec<FieldPredicate>> {
+    let proto: MaskSpec<u8> = proto.into();
+    match (src_ip_range, dst_ip_range) {
+        (Prefix::IPV4(src_ip_range), Prefix::IPV4(dst_ip_range)) => Some(
+            AclKeyRule {
+                proto,
+                src_vni: ExactSpec::new(src_vni.as_u32()),
+                dst_vni: ExactSpec::new(dst_vni.as_u32()),
+                src_ip_range: src_ip_range.into(),
+                dst_ip_range: dst_ip_range.into(),
+                src_port_range,
+                dst_port_range,
+            }
+            .into_backend_fields::<RuleBackend>(),
+        ),
+        (Prefix::IPV6(src_ip_range), Prefix::IPV6(dst_ip_range)) => Some(
+            AclKeyRule {
+                proto,
+                src_vni: ExactSpec::new(src_vni.as_u32()),
+                dst_vni: ExactSpec::new(dst_vni.as_u32()),
+                src_ip_range: src_ip_range.into(),
+                dst_ip_range: dst_ip_range.into(),
+                src_port_range,
+                dst_port_range,
+            }
+            .into_backend_fields::<RuleBackend>(),
+        ),
+        _ => None,
     }
 }
 
@@ -297,15 +253,17 @@ impl Wildcardable for Ipv6Addr {
     }
 }
 
-// Lower rules into a tuple (prefixes + ports) table.
-fn build_ips_ports_tuple<T: FixedSize + Wildcardable>(
+// Lower a set of rules (already grouped by IP version) into a single table. A missing prefix or
+// port range becomes the wildcard for that field.
+fn build_acl_table<T: FixedSize + Wildcardable>(
     rules: &[PeeringAclRule],
-) -> ReferenceTable<IpsPortsTuple<T>, LookupResult> {
+) -> ReferenceTable<AclKey<T>, LookupResult> {
     let rules = rules
         .iter()
         .filter_map(|rule| {
             Some(RefRule::new(
-                IpsPortsTuple::<T>::predicates(
+                rule_predicates(
+                    rule.proto,
                     rule.src_vni,
                     rule.dst_vni,
                     rule.src_ip_range.unwrap_or_else(T::wildcard),
@@ -326,51 +284,6 @@ fn build_ips_ports_tuple<T: FixedSize + Wildcardable>(
     ReferenceTable::new(rules)
 }
 
-// Lower rules into a tuple (prefixes + proto) table.
-fn build_ips_proto_tuple<T: FixedSize + Wildcardable>(
-    rules: &[PeeringAclRule],
-) -> ReferenceTable<IpsProtoTuple<T>, LookupResult> {
-    let rules = rules
-        .iter()
-        .filter_map(|rule| {
-            Some(RefRule::new(
-                IpsProtoTuple::<T>::predicates(
-                    rule.src_vni,
-                    rule.dst_vni,
-                    rule.proto,
-                    rule.src_ip_range.unwrap_or_else(T::wildcard),
-                    rule.dst_ip_range.unwrap_or_else(T::wildcard),
-                )?,
-                LookupResult {
-                    action: rule.action,
-                    log: rule.log,
-                    scope: rule.scope,
-                },
-            ))
-        })
-        .collect();
-    ReferenceTable::new(rules)
-}
-
-pub(super) trait TupleProto<T> {
-    fn from_tuple_and_proto(tuple: &T, proto: u8) -> Self;
-}
-
-impl<I> TupleProto<IpsPortsTuple<I>> for IpsProtoTuple<I>
-where
-    I: Clone,
-{
-    fn from_tuple_and_proto(tuple: &IpsPortsTuple<I>, proto: u8) -> Self {
-        Self {
-            src_vni: tuple.src_vni,
-            dst_vni: tuple.dst_vni,
-            proto,
-            src_ip_range: tuple.src_ip_range.clone(),
-            dst_ip_range: tuple.dst_ip_range.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct LookupResult {
     pub(super) action: AclAction,
@@ -379,55 +292,27 @@ pub(super) struct LookupResult {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct PeeringAclTables<T, U> {
-    pub(super) tcp: ReferenceTable<T, LookupResult>,
-    pub(super) udp: ReferenceTable<T, LookupResult>,
-    pub(super) other: ReferenceTable<U, LookupResult>,
+pub(super) struct AclTables {
+    pub(super) v4: ReferenceTable<AclKey<Ipv4Addr>, LookupResult>,
+    pub(super) v6: ReferenceTable<AclKey<Ipv6Addr>, LookupResult>,
+    pub(super) default_actions: HashMap<(Vni, Vni), AclAction>,
 }
 
-impl<T, U> Default for PeeringAclTables<T, U>
-where
-    T: MatchKey,
-    U: MatchKey,
-{
+impl Default for AclTables {
     fn default() -> Self {
         Self {
-            tcp: ReferenceTable::empty(),
-            udp: ReferenceTable::empty(),
-            other: ReferenceTable::empty(),
+            v4: ReferenceTable::empty(),
+            v6: ReferenceTable::empty(),
+            default_actions: HashMap::new(),
         }
     }
-}
-
-impl<I> PeeringAclTables<IpsPortsTuple<I>, IpsProtoTuple<I>>
-where
-    I: FixedSize + Wildcardable,
-{
-    fn from_tables(
-        tcp: &[PeeringAclRule],
-        udp: &[PeeringAclRule],
-        other: &[PeeringAclRule],
-    ) -> Self {
-        PeeringAclTables {
-            tcp: build_ips_ports_tuple(tcp),
-            udp: build_ips_ports_tuple(udp),
-            other: build_ips_proto_tuple(other),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub(super) struct AclTables {
-    pub(super) v4: PeeringAclTables<IpsPortsTuple<Ipv4Addr>, IpsProtoTuple<Ipv4Addr>>,
-    pub(super) v6: PeeringAclTables<IpsPortsTuple<Ipv6Addr>, IpsProtoTuple<Ipv6Addr>>,
-    pub(super) default_actions: HashMap<(Vni, Vni), AclAction>,
 }
 
 impl From<PeeringAclRuleSet> for AclTables {
     fn from(context: PeeringAclRuleSet) -> Self {
         Self {
-            v4: PeeringAclTables::from_tables(&context.tcp_v4, &context.udp_v4, &context.other_v4),
-            v6: PeeringAclTables::from_tables(&context.tcp_v6, &context.udp_v6, &context.other_v6),
+            v4: build_acl_table(&context.v4),
+            v6: build_acl_table(&context.v6),
             default_actions: context.default_actions,
         }
     }
@@ -442,37 +327,22 @@ impl From<&ValidatedOverlay> for AclTables {
 // -------------------------------------------------------------------------------------------------
 // Lookup logic
 
-impl<T, U> PeeringAclTables<T, U>
-where
-    T: MatchKey + Clone,
-    U: MatchKey + TupleProto<T>,
-{
-    fn lookup(&self, proto: NextHeader, tuple: &T) -> Option<&LookupResult> {
-        match proto {
-            NextHeader::TCP => self.tcp.lookup(tuple),
-            NextHeader::UDP => self.udp.lookup(tuple),
-            _ => {
-                let proto = proto.as_u8();
-                let proto_tuple = U::from_tuple_and_proto(tuple, proto);
-                self.other.lookup(&proto_tuple)
-            }
-        }
-    }
-}
-
 impl AclTables {
     pub(super) fn lookup(&self, p: &PacketSummary) -> Option<&LookupResult> {
+        let proto = p.proto.as_u8();
         let (src_ports, dst_ports) = p.ports.unzip();
         match (p.src_ip, p.dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let tuple =
-                    IpsPortsTuple::new(p.src_vni, p.dst_vni, src_ip, dst_ip, src_ports, dst_ports);
-                self.v4.lookup(p.proto, &tuple)
+                let key = AclKey::new(
+                    proto, p.src_vni, p.dst_vni, src_ip, dst_ip, src_ports, dst_ports,
+                );
+                self.v4.lookup(&key)
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let tuple =
-                    IpsPortsTuple::new(p.src_vni, p.dst_vni, src_ip, dst_ip, src_ports, dst_ports);
-                self.v6.lookup(p.proto, &tuple)
+                let key = AclKey::new(
+                    proto, p.src_vni, p.dst_vni, src_ip, dst_ip, src_ports, dst_ports,
+                );
+                self.v6.lookup(&key)
             }
             _ => {
                 error!("Found packet with different IP versions for source and destination!");
