@@ -24,7 +24,12 @@ in
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
-  cargo-llvm-cov = prev.cargo-llvm-cov.override override-packages;
+  # We rebuild cargo-llvm-cov only to swap it onto our pinned rust-toolchain;
+  cargo-llvm-cov = (prev.cargo-llvm-cov.override override-packages).overrideAttrs (_: {
+    # the upstream package is already tested in nixpkgs. Its bundled test suite is
+    # sandbox-fragile so we skip tests here.
+    doCheck = false;
+  });
   cargo-nextest = prev.cargo-nextest.override override-packages;
   just = prev.just.override override-packages;
   npins = prev.npins.override { inherit (override-packages) rustPlatform; };
