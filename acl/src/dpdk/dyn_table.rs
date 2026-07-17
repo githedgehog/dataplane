@@ -432,9 +432,11 @@ mod failing_repros {
             offset,
         }
     }
+    use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU32, Ordering};
 
-    static SEQ: AtomicU32 = AtomicU32::new(0);
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
+    static SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
     fn uname(p: &str) -> String {
         format!("{p}_{}", SEQ.fetch_add(1, Ordering::Relaxed))
     }
@@ -503,9 +505,11 @@ mod tests {
 
     dpdk_table_alias!(type FiveTupleTable<A> = FiveTuple);
 
+    use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU32, Ordering};
 
-    static CTX_SEQ: AtomicU32 = AtomicU32::new(0);
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
+    static CTX_SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
     fn unique_name(prefix: &str) -> String {
         format!("{prefix}_{}", CTX_SEQ.fetch_add(1, Ordering::Relaxed))
     }
