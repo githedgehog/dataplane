@@ -15,6 +15,9 @@ use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
+// The real flow-filter links dpdk-sys, which cannot build under miri; it is only used by tests with
+// #[dpdk::with_eal] below. The miri-eligible tests use the local TestFlowFilter mock instead.
+#[cfg(not(miri))]
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
@@ -1058,6 +1061,7 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
+#[cfg(not(miri))]
 #[allow(clippy::too_many_arguments)]
 fn check_packet_with_vpcd_lookup(
     nat: &mut Masquerade,
@@ -1125,6 +1129,7 @@ fn check_packet_with_vpcd_lookup(
     )
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
 #[dpdk::with_eal]
 #[allow(clippy::too_many_lines)]
