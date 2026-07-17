@@ -4,6 +4,7 @@
 #![cfg(feature = "dpdk")]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use core::num::NonZero;
 
@@ -147,7 +148,8 @@ impl ValueGenerator for ShapeMisses {
     }
 }
 
-static CTX_SEQ: AtomicU32 = AtomicU32::new(0);
+// Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
+static CTX_SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
 
 fn unique_name(prefix: &str) -> String {
     format!("{prefix}_{}", CTX_SEQ.fetch_add(1, Ordering::Relaxed))
@@ -208,9 +210,10 @@ where
 #[test]
 #[dpdk::with_eal]
 fn dyn_dpdk_and_reference_agree_on_random_shapes() {
-    static ASSERTED_HITS: AtomicU64 = AtomicU64::new(0);
-    static ASSERTED_MISSES: AtomicU64 = AtomicU64::new(0);
-    static SHAPES_RUN: AtomicU64 = AtomicU64::new(0);
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const
+    static ASSERTED_HITS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static ASSERTED_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static SHAPES_RUN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
     bolero::check!()
         .with_type::<(RawShape, Box<[u8]>, Box<[u8]>)>()
