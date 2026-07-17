@@ -52,7 +52,7 @@
         "owner": "githedgehog",
         "repo": "dplane-plugin"
       },
-      "branch": "master",
+      "branch": "hh-master-10.6",
       "submodules": false,
       "revision": "19d17cdba14bfca79fa6797e8459f217232f906c",
       "url": "https://github.com/githedgehog/dplane-plugin/archive/19d17cdba14bfca79fa6797e8459f217232f906c.tar.gz",
@@ -95,11 +95,11 @@
         "owner": "FRRouting",
         "repo": "frr"
       },
-      "branch": "stable/10.5",
+      "branch": "stable/10.6",
       "submodules": false,
-      "revision": "a7f078b3944904949fb2a1bf348e4cea36e5c0b9",
-      "url": "https://github.com/FRRouting/frr/archive/a7f078b3944904949fb2a1bf348e4cea36e5c0b9.tar.gz",
-      "hash": "sha256-X8vh9JeWe6omWfGtpf5ifywuxYUSkURxYI7s4fbUxnU="
+      "revision": "521748debee7faa4f4c45c19f43a5bc9966ec4c9",
+      "url": "https://github.com/FRRouting/frr/archive/521748debee7faa4f4c45c19f43a5bc9966ec4c9.tar.gz",
+      "hash": "sha256-EA1smpgVtEKkPB07Lz79aj42+HB8IYt5pzcEOJkSBxs="
     },
     "frr-agent": {
       "type": "Git",
@@ -121,11 +121,11 @@
         "owner": "githedgehog",
         "repo": "frr"
       },
-      "branch": "hh-master-10.5",
+      "branch": "hh-master-10.6",
       "submodules": false,
-      "revision": "d6cbff16e2261a7e1a88c6369de9e5c1d1bdb4f7",
-      "url": "https://github.com/githedgehog/frr/archive/d6cbff16e2261a7e1a88c6369de9e5c1d1bdb4f7.tar.gz",
-      "hash": "sha256-dUjnWQFcP+iUcYl1vetWbawL9HZt8FmMzC0cJdUJrxI="
+      "revision": "b2ca1eb04c8746d17f11fe49181d1e2287be1470",
+      "url": "https://github.com/githedgehog/frr/archive/b2ca1eb04c8746d17f11fe49181d1e2287be1470.tar.gz",
+      "hash": "sha256-BsFh/T7VlIravMLA5m/mKjUy8bT9rnmLYzI0g/RX6J8="
     },
     "kopium": {
       "type": "GitRelease",
