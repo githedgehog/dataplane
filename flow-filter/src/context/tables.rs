@@ -25,6 +25,7 @@ use acl::dpdk::lookup::{DpdkAclLookup, MAX_BATCH};
 use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
 #[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
+use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
 use dpdk::acl::{CategoryMask, Priority};
@@ -241,7 +242,11 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-static TABLE_SEQ: AtomicU64 = AtomicU64::new(0);
+// Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const
+// (each instance registers with the loom executor). The atomic itself is still the backend atomic,
+// so fetch_add() stays instrumented; only construction is deferred. On every other backend LazyLock
+// is a thin wrapper over an otherwise-const atomic.
+static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
 /// A process-unique rte_acl context name (rte_acl rejects duplicate names).
 fn table_name(base: &str) -> String {
