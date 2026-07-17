@@ -20,7 +20,7 @@ trace_target!("bmp", LevelFilter::INFO, &[]);
 /// Spawn the BMP server on `handle`, tracked under `mgmt` so it drains
 /// with the rest of mgmt's tasks.
 #[must_use]
-pub fn spawn_background(
+pub fn spawn_bmp_server(
     mgmt: &Subsystem,
     handle: &tokio::runtime::Handle,
     bind: std::net::SocketAddr,

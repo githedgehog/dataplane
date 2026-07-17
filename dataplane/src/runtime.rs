@@ -15,7 +15,7 @@ use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
 
-use routing::{BmpServerParams, RouterParamsBuilder};
+use routing::{BmpServerParams, RouterParamsBuilder, spawn_bmp_server};
 use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
@@ -134,6 +134,15 @@ fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptio
     }
 }
 
+fn start_bmp(
+    mgmt: &lifecycle::Subsystem,
+    mgmt_handle: &tokio::runtime::Handle,
+    bmp_params: &BmpServerParams,
+    dp_status: Arc<RwLock<DataplaneStatus>>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_bmp_server(mgmt, mgmt_handle, bmp_params.bind_addr, dp_status)
+}
+
 // Main signal handling of dataplane occurs here
 fn spawn_signal_handler(
     rt_handle: &tokio::runtime::Handle,
@@ -223,35 +232,37 @@ pub fn main() {
     let sigrx = lifecycle::spawn_signal_catcher(&mgmt_handle, shutdown.root.clone())
         .expect("failed to install signal handler");
 
+    spawn_signal_handler(&mgmt_handle, sigrx, shutdown.root.clone());
+
     spawn_shutdown_watchdog(shutdown.root.clone(), default_deadlines::TOTAL, 124)
         .expect("failed to spawn shutdown watchdog");
 
-    /* router parameters */
+    // start bmp server if indicated via cmd line
+    let _bmp_handle = if let Some(bmp_params) = &bmp_server_params {
+        Some(start_bmp(
+            &shutdown.mgmt,
+            &mgmt_handle,
+            bmp_params,
+            dp_status.clone(),
+        ))
+    } else {
+        None
+    };
+
+    // assemble router parameters
     let mut binding = RouterParamsBuilder::default();
-    let mut rp_builder = binding
+    let rp_builder = binding
         .cli_sock_path(args.cli_sock_path())
         .cpi_sock_path(args.cpi_sock_path())
-        .frr_agent_path(args.frr_agent_path())
-        .dp_status(dp_status.clone());
-
-    if let Some(server) = bmp_server_params {
-        rp_builder = rp_builder.bmp(server);
-    }
+        .frr_agent_path(args.frr_agent_path());
 
     let Ok(router_params) = rp_builder.build() else {
         error!("Bad router configuration");
         panic!("Bad router configuration");
     };
 
-    let mut setup = start_router(
-        &shutdown.mgmt,
-        &mgmt_handle,
-        &shutdown.router,
-        router_params,
-    )
-    .expect("failed to start router");
-
-    spawn_signal_handler(&mgmt_handle, sigrx, shutdown.root.clone());
+    // start router
+    let mut setup = start_router(&shutdown.router, router_params).expect("failed to start router");
 
     spawn_metrics(
         &shutdown.metrics,
@@ -336,8 +347,6 @@ pub fn main() {
 
     let exit_code = i32::from(shutdown.is_fatal());
 
-    // Router::stop()'s BMP abort needs mgmt_runtime live, so stop router
-    // before shutting the runtime down.
     setup.router.stop();
     mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
 
@@ -347,5 +356,6 @@ pub fn main() {
             Err(e) => error!("Pyroscope stop failed: {e}"),
         }
     }
+    info!("Dataplane shutdown completed");
     std::process::exit(exit_code);
 }

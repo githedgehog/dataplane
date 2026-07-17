@@ -43,6 +43,7 @@ pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
 pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
+pub use bmp::spawn_bmp_server;
 pub use router::ctl::RouterCtlSender;
 pub use router::{BmpServerParams, CliSources, Router, RouterParams, RouterParamsBuilder};
 
