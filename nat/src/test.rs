@@ -3,7 +3,9 @@
 
 //! NAT tests
 
-#![cfg(test)]
+// All tests use #[dpdk::with_eal] that links the real flow-filter (and thus dpdk-sys), which cannot
+// build on the miri cross target.
+#![cfg(all(test, not(miri)))]
 
 use super::*;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};

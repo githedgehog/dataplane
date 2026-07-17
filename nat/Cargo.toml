@@ -37,9 +37,7 @@ shuttle = { workspace = true, optional = true }
 [dev-dependencies]
 # internal
 config = { workspace = true }
-dpdk = { workspace = true, features = ["test"] }
 fixin = { workspace = true }
-flow-filter = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
@@ -53,3 +51,9 @@ tracing-test = { workspace = true, features = [] }
 
 [target.'cfg(not(miri))'.dev-dependencies]
 shuttle = { workspace = true, features = [] }
+
+# Dependencies below pull in dpdk-sys, whose build cannot run on the miri cross target. Only
+# #[dpdk::with_eal] tests use them, and those are gated with #[cfg(not(miri))], so keep the deps out
+# of the miri dependency graph entirely.
+dpdk = { workspace = true, features = ["test"] }
+flow-filter = { workspace = true }
