@@ -5,14 +5,14 @@
 
 use netgauze_bgp_pkt::BgpMessage;
 use netgauze_bmp_pkt::v3::{
-    BmpMessageValue, PeerDownNotificationMessage, PeerUpNotificationMessage,
-    RouteMonitoringMessage, StatisticsReportMessage,
+    BmpMessageValue, MirroredBgpMessage, PeerDownNotificationMessage, PeerUpNotificationMessage,
+    RouteMirroringMessage, RouteMirroringValue, RouteMonitoringMessage, StatisticsReportMessage,
 };
 use netgauze_bmp_pkt::{BmpMessage, BmpPeerType};
 
 use config::internal::status::{
-    BgpNeighborPrefixes, BgpNeighborSessionState, BgpNeighborStatus, BgpStatus, BgpVrfStatus,
-    DataplaneStatus,
+    BgpMessages, BgpNeighborPrefixes, BgpNeighborSessionState, BgpNeighborStatus, BgpStatus,
+    BgpVrfStatus, DataplaneStatus,
 };
 
 use concurrency::sync::Arc;
@@ -94,6 +94,7 @@ pub async fn handle_bmp_message(
             }
             BmpMessageValue::RouteMonitoring(rm) => on_route_monitoring(&mut status_guard, rm),
             BmpMessageValue::StatisticsReport(sr) => on_statistics(&mut status_guard, sr),
+            BmpMessageValue::RouteMirroring(rm) => on_route_mirroring(&mut status_guard, rm),
             _ => {}
         },
         // V4 not handled yet
@@ -339,12 +340,43 @@ fn on_peer_down(
     None
 }
 
+fn update_msg_counts_from_neigh(msgs: &mut BgpMessages, rm: &RouteMirroringMessage) {
+    let rcv = &mut msgs.received;
+    let mirrored = rm.mirrored();
+    for value in mirrored {
+        if let RouteMirroringValue::BgpMessage(msg) = value
+            && let MirroredBgpMessage::Parsed(m) = msg
+        {
+            match m {
+                // FIXME: FRR docs say "route mirroring is fully implemented,
+                // however BGP OPEN messages are not currently included in route mirroring messages.
+                // Their contents can be extracted from the “peer up” notification for sessions that established successfully."
+                BgpMessage::Open(_) => rcv.open = rcv.open.saturating_add(1),
+
+                // FIXME: we're just counting updates here, but an update may contain many
+                // NLRIs and withdrawn routes.
+                BgpMessage::Update(_) => rcv.update = rcv.update.saturating_add(1),
+
+                BgpMessage::KeepAlive => rcv.keepalive = rcv.keepalive.saturating_add(1),
+                BgpMessage::RouteRefresh(_) => {
+                    rcv.route_refresh = rcv.route_refresh.saturating_add(1);
+                }
+
+                // FIXME: we only count notification messages, ignoring the reason for the
+                // notification, which could provide important info.
+                BgpMessage::Notification(_) => {
+                    rcv.notification = rcv.notification.saturating_add(1);
+                }
+            }
+        }
+    }
+}
+
 fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage) {
     let peer = rm.peer_header();
     if !is_real_bgp_neighbor(peer.peer_type()) {
         return;
     }
-
     let post = post_policy_from_peer_type(peer.peer_type());
     if post {
         return;
@@ -375,6 +407,28 @@ fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage
         "BMP: route-monitoring vrf={} key={} post_policy={} ipv4_received={} ipv4_received_pre={}",
         vrf, key, post, pref.received, pref.received_pre_policy,
     );
+}
+
+fn on_route_mirroring(status: &mut DataplaneStatus, rm: &RouteMirroringMessage) {
+    let peer = rm.peer_header();
+    if !is_real_bgp_neighbor(peer.peer_type()) {
+        return;
+    }
+    let post = post_policy_from_peer_type(peer.peer_type());
+    if post {
+        return;
+    }
+
+    let vrf = vrf_from_peer_header(peer);
+    let key = key_from_peer_header(peer);
+
+    let bgp = ensure_bgp(status);
+    let vrf_s = ensure_vrf(bgp, &vrf);
+    let neigh = ensure_neighbor(vrf_s, &key);
+
+    // count messages received. Mirroring mirrors bgp messages received by the BGP speaker.
+    // RFC 8671 defines adj-rib-out mirroring, but FRR does not implement it.
+    update_msg_counts_from_neigh(&mut neigh.messages, rm);
 }
 
 fn on_statistics(status: &mut DataplaneStatus, sr: &StatisticsReportMessage) {
