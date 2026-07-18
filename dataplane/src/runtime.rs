@@ -14,8 +14,7 @@ use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
-
-use routing::{BmpServerParams, RouterParamsBuilder, spawn_bmp_server};
+use routing::{BmpServerParams, RouterCtlSender, RouterParamsBuilder, spawn_bmp_server};
 use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
@@ -134,8 +133,9 @@ fn start_bmp(
     mgmt_handle: &tokio::runtime::Handle,
     bmp_params: &BmpServerParams,
     dp_status: Arc<RwLock<DataplaneStatus>>,
+    rtr_ctl: RouterCtlSender,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_bmp_server(mgmt, mgmt_handle, bmp_params.bind_addr, dp_status)
+    spawn_bmp_server(mgmt, mgmt_handle, bmp_params.bind_addr, dp_status, rtr_ctl)
 }
 
 // Main signal handling of dataplane occurs here
@@ -248,18 +248,6 @@ pub fn main() {
     spawn_shutdown_watchdog(shutdown.root.clone(), default_deadlines::TOTAL, 124)
         .expect("failed to spawn shutdown watchdog");
 
-    // start bmp server if indicated via cmd line
-    let _bmp_handle = if let Some(bmp_params) = &bmp_server_params {
-        Some(start_bmp(
-            &shutdown.mgmt,
-            &mgmt_handle,
-            bmp_params,
-            dp_status.clone(),
-        ))
-    } else {
-        None
-    };
-
     // assemble router parameters
     let mut binding = RouterParamsBuilder::default();
     let rp_builder = binding
@@ -274,6 +262,20 @@ pub fn main() {
 
     // start router
     let mut setup = start_router(&shutdown.router, router_params).expect("failed to start router");
+
+    // start bmp server if indicated via cmd line. It is fine to start it after the router since no bgp session may be up
+    // until a configuration is applied, and the mgmt is not yet up.
+    let _bmp_handle = if let Some(bmp_params) = &bmp_server_params {
+        Some(start_bmp(
+            &shutdown.mgmt,
+            &mgmt_handle,
+            bmp_params,
+            dp_status.clone(),
+            setup.router.get_ctl_tx(),
+        ))
+    } else {
+        None
+    };
 
     spawn_metrics(
         &shutdown.metrics,
