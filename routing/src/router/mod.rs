@@ -14,7 +14,6 @@ use common::cliprovider::CliDataProvider;
 use derive_builder::Builder;
 use std::fmt::Display;
 use std::path::PathBuf;
-use std::time::Duration;
 use tracing::{debug, error};
 
 // sockets
@@ -36,12 +35,6 @@ use args::DEFAULT_FRR_AGENT_PATH;
 pub struct BmpServerParams {
     /// TCP bind address for the BMP listener
     pub bind_addr: SocketAddr,
-    /// Periodic stats emit interval (milliseconds)
-    pub stats_interval: Duration,
-    /// Optional reconnect/backoff lower bound (milliseconds)
-    pub min_retry: Option<Duration>,
-    /// Optional reconnect/backoff upper bound (milliseconds)
-    pub max_retry: Option<Duration>,
 }
 
 /// Struct to configure router object. N.B we derive a builder type `RouterConfig`

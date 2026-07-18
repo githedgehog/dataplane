@@ -106,22 +106,17 @@ fn process_tracing_cmds(args: &CmdArgs) {
 
 fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
     if args.bmp_enabled() {
-        let bind = args.bmp_address();
+        let bind_addr = args.bmp_address();
         let interval: Duration = args.bmp_interval();
 
-        info!("BMP: enabled, listening on {bind}, interval={:?}", interval);
+        info!("BMP: required. Bind-address: {bind_addr}, interval={interval:?}");
 
         // BMP server (for routing crate)
-        let server = BmpServerParams {
-            bind_addr: bind,
-            stats_interval: interval,
-            min_retry: None,
-            max_retry: None,
-        };
+        let server = BmpServerParams { bind_addr };
 
         // BMP options for FRR (for internal config)
-        let host = bind.ip().to_string();
-        let port = TcpPort::try_from(bind.port()).expect("Invalid BMP port");
+        let host = bind_addr.ip().to_string();
+        let port = TcpPort::try_from(bind_addr.port()).expect("Invalid BMP port");
         let client = BmpOptions::new("bmp1", host, port)
             .set_retry(interval, interval.saturating_mul(4u32))
             .set_stats_interval(interval)
