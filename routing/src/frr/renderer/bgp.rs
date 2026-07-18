@@ -83,6 +83,11 @@ impl Render for BmpOptions {
         }
         cfg += connect;
 
+        // mirror
+        if self.mirror {
+            cfg += " bmp mirror";
+        }
+
         // monitors
         if self.monitor_ipv4_pre {
             cfg += " bmp monitor ipv4 unicast pre-policy";
