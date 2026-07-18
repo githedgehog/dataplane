@@ -278,8 +278,8 @@ impl BgpMessageCounters {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BgpMessages {
-    pub received: Option<BgpMessageCounters>,
-    pub sent: Option<BgpMessageCounters>,
+    pub received: BgpMessageCounters,
+    pub sent: BgpMessageCounters,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -302,7 +302,7 @@ pub struct BgpNeighborStatus {
     pub established_transitions: u64,
     pub last_reset_reason: Option<String>,
     pub last_reset_time: Option<std::time::Instant>, // not in model
-    pub messages: Option<BgpMessages>,
+    pub messages: BgpMessages,
     pub ipv4_unicast_prefixes: Option<BgpNeighborPrefixes>,
     pub ipv6_unicast_prefixes: Option<BgpNeighborPrefixes>,
     pub l2vpn_evpn_prefixes: Option<BgpNeighborPrefixes>,
