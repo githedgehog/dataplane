@@ -82,7 +82,7 @@ impl RouterCtlSender {
             waker: Arc::clone(&self.waker),
         }
     }
-    async fn send_and_wake(&mut self, msg: RouterCtlMsg) -> Result<(), RouterError> {
+    async fn send_and_wake(&self, msg: RouterCtlMsg) -> Result<(), RouterError> {
         self.tx
             .send(msg)
             .await
@@ -95,7 +95,7 @@ impl RouterCtlSender {
         Ok(())
     }
 
-    pub async fn lock(&mut self) -> Result<LockGuard, RouterError> {
+    pub async fn lock(&self) -> Result<LockGuard, RouterError> {
         debug!("Requesting CPI lock...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::Lock(reply_tx);
@@ -111,7 +111,7 @@ impl RouterCtlSender {
         Ok(self.as_lock_guard())
     }
     #[allow(unused)]
-    pub async fn unlock(&mut self) -> Result<(), RouterError> {
+    pub async fn unlock(&self) -> Result<(), RouterError> {
         debug!("Requesting CPI unlock...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::Unlock(reply_tx);
@@ -125,7 +125,7 @@ impl RouterCtlSender {
         };
         result
     }
-    pub async fn configure(&mut self, config: RouterConfig) -> Result<(), RouterError> {
+    pub async fn configure(&self, config: RouterConfig) -> Result<(), RouterError> {
         let genid = config.genid();
         debug!("Requesting router to apply config for gen {genid}...");
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -141,9 +141,7 @@ impl RouterCtlSender {
         };
         result
     }
-    pub async fn get_frr_applied_config(
-        &mut self,
-    ) -> Result<Option<FrrAppliedConfig>, RouterError> {
+    pub async fn get_frr_applied_config(&self) -> Result<Option<FrrAppliedConfig>, RouterError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::GetFrrAppliedConfig(reply_tx);
         self.send_and_wake(msg).await?;
@@ -156,22 +154,22 @@ impl RouterCtlSender {
         };
         Ok(frr_cfg)
     }
-    pub async fn send_config(&mut self, config: Arc<ValidatedGwConfig>) -> Result<(), RouterError> {
+    pub async fn send_config(&self, config: Arc<ValidatedGwConfig>) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::Config(config);
         self.send_and_wake(msg).await
     }
     pub async fn send_config_history(
-        &mut self,
+        &self,
         history: Arc<Vec<GwConfigMeta>>,
     ) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::ConfigHistory(history);
         self.send_and_wake(msg).await
     }
-    pub async fn send_ifevent(&mut self, ev: EthEvent) -> Result<(), RouterError> {
+    pub async fn send_ifevent(&self, ev: EthEvent) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::IfEvent(ev);
         self.send_and_wake(msg).await
     }
-    pub async fn send_bgp_neigh_change(&mut self, ev: BgpNeighEvent) -> Result<(), RouterError> {
+    pub async fn send_bgp_neigh_change(&self, ev: BgpNeighEvent) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::BgpNeighStatus(ev);
         self.send_and_wake(msg).await
     }

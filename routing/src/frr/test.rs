@@ -146,7 +146,7 @@ pub mod tests {
         let router_subsystem =
             lifecycle::Subsystem::new("router", lifecycle::CancellationToken::new());
         let mut router = Router::new(&router_subsystem, router_params, None).unwrap();
-        let mut ctl = router.get_ctl_tx();
+        let ctl = router.get_ctl_tx();
 
         /* start fake frr agent */
         let frr_agent_path = router.get_frr_agent_path().to_str().expect("Bad path");

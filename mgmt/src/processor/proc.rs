@@ -53,10 +53,7 @@ use vpcmap::map::{VpcMap, VpcMapWriter};
 use config::internal::routing::bmp::BmpOptions;
 
 /// Populate FRR status into the dataplane status structure
-pub async fn populate_status_with_frr(
-    status: &mut DataplaneStatus,
-    router_ctl: &mut RouterCtlSender,
-) {
+pub async fn populate_status_with_frr(status: &mut DataplaneStatus, router_ctl: &RouterCtlSender) {
     let mut frr = FrrStatus::new();
 
     if let Ok(Some(FrrAppliedConfig { genid, .. })) = router_ctl.get_frr_applied_config().await {
@@ -173,7 +170,7 @@ impl ConfigProcessor {
             config.meta().store(Arc::from(meta));
         }
         let history = Arc::from(self.config_db.history().clone());
-        let router_ctl = &mut self.proc_params.router_ctl;
+        let router_ctl = &self.proc_params.router_ctl;
         let _ = router_ctl.send_config_history(history).await;
         self.config_db.log();
     }
@@ -356,7 +353,7 @@ impl ConfigProcessor {
         }
 
         // FRR minimal info
-        populate_status_with_frr(&mut status, &mut self.proc_params.router_ctl).await;
+        populate_status_with_frr(&mut status, &self.proc_params.router_ctl).await;
 
         ConfigResponse::GetDataplaneStatus(Box::new(status))
     }
@@ -460,7 +457,7 @@ impl VpcManager<RequiredInformationBase> {
 async fn apply_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
     config: Arc<ValidatedGwConfig>,
-    router_ctl: &mut RouterCtlSender,
+    router_ctl: &RouterCtlSender,
 ) -> ConfigResult {
     let genid = config.genid();
 
@@ -593,7 +590,7 @@ impl ConfigProcessor {
         debug!("Applying config with genid '{genid}'...");
 
         let vpc_mgr = &self.vpc_mgr;
-        let router_ctl = &mut self.proc_params.router_ctl;
+        let router_ctl = &self.proc_params.router_ctl;
         let vpcmapw = &mut self.proc_params.vpcmapw;
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;

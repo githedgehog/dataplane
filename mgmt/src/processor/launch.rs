@@ -90,7 +90,7 @@ async fn k8s_mgmt_init(
 
 async fn interface_event_notify(
     mut rx: tokio::sync::broadcast::Receiver<EthEvent>,
-    mut rtr_ctl: RouterCtlSender,
+    rtr_ctl: RouterCtlSender,
 ) {
     use tokio::sync::broadcast::error::RecvError;
     loop {
