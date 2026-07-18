@@ -47,6 +47,9 @@ pub struct BmpOptions {
     pub monitor_ipv6_pre: bool,
     pub monitor_ipv6_post: bool,
 
+    /// Route mirroring
+    pub mirror: bool,
+
     /// VRFs/views to import into the default BMP instance:
     /// renders as multiple `bmp import-vrf-view <vrf>`
     pub import_vrf_views: Vec<String>,
@@ -66,6 +69,7 @@ impl Default for BmpOptions {
             monitor_ipv4_post: true,
             monitor_ipv6_pre: false,
             monitor_ipv6_post: false,
+            mirror: false,
             import_vrf_views: Vec::new(),
         }
     }
@@ -122,6 +126,12 @@ impl BmpOptions {
     pub fn monitor_ipv6(mut self, pre: bool, post: bool) -> Self {
         self.monitor_ipv6_pre = pre;
         self.monitor_ipv6_post = post;
+        self
+    }
+
+    #[must_use]
+    pub fn mirror(mut self, value: bool) -> Self {
+        self.mirror = value;
         self
     }
 
