@@ -17,6 +17,16 @@ use config::internal::status::{
 
 use tracing::debug;
 
+/// A struct representing a status change of a BGP peering. Most of the information here
+/// comes from `BgpNeighborStatus`.
+pub struct BgpNeighEvent {
+    pub(crate) peer: String,
+    pub(crate) peer_asn: u32,
+    pub(crate) prev: BgpNeighborSessionState, // previous state
+    pub(crate) new: BgpNeighborSessionState,  // new state
+    pub(crate) last_reset_reason: String,
+}
+
 /// Update `DataplaneStatus` from a single BMP message.
 pub fn handle_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
     match msg {

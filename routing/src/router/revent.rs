@@ -4,6 +4,7 @@
 //! Router events and eventlog
 
 use crate::IfState;
+use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
 use config::GenId;
@@ -30,6 +31,8 @@ pub enum RouterEvent {
 
     IfAdmChange(EthEvent, IfState, IfState),
     IfOperChange(EthEvent, IfState, IfState),
+
+    BgpNeighStateChange(BgpNeighEvent),
 }
 
 impl Display for RouterEvent {
@@ -76,6 +79,17 @@ impl Display for RouterEvent {
                     f,
                     "{ifc}: admin state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
                     ev.carrier, ev.carrierup, ev.carrierdown
+                )?;
+            }
+            RouterEvent::BgpNeighStateChange(bgp_ev) => {
+                let peer = &bgp_ev.peer;
+                let peer_asn = bgp_ev.peer_asn;
+                let last_reset_reason = &bgp_ev.last_reset_reason;
+                let prev = bgp_ev.prev;
+                let new = bgp_ev.new;
+                write!(
+                    f,
+                    "Status of BGP peer {peer} (AS {peer_asn}) changed: {prev} -> {new}. Last reset reason: {last_reset_reason}"
                 )?;
             }
         }
