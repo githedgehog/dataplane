@@ -8,6 +8,7 @@ use netgauze_bmp_pkt::BmpMessage;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::RouterCtlSender;
 use crate::bmp::bmp_render;
 
 #[async_trait]
@@ -24,12 +25,13 @@ pub trait BmpHandler: Send + Sync + 'static {
 /// Background BMP handler that updates shared dataplane status.
 pub struct StatusHandler {
     dp_status: Arc<RwLock<DataplaneStatus>>,
+    rtr_ctl: RouterCtlSender,
 }
 
 impl StatusHandler {
     #[must_use]
-    pub fn new(dp_status: Arc<RwLock<DataplaneStatus>>) -> Self {
-        Self { dp_status }
+    pub fn new(dp_status: Arc<RwLock<DataplaneStatus>>, rtr_ctl: RouterCtlSender) -> Self {
+        Self { dp_status, rtr_ctl }
     }
 }
 

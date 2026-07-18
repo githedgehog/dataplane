@@ -5,6 +5,7 @@ pub mod bmp_render;
 pub mod handler;
 pub mod server;
 
+use crate::RouterCtlSender;
 pub use server::{BmpServer, BmpServerConfig};
 
 use concurrency::sync::Arc;
@@ -25,6 +26,7 @@ pub fn spawn_bmp_server(
     handle: &tokio::runtime::Handle,
     bind: std::net::SocketAddr,
     dp_status: Arc<RwLock<DataplaneStatus>>,
+    rtr_ctl: RouterCtlSender,
 ) -> JoinHandle<()> {
     let cancel = mgmt.cancel_token();
     let fut = async move {
@@ -33,7 +35,7 @@ pub fn spawn_bmp_server(
             bind_addr: bind,
             ..Default::default()
         };
-        let srv = BmpServer::new(cfg, handler::StatusHandler::new(dp_status));
+        let srv = BmpServer::new(cfg, handler::StatusHandler::new(dp_status, rtr_ctl));
         tokio::select! {
             () = cancel.cancelled() => {
                 info!("BMP server shutdown requested");
