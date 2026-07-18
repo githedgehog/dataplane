@@ -244,6 +244,13 @@ fn on_peer_up(
         neigh.local_as = u32::from(open.my_as());
     }
 
+    if let BgpMessage::Open(_open) = pu.received_message() {
+        // amend FRR's limitation by increasing the count of opens received
+        // FIXME: this seems to over count the messages received.
+        // TODO: investigate if it is needed
+        // neigh.messages.received.open = neigh.messages.received.open.saturating_add(1);
+    }
+
     debug!(
         "BMP: peer-up vrf={} key={} peer_addr={} prev_state={:?} new_state={:?} peer_as={} local_as={} peer_port={} remote_id={}",
         vrf,
