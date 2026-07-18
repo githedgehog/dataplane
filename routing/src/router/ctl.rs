@@ -16,6 +16,7 @@ use tokio::task;
 use tracing::{debug, error, info, warn};
 
 use crate::RouterError;
+use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
 use crate::interfaces::interface::IfState;
@@ -59,6 +60,7 @@ pub(crate) enum RouterCtlMsg {
     Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
     IfEvent(EthEvent),
+    BgpNeighStatus(BgpNeighEvent),
 }
 
 /// Object to send control messages to the router
@@ -169,6 +171,10 @@ impl RouterCtlSender {
         let msg = RouterCtlMsg::IfEvent(ev);
         self.send_and_wake(msg).await
     }
+    pub async fn send_bgp_neigh_change(&mut self, ev: BgpNeighEvent) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::BgpNeighStatus(ev);
+        self.send_and_wake(msg).await
+    }
 }
 
 /// Handle a lock request for the indicated CPI
@@ -276,6 +282,14 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
     iftw.set_iface_oper_state(ifindex, oper_state);
 }
 
+fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
+    info!(
+        "BGP session with {} (ASN {}) changed {} -> {}",
+        bgp_ev.peer, bgp_ev.peer_asn, bgp_ev.prev, bgp_ev.new
+    );
+    revent!(RouterEvent::BgpNeighStateChange(bgp_ev));
+}
+
 /// Handle requests from the control channel. Since the channel is integrated with the poll loop via a `Waker`
 /// and the `Waker` coalesce multiple readiness events, we drain completely on each call with a loop.
 pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
@@ -293,6 +307,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
             Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
+            Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {
                 error!("Error receiving from ctl channel {e:?}");
