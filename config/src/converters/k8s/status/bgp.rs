@@ -90,11 +90,7 @@ impl TryFrom<&BgpNeighborStatus> for GatewayAgentStatusStateBgpVrfsNeighbors {
     type Error = ToK8sConversionError;
 
     fn try_from(n: &BgpNeighborStatus) -> Result<Self, Self::Error> {
-        let messages = n
-            .messages
-            .as_ref()
-            .map(GatewayAgentStatusStateBgpVrfsNeighborsMessages::try_from)
-            .transpose()?;
+        let messages = GatewayAgentStatusStateBgpVrfsNeighborsMessages::try_from(&n.messages)?;
 
         let ipv4_unicast_prefixes = n
             .ipv4_unicast_prefixes
@@ -120,7 +116,7 @@ impl TryFrom<&BgpNeighborStatus> for GatewayAgentStatusStateBgpVrfsNeighbors {
             l2_vpnevpn_prefixes,
             last_reset_reason: n.last_reset_reason.clone(),
             local_as: Some(n.local_as),
-            messages,
+            messages: Some(messages),
             peer_as: Some(n.peer_as),
             remote_router_id: (!n.remote_router_id.is_empty()).then(|| n.remote_router_id.clone()),
             session_state: Some(n.session_state.into()),
@@ -132,16 +128,13 @@ impl TryFrom<&BgpMessages> for GatewayAgentStatusStateBgpVrfsNeighborsMessages {
     type Error = ToK8sConversionError;
 
     fn try_from(m: &BgpMessages) -> Result<Self, Self::Error> {
-        let received = m
-            .received
-            .as_ref()
-            .map(GatewayAgentStatusStateBgpVrfsNeighborsMessagesReceived::from);
-        let sent = m
-            .sent
-            .as_ref()
-            .map(GatewayAgentStatusStateBgpVrfsNeighborsMessagesSent::from);
+        let received = GatewayAgentStatusStateBgpVrfsNeighborsMessagesReceived::from(&m.received);
+        let sent = GatewayAgentStatusStateBgpVrfsNeighborsMessagesSent::from(&m.sent);
 
-        Ok(GatewayAgentStatusStateBgpVrfsNeighborsMessages { received, sent })
+        Ok(GatewayAgentStatusStateBgpVrfsNeighborsMessages {
+            received: Some(received),
+            sent: Some(sent),
+        })
     }
 }
 
@@ -222,8 +215,8 @@ mod tests {
         };
 
         let messages = BgpMessages {
-            received: Some(msg_counters.clone()),
-            sent: Some(msg_counters),
+            received: msg_counters.clone(),
+            sent: msg_counters,
         };
 
         let prefixes = BgpNeighborPrefixes {
@@ -244,7 +237,7 @@ mod tests {
             established_transitions: 8,
             last_reset_reason: None,
             last_reset_time: None,
-            messages: Some(messages),
+            messages,
             ipv4_unicast_prefixes: Some(prefixes.clone()),
             ipv6_unicast_prefixes: Some(prefixes.clone()),
             l2vpn_evpn_prefixes: Some(prefixes),
