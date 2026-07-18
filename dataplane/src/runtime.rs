@@ -119,7 +119,8 @@ fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptio
         let client = BmpOptions::new("bmp1", host, port)
             .set_retry(interval, interval.saturating_mul(4u32))
             .set_stats_interval(interval)
-            .monitor_ipv4(true, true);
+            .monitor_ipv4(true, true)
+            .mirror(true);
 
         (Some(server), Some(client))
     } else {
