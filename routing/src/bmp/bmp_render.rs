@@ -11,8 +11,8 @@ use netgauze_bmp_pkt::v3::{
 use netgauze_bmp_pkt::{BmpMessage, BmpPeerType};
 
 use config::internal::status::{
-    BgpMessageCounters, BgpMessages, BgpNeighborPrefixes, BgpNeighborSessionState,
-    BgpNeighborStatus, BgpStatus, BgpVrfStatus, DataplaneStatus,
+    BgpNeighborPrefixes, BgpNeighborSessionState, BgpNeighborStatus, BgpStatus, BgpVrfStatus,
+    DataplaneStatus,
 };
 
 use concurrency::sync::Arc;
@@ -243,13 +243,6 @@ fn on_peer_up(
         neigh.local_as = u32::from(open.my_as());
     }
 
-    if neigh.messages.is_none() {
-        neigh.messages = Some(BgpMessages {
-            received: Some(BgpMessageCounters::new()),
-            sent: Some(BgpMessageCounters::new()),
-        });
-    }
-
     debug!(
         "BMP: peer-up vrf={} key={} peer_addr={} prev_state={:?} new_state={:?} peer_as={} local_as={} peer_port={} remote_id={}",
         vrf,
@@ -364,16 +357,10 @@ fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage
     let vrf_s = ensure_vrf(bgp, &vrf);
     let neigh = ensure_neighbor(vrf_s, &key);
 
-    let msgs = neigh.messages.get_or_insert_with(|| BgpMessages {
-        received: Some(BgpMessageCounters::new()),
-        sent: Some(BgpMessageCounters::new()),
-    });
-
     // Count UPDATE messages received (best-effort)
     if let BgpMessage::Update(_) = rm.update_message() {
-        if let Some(rcv) = msgs.received.as_mut() {
-            rcv.update = rcv.update.saturating_add(1);
-        }
+        let rcv = &mut neigh.messages.received;
+        rcv.update = rcv.update.saturating_add(1);
     }
 
     // Minimal prefix counters placeholder (per RM message) — can be upgraded later to real NLRI counting.
@@ -401,12 +388,7 @@ fn on_statistics(status: &mut DataplaneStatus, sr: &StatisticsReportMessage) {
 
     let bgp = ensure_bgp(status);
     let vrf_s = ensure_vrf(bgp, &vrf);
-    let neigh = ensure_neighbor(vrf_s, &key);
-
-    let _ = neigh.messages.get_or_insert_with(|| BgpMessages {
-        received: Some(BgpMessageCounters::new()),
-        sent: Some(BgpMessageCounters::new()),
-    });
+    let _neigh = ensure_neighbor(vrf_s, &key);
 
     debug!(
         "BMP: statistics-report vrf={} key={} (TODO: decode stats later)",
