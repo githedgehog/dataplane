@@ -16,8 +16,8 @@ pub trait BmpHandler: Send + Sync + 'static {
     async fn on_message(&self, peer: std::net::SocketAddr, msg: BmpMessage);
 
     /// Called when a connection terminates (EOF / error).
-    async fn on_disconnect(&self, _peer: std::net::SocketAddr, _reason: &str) {
-        debug!("BMP: connection to {} disconnected", _peer);
+    async fn on_disconnect(&self, peer: std::net::SocketAddr, _reason: &str) {
+        debug!("BMP: connection to {peer} disconnected");
     }
 }
 

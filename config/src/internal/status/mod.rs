@@ -67,6 +67,19 @@ pub enum BgpNeighborSessionState {
     Established,
 }
 
+impl std::fmt::Display for BgpNeighborSessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unset => f.pad("Unset"),
+            Self::Idle => f.pad("Idle"),
+            Self::Connect => f.pad("Connect"),
+            Self::Active => f.pad("Active"),
+            Self::Open => f.pad("Open"),
+            Self::Established => f.pad("Established"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InterfaceStatus {
     pub ifname: String,
