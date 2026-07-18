@@ -300,7 +300,7 @@ pub struct BgpNeighborStatus {
     pub session_state: BgpNeighborSessionState,
     pub connections_dropped: u64,
     pub established_transitions: u64,
-    pub last_reset_reason: String,
+    pub last_reset_reason: Option<String>,
     pub messages: Option<BgpMessages>,
     pub ipv4_unicast_prefixes: Option<BgpNeighborPrefixes>,
     pub ipv6_unicast_prefixes: Option<BgpNeighborPrefixes>,

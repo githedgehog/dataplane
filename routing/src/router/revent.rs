@@ -8,6 +8,7 @@ use crate::bmp::bmp_render::BgpNeighEvent;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
 use config::GenId;
+use config::internal::status::BgpNeighborSessionState;
 use interface_manager::monitor::EthEvent;
 use std::cell::RefCell;
 use std::fmt::Display;
@@ -84,20 +85,24 @@ impl Display for RouterEvent {
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
                 let peer = &bgp_ev.peer;
                 let peer_asn = bgp_ev.peer_asn;
-                let last_reset_reason = &bgp_ev.last_reset_reason;
                 let prev = bgp_ev.prev;
                 let new = bgp_ev.new;
+
                 write!(
                     f,
-                    "Status of BGP peer {peer} (AS {peer_asn}) changed: {prev} -> {new}. Last reset reason: {last_reset_reason}"
+                    "Status of BGP peer {peer} (AS {peer_asn}) changed: {prev} -> {new}"
                 )?;
+                if new != BgpNeighborSessionState::Established {
+                    let last_reset_reason = bgp_ev.last_reset_reason.as_deref().unwrap_or("none");
+                    write!(f, " reason: {last_reset_reason}")?;
+                }
             }
         }
         Ok(())
     }
 }
 
-make_event_log!(ROUTER_EVENTS, RouterEvent, 1000);
+make_event_log!(ROUTER_EVENTS, RouterEvent, 2000);
 
 macro_rules! revent {
     ($item:expr) => {
