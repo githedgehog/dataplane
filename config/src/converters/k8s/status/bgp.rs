@@ -118,8 +118,7 @@ impl TryFrom<&BgpNeighborStatus> for GatewayAgentStatusStateBgpVrfsNeighbors {
             ipv4_unicast_prefixes,
             ipv6_unicast_prefixes,
             l2_vpnevpn_prefixes,
-            last_reset_reason: (!n.last_reset_reason.is_empty())
-                .then(|| n.last_reset_reason.clone()),
+            last_reset_reason: n.last_reset_reason.clone(),
             local_as: Some(n.local_as),
             messages,
             peer_as: Some(n.peer_as),
@@ -243,7 +242,7 @@ mod tests {
             session_state: BgpNeighborSessionState::Established,
             connections_dropped: 7,
             established_transitions: 8,
-            last_reset_reason: "none".to_string(),
+            last_reset_reason: None,
             messages: Some(messages),
             ipv4_unicast_prefixes: Some(prefixes.clone()),
             ipv6_unicast_prefixes: Some(prefixes.clone()),

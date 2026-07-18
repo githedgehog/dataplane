@@ -16,6 +16,7 @@ use config::internal::status::{
 };
 
 use crate::RouterCtlSender;
+use netgauze_bmp_pkt::iana::PeerDownReasonCode;
 use tracing::{debug, error};
 
 /// A struct representing a status change of a BGP peering. Most of the information here
@@ -25,7 +26,7 @@ pub struct BgpNeighEvent {
     pub(crate) peer_asn: u32,
     pub(crate) prev: BgpNeighborSessionState, // previous state
     pub(crate) new: BgpNeighborSessionState,  // new state
-    pub(crate) last_reset_reason: String,
+    pub(crate) last_reset_reason: Option<String>,
 }
 impl BgpNeighEvent {
     #[must_use]
@@ -34,7 +35,7 @@ impl BgpNeighEvent {
         peer_asn: u32,
         prev: BgpNeighborSessionState,
         new: BgpNeighborSessionState,
-        last_reset_reason: String,
+        last_reset_reason: Option<String>,
     ) -> Self {
         Self {
             peer,
@@ -165,7 +166,7 @@ async fn generate_bgp_event(
             neigh.last_reset_reason.clone(),
         );
         if let Err(e) = rtr_ctl.send_bgp_neigh_change(ev).await {
-            error!("Failed to send bgp session event: {e}")
+            error!("Failed to send bgp session event: {e}");
         }
     }
 }
@@ -235,6 +236,24 @@ async fn on_peer_up(
     generate_bgp_event(rtr_ctl, prev_state, neigh).await;
 }
 
+fn pretty(reason: PeerDownReasonCode) -> String {
+    match reason {
+        PeerDownReasonCode::LocalSystemClosedNotificationPduFollows
+        | PeerDownReasonCode::LocalSystemClosedFsmEventFollows
+        | PeerDownReasonCode::LocalSystemClosedTlvDataFollows => "Local system closed".to_string(),
+
+        PeerDownReasonCode::RemoteSystemClosedNotificationPduFollows
+        | PeerDownReasonCode::RemoteSystemClosedNoData => "Remote system closed".to_string(),
+
+        PeerDownReasonCode::PeerDeConfigured => "Peer de-configured".to_string(),
+
+        PeerDownReasonCode::Experimental251 => "Experimental 251".to_string(),
+        PeerDownReasonCode::Experimental252 => "Experimental 252".to_string(),
+        PeerDownReasonCode::Experimental253 => "Experimental 253".to_string(),
+        PeerDownReasonCode::Experimental254 => "Experimental 254".to_string(),
+    }
+}
+
 async fn on_peer_down(
     status: &mut DataplaneStatus,
     pd: &PeerDownNotificationMessage,
@@ -256,6 +275,7 @@ async fn on_peer_down(
 
                 set_neighbor_session_state(neigh, BgpNeighborSessionState::Idle);
                 neigh.connections_dropped = neigh.connections_dropped.saturating_add(1);
+                neigh.last_reset_reason = Some(pretty(pd.reason().get_type()));
 
                 debug!(
                     "BMP: peer-down vrf={} key={} prev_state={:?} new_state={:?} prev_connections_dropped={} new_connections_dropped={}",
