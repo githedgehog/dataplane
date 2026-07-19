@@ -92,7 +92,7 @@ impl AclFilter {
         if let Some(result) = lookup_result {
             let verdict = result.action;
             if result.log {
-                info!("ACL filtering: {summary:?} -> {verdict:?}")
+                info!("ACL filtering: {summary} -> {verdict:?}")
             }
             return verdict;
         }
@@ -111,7 +111,7 @@ impl AclFilter {
             {
                 let verdict = result.action;
                 if result.log {
-                    info!("ACL filtering: {summary:?} -> {verdict:?} (reply from allowed flow)")
+                    info!("ACL filtering: {summary} -> {verdict:?} (reply from allowed flow)")
                 }
                 return verdict;
             }

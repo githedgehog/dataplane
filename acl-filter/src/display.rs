@@ -15,6 +15,7 @@ use common::cliprovider::{CliSource, Heading};
 use std::fmt::{self, Display, Write};
 
 use crate::AclFilterContext;
+use crate::PacketSummary;
 use crate::context::AclTables;
 
 impl CliSource for AclFilterContext {}
@@ -101,6 +102,24 @@ fn fmt_ref_table<W: Write, K: match_action::MatchKey>(
         )?;
     }
     Ok(())
+}
+
+impl Display for PacketSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let (Some(sport), Some(dport)) = self.ports.unzip() {
+            write!(
+                f,
+                "vni:{} -> vni:{}, {}:{} -> {}:{} ({})",
+                self.src_vni, self.dst_vni, self.src_ip, sport, self.dst_ip, dport, self.proto
+            )
+        } else {
+            write!(
+                f,
+                "vni:{} -> vni:{}, {} -> {} ({})",
+                self.src_vni, self.dst_vni, self.src_ip, self.dst_ip, self.proto
+            )
+        }
+    }
 }
 
 /// Decode a VNI stored as a 4-byte big-endian exact-match predicate.
