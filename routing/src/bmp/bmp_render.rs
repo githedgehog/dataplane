@@ -25,7 +25,8 @@ use tracing::{debug, error};
 /// A struct representing a status change of a BGP peering. Most of the information here
 /// comes from `BgpNeighborStatus`.
 pub struct BgpNeighEvent {
-    pub(crate) peer: String,
+    pub(crate) peer_key: String,
+    pub(crate) peer_router_id: String,
     pub(crate) peer_asn: u32,
     pub(crate) prev: BgpNeighborSessionState, // previous state
     pub(crate) new: BgpNeighborSessionState,  // new state
@@ -34,14 +35,16 @@ pub struct BgpNeighEvent {
 impl BgpNeighEvent {
     #[must_use]
     pub fn new(
-        peer: String,
+        peer_key: String,
+        peer_router_id: String,
         peer_asn: u32,
         prev: BgpNeighborSessionState,
         new: BgpNeighborSessionState,
         last_reset_reason: Option<String>,
     ) -> Self {
         Self {
-            peer,
+            peer_key,
+            peer_router_id,
             peer_asn,
             prev,
             new,
@@ -177,12 +180,14 @@ fn post_policy_from_peer_type(pt: BmpPeerType) -> bool {
 /// Otherwise, return `None`
 fn bgp_event(
     prev_state: BgpNeighborSessionState,
+    neigh_key: String,
     neigh: &BgpNeighborStatus,
 ) -> Option<BgpNeighEvent> {
     if prev_state == neigh.session_state {
         return None;
     }
     let ev = BgpNeighEvent::new(
+        neigh_key,
         neigh.remote_router_id.clone(),
         neigh.peer_as,
         prev_state,
@@ -253,7 +258,7 @@ fn on_peer_up(
     );
 
     // generate event (if status changed)
-    bgp_event(prev_state, neigh)
+    bgp_event(prev_state, key, neigh)
 }
 
 fn pretty(reason: PeerDownReasonCode) -> String {
@@ -307,7 +312,7 @@ fn on_peer_down(
                 );
 
                 // generate event (if status changed)
-                return bgp_event(prev_state, neigh);
+                return bgp_event(prev_state, key, neigh);
             }
             debug!(
                 "BMP: peer-down for unknown neighbor: vrf={} key={}",

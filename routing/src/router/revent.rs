@@ -83,14 +83,15 @@ impl Display for RouterEvent {
                 )?;
             }
             RouterEvent::BgpNeighStateChange(bgp_ev) => {
-                let peer = &bgp_ev.peer;
+                let peer_key = &bgp_ev.peer_key;
+                let peer_router_id = &bgp_ev.peer_router_id;
                 let peer_asn = bgp_ev.peer_asn;
                 let prev = bgp_ev.prev;
                 let new = bgp_ev.new;
 
                 write!(
                     f,
-                    "Status of BGP peer {peer} (AS {peer_asn}) changed: {prev} -> {new}"
+                    "Status of BGP peer {peer_key} (id:{peer_router_id} ASN:{peer_asn}) changed: {prev} -> {new}"
                 )?;
                 if new != BgpNeighborSessionState::Established {
                     let last_reset_reason = bgp_ev.last_reset_reason.as_deref().unwrap_or("none");

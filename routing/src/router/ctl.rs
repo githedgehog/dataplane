@@ -282,8 +282,8 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
     info!(
-        "BGP session with {} (ASN {}) changed {} -> {}",
-        bgp_ev.peer, bgp_ev.peer_asn, bgp_ev.prev, bgp_ev.new
+        "BGP session with {} (id:{} ASN:{}) changed {} -> {}",
+        bgp_ev.peer_key, bgp_ev.peer_router_id, bgp_ev.peer_asn, bgp_ev.prev, bgp_ev.new
     );
     revent!(RouterEvent::BgpNeighStateChange(bgp_ev));
 }
