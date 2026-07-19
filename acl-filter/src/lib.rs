@@ -14,6 +14,9 @@ use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 use tracing::{debug, info};
 
+use tracectl::trace_target;
+trace_target!("acl-filter", LevelFilter::INFO, &["pipeline"]);
+
 mod access;
 mod context;
 mod display;

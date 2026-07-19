@@ -12,11 +12,13 @@ concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
 indenter = { workspace = true }
+linkme = { workspace = true }
 lookup = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true, features = ["derive"] }
 net = { workspace = true }
 pipeline = { workspace = true }
+tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
