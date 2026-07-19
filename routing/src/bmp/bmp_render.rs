@@ -15,6 +15,9 @@ use config::internal::status::{
     BgpNeighborStatus, BgpStatus, BgpVrfStatus, DataplaneStatus,
 };
 
+use concurrency::sync::Arc;
+use tokio::sync::RwLock;
+
 use crate::RouterCtlSender;
 use netgauze_bmp_pkt::iana::PeerDownReasonCode;
 use tracing::{debug, error};
@@ -49,10 +52,12 @@ impl BgpNeighEvent {
 
 /// Update `DataplaneStatus` from a single BMP message.
 pub async fn handle_bmp_message(
-    status: &mut DataplaneStatus,
+    dp_status: &Arc<RwLock<DataplaneStatus>>,
     msg: &BmpMessage,
     rtr_ctl: &RouterCtlSender,
 ) {
+    let mut status_guard = dp_status.write().await;
+
     match msg {
         BmpMessage::V3(v) => match v {
             // NOTE: NetGauze uses `Initiation`, not `InitiationMessage`
@@ -62,10 +67,26 @@ pub async fn handle_bmp_message(
             BmpMessageValue::Termination(term) => {
                 debug!("BMP: termination: {:?}", term);
             }
-            BmpMessageValue::PeerUpNotification(pu) => on_peer_up(status, pu, rtr_ctl).await,
-            BmpMessageValue::PeerDownNotification(pd) => on_peer_down(status, pd, rtr_ctl).await,
-            BmpMessageValue::RouteMonitoring(rm) => on_route_monitoring(status, rm),
-            BmpMessageValue::StatisticsReport(sr) => on_statistics(status, sr),
+            BmpMessageValue::PeerUpNotification(pu) => {
+                let event = on_peer_up(&mut status_guard, pu);
+                if let Some(ev) = event {
+                    drop(status_guard); // release lock before sending event
+                    if let Err(e) = rtr_ctl.send_bgp_neigh_change(ev).await {
+                        error!("Failed to send bgp event on peer up: {e}");
+                    }
+                }
+            }
+            BmpMessageValue::PeerDownNotification(pd) => {
+                let event = on_peer_down(&mut status_guard, pd);
+                if let Some(ev) = event {
+                    drop(status_guard); // release lock before sending event
+                    if let Err(e) = rtr_ctl.send_bgp_neigh_change(ev).await {
+                        error!("Failed to send bgp event on peer down: {e}");
+                    }
+                }
+            }
+            BmpMessageValue::RouteMonitoring(rm) => on_route_monitoring(&mut status_guard, rm),
+            BmpMessageValue::StatisticsReport(sr) => on_statistics(&mut status_guard, sr),
             _ => {}
         },
         // V4 not handled yet
@@ -152,34 +173,33 @@ fn post_policy_from_peer_type(pt: BmpPeerType) -> bool {
     }
 }
 
-async fn generate_bgp_event(
-    rtr_ctl: &RouterCtlSender,
+/// Build and return a `BgpNeighEvent` if the status of a neighbor changed.
+/// Otherwise, return `None`
+fn bgp_event(
     prev_state: BgpNeighborSessionState,
     neigh: &BgpNeighborStatus,
-) {
-    if prev_state != neigh.session_state {
-        let ev = BgpNeighEvent::new(
-            neigh.remote_router_id.clone(),
-            neigh.peer_as,
-            prev_state,
-            neigh.session_state,
-            neigh.last_reset_reason.clone(),
-        );
-        if let Err(e) = rtr_ctl.send_bgp_neigh_change(ev).await {
-            error!("Failed to send bgp session event: {e}");
-        }
+) -> Option<BgpNeighEvent> {
+    if prev_state == neigh.session_state {
+        return None;
     }
+    let ev = BgpNeighEvent::new(
+        neigh.remote_router_id.clone(),
+        neigh.peer_as,
+        prev_state,
+        neigh.session_state,
+        neigh.last_reset_reason.clone(),
+    );
+    Some(ev)
 }
 
 #[allow(clippy::map_unwrap_or)]
-async fn on_peer_up(
+fn on_peer_up(
     status: &mut DataplaneStatus,
     pu: &PeerUpNotificationMessage,
-    rtr_ctl: &RouterCtlSender,
-) {
+) -> Option<BgpNeighEvent> {
     let peer = pu.peer_header();
     if !is_real_bgp_neighbor(peer.peer_type()) {
-        return;
+        return None;
     }
 
     let vrf = vrf_from_peer_header(peer);
@@ -233,7 +253,7 @@ async fn on_peer_up(
     );
 
     // generate event (if status changed)
-    generate_bgp_event(rtr_ctl, prev_state, neigh).await;
+    bgp_event(prev_state, neigh)
 }
 
 fn pretty(reason: PeerDownReasonCode) -> String {
@@ -254,14 +274,13 @@ fn pretty(reason: PeerDownReasonCode) -> String {
     }
 }
 
-async fn on_peer_down(
+fn on_peer_down(
     status: &mut DataplaneStatus,
     pd: &PeerDownNotificationMessage,
-    rtr_ctl: &RouterCtlSender,
-) {
+) -> Option<BgpNeighEvent> {
     let peer = pd.peer_header();
     if !is_real_bgp_neighbor(peer.peer_type()) {
-        return;
+        return None;
     }
 
     let vrf = vrf_from_peer_header(peer);
@@ -288,13 +307,12 @@ async fn on_peer_down(
                 );
 
                 // generate event (if status changed)
-                generate_bgp_event(rtr_ctl, prev_state, neigh).await;
-            } else {
-                debug!(
-                    "BMP: peer-down for unknown neighbor: vrf={} key={}",
-                    vrf, key
-                );
+                return bgp_event(prev_state, neigh);
             }
+            debug!(
+                "BMP: peer-down for unknown neighbor: vrf={} key={}",
+                vrf, key
+            );
         } else {
             debug!("BMP: peer-down for unknown vrf: vrf={} key={}", vrf, key);
         }
@@ -304,6 +322,7 @@ async fn on_peer_down(
             vrf, key
         );
     }
+    None
 }
 
 fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage) {
