@@ -243,6 +243,7 @@ mod tests {
             connections_dropped: 7,
             established_transitions: 8,
             last_reset_reason: None,
+            last_reset_time: None,
             messages: Some(messages),
             ipv4_unicast_prefixes: Some(prefixes.clone()),
             ipv6_unicast_prefixes: Some(prefixes.clone()),

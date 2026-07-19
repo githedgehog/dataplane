@@ -16,6 +16,7 @@ use config::internal::status::{
 };
 
 use concurrency::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::RouterCtlSender;
@@ -31,6 +32,7 @@ pub struct BgpNeighEvent {
     pub(crate) prev: BgpNeighborSessionState, // previous state
     pub(crate) new: BgpNeighborSessionState,  // new state
     pub(crate) last_reset_reason: Option<String>,
+    pub(crate) last_downtime: Option<Duration>,
 }
 impl BgpNeighEvent {
     #[must_use]
@@ -41,6 +43,7 @@ impl BgpNeighEvent {
         prev: BgpNeighborSessionState,
         new: BgpNeighborSessionState,
         last_reset_reason: Option<String>,
+        last_downtime: Option<Duration>,
     ) -> Self {
         Self {
             peer_key,
@@ -49,6 +52,7 @@ impl BgpNeighEvent {
             prev,
             new,
             last_reset_reason,
+            last_downtime,
         }
     }
 }
@@ -181,11 +185,12 @@ fn post_policy_from_peer_type(pt: BmpPeerType) -> bool {
 fn bgp_event(
     prev_state: BgpNeighborSessionState,
     neigh_key: String,
-    neigh: &BgpNeighborStatus,
+    neigh: &mut BgpNeighborStatus,
 ) -> Option<BgpNeighEvent> {
     if prev_state == neigh.session_state {
         return None;
     }
+
     let ev = BgpNeighEvent::new(
         neigh_key,
         neigh.remote_router_id.clone(),
@@ -193,6 +198,7 @@ fn bgp_event(
         prev_state,
         neigh.session_state,
         neigh.last_reset_reason.clone(),
+        neigh.last_reset_time.map(|instant| instant.elapsed()),
     );
     Some(ev)
 }
@@ -300,6 +306,7 @@ fn on_peer_down(
                 set_neighbor_session_state(neigh, BgpNeighborSessionState::Idle);
                 neigh.connections_dropped = neigh.connections_dropped.saturating_add(1);
                 neigh.last_reset_reason = Some(pretty(pd.reason().get_type()));
+                neigh.last_reset_time = Some(std::time::Instant::now());
 
                 debug!(
                     "BMP: peer-down vrf={} key={} prev_state={:?} new_state={:?} prev_connections_dropped={} new_connections_dropped={}",
