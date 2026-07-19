@@ -3,5 +3,5 @@
 
 //! Cli
 
-mod display;
+pub(crate) mod display;
 pub(crate) mod handler;

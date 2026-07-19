@@ -5,8 +5,10 @@
 
 use crate::IfState;
 use crate::bmp::bmp_render::BgpNeighEvent;
+use crate::cli::display::PrettyDuration;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
+
 use config::GenId;
 use config::internal::status::BgpNeighborSessionState;
 use interface_manager::monitor::EthEvent;
@@ -96,6 +98,9 @@ impl Display for RouterEvent {
                 if new != BgpNeighborSessionState::Established {
                     let last_reset_reason = bgp_ev.last_reset_reason.as_deref().unwrap_or("none");
                     write!(f, " reason: {last_reset_reason}")?;
+                } else if let Some(downtime) = &bgp_ev.last_downtime {
+                    let downtime = PrettyDuration::new(*downtime);
+                    write!(f, " (downtime of {downtime})")?;
                 }
             }
         }
