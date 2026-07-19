@@ -38,10 +38,6 @@ impl StatusHandler {
 #[async_trait]
 impl BmpHandler for StatusHandler {
     async fn on_message(&self, _peer: std::net::SocketAddr, msg: BmpMessage) {
-        {
-            let mut guard = self.dp_status.write().await;
-            bmp_render::handle_bmp_message(&mut guard, &msg, &self.rtr_ctl).await;
-        }
-        debug!("BMP: released dataplane status write guard after handling message");
+        bmp_render::handle_bmp_message(&self.dp_status, &msg, &self.rtr_ctl).await;
     }
 }
