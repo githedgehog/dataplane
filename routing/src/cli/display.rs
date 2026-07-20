@@ -592,29 +592,42 @@ impl Display for IfTableAddress<'_> {
 //========================= Rmac Store ================================//
 macro_rules! RMAC_TBL_FMT {
     () => {
-        " {:<5} {:<20} {:<18}"
+        " {:<5} {:<20} {:<18} {:<8}"
     };
 }
 fn fmt_rmac_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
         "{}",
-        format_args!(RMAC_TBL_FMT!(), "vni", "address", "mac")
+        format_args!(RMAC_TBL_FMT!(), "vni", "address", "mac", "status")
     )
 }
 
 impl Display for RmacEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let valid = if self.is_stale() { "stale" } else { "ok" };
         write!(
             f,
             "{}",
-            format_args!(RMAC_TBL_FMT!(), self.vni.as_u32(), self.address, self.mac)
+            format_args!(
+                RMAC_TBL_FMT!(),
+                self.vni.as_u32(),
+                self.address,
+                self.mac,
+                valid
+            )
         )
     }
 }
 impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!("Router macs ({})", self.len())).fmt(f)?;
+        Heading(format!(
+            "Router macs (entries: {} stale: {})",
+            self.len(),
+            self.stale()
+        ))
+        .fmt(f)?;
+
         fmt_rmac_heading(f)?;
         for rmac in self.values() {
             writeln!(f, "{rmac}")?;

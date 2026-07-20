@@ -567,6 +567,13 @@ pub(crate) fn start_rio(
 
             /* check stale timeout. If expired, remove stale routes */
             rio.check_stale_timeout(&mut db);
+
+            /* remove stale router mac entries (if aged). If rmacs were deleted, refresh the
+            fibs for the vrfs with the corresponding vnis */
+            let vnis = db.rmac_store.flush_stale_rmacs();
+            if !vnis.is_empty() {
+                db.vrftable.refresh_fibs_by_vni(&vnis, &db.rmac_store);
+            }
         }
     };
     let handle = thread::Builder::new()
