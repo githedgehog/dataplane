@@ -124,45 +124,114 @@ mod test {
 
     // Reserved IP 0.0.0.0/32 in ips should be rejected
     #[test]
-    #[ignore = "TODO: validation for reserved IPs not yet implemented"]
     fn test_reserved_ipv4_zero_rejected() {
-        let expose = VpcExpose::empty().ip("0.0.0.0/32".into());
-        assert!(expose.validate().is_err());
+        let result = VpcExpose::empty().ip("0.0.0.0/32".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
     // Reserved IP ::/128 in ips should be rejected
     #[test]
-    #[ignore = "TODO: validation for reserved IPs not yet implemented"]
     fn test_reserved_ipv6_zero_rejected() {
-        let expose = VpcExpose::empty().ip("::/128".into());
-        assert!(expose.validate().is_err());
+        let result = VpcExpose::empty().ip("::/128".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
     // Reserved IP 255.255.255.255/32 in as_range should be rejected
     #[test]
-    #[ignore = "TODO: validation for reserved IPs not yet implemented"]
     fn test_reserved_ipv4_broadcast_rejected() {
-        let expose = VpcExpose::empty()
+        let result = VpcExpose::empty()
+            .make_masquerade(None)
+            .unwrap()
             .ip("10.0.0.1/32".into())
             .as_range("255.255.255.255/32".into())
-            .unwrap();
-        assert!(expose.validate().is_err());
+            .unwrap()
+            .validate();
+        // Assert the exact class so this hits "limited broadcast", not "reserved (240.0.0.0/4)".
+        assert!(
+            matches!(&result, Err(ConfigError::SpecialUsePrefix(_, class)) if *class == "limited broadcast"),
+            "{result:?}"
+        );
     }
 
     // Multicast prefix 224.0.0.0/4 in ips should be rejected
     #[test]
-    #[ignore = "TODO: validation for multicast prefixes not yet implemented"]
     fn test_multicast_prefix_rejected() {
-        let expose = VpcExpose::empty().ip("224.0.0.0/4".into());
-        assert!(expose.validate().is_err());
+        let result = VpcExpose::empty().ip("224.0.0.0/4".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
     // Loopback prefix 127.0.0.0/8 in ips should be rejected
     #[test]
-    #[ignore = "TODO: validation for loopback prefixes not yet implemented"]
     fn test_loopback_prefix_rejected() {
-        let expose = VpcExpose::empty().ip("127.0.0.0/8".into());
-        assert!(expose.validate().is_err());
+        let result = VpcExpose::empty().ip("127.0.0.0/8".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
+    }
+
+    // IPv4 link-local 169.254.0.0/16 (and any host within it) should be rejected
+    #[test]
+    fn test_ipv4_link_local_rejected() {
+        let result = VpcExpose::empty().ip("169.254.1.2/32".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
+    }
+
+    // IPv6 link-local fe80::/10 (and any host within it) should be rejected
+    #[test]
+    fn test_ipv6_link_local_rejected() {
+        let result = VpcExpose::empty().ip("fe80::1/128".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
+    }
+
+    // IPv6 loopback ::1/128 should be rejected
+    #[test]
+    fn test_ipv6_loopback_rejected() {
+        let result = VpcExpose::empty().ip("::1/128".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
+    }
+
+    // IPv6 multicast ff00::/8 (and any host within it) should be rejected
+    #[test]
+    fn test_ipv6_multicast_rejected() {
+        let result = VpcExpose::empty().ip("ff02::1/128".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
+    }
+
+    // A broad allowed prefix can be split by exclusions into a fragment that is wholly reserved.
+    // Since special-use validation happens on the effective (post-exclusion) set, that fragment
+    // must still be rejected. Here 224.0.0.0/3 minus 240.0.0.0/4 collapses to multicast 224.0.0.0/4.
+    #[test]
+    fn test_reserved_fragment_after_exclusion_rejected() {
+        let result = VpcExpose::empty()
+            .ip("224.0.0.0/3".into())
+            .not("240.0.0.0/4".into())
+            .validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
     // Port 0 in port range should be rejected
@@ -174,33 +243,56 @@ mod test {
 
     // --- 0.0.0.0/0 and ::/0 prefixes ---
 
-    // Note that it's not clear yet whether these prefixes should be allowed once we reject 0.0.0.0
-    // (and possibly prefixes containing it).
+    // Reserved ranges are matched by overlap, so a broad prefix that merely *contains* a reserved
+    // block is rejected too. Use a `default` expose (or exclude the reserved sub-blocks) to express
+    // "everything".
 
-    // Root prefix 0.0.0.0/0 in ips is legal (but semantically different from a "default" expose)
+    // Root prefix 0.0.0.0/0 in ips is rejected: it overlaps reserved blocks.
     #[test]
-    fn test_root_v4_in_ips_passes() {
-        let expose = VpcExpose::empty().ip("0.0.0.0/0".into());
-        assert!(expose.validate().is_ok());
+    fn test_root_v4_in_ips_rejected() {
+        let result = VpcExpose::empty().ip("0.0.0.0/0".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
-    // Root prefix ::/0 in ips is legal (IPv6 variant)
+    // Root prefix ::/0 in ips is rejected (IPv6 variant).
     #[test]
-    fn test_root_v6_in_ips_passes() {
-        let expose = VpcExpose::empty().ip("::/0".into());
-        assert!(expose.validate().is_ok());
+    fn test_root_v6_in_ips_rejected() {
+        let result = VpcExpose::empty().ip("::/0".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
-    // Root prefix 0.0.0.0/0 in as_range is legal
+    // Root prefix 0.0.0.0/0 in as_range is rejected: a NAT pool must not contain reserved addresses.
     #[test]
-    fn test_root_v4_in_as_range_passes() {
-        let expose = VpcExpose::empty()
+    fn test_root_v4_in_as_range_rejected() {
+        let result = VpcExpose::empty()
             .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/8".into())
             .as_range("0.0.0.0/0".into())
-            .unwrap();
-        assert!(expose.validate().is_ok());
+            .unwrap()
+            .validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
+    }
+
+    // A prefix that *contains* a reserved block (here multicast) but is not wholly inside any single
+    // block is still rejected, because matching is by overlap.
+    #[test]
+    fn test_reserved_containing_prefix_rejected() {
+        // 224.0.0.0/3 contains multicast 224.0.0.0/4 but is not wholly inside any single block.
+        let result = VpcExpose::empty().ip("224.0.0.0/3".into()).validate();
+        assert!(
+            matches!(result, Err(ConfigError::SpecialUsePrefix(..))),
+            "{result:?}"
+        );
     }
 
     // Root prefix 0.0.0.0/0 in nots is rejected - not illegal per-se, but excludes all available

@@ -11,7 +11,7 @@ use crate::external::GenId;
 use crate::external::overlay::vpc::VpcId;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
-use lpm::prefix::{PrefixWithOptionalPorts, PrefixWithPortsSize};
+use lpm::prefix::{Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
 use net::eth::mac::Mac;
 use thiserror::Error;
 
@@ -68,6 +68,10 @@ pub enum ConfigError {
     OverlappingPrefixes(PrefixWithOptionalPorts, PrefixWithOptionalPorts),
     #[error("Inconsistent IP version in VpcExpose: {0}")]
     InconsistentIpVersion(Box<VpcExpose>),
+    #[error(
+        "Prefix {0} overlaps a special-use/reserved range ({1}) and cannot be used in a VpcExpose"
+    )]
+    SpecialUsePrefix(Prefix, &'static str),
     #[error("Invalid ACL configuration: {0}")]
     InvalidAcl(String),
     // NAT-specific
