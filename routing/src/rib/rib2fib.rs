@@ -29,7 +29,7 @@ impl Nhop {
             match self.key.ifindex {
                 Some(if_index) => instructions.push(PktInstruction::Local(if_index)),
                 None => {
-                    warn!("packet is locally destined but has no target interface index: dropping");
+                    warn!("Unknown ifindex for local next-hop. Will set action drop");
                     instructions.push(PktInstruction::Drop);
                 }
             }

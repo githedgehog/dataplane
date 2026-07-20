@@ -256,7 +256,7 @@ impl RpcOperation for Rmac {
         let Ok(rmac) = RmacEntry::try_from(self) else {
             return RpcResultCode::Failure;
         };
-        rmac_store.del_rmac_entry(&rmac);
+        rmac_store.invalidate_rmac_entry(&rmac);
         RpcResultCode::Ok
     }
 }
