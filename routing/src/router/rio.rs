@@ -459,6 +459,13 @@ pub(crate) fn start_rio(
 
             /* handle control-channel messages */
             handle_ctl_msg(&mut rio, &mut db);
+
+            /* remove stale router mac entries (if aged). If rmacs were deleted, refresh the
+            fibs for the vrfs with the corresponding vnis */
+            let vnis = db.rmac_store.flush_stale_rmacs();
+            if !vnis.is_empty() {
+                db.vrftable.refresh_fibs_by_vni(&vnis, &db.rmac_store);
+            }
         }
     };
     let handle = thread::Builder::new()
