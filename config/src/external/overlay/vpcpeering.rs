@@ -11,8 +11,58 @@ use crate::utils::{
 use concurrency::sync::LazyLock;
 use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::time::Duration;
 use tracing::warn;
+
+/// Reserved prefixes that are never valid tenant endpoints, with the reason they are rejected.
+static SPECIAL_USE_PREFIXES: LazyLock<Vec<(Prefix, &'static str)>> = LazyLock::new(|| {
+    [
+        ("0.0.0.0/8", "unspecified (0.0.0.0/8)"),
+        ("127.0.0.0/8", "loopback"),
+        ("169.254.0.0/16", "link-local"),
+        ("224.0.0.0/4", "multicast"),
+        // Listed before 240.0.0.0/4 so the more specific match wins for 255.255.255.255.
+        ("255.255.255.255/32", "limited broadcast"),
+        ("240.0.0.0/4", "reserved (240.0.0.0/4)"),
+        ("::/128", "unspecified (::/128)"),
+        ("::1/128", "loopback"),
+        ("fe80::/10", "link-local"),
+        ("ff00::/8", "multicast"),
+    ]
+    .into_iter()
+    .map(|(cidr, class)| {
+        let Ok(prefix) = Prefix::from_str(cidr) else {
+            unreachable!("SPECIAL_USE_PREFIXES entries must be valid prefixes")
+        };
+        (prefix, class)
+    })
+    .collect()
+});
+
+/// Returns the reason a prefix is reserved (it overlaps a special-use block), or `None` if it is
+/// usable. Does not itself reject anything; see [`reject_special_use`].
+///
+/// Overlap, not containment: a prefix is rejected if it holds *any* reserved address, so broad
+/// prefixes such as the root `0.0.0.0/0` (which contain reserved blocks) are rejected too. Use a
+/// `default` expose or exclude the reserved sub-blocks to express "everything".
+fn special_use_class(prefix: &Prefix) -> Option<&'static str> {
+    SPECIAL_USE_PREFIXES
+        .iter()
+        .find(|(special, _)| special.collides_with(prefix))
+        .map(|(_, class)| *class)
+}
+
+/// Reject any prefix in `prefixes` that overlaps a reserved range.
+fn reject_special_use(prefixes: &PrefixPortsSet) -> ConfigResult {
+    for prefix_with_ports in prefixes {
+        let prefix = prefix_with_ports.prefix();
+        if let Some(class) = special_use_class(&prefix) {
+            return Err(ConfigError::SpecialUsePrefix(prefix, class));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStaticNat;
@@ -340,6 +390,15 @@ impl VpcExpose {
         if let Some(nat) = &mut clone.nat {
             normalize(&mut nat.as_range);
         }
+
+        // Reject reserved prefixes in the effective (post-exclusion) sets. Checking here rather than
+        // on the raw input means a reserved prefix that is entirely removed by an exclusion is not
+        // flagged, since it can never become an endpoint.
+        reject_special_use(&clone.ips)?;
+        if let Some(nat) = &clone.nat {
+            reject_special_use(&nat.as_range)?;
+        }
+
         let collapsed_expose = ValidatedExpose {
             default: clone.default,
             ips: clone.ips,
