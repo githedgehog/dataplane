@@ -290,7 +290,7 @@ fn is_allowed(packet: &Packet<TestBuffer>) -> bool {
 }
 
 fn is_denied(packet: &Packet<TestBuffer>) -> bool {
-    packet.get_done() == Some(DoneReason::Filtered)
+    packet.get_done() == Some(DoneReason::AclDropped)
 }
 
 // -------------------------------------------------------------------------------------------------

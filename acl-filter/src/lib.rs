@@ -57,7 +57,7 @@ impl AclFilter {
         if self.lookup(&summary, valid_flow) == AclAction::Deny {
             debug!("{nfi}: Packet rejected by ACLs, dropping packet");
             packet.invalidate_flows();
-            packet.done(DoneReason::Filtered);
+            packet.done(DoneReason::AclDropped);
         }
     }
 
