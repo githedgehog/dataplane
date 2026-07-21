@@ -150,7 +150,6 @@ impl Worker {
     pub fn start<'scope>(
         &mut self,
         scope: &'scope thread::Scope<'scope, '_>,
-        thread_builder: thread::Builder,
         interfaces: &[Kif],
     ) -> Result<thread::ScopedJoinHandle<'scope, Result<(), io::Error>>, io::Error> {
         let id = self.id;
@@ -160,6 +159,7 @@ impl Worker {
         let cancel = subsystem.cancel_token();
         let interfaces = interfaces.to_vec();
 
+        let thread_builder = thread::Builder::new().name(format!("dp-worker-{id}"));
         let handle_res = thread_builder.spawn_scoped(scope, move || {
             info!(worker = id, "Worker started");
 

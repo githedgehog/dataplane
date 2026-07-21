@@ -53,9 +53,8 @@ impl DriverKernel {
         info!("Spawning {num_workers} workers");
         (0..num_workers)
             .map(|wid| {
-                let builder = thread::Builder::new().name(format!("dp-worker-{wid}"));
                 Worker::new(wid, num_workers, setup_pipeline, workers_subsystem.clone())
-                    .start(scope, builder, interfaces)
+                    .start(scope, interfaces)
             })
             .collect()
     }
