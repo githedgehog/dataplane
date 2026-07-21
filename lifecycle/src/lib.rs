@@ -18,6 +18,9 @@
     clippy::panic
 )]
 
+pub mod utils;
+pub use utils::ExitGuard;
+
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicBool, Ordering};
 use std::future::Future;

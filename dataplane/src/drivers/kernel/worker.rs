@@ -161,38 +161,10 @@ impl Worker {
         let interfaces = interfaces.to_vec();
 
         let handle_res = thread_builder.spawn_scoped(scope, move || {
-            // Drop-guard so panic-unwind, early-`?`, and unexpected normal
-            // return all reach report_fatal. Disarmed on the graceful path.
-            struct ExitGuard {
-                subsystem: Subsystem,
-                id: WorkerId,
-                armed: bool,
-            }
-            impl ExitGuard {
-                fn disarm(&mut self) {
-                    self.armed = false;
-                }
-            }
-            impl Drop for ExitGuard {
-                fn drop(&mut self) {
-                    if !self.armed || self.subsystem.is_cancelled() {
-                        return;
-                    }
-                    let reason = if std::thread::panicking() {
-                        format!("worker {} panicked", self.id)
-                    } else {
-                        format!("worker {} exited unexpectedly", self.id)
-                    };
-                    self.subsystem.report_fatal(&reason);
-                }
-            }
-
             info!(worker = id, "Worker started");
-            let mut guard = ExitGuard {
-                subsystem: subsystem.clone(),
-                id,
-                armed: true,
-            };
+
+            // create exit guard for this worker
+            let mut guard = subsystem.new_exit_guard(format!("worker {id}"), true);
 
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
