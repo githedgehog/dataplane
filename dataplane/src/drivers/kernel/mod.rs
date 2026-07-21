@@ -16,6 +16,8 @@ mod fanout;
 mod kif;
 mod worker;
 
+use worker::WorkerId;
+
 use concurrency::sync::Arc;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
@@ -48,8 +50,10 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
         interfaces: &[Kif],
-    ) -> Result<Vec<thread::ScopedJoinHandle<'scope, Result<(), std::io::Error>>>, std::io::Error>
-    {
+    ) -> Result<
+        Vec<thread::ScopedJoinHandle<'scope, Result<WorkerId, (WorkerId, std::io::Error)>>>,
+        std::io::Error,
+    > {
         info!("Spawning {num_workers} workers");
         (0..num_workers)
             .map(|wid| {
@@ -93,18 +97,19 @@ impl DriverKernel {
             setup_pipeline,
             interfaces.as_slice(),
         )?;
+        debug_assert_eq!(worker_handles.len(), num_workers);
 
         // The supervisor just joins-and-logs; worker fatal reporting is
         // handled by the `ExitGuard` inside each worker thread.
         let supervisor_builder =
             thread::Builder::new().name("kernel-driver-supervisor".to_string());
+
         supervisor_builder.spawn_scoped(scope, move || {
-            for (id, handle) in worker_handles.into_iter().enumerate() {
-                info!("Waiting for worker {id} to finish");
+            for handle in worker_handles.into_iter() {
                 match handle.join() {
-                    Ok(Ok(())) => info!("Worker {id} exited successfully"),
-                    Ok(Err(e)) => error!("Worker {id} exited with error: {e}"),
-                    Err(panic_payload) => error!("Worker {id} panicked: {panic_payload:?}"),
+                    Ok(Ok(id)) => info!("Worker {id} exited successfully"),
+                    Ok(Err((id, e))) => error!("Worker {id} exited with error: {e}"),
+                    Err(panic_payload) => error!("Worker panicked: {panic_payload:?}"),
                 }
             }
             info!("All workers joined");

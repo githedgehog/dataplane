@@ -28,7 +28,7 @@ use crate::drivers::kernel::kif::Kif;
 
 use tracing::{debug, error, info, trace, warn};
 
-type WorkerId = usize;
+pub(crate) type WorkerId = usize;
 
 struct WorkerInterfaceWriter {
     if_name: String,
@@ -148,14 +148,15 @@ impl Worker {
 
     #[allow(clippy::too_many_lines)]
     pub fn start<'scope>(
-        &mut self,
+        self,
         scope: &'scope thread::Scope<'scope, '_>,
         interfaces: &[Kif],
-    ) -> Result<thread::ScopedJoinHandle<'scope, Result<(), io::Error>>, io::Error> {
+    ) -> Result<thread::ScopedJoinHandle<'scope, Result<WorkerId, (WorkerId, io::Error)>>, io::Error>
+    {
         let id = self.id;
         let total_workers = self.total_workers;
-        let setup = self.setup_pipeline.clone();
-        let subsystem = self.subsystem.clone();
+        let setup = self.setup_pipeline;
+        let subsystem = self.subsystem;
         let cancel = subsystem.cancel_token();
         let interfaces = interfaces.to_vec();
 
@@ -168,7 +169,8 @@ impl Worker {
 
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .build_local(tokio::runtime::LocalOptions::default())?;
+                .build_local(tokio::runtime::LocalOptions::default())
+                .map_err(|e| (id, e))?;
 
             let result = rt.block_on(async {
                 let (readers, if_table) =
@@ -271,8 +273,8 @@ impl Worker {
                 guard.disarm();
             }
             info!(worker = id, "worker exited");
-            result?;
-            Ok::<(), io::Error>(())
+            result.map_err(|e| (id, e))?;
+            Ok::<WorkerId, (WorkerId, io::Error)>(id)
         })?;
         Ok(handle_res)
     }
