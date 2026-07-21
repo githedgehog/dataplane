@@ -2,11 +2,10 @@
 // Copyright Open Network Fabric Authors
 #![allow(unsafe_code)]
 
-// `std::sync::Arc` (not `concurrency::sync::Arc`) is required: the built classifier is coerced to
-// `Arc<dyn DynClassifier>` below, and loom/shuttle's `Arc` does not implement `CoerceUnsized`. The
-// classifier is immutable and shared read-only, so it is not a model-checked synchronization point.
-// The suppression is a trailing comment so it stays on the `std::sync` line if rustfmt reorders.
 use core::num::NonZero;
+// std::sync::Arc (not concurrency::sync::Arc) is required: the built classifier is coerced to
+// Arc<dyn DynClassifier> below, and loom/shuttle's Arc does not implement CoerceUnsized. The
+// classifier is immutable and shared read-only, so it is not a model-checked synchronization point.
 use std::sync::Arc; // nosemgrep: rust-no-direct-std-sync-import
 
 use dpdk::acl::{
