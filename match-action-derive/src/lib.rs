@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::collections::HashSet;
-
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
-use quote::{ToTokens, quote};
+use proc_macro2::{Span, TokenStream as TokenStream2};
+use quote::quote;
 use syn::{
-    Attribute, Data, DeriveInput, Field, Fields, GenericParam, Ident, Type, TypeParamBound,
-    parse_macro_input, parse_quote, spanned::Spanned,
+    Attribute, Data, DeriveInput, Field, Fields, GenericParam, Ident, Type, parse_macro_input,
+    parse_quote, spanned::Spanned,
 };
 fn match_action_crate_path() -> TokenStream2 {
     match crate_name("dataplane-match-action") {
@@ -123,21 +121,20 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ));
     }
 
-    // Only bound the type parameters actually used by a match field with
-    // `FixedSize`. Parameters used solely by phantom fields keep whatever
-    // compile-time constraint the author wrote and must not be forced to be
-    // `FixedSize` -- forcing it would defeat the point of a phantom marker.
-    let mut match_param_idents: HashSet<String> = HashSet::new();
-    for field in &fields {
-        collect_idents(field.ty.to_token_stream(), &mut match_param_idents);
-    }
+    // Bound each match field's type -- not its type parameters -- with
+    // `FixedSize`: that is exactly what the generated code needs, and it is what
+    // a wrapper type such as `Wrapper<T>: FixedSize` satisfies even when `T`
+    // itself is not `FixedSize`. Bounding the parameters instead would reject
+    // such a wrapper, and would also force `FixedSize` onto parameters used
+    // solely by phantom fields, defeating the point of a phantom marker.
     let mut generics = input.generics.clone();
-    let fixed_size_bound: TypeParamBound = parse_quote!(#crate_path::FixedSize);
-    for param in &mut generics.params {
-        if let GenericParam::Type(tp) = param
-            && match_param_idents.contains(&tp.ident.to_string())
-        {
-            tp.bounds.push(fixed_size_bound.clone());
+    {
+        let where_clause = generics.make_where_clause();
+        for field in &fields {
+            let ty = &field.ty;
+            where_clause
+                .predicates
+                .push(parse_quote!(#ty: #crate_path::FixedSize));
         }
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -311,7 +308,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #as_key_impl
         };
         #[derive(::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
-        #key_vis struct #rule_ident #generics {
+        #key_vis struct #rule_ident #generics #where_clause {
             #(#rule_fields,)*
             #(#rule_phantom_fields,)*
         }
@@ -407,18 +404,4 @@ fn parse_field_role(field: &Field) -> syn::Result<FieldRole> {
         return Ok(FieldRole::Phantom);
     }
     Ok(FieldRole::Match(found.map_or(Kind::Exact, |(k, _)| k)))
-}
-
-/// Collect every identifier appearing in `tokens` into `out`. Used to discover
-/// which generic type parameters a match field's type actually references.
-fn collect_idents(tokens: TokenStream2, out: &mut HashSet<String>) {
-    for tt in tokens {
-        match tt {
-            TokenTree::Ident(id) => {
-                out.insert(id.to_string());
-            }
-            TokenTree::Group(g) => collect_idents(g.stream(), out),
-            _ => {}
-        }
-    }
 }
