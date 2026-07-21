@@ -20,8 +20,8 @@ net = { workspace = true, features = [] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# Enable the `reference` backend for this crate's own tests and benches. It is a non-default
-# feature (production links only the rte_acl backend), but the integration tests and benches
+# Enable the "reference" backend for this crate's own tests and benches. It is a non-default feature
+# (production links only the rte_acl backend), but the integration tests and benches
 # differential-test against it, so make it available whenever test/bench targets are built.
 dataplane-acl = { path = ".", features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }

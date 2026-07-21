@@ -176,13 +176,13 @@ pub fn main() {
     };
     init_logging(&args, &gwname);
 
-    // Initialize a minimal EAL as early as possible. The ACL filter builds rte_acl
-    // classifiers when configuration is applied (which happens before any packet driver starts),
-    // and rte_acl needs the EAL memory subsystem up. These are the lightweight, classifier-only
-    // args (no hugepages / no PCI). NOTE: there can be only one `rte_eal_init` per process, so the
-    // real DPDK datapath driver (currently `todo!()`) must eventually take over EAL ownership with
-    // device-appropriate args rather than adding a second init. The guard is held for the life of
-    // the process.
+    // Initialize a minimal EAL as early as possible. Stages such as the ACL filter and the
+    // flow-filter build rte_acl classifiers when configuration is applied (which happens before any
+    // packet driver starts), and rte_acl needs the EAL memory subsystem up. These are the
+    // lightweight, classifier-only args (no hugepages / no PCI). NOTE: there can be only one
+    // `rte_eal_init` per process, so the real DPDK datapath driver (currently `todo!()`) must
+    // eventually take over EAL ownership with device-appropriate args rather than adding a second
+    // init. The guard is held for the life of the process.
     //
     // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
     // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
