@@ -314,7 +314,7 @@ impl Absorb<FibChange> for Fib {
         }
     }
     fn sync_with(&mut self, first: &Self) {
-        assert!(self.id != FibKey::Unset);
+        assert_ne!(self.id, FibKey::Unset);
         assert_eq!(self.id, first.id);
         debug!("Internal LR state for fib {} is now synced", self.id);
     }

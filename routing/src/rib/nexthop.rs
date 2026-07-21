@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use std::option::Option;
 
 use net::interface::InterfaceIndex;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 #[cfg(test)]
@@ -39,6 +40,7 @@ pub struct Nhop {
     pub(crate) resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
+    pub(crate) invalid: Cell<bool>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -167,6 +169,7 @@ impl Nhop {
             resolvers: RefCell::new(Vec::new()),
             instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RefCell::new(FibGroup::new()),
+            invalid: Cell::new(false),
         }
     }
 
@@ -755,7 +758,7 @@ mod tests {
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.1", 1)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
-        println!("{:#?}", &res);
+        println!("{res:#?}");
     }
 
     #[test]
@@ -774,7 +777,7 @@ mod tests {
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.1", 1)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
-        println!("{:#?}", &res);
+        println!("{res:#?}");
     }
 
     #[test]
@@ -808,7 +811,7 @@ mod tests {
         // similar using next-hop store method that looks up the next-hop first
         let res = store.resolve_by_addr(&("7.0.0.1".parse().unwrap()));
         assert!(res.is_some());
-        println!("{:#?}", &res);
+        println!("{res:#?}");
     }
 
     #[traced_test]

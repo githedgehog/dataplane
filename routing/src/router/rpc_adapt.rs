@@ -93,6 +93,7 @@ impl TryFrom<&Rmac> for RmacEntry {
                 error!("Received router mac with invalid vni {}", value.vni);
                 RouterError::VniInvalid(value.vni)
             })?,
+            stale_t: None,
         })
     }
 }

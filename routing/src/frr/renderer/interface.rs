@@ -23,7 +23,7 @@ impl Rendered for InterfaceAddress {
         format!(
             " {} address {}/{}",
             ip_address_type_str(&self.address),
-            &self.address,
+            self.address,
             self.mask_len
         )
     }

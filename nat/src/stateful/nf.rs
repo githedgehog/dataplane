@@ -148,10 +148,7 @@ impl StatefulNat {
             | NatFlowStatus::CHalfClose
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
-            NatFlowStatus::OneWay => {
-                warn!("Unexpected oneway state");
-                None
-            }
+            NatFlowStatus::OneWay => None,
         };
 
         // extend the duration of the flow according to the new status

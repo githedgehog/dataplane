@@ -390,6 +390,17 @@ impl VrfTable {
         }
     }
 
+    //////////////////////////////////////////////////////////////////
+    /// Refresh the fib groups for all vrfs that have a vni in the
+    /// provided set
+    //////////////////////////////////////////////////////////////////
+    pub fn refresh_fibs_by_vni(&mut self, vnis: &[Vni], rstore: &RmacStore) {
+        let (vrfs, vrf0) = self.values_mut_except_default();
+        for vrf in vrfs.filter(|v| v.vni.is_some_and(|vni| vnis.contains(&vni))) {
+            vrf.refresh_fib(rstore, Some(vrf0));
+        }
+    }
+
     /////////////////////////////////////////////////////////////////////////
     // Set/unset stale flag for all routes in all vrfs
     /////////////////////////////////////////////////////////////////////////

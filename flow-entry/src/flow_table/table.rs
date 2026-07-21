@@ -474,7 +474,7 @@ mod tests {
 
             flow_table.insert(flow_info).unwrap();
             let result = flow_table.remove(&flow_key).unwrap();
-            assert!(result.0 == flow_key);
+            assert_eq!(result.0, flow_key);
         }
 
         #[tokio::test]
