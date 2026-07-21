@@ -33,6 +33,7 @@ use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
 use chrono::DateTime;
 use common::cliprovider::{Heading, line};
+
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
@@ -118,6 +119,9 @@ impl Display for NhopKey {
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.key)?;
+        if self.invalid.get() {
+            write!(f, " (INVALID)")?;
+        }
         fmt_nhop_resolvers(f, self, 2)
     }
 }

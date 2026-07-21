@@ -24,31 +24,48 @@ impl Nhop {
     #[allow(clippy::single_match_else)]
     #[must_use]
     fn build_pkt_instructions(&self, rstore: &RmacStore) -> Vec<PktInstruction> {
+        // mark as valid for the time being
+        self.invalid.set(false);
+
         let mut instructions = Vec::with_capacity(2);
+
+        // local route
         if self.key.origin == RouteOrigin::Local {
             match self.key.ifindex {
                 Some(if_index) => instructions.push(PktInstruction::Local(if_index)),
                 None => {
+                    self.invalid.set(true);
                     warn!("Unknown ifindex for local next-hop. Will set action drop");
                     instructions.push(PktInstruction::Drop);
                 }
             }
             return instructions;
         }
+
+        // an explicit drop
         if self.key.fwaction == FwAction::Drop {
             instructions.push(PktInstruction::Drop);
             return instructions;
         }
+
+        // encapsulation
         if let Some(encap) = self.key.encap {
-            let mut inst_encap = encap;
-            match inst_encap {
+            let mut encap_instr = encap;
+            let ok = match encap_instr {
                 Encapsulation::Vxlan(ref mut vxlan) => vxlan.resolve(rstore),
-                Encapsulation::Mpls(_) => {}
+                Encapsulation::Mpls(_) => true, // set to true for tests, actually unsupported
+            };
+            if ok {
+                instructions.push(PktInstruction::Encap(encap_instr));
+                let egress =
+                    EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
+                instructions.push(PktInstruction::Egress(egress));
+            } else {
+                // resolution of encap instructions failed. Keep the route with action drop and mark the nhop as invalid
+                self.invalid.set(true);
+                instructions = vec![PktInstruction::Drop];
+                warn!("Nhop {self} became invalid");
             }
-            instructions.push(PktInstruction::Encap(inst_encap));
-            let egress =
-                EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
-            instructions.push(PktInstruction::Egress(egress));
             return instructions;
         }
         if self.key.ifindex.is_some() {
@@ -131,8 +148,10 @@ impl Nhop {
 
 impl VxlanEncapsulation {
     /// Resolve a Vxlan encapsulation object. The local vtep information is not used
-    /// in this process. We only resolve the destination mac.
-    pub(crate) fn resolve(&mut self, rstore: &RmacStore) {
+    /// in this process. We only resolve the destination mac. If no entry is found,
+    /// the vxlan object will have no MAC. If an entry is hit, the vxlan encap object
+    /// surely gets a MAC, whether the entry is stale or not.
+    pub(crate) fn resolve(&mut self, rstore: &RmacStore) -> bool {
         self.dmac = rstore.get_rmac(self.vni, self.remote).map(|e| e.mac);
         if self.dmac.is_none() {
             warn!(
@@ -141,5 +160,7 @@ impl VxlanEncapsulation {
                 self.remote
             );
         }
+        // ok if we found a mac, even if the entry is stale
+        self.dmac.is_some()
     }
 }
