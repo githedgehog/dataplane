@@ -158,6 +158,18 @@ fn build_filter_v4(acl: Option<Acl>) -> AclFilter {
     build_filter(V1_IPS, V2_IPS, acl)
 }
 
+fn build_filter_v4_masquerade(acl: Option<Acl>) -> AclFilter {
+    acl_filter(&overlay(
+        &[("vpc1", VNI1), ("vpc2", VNI2)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose(V1_IPS)]),
+            ("vpc2", vec![expose_masquerade(V2_IPS, V2_IPS)]),
+            acl,
+        )],
+    ))
+}
+
 // -------------------------------------------------------------------------------------------------
 // ACL rule builders
 
@@ -682,7 +694,7 @@ fn flow_scope_allows_reply_for_allowed_request() {
             pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
         )],
     );
-    let mut filter = build_filter_v4(Some(acl));
+    let mut filter = build_filter_v4_masquerade(Some(acl));
 
     // The request is allowed by the rule directly
     let request = packet(
@@ -763,7 +775,7 @@ fn explicit_deny_rule_drops_reply_despite_matching_flow() {
             ),
         ],
     );
-    let mut filter = build_filter_v4(Some(acl));
+    let mut filter = build_filter_v4_masquerade(Some(acl));
 
     // The request is allowed by the request-direction rule
     let request = packet(

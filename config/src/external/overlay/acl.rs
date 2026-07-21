@@ -4,8 +4,8 @@
 //! Access Control Lists (ACLs)
 
 use super::vpcpeering::ValidatedManifest;
-use crate::ConfigError;
 use crate::utils::normalize;
+use crate::{ConfigError, ConfigResult};
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use match_action::MaskSpec;
 use net::ip::NextHeader;
@@ -182,7 +182,7 @@ impl AclRule {
         &self,
         manifest_left: &ValidatedManifest,
         manifest_right: &ValidatedManifest,
-    ) -> Result<(), ConfigError> {
+    ) -> ConfigResult {
         match (self.from.as_str(), self.to.as_str()) {
             (from, to) if from == manifest_left.name() && to == manifest_right.name() => Ok(()),
             (from, to) if from == manifest_right.name() && to == manifest_left.name() => Ok(()),
@@ -221,6 +221,7 @@ impl AclRule {
             &src_any_ports,
             &dst_any_ports,
         )?;
+        validated_rule.validate_scope(manifest_left, manifest_right)?;
         Ok(validated_rule)
     }
 }
@@ -333,7 +334,7 @@ impl ValidatedAclRule {
         name: &str,
         prefixes_acl: &mut PrefixPortsSet,
         prefixes_manifest: &PrefixPortsSet,
-    ) -> Result<(), ConfigError> {
+    ) -> ConfigResult {
         // If the list of prefixes is empty, it means we match all prefixes from the manifest.
         if prefixes_acl.is_empty() {
             *prefixes_acl = prefixes_manifest.clone();
@@ -365,7 +366,7 @@ impl ValidatedAclRule {
         manifest_right: &ValidatedManifest,
         src_any_ports: &[PortRange],
         dst_any_ports: &[PortRange],
-    ) -> Result<(), ConfigError> {
+    ) -> ConfigResult {
         // A default-only manifest's is_v4()/is_v6() are always false, so fall back to the other side
         let is_v4 = if manifest_left.is_default_only() {
             manifest_right.is_v4()
@@ -386,6 +387,41 @@ impl ValidatedAclRule {
         Self::validate_pattern_coverage(&self.name, &mut self.pattern.dst, &dst_set)?;
 
         Ok(())
+    }
+
+    // TODO: Remove once we support flow tracking for non-NAT and static NAT flows
+    // See https://github.com/githedgehog/dataplane/issues/1625
+    fn validate_scope(
+        &self,
+        manifest_left: &ValidatedManifest,
+        manifest_right: &ValidatedManifest,
+    ) -> ConfigResult {
+        if self.scope() != AclScope::Flow {
+            return Ok(());
+        }
+        // If one side uses masquerade or port forwarding for all exposes, then we're good
+        if manifest_left.valexp().iter().all(|expose| {
+            expose
+                .nat()
+                .is_some_and(|nat| nat.is_masquerade() || nat.is_port_forwarding())
+        }) {
+            return Ok(());
+        }
+        // If the other side uses masquerade or port forwarding for all exposes, then we're good
+        if manifest_right.valexp().iter().all(|expose| {
+            expose
+                .nat()
+                .is_some_and(|nat| nat.is_masquerade() || nat.is_port_forwarding())
+        }) {
+            return Ok(());
+        }
+        // If both sides have at least one prefix without masquerade or port forwarding, the peering
+        // will expose flows that won't get entries in the flow table, and ACLs with "scope: flow"
+        // are not supported
+        Err(ConfigError::InvalidAcl(format!(
+            "ACL rule '{}': At the moment, 'scope: flow' is only supported when all connections in the peering use masquerade or port forwarding",
+            self.name,
+        )))
     }
 }
 
@@ -411,7 +447,7 @@ impl Acl {
         &self.rules
     }
 
-    fn validate_rules_names(&self) -> Result<(), ConfigError> {
+    fn validate_rules_names(&self) -> ConfigResult {
         let mut seen_names = std::collections::HashSet::new();
         for rule in &self.rules {
             if rule.name.is_empty() {
@@ -500,6 +536,20 @@ mod validation_tests {
             .unwrap()
     }
 
+    // Helper: build a validated manifest, exposing the given prefixes with masquerade
+    fn manifest_masquerade(name: &str, ips: &[&str], as_ranges: &[&str]) -> ValidatedManifest {
+        let mut expose = VpcExpose::empty().make_masquerade(None).unwrap();
+        for ip in ips {
+            expose = expose.ip((*ip).into());
+        }
+        for as_range in as_ranges {
+            expose = expose.as_range((*as_range).into()).unwrap();
+        }
+        VpcManifest::with_exposes(name, vec![expose])
+            .validate()
+            .unwrap()
+    }
+
     // Helper: build a validated manifest with only a default expose (no concrete prefixes)
     fn default_manifest(name: &str) -> ValidatedManifest {
         VpcManifest::with_exposes(name, vec![VpcExpose::empty().set_default()])
@@ -545,6 +595,25 @@ mod validation_tests {
 
     // Helper: assemble an AclRule
     fn rule(name: &str, from: &str, to: &str, action: AclAction, pattern: AclPattern) -> AclRule {
+        AclRule {
+            name: name.to_owned(),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            action,
+            pattern,
+            scope: AclScope::Packet,
+            log: false,
+        }
+    }
+
+    // Helper: assemble an AclRule
+    fn rule_scope_flow(
+        name: &str,
+        from: &str,
+        to: &str,
+        action: AclAction,
+        pattern: AclPattern,
+    ) -> AclRule {
         AclRule {
             name: name.to_owned(),
             from: from.to_owned(),
@@ -997,6 +1066,44 @@ mod validation_tests {
                 Some(PortRange::new(443, 443).unwrap())
             )])
         );
+    }
+
+    // =============================================================================================
+    // User ACLs limitation: restriction on "scope: flow"
+    // =============================================================================================
+
+    #[test]
+    fn test_flow_scope_rejected_when_no_flow_tracking() {
+        let left = manifest("VPC-1", &["10.0.0.0/16"]);
+        let right = manifest("VPC-2", &["10.1.0.0/16"]);
+
+        let p = pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Any,
+        );
+        let rule = rule_scope_flow("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+
+        let result = rule.validate(&left, &right);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn test_flow_scope_valid_with_flow_tracking() {
+        let left = manifest("VPC-1", &["10.0.0.0/16"]);
+        let right = manifest_masquerade("VPC-2", &["1.0.0.0/16"], &["10.1.0.0/16"]);
+
+        let p = pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Any,
+        );
+        let rule = rule_scope_flow("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+
+        rule.validate(&left, &right).expect("should validate");
     }
 
     // =============================================================================================
