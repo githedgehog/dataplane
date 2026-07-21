@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 
 use crate::RouterCtlSender;
 use netgauze_bmp_pkt::iana::PeerDownReasonCode;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 /// A struct representing a status change of a BGP peering. Most of the information here
 /// comes from `BgpNeighborStatus`.
@@ -304,10 +304,19 @@ fn on_peer_down(
                 let prev_dropped = neigh.connections_dropped;
 
                 set_neighbor_session_state(neigh, BgpNeighborSessionState::Idle);
-                neigh.connections_dropped = neigh.connections_dropped.saturating_add(1);
-                neigh.last_reset_reason = Some(pretty(pd.reason().get_type()));
-                neigh.last_reset_time = Some(std::time::Instant::now());
-
+                if prev_state == BgpNeighborSessionState::Established {
+                    neigh.connections_dropped = neigh.connections_dropped.saturating_add(1);
+                    neigh.last_reset_reason = Some(pretty(pd.reason().get_type()));
+                    neigh.last_reset_time = Some(std::time::Instant::now());
+                } else {
+                    // we should not get to see this message with current FRR and RFC 7854
+                    // Peer down events are only produced when leaving Established state
+                    info!(
+                        "Bgp session with peer {key} (ASN {}) failed to establish: {}",
+                        neigh.peer_as,
+                        pretty(pd.reason().get_type())
+                    );
+                }
                 debug!(
                     "BMP: peer-down vrf={} key={} prev_state={:?} new_state={:?} prev_connections_dropped={} new_connections_dropped={}",
                     vrf,
