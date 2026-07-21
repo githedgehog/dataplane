@@ -14,7 +14,7 @@ use common::cliprovider::CliDataProvider;
 use derive_builder::Builder;
 use std::fmt::Display;
 use std::path::PathBuf;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 // sockets
 use std::net::SocketAddr;
@@ -159,7 +159,7 @@ impl Router {
         }
         self.resolver.stop();
 
-        debug!("Router '{}' is now stopped", self.name);
+        info!("Router '{}' is now stopped", self.name);
     }
 
     #[must_use]

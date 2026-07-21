@@ -402,25 +402,6 @@ impl Rio {
     }
 }
 
-// Drop-guard so panic-unwind or unexpected loop exit trips
-// report_fatal.
-struct ExitGuard {
-    subsystem: Subsystem,
-}
-impl Drop for ExitGuard {
-    fn drop(&mut self) {
-        if self.subsystem.is_cancelled() {
-            return;
-        }
-        let reason = if std::thread::panicking() {
-            "RIO thread panicked"
-        } else {
-            "RIO thread exited unexpectedly"
-        };
-        self.subsystem.report_fatal(reason);
-    }
-}
-
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 pub(crate) fn start_rio(
     subsystem: &Subsystem,
@@ -441,9 +422,7 @@ pub(crate) fn start_rio(
     /* router IO loop */
     let rio_loop = move || {
         // drop-guard to detect loop termination
-        let _guard = ExitGuard {
-            subsystem: guard_subsystem,
-        };
+        let _guard = guard_subsystem.new_exit_guard("RIO".to_string(), true);
 
         info!("CPI: Listening at {}.", &rio.cp_sock_path);
         info!("CLI: Listening at {}.", &rio.cli_sock_path);
@@ -575,6 +554,7 @@ pub(crate) fn start_rio(
                 db.vrftable.refresh_fibs_by_vni(&vnis, &db.rmac_store);
             }
         }
+        info!("RIO is now exiting");
     };
     let handle = thread::Builder::new()
         .name("routerIO".to_string())
