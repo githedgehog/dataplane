@@ -333,6 +333,7 @@ mod test {
         to: &str,
         action: GatewayAgentPeeringsAclRulesAction,
         r#match: Option<GatewayAgentPeeringsAclRulesMatch>,
+        scope: Option<GatewayAgentPeeringsAclRulesScope>,
     ) -> GatewayAgentPeeringsAclRules {
         GatewayAgentPeeringsAclRules {
             action,
@@ -340,7 +341,7 @@ mod test {
             log: None,
             r#match,
             name: (!name.is_empty()).then(|| name.to_string()),
-            scope: None,
+            scope,
             to: (!to.is_empty()).then(|| to.to_string()),
         }
     }
@@ -433,6 +434,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 None,
+                None,
             ),
         )
         .unwrap();
@@ -450,6 +452,7 @@ mod test {
                     "",
                     GatewayAgentPeeringsAclRulesAction::Allow,
                     None,
+                    None,
                 ),
             )
             .is_ok()
@@ -461,7 +464,14 @@ mod test {
                 &vpc_subnets,
                 "VPC-1",
                 "VPC-2",
-                &rule("r", "", "", GatewayAgentPeeringsAclRulesAction::Allow, None),
+                &rule(
+                    "r",
+                    "",
+                    "",
+                    GatewayAgentPeeringsAclRulesAction::Allow,
+                    None,
+                    None,
+                ),
             )
             .is_err()
         );
@@ -477,6 +487,7 @@ mod test {
                     "VPC-X",
                     "VPC-2",
                     GatewayAgentPeeringsAclRulesAction::Allow,
+                    None,
                     None,
                 ),
             )
@@ -509,6 +520,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(m.clone()),
+                None,
             ),
         )
         .unwrap();
@@ -526,6 +538,7 @@ mod test {
                     "VPC-1",
                     GatewayAgentPeeringsAclRulesAction::Allow,
                     Some(m),
+                    None,
                 ),
             )
             .is_err()
@@ -557,6 +570,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(m),
+                None,
             ),
         );
         assert!(
@@ -589,6 +603,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(m),
+                None,
             ),
         )
         .unwrap();
@@ -622,6 +637,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(ports_only),
+                None,
             ),
         )
         .unwrap();
@@ -646,6 +662,7 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(empty_ports),
+                None,
             ),
         );
         assert!(
@@ -680,6 +697,10 @@ mod test {
                 "VPC-2",
                 GatewayAgentPeeringsAclRulesAction::Allow,
                 Some(m),
+                // "scope: flow" (default scope) not currently supported with the peering
+                // configuration, because there's no masquerade/port forwarding.
+                // See https://github.com/githedgehog/dataplane/issues/1625
+                Some(GatewayAgentPeeringsAclRulesScope::Packet),
             ),
         )
         .unwrap();
@@ -733,12 +754,14 @@ mod test {
                         proto: Some("tcp".to_string()),
                         src: None,
                     }),
+                    None,
                 ),
                 rule(
                     "return",
                     "VPC-2",
                     "VPC-1",
                     GatewayAgentPeeringsAclRulesAction::Allow,
+                    None,
                     None,
                 ),
             ]),
@@ -750,8 +773,8 @@ mod test {
             "VPC-2",
             GatewayAgentPeeringsAclRulesAction::Deny,
             None,
+            Some(GatewayAgentPeeringsAclRulesScope::Packet),
         );
-        rule_with_scope.scope = Some(GatewayAgentPeeringsAclRulesScope::Packet);
         rule_with_scope.log = Some(true);
         let mut acl_with_scope = acl.clone();
         acl_with_scope.rules.as_mut().unwrap().push(rule_with_scope);
