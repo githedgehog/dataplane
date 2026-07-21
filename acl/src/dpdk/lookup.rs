@@ -4,11 +4,11 @@
 
 use core::marker::PhantomData;
 
-// The classifier is immutable after build and shared read-only across pipeline workers; it is not
-// a synchronization point that the concurrency model checkers need to observe. It must be
-// `std::sync::Arc` (not `concurrency::sync::Arc`) because loom/shuttle's `Arc` does not implement
-// `CoerceUnsized`, so `Arc::new(concrete)` cannot coerce to `Arc<dyn DynClassifier>` under those
-// backends. See `acl/src/dpdk/dyn_table.rs` for the coercion site.
+// The classifier is immutable after build and shared read-only across pipeline workers; it is not a
+// synchronization point that the concurrency model checkers need to observe. It must be
+// std::sync::Arc (not concurrency::sync::Arc) because loom/shuttle's Arc does not implement
+// CoerceUnsized, so Arc::new(concrete) cannot coerce to Arc<dyn DynClassifier> under those
+// backends. See acl/src/dpdk/dyn_table.rs for the coercion site.
 use std::sync::Arc; // nosemgrep: rust-no-direct-std-sync-import
 
 use arrayvec::ArrayVec;
