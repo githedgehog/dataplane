@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use std::option::Option;
 
 use net::interface::InterfaceIndex;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 #[cfg(test)]
@@ -39,6 +40,7 @@ pub struct Nhop {
     pub(crate) resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
+    pub(crate) invalid: Cell<bool>,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
@@ -167,6 +169,7 @@ impl Nhop {
             resolvers: RefCell::new(Vec::new()),
             instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RefCell::new(FibGroup::new()),
+            invalid: Cell::new(false),
         }
     }
 
