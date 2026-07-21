@@ -340,3 +340,53 @@ fn phantom_only_generic_param_is_not_bounded_fixed_size() {
         _marker: PhantomData,
     };
 }
+
+#[test]
+fn wrapper_field_bounds_the_field_type_not_its_parameter() {
+    use core::marker::PhantomData;
+
+    // A wrapper that is `FixedSize` for *every* `T`: the parameter is a
+    // compile-time tag only, and the payload has a fixed layout.
+    struct Tag<T>(u32, PhantomData<T>);
+
+    impl<T> Clone for Tag<T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+    impl<T> Copy for Tag<T> {}
+    impl<T> core::fmt::Debug for Tag<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "Tag({})", self.0)
+        }
+    }
+    impl<T> FixedSize for Tag<T> {
+        const SIZE: usize = 4;
+        fn write_be(&self, out: &mut [u8]) {
+            out[..Self::SIZE].copy_from_slice(&self.0.to_be_bytes());
+        }
+    }
+
+    // The derive must require `Tag<T>: FixedSize` (which holds here), not
+    // `T: FixedSize` -- so instantiating with `NotFixed` must compile.
+    #[derive(MatchKey)]
+    #[allow(dead_code)]
+    struct Wrapped<T> {
+        #[exact]
+        tagged: Tag<T>,
+    }
+
+    assert_eq!(<Wrapped<NotFixed>>::N, 1);
+    assert_eq!(<Wrapped<NotFixed>>::KEY_SIZE, 4);
+
+    let key = Wrapped::<NotFixed> {
+        tagged: Tag(0xDEAD_BEEF, PhantomData),
+    };
+    let mut buf = [0u8; 4];
+    key.as_key_into(&mut buf);
+    assert_eq!(buf, 0xDEAD_BEEFu32.to_be_bytes());
+
+    let _rule = WrappedRule::<NotFixed> {
+        tagged: ExactSpec::new(Tag(0xDEAD_BEEF, PhantomData)),
+    };
+}
