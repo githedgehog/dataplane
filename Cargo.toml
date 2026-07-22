@@ -140,7 +140,7 @@ dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.21.0", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main", features = [] }
 futures = { version = "0.3.33", default-features = false, features = [] }
-futures-util = { version = "0.3.32", default-features = false, features = [] }
+futures-util = { version = "0.3.33", default-features = false, features = [] }
 hashbrown = { version = "0.17.1", default-features = false, features = [] }
 hwlocality = { version = "1.0.0-alpha.12", default-features = false, features = [] }
 hyper = { version = "1.10.1", default-features = false, features = [] }
