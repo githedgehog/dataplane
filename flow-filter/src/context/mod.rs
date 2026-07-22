@@ -3,8 +3,6 @@
 
 //! Context table build
 
-#[cfg(test)]
-use crate::NatMode;
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use config::ConfigError;
@@ -17,7 +15,7 @@ mod tests;
 
 pub use tables::FlowFilterContext;
 use tables::PRODUCTION_BACKEND;
-pub(crate) use tables::{LookupInput, Route};
+pub(crate) use tables::{LookupInput, LookupResult};
 
 impl TryFrom<&ValidatedOverlay> for FlowFilterContext {
     type Error = ConfigError;
