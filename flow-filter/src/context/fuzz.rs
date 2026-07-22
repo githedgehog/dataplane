@@ -11,9 +11,11 @@
 
 #![cfg(test)]
 
-use super::tables::{Backend, LookupResult, PeeringTables};
+use super::tables::{Backend, LookupInput, LookupResult, PeeringTables};
 use crate::NatRequirement;
-use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec};
+use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
+use concurrency::sync::LazyLock;
+use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
 use lpm::prefix::{IpPrefix, L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
@@ -143,6 +145,121 @@ fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
 
 // -------------------------------------------------------------------------------------------------
 // Properties.
+
+/// The rte_acl backend agrees with the reference backend on every probe of every generated
+/// overlay -- single lookups and the chunked batch path alike. This is the fuzz form of
+/// `tests::reference_and_dpdk_backends_agree`: it validates the wide-key encoding and the
+/// priority mapping against real rte_acl under configs nobody hand-picked.
+///
+/// Coverage is asserted, not assumed (the acl property suites' pattern): the counters fail the
+/// test if the time-boxed run never exercised full routes, source misses, or destination misses.
+#[test]
+#[dpdk::with_eal]
+fn dpdk_backend_matches_reference_on_generated_overlays() {
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not
+    // const (each instance registers with the loom executor).
+    static ROUTES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static SOURCE_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static DESTINATION_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    bolero::check!()
+        .with_type::<(OverlaySpec, [ProbeSpec; 40])>()
+        .for_each(|(overlay_spec, probe_specs)| {
+            let built = overlay_spec.build();
+            let reference =
+                PeeringTables::build(&built.overlay, Backend::Reference).expect("reference build");
+            let dpdk = PeeringTables::build(&built.overlay, Backend::Dpdk).expect("dpdk build");
+
+            let probes: Vec<Probe> = probe_specs
+                .iter()
+                .map(|p| p.resolve(built.blocks))
+                .collect();
+            let inputs: Vec<LookupInput> = probes
+                .iter()
+                .map(|p| LookupInput {
+                    src_vpcd: p.src_vpcd,
+                    src_ip: p.src_ip,
+                    dst_ip: p.dst_ip,
+                    proto: p.proto,
+                    ports: p.ports,
+                })
+                .collect();
+
+            let mut expected = Vec::with_capacity(probes.len());
+            for probe in &probes {
+                let want = reference.lookup(
+                    probe.src_vpcd,
+                    probe.src_ip,
+                    probe.dst_ip,
+                    probe.proto,
+                    probe.ports,
+                );
+                assert_eq!(
+                    dpdk.lookup(
+                        probe.src_vpcd,
+                        probe.src_ip,
+                        probe.dst_ip,
+                        probe.proto,
+                        probe.ports
+                    ),
+                    want,
+                    "backends disagree on single lookup of {probe:?}\nspec: {overlay_spec:?}",
+                );
+                match want {
+                    LookupResult::Route(_) => ROUTES.fetch_add(1, Ordering::Relaxed),
+                    LookupResult::SourceMiss(_) => SOURCE_MISSES.fetch_add(1, Ordering::Relaxed),
+                    LookupResult::DestinationMiss => {
+                        DESTINATION_MISSES.fetch_add(1, Ordering::Relaxed)
+                    }
+                };
+                expected.push(want);
+            }
+
+            // Batch path: 40 inputs > MAX_BATCH exercises the chunked scatter; every slot must
+            // equal the corresponding single lookup.
+            let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
+            dpdk.lookup_batch(&inputs, &mut out);
+            assert_eq!(
+                out, expected,
+                "dpdk batch != single\nspec: {overlay_spec:?}"
+            );
+
+            // All-miss batch: an unknown source VPC misses stage 1 for every input, so stage 2
+            // runs on an empty key set -- rte_acl classify with zero buffers must be harmless.
+            // 33 inputs of one version make the first chunk a full MAX_BATCH.
+            let all_miss: Vec<LookupInput> = (0..33u8)
+                .map(|i| LookupInput {
+                    src_vpcd: bogus_vpcd(),
+                    src_ip: format!("10.0.0.{i}").parse().unwrap(),
+                    dst_ip: "10.0.0.99".parse().unwrap(),
+                    proto: NextHeader::TCP,
+                    ports: Some((1, 2)),
+                })
+                .collect();
+            let mut out = vec![LookupResult::DestinationMiss; all_miss.len()];
+            dpdk.lookup_batch(&all_miss, &mut out);
+            assert!(
+                out.iter().all(|r| *r == LookupResult::DestinationMiss),
+                "unknown source VPC must miss stage 1 for every input",
+            );
+        });
+
+    eprintln!(
+        "coverage: {} routes, {} source misses, {} destination misses",
+        ROUTES.load(Ordering::Relaxed),
+        SOURCE_MISSES.load(Ordering::Relaxed),
+        DESTINATION_MISSES.load(Ordering::Relaxed),
+    );
+    assert!(ROUTES.load(Ordering::Relaxed) >= 20, "too few full routes");
+    assert!(
+        SOURCE_MISSES.load(Ordering::Relaxed) >= 20,
+        "too few source misses"
+    );
+    assert!(
+        DESTINATION_MISSES.load(Ordering::Relaxed) >= 100,
+        "too few destination misses"
+    );
+}
 
 /// The reference backend agrees with the config-semantics oracle on every probe, for every
 /// generated overlay. This is the test that can catch rule-lowering bugs.
