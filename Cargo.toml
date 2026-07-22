@@ -189,7 +189,7 @@ reedline = { version = "0.49.0", default-features = false, features = [] }
 rkyv = { version = "0.8.17", default-features = false, features = [] }
 roaring = { version = "0.11.4", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions4", default-features = false, features = [] }
-rustls = { version = "0.23.41", default-features = false, features = [] }
+rustls = { version = "0.23.42", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
 serde_json = { version = "1.0.150", default-features = false, features = [] }
