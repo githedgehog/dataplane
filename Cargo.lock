@@ -1446,6 +1446,7 @@ dependencies = [
 name = "dataplane-flow-filter"
 version = "0.23.0"
 dependencies = [
+ "bolero",
  "dataplane-acl",
  "dataplane-common",
  "dataplane-concurrency",
