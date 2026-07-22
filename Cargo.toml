@@ -191,7 +191,7 @@ roaring = { version = "0.11.4", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions4", default-features = false, features = [] }
 rustls = { version = "0.23.42", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
-serde = { version = "1.0.228", default-features = false, features = [] }
+serde = { version = "1.0.229", default-features = false, features = [] }
 serde_json = { version = "1.0.150", default-features = false, features = [] }
 serde_yaml_ng = { version = "0.10.0", default-features = false, features = [] }
 serial_test = { version = "3.5.0", default-features = false, features = [] }
