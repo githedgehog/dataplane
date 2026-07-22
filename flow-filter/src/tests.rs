@@ -830,3 +830,92 @@ fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
         assert_eq!(pkt.meta().dst_vpcd, Some(expected), "packet {i}");
     }
 }
+
+// -------------------------------------------------------------------------------------------------
+// The flow-invalidation decision table, as an executable spec. `should_invalidate_flow` is the
+// subtlest policy in this NF (it decides which established sessions a config change kills); the
+// property pins its complete truth table instead of sampling branches.
+
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+enum GenidRel {
+    Older,
+    Same,
+    Newer,
+}
+
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+struct InvalidationCase {
+    meta_masquerade: bool,
+    meta_port_forwarding: bool,
+    has_flow: bool,
+    genid: GenidRel,
+    /// `Some(true)`: the flow's destination equals the route's; `Some(false)`: a different one;
+    /// `None`: the flow records no destination.
+    flow_dst_matches: Option<bool>,
+    flow_masquerade: bool,
+    flow_port_forwarding: bool,
+}
+
+// The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
+// (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
+// destination changed (or was never recorded), a stateful-NAT requirement appeared or
+// disappeared, or the route no longer needs state at all. Anything else is deferred to the
+// stateful NFs, which own the state's validity.
+fn expected_invalidation(case: &InvalidationCase) -> bool {
+    if !case.has_flow || matches!(case.genid, GenidRel::Same) {
+        return false;
+    }
+    case.flow_dst_matches != Some(true)
+        || case.meta_masquerade != case.flow_masquerade
+        || case.meta_port_forwarding != case.flow_port_forwarding
+        || (!case.meta_masquerade && !case.meta_port_forwarding)
+}
+
+#[test]
+fn invalidation_decision_matches_spec() {
+    use net::packet::PacketMeta;
+
+    const GENID: i64 = 7;
+    let route_dst = vpcd(200);
+
+    bolero::check!()
+        .with_type::<InvalidationCase>()
+        .for_each(|case| {
+            // Built inside the closure: neither the filter (classifier) nor FlowInfo (interior
+            // mutability) is unwind-safe, so they cannot be captured across bolero's
+            // catch_unwind boundary. Any FlowInfo serves: the decision reads only the summary
+            // fields (the info itself is used for logging alone).
+            let (flow_filter, _writer) = make_flow_filter(FlowFilterContext::default());
+            let mut p = packet(
+                Some(vpcd(100)),
+                build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+            );
+            let flow_info = attach_flow(&mut p, Some(route_dst), true, false, false);
+
+            let mut meta = PacketMeta::default();
+            meta.set_masquerade(case.meta_masquerade);
+            meta.set_port_forwarding(case.meta_port_forwarding);
+
+            let summary = case.has_flow.then(|| crate::FlowSummary {
+                genid: match case.genid {
+                    GenidRel::Older => GENID - 3,
+                    GenidRel::Same => GENID,
+                    GenidRel::Newer => GENID + 3,
+                },
+                dst_vpcd: match case.flow_dst_matches {
+                    Some(true) => Some(route_dst),
+                    Some(false) => Some(vpcd(300)),
+                    None => None,
+                },
+                needs_masquerade: case.flow_masquerade,
+                needs_port_forwarding: case.flow_port_forwarding,
+                flow_info,
+            });
+
+            assert_eq!(
+                flow_filter.should_invalidate_flow(&meta, route_dst, GENID, summary.as_ref()),
+                expected_invalidation(case),
+                "decision diverges from spec for {case:?}",
+            );
+        });
+}
