@@ -17,7 +17,7 @@ use concurrency::sync::Arc;
 use concurrency::thread;
 #[allow(unused_imports)] // used under loom/shuttle backends
 use concurrency::thread::BuilderExt;
-use lifecycle::Subsystem;
+use lifecycle::{CancellationToken, Subsystem};
 use net::buffer::test_buffer::TestBuffer;
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
@@ -146,7 +146,82 @@ impl Worker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Spawn a task for a given worker `WorkerId` in the given `JoinSet` to read packets
+    /// from a single interface (`WorkerInterfaceReader`) and process them with a pipeline
+    /// built from `setup`. The task can be cancelled with the provided `CancellationToken`.
+    /// The interface table is used to send packets successfully processed over the right
+    /// interface (`WorkerInterfaceWriter`).
+    fn spawn_worker_interface_reader(
+        id: WorkerId,
+        intf: WorkerInterfaceReader,
+        reader_handles: &mut tokio::task::JoinSet<()>,
+        setup: Arc<dyn Fn() -> DynPipeline<TestBuffer> + Send + Sync>,
+        if_table: Arc<HashMap<InterfaceIndex, Arc<Mutex<WorkerInterfaceWriter>>>>,
+        cancel: CancellationToken,
+    ) {
+        reader_handles.spawn_local(async move {
+            let intf = intf;
+            let mut pipeline = setup();
+            loop {
+                debug!(worker = id, "awaiting packets");
+
+                let packets_vec = tokio::select! {
+                    () = cancel.cancelled() => {
+                        info!(
+                            worker = id,
+                            rx_intf_name = intf.if_name,
+                            "cancellation observed; exiting reader"
+                        );
+                        break;
+                    }
+                    result = read_packets_from_interface(id, &intf) => match result {
+                        Ok(packets) => packets,
+                        Err(e) => {
+                            error!(
+                                worker = id,
+                                rx_intf_name = intf.if_name,
+                                "Error reading packets from interface: {e}"
+                            );
+                            vec![]
+                        }
+                    }
+                };
+
+                debug!(
+                    worker = id,
+                    rx_intf_name = intf.if_name,
+                    "Read {} packets from interface {}",
+                    packets_vec.len(),
+                    intf.if_name
+                );
+
+                let packets = packets_vec.into_iter();
+
+                let mut count = 0;
+                let out_pkts = pipeline
+                    .process(packets.map(|pkt| *pkt))
+                    .collect::<Vec<_>>();
+                for out_pkt in out_pkts {
+                    trace!(
+                        worker = id,
+                        rx_intf_name = intf.if_name,
+                        "Tx packet after pipeline for interface {}",
+                        intf.if_name
+                    );
+                    tx_packet(id, &intf.if_name, &if_table, out_pkt).await;
+                    count += 1;
+                }
+
+                tracing::debug!(
+                    worker = id,
+                    rx_intf_name = intf.if_name,
+                    "processed {count} packets from interface {}",
+                    intf.if_name
+                );
+            }
+        });
+    }
+
     pub fn start<'scope>(
         self,
         scope: &'scope thread::Scope<'scope, '_>,
@@ -167,11 +242,13 @@ impl Worker {
             // create exit guard for this worker
             let mut guard = subsystem.new_exit_guard(format!("worker {id}"), true);
 
+            // each worker has its own tokio runtime
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build_local(tokio::runtime::LocalOptions::default())
                 .map_err(|e| (id, e))?;
 
+            // block on a single task to create and supervise all of this worker's interface readers
             let result = rt.block_on(async {
                 let (readers, if_table) =
                     match build_interface_table(id, total_workers, interfaces.as_slice()) {
@@ -182,77 +259,17 @@ impl Worker {
                         }
                     };
 
-                let setup = setup.clone();
-                let if_table = if_table.clone();
-                let cancel = cancel.clone();
-
+                // spawn a task to read from each interface
                 let mut reader_handles = tokio::task::JoinSet::new();
-
                 for intf in readers {
-                    let setup = setup.clone();
-                    let if_table = if_table.clone();
-                    let cancel = cancel.clone();
-                    reader_handles.spawn_local(async move {
-                        let intf = intf;
-                        let mut pipeline = setup();
-                        loop {
-                            debug!(worker = id, "awaiting packets");
-
-                            let packets_vec = tokio::select! {
-                                () = cancel.cancelled() => {
-                                    info!(
-                                        worker = id,
-                                        rx_intf_name = intf.if_name,
-                                        "cancellation observed; exiting reader"
-                                    );
-                                    break;
-                                }
-                                result = read_packets_from_interface(id, &intf) => match result {
-                                    Ok(packets) => packets,
-                                    Err(e) => {
-                                        error!(
-                                            worker = id,
-                                            rx_intf_name = intf.if_name,
-                                            "Error reading packets from interface: {e}"
-                                        );
-                                        vec![]
-                                    }
-                                }
-                            };
-
-                            debug!(
-                                worker = id,
-                                rx_intf_name = intf.if_name,
-                                "Read {} packets from interface {}",
-                                packets_vec.len(),
-                                intf.if_name
-                            );
-
-                            let packets = packets_vec.into_iter();
-
-                            let mut count = 0;
-                            let out_pkts = pipeline
-                                .process(packets.map(|pkt| *pkt))
-                                .collect::<Vec<_>>();
-                            for out_pkt in out_pkts {
-                                trace!(
-                                    worker = id,
-                                    rx_intf_name = intf.if_name,
-                                    "Tx packet after pipeline for interface {}",
-                                    intf.if_name
-                                );
-                                tx_packet(id, &intf.if_name, &if_table, out_pkt).await;
-                                count += 1;
-                            }
-
-                            tracing::debug!(
-                                worker = id,
-                                rx_intf_name = intf.if_name,
-                                "processed {count} packets from interface {}",
-                                intf.if_name
-                            );
-                        }
-                    });
+                    Self::spawn_worker_interface_reader(
+                        id,
+                        intf,
+                        &mut reader_handles,
+                        setup.clone(),
+                        if_table.clone(),
+                        cancel.clone(),
+                    );
                 }
 
                 // Wait for all reader handles to complete
