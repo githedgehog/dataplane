@@ -20,7 +20,8 @@ use dataplane_acl::reference::{Erased, RefRule, ReferenceTable};
 use dpdk::acl::{CategoryMask, Priority};
 use lookup::Lookup;
 use match_action::{
-    ExactSpec, FieldHit, FieldMiss, FixedSize, IsUniversal, MatchKey, PrefixSpec, RangeSpec,
+    ExactSpec, FieldHit, FieldMiss, FixedSize, IsUniversal, MaskSpec, MatchKey, PrefixSpec,
+    RangeSpec,
 };
 
 mod sealed {
@@ -47,6 +48,10 @@ impl IpAddress for Ipv6Addr {
 struct FiveTuple<A: IpAddress> {
     #[exact]
     proto: u8,
+    // A masked byte alongside the exact one: the flow-filter's keys rely on #[mask] for
+    // protocol wildcarding, so the predicate fuzz must cover that field kind too.
+    #[mask]
+    tos: u8,
     #[prefix]
     src: A,
     #[prefix]
@@ -63,6 +68,8 @@ dpdk_table_alias!(type FiveTupleTableV6<A> = FiveTuple<Ipv6Addr>);
 #[derive(Debug, Clone, Copy, TypeGenerator)]
 struct RawRule<A> {
     proto: u8,
+    tos_value: u8,
+    tos_mask: u8,
     src: A,
     src_len: u8,
     dst: A,
@@ -85,6 +92,7 @@ fn build_rule<A: IpAddress>(raw: &RawRule<A>) -> FiveTupleRule<A> {
     let dst_len = u8::try_from(u16::from(raw.dst_len) % bits).unwrap_or(A::BITS);
     FiveTupleRule {
         proto: ExactSpec::new(raw.proto),
+        tos: MaskSpec::new(raw.tos_value, raw.tos_mask),
         src: PrefixSpec::new(raw.src, src_len),
         dst: PrefixSpec::new(raw.dst, dst_len),
         sport: RangeSpec::new(sport_lo, sport_hi),
@@ -105,6 +113,7 @@ where
         let r = &self.rule;
         Some(FiveTuple {
             proto: FieldHit::hits(&r.proto).generate(d)?,
+            tos: FieldHit::hits(&r.tos).generate(d)?,
             src: FieldHit::hits(&r.src).generate(d)?,
             dst: FieldHit::hits(&r.dst).generate(d)?,
             sport: FieldHit::hits(&r.sport).generate(d)?,
@@ -124,9 +133,12 @@ where
     type Output = FiveTuple<A>;
     fn generate<D: Driver>(&self, d: &mut D) -> Option<FiveTuple<A>> {
         let r = &self.rule;
-        let mut nu: ArrayVec<u8, 5> = ArrayVec::new();
+        let mut nu: ArrayVec<u8, 6> = ArrayVec::new();
         if !r.proto.is_universal() {
             nu.push(0);
+        }
+        if !r.tos.is_universal() {
+            nu.push(5);
         }
         if !r.src.is_universal() {
             nu.push(1);
@@ -150,6 +162,11 @@ where
                 FieldMiss::misses(&r.proto).generate(d)?
             } else {
                 FieldHit::hits(&r.proto).generate(d)?
+            },
+            tos: if target == 5 {
+                FieldMiss::misses(&r.tos).generate(d)?
+            } else {
+                FieldHit::hits(&r.tos).generate(d)?
             },
             src: if target == 1 {
                 FieldMiss::misses(&r.src).generate(d)?
