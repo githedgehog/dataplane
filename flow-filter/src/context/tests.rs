@@ -5,6 +5,7 @@
 
 #![cfg(test)]
 
+use super::LookupResult;
 use crate::test_utils::*;
 use crate::{FlowFilterContext, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
@@ -36,13 +37,14 @@ fn route(
             .map(NonZero::get)
             .zip(t.dst_port().map(NonZero::get))
     });
-    context
-        .lookup_route(src_vpcd, src_ip, dst_ip, proto, ports)
-        .map(|(dst_vpcd, dst_nat, src_nat)| Route {
+    match context.lookup_route(src_vpcd, src_ip, dst_ip, proto, ports) {
+        LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
             dst_vpcd,
             dst_nat,
             src_nat,
-        })
+        }),
+        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => None,
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -282,15 +284,16 @@ fn dst_side_overlay() -> FlowFilterContext {
 fn dst_side_nat_modes() {
     let ctx = dst_side_overlay();
 
-    // Masquerade destination: excluded from the remote end -> filtered
-    assert_eq!(
-        route(
-            &ctx,
-            vpcd(100),
-            &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
-        ),
-        None,
-    );
+    // Masquerade destination: resolves at table level as a marker (the NF only lets it through
+    // for reply traffic on an established masquerade flow; see crate::tests)
+    let masq = route(
+        &ctx,
+        vpcd(100),
+        &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
+    )
+    .expect("masquerade destination resolves as a marker");
+    assert_eq!(masq.dst_vpcd, vpcd(200));
+    assert_eq!(masq.dst_nat, Some(NatRequirement::Masquerade));
 
     // Port-forwarding destination (matching proto + port): returned
     let pf = route(
@@ -505,8 +508,10 @@ fn reference_and_dpdk_backends_agree() {
     use net::ip::NextHeader;
     use std::net::IpAddr;
 
-    // v4 peering (vpc1<->vpc2, with source static-NAT, a plain dst and a default dst) and a v6
-    // peering (vpc1<->vpc3) so all four tables are populated in both directions.
+    // v4 peering (vpc1<->vpc2, with source static-NAT, a masquerade, a plain dst and a default
+    // dst) and a v6 peering (vpc1<->vpc3) so all four tables are populated in both directions.
+    // The masquerade expose additionally covers the stage-1 marker rules and the SourceMiss /
+    // DestinationMiss distinction across backends.
     let ov = overlay(
         &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
         vec![
@@ -517,6 +522,7 @@ fn reference_and_dpdk_backends_agree() {
                     vec![
                         expose("1.0.0.0/24"),
                         expose_static("2.0.0.0/24", "20.0.0.0/24"),
+                        expose_masquerade("3.0.0.0/24", "30.0.0.0/24"),
                     ],
                 ),
                 ("vpc2", vec![expose("5.0.0.0/24"), expose_default()]),
@@ -587,6 +593,23 @@ fn reference_and_dpdk_backends_agree() {
             NextHeader::TCP,
             Some((1234, 5678)),
         ), // unknown src vpc
+        // masquerade: outbound from the masquerade source, and reply traffic toward the
+        // masquerade public range (stage-1 marker rule).
+        (
+            100,
+            ip("3.0.0.5"),
+            ip("5.0.0.10"),
+            NextHeader::TCP,
+            Some((1234, 5678)),
+        ),
+        (
+            200,
+            ip("5.0.0.10"),
+            ip("30.0.0.5"),
+            NextHeader::TCP,
+            Some((5678, 1234)),
+        ),
+        (200, ip("5.0.0.10"), ip("30.0.0.5"), NextHeader::ICMP, None),
         // v6 hit + miss.
         (
             100,
@@ -636,8 +659,8 @@ fn reference_and_dpdk_backends_agree() {
         .collect();
     assert!(inputs.len() > 32, "want a multi-chunk batch");
 
-    let mut ref_out = vec![None; inputs.len()];
-    let mut dpdk_out = vec![None; inputs.len()];
+    let mut ref_out = vec![LookupResult::DestinationMiss; inputs.len()];
+    let mut dpdk_out = vec![LookupResult::DestinationMiss; inputs.len()];
     reference.lookup_batch(&inputs, &mut ref_out);
     dpdk.lookup_batch(&inputs, &mut dpdk_out);
     assert_eq!(ref_out, dpdk_out, "batched backends disagree");

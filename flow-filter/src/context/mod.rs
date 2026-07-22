@@ -3,8 +3,6 @@
 
 //! Context table build
 
-#[cfg(test)]
-use crate::NatMode;
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use config::ConfigError;
@@ -19,7 +17,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use tables::{LookupInput, Route};
+pub(crate) use tables::{LookupInput, LookupResult};
 use tables::{PRODUCTION_BACKEND, PeeringTables};
 
 #[derive(Debug, Default)]
@@ -57,13 +55,13 @@ impl FlowFilterContext {
         dst_ip: std::net::IpAddr,
         proto: NextHeader,
         ports: Option<(u16, u16)>,
-    ) -> Option<(VpcDiscriminant, NatMode, NatMode)> {
+    ) -> LookupResult {
         self.routes.lookup(src_vpcd, src_ip, dst_ip, proto, ports)
     }
 
-    /// Resolve one [`Route`] per input into `out` (`out.len() == inputs.len()`).
+    /// Resolve one [`LookupResult`] per input into `out` (`out.len() == inputs.len()`).
     /// See [`tables::PeeringTables::lookup_batch`].
-    pub(crate) fn lookup_route_batch(&self, inputs: &[LookupInput], out: &mut [Option<Route>]) {
+    pub(crate) fn lookup_route_batch(&self, inputs: &[LookupInput], out: &mut [LookupResult]) {
         self.routes.lookup_batch(inputs, out);
     }
 }
