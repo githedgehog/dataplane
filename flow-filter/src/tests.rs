@@ -565,6 +565,122 @@ fn outdated_flow_with_consistent_state_is_kept() {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Stateful reply traffic across config changes. The tables cannot answer for the reverse direction
+// of stateful-NAT sessions (masquerade destinations are only markers, port-forwarding sources are
+// absent altogether), so after a genid bump those packets must ride their established flow instead
+// of being dropped -- while packets with no such flow, and flows whose peering is gone, still fail
+// closed.
+
+#[test]
+fn masquerade_reply_on_established_flow_survives_config_change() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    // Reply direction of a masqueraded session: vpc2 answers towards vpc1's masquerade public
+    // range. The flow (genid 0) is outdated, so the bypass is refused and the packet goes through
+    // the tables, which resolve a masquerade marker.
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn masquerade_reply_without_flow_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // No established flow: a masquerade destination cannot accept a new connection.
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+        ),
+    );
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+}
+
+#[test]
+fn masquerade_reply_with_inactive_flow_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+    );
+    attach_flow(&mut p, Some(vpcd(100)), false, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+}
+
+#[test]
+fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+    );
+    // The flow's recorded destination does not match what the tables resolve: stale, drop.
+    let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn port_forwarding_reply_on_established_flow_survives_config_change() {
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    set_genid(&mut flow_filter, 5);
+    // Reply direction of a forwarded session: the forwarded host answers from its private
+    // address, which is (deliberately) not in the local tables.
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn port_forwarding_reply_without_flow_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
+        ),
+    );
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+}
+
+#[test]
+fn stateful_flow_does_not_survive_peering_removal() {
+    // The peering is gone from the new config: even an active, state-consistent flow must not let
+    // reply traffic through (stage 1 finds no marker to trust), and the flow pair is invalidated.
+    let (mut flow_filter, writer) = make_flow_filter(source_nat_context());
+    writer.store(context(&[], vec![]));
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// -------------------------------------------------------------------------------------------------
 // Stateful flows: flow-key attachment for the {masquerade|port-forwarding} + static-NAT combination
 
 #[test]

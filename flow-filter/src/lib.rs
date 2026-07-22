@@ -24,7 +24,7 @@ pub use context::{
     FlowFilterContext, FlowFilterContextReader, FlowFilterContextReaderFactory,
     FlowFilterContextWriter,
 };
-use context::{LookupInput, Route};
+use context::{LookupInput, LookupResult};
 
 pub struct FlowFilter {
     name: String,
@@ -92,16 +92,16 @@ impl FlowFilter {
             return;
         }
 
-        let mut routes: Vec<Option<Route>> = vec![None; inputs.len()];
+        let mut results: Vec<LookupResult> = vec![LookupResult::DestinationMiss; inputs.len()];
         {
             let tables = self.tables.load();
-            tables.lookup_route_batch(&inputs, &mut routes);
+            tables.lookup_route_batch(&inputs, &mut results);
         }
 
-        for (item, route) in work.iter().zip(routes) {
+        for (item, result) in work.iter().zip(results) {
             self.apply_route(
                 &mut burst[item.idx],
-                route,
+                result,
                 item.flow_summary.as_ref(),
                 genid,
             );
@@ -152,20 +152,65 @@ impl FlowFilter {
     }
 
     /// Phase C: apply a resolved route (or drop on a miss) to a single packet.
+    ///
+    /// The tables cannot answer for reply traffic of established stateful-NAT sessions: masquerade
+    /// destinations only appear as marker rules (they cannot accept new connections) and
+    /// port-forwarding sources are absent altogether (they cannot initiate). For those two cases
+    /// -- and only those -- an active flow carrying the matching NAT state lets the packet
+    /// through, exactly as the flow-bypass path would. The flow's validity under the new
+    /// configuration remains the stateful NFs' responsibility; a genuine miss (no peering covers
+    /// the packet) still drops and invalidates.
     fn apply_route<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        route: Option<Route>,
+        result: LookupResult,
         flow_summary: Option<&FlowSummary>,
         genid: i64,
     ) {
         let nfi = &self.name;
-        let Some((dst_vpcd, dst_nat_mode, src_nat_mode)) = route else {
-            debug!("{nfi}: Could not determine destination VPC, dropping packet");
+        let (dst_vpcd, dst_nat_mode, src_nat_mode) = match result {
+            LookupResult::Route(route) => route,
+            LookupResult::SourceMiss(dst_vpcd) => {
+                // Port-forwarding sources are deliberately absent from the local tables; reply
+                // traffic from one rides its established flow.
+                if let Some(flow) =
+                    active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_port_forwarding)
+                {
+                    debug!("{nfi}: Source allowed by established port-forwarding flow");
+                    Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
+                    return;
+                }
+                debug!("{nfi}: Source not allowed towards {dst_vpcd}, dropping packet");
+                packet.invalidate_flows();
+                packet.done(DoneReason::Filtered);
+                return;
+            }
+            LookupResult::DestinationMiss => {
+                debug!("{nfi}: Could not determine destination VPC, dropping packet");
+                packet.invalidate_flows();
+                packet.done(DoneReason::Filtered);
+                return;
+            }
+        };
+
+        // A masquerade destination cannot accept new connections; its rule is in the table only
+        // so that reply traffic on an established masquerade flow is distinguishable from a
+        // destination no peering covers.
+        if dst_nat_mode == Some(NatRequirement::Masquerade) {
+            if let Some(flow) = active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_masquerade)
+            {
+                debug!("{nfi}: Masquerade destination allowed by established flow");
+                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
+                return;
+            }
+            debug!(
+                "{nfi}: Masquerade destination with no established flow, dropping packet (cannot initiate a connection towards a masquerade expose)"
+            );
             packet.invalidate_flows();
             packet.done(DoneReason::Filtered);
             return;
-        };
+        }
+
         debug!(
             "{nfi}: Packet matches peering configuration, found VPC {dst_vpcd} and NAT modes {src_nat_mode:?} (src), {dst_nat_mode:?} (dst)"
         );
@@ -349,6 +394,23 @@ impl FlowSummary {
             flow_info: flow_info.clone(),
         })
     }
+}
+
+/// The flow, if it is active, agrees with the lookup on the destination VPC, and carries the
+/// stateful-NAT state selected by `has_state`. Such a flow vouches for reply traffic that the
+/// tables cannot answer for (see [`FlowFilter::apply_route`]). No genid check: an up-to-date flow
+/// would have bypassed the lookup already, and an outdated one is exactly the case where the flow
+/// must speak for the packet; the stateful NFs remain the authority on the state itself.
+fn active_stateful_flow(
+    flow_summary: Option<&FlowSummary>,
+    dst_vpcd: VpcDiscriminant,
+    has_state: impl Fn(&FlowSummary) -> bool,
+) -> Option<&FlowSummary> {
+    flow_summary.filter(|flow| {
+        flow.flow_info.status() == FlowStatus::Active
+            && flow.dst_vpcd == Some(dst_vpcd)
+            && has_state(flow)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

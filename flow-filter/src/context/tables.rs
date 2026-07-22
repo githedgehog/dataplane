@@ -15,8 +15,16 @@
 //!   private prefixes, yielding the source NAT mode.
 //!
 //! A "default" (catch-all) expose lowers to a lowest-priority `/0` rule, so
-//! longest-prefix-match (encoded as `priority = prefix_len + 1`) handles it
-//! uniformly.
+//! longest-prefix-match (encoded in the rule priority, see [`rule_priority`])
+//! handles it uniformly.
+//!
+//! Masquerade destinations are kept in the remote tables even though they cannot
+//! accept new connections: their [`Verdict`] marks reply traffic on established
+//! masquerade flows as distinguishable from a destination no peering covers, and
+//! the NF gates them on flow state. Port-forwarding sources stay out of the local
+//! tables (a covering expose must answer for connection initiation), so a stage-2
+//! miss is reported distinctly (see [`LookupResult`]) for the NF to resolve
+//! against flow state.
 
 use crate::{NatMode, NatRequirement};
 use acl::dpdk::dyn_table::predicate_to_chunks;
@@ -49,6 +57,21 @@ use tracing::debug;
 /// A resolved route: destination VPC, destination NAT mode, source NAT mode. All `Copy`, so batch
 /// results can be extracted and the context guard dropped before packet metadata is mutated.
 pub(crate) type Route = (VpcDiscriminant, NatMode, NatMode);
+
+/// One lookup outcome. The two miss variants are distinct because the NF's fallback differs:
+/// a destination miss means no peering covers the packet at all (drop, fail closed), while a
+/// source miss can still be legitimate reply traffic from a port-forwarding-only source, whose
+/// rules are deliberately absent from the local tables (the NF resolves it against flow state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LookupResult {
+    /// Both stages matched.
+    Route(Route),
+    /// Stage 1 resolved the destination VPC, but the source matched nothing.
+    SourceMiss(VpcDiscriminant),
+    /// Stage 1 matched nothing: no peering covers this destination (also used for IP-version
+    /// mismatches).
+    DestinationMiss,
+}
 
 /// One packet's routing question, IP-version-agnostic (partitioned by version inside
 /// [`PeeringTables::lookup_batch`]).
@@ -318,6 +341,17 @@ fn build_table<K: MatchKey, A>(
 // "{remote, local} x {v4, v6}" bucket. The IP version is taken from each concrete prefix; defaults
 // (which carry no prefix) use the peering's version.
 
+/// Rule priority: longest-prefix-match, with port forwarding beating an equal-length overlap.
+///
+/// Config validation guarantees that rules with intersecting match sets never share a prefix
+/// length, with one exception: a port-forwarding public range may overlap a masquerade public
+/// range of the same length. Port forwarding must win that tie (a masquerade destination can only
+/// carry reply traffic), so the priority reserves its low bit for it; everything else keeps pure
+/// prefix-length ordering.
+fn rule_priority(ip_range: Prefix, port_forwarding: bool) -> u32 {
+    ((u32::from(ip_range.length()) + 1) << 1) | u32::from(port_forwarding)
+}
+
 /// Lower a stage-1 (remote) rule into the v4 or v6 bucket according to its prefix.
 #[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
 fn emit_remote(
@@ -329,7 +363,10 @@ fn emit_remote(
     (proto_value, proto_mask): (u8, u8),
     action: Verdict,
 ) {
-    let priority = u32::from(ip_range.length()) + 1;
+    let priority = rule_priority(
+        ip_range,
+        action.nat_mode == Some(NatRequirement::PortForwarding),
+    );
     match ip_range {
         Prefix::IPV4(prefix) => {
             let fields = RemoteKeyRule::<Ipv4Addr> {
@@ -374,7 +411,9 @@ fn emit_local(
     (proto_value, proto_mask): (u8, u8),
     action: NatMode,
 ) {
-    let priority = u32::from(ip_range.length()) + 1;
+    // Port-forwarding sources are never emitted into the local tables, so the tie-break bit is
+    // always clear here; local rules keep pure prefix-length ordering.
+    let priority = rule_priority(ip_range, false);
     match ip_range {
         Prefix::IPV4(prefix) => {
             let fields = LocalKeyRule::<Ipv4Addr> {
@@ -434,13 +473,11 @@ impl RuleSet {
                 };
 
                 // Stage 1: peer's public prefixes -> Verdict{dst VPC, dst NAT}. Masquerade
-                // destinations cannot receive connections, so they are excluded here.
-                for expose in peering
-                    .remote()
-                    .valexp()
-                    .iter()
-                    .filter(|expose| expose.can_receive_connection())
-                {
+                // destinations cannot receive connections, but their rules stay in the table:
+                // a masquerade Verdict lets the NF tell reply traffic on an established
+                // masquerade flow apart from a destination no peering covers (which must drop).
+                // The NF only accepts a masquerade Verdict when the packet rides such a flow.
+                for expose in peering.remote().valexp() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = Verdict {
                         nat_mode: NatRequirement::from_expose(expose),
@@ -572,7 +609,7 @@ impl PeeringTables {
         dst_ip: IpAddr,
         proto: NextHeader,
         ports: Option<(u16, u16)>,
-    ) -> Option<(VpcDiscriminant, NatMode, NatMode)> {
+    ) -> LookupResult {
         let proto = proto_byte(proto);
         let src = vpcd_u32(src_vpcd);
         let (src_port, dst_port) = ports.unzip();
@@ -581,51 +618,64 @@ impl PeeringTables {
 
         match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let verdict = self.remote_v4.lookup(&RemoteKey {
+                let Some(verdict) = self.remote_v4.lookup(&RemoteKey {
                     proto,
                     src_vpcd: src,
                     dst_ip,
                     dst_port,
-                })?;
-                let nat_mode = self.local_v4.lookup(&LocalKey {
+                }) else {
+                    return LookupResult::DestinationMiss;
+                };
+                match self.local_v4.lookup(&LocalKey {
                     proto,
                     src_vpcd: src,
                     dst_vpcd: vpcd_u32(verdict.dst_vpcd),
                     src_ip,
                     src_port,
-                })?;
-                Some((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                }) {
+                    Some(nat_mode) => {
+                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                    }
+                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
+                }
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let verdict = self.remote_v6.lookup(&RemoteKey {
+                let Some(verdict) = self.remote_v6.lookup(&RemoteKey {
                     proto,
                     src_vpcd: src,
                     dst_ip,
                     dst_port,
-                })?;
-                let nat_mode = self.local_v6.lookup(&LocalKey {
+                }) else {
+                    return LookupResult::DestinationMiss;
+                };
+                match self.local_v6.lookup(&LocalKey {
                     proto,
                     src_vpcd: src,
                     dst_vpcd: vpcd_u32(verdict.dst_vpcd),
                     src_ip,
                     src_port,
-                })?;
-                Some((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                }) {
+                    Some(nat_mode) => {
+                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                    }
+                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
+                }
             }
             _ => {
                 debug!(
                     "Source and destination IP versions do not match: src_ip={src_ip:?}, dst_ip={dst_ip:?}",
                 );
-                None
+                LookupResult::DestinationMiss
             }
         }
     }
 
-    /// Batched form of [`lookup`](Self::lookup): resolve one [`Route`] per input into `out`
+    /// Batched form of [`lookup`](Self::lookup): resolve one [`LookupResult`] per input into `out`
     /// (`out.len() == inputs.len()`). Inputs are partitioned by IP version into per-version index
     /// lists (packets are never reordered), and each version runs the two-pass lookup in
-    /// `MAX_BATCH`-sized rte_acl calls. IP-version mismatches resolve to `None` (as in `lookup`).
-    pub(crate) fn lookup_batch(&self, inputs: &[LookupInput], out: &mut [Option<Route>]) {
+    /// `MAX_BATCH`-sized rte_acl calls. IP-version mismatches resolve to
+    /// [`LookupResult::DestinationMiss`] (as in `lookup`).
+    pub(crate) fn lookup_batch(&self, inputs: &[LookupInput], out: &mut [LookupResult]) {
         debug_assert_eq!(inputs.len(), out.len());
 
         let mut v4_idx: Vec<usize> = Vec::new();
@@ -634,7 +684,7 @@ impl PeeringTables {
         let mut v6_q: Vec<Query<Ipv6Addr>> = Vec::new();
 
         for (i, input) in inputs.iter().enumerate() {
-            out[i] = None;
+            out[i] = LookupResult::DestinationMiss;
             let proto = proto_byte(input.proto);
             let src_vpcd = vpcd_u32(input.src_vpcd);
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
@@ -661,7 +711,7 @@ impl PeeringTables {
                         dst_port,
                     });
                 }
-                _ => { /* version mismatch: leave "out[i] = None" */ }
+                _ => { /* version mismatch: leave "out[i] = DestinationMiss" */ }
             }
         }
 
@@ -678,7 +728,7 @@ fn lookup_versioned<I: FixedSize + Copy>(
     local: &AnyTable<LocalKey<I>, NatMode>,
     queries: &[Query<I>],
     idx: &[usize],
-    out: &mut [Option<Route>],
+    out: &mut [LookupResult],
 ) where
     RemoteKey<I>: MatchKey,
     LocalKey<I>: MatchKey,
@@ -716,12 +766,16 @@ fn lookup_versioned<I: FixedSize + Copy>(
         let mut nat_modes: Vec<Option<&NatMode>> = vec![None; local_keys.len()];
         local.lookup_batch(&local_keys, &mut nat_modes);
 
-        // Scatter results back to the caller's output positions. A stage-2 miss stays None.
+        // Scatter results back to the caller's output positions. A stage-1 miss stays
+        // DestinationMiss; a stage-1 hit whose source matched nothing becomes SourceMiss.
         for (hit, &pos) in hit_pos.iter().enumerate() {
-            if let Some(nat_mode) = nat_modes[hit] {
-                let verdict = verdicts[pos].unwrap_or_else(|| unreachable!("hit_pos tracks Some"));
-                out[i_chunk[pos]] = Some((verdict.dst_vpcd, verdict.nat_mode, *nat_mode));
-            }
+            let verdict = verdicts[pos].unwrap_or_else(|| unreachable!("hit_pos tracks Some"));
+            out[i_chunk[pos]] = match nat_modes[hit] {
+                Some(nat_mode) => {
+                    LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                }
+                None => LookupResult::SourceMiss(verdict.dst_vpcd),
+            };
         }
     }
 }
@@ -753,5 +807,17 @@ mod unit_tests {
         let tables = PeeringTables::default();
         assert_eq!(tables.remote_v4.len(), 0);
         assert_eq!(tables.local_v6.len(), 0);
+    }
+
+    #[test]
+    fn priority_is_lpm_with_port_forwarding_tie_break() {
+        let p24 = Prefix::from("10.0.0.0/24");
+        let p25 = Prefix::from("10.0.0.0/25");
+        // A longer prefix always wins, regardless of the tie-break bit.
+        assert!(rule_priority(p25, false) > rule_priority(p24, true));
+        // At equal prefix length, port forwarding wins.
+        assert!(rule_priority(p24, true) > rule_priority(p24, false));
+        // The lowest possible priority (a /0 default) is still a valid rte_acl priority (>= 1).
+        assert!(rule_priority(Prefix::root_v4(), false) >= 1);
     }
 }
