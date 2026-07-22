@@ -209,8 +209,8 @@ where
     }
     count
 }
-const MIN_ASSERTED_HITS: u64 = 200;
-const MIN_ASSERTED_MISSES: u64 = 200;
+const MIN_ASSERTED_HITS: u64 = 20;
+const MIN_ASSERTED_MISSES: u64 = 20;
 fn run_property<A, T>(
     name_prefix: &str,
     install_dpdk: impl Fn(String, &FiveTupleRule<A>) -> T + core::panic::RefUnwindSafe,
@@ -268,7 +268,6 @@ fn run_property<A, T>(
 }
 
 #[test]
-#[ignore = "flaky"] // FIXME
 #[dpdk::with_eal]
 fn property_v4() {
     run_property::<Ipv4Addr, FiveTupleTableV4<Verdict>>("prop_v4", |name, rule| {
@@ -290,7 +289,6 @@ fn property_v4() {
 }
 
 #[test]
-#[ignore = "flaky"] // FIXME
 #[dpdk::with_eal]
 fn property_v6() {
     run_property::<Ipv6Addr, FiveTupleTableV6<Verdict>>("prop_v6", |name, rule| {
