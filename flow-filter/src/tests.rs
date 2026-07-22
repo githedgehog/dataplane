@@ -919,3 +919,145 @@ fn invalidation_decision_matches_spec() {
             );
         });
 }
+
+// -------------------------------------------------------------------------------------------------
+// Burst-level structural invariants. The semantic correctness of individual routing decisions is
+// covered by the context property tests; here the subject is the burst pipeline itself
+// (classify / batched lookup / apply): nothing is lost or reordered, skipped packets are
+// untouched, every processed packet is either resolved or done (never both, never neither), the
+// flow bypass always short-circuits when it should, and a Filtered packet always cancels its
+// flow pair.
+
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+struct BurstFlowSpec {
+    active: bool,
+    /// `Some(true)`: the flow records vpc2 (the routable peer); `Some(false)`: an unrelated VPC;
+    /// `None`: no destination recorded (a buggy flow).
+    dst: Option<bool>,
+    masq_state: bool,
+    pf_state: bool,
+}
+
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+struct BurstPacketSpec {
+    non_ip: bool,
+    overlay: bool,
+    preset_dst: bool,
+    has_src_vpcd: bool,
+    src_sel: u8,
+    dst_sel: u8,
+    flow: Option<BurstFlowSpec>,
+}
+
+impl BurstFlowSpec {
+    fn dst_vpcd(&self) -> Option<VpcDiscriminant> {
+        match self.dst {
+            Some(true) => Some(vpcd(200)),
+            Some(false) => Some(vpcd(300)),
+            None => None,
+        }
+    }
+}
+
+#[test]
+fn burst_processing_upholds_structural_invariants() {
+    use net::headers::TryTransport;
+
+    bolero::check!()
+        .with_type::<(bool, [BurstPacketSpec; 40])>()
+        .for_each(|&(bump_genid, ref specs)| {
+            // Built inside the closure: the filter holds a classifier, which is not unwind-safe.
+            let (mut flow_filter, _writer) = make_flow_filter(source_nat_context());
+            if bump_genid {
+                set_genid(&mut flow_filter, 5);
+            }
+
+            let mut packets = Vec::with_capacity(specs.len());
+            let mut flows = Vec::with_capacity(specs.len());
+            for (i, spec) in specs.iter().enumerate() {
+                let sport = 1000 + u16::try_from(i).unwrap();
+                let headers = if spec.non_ip {
+                    build_nonip_packet()
+                } else {
+                    let src = match spec.src_sel % 3 {
+                        0 => v4("1.0.0.5"), // plain source expose
+                        1 => v4("3.0.0.5"), // masquerade source expose
+                        _ => v4("9.9.9.9"), // no source expose (stage-2 miss)
+                    };
+                    let dst = match spec.dst_sel % 3 {
+                        0 => v4("5.0.0.10"),  // the peer's expose (stage-1 hit)
+                        1 => v4("30.0.0.10"), // our own masquerade public (stage-1 miss)
+                        _ => v4("8.8.8.8"),   // nowhere (stage-1 miss)
+                    };
+                    build_tcp_packet(src, dst, sport, 5678)
+                };
+                let mut p = packet(spec.has_src_vpcd.then(|| vpcd(100)), headers);
+                p.meta_mut().set_overlay(spec.overlay);
+                if spec.preset_dst {
+                    p.meta_mut().dst_vpcd = Some(vpcd(777));
+                }
+                // Flow attachment needs a FlowKey, which a non-IP packet cannot provide.
+                let flow = spec
+                    .flow
+                    .filter(|_| !spec.non_ip)
+                    .map(|f| attach_flow(&mut p, f.dst_vpcd(), f.active, f.masq_state, f.pf_state));
+                flows.push(flow);
+                packets.push(p);
+            }
+
+            let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+            assert_eq!(out.len(), specs.len(), "burst length must be preserved");
+
+            for (i, (spec, pkt)) in specs.iter().zip(&out).enumerate() {
+                // Order: each packet's source-port tag must sit at its original position.
+                if !spec.non_ip {
+                    let sport = pkt
+                        .try_transport()
+                        .and_then(|t| t.src_port())
+                        .map(std::num::NonZero::get);
+                    assert_eq!(
+                        sport,
+                        Some(1000 + u16::try_from(i).unwrap()),
+                        "packet order not preserved at position {i}",
+                    );
+                }
+
+                // Skipped packets (non-overlay, or destination already resolved upstream) are
+                // untouched, and their flows are left alone.
+                if !spec.overlay || spec.preset_dst {
+                    assert!(!pkt.is_done(), "skipped packet must pass through: {spec:?}");
+                    assert_eq!(pkt.meta().dst_vpcd, spec.preset_dst.then(|| vpcd(777)));
+                    if let Some(flow) = &flows[i] {
+                        assert_ne!(flow.status(), FlowStatus::Cancelled, "{spec:?}");
+                    }
+                    continue;
+                }
+
+                // Every processed packet is either resolved or done -- never both, never neither.
+                assert_ne!(
+                    pkt.is_done(),
+                    pkt.meta().dst_vpcd.is_some(),
+                    "processed packet must be resolved XOR done: {spec:?}",
+                );
+
+                // An active, current-generation flow with a recorded destination always
+                // short-circuits the tables, whatever they would have said.
+                if let Some(f) = spec.flow
+                    && !spec.non_ip
+                    && !bump_genid
+                    && f.active
+                    && f.dst.is_some()
+                {
+                    assert!(!pkt.is_done(), "bypass must win: {spec:?}");
+                    assert_eq!(pkt.meta().dst_vpcd, f.dst_vpcd(), "{spec:?}");
+                }
+
+                // A Filtered packet always cancels its flow pair (Unroutable/NotIp do not).
+                if pkt.get_done() == Some(DoneReason::Filtered)
+                    && let Some(flow) = &flows[i]
+                {
+                    assert_eq!(flow.status(), FlowStatus::Cancelled, "{spec:?}");
+                }
+            }
+        });
+}
