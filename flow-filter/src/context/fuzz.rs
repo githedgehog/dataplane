@@ -261,6 +261,53 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
     );
 }
 
+/// The batched lookup equals the single lookup, slot for slot, on the reference backend. The
+/// batch path's own logic -- the v4/v6 partition, `MAX_BATCH` chunking, the stage-1-hit gather
+/// and the scatter back through saved indices -- is backend-generic, so this EAL-free variant
+/// exercises it with far more iterations than the rte_acl differential can afford. 40 probes
+/// force multi-chunk batches; probe specs freely mix IP versions and version-mismatched pairs.
+#[test]
+fn batched_lookup_matches_single_lookup() {
+    bolero::check!()
+        .with_type::<(OverlaySpec, [ProbeSpec; 40])>()
+        .for_each(|(overlay_spec, probe_specs)| {
+            let built = overlay_spec.build();
+            let tables =
+                PeeringTables::build(&built.overlay, Backend::Reference).expect("reference build");
+
+            let probes: Vec<Probe> = probe_specs
+                .iter()
+                .map(|p| p.resolve(built.blocks))
+                .collect();
+            let inputs: Vec<LookupInput> = probes
+                .iter()
+                .map(|p| LookupInput {
+                    src_vpcd: p.src_vpcd,
+                    src_ip: p.src_ip,
+                    dst_ip: p.dst_ip,
+                    proto: p.proto,
+                    ports: p.ports,
+                })
+                .collect();
+
+            let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
+            tables.lookup_batch(&inputs, &mut out);
+            for (i, probe) in probes.iter().enumerate() {
+                assert_eq!(
+                    out[i],
+                    tables.lookup(
+                        probe.src_vpcd,
+                        probe.src_ip,
+                        probe.dst_ip,
+                        probe.proto,
+                        probe.ports
+                    ),
+                    "batch slot {i} != single lookup for {probe:?}\nspec: {overlay_spec:?}",
+                );
+            }
+        });
+}
+
 /// The reference backend agrees with the config-semantics oracle on every probe, for every
 /// generated overlay. This is the test that can catch rule-lowering bugs.
 #[test]
