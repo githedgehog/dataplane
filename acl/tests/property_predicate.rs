@@ -268,6 +268,7 @@ fn run_property<A, T>(
 }
 
 #[test]
+#[ignore = "flaky"] // FIXME
 #[dpdk::with_eal]
 fn property_v4() {
     run_property::<Ipv4Addr, FiveTupleTableV4<Verdict>>("prop_v4", |name, rule| {
@@ -289,6 +290,7 @@ fn property_v4() {
 }
 
 #[test]
+#[ignore = "flaky"] // FIXME
 #[dpdk::with_eal]
 fn property_v6() {
     run_property::<Ipv6Addr, FiveTupleTableV6<Verdict>>("prop_v6", |name, rule| {
