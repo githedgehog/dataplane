@@ -9,6 +9,8 @@ use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 
 mod display;
+#[cfg(test)]
+mod fuzz;
 mod tables;
 #[cfg(test)]
 mod tests;
