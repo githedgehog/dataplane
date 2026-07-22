@@ -28,6 +28,7 @@ tracing = { workspace = true }
 # EAL-free semantic suite. It is `cfg(test)`-gated in the source, so it is never part of a
 # production build; this dev-dep just makes `acl::reference` available to test builds.
 acl = { workspace = true, features = ["reference"] }
+bolero = { workspace = true, features = ["std"] }
 dpdk = { workspace = true, features = ["test"] }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["builder"] }

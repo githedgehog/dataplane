@@ -13,6 +13,8 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
 mod display;
+#[cfg(test)]
+mod fuzz;
 mod tables;
 #[cfg(test)]
 mod tests;

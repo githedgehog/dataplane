@@ -1437,6 +1437,7 @@ name = "dataplane-flow-filter"
 version = "0.23.0"
 dependencies = [
  "arc-swap",
+ "bolero",
  "dataplane-acl",
  "dataplane-common",
  "dataplane-concurrency",
