@@ -201,7 +201,7 @@ small-map = { version = "0.1.5", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.28.0", default-features = false, features = [] }
 strum_macros = { version = "0.28.0", default-features = false, features = [] }
-syn = { version = "2.0.118", default-features = false, features = [] }
+syn = { version = "3.0.3", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.10", default-features = false, features = [] }
 # Exception to the "no workspace-wide features" rule above.  `tokio/parking_lot` is
