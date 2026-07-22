@@ -809,15 +809,52 @@ mod unit_tests {
         assert_eq!(tables.local_v6.len(), 0);
     }
 
+    /// The masked-byte lowering of the protocol constraint is equivalent to its direct
+    /// semantics for EVERY possible packet protocol and every rule protocol. In particular this
+    /// pins the `PROTO_OTHER = 0` sentinel: protocol 0 (IPv6 hop-by-hop) shares the sentinel
+    /// byte with every other non-TCP/UDP protocol and must match exactly the `Any` rules.
     #[test]
-    fn priority_is_lpm_with_port_forwarding_tie_break() {
-        let p24 = Prefix::from("10.0.0.0/24");
-        let p25 = Prefix::from("10.0.0.0/25");
-        // A longer prefix always wins, regardless of the tie-break bit.
-        assert!(rule_priority(p25, false) > rule_priority(p24, true));
-        // At equal prefix length, port forwarding wins.
-        assert!(rule_priority(p24, true) > rule_priority(p24, false));
-        // The lowest possible priority (a /0 default) is still a valid rte_acl priority (>= 1).
-        assert!(rule_priority(Prefix::root_v4(), false) >= 1);
+    fn proto_lowering_matches_direct_semantics() {
+        bolero::check!().with_type::<u8>().for_each(|&raw| {
+            let packet = NextHeader::new(raw);
+            let byte = proto_byte(packet);
+            for rule in [L4Protocol::Tcp, L4Protocol::Udp, L4Protocol::Any] {
+                let (value, mask) = proto_mask(rule);
+                let lowered = (byte & mask) == (value & mask);
+                let direct = match rule {
+                    L4Protocol::Any => true,
+                    L4Protocol::Tcp => packet == NextHeader::TCP,
+                    L4Protocol::Udp => packet == NextHeader::UDP,
+                };
+                assert_eq!(lowered, direct, "protocol {raw}, rule {rule:?}");
+            }
+        });
+    }
+
+    /// `rule_priority` embeds the intended precedence order exactly: lexicographic in
+    /// (prefix length, port-forwarding bit). A longer prefix always wins regardless of the
+    /// tie-break bit; at equal length port forwarding wins; equal inputs tie. Every produced
+    /// value is a valid rte_acl priority (>= 1).
+    #[test]
+    fn priority_is_lexicographic_in_length_then_port_forwarding() {
+        use lpm::prefix::{IpPrefix, Ipv6Prefix};
+        use std::net::Ipv6Addr;
+        let prefix_of_len = |len: u8| {
+            Prefix::IPV6(Ipv6Prefix::new(Ipv6Addr::UNSPECIFIED, len).expect("valid length"))
+        };
+        bolero::check!()
+            .with_type::<(u8, bool, u8, bool)>()
+            .for_each(|&(len_a, fw_a, len_b, fw_b)| {
+                let (len_a, len_b) = (len_a % 129, len_b % 129);
+                let prio_a = rule_priority(prefix_of_len(len_a), fw_a);
+                let prio_b = rule_priority(prefix_of_len(len_b), fw_b);
+                assert_eq!(
+                    prio_a.cmp(&prio_b),
+                    (len_a, fw_a).cmp(&(len_b, fw_b)),
+                    "priority order diverges from (length, port-forwarding) order for \
+                     ({len_a}, {fw_a}) vs ({len_b}, {fw_b})",
+                );
+                assert!(prio_a >= 1, "priority must be a valid rte_acl priority");
+            });
     }
 }
