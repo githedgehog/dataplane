@@ -39,6 +39,11 @@ use std::net::IpAddr;
 pub(crate) const VNIS: [u32; 4] = [100, 200, 300, 400];
 /// A VNI no generated VPC uses; probes drawing it must miss.
 const BOGUS_VNI: u32 = 999;
+
+/// A source VPC discriminant no generated overlay contains: every stage-1 lookup with it misses.
+pub(crate) fn bogus_vpcd() -> VpcDiscriminant {
+    VpcDiscriminant::from_vni(Vni::new_checked(BOGUS_VNI).unwrap())
+}
 /// Peering slot `i`, when present, connects this fixed VPC pair. Distinct pairs by construction,
 /// so the one-peering-per-VPC-pair rule always holds.
 const PEERING_PAIRS: [(usize, usize); 4] = [(0, 1), (0, 2), (1, 2), (2, 3)];
