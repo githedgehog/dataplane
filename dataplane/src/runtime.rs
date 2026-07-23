@@ -182,6 +182,11 @@ pub fn main() {
     // real DPDK datapath driver (currently `todo!()`) must eventually take over EAL ownership with
     // device-appropriate args rather than adding a second init. The guard is held for the life of
     // the process.
+    //
+    // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
+    // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
+    // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
+    let main_lcore_arg = dpdk::eal::main_lcore_arg();
     let _eal = dpdk::eal::init([
         "--no-huge",
         "--no-pci",
@@ -189,6 +194,8 @@ pub fn main() {
         "--no-telemetry",
         "--no-shconf",
         "--iova-mode=va",
+        "--lcores",
+        main_lcore_arg.as_str(),
     ]);
 
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);

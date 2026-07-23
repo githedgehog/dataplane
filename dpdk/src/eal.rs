@@ -108,6 +108,43 @@ impl ValidatedEalArgs {
     }
 }
 
+/// Returns a DPDK `--lcores` argument value (e.g. `"0@(0,2,4,6)"`) that maps
+/// lcore 0 to every CPU currently allowed for the calling thread.
+///
+/// Without an explicit `-l`/`-c`/`--lcores` argument, `rte_eal_init` derives
+/// a default main-lcore cpuset containing exactly one CPU (see
+/// `eal_common_lcore.c`), and then calls `rte_thread_set_affinity_by_id` to
+/// pin the *calling* thread to that single-CPU cpuset. Since every thread
+/// dataplane spawns afterward (tokio workers, driver workers, ...) inherits
+/// the calling thread's affinity mask at creation time, that default narrows
+/// the whole process down to one core. Passing this value as `--lcores`
+/// keeps the main lcore's cpuset equal to the CPUs actually available to the
+/// process (respecting cgroup cpusets, `taskset`, `isolcpus`, etc.) instead
+/// of DPDK's single-CPU default.
+///
+/// # Panics
+///
+/// - Panics if the calling thread's CPU affinity cannot be queried.
+/// - Panics if there are no available CPUs in the result of `sched_getaffinity`.
+#[must_use]
+#[allow(clippy::expect_used)]
+pub fn main_lcore_arg() -> String {
+    use nix::sched::{CpuSet, sched_getaffinity};
+    use nix::unistd::Pid;
+    // Startup-only helper; failure to query thread affinity is unrecoverable
+    let set = sched_getaffinity(Pid::from_raw(0)).expect("sched_getaffinity");
+    let cpus = (0..CpuSet::count())
+        .filter(|&i| set.is_set(i).unwrap_or(false))
+        .collect::<Vec<_>>();
+    assert_ne!(cpus.len(), 0, "CPU affinity empty!");
+    let cpu_list = cpus
+        .iter()
+        .map(|&x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("0@({cpu_list})")
+}
+
 /// Initialize the DPDK Environment Abstraction Layer (EAL).
 ///
 /// # Panics
