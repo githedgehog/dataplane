@@ -98,6 +98,32 @@ impl ExposeSpec {
     fn has_nat(self) -> bool {
         !matches!(self, ExposeSpec::Plain)
     }
+
+    /// Whether this expose gives the source side of a route an unconstrained, connection-initiating
+    /// match: a plain / static-nat / masquerade private block (a `/24` or `/120` with no port
+    /// constraint, `can_init_connection`). Port forwarding cannot initiate, so a pure
+    /// port-forwarding expose is not source-capable.
+    fn source_capable(self) -> bool {
+        !matches!(
+            self,
+            ExposeSpec::PortForwarding(_) | ExposeSpec::PortFwProtoPair
+        )
+    }
+
+    /// Where a destination address this expose matches lives, or `None` if it only matches
+    /// port-forwarded destinations (skipped -- those need a specific public port). `Some(true)`
+    /// means the public block (NAT exposes translate destinations into it); `Some(false)` means the
+    /// private block (a plain expose's public IPs are its private IPs).
+    fn dest_public_space(self) -> Option<bool> {
+        match self {
+            ExposeSpec::Plain => Some(false),
+            ExposeSpec::StaticNat
+            | ExposeSpec::Masquerade
+            | ExposeSpec::MasqueradeNestingPortFw(_)
+            | ExposeSpec::MasqueradeSameLenPortFw(_) => Some(true),
+            ExposeSpec::PortForwarding(_) | ExposeSpec::PortFwProtoPair => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, TypeGenerator)]
@@ -159,6 +185,7 @@ pub(crate) struct OverlaySpec {
 pub(crate) struct BuiltOverlay {
     pub(crate) overlay: ValidatedOverlay,
     pub(crate) blocks: u8,
+    pub(crate) routing_probes: Vec<Probe>,
 }
 
 impl OverlaySpec {
@@ -229,11 +256,23 @@ impl OverlaySpec {
         }
         let mut peering_table = VpcPeeringTable::new();
         let mut blocks: u8 = 0;
+        let mut routing_probes = Vec::new();
         for (slot, peering) in spec.peerings.iter().enumerate() {
             let Some(peering) = peering else { continue };
             let (a, b) = PEERING_PAIRS[slot];
+            // build_manifest assigns one block per expose spec, in order, so the block index of
+            // expose spec `i` is `base + i`. Record each side's base before it advances.
+            let local_base = blocks;
             let local = build_manifest(&vpc_name(a), &peering.local, peering.v6, &mut blocks);
+            let remote_base = blocks;
             let remote = build_manifest(&vpc_name(b), &peering.remote, peering.v6, &mut blocks);
+            derive_routing_probes(
+                &mut routing_probes,
+                VNIS[a],
+                peering.v6,
+                (local_base, &peering.local),
+                (remote_base, &peering.remote),
+            );
             peering_table
                 .add(VpcPeering::with_default_group(
                     &format!("{}-to-{}", vpc_name(a), vpc_name(b)),
@@ -249,7 +288,42 @@ impl OverlaySpec {
                     "generated overlay must validate (generator/config drift): {e}\nspec: {spec:?}"
                 )
             });
-        BuiltOverlay { overlay, blocks }
+        BuiltOverlay {
+            overlay,
+            blocks,
+            routing_probes,
+        }
+    }
+}
+
+/// Append one guaranteed-routing probe for each (source-capable local expose, matchable remote
+/// expose) pair of a peering. The source lands at host `.1` of a can-init private block and the
+/// destination at host `.1` of the peer's matching block
+fn derive_routing_probes(
+    out: &mut Vec<Probe>,
+    src_vni: u32,
+    v6: bool,
+    (local_base, local): (u8, &ManifestSpec),
+    (remote_base, remote): (u8, &ManifestSpec),
+) {
+    let src_vpcd = VpcDiscriminant::from_vni(Vni::new_checked(src_vni).unwrap());
+    for (li, lspec) in local.expose_specs().enumerate() {
+        if !lspec.source_capable() {
+            continue;
+        }
+        let src_ip = block_addr(local_base + li as u8, 1, false, v6);
+        for (ri, rspec) in remote.expose_specs().enumerate() {
+            let Some(dst_public) = rspec.dest_public_space() else {
+                continue;
+            };
+            out.push(Probe {
+                src_vpcd,
+                src_ip,
+                dst_ip: block_addr(remote_base + ri as u8, 1, dst_public, v6),
+                proto: NextHeader::TCP,
+                ports: Some((1, 1)),
+            });
+        }
     }
 }
 
