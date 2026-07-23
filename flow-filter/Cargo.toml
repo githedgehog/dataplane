@@ -6,20 +6,28 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-bitflags = { workspace = true }
+# internal
+acl = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
-indenter = { workspace = true }
-left-right = { workspace = true }
-linkme = { workspace = true }
+dpdk = { workspace = true }
+lookup = { workspace = true }
 lpm = { workspace = true }
+match-action = { workspace = true, features = ["derive"] }
 net = { workspace = true }
 pipeline = { workspace = true }
-tracectl = { workspace = true }
+
+# external
+indenter = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-config = { workspace = true, features = ["testing"] }
+# The reference (linear-scan) ACL backend is the differential-test oracle and drives the fast,
+# EAL-free semantic suite. It is `cfg(test)`-gated in the source, so it is never part of a
+# production build; this dev-dep just makes `acl::reference` available to test builds.
+acl = { workspace = true, features = ["reference"] }
+bolero = { workspace = true, features = ["std"] }
+dpdk = { workspace = true, features = ["test"] }
 lpm = { workspace = true, features = ["testing"] }
-tracing-test = { workspace = true, features = [] }
+net = { workspace = true, features = ["builder"] }

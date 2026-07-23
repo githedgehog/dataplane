@@ -3,7 +3,9 @@
 
 //! NAT tests
 
-#![cfg(test)]
+// All tests use #[dpdk::with_eal] that links the real flow-filter (and thus dpdk-sys), which cannot
+// build on the miri cross target.
+#![cfg(all(test, not(miri)))]
 
 use super::*;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
@@ -16,7 +18,7 @@ use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, 
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::FlowLookup;
 use flow_entry::flow_table::FlowTable;
-use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
+use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
 use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::eth::mac::Mac;
@@ -69,7 +71,7 @@ fn setup_masq_pipeline(
 ) -> (
     DynPipeline<TestBuffer>,
     Arc<FlowTable>,
-    FlowFilterTableWriter,
+    FlowFilterContextWriter,
     NatTablesWriter,
     PortFwTableWriter,
     NatAllocatorWriter,
@@ -88,10 +90,10 @@ fn setup_masq_pipeline(
     pipeline = pipeline.add_stage(flow_lookup);
 
     // Flow-filter
-    let flow_filter_table = FlowFilterTable::build_from_overlay(overlay).unwrap();
-    println!("{flow_filter_table}");
-    let mut flow_filter_writer = FlowFilterTableWriter::new();
-    flow_filter_writer.update_flow_filter_table(flow_filter_table);
+    let flow_filter_context = FlowFilterContext::try_from(overlay).unwrap();
+    println!("{flow_filter_context}");
+    let flow_filter_writer = FlowFilterContextWriter::new();
+    flow_filter_writer.store(flow_filter_context);
     let flow_filter = FlowFilter::new("flow-filter", flow_filter_writer.get_reader());
     pipeline = pipeline.add_stage(flow_filter);
 
@@ -135,6 +137,7 @@ fn setup_masq_pipeline(
 }
 
 #[tokio::test]
+#[dpdk::with_eal]
 async fn test_nat_combination_static_masquerade() {
     #[cfg(not(miri))]
     let _tctl = get_trace_ctl().setup_from_string("pipeline=debug");
@@ -242,6 +245,7 @@ async fn test_nat_combination_static_masquerade() {
 }
 
 #[tokio::test]
+#[dpdk::with_eal]
 #[allow(clippy::too_many_lines)]
 async fn test_nat_combination_static_portfw() {
     #[cfg(not(miri))]
@@ -366,6 +370,7 @@ async fn test_nat_combination_static_portfw() {
 
 // Static NAT + masquerade: Check that ICMP errors are handled correctly
 #[tokio::test]
+#[dpdk::with_eal]
 async fn test_nat_combination_static_masq_icmp_error() {
     #[cfg(not(miri))]
     let _tctl = get_trace_ctl().setup_from_string("pipeline=debug");
@@ -491,6 +496,7 @@ async fn test_nat_combination_static_masq_icmp_error() {
 
 // Static NAT + port forwarding: Check that ICMP errors are handled correctly
 #[tokio::test]
+#[dpdk::with_eal]
 #[allow(clippy::too_many_lines)]
 async fn test_nat_combination_static_portfwd_icmp_error() {
     #[cfg(not(miri))]

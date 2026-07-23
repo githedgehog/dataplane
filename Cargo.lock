@@ -1446,19 +1446,19 @@ dependencies = [
 name = "dataplane-flow-filter"
 version = "0.23.0"
 dependencies = [
- "bitflags 2.13.1",
+ "bolero",
+ "dataplane-acl",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-dpdk",
+ "dataplane-lookup",
  "dataplane-lpm",
+ "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
- "dataplane-tracectl",
  "indenter",
- "left-right 0.11.7",
- "linkme",
  "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -1699,6 +1699,7 @@ dependencies = [
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-dpdk",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
  "dataplane-lpm",

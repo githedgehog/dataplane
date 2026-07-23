@@ -478,18 +478,6 @@ impl VpcExpose {
 
         Ok(collapsed_expose)
     }
-
-    /// FOR TESTS ONLY
-    #[cfg(feature = "testing")]
-    #[must_use]
-    #[allow(unsafe_code)]
-    unsafe fn fake_validated_expose(&self) -> ValidatedExpose {
-        ValidatedExpose {
-            default: self.default,
-            ips: self.ips.clone(),
-            nat: self.nat.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -606,6 +594,18 @@ impl ValidatedExpose {
             .is_some_and(VpcExposeNat::is_port_forwarding)
     }
 
+    /// Returns whether a packet with source IP/port in this expose block can initiate a connection
+    #[must_use]
+    pub fn can_init_connection(&self) -> bool {
+        !self.has_port_forwarding()
+    }
+
+    /// Returns whether destinations in this expose block are valid targets for incoming connections
+    #[must_use]
+    pub fn can_receive_connection(&self) -> bool {
+        !self.has_masquerade()
+    }
+
     #[must_use]
     pub fn nat(&self) -> Option<&VpcExposeNat> {
         self.nat.as_ref()
@@ -617,8 +617,8 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub fn nat_proto(&self) -> Option<&L4Protocol> {
-        self.nat.as_ref().map(|nat| &nat.proto)
+    pub fn nat_proto(&self) -> Option<L4Protocol> {
+        self.nat.as_ref().map(|nat| nat.proto)
     }
 
     #[must_use]
@@ -700,26 +700,6 @@ impl VpcManifest {
     pub fn default_expose(&self) -> Option<&VpcExpose> {
         self.exposes.iter().find(|expose| expose.default)
     }
-
-    /// FOR TESTS ONLY. Fake validation for the manifest.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_valid_manifest_for_tests(&self) -> ValidatedManifest {
-        let mut fake_valid_manifest = ValidatedManifest {
-            name: self.name.clone(),
-            valexp: Vec::new(),
-        };
-        for expose in &self.exposes {
-            let fake_valid_expose = unsafe { expose.fake_validated_expose() };
-            fake_valid_manifest.valexp.push(fake_valid_expose);
-        }
-        fake_valid_manifest
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -794,16 +774,6 @@ impl ValidatedManifest {
     #[must_use]
     pub fn is_default_only(&self) -> bool {
         self.valexp.len() == 1 && self.valexp.first().is_some_and(ValidatedExpose::is_default)
-    }
-
-    #[must_use]
-    pub fn is_v4_or_default(&self) -> bool {
-        self.is_default_only() || self.is_v4()
-    }
-
-    #[must_use]
-    pub fn is_v6_or_default(&self) -> bool {
-        self.is_default_only() || self.is_v6()
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {

@@ -175,13 +175,13 @@ pub fn main() {
     };
     init_logging(&args, &gwname);
 
-    // Initialize a minimal EAL as early as possible. The ACL filter builds rte_acl
-    // classifiers when configuration is applied (which happens before any packet driver starts),
-    // and rte_acl needs the EAL memory subsystem up. These are the lightweight, classifier-only
-    // args (no hugepages / no PCI). NOTE: there can be only one `rte_eal_init` per process, so the
-    // real DPDK datapath driver (currently `todo!()`) must eventually take over EAL ownership with
-    // device-appropriate args rather than adding a second init. The guard is held for the life of
-    // the process.
+    // Initialize a minimal EAL as early as possible. Stages such as the flow-filter and the ACL
+    // filter build rte_acl when configuration is applied (which happens before any packet driver
+    // starts), and rte_acl needs the EAL memory subsystem up. These are the lightweight,
+    // classifier-only args (no hugepages / no PCI). NOTE: there can be only one `rte_eal_init` per
+    // process, so the real DPDK datapath driver (currently `todo!()`) must eventually take over EAL
+    // ownership with device-appropriate args rather than adding a second init. The guard is held
+    // for the life of the process.
     let _eal = dpdk::eal::init([
         "--no-huge",
         "--no-pci",
@@ -299,7 +299,7 @@ pub fn main() {
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
                     natallocatorw: setup.natallocatorw,
-                    flowfilterw: setup.flowfiltertablesw,
+                    flow_filter_writer: setup.flow_filter_writer,
                     aclfilterw: setup.aclfiltertablesw,
                     portfw_w: setup.portfw_w,
                     vpc_stats_store: setup.vpc_stats_store,

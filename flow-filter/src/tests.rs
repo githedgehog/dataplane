@@ -1,1972 +1,1063 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::tables::NatRequirement;
-use crate::{
-    FlowFilter, FlowFilterTable, FlowFilterTableWriter, FlowTuple, RemoteData, VpcdLookupResult,
+//! End-to-end tests for the flow-filter network function.
+
+#![cfg(test)]
+
+use crate::FlowFilter;
+use crate::context::{FlowFilterContext, FlowFilterContextWriter};
+use crate::test_utils::{
+    build_icmp_packet, build_nonip_packet, build_tcp_packet, build_tcp_packet_v6, build_udp_packet,
+    context, expose, expose_masquerade, expose_port_forwarding, expose_static, peering, v4, v6,
+    vpcd,
 };
-use config::ConfigError;
-use config::external::overlay::Overlay;
-use config::external::overlay::vpc::{Vpc, VpcTable};
-use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
-use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
+use concurrency::sync::Arc;
+use lpm::prefix::L4Protocol;
 use net::FlowKey;
-use net::buffer::{PacketBufferMut, TestBuffer};
+use net::buffer::TestBuffer;
 use net::flows::{FlowInfo, FlowStatus};
-use net::headers::{Net, TryHeadersMut, TryIpMut};
-use net::ip::NextHeader;
-use net::ipv4::addr::UnicastIpv4Addr;
-use net::ipv6::addr::UnicastIpv6Addr;
-use net::packet::test_utils::{
-    IcmpEchoDirection, build_test_icmp4_echo, build_test_ipv4_packet_with_transport,
-    build_test_ipv6_packet_with_transport,
-};
+use net::headers::Headers;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::vxlan::Vni;
-use pipeline::NetworkFunction;
-use std::collections::HashSet;
-use std::net::IpAddr;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::str::FromStr;
+use net::parse::DeParse;
+use pipeline::{NetworkFunction, PipelineData};
 use std::time::{Duration, Instant};
 
-use concurrency::sync::Arc;
-use tracing_test::traced_test;
+// -------------------------------------------------------------------------------------------------
+// Helpers
 
-fn vni(id: u32) -> Vni {
-    Vni::new_checked(id).unwrap()
-}
-
-fn vpcd(id: u32) -> VpcDiscriminant {
-    VpcDiscriminant::from_vni(vni(id))
-}
-
-fn needs_masquerade<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    packet.meta().requires_masquerade()
-        && !packet.meta().requires_static_nat()
-        && !packet.meta().requires_port_forwarding()
-}
-
-fn needs_static_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    packet.meta().requires_static_nat()
-        && !packet.meta().requires_masquerade()
-        && !packet.meta().requires_port_forwarding()
-}
-
-fn needs_port_forwarding<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    packet.meta().requires_port_forwarding()
-        && !packet.meta().requires_masquerade()
-        && !packet.meta().requires_static_nat()
-}
-
-fn needs_no_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    !packet.meta().requires_masquerade()
-        && !packet.meta().requires_static_nat()
-        && !packet.meta().requires_port_forwarding()
-}
-
-fn set_src_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
-    let net = packet.headers_mut().try_ip_mut().unwrap();
-    match net {
-        Net::Ipv4(ip) => {
-            ip.set_source(UnicastIpv4Addr::try_from(addr).unwrap());
-        }
-        Net::Ipv6(ip) => {
-            ip.set_source(UnicastIpv6Addr::try_from(addr).unwrap());
-        }
-    }
-}
-
-fn set_dst_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
-    let net = packet.headers_mut().try_ip_mut().unwrap();
-    match net {
-        Net::Ipv4(ip) => {
-            ip.set_destination(UnicastIpv4Addr::try_from(addr).unwrap().into());
-        }
-        Net::Ipv6(ip) => {
-            ip.set_destination(UnicastIpv6Addr::try_from(addr).unwrap().into());
-        }
-    }
-}
-
-fn create_test_packet(
-    src_vpcd: Option<VpcDiscriminant>,
-    src_addr: IpAddr,
-    dst_addr: IpAddr,
-) -> Packet<TestBuffer> {
-    match (src_addr, dst_addr) {
-        (IpAddr::V4(src), IpAddr::V4(dst)) => {
-            create_test_ipv4_udp_packet_with_ports(src_vpcd, src, dst, 1234, 5678)
-        }
-        (IpAddr::V6(src), IpAddr::V6(dst)) => {
-            create_test_ipv6_udp_packet_with_ports(src_vpcd, src, dst, 1234, 5678)
-        }
-        _ => panic!("Invalid IP versions combination"),
-    }
-}
-
-fn create_test_ipv4_udp_packet_with_ports(
-    src_vpcd: Option<VpcDiscriminant>,
-    src_addr: Ipv4Addr,
-    dst_addr: Ipv4Addr,
-    src_port: u16,
-    dst_port: u16,
-) -> Packet<TestBuffer> {
-    let mut packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::UDP)).unwrap();
-
+// Serialize built headers into a parseable test packet, marked as overlay traffic with the given
+// source VPC (the pipeline only processes overlay packets that still lack a destination VPC).
+fn packet(src_vpcd: Option<VpcDiscriminant>, headers: Headers) -> Packet<TestBuffer> {
+    let mut buffer = TestBuffer::new();
+    headers.deparse(buffer.as_mut()).unwrap();
+    let mut packet = Packet::new(buffer).unwrap();
     packet.meta_mut().set_overlay(true);
-    set_src_addr(&mut packet, src_addr.into());
-    set_dst_addr(&mut packet, dst_addr.into());
-    packet
-        .set_udp_source_port(src_port.try_into().unwrap())
-        .unwrap();
-    packet
-        .set_udp_destination_port(dst_port.try_into().unwrap())
-        .unwrap();
     packet.meta_mut().src_vpcd = src_vpcd;
     packet
 }
 
-fn create_test_ipv4_tcp_packet_with_ports(
-    src_vpcd: Option<VpcDiscriminant>,
-    src_addr: Ipv4Addr,
-    dst_addr: Ipv4Addr,
-    src_port: u16,
-    dst_port: u16,
-) -> Packet<TestBuffer> {
-    let mut packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
-
-    packet.meta_mut().set_overlay(true);
-    set_src_addr(&mut packet, src_addr.into());
-    set_dst_addr(&mut packet, dst_addr.into());
-    packet
-        .set_tcp_source_port(net::tcp::TcpPort::new_checked(src_port).unwrap())
-        .unwrap();
-    packet
-        .set_tcp_destination_port(net::tcp::TcpPort::new_checked(dst_port).unwrap())
-        .unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
-    packet
-}
-
-fn create_test_ipv6_udp_packet_with_ports(
-    src_vpcd: Option<VpcDiscriminant>,
-    src_addr: Ipv6Addr,
-    dst_addr: Ipv6Addr,
-    src_port: u16,
-    dst_port: u16,
-) -> Packet<TestBuffer> {
-    let mut packet = build_test_ipv6_packet_with_transport(100, Some(NextHeader::UDP)).unwrap();
-
-    packet.meta_mut().set_overlay(true);
-    set_src_addr(&mut packet, src_addr.into());
-    set_dst_addr(&mut packet, dst_addr.into());
-    packet
-        .set_udp_source_port(src_port.try_into().unwrap())
-        .unwrap();
-    packet
-        .set_udp_destination_port(dst_port.try_into().unwrap())
-        .unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
-    packet
-}
-
-fn create_test_icmp_v4_packet(
-    src_vpcd: Option<VpcDiscriminant>,
-    src_addr: Ipv4Addr,
-    dst_addr: Ipv4Addr,
-) -> Packet<TestBuffer> {
-    let mut packet =
-        build_test_icmp4_echo(src_addr, dst_addr, 1, IcmpEchoDirection::Request).unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
-    packet.meta_mut().set_overlay(true);
-    packet
-}
-
-fn fake_flow_session<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
-    dst_vpcd: VpcDiscriminant,
-    set_nat_state: bool,
-    set_port_fw_state: bool,
-) {
-    // build flow key
+// Attach a flow session, the way a downstream stateful NF would. `active` controls the flow status
+// (only active flows can be used to bypass the filter); `dst_vpcd` is the flow's recorded
+// destination (`None` models a buggy flow with no destination); `nat_state` / `port_fw_state` model
+// stored masquerade / port-forwarding state. Returns the shared `FlowInfo` so a test can inspect it
+// after processing (e.g. to check invalidation).
+fn attach_flow(
+    packet: &mut Packet<TestBuffer>,
+    dst_vpcd: Option<VpcDiscriminant>,
+    active: bool,
+    nat_state: bool,
+    port_fw_state: bool,
+) -> Arc<FlowInfo> {
     let flow_key = FlowKey::try_from(&*packet).unwrap();
 
-    // Create flow_info with dst_vpcd and NAT info and attach it to the packet
-    let flow_info = FlowInfo::new(flow_key, Instant::now() + Duration::from_secs(60));
+    let expires_at = Instant::now() + Duration::from_secs(60);
+    let (flow_info, _) = FlowInfo::related_pair(
+        expires_at,
+        flow_key,
+        packet.meta().compute_flow_flags_forward(),
+        flow_key.reverse(dst_vpcd),
+        packet.meta().compute_flow_flags_reverse(),
+    );
 
-    // pretend that flow is in table
-    flow_info.update_status(FlowStatus::Active);
-
-    let mut binding = flow_info.locked.write();
-    binding.dst_vpcd = Some(dst_vpcd);
-    if set_nat_state {
-        // Content should be a NatFlowState object but we can't include it in this crate without
-        // introducing a circular dependency; just use a bool, as we don't attempt to downcast
-        // it anyway.
-        binding.nat_state = Some(Box::new(true));
+    if active {
+        flow_info.update_status(FlowStatus::Active);
     }
-    if set_port_fw_state {
-        // Content should be a PortFwState object but we can't include it in this crate without
-        // introducing a circular dependency; just use a bool, as we don't attempt to downcast
-        // it anyway.
-        binding.port_fw_state = Some(Box::new(true));
+    {
+        let mut locked = flow_info.locked.write();
+        locked.dst_vpcd = dst_vpcd;
+        if nat_state {
+            // The concrete type would be a NatState; a bool is enough here since the flow filter
+            // only checks for presence, never downcasts it.
+            locked.nat_state = Some(Box::new(true));
+        }
+        if port_fw_state {
+            locked.port_fw_state = Some(Box::new(true));
+        }
     }
-    drop(binding);
-    packet.meta_mut().flow_info = Some(Arc::new(flow_info));
+    packet.meta_mut().flow_info = Some(flow_info.clone());
+    flow_info
 }
 
-#[test]
-fn test_flow_filter_packet_allowed() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), None, None);
+fn make_flow_filter(ctx: FlowFilterContext) -> (FlowFilter, FlowFilterContextWriter) {
+    let writer = FlowFilterContextWriter::default();
+    writer.store(ctx);
+    (
+        FlowFilter::new("test-flow-filter", writer.get_reader()),
+        writer,
+    )
+}
 
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("10.0.0.0/24"),
-            None,
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet
-    let packet = create_test_packet(
-        Some(src_vpcd),
-        "10.0.0.5".parse().unwrap(),
-        "20.0.0.10".parse().unwrap(),
+// Set the configuration generation id the filter compares flows against.
+fn set_genid(flow_filter: &mut FlowFilter, genid: i64) {
+    <FlowFilter as NetworkFunction<TestBuffer>>::set_data(
+        flow_filter,
+        Arc::new(PipelineData::new(genid)),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(dst_data.vpcd));
 }
 
+fn run(flow_filter: &mut FlowFilter, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
+    flow_filter.process([packet].into_iter()).next().unwrap()
+}
+
+// vpc1 <-> vpc2: vpc1 (source side) exposes a plain prefix, a static-NAT prefix and a masquerade
+// prefix; vpc2 (destination side) exposes a plain prefix.
+fn source_nat_context() -> FlowFilterContext {
+    context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            (
+                "vpc1",
+                vec![
+                    expose("1.0.0.0/24"),
+                    expose_static("2.0.0.0/24", "20.0.0.0/24"),
+                    expose_masquerade("3.0.0.0/24", "30.0.0.0/24"),
+                ],
+            ),
+            ("vpc2", vec![expose("5.0.0.0/24")]),
+        )],
+    )
+}
+
+// vpc1 <-> vpc2 with a TCP-only port-forwarding destination on vpc2.
+fn dst_port_forwarding_context() -> FlowFilterContext {
+    context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            (
+                "vpc2",
+                vec![expose_port_forwarding(
+                    "192.168.80.5/32",
+                    (22, 22),
+                    "80.0.0.5/32",
+                    (2222, 2222),
+                    Some(L4Protocol::Tcp),
+                )],
+            ),
+        )],
+    )
+}
+
+// vpc1 <-> vpc2 with a static-NAT destination on vpc2.
+fn dst_static_context() -> FlowFilterContext {
+    context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            ("vpc2", vec![expose_static("192.168.6.0/24", "60.0.0.0/24")]),
+        )],
+    )
+}
+
+// vpc1 <-> vpc2: vpc1 (source side) exposes a masquerade prefix; vpc2 (destination side) exposes a
+// static-NAT prefix.
+fn static_nat_plus_masquerade_context() -> FlowFilterContext {
+    context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose_masquerade("1.0.0.0/24", "10.0.0.0/24")]),
+            ("vpc2", vec![expose_static("2.0.0.0/24", "20.0.0.0/24")]),
+        )],
+    )
+}
+
+// vpc1 <-> vpc2 over IPv6.
+fn ipv6_context() -> FlowFilterContext {
+    context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc2", vec![expose("2001:db9::/32")]),
+        )],
+    )
+}
+
+// -------------------------------------------------------------------------------------------------
+// Basic acceptance / rejection
+
 #[test]
-fn test_flow_filter_packet_filtered() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Masquerade), None);
-
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("10.0.0.0/24"),
-            None,
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet with non-matching destination
-    let packet = create_test_packet(
-        Some(src_vpcd),
-        "10.0.0.5".parse().unwrap(),
-        "30.0.0.10".parse().unwrap(),
+fn allowed_packet_sets_destination_and_no_nat() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(!out.meta().requires_masquerade());
+    assert!(!out.meta().requires_static_nat());
+    assert!(!out.meta().requires_port_forwarding());
 }
 
 #[test]
-fn test_flow_filter_missing_src_vpcd() {
-    let table = FlowFilterTable::new();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet without src_vpcd
-    let packet = create_test_packet(
-        None,
-        "10.0.0.5".parse().unwrap(),
-        "20.0.0.10".parse().unwrap(),
+fn unmatched_destination_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("9.9.9.9"), 1234, 5678),
+        ),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Unroutable));
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(out.meta().dst_vpcd, None);
 }
 
 #[test]
-fn test_flow_filter_no_matching_src_prefix() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), None, None);
-
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("10.0.0.0/24"),
+fn missing_source_vpc_is_unroutable() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
             None,
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet with non-matching source address
-    let packet = create_test_packet(
-        Some(src_vpcd),
-        "11.0.0.5".parse().unwrap(),
-        "20.0.0.10".parse().unwrap(),
+            build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(out.get_done(), Some(DoneReason::Unroutable));
 }
 
 #[test]
-fn test_flow_filter_multiple_matches_no_dst_vpcd() {
-    // Setup table with overlapping destination prefixes from different VPCs
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-
-    // Manually set up a scenario where dst_vpcd lookup returns MultipleMatches
-    // This happens when the same destination can be reached from multiple VPCs
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::MultipleMatches(HashSet::from([
-                RemoteData::new(
-                    vpcd(200),
-                    None,
-                    Some(NatRequirement::PortForwarding(L4Protocol::Tcp)), // This rule is for TCP
-                ),
-                RemoteData::new(
-                    vpcd(300),
-                    None,
-                    Some(NatRequirement::PortForwarding(L4Protocol::Tcp)), // This rule is for TCP
-                ),
-            ])),
-            Prefix::from("10.0.0.0/24"),
-            None,
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test UDP packet
-    let packet = create_test_ipv4_udp_packet_with_ports(
+fn non_overlay_packet_is_left_untouched() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let mut p = packet(
         Some(vpcd(100)),
-        "10.0.0.5".parse().unwrap(),
-        "20.0.0.10".parse().unwrap(),
-        1234,
-        5678,
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    // Without table flow lookup we can't find the right dst_vpcd, so we should drop the packet
-    assert!(packet_out.is_done());
-    assert!(packet_out.meta().dst_vpcd.is_none());
+    p.meta_mut().set_overlay(false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done());
+    assert_eq!(out.meta().dst_vpcd, None);
 }
 
 #[test]
-fn test_flow_filter_table_overlap_cases() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-    let vni3 = Vni::new_checked(300).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
-        .unwrap();
-
-    // - vpc1-to-vpc2:
-    //     VPC01:
-    //       prefixes:
-    //       - 1.0.0.0/24
-    //     VPC02:
-    //       prefixes:
-    //       - 5.0.0.0/24
-    //
-    // - vpc2-to-vpc3:
-    //     VPC02:
-    //       prefixes:
-    //       - 5.0.0.0/24
-    //       - 6.0.0.0/24
-    //     VPC03:
-    //       prefixes:
-    //       - 1.0.0.64/26    // 1.0.0.64 to 1.0.0.127
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::new(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().ip("1.0.0.0/24".into())]),
-            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
-            "default".into(),
-        ))
-        .unwrap();
-
-    peering_table
-        .add(VpcPeering::new(
-            "vpc2-to-vpc3",
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty().ip("5.0.0.0/24".into()),
-                    VpcExpose::empty().ip("6.0.0.0/24".into()),
-                ],
-            ),
-            VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().ip("1.0.0.64/26".into())]),
-            "default".into(),
-        ))
-        .unwrap();
-
-    // Build overlay.vpc_table's peerings from peering_table, with no validation.
-    // We don't validate because overlapping prefixes actually make the config invalid; but it
-    // doesn't matter for the test.
-    let overlay = Overlay::new(vpc_table, peering_table);
-    assert!(matches!(
-        overlay.validate(),
-        Err(ConfigError::OverlappingPrefixes(_, _))
-    ));
-    let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
-
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // VPC-1 -> VPC-2: No ambiguity
-    let packet = create_test_packet(
+fn packet_with_destination_already_set_is_left_untouched() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let mut p = packet(
         Some(vpcd(100)),
-        "1.0.0.5".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+    p.meta_mut().dst_vpcd = Some(vpcd(777));
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(777)));
+}
 
-    // VPC-3 -> VPC-2: No ambiguity
-    let packet = create_test_packet(
-        Some(vpcd(300)),
-        "1.0.0.70".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
+#[test]
+fn icmp_packet_is_allowed() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("1.0.0.5"), v4("5.0.0.10")),
+        ),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
 
-    // VPC-2 -> VPC-1 using lower non-overlapping destination prefix section
-    let packet = create_test_packet(
+// -------------------------------------------------------------------------------------------------
+// NAT requirement flags derived from the lookup
+
+#[test]
+fn static_nat_source_sets_static_flag() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("2.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_static_nat());
+    assert!(out.meta().requires_static_nat_src());
+    assert!(!out.meta().requires_masquerade());
+}
+
+#[test]
+fn masquerade_source_sets_masquerade_flag() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+    assert!(!out.meta().requires_static_nat());
+}
+
+#[test]
+fn port_forwarding_destination_sets_flag_and_is_protocol_aware() {
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+
+    // TCP packet into the port-forwarding range: allowed, flag set.
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("10.0.0.5"), v4("80.0.0.5"), 1234, 2222),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_port_forwarding());
+
+    // UDP packet into the same range: TCP-only forwarding does not match -> filtered.
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_udp_packet(v4("10.0.0.5"), v4("80.0.0.5"), 1234, 2222),
+        ),
+    );
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+}
+
+// -------------------------------------------------------------------------------------------------
+// Stateful flows
+
+#[test]
+fn active_flow_state_is_honored() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // Route itself requires no NAT, but the attached active flow carries masquerade state, so the
+    // bypass path tags the packet for masquerade. Flow genid (0) matches the NF's default genid
+    // (0), so the flow is considered up-to-date and is not invalidated.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+    assert_eq!(flow.status(), FlowStatus::Active);
+}
+
+#[test]
+fn outdated_flow_is_invalidated() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // Advance the configuration generation so the flow (genid 0) is outdated.
+    set_genid(&mut flow_filter, 5);
+
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    // The flow points at the wrong destination VPC for the current config.
+    let flow = attach_flow(&mut p, Some(vpcd(300)), true, false, false);
+    let out = run(&mut flow_filter, p);
+
+    // The packet is re-evaluated from the tables (resolving to vpc2) and the stale flow is cancelled.
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// -------------------------------------------------------------------------------------------------
+// More NAT flags, protocols and batching
+
+#[test]
+fn static_nat_destination_sets_static_dst_flag() {
+    let (mut flow_filter, _) = make_flow_filter(dst_static_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("10.0.0.5"), v4("60.0.0.10"), 1234, 5678),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_static_nat());
+    assert!(out.meta().requires_static_nat_dst());
+    assert!(!out.meta().requires_static_nat_src());
+}
+
+#[test]
+fn ipv6_packet_through_the_nf() {
+    let (mut flow_filter, _) = make_flow_filter(ipv6_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:db9::1"), 1234, 5678),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
+
+#[test]
+fn non_ip_packet_is_dropped() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let out = run(
+        &mut flow_filter,
+        packet(Some(vpcd(100)), build_nonip_packet()),
+    );
+    assert_eq!(out.get_done(), Some(DoneReason::NotIp));
+}
+
+#[test]
+fn batch_of_packets_is_processed_independently() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    let packets = vec![
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ), // allowed, no NAT
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("9.9.9.9"), 1234, 5678),
+        ), // filtered
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ), // allowed, masquerade
+    ];
+    let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+    assert_eq!(out.len(), 3);
+
+    assert!(!out[0].is_done());
+    assert_eq!(out[0].meta().dst_vpcd, Some(vpcd(200)));
+    assert!(!out[0].meta().requires_masquerade());
+
+    assert_eq!(out[1].get_done(), Some(DoneReason::Filtered));
+
+    assert!(!out[2].is_done());
+    assert_eq!(out[2].meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out[2].meta().requires_masquerade());
+}
+
+// -------------------------------------------------------------------------------------------------
+// Stateful flows: bypass eligibility
+
+#[test]
+fn active_flow_port_forwarding_state_is_honored() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // No-NAT route, but the active flow carries port-forwarding state -> tagged for port forwarding.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_eq!(flow.status(), FlowStatus::Active);
+}
+
+#[test]
+fn inactive_flow_state_is_not_honored() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // The flow carries masquerade state but is not active, so it must not be used to bypass the
+    // filter: the packet is evaluated purely from the tables (no NAT) and the flow is left alone.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), false, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(!out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn active_flow_without_destination_is_invalidated() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // An active, up-to-date flow that records no destination VPC is a bug: it is invalidated.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, None, true, false, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// -------------------------------------------------------------------------------------------------
+// Stateful flows: invalidation of outdated flows (each `should_invalidate_flow` branch)
+
+#[test]
+fn outdated_flow_that_no_longer_needs_state_is_invalidated() {
+    // Outdated flow, correct destination, but the (no-NAT) route no longer requires any state.
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn outdated_flow_missing_masquerade_state_is_invalidated() {
+    // Outdated flow, correct destination, route now requires masquerade, but the flow has no
+    // masquerade state.
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(out.meta().requires_masquerade());
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn outdated_flow_missing_port_forwarding_state_is_invalidated() {
+    // Outdated flow, correct destination, route now requires port forwarding, but the flow has no
+    // port-forwarding state.
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("10.0.0.5"), v4("80.0.0.5"), 1234, 2222),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(out.meta().requires_port_forwarding());
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn outdated_flow_with_consistent_state_is_kept() {
+    // Outdated flow, correct destination, route requires masquerade and the flow already has
+    // masquerade state: the filter cannot prove it stale, so it is left for the stateful NFs.
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+}
+
+// -------------------------------------------------------------------------------------------------
+// Stateful reply traffic across config changes. The tables cannot answer for the reverse direction
+// of stateful-NAT sessions (masquerade destinations are only markers, port-forwarding sources are
+// absent altogether), so after a genid bump those packets must ride their established flow instead
+// of being dropped -- while packets with no such flow, and flows whose peering is gone, still fail
+// closed.
+
+#[test]
+fn masquerade_reply_on_established_flow_survives_config_change() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    // Reply direction of a masqueraded session: vpc2 answers towards vpc1's masquerade public
+    // range. The flow (genid 0) is outdated, so the bypass is refused and the packet goes through
+    // the tables, which resolve a masquerade marker.
+    let mut p = packet(
         Some(vpcd(200)),
-        "5.0.0.10".parse().unwrap(),
-        "1.0.0.5".parse().unwrap(),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+}
 
-    // VPC-2 -> VPC-1 using upper non-overlapping destination prefix section
-    let packet = create_test_packet(
+#[test]
+fn masquerade_reply_without_flow_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // No established flow: a masquerade destination cannot accept a new connection.
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+        ),
+    );
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+}
+
+#[test]
+fn masquerade_reply_with_inactive_flow_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
         Some(vpcd(200)),
-        "5.0.0.10".parse().unwrap(),
-        "1.0.0.205".parse().unwrap(),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
+    attach_flow(&mut p, Some(vpcd(100)), false, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+}
 
-    // VPC-2 -> VPC-3 using non-overlapping source prefix
-    let packet = create_test_packet(
+#[test]
+fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
         Some(vpcd(200)),
-        "6.0.0.11".parse().unwrap(),
-        "1.0.0.70".parse().unwrap(),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+    // The flow's recorded destination does not match what the tables resolve: stale, drop.
+    let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
 
-    // VPC-2 -> VPC-??? using overlapping prefix sections: multiple matches
-    let packet = create_test_packet(
+#[test]
+fn port_forwarding_reply_on_established_flow_survives_config_change() {
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    set_genid(&mut flow_filter, 5);
+    // Reply direction of a forwarded session: the forwarded host answers from its private
+    // address, which is (deliberately) not in the local tables.
+    let mut p = packet(
         Some(vpcd(200)),
-        "5.0.0.10".parse().unwrap(),
-        "1.0.0.70".parse().unwrap(),
+        build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, None)
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
 }
 
 #[test]
-fn test_flow_filter_ipv6() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(
-        vpcd(200),
-        Some(NatRequirement::Static),
-        Some(NatRequirement::Static),
+fn port_forwarding_reply_without_flow_is_filtered() {
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(200)),
+            build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
+        ),
     );
-
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("2001:db8::/32"),
-            None,
-            Prefix::from("2001:db9::/32"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet
-    let packet = create_test_packet(
-        Some(src_vpcd),
-        "2001:db8::1".parse().unwrap(),
-        "2001:db9::1".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(dst_data.vpcd));
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
 }
 
 #[test]
-fn test_flow_filter_packet_icmp_allowed() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Masquerade), None);
-
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("10.0.0.0/24"),
-            None,
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet
-    let packet = create_test_icmp_v4_packet(
-        Some(src_vpcd),
-        Ipv4Addr::from_str("10.0.0.5").unwrap(),
-        Ipv4Addr::from_str("20.0.0.10").unwrap(),
+fn stateful_flow_does_not_survive_peering_removal() {
+    // The peering is gone from the new config: even an active, state-consistent flow must not let
+    // reply traffic through (stage 1 finds no marker to trust), and the flow pair is invalidated.
+    let (mut flow_filter, writer) = make_flow_filter(source_nat_context());
+    writer.store(context(&[], vec![]));
+    set_genid(&mut flow_filter, 5);
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(dst_data.vpcd));
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// -------------------------------------------------------------------------------------------------
+// Stateful flows: flow-key attachment for the {masquerade|port-forwarding} + static-NAT combination
+
+#[test]
+fn flow_key_attached_for_stateful_plus_static_nat_first_packet() {
+    let (mut flow_filter, _) = make_flow_filter(static_nat_plus_masquerade_context());
+    // Masquerade on the source combined with static-NAT on the destination, assuming this is the
+    // first packet of a flow: we don't bypass the lookup, and we also need to have a flow key
+    // attached for the stateful NFs to create a flow with the relevant information for both NAT
+    // modes.
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("20.0.0.10"), 1234, 5678),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(out.meta().requires_masquerade());
+    assert!(out.meta().requires_static_nat());
+    assert!(out.meta().flow_key.is_some());
 }
 
 #[test]
-fn test_flow_filter_packet_icmp_filtered() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), None, None);
-
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("10.0.0.0/24"),
-            Some(PortRange::new(1025, 1999).unwrap()),
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
-
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Create test packet
-    let packet = create_test_icmp_v4_packet(
-        Some(src_vpcd),
-        Ipv4Addr::from_str("10.0.0.5").unwrap(),
-        Ipv4Addr::from_str("20.0.0.10").unwrap(),
+fn flow_key_attached_for_stateful_plus_static_nat_followup_packet() {
+    let (mut flow_filter, _) = make_flow_filter(static_nat_plus_masquerade_context());
+    // Masquerade on the source combined with static-NAT on the destination, assuming we already
+    // have an existing flow with the relevant information for both NAT modes: both modes are added
+    // to packet metadata, but there's no need to attach a new flow key (only required for flow
+    // creation).
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("20.0.0.10"), 1234, 5678),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(packet_out.is_done());
-    assert_eq!(packet_out.meta().dst_vpcd, None);
+    // Set source static-NAT flag manually just for flow attachment, to have the created flow
+    // contain the static-NAT state.
+    p.meta_mut().set_static_nat_src(true);
+    attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    // Undo source static NAT flag.
+    p.meta_mut().set_static_nat_src(false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert!(out.meta().requires_masquerade());
+    assert!(out.meta().requires_static_nat());
+    assert!(out.meta().flow_key.is_none());
 }
 
-#[cfg_attr(not(emulated), traced_test)]
+// -------------------------------------------------------------------------------------------------
+// Context hot-swap via the control-plane writer
+
+// A context published through the writer handle is observed by a running the NF on its next packet:
+// the same packet routes before the swap and is filtered after it.
 #[test]
-fn test_flow_filter_table_from_overlay() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-    let vni3 = Vni::new_checked(300).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().ip("1.0.0.0/24".into())]),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty().ip("5.0.0.0/24".into()),
-                    VpcExpose::empty().set_default(),
-                ],
-            ),
-        ))
-        .unwrap();
-
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc3",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty().ip("1.0.0.0/24".into()),
-                    VpcExpose::empty().ip("2.0.0.0/24".into()),
-                ],
-            ),
-            VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().ip("6.0.0.0/24".into())]),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // VPC-1 -> VPC-2 using prefix
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "1.0.0.5".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
+fn context_writer_hot_swaps_routing() {
+    let (mut flow_filter, writer) = make_flow_filter(source_nat_context());
+    // Before the swap: 1.0.0.5 -> 5.0.0.10 is routed to vpc2.
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_no_nat(&packet_out));
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
 
-    // VPC-1 -> VPC-2 using default range
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "1.0.0.6".parse().unwrap(),
-        "17.34.51.68".parse().unwrap(),
+    // Publish an empty context (no peerings); the running NF observes it on the next packet.
+    writer.store(context(&[], vec![]));
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+        ),
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-
-    // VPC-1 -> VPC-3, using source prefix overlapping with VPC-1 <-> VPC-2 peering
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "1.0.0.7".parse().unwrap(),
-        "6.0.0.8".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-
-    // VPC-1 -> VPC-3, using the other source prefix
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "2.0.0.24".parse().unwrap(),
-        "6.0.0.8".parse().unwrap(),
-    );
-
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-
-    // Invalid: source from VPC-1 <-> VPC-3 peering, but invalid destination
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "2.0.0.24".parse().unwrap(),
-        "25.50.100.200".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(packet_out.is_done());
-    assert_eq!(packet_out.meta().dst_vpcd, None);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(out.meta().dst_vpcd, None);
 }
 
-#[cfg_attr(not(emulated), traced_test)]
+// -------------------------------------------------------------------------------------------------
+// Batched processing: a burst larger than MAX_BATCH (exercises per-version chunking), and a mixed
+// v4/v6 burst (exercises the version partition + output-order preservation).
+
 #[test]
-fn test_flow_filter_table_check_send_from_default() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
-            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with a packet
-
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "99.99.99.99".parse().unwrap(), // From "default" expose, use any address
-        "5.0.0.8".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-}
-
-#[cfg_attr(not(emulated), traced_test)]
-#[test]
-fn test_flow_filter_table_check_default_to_default() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
-            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().set_default()]),
-        ))
-        .unwrap();
-
-    // Build overlay.vpc_table's peerings from peering_table, with no validation.
-    // We don't validate because overlapping prefixes actually make the config invalid; but it
-    // doesn't matter for the test.
-    let overlay = Overlay::new(vpc_table, peering_table);
-    assert!(matches!(overlay.validate(), Err(ConfigError::Forbidden(_))));
-    let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
-
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "99.99.99.99".parse().unwrap(),
-        "77.77.77.77".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-}
-
-#[cfg_attr(not(emulated), traced_test)]
-#[test]
-fn test_flow_filter_table_check_nat_requirements() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty().ip("1.0.0.0/24".into()), // No NAT
-                    VpcExpose::empty()
-                        .make_static_nat()
-                        .unwrap()
-                        .ip("2.0.0.0/24".into())
-                        .as_range("20.0.0.0/24".into()) // Static NAT
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("3.0.0.0/24".into())
-                        .as_range("30.0.0.0/24".into()) // Masquerade
-                        .unwrap(),
-                    VpcExpose::empty().set_default(), // Default (no NAT)
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty().ip("5.0.0.0/24".into()), // No NAT
-                    VpcExpose::empty()
-                        .make_static_nat()
-                        .unwrap()
-                        .ip("6.0.0.0/24".into())
-                        .as_range("60.0.0.0/24".into()) // Static NAT
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("7.0.0.0/24".into())
-                        .as_range("70.0.0.0/24".into()) // Masquerade
-                        .unwrap(),
-                    VpcExpose::empty().set_default(), // Default (no NAT)
-                ],
-            ),
-        ))
-        .unwrap();
-
-    // Build overlay.vpc_table's peerings from peering_table, with no validation.
-    // We don't validate because overlapping prefixes actually make the config invalid; but it
-    // doesn't matter for the test.
-    let overlay = Overlay::new(vpc_table, peering_table);
-    assert!(matches!(overlay.validate(), Err(ConfigError::Forbidden(_))));
-    let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
-
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // src: no NAT, dst: no NAT
-    let packet = create_test_packet(
-        Some(Vni::new_checked(100).unwrap().into()),
-        "1.0.0.5".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_no_nat(&packet_out));
-
-    // src: static NAT, dst: static NAT
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "2.0.0.5".parse().unwrap(),
-        "60.0.0.10".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_static_nat(&packet_out));
-
-    // src: masquerade, dst: no NAT
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "3.0.0.5".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // src: no NAT, dst: masquerade
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "1.0.0.5".parse().unwrap(),
-        "70.0.0.10".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    // These are invalid NAT requirements because we cannot currently initiate a connection towards
-    // an expose using masquerading, and here there is no flow info attached to packet.
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
-
-    // src: masquerade, dst: default (no NAT)
-    let packet = create_test_packet(
-        Some(vni1.into()),
-        "3.0.0.5".parse().unwrap(),
-        "99.0.0.10".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_masquerade(&packet_out));
-}
-
-#[cfg_attr(not(emulated), traced_test)]
-#[test]
-fn test_flow_filter_table_check_masquerade_plus_port_forwarding() {
-    let vni1 = vni(100);
-    let vni2 = vni(200);
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("1.0.0.0/24".into())
-                        .as_range("100.0.0.0/24".into()) // Masquerade
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, None)
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "1.0.0.27/32".into(),
-                            Some(PortRange::new(2000, 2001).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "100.0.0.27/32".into(),
-                            Some(PortRange::new(3000, 3001).unwrap()),
-                        )) // Port forwarding
-                        .unwrap(),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
-            ),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // VPC 1 to VPC 2, outside of port forwarding IP range: masquerade
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.4".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        2000,
-        456,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC 1 to VPC 2, outside of port forwarding port range: masquerade
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.27".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        123,
-        456,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC 1 to VPC 2, inside of port forwarding range: still masquerade (no existing port
-    // forwarding entry in the flow table)
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.27".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        2000,
-        456,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC 2 to VPC 1, outside of port forwarding IP range: reverse masquerade
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.4".parse().unwrap(),
-        456,
-        2000,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    // We don't have a flow-info for the packet, and cannot initiate the connection towards an
-    // expose using masquerading.
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
-
-    // VPC 2 to VPC 1, outside of port forwarding port range: reverse masquerade
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        123,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    // We don't have a flow-info for the packet, and cannot initiate the connection towards an
-    // expose using masquerading.
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
-
-    // VPC 2 to VPC 1, inside of port forwarding range: port forwarding
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        3000,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_port_forwarding(&packet_out));
-
-    // Back to VPC 1 to VPC 2, inside of port forwarding range, with flow_info attached for
-    // masquerade: masquerade
-    let mut packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.27".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        2000,
-        456,
-    );
-    fake_flow_session(&mut packet, vni2.into(), true, false);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC 1 to VPC 2, inside of port forwarding range, this time with flow_info attached for
-    // port forwarding: port forwarding
-    let mut packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.27".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        2000,
-        456,
-    );
-    fake_flow_session(&mut packet, vni2.into(), false, true);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_port_forwarding(&packet_out));
-
-    // VPC 2 to VPC 1, outside of port forwarding port range, with flow_info attached for
-    // masquerade: reverse masquerade
-    let mut packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        123,
-    );
-    fake_flow_session(&mut packet, vni1.into(), true, false);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC 2 to VPC 1, outside of port forwarding IP range, with flow_info attached for masquerade:
-    // reverse masquerade
-    let mut packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.4".parse().unwrap(),
-        456,
-        2000,
-    );
-    fake_flow_session(&mut packet, vni1.into(), true, false);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_masquerade(&packet_out));
+fn burst_larger_than_max_batch_is_processed() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    // 40 packets (> MAX_BATCH = 32): even indices routed to vpc2, odd indices filtered.
+    let packets: Vec<_> = (0..40)
+        .map(|i| {
+            let dst = if i % 2 == 0 { "5.0.0.10" } else { "9.9.9.9" };
+            packet(
+                Some(vpcd(100)),
+                build_tcp_packet(v4("1.0.0.5"), v4(dst), 1234, 5678),
+            )
+        })
+        .collect();
+    let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+    // `enforce` marks (does not drop) filtered packets, so all 40 come out in order: even indices
+    // routed to vpc2, odd indices marked Filtered.
+    assert_eq!(out.len(), 40);
+    for (i, pkt) in out.iter().enumerate() {
+        if i % 2 == 0 {
+            assert!(!pkt.is_done(), "{:?}", pkt.get_done());
+            assert_eq!(pkt.meta().dst_vpcd, Some(vpcd(200)));
+        } else {
+            assert_eq!(pkt.get_done(), Some(DoneReason::Filtered));
+        }
+    }
 }
 
 #[test]
-#[cfg_attr(not(emulated), traced_test)]
-fn test_flow_filter_protocol_aware_port_forwarding() {
-    // Test that protocol-specific port forwarding correctly filters by L4 protocol.
-    // Setup: TCP-only port forwarding overlapping with masquerade.
-    // - A TCP packet in the port forwarding range should get port forwarding (dst side) or
-    //   masquerade (src side, no existing flow).
-    // - A UDP packet in the same range should fall back to masquerade (the TCP-only port forwarding
-    //   entry is filtered out by applies_to()).
-
-    let vni1 = vni(100);
-    let vni2 = vni(200);
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .make_masquerade(None) // Masquerade
-                        .unwrap()
-                        .ip("1.0.0.0/24".into())
-                        .as_range("100.0.0.0/24".into())
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP-only port forwarding
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "1.0.0.27/32".into(),
-                            Some(PortRange::new(2000, 2001).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "100.0.0.27/32".into(),
-                            Some(PortRange::new(3000, 3001).unwrap()),
-                        ))
-                        .unwrap(),
-                ],
+fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
+    let ctx = context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("1.0.0.0/24")]),
+                ("vpc2", vec![expose("5.0.0.0/24")]),
             ),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
+            peering(
+                "vpc1-to-vpc3",
+                ("vpc1", vec![expose("2001:db8::/32")]),
+                ("vpc3", vec![expose("2001:db9::/32")]),
             ),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Source side: VPC 1 -> VPC 2
-
-    // TCP packet inside port forwarding range: masquerade takes precedence on source side
-    // (no existing port forwarding flow)
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.27".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        2000,
-        456,
+        ],
     );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_masquerade(&packet_out));
+    let (mut flow_filter, _) = make_flow_filter(ctx);
+    // Interleave v4 (-> vpc2) and v6 (-> vpc3). Nothing is dropped, so output order == input order.
+    let packets: Vec<_> = (0..8)
+        .map(|i| {
+            if i % 2 == 0 {
+                packet(
+                    Some(vpcd(100)),
+                    build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+                )
+            } else {
+                packet(
+                    Some(vpcd(100)),
+                    build_tcp_packet_v6(v6("2001:db8::1"), v6("2001:db9::1"), 1234, 5678),
+                )
+            }
+        })
+        .collect();
+    let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+    assert_eq!(out.len(), 8);
+    for (i, pkt) in out.iter().enumerate() {
+        let expected = if i % 2 == 0 { vpcd(200) } else { vpcd(300) };
+        assert_eq!(pkt.meta().dst_vpcd, Some(expected), "packet {i}");
+    }
+}
 
-    // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only masquerade remains -> masquerade
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni1.into()),
-        "1.0.0.27".parse().unwrap(),
-        "5.0.0.10".parse().unwrap(),
-        2000,
-        456,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
-    assert!(needs_masquerade(&packet_out));
+// -------------------------------------------------------------------------------------------------
+// The flow-invalidation decision table, as an executable spec. `should_invalidate_flow` is the
+// subtlest policy in this NF (it decides which established sessions a config change kills); the
+// property pins its complete truth table instead of sampling branches.
 
-    // Destination side: VPC 2 -> VPC 1
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+enum GenidRel {
+    Older,
+    Same,
+    Newer,
+}
 
-    // TCP packet inside port forwarding range: port forwarding takes precedence
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        3000,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_port_forwarding(&packet_out));
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+struct InvalidationCase {
+    meta_masquerade: bool,
+    meta_port_forwarding: bool,
+    has_flow: bool,
+    genid: GenidRel,
+    /// `Some(true)`: the flow's destination equals the route's; `Some(false)`: a different one;
+    /// `None`: the flow records no destination.
+    flow_dst_matches: Option<bool>,
+    flow_masquerade: bool,
+    flow_port_forwarding: bool,
+}
 
-    // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only masquerade remains (destination NAT), with no flow table entry -> drop packet
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        3000,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
-
-    // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only masquerade remains, with flow table entry -> masquerade (not dropped!)
-    let mut packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        3000,
-    );
-    fake_flow_session(&mut packet, vni1.into(), true, false);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_masquerade(&packet_out));
+// The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
+// (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
+// destination changed (or was never recorded), a stateful-NAT requirement appeared or
+// disappeared, or the route no longer needs state at all. Anything else is deferred to the
+// stateful NFs, which own the state's validity.
+fn expected_invalidation(case: &InvalidationCase) -> bool {
+    if !case.has_flow || matches!(case.genid, GenidRel::Same) {
+        return false;
+    }
+    case.flow_dst_matches != Some(true)
+        || case.meta_masquerade != case.flow_masquerade
+        || case.meta_port_forwarding != case.flow_port_forwarding
+        || (!case.meta_masquerade && !case.meta_port_forwarding)
 }
 
 #[test]
-#[cfg_attr(not(emulated), traced_test)]
-fn test_flow_filter_protocol_any_port_forwarding() {
-    // Test that L4Protocol::Any port forwarding works for both TCP and UDP packets.
+fn invalidation_decision_matches_spec() {
+    use net::packet::PacketMeta;
 
-    let vni1 = vni(100);
-    let vni2 = vni(200);
+    const GENID: i64 = 7;
+    let route_dst = vpcd(200);
 
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
+    bolero::check!()
+        .with_type::<InvalidationCase>()
+        .for_each(|case| {
+            // Built inside the closure: neither the filter (classifier) nor FlowInfo (interior
+            // mutability) is unwind-safe, so they cannot be captured across bolero's
+            // catch_unwind boundary. Any FlowInfo serves: the decision reads only the summary
+            // fields (the info itself is used for logging alone).
+            let (flow_filter, _writer) = make_flow_filter(FlowFilterContext::default());
+            let mut p = packet(
+                Some(vpcd(100)),
+                build_tcp_packet(v4("1.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+            );
+            let flow_info = attach_flow(&mut p, Some(route_dst), true, false, false);
 
-    // Port forwarding with L4Protocol::Any (default)
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("1.0.0.0/24".into())
-                        .as_range("100.0.0.0/24".into())
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, None)
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "1.0.0.27/32".into(),
-                            Some(PortRange::new(2000, 2001).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "100.0.0.27/32".into(),
-                            Some(PortRange::new(3000, 3001).unwrap()),
-                        ))
-                        .unwrap(),
-                ],
-            ),
-            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
-        ))
-        .unwrap();
+            let mut meta = PacketMeta::default();
+            meta.set_masquerade(case.meta_masquerade);
+            meta.set_port_forwarding(case.meta_port_forwarding);
 
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+            let summary = case.has_flow.then(|| crate::FlowSummary {
+                genid: match case.genid {
+                    GenidRel::Older => GENID - 3,
+                    GenidRel::Same => GENID,
+                    GenidRel::Newer => GENID + 3,
+                },
+                dst_vpcd: match case.flow_dst_matches {
+                    Some(true) => Some(route_dst),
+                    Some(false) => Some(vpcd(300)),
+                    None => None,
+                },
+                needs_masquerade: case.flow_masquerade,
+                needs_port_forwarding: case.flow_port_forwarding,
+                flow_info,
+            });
 
-    // Destination side: TCP packet -> port forwarding
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        3000,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert!(needs_port_forwarding(&packet_out));
-
-    // Destination side: UDP packet -> port forwarding
-    let packet = create_test_ipv4_udp_packet_with_ports(
-        Some(vni2.into()),
-        "5.0.0.10".parse().unwrap(),
-        "100.0.0.27".parse().unwrap(),
-        456,
-        3000,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert!(needs_port_forwarding(&packet_out));
+            assert_eq!(
+                flow_filter.should_invalidate_flow(&meta, route_dst, GENID, summary.as_ref()),
+                expected_invalidation(case),
+                "decision diverges from spec for {case:?}",
+            );
+        });
 }
 
-#[cfg_attr(not(emulated), traced_test)]
-#[test]
-fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-    let vni3 = Vni::new_checked(300).unwrap();
+// -------------------------------------------------------------------------------------------------
+// Burst-level structural invariants. The semantic correctness of individual routing decisions is
+// covered by the context property tests; here the subject is the burst pipeline itself
+// (classify / batched lookup / apply): nothing is lost or reordered, skipped packets are
+// untouched, every processed packet is either resolved or done (never both, never neither), the
+// flow bypass always short-circuits when it should, and a Filtered packet always cancels its
+// flow pair.
 
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .ip("192.168.50.0/24".into())
-                        .ip("192.168.60.0/24".into()),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
-                            Some(PortRange::new(22, 22).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "20.10.90.100/32".into(),
-                            Some(PortRange::new(2222, 2222).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Udp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
-                            Some(PortRange::new(53, 53).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "20.10.90.100/32".into(),
-                            Some(PortRange::new(2053, 2053).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
-                            Some(PortRange::new(8080, 8080).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "20.10.90.100/32".into(),
-                            Some(PortRange::new(80, 80).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty().ip("192.168.80.0/24".into()),
-                ],
-            ),
-        ))
-        .unwrap();
-
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc3",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .make_static_nat()
-                        .unwrap()
-                        .ip("192.168.50.0/24".into())
-                        .as_range("10.30.50.0/24".into())
-                        .unwrap(),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc3",
-                vec![
-                    VpcExpose::empty().ip("192.168.100.0/24".into()),
-                    VpcExpose::empty()
-                        .make_static_nat()
-                        .unwrap()
-                        .ip("192.168.128.0/27".into())
-                        .as_range("30.10.128.0/27".into())
-                        .unwrap(),
-                ],
-            ),
-        ))
-        .unwrap();
-
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc2-to-vpc3",
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("192.168.90.0/24".into()) // Contains 192.168.90.100 used privately for VPC02
-                        .as_range("20.30.90.0/24".into())
-                        .unwrap(),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc3",
-                vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
-            ),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // VPC-2 -> VPC-3: ping 192.168.128.7
-    //
-    // We used to have a bug where we the flow-filter lookup would fail when looking for the
-    // source information because of the overlap between addresses exposed for port forwarding
-    // and masquerading. For ICMP (or TCP/UDP with unforwarded ports) it would run a LPM lookup
-    // on the address, find the port-forwarding entry that only works with ports, and then fail
-    // because the packet doesn't have a port (or a port in the relevant range). Fixed now.
-    let packet = create_test_icmp_v4_packet(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.128.7".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.128.7".parse().unwrap(),
-        2345,
-        6789,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
-    //
-    // Must use masquerading even though we have overlap on source IP/port with port forwarding
-    // rules, because of unambiguous destination
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.128.7".parse().unwrap(),
-        22,
-        6789,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
-    //
-    // Overlap on source IP/port with masquerading rule, the destination is unambiguous and we find
-    // a source NAT port forwarding requirement, but there's no associated flow table entry and we
-    // cannot initiate a port forwarding session on the source side, so we drop
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.50.7".parse().unwrap(),
-        22,
-        6789,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
-
-    // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
-    //
-    // Must use port forwarding even though we have overlap on source IP/port with masquerading
-    // rule, because of unambiguous destination, and we have a flow table entry so source-side port
-    // forwarding is allowed
-    let mut packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.50.7".parse().unwrap(),
-        22,
-        6789,
-    );
-    fake_flow_session(&mut packet, vni1.into(), false, true);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
-    assert!(needs_port_forwarding(&packet_out));
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+struct BurstFlowSpec {
+    active: bool,
+    /// `Some(true)`: the flow records vpc2 (the routable peer); `Some(false)`: an unrelated VPC;
+    /// `None`: no destination recorded (a buggy flow).
+    dst: Option<bool>,
+    masq_state: bool,
+    pf_state: bool,
 }
 
-// This is close to the previous test: We check that for masquerade and port forwarding on a
-// manifest, using the same private IPs, the flow-filter stage behaves as expected. Contrary to
-// the previous example, the prefix CIDR used for masquerade is smaller than the one for port
-// forwarding, although the latter is restricted to specific ports. This test validates that
-// prefix splitting occurs correctly for this configuration, and that we find the right
-// destination and NAT requirements.
-#[cfg_attr(not(emulated), traced_test)]
-#[test]
-fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap_smaller_masquerade()
- {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-    let vni3 = Vni::new_checked(300).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .ip("192.168.50.0/24".into())
-                        .ip("192.168.60.0/24".into()),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
-                            Some(PortRange::new(22, 22).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "20.10.90.0/24".into(),
-                            Some(PortRange::new(2222, 2222).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Udp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
-                            Some(PortRange::new(53, 53).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "20.10.90.0/24".into(),
-                            Some(PortRange::new(2053, 2053).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "192.168.90.100/32".into(), // 192.168.90.100 used privately from VPC 2
-                            Some(PortRange::new(8080, 8080).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "20.10.90.100/32".into(),
-                            Some(PortRange::new(80, 80).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("192.168.90.0/24".into())
-                        .not("192.168.90.0/27".into())
-                        .as_range("1.2.3.4/32".into())
-                        .unwrap(),
-                    VpcExpose::empty().ip("192.168.80.0/24".into()),
-                ],
-            ),
-        ))
-        .unwrap();
-
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc3",
-            VpcManifest::with_exposes(
-                "vpc1",
-                vec![
-                    VpcExpose::empty()
-                        .make_static_nat()
-                        .unwrap()
-                        .ip("192.168.50.0/24".into())
-                        .as_range("10.30.50.0/24".into())
-                        .unwrap(),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc3",
-                vec![
-                    VpcExpose::empty().ip("192.168.100.0/24".into()),
-                    VpcExpose::empty()
-                        .make_static_nat()
-                        .unwrap()
-                        .ip("192.168.128.0/27".into())
-                        .as_range("30.10.128.0/27".into())
-                        .unwrap(),
-                ],
-            ),
-        ))
-        .unwrap();
-
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc2-to-vpc3",
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("192.168.90.0/24".into())
-                        .as_range("20.30.90.30/32".into())
-                        .unwrap(),
-                ],
-            ),
-            VpcManifest::with_exposes(
-                "vpc3",
-                vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
-            ),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // VPC-2 -> VPC-3: ping 192.168.128.7
-    //
-    // We used to have a bug where we the flow-filter lookup would fail when looking for the
-    // source information because of the overlap between addresses exposed for port forwarding
-    // and masquerading. For ICMP (or TCP/UDP with unforwarded ports) it would run a LPM lookup
-    // on the address, find the port-forwarding entry that only works with ports, and then fail
-    // because the packet doesn't have a port (or a port in the relevant range). Fixed now.
-    let packet = create_test_icmp_v4_packet(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.128.7".parse().unwrap(),
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.128.7".parse().unwrap(),
-        2345,
-        6789,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
-    //
-    // Must use masquerading even though we have overlap on source IP/port with port forwarding
-    // rules, because of unambiguous destination
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.128.7".parse().unwrap(),
-        22,
-        6789,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
-    //
-    // Destination VPC is not ambiguous, but NAT mode is. Here we must use masquerading even
-    // though we have overlap on source IP/port with port forwarding rule, because we don't have
-    // flow information for the packet, so we favor masquerading so the packet can go out.
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "192.168.90.100".parse().unwrap(),
-        "192.168.50.7".parse().unwrap(),
-        22,
-        6789,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
-    assert!(needs_masquerade(&packet_out));
+#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+struct BurstPacketSpec {
+    non_ip: bool,
+    overlay: bool,
+    preset_dst: bool,
+    has_src_vpcd: bool,
+    src_sel: u8,
+    dst_sel: u8,
+    flow: Option<BurstFlowSpec>,
 }
 
-#[cfg_attr(not(emulated), traced_test)]
-#[test]
-fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap_to_default() {
-    let vni1 = Vni::new_checked(100).unwrap();
-    let vni2 = Vni::new_checked(200).unwrap();
-
-    let mut vpc_table = VpcTable::new();
-    vpc_table
-        .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
-        .unwrap();
-    vpc_table
-        .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
-        .unwrap();
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table
-        .add(VpcPeering::with_default_group(
-            "vpc1-to-vpc2",
-            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
-            VpcManifest::with_exposes(
-                "vpc2",
-                vec![
-                    VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
-                        .unwrap()
-                        .ip(PrefixWithOptionalPorts::new(
-                            "1.0.0.1/32".into(),
-                            Some(PortRange::new(22, 22).unwrap()),
-                        ))
-                        .as_range(PrefixWithOptionalPorts::new(
-                            "10.0.0.1/32".into(),
-                            Some(PortRange::new(2222, 2222).unwrap()),
-                        ))
-                        .unwrap(),
-                    VpcExpose::empty()
-                        .make_masquerade(None)
-                        .unwrap()
-                        .ip("1.0.0.0/24".into())
-                        .as_range("10.0.0.0/24".into())
-                        .unwrap(),
-                ],
-            ),
-        ))
-        .unwrap();
-
-    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
-    let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
-
-    // Test with packets
-
-    // VPC-1 -> VPC-2, outside of port forwarding range, no flow info attached
-    //
-    // Only masquerading applies but we cannot initiate the connection towards the expose using
-    // masquerading.
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni1.into())),
-        "7.7.7.7".parse().unwrap(),
-        "10.0.0.1".parse().unwrap(),
-        1234,
-        5678,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
-
-    // VPC-1 -> VPC-2, outside of port forwarding range, with flow info attached
-    //
-    // Only masquerading applies.
-    let mut packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni1.into())),
-        "7.7.7.7".parse().unwrap(),
-        "10.0.0.1".parse().unwrap(),
-        1234,
-        5678,
-    );
-    fake_flow_session(&mut packet, vni2.into(), true, false);
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_masquerade(&packet_out));
-
-    // VPC-1 -> VPC-2, inside port forwarding range
-    //
-    // Given that we have no flow table entry, port forwarding should take precedence in that
-    // direction.
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni1.into())),
-        "7.7.7.7".parse().unwrap(),
-        "10.0.0.1".parse().unwrap(),
-        1234,
-        2222,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_port_forwarding(&packet_out));
-
-    // VPC-2 -> VPC-1, inside port forwarding range
-    //
-    // Given that we have no flow table entry, masquerading should take precedence in that
-    // direction.
-    let packet = create_test_ipv4_tcp_packet_with_ports(
-        Some(vpcd(vni2.into())),
-        "1.0.0.1".parse().unwrap(),
-        "7.7.7.7".parse().unwrap(),
-        22,
-        1234,
-    );
-    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
-    assert!(needs_masquerade(&packet_out));
+impl BurstFlowSpec {
+    fn dst_vpcd(&self) -> Option<VpcDiscriminant> {
+        match self.dst {
+            Some(true) => Some(vpcd(200)),
+            Some(false) => Some(vpcd(300)),
+            None => None,
+        }
+    }
 }
 
 #[test]
-fn test_flow_filter_batch_processing() {
-    // Setup table
-    let mut table = FlowFilterTable::new();
-    let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Masquerade), None);
+fn burst_processing_upholds_structural_invariants() {
+    use net::headers::TryTransport;
 
-    table
-        .insert(
-            src_vpcd,
-            VpcdLookupResult::Single(dst_data),
-            Prefix::from("10.0.0.0/24"),
-            None,
-            Prefix::from("20.0.0.0/24"),
-            None,
-        )
-        .unwrap();
+    bolero::check!()
+        .with_type::<(bool, [BurstPacketSpec; 40])>()
+        .for_each(|&(bump_genid, ref specs)| {
+            // Built inside the closure: the filter holds a classifier, which is not unwind-safe.
+            let (mut flow_filter, _writer) = make_flow_filter(source_nat_context());
+            if bump_genid {
+                set_genid(&mut flow_filter, 5);
+            }
 
-    let mut writer = FlowFilterTableWriter::new();
-    writer.update_flow_filter_table(table);
+            let mut packets = Vec::with_capacity(specs.len());
+            let mut flows = Vec::with_capacity(specs.len());
+            for (i, spec) in specs.iter().enumerate() {
+                let sport = 1000 + u16::try_from(i).unwrap();
+                let headers = if spec.non_ip {
+                    build_nonip_packet()
+                } else {
+                    let src = match spec.src_sel % 3 {
+                        0 => v4("1.0.0.5"), // plain source expose
+                        1 => v4("3.0.0.5"), // masquerade source expose
+                        _ => v4("9.9.9.9"), // no source expose (stage-2 miss)
+                    };
+                    let dst = match spec.dst_sel % 3 {
+                        0 => v4("5.0.0.10"),  // the peer's expose (stage-1 hit)
+                        1 => v4("30.0.0.10"), // our own masquerade public (stage-1 miss)
+                        _ => v4("8.8.8.8"),   // nowhere (stage-1 miss)
+                    };
+                    build_tcp_packet(src, dst, sport, 5678)
+                };
+                let mut p = packet(spec.has_src_vpcd.then(|| vpcd(100)), headers);
+                p.meta_mut().set_overlay(spec.overlay);
+                if spec.preset_dst {
+                    p.meta_mut().dst_vpcd = Some(vpcd(777));
+                }
+                // Flow attachment needs a FlowKey, which a non-IP packet cannot provide.
+                let flow = spec
+                    .flow
+                    .filter(|_| !spec.non_ip)
+                    .map(|f| attach_flow(&mut p, f.dst_vpcd(), f.active, f.masq_state, f.pf_state));
+                flows.push(flow);
+                packets.push(p);
+            }
 
-    let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+            let out: Vec<_> = flow_filter.process(packets.into_iter()).collect();
+            assert_eq!(out.len(), specs.len(), "burst length must be preserved");
 
-    // Create multiple test packets
-    let packet1 = create_test_packet(
-        Some(src_vpcd),
-        "10.0.0.5".parse().unwrap(),
-        "20.0.0.10".parse().unwrap(),
-    );
-    let packet2 = create_test_packet(
-        Some(src_vpcd),
-        "10.0.0.6".parse().unwrap(),
-        "30.0.0.10".parse().unwrap(), // Should be filtered
-    );
-    let packet3 = create_test_packet(
-        Some(src_vpcd),
-        "10.0.0.7".parse().unwrap(),
-        "20.0.0.20".parse().unwrap(),
-    );
+            for (i, (spec, pkt)) in specs.iter().zip(&out).enumerate() {
+                // Order: each packet's source-port tag must sit at its original position.
+                if !spec.non_ip {
+                    let sport = pkt
+                        .try_transport()
+                        .and_then(|t| t.src_port())
+                        .map(std::num::NonZero::get);
+                    assert_eq!(
+                        sport,
+                        Some(1000 + u16::try_from(i).unwrap()),
+                        "packet order not preserved at position {i}",
+                    );
+                }
 
-    let packets = flow_filter
-        .process([packet1, packet2, packet3].into_iter())
-        .collect::<Vec<_>>();
+                // Skipped packets (non-overlay, or destination already resolved upstream) are
+                // untouched, and their flows are left alone.
+                if !spec.overlay || spec.preset_dst {
+                    assert!(!pkt.is_done(), "skipped packet must pass through: {spec:?}");
+                    assert_eq!(pkt.meta().dst_vpcd, spec.preset_dst.then(|| vpcd(777)));
+                    if let Some(flow) = &flows[i] {
+                        assert_ne!(flow.status(), FlowStatus::Cancelled, "{spec:?}");
+                    }
+                    continue;
+                }
 
-    assert_eq!(packets.len(), 3);
-    assert!(!packets[0].is_done());
-    assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
-    assert_eq!(packets[1].get_done(), Some(DoneReason::Filtered));
-    assert!(!packets[2].is_done());
-    assert_eq!(packets[2].meta().dst_vpcd, Some(dst_data.vpcd));
-}
+                // Every processed packet is either resolved or done -- never both, never neither.
+                assert_ne!(
+                    pkt.is_done(),
+                    pkt.meta().dst_vpcd.is_some(),
+                    "processed packet must be resolved XOR done: {spec:?}",
+                );
 
-#[test]
-fn test_format_packet_addrs_ports() {
-    let src_vpcd = VpcDiscriminant::VNI(3000.try_into().unwrap());
-    let src_addr = "10.0.0.1".parse().unwrap();
-    let dst_addr = "20.0.0.2".parse().unwrap();
+                // An active, current-generation flow with a recorded destination always
+                // short-circuits the tables, whatever they would have said.
+                if let Some(f) = spec.flow
+                    && !spec.non_ip
+                    && !bump_genid
+                    && f.active
+                    && f.dst.is_some()
+                {
+                    assert!(!pkt.is_done(), "bypass must win: {spec:?}");
+                    assert_eq!(pkt.meta().dst_vpcd, f.dst_vpcd(), "{spec:?}");
+                }
 
-    let result = FlowTuple::new(src_vpcd, src_addr, dst_addr, Some((8080, 443)));
-    assert_eq!(
-        result.to_string(),
-        "srcVpc=VNI(3000) src=10.0.0.1:8080 dst=20.0.0.2:443"
-    );
-
-    let result_no_ports = FlowTuple::new(src_vpcd, src_addr, dst_addr, None);
-    assert_eq!(
-        result_no_ports.to_string(),
-        "srcVpc=VNI(3000) src=10.0.0.1 dst=20.0.0.2"
-    );
+                // A Filtered packet always cancels its flow pair (Unroutable/NotIp do not).
+                if pkt.get_done() == Some(DoneReason::Filtered)
+                    && let Some(flow) = &flows[i]
+                {
+                    assert_eq!(flow.status(), FlowStatus::Cancelled, "{spec:?}");
+                }
+            }
+        });
 }

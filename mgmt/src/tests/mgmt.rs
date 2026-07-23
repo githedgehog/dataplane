@@ -43,7 +43,7 @@ pub mod test {
     use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
-    use flow_filter::FlowFilterTableWriter;
+    use flow_filter::FlowFilterContextWriter;
     use nat::masquerade::NatAllocatorWriter;
     use nat::portfw::PortFwTableWriter;
     use nat::static_nat::NatTablesWriter;
@@ -410,7 +410,8 @@ pub mod test {
     #[n_vm::in_vm]
     #[tokio::test]
     async fn test_sample_config() {
-        // Applying the config builds the rte_acl-backed flofi context, which needs the EAL up.
+        // Applying the config builds the rte_acl-backed ACL filter and flow-filter contexts, which
+        // need the EAL up
         let _eal = dpdk::test_support::start_eal();
 
         get_trace_ctl()
@@ -453,8 +454,8 @@ pub mod test {
         /* create NatAllocator for masquerade */
         let natallocatorw = NatAllocatorWriter::new();
 
-        /* create FlowFilterTable for flow filtering */
-        let flowfilterw = FlowFilterTableWriter::new();
+        /* create FlowFilterContext for flow filtering */
+        let flow_filter_writer = FlowFilterContextWriter::new();
 
         /* create AclFilterContext for ACL filtering */
         let aclfilterw = AclFilterContextWriter::new();
@@ -479,7 +480,7 @@ pub mod test {
             vpcmapw,
             nattablesw,
             natallocatorw,
-            flowfilterw,
+            flow_filter_writer,
             aclfilterw,
             portfw_w,
             vpc_stats_store,

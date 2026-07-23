@@ -10,12 +10,15 @@ use crate::{IcmpErrorHandler, Masquerade};
 use ahash::HashMap;
 use common::cliprovider::Frame;
 use concurrency::sync::Arc;
+use config::GenId;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
-use config::{ConfigError, GenId};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
+// The real flow-filter links dpdk-sys, which cannot build under miri; it is only used by tests with
+// #[dpdk::with_eal] below. The miri-eligible tests use the local TestFlowFilter mock instead.
+#[cfg(not(miri))]
+use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
 use net::flows::FlowStatus;
@@ -1058,6 +1061,7 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
+#[cfg(not(miri))]
 #[allow(clippy::too_many_arguments)]
 fn check_packet_with_vpcd_lookup(
     nat: &mut Masquerade,
@@ -1125,7 +1129,9 @@ fn check_packet_with_vpcd_lookup(
     )
 }
 
+#[cfg(not(miri))]
 #[tokio::test]
+#[dpdk::with_eal]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config_unidirectional_nat_overlapping_destination() {
     #[cfg(not(miri))]
@@ -1142,10 +1148,10 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
             .unwrap();
 
     // Build VPC discriminant lookup stage
-    let vpcd_tables = FlowFilterTable::build_from_overlay(config.external().overlay()).unwrap();
-    let mut vpcdtablesw = FlowFilterTableWriter::new();
-    vpcdtablesw.update_flow_filter_table(vpcd_tables);
-    let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
+    let vpcd_context = FlowFilterContext::try_from(config.external().overlay()).unwrap();
+    let vpcd_context_writer = FlowFilterContextWriter::new();
+    vpcd_context_writer.store(vpcd_context);
+    let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcd_context_writer.get_reader());
 
     /////////////////////////////////////////////////////////////////
     // First NAT stage: We do not search for the destination VPC discriminant in the flow table.
@@ -1367,224 +1373,6 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
     );
 
     println!("{flow_table}");
-    assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
-    assert_eq!(return_output_src, addr_v4(orig_dst));
-    assert_eq!(return_output_dst, addr_v4(orig_src));
-    assert_eq!(return_output_src_port, orig_dst_port);
-    assert_eq!(return_output_dst_port, orig_src_port);
-    assert_eq!(return_done_reason, None);
-}
-
-fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
-    let mut vpc_table = VpcTable::new();
-    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).unwrap());
-    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).unwrap());
-
-    // Peering 1
-    let expose1_1 = VpcExpose::empty()
-        .make_masquerade(None)
-        .unwrap()
-        .ip("1.0.0.0/24".into())
-        .as_range("2.0.0.0/24".into())
-        .unwrap();
-    let expose1_2 = VpcExpose::empty().ip("5.0.0.0/24".into());
-
-    let manifest1_1 = VpcManifest::new("VPC-1").exposing(expose1_1);
-    let manifest1_2 = VpcManifest::new("VPC-2").exposing(expose1_2);
-    let peering1 = VpcPeering::with_default_group("VPC-1--VPC-2--1", manifest1_1, manifest1_2);
-
-    // Peering 2 - Overlap with Peering 1
-
-    let expose2_1 = VpcExpose::empty()
-        .make_masquerade(None)
-        .unwrap()
-        .ip("3.0.0.0/24".into())
-        .as_range("2.0.0.0/24".into()) // Overlap
-        .unwrap();
-    let expose2_2 = VpcExpose::empty().ip("6.0.0.0/24".into());
-
-    let manifest2_1 = VpcManifest::new("VPC-1").exposing(expose2_1);
-    let manifest2_2 = VpcManifest::new("VPC-2").exposing(expose2_2);
-    let peering2 = VpcPeering::with_default_group("VPC-1--VPC-2--2", manifest2_1, manifest2_2);
-
-    // Peering table
-
-    let mut peering_table = VpcPeeringTable::new();
-    peering_table.add(peering1).unwrap();
-    peering_table.add(peering2).unwrap();
-
-    Overlay::new(vpc_table, peering_table)
-}
-
-#[tokio::test]
-#[cfg_attr(not(emulated), traced_test)]
-#[allow(clippy::too_many_lines)]
-async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
-    let config =
-        build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes());
-    // Validation fails - We currently forbid multiple peerings between any pair of VPCs. We
-    // could probably allow them for masquerade, but we still need the restriction for static NAT.
-    // We can carry on with the test anyway.
-    assert!(
-        config
-            .validate()
-            .is_err_and(|e| e == ConfigError::DuplicateVpcPeerings("VPC-1--VPC-2--2".to_owned()))
-    );
-    let config = unsafe {
-        build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes())
-            .fake_validated_external_for_tests()
-    };
-
-    // Build VPC discriminant lookup stage
-    let vpcd_tables = FlowFilterTable::build_from_overlay(config.overlay()).unwrap();
-    let mut vpcdtablesw = FlowFilterTableWriter::new();
-    vpcdtablesw.update_flow_filter_table(vpcd_tables);
-    let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
-
-    // Build flow table lookup stage
-    let flow_table = Arc::new(FlowTable::default());
-    let mut flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
-
-    /////////////////////////////////////////////////////////////////
-    // Build a NAT stage and send a packet through peering1.
-    // Check that NAT occurs as expected.
-
-    // Build a new NAT stage
-    let mut allocator = NatAllocatorWriter::new();
-    let mut nat = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
-    let nat_config = MasqueradeConfig::new(config.overlay().vpc_table(), 1);
-
-    // Check that we can validate the allocator
-    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
-
-    // NAT: expose1_1 -> expose1_2
-    let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.0.0.18", "5.0.0.5", 9998, 443);
-    let target_src = "2.0.0.0";
-    let (dst_vpcd, output_src, output_dst, output_src_port, output_dst_port, done_reason) =
-        check_packet_with_vpcd_lookup(
-            &mut nat,
-            &mut vpcdlookup,
-            Some(&mut flow_lookup),
-            vni(100),
-            orig_src,
-            orig_dst,
-            orig_src_port,
-            orig_dst_port,
-        );
-    assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni(200))));
-    assert_eq!(output_src, addr_v4(target_src));
-    assert_eq!(output_dst, addr_v4(orig_dst));
-    assert!(
-        output_src_port.is_multiple_of(256) || output_src_port == 1,
-        "{output_src_port}"
-    );
-    assert_eq!(output_dst_port, orig_dst_port);
-    assert_eq!(done_reason, None);
-
-    // Reverse path - 5.0.0.5 -> 2.0.0.0, destination is ambiguous (could be peering1 or peering2)
-    let (
-        return_vpcd,
-        return_output_src,
-        return_output_dst,
-        return_output_src_port,
-        return_output_dst_port,
-        return_done_reason,
-    ) = check_packet_with_vpcd_lookup(
-        &mut nat,
-        &mut vpcdlookup,
-        Some(&mut flow_lookup),
-        vni(200),
-        orig_dst,
-        target_src,
-        output_dst_port,
-        output_src_port,
-    );
-    assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
-    assert_eq!(return_output_src, addr_v4(orig_dst));
-    assert_eq!(return_output_dst, addr_v4(orig_src));
-    assert_eq!(return_output_src_port, orig_dst_port);
-    assert_eq!(return_output_dst_port, orig_src_port);
-    assert_eq!(return_done_reason, None);
-
-    /////////////////////////////////////////////////////////////////
-    // With the same NAT stage, send a packet through peering2.
-    // Check that updating the flow table for this new connection does not affect
-    // translation for the previous connection.
-
-    // Reverse path from previous connection: 5.0.0.5 -> 2.0.0.0, session is still valid
-    let (
-        return_vpcd,
-        return_output_src,
-        return_output_dst,
-        return_output_src_port,
-        return_output_dst_port,
-        return_done_reason,
-    ) = check_packet_with_vpcd_lookup(
-        &mut nat,
-        &mut vpcdlookup,
-        Some(&mut flow_lookup),
-        vni(200),
-        orig_dst,
-        target_src,
-        output_dst_port,
-        output_src_port,
-    );
-    assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
-    assert_eq!(return_output_src, addr_v4(orig_dst));
-    assert_eq!(return_output_dst, addr_v4(orig_src));
-    assert_eq!(return_output_src_port, orig_dst_port);
-    assert_eq!(return_output_dst_port, orig_src_port);
-    assert_eq!(return_done_reason, None);
-
-    // NAT: expose2_1 <-> expose2_2 - Connection through peering2
-    let (orig_src_2, orig_dst_2, orig_src_port_2, orig_dst_port_2) =
-        ("3.0.0.4", "6.0.0.12", 8887, 800);
-    let target_src_2 = "2.0.0.0";
-    let (
-        dst_vpcd_2,
-        output_src_2,
-        output_dst_2,
-        output_src_port_2,
-        output_dst_port_2,
-        done_reason_2,
-    ) = check_packet_with_vpcd_lookup(
-        &mut nat,
-        &mut vpcdlookup,
-        Some(&mut flow_lookup),
-        vni(100),
-        orig_src_2,
-        orig_dst_2,
-        orig_src_port_2,
-        orig_dst_port_2,
-    );
-    assert_eq!(dst_vpcd_2, Some(VpcDiscriminant::VNI(vni(200))));
-    assert_eq!(output_src_2, addr_v4(target_src_2));
-    assert_eq!(output_dst_2, addr_v4(orig_dst_2));
-    assert!(
-        output_src_port_2.is_multiple_of(256) || output_src_port_2 == 1,
-        "{output_src_port_2}"
-    );
-    assert_eq!(output_dst_port_2, orig_dst_port_2);
-    assert_eq!(done_reason_2, None);
-
-    // Back to 5.0.0.5 -> 2.0.0.0 through peering1
-    let (
-        return_vpcd,
-        return_output_src,
-        return_output_dst,
-        return_output_src_port,
-        return_output_dst_port,
-        return_done_reason,
-    ) = check_packet_with_vpcd_lookup(
-        &mut nat,
-        &mut vpcdlookup,
-        Some(&mut flow_lookup),
-        vni(200),
-        orig_dst,
-        target_src,
-        output_dst_port,
-        output_src_port,
-    );
     assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
     assert_eq!(return_output_src, addr_v4(orig_dst));
     assert_eq!(return_output_dst, addr_v4(orig_src));

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::net::{Ipv4Addr, Ipv6Addr};
+
 use fixed_size::FixedSize;
 
 use crate::ipv4::UnicastIpv4Addr;
+use crate::ipv6::UnicastIpv6Addr;
 use crate::tcp::TcpPort;
 use crate::udp::UdpPort;
 use crate::vxlan::Vni;
@@ -23,7 +26,15 @@ impl FixedSize for UdpPort {
 }
 
 impl FixedSize for UnicastIpv4Addr {
-    const SIZE: usize = 4;
+    const SIZE: usize = Ipv4Addr::SIZE;
+    fn write_be(&self, out: &mut [u8]) {
+        self.inner().write_be(out);
+    }
+}
+
+impl FixedSize for UnicastIpv6Addr {
+    const SIZE: usize = Ipv6Addr::SIZE;
+
     fn write_be(&self, out: &mut [u8]) {
         self.inner().write_be(out);
     }

@@ -72,22 +72,6 @@ impl Overlay {
         debug!("Overlay configuration is VALID:\n{validated_overlay}\n{peering_table}");
         Ok(validated_overlay)
     }
-
-    /// FOR TESTS ONLY. Fake validation for the overlay.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_validated_overlay_for_tests(&self) -> ValidatedOverlay {
-        let vpc_table = self.vpc_table.collect_peerings(&self.peering_table);
-        let fake_valid_vpc_table = unsafe { vpc_table.fake_validated_vpc_table_for_tests() };
-        ValidatedOverlay {
-            vpc_table: fake_valid_vpc_table,
-        }
-    }
 }
 
 #[derive(Debug, Default)]

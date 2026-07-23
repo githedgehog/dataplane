@@ -552,6 +552,76 @@ impl PortRange {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PortRangeConversionError {
+    #[error("the supplied port range is empty")]
+    Empty,
+}
+
+impl TryFrom<std::ops::RangeInclusive<u16>> for PortRange {
+    type Error = PortRangeConversionError;
+
+    fn try_from(value: std::ops::RangeInclusive<u16>) -> Result<Self, Self::Error> {
+        match value.len() {
+            0 => Err(PortRangeConversionError::Empty),
+            _ => Ok(PortRange {
+                start: *value.start(),
+                end: *value.end(),
+            }),
+        }
+    }
+}
+
+impl TryFrom<std::ops::Range<u16>> for PortRange {
+    type Error = PortRangeConversionError;
+
+    fn try_from(value: std::ops::Range<u16>) -> Result<Self, Self::Error> {
+        match value.len() {
+            0 => Err(PortRangeConversionError::Empty),
+            1 => Ok(PortRange {
+                start: value.start,
+                end: value.start,
+            }),
+            _ => Ok(PortRange {
+                start: value.start,
+                end: value.end - 1,
+            }),
+        }
+    }
+}
+
+impl From<std::ops::RangeFrom<u16>> for PortRange {
+    fn from(value: std::ops::RangeFrom<u16>) -> Self {
+        PortRange {
+            start: value.start,
+            end: u16::MAX,
+        }
+    }
+}
+
+impl TryFrom<std::ops::RangeTo<u16>> for PortRange {
+    type Error = PortRangeConversionError;
+
+    fn try_from(value: std::ops::RangeTo<u16>) -> Result<Self, Self::Error> {
+        match value.end {
+            0 => Err(PortRangeConversionError::Empty),
+            _ => Ok(PortRange {
+                start: 0,
+                end: value.end - 1,
+            }),
+        }
+    }
+}
+
+impl From<std::ops::RangeToInclusive<u16>> for PortRange {
+    fn from(value: std::ops::RangeToInclusive<u16>) -> Self {
+        Self {
+            start: 0,
+            end: value.end,
+        }
+    }
+}
+
 // Used for DisjointRangesBTreeMap
 impl UpperBoundFrom<u16> for PortRange {
     fn upper_bound_from(port: u16) -> Self {

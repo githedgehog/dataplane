@@ -343,8 +343,8 @@ wasm = false # miss
 
 [workspace.metadata.package.flow-filter]
 package = "dataplane-flow-filter"
-miri = true
-wasm = false # miss
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.hardware]
 package = "dataplane-hardware"
