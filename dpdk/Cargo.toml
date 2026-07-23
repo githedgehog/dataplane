@@ -8,7 +8,7 @@ version.workspace = true
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
-test = ["dep:id", "dep:nix", "dep:dpdk-test-macros"]
+test = ["dep:id", "dep:dpdk-test-macros"]
 
 [dependencies]
 
@@ -18,7 +18,7 @@ dpdk-test-macros = { workspace = true, optional = true }
 errno = { workspace = true }
 id = { workspace = true, optional = true }
 net = { workspace = true }
-nix = { workspace = true, optional = true, features = ["sched"] }
+nix = { workspace = true, features = ["sched"] }
 
 serde = { workspace = true, optional = true, features = ["std"] }
 thiserror = { workspace = true }
