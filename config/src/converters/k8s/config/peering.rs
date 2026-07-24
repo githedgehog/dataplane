@@ -169,15 +169,17 @@ mod test {
                 ]),
             ),
         ]);
-        let generator = LegalValuePeeringsGenerator::new(&subnets).unwrap();
+        let gwgroups = ["group-a".to_string(), "group-b".to_string()];
+        let generator = LegalValuePeeringsGenerator::new(&subnets, &gwgroups).unwrap();
         bolero::check!()
             .with_generator(generator)
             .for_each(|peering| {
                 let peering_name = "test-peering";
                 let converted = VpcPeering::try_from((&subnets, peering_name, peering)).unwrap();
                 assert_eq!(converted.name, peering_name);
-                // The ACL the generator produced is relative to this peering's two VPCs, so it
-                // must survive conversion rather than being dropped.
+                // The generator only ever names a group it was given, and the ACL it generates is
+                // relative to this peering's two VPCs, so both must survive conversion.
+                assert!(gwgroups.contains(&converted.gwgroup));
                 assert_eq!(converted.acl.is_some(), peering.acl.is_some());
                 // Rest of the assertions come from the types and the unwrap in the conversion above
             });

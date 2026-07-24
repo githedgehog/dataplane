@@ -140,15 +140,14 @@ fn generate_match_side<D: Driver>(
     }
 
     let subnet_names: Vec<&String> = subnets.keys().collect();
-    // One prefix per entry, all distinct, so a `cidr` entry never duplicates another.
-    let prefixes = if want_v4 {
-        generate_prefixes(d, count, 0)?
-    } else {
-        generate_prefixes(d, 0, count)?
-    };
 
-    let mut entries = Vec::with_capacity(usize::from(count));
-    for prefix in prefixes {
+    // Draw each entry's shape and ports first, then generate exactly as many prefixes as the
+    // `cidr` entries need.  Generating one per entry up front would spend driver draws on
+    // prefixes the `vpcSubnet` and "any address" entries discard, which costs nothing in output
+    // but blunts shrinking; asking for them in one call is what keeps them distinct, so a `cidr`
+    // entry never duplicates another.
+    let mut shapes = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
         // A present-but-empty ports list is rejected by the converter, so only ever emit
         // `None` (match all ports) or a non-empty list.
         let ports = if allow_ports && d.gen_bool(None)? {
@@ -157,15 +156,30 @@ fn generate_match_side<D: Driver>(
             None
         };
 
-        // Three legal address shapes: a CIDR, a named VPC subnet, or neither ("any address
-        // within the peering", which the converter routes through a separate code path).
+        // Three legal address shapes: shape 0 is a CIDR, shape 1 a named VPC subnet, and shape 2
+        // neither ("any address within the peering", which the converter routes through a separate
+        // code path).  Shape 1 falls through to "any address" when the VPC has no subnets.
         let shape = d.gen_usize(Bound::Included(&0), Bound::Included(&2))?;
-        let (cidr, vpc_subnet) = match shape {
-            0 => (Some(prefix), None),
-            1 if !subnet_names.is_empty() => (None, Some(choose(d, &subnet_names)?.clone())),
-            // Falls through to "any address" when the VPC has no subnets to reference.
-            _ => (None, None),
+        let vpc_subnet = if shape == 1 && !subnet_names.is_empty() {
+            Some(choose(d, &subnet_names)?.clone())
+        } else {
+            None
         };
+        shapes.push((shape == 0, vpc_subnet, ports));
+    }
+
+    let cidr_count = u16::try_from(shapes.iter().filter(|(cidr, _, _)| *cidr).count())
+        .unwrap_or_else(|_| unreachable!("at most MAX_MATCH_ENTRIES entries"));
+    let mut prefixes = if want_v4 {
+        generate_prefixes(d, cidr_count, 0)?
+    } else {
+        generate_prefixes(d, 0, cidr_count)?
+    }
+    .into_iter();
+
+    let mut entries = Vec::with_capacity(usize::from(count));
+    for (wants_cidr, vpc_subnet, ports) in shapes {
+        let cidr = if wants_cidr { prefixes.next() } else { None };
 
         // "Any address" with no ports means "match everything"; the converter short-circuits the
         // whole side on it, discarding any other entry.  Skip it unless it is the only entry, so
@@ -214,12 +228,14 @@ fn generate_proto<D: Driver>(d: &mut D) -> Option<ProtoChoice> {
 
 /// Generate a legal, peering-relative ACL.
 ///
-/// The generated ACL is legal with respect to *conversion*: `Acl::try_from` accepts it for the
-/// peering it was built against.
+/// By default the generated ACL is legal with respect to *conversion*: `Acl::try_from` accepts it
+/// for the peering it was built against.  It is not necessarily legal with respect to
+/// `ValidatedAcl` -- see [`LegalValueAclGenerator::independent_of_exposes`].
 pub struct LegalValueAclGenerator<'a> {
     vpc_subnets: &'a VpcSubnetMap,
     left_name: &'a str,
     right_name: &'a str,
+    independent_of_exposes: bool,
 }
 
 impl<'a> LegalValueAclGenerator<'a> {
@@ -230,10 +246,35 @@ impl<'a> LegalValueAclGenerator<'a> {
             vpc_subnets,
             left_name,
             right_name,
+            independent_of_exposes: false,
         }
     }
-}
 
+    /// Restrict generation to ACLs whose legality does not depend on the peering's exposes.
+    ///
+    /// Two validation rules couple an ACL to the exposes on either side of its peering, neither of
+    /// which is visible from the ACL section alone:
+    ///
+    /// - `ValidatedAclRule::validate_patterns_coverage` requires a rule's `src`/`dst` addresses to
+    ///   intersect what the corresponding side actually exposes.  An empty side is exempt: it is
+    ///   read as "everything the manifest exposes".
+    /// - `ValidatedAclRule::validate_scope` rejects `scope: flow` -- which is also the default --
+    ///   unless every expose on one side of the peering uses masquerade or port forwarding.
+    ///
+    /// In this mode, rules carry no address matches (so coverage is trivially satisfied) and always
+    /// set `scope: packet`.  Everything else -- `from`/`to` inference, actions, protocols, logging,
+    /// the default action -- is still generated.
+    ///
+    /// FIXME: a generator that also covers address matches and `scope: flow` needs the *generated
+    /// exposes* of both sides as further context, and would have to mirror `manifest_coverage_set`
+    /// to know which prefixes are in scope.  Until then, address matches are exercised at the
+    /// conversion level only (`converters::k8s::config::peering`).
+    #[must_use]
+    pub fn independent_of_exposes(mut self) -> Self {
+        self.independent_of_exposes = true;
+        self
+    }
+}
 
 impl ValueGenerator for LegalValueAclGenerator<'_> {
     type Output = GatewayAgentPeeringsAcl;
@@ -262,11 +303,18 @@ impl ValueGenerator for LegalValueAclGenerator<'_> {
             let r#match = if d.gen_bool(None)? {
                 let proto: Option<String> = generate_proto(d)?.into();
                 let allow_ports = proto_supports_ports(proto.as_deref());
-                // One family per rule: `AclPattern::validate` rejects a rule whose `src` and `dst`
-                // disagree on IP version.
-                let want_v4 = d.gen_bool(None)?;
-                let src = generate_match_side(d, src_subnets, want_v4, allow_ports)?;
-                let dst = generate_match_side(d, dst_subnets, want_v4, allow_ports)?;
+                let (src, dst) = if self.independent_of_exposes {
+                    (Vec::new(), Vec::new())
+                } else {
+                    // One family per rule: `AclPattern::validate` rejects a rule whose `src` and
+                    // `dst` disagree on IP version.  Drawn here rather than above so that the
+                    // no-address-match mode does not spend a draw on it.
+                    let want_v4 = d.gen_bool(None)?;
+                    (
+                        generate_match_side(d, src_subnets, want_v4, allow_ports)?,
+                        generate_match_side(d, dst_subnets, want_v4, allow_ports)?,
+                    )
+                };
                 Some(GatewayAgentPeeringsAclRulesMatch {
                     src: Some(src.into_iter().map(Into::into).collect::<Vec<_>>())
                         .filter(|s: &Vec<GatewayAgentPeeringsAclRulesMatchSrc>| !s.is_empty()),
@@ -284,11 +332,15 @@ impl ValueGenerator for LegalValueAclGenerator<'_> {
                 .produce::<Option<crate::bolero::support::K8sName>>()?
                 .map(|n| format!("{n}-{index}"));
 
-            let scope = match d.gen_usize(Bound::Included(&0), Bound::Included(&3))? {
-                0 => None,
-                1 => Some(GatewayAgentPeeringsAclRulesScope::Flow),
-                2 => Some(GatewayAgentPeeringsAclRulesScope::Packet),
-                _ => Some(GatewayAgentPeeringsAclRulesScope::KopiumEmpty),
+            let scope = if self.independent_of_exposes {
+                Some(GatewayAgentPeeringsAclRulesScope::Packet)
+            } else {
+                match d.gen_usize(Bound::Included(&0), Bound::Included(&3))? {
+                    0 => None,
+                    1 => Some(GatewayAgentPeeringsAclRulesScope::Flow),
+                    2 => Some(GatewayAgentPeeringsAclRulesScope::Packet),
+                    _ => Some(GatewayAgentPeeringsAclRulesScope::KopiumEmpty),
+                }
             };
 
             rules.push(GatewayAgentPeeringsAclRules {
