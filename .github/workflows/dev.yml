@@ -133,7 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: &default-build
+        build:
           - &debug-build
             name: "debug"
             profile: "debug"
@@ -335,7 +335,19 @@ jobs:
           - frr.dataplane
           - dataplane
           - validator
-        build: *default-build
+        build:
+          - name: "debug"
+            profile: "debug"
+            sanitize: ""
+            instrument: "none"
+          - name: "release"
+            profile: "release"
+            sanitize: ""
+            instrument: "none"
+          - name: "thread"
+            profile: "fuzz"
+            sanitize: "thread"
+            instrument: "none"
         exclude:
           - nix-target: validator
             build:
