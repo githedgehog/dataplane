@@ -32,6 +32,10 @@ let
       ;
   };
   sanitizers = split-str ",+" sanitize;
+  # True for any `sanitize=` build (thread/address/leak/cfi/...). Used to bundle
+  # sanitizer-only tooling (llvm-symbolizer + its debug-info wiring) without
+  # bloating production images.
+  is-sanitized = sanitizers != [ ];
   cargo-features = split-str ",+" features;
   profile' = import ./nix/profiles.nix {
     inherit
@@ -215,6 +219,7 @@ let
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
   jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
+  suppressionFilter = p: _type: builtins.match ".*\.suppress$" p != null;
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
@@ -226,6 +231,7 @@ let
       || (markdownFilter p t)
       || (jsonFilter p t)
       || (cHeaderFilter p t)
+      || (suppressionFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources full-path t));
     src = lib.cleanSource ./.;
     name = "source";
@@ -637,6 +643,25 @@ let
     ) package-list;
   };
 
+  dp-debug = pkgs.buildEnv {
+    name = "dataplane-debugger-env";
+    pathsToLink = [
+      "/bin"
+      "/etc"
+      "/var"
+      "/lib"
+    ];
+    paths = [
+      pkgs.pkgsHostHost.llvmPackages'.llvm.lib
+      pkgs.pkgsHostHost.llvmPackages'.llvm
+      pkgs.pkgsHostHost.libc.debug
+      pkgs.pkgsHostHost.libxml2
+      workspace.cli.debug
+      workspace.dataplane.debug
+      workspace.init.debug
+    ];
+  };
+
   dataplane.tar = pkgs.stdenv'.mkDerivation {
     pname = "dataplane.tar";
     inherit version;
@@ -673,10 +698,16 @@ let
         # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
         # isn't present in the image.
         libc-tar-input = "${libc-pkg.out}";
+        # Compiler-rt sanitizers (TSan/ASan/...) shell out to an external
+        # `llvm-symbolizer` to turn `binary+0xoffset` frames into
+        # function/file:line. Bundled only for sanitizer builds (see the
+        # `is-sanitized` block in buildPhase). Pinned to the LLVM our rustc
+        # uses via `llvmPackages'`.
+        llvm-symbolizer-pkg = pkgs.pkgsHostHost.llvmPackages'.llvm;
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
+        mkdir -p "$tmp/"{bin,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
         ln -s /run "$tmp/var/run"
         for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
@@ -691,6 +722,31 @@ let
         ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
         ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
         ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
+        ln -s "${dp-debug}/lib" "$tmp/lib"
+        ${lib.optionalString is-sanitized ''
+          # Sanitizer builds rely on an external `llvm-symbolizer` to turn
+          # `dataplane+0xoffset` frames into function/file:line. compiler-rt
+          # auto-discovers a binary literally named `llvm-symbolizer` on $PATH,
+          # so drop a wrapper at /bin/llvm-symbolizer that also points it at the
+          # debug-info search dirs. No env var / image-config change needed.
+          #
+          # `/lib/debug` already carries the per-dependency build-id tree (libc,
+          # etc.) via dp-debug. The workspace binaries are stripped with a
+          # gnu_debuglink (see postInstall), so mirror their full-DWARF debug
+          # files where llvm-symbolizer's debuglink lookup expects them:
+          #   <debug-file-dir>/<abs-dir-of-binary>/<debuglink-name>
+          # These must be the exact files `objcopy --add-gnu-debuglink` ran
+          # against, or the embedded CRC check rejects them.
+          mkdir -p "$tmp/usr/lib/debug${workspace.dataplane}/bin"
+          ln -s "${workspace.dataplane.debug}/bin/dataplane" "$tmp/usr/lib/debug${workspace.dataplane}/bin/dataplane"
+          mkdir -p "$tmp/usr/lib/debug${workspace.cli}/bin"
+          ln -s "${workspace.cli.debug}/bin/cli" "$tmp/usr/lib/debug${workspace.cli}/bin/cli"
+          mkdir -p "$tmp/usr/lib/debug${workspace.init}/bin"
+          ln -s "${workspace.init.debug}/bin/dataplane-init" "$tmp/usr/lib/debug${workspace.init}/bin/dataplane-init"
+          echo '#!/bin/sh' > "$tmp/bin/llvm-symbolizer"
+          echo 'exec ${llvm-symbolizer-pkg}/bin/llvm-symbolizer --debug-file-directory=/usr/lib/debug --debug-file-directory=/lib/debug "$@"' >> "$tmp/bin/llvm-symbolizer"
+          chmod +x "$tmp/bin/llvm-symbolizer"
+        ''}
         # we take some care to make the tar file reproducible here
         tar \
           --create \
@@ -755,7 +811,10 @@ let
           ${workspace.dataplane} \
           ${workspace.init} \
           ${workspace.cli} \
-          ${pkgs.pkgsHostHost.busybox}
+          ${pkgs.pkgsHostHost.busybox} \
+          ${pkgs.perf} \
+          ${lib.optionalString is-sanitized "${llvm-symbolizer-pkg}"} \
+          ${dp-debug}
       '';
   };
 
@@ -771,15 +830,22 @@ let
         "/lib"
       ];
       paths = [
-        pkgs.pkgsHostHost.dockerTools.fakeNss
         pkgs.pkgsHostHost.busybox
+        pkgs.pkgsHostHost.dockerTools.fakeNss
         pkgs.pkgsHostHost.dockerTools.usrBinEnv
+        pkgs.pkgsHostHost.libc.debug
+        pkgs.pkgsHostHost.llvmPackages'.llvm
+        pkgs.pkgsHostHost.llvmPackages'.llvm.lib
         workspace.cli
+        # workspace.cli.debug
         workspace.dataplane
+        # workspace.dataplane.debug
         workspace.init
+        # workspace.init.debug
       ];
     };
-    config.Entrypoint = [ "/bin/dataplane" ];
+    # config.Entrypoint = [ "/bin/perf" "-o" "/blah/dataplane-perf.data" "/bin/dataplane" ];
+    config.Entrypoint = [ "/dataplane" ];
   };
 
   containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {

@@ -46,6 +46,11 @@ on:
         description: "Enable release tests for VLAB/HLAB tests"
         required: false
         default: false
+      run_tsan_vlab:
+        type: "boolean"
+        description: "Run VLAB against a thread-sanitized dataplane (slow; lab instrument, not a gate)"
+        required: false
+        default: false
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
@@ -133,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: &default-build
+        build:
           - &debug-build
             name: "debug"
             profile: "debug"
@@ -335,7 +340,19 @@ jobs:
           - frr.dataplane
           - dataplane
           - validator
-        build: *default-build
+        build:
+          - name: "debug"
+            profile: "debug"
+            sanitize: ""
+            instrument: "none"
+          - name: "release"
+            profile: "release"
+            sanitize: ""
+            instrument: "none"
+          - name: "thread"
+            profile: "fuzz"
+            sanitize: "thread"
+            instrument: "none"
         exclude:
           - nix-target: validator
             build:
@@ -354,8 +371,22 @@ jobs:
           DEBUG_JUSTFILE: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}"
         run: |
           set -euo pipefail
+          sanitize="${SANITIZE}"
           if [ "${NIX_TARGET}" = "validator" ]; then
             platform="wasm32-wasip1"
+            # rustc has no sanitizer support for `wasm32-wasip1` ("thread
+            # sanitizer is not supported for this target"), and
+            # `nix/platforms.nix` does not filter sanitizers per platform, so
+            # the flags would reach rustc and fail the build. A wasm module has
+            # nothing to sanitize in any case.
+            #
+            # We build it unsanitized rather than skipping the cell, because
+            # fabricator derives the validator ref from the single
+            # `DataplaneVersion` field (`comp/gateway.Artifacts`, mirrored via
+            # `AirgapArtifactsGateway`). Pointing that field at a sanitized
+            # dataplane tag makes hhfab mirror `dataplane/validator:<same tag>`
+            # too -- so the tag has to exist or VLAB dies before it boots.
+            sanitize=""
           else
             platform="x86-64-v3"
           fi
@@ -364,12 +395,27 @@ jobs:
             debug_justfile="${DEBUG_JUSTFILE}"
             profile="${PROFILE}"
             platform="${platform}"
-            sanitize="${SANITIZE}"
+            sanitize="${sanitize}"
             instrument="${INSTRUMENT}"
             oci_repo=ghcr.io
           )
-          just "${base_args[@]}" push-container "${NIX_TARGET}"
-          just "${base_args[@]}" "version=${VERSION}-${PROFILE}" push-container "${NIX_TARGET}"
+          # The profile alone does not identify a build: `fuzz` is shared by
+          # every sanitizer variant, so a thread- and an address-sanitized
+          # image would land on the same tag. Mirror the suffix the justfile
+          # already uses for locally-computed versions (`version_san`).
+          san_suffix=""
+          if [ -n "${SANITIZE}" ]; then
+            san_suffix="-san.${SANITIZE//,/.}"
+          fi
+          # The bare `${VERSION}` tag names a single image per commit, so only
+          # one matrix cell may write it -- otherwise debug, release and thread
+          # race and the winner is whichever job happens to finish last. Give it
+          # to the plain release build, which is what every consumer that does
+          # not ask for a variant means.
+          if [ -z "${SANITIZE}" ] && [ "${PROFILE}" = "release" ]; then
+            just "${base_args[@]}" "version=${VERSION}" push-container "${NIX_TARGET}"
+          fi
+          just "${base_args[@]}" "version=${VERSION}-${PROFILE}${san_suffix}" push-container "${NIX_TARGET}"
       - *verify-clean-tree
       - *tmate
 
@@ -743,6 +789,68 @@ jobs:
             vpcmode: l2vni
             hybrid: true
             upgradefrom: ""
+
+  # Run VLAB against the thread-sanitized dataplane image built by the `build`
+  # matrix's "thread" cell.
+  #
+  # This is a lab instrument for hunting locking issues, NOT a merge gate, and
+  # it is deliberately absent from `summary`'s `needs`: a ThreadSanitizer report
+  # here should start an investigation, not block someone's PR. It is also
+  # opt-in (label / dispatch) because a sanitized build is slow enough that
+  # running it on every PR would be a poor trade.
+  #
+  # Everything the sanitized run needs beyond the base VLAB job is carried by
+  # `prebuild`, which the reusable workflow executes as an ordinary step in the
+  # same job as `hhfab vlab up`. That means it can export settings to later
+  # steps via `$GITHUB_ENV` -- the only seam available, since a reusable
+  # workflow cannot inherit the caller's `env`.
+  vlab_tsan:
+    if: >-
+      ${{
+        github.event_name == 'pull_request'
+        && contains(github.event.pull_request.labels.*.name, 'ci:+tsan')
+        || github.event_name == 'workflow_dispatch' && inputs.run_tsan_vlab
+      }}
+    needs:
+      - version
+      - build
+
+    name: "v-tsan-gw-iso-l2vni"
+
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    with:
+      fabricatorref: master
+      # `HHFAB_VLAB_GW_RAM` is the env var behind `hhfab vlab up --gateway-ram`.
+      # The default is 6144 MB, which ThreadSanitizer's shadow memory is likely
+      # to exhaust: the container has no memory limit, so the VM is the ceiling
+      # and the failure mode is an OOM kill that looks like an unrelated crash.
+      # 12288 is a starting guess -- tune it from what the first run actually
+      # uses. Note this applies to each of the two gateway VMs.
+      #
+      # Only the dataplane is switched to the sanitized image. FRR is built with
+      # the same `stdenv'` and so is also instrumented at the `-fuzz-san.thread`
+      # tag, but sanitizing both at once doubles the slowdown and the noise for
+      # no extra signal about our own locking. It still has to be bumped to this
+      # commit's release build: leaving it alone would silently pin FRR to the
+      # last released version and put a stale frr-agent on the other end of CPI.
+      #
+      # temp comment out till I talk to Sergei
+      # echo "HHFAB_VLAB_GW_RAM=12288" >> "$GITHUB_ENV"
+      prebuild: |
+        just bump dataplane ${{ needs.version.outputs.version }}-fuzz-san.thread
+        just bump frr ${{ needs.version.outputs.version }}-release
+      fabricmode: spine-leaf
+      gateway: true
+      includeonie: false
+      buildmode: iso
+      vpcmode: l2vni
+      hybrid: false
+      upgradefrom: ""
+      # The whole point of the run is the report, and `show-tech` is what
+      # captures the dataplane container's stderr (`crictl logs`) into the
+      # uploaded artifact. Without this it is only collected on failure -- but a
+      # race that TSan reports without killing anything is a *passing* run.
+      collect_show_tech: true
 
   summary:
     name: "Summary"

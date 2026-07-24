@@ -23,4 +23,6 @@ mod packet_processor;
 #[cfg(not(feature = "loom"))]
 mod runtime;
 #[cfg(not(feature = "loom"))]
+mod sanitizer;
+#[cfg(not(feature = "loom"))]
 mod statistics;
