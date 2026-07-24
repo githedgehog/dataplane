@@ -1,0 +1,11 @@
+# tokio's I/O driver runs on its own worker thread(s). When another thread
+# registers an I/O source , tokio allocates and initializes a `ScheduledIo`,
+# then hands the fd to the kernel via `epoll_ctl`. The driver worker only ever
+# sees that `ScheduledIo` after `epoll_wait` returns its token (strictly
+# after the registration syscall). That happens-before edge is real but runs
+# through the kernel, which ThreadSanitizer cannot instrument, so it reports a
+# false positive between RegistrationSet::allocate (init) and
+# Driver::turn -> ScheduledIo::{set_readiness,wake} (use). Matching either
+# tokio frame silences that pattern without hiding races in our own fd handling.
+race:tokio::runtime::io::scheduled_io
+race:tokio::runtime::io::registration_set
