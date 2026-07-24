@@ -10,8 +10,11 @@ use lpm::prefix::Prefix;
 
 use crate::bolero::gwgroups::{LegalValueGroupsTableGenerator, MAX_GROUP_MEMBERS};
 use crate::bolero::peering::LegalValuePeeringsGenerator;
+use crate::bolero::support::K8sName;
 use crate::bolero::{LegalValue, SubnetMap, VpcSubnetMap};
-use crate::gateway_agent_crd::{GatewayAgentGateway, GatewayAgentSpec, GatewayAgentVpcs};
+use crate::gateway_agent_crd::{
+    GatewayAgentConfig, GatewayAgentGateway, GatewayAgentSpec, GatewayAgentVpcs,
+};
 
 fn extract_subnets(vpcs: &BTreeMap<String, GatewayAgentVpcs>) -> VpcSubnetMap {
     let mut vpc_subnets = VpcSubnetMap::new();
@@ -97,8 +100,14 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
         }
 
         Some(LegalValue(GatewayAgentSpec {
-            agent_version: None,
-            config: None,
+            agent_version: d.produce::<Option<K8sName>>()?.map(K8sName::take),
+            // `fabricBFD` fans out over every underlay BGP neighbor in the converter, so it is
+            // worth generating rather than pinning to `None`.
+            config: d
+                .produce::<Option<bool>>()?
+                .map(|fabric_bfd| GatewayAgentConfig {
+                    fabric_bfd: Some(fabric_bfd),
+                }),
             groups: Some(groups),
             communities: Some(communities),
             gateway: Some(d.produce::<LegalValue<GatewayAgentGateway>>()?.take()),

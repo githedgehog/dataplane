@@ -14,7 +14,7 @@ use crate::bolero::Normalize;
 
 use crate::gateway_agent_crd::{
     GatewayAgentGateway, GatewayAgentGatewayGroups, GatewayAgentGatewayInterfaces,
-    GatewayAgentGatewayLogs, GatewayAgentGatewayNeighbors,
+    GatewayAgentGatewayLogs, GatewayAgentGatewayNeighbors, GatewayAgentGatewayProfiling,
 };
 
 impl TypeGenerator for LegalValue<GatewayAgentGateway> {
@@ -42,12 +42,18 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
 
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
-            flow_table_capacity: None,
+            // The converter requires this to be non-zero and to fit in a `usize`; zero is an
+            // illegal value, so it is left to the hostile generators to produce.
+            flow_table_capacity: d.produce::<Option<u32>>()?.map(|capacity| capacity.max(1)),
             groups: Some(groups),
             logs: Some(d.produce::<LegalValue<GatewayAgentGatewayLogs>>()?.take()),
             interfaces: Some(interfaces).filter(|i| !i.is_empty()),
             neighbors: Some(neighbors).filter(|n| !n.is_empty()),
-            profiling: None, // FIXME(mvachhar) Add a proper implementation
+            profiling: d
+                .produce::<Option<bool>>()?
+                .map(|enabled| GatewayAgentGatewayProfiling {
+                    enabled: Some(enabled),
+                }),
             protocol_ip: Some(format!(
                 "{}/{}",
                 d.produce::<UnicastIpv4Addr>()?,
