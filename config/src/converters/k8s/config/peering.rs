@@ -174,8 +174,11 @@ mod test {
             .with_generator(generator)
             .for_each(|peering| {
                 let peering_name = "test-peering";
-                let peering = VpcPeering::try_from((&subnets, peering_name, peering)).unwrap();
-                assert_eq!(peering.name, peering_name);
+                let converted = VpcPeering::try_from((&subnets, peering_name, peering)).unwrap();
+                assert_eq!(converted.name, peering_name);
+                // The ACL the generator produced is relative to this peering's two VPCs, so it
+                // must survive conversion rather than being dropped.
+                assert_eq!(converted.acl.is_some(), peering.acl.is_some());
                 // Rest of the assertions come from the types and the unwrap in the conversion above
             });
     }

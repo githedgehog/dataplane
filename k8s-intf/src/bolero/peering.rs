@@ -6,6 +6,7 @@ use std::ops::Bound;
 
 use bolero::{Driver, ValueGenerator};
 
+use crate::bolero::acl::LegalValueAclGenerator;
 use crate::bolero::expose::LegalValueExposeGenerator;
 use crate::bolero::{SubnetMap, VpcSubnetMap};
 use crate::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering};
@@ -91,10 +92,23 @@ impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
             .map(|i| Some((vpc_names[i].clone(), peerings_gens[i].generate(d)?)))
             .collect::<Option<BTreeMap<_, _>>>()?;
 
+        // `VpcPeering::try_from` names the sides by iterating the `peering` map, so `left` is the
+        // lexicographically smaller of the two VPC names.  The ACL's `from`/`to` must agree with
+        // that, so derive the names from the map rather than from `vpc_names`.
+        let mut side_names = peering.keys();
+        let left_name = side_names.next()?;
+        let right_name = side_names.next()?;
+
+        let acl = if d.gen_bool(None)? {
+            Some(LegalValueAclGenerator::new(self.vpc_subnets, left_name, right_name).generate(d)?)
+        } else {
+            None
+        };
+
         Some(GatewayAgentPeerings {
             gateway_group: Some(d.produce::<String>()?),
             peering: Some(peering),
-            acl: None, // FIXME: Add a proper implementation when used
+            acl,
         })
     }
 }
