@@ -8,11 +8,10 @@ use bolero::{Driver, TypeGenerator, ValueGenerator};
 
 use lpm::prefix::Prefix;
 
+use crate::bolero::gwgroups::{LegalValueGroupsTableGenerator, MAX_GROUP_MEMBERS};
 use crate::bolero::peering::LegalValuePeeringsGenerator;
 use crate::bolero::{LegalValue, SubnetMap, VpcSubnetMap};
-use crate::gateway_agent_crd::{
-    GatewayAgentGateway, GatewayAgentGroups, GatewayAgentSpec, GatewayAgentVpcs,
-};
+use crate::gateway_agent_crd::{GatewayAgentGateway, GatewayAgentSpec, GatewayAgentVpcs};
 
 fn extract_subnets(vpcs: &BTreeMap<String, GatewayAgentVpcs>) -> VpcSubnetMap {
     let mut vpc_subnets = VpcSubnetMap::new();
@@ -86,17 +85,15 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
             }
         }
 
-        let num_groups = d.gen_usize(Bound::Included(&0), Bound::Included(&6))?;
-        let mut groups = BTreeMap::new();
-        for i in 0..=num_groups {
-            groups.insert(format!("gwgroup-{i}"), d.produce::<GatewayAgentGroups>()?);
-        }
+        let num_groups = d.gen_usize(Bound::Included(&1), Bound::Included(&6))?;
+        let (groups, _) = LegalValueGroupsTableGenerator::new(num_groups).generate(d)?;
 
-        let num_communities = d.gen_usize(Bound::Included(&0), Bound::Included(&9))?;
+        // A group of N members occupies ranks `0..N`, and `ExternalConfig::validate` requires a
+        // community at every rank it finds.  Sizing the table to the largest group a generated
+        // spec can hold keeps that satisfied without coupling to how many members were drawn.
         let mut communities = BTreeMap::new();
-        for i in 0..=num_communities {
-            let community = format!("65000:{}", 100 + i);
-            communities.insert(i.to_string(), community);
+        for i in 0..MAX_GROUP_MEMBERS {
+            communities.insert(i.to_string(), format!("65000:{}", 100 + i));
         }
 
         Some(LegalValue(GatewayAgentSpec {
