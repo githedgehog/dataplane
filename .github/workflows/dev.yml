@@ -833,8 +833,10 @@ jobs:
       # no extra signal about our own locking. It still has to be bumped to this
       # commit's release build: leaving it alone would silently pin FRR to the
       # last released version and put a stale frr-agent on the other end of CPI.
+      #
+      # temp comment out till I talk to Sergei
+      # echo "HHFAB_VLAB_GW_RAM=12288" >> "$GITHUB_ENV"
       prebuild: |
-        echo "HHFAB_VLAB_GW_RAM=12288" >> "$GITHUB_ENV"
         just bump dataplane ${{ needs.version.outputs.version }}-fuzz-san.thread
         just bump frr ${{ needs.version.outputs.version }}-release
       fabricmode: spine-leaf
