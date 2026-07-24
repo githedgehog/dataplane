@@ -155,6 +155,7 @@ mod test {
     use std::num::NonZero;
 
     use k8s_intf::bolero::LegalValue;
+    use k8s_intf::bolero::mutate::Mutated;
     use k8s_intf::gateway_agent_crd::GatewayAgent;
 
     use crate::ExternalConfig;
@@ -228,6 +229,39 @@ mod test {
                     ),
                 }
             });
+    }
+
+    /// A config with one thing deliberately wrong must be *rejected*, never panic.
+    ///
+    /// The property is deliberately coarse. Asserting a specific error variant per mutation would
+    /// pin down the current phrasing of every guard and break on harmless refactors; asserting only
+    /// "does not panic" would pass even if the config plane silently accepted a dangling reference.
+    /// Rejection is the property that actually matters: bad config from outside the dataplane must
+    /// not be applied.
+    ///
+    /// A mutation that found nothing to corrupt (no peerings to break a group reference in, say)
+    /// leaves the config legal, and is required to still validate.
+    #[test]
+    fn test_mutated_config_is_rejected() {
+        bolero::check!().with_type::<Mutated>().for_each(|mutated| {
+            let result = ExternalConfig::try_from(mutated.agent())
+                .and_then(|c| c.validate().map_err(Into::into));
+
+            if mutated.is_noop() {
+                assert!(
+                    result.is_ok(),
+                    "{:?} changed nothing, so the config should still be valid: {:?}",
+                    mutated.mutation(),
+                    result.err(),
+                );
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{:?} was applied but the config was still accepted",
+                    mutated.mutation(),
+                );
+            }
+        });
     }
 
     /// `flowTableCapacity` must survive the `u32` -> `NonZero<usize>` narrowing intact.
