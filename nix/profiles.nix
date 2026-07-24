@@ -131,6 +131,7 @@ let
   march.wasm32 = { };
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
+    "-fno-omit-frame-pointer"
   ];
   sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
@@ -139,6 +140,7 @@ let
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
     "-Zexternal-clangrt"
+    "-Cforce-frame-pointers=yes"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
   sanitize.leak.NIX_CFLAGS_COMPILE = [
@@ -149,10 +151,12 @@ let
   sanitize.leak.RUSTFLAGS = [
     "-Zsanitizer=leak"
     "-Zexternal-clangrt"
+    "-Cforce-frame-pointers=yes"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   sanitize.thread.NIX_CFLAGS_COMPILE = [
     "-fsanitize=thread"
+    "-fno-omit-frame-pointer"
   ];
   sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
   sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
@@ -163,6 +167,7 @@ let
     "-Zexternal-clangrt"
     # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
     "-Cunsafe-allow-abi-mismatch=sanitizer"
+    "-Cforce-frame-pointers=yes"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
   # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds

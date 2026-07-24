@@ -22,5 +22,9 @@ mod drivers;
 mod packet_processor;
 #[cfg(not(feature = "loom"))]
 mod runtime;
+// Baked-in sanitizer suppressions (e.g. `__tsan_default_suppressions`). Compiles
+// to nothing unless a matching `-Zsanitizer=<kind>` build is active.
+#[cfg(not(feature = "loom"))]
+mod sanitizer;
 #[cfg(not(feature = "loom"))]
 mod statistics;

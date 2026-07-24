@@ -1,0 +1,118 @@
+[2m2026-07-24T06:56:16.826639Z[0m [32m INFO[0m main [2mdataplane::runtime[0m[2m:[0m [2m65:[0m  ━━━━━━ Starting dataplane for gateway 'a921d9ba8a7b' (Version = v0.23.1-1-gce7a6af5a-dirty-fuzz-san.thread) ━━━━━━
+[2m2026-07-24T06:56:16.826765Z[0m [32m INFO[0m main [2mdataplane_tracectl::control[0m[2m:[0m [2m626:[0m Changing default log-level from info to debug
+[2m2026-07-24T06:56:16.827152Z[0m [32m INFO[0m main [1mnew[0m[2m:[0m [2mdataplane_dpdk::eal[0m[2m:[0m [2m80:[0m [3mreturn[0m[2m=[0mOk(ValidatedEalArgs(["--no-huge", "--no-pci", "--in-memory", "--no-telemetry", "--no-shconf", "--iova-mode=va", "--lcores", "0@(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63)"]))
+EAL: Detected CPU lcores: 64
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Selected IOVA mode 'VA'
+[2m2026-07-24T06:56:16.943791Z[0m [34mDEBUG[0m main [2mdataplane_dpdk::socket[0m[2m:[0m [2m36:[0m Initializing DPDK socket manager
+[2m2026-07-24T06:56:16.943857Z[0m [32m INFO[0m main [2mdataplane::runtime[0m[2m:[0m [2m127:[0m BMP: disabled
+[2m2026-07-24T06:56:16.960505Z[0m [34mDEBUG[0m main [2mdataplane_routing::router[0m[2m:[0m [2m127:[0m router: Creating interface table...
+[2m2026-07-24T06:56:16.960590Z[0m [34mDEBUG[0m main [2mdataplane_routing::router[0m[2m:[0m [2m130:[0m router: Creating FIB table...
+[2m2026-07-24T06:56:16.960640Z[0m [34mDEBUG[0m main [2mdataplane_routing::router[0m[2m:[0m [2m133:[0m router: Creating Adjacency resolver...
+[2m2026-07-24T06:56:16.961231Z[0m [34mDEBUG[0m main [2mdataplane_routing::router[0m[2m:[0m [2m137:[0m router: Building router IO config...
+[2m2026-07-24T06:56:16.961321Z[0m [34mDEBUG[0m main [2mdataplane_routing::router[0m[2m:[0m [2m140:[0m router: Starting router IO...
+[2m2026-07-24T06:56:16.961382Z[0m [34mDEBUG[0m main [2mdataplane_routing::router::rio[0m[2m:[0m [2m88:[0m Opening UNIX sock; target bind point is /var/run/frr/hh/dataplane.sock
+[2m2026-07-24T06:56:16.961535Z[0m [34mDEBUG[0m main [2mdataplane_routing::router::rio[0m[2m:[0m [2m98:[0m Successfully opened UX sock @ /var/run/frr/hh/dataplane.sock
+[2m2026-07-24T06:56:16.961566Z[0m [34mDEBUG[0m main [2mdataplane_routing::router::rio[0m[2m:[0m [2m88:[0m Opening UNIX sock; target bind point is /var/run/dataplane/cli.sock
+[2m2026-07-24T06:56:16.961702Z[0m [34mDEBUG[0m main [2mdataplane_routing::router::rio[0m[2m:[0m [2m98:[0m Successfully opened UX sock @ /var/run/dataplane/cli.sock
+[2m2026-07-24T06:56:16.961774Z[0m [34mDEBUG[0m main [2mdataplane_routing::router::rio[0m[2m:[0m [2m107:[0m Cli sock send buffer set to 8388608
+[2m2026-07-24T06:56:16.961833Z[0m [34mDEBUG[0m main [2mdataplane_routing::router::rio[0m[2m:[0m [2m129:[0m Will track /var/run/dataplane/cli.sock via (/var/run/dataplane)
+[2m2026-07-24T06:56:16.962232Z[0m [34mDEBUG[0m main [2mdataplane_routing::router[0m[2m:[0m [2m142:[0m router: Successfully started router with parameters:
+Router config
+  name     : router
+  CPI path : /var/run/frr/hh/dataplane.sock
+  CLI path : /var/run/dataplane/cli.sock
+  FRR-agent: /var/run/frr/frr-agent.sock
+
+[2m2026-07-24T06:56:16.962316Z[0m [32m INFO[0m routerIO [2mdataplane_routing::router::rio[0m[2m:[0m [2m448:[0m CPI: Listening at /var/run/frr/hh/dataplane.sock.
+[2m2026-07-24T06:56:16.962457Z[0m [32m INFO[0m routerIO [2mdataplane_routing::router::rio[0m[2m:[0m [2m449:[0m CLI: Listening at /var/run/dataplane/cli.sock.
+[2m2026-07-24T06:56:16.962510Z[0m [32m INFO[0m routerIO [2mdataplane_routing::router::rio[0m[2m:[0m [2m450:[0m FRRMI: will connect to /var/run/frr/frr-agent.sock.
+[2m2026-07-24T06:56:16.962596Z[0m [34mDEBUG[0m routerIO [2mdataplane_routing::rib::vrftable[0m[2m:[0m [2m50:[0m Creating new VRF name:default id: 0
+[2m2026-07-24T06:56:16.962927Z[0m [34mDEBUG[0m routerIO [2mdataplane_routing::rib::vrftable[0m[2m:[0m [2m80:[0m Successfully added VRF default, id 0
+[2m2026-07-24T06:56:16.963075Z[0m [32m INFO[0m routerIO [2mdataplane_routing::router::rio[0m[2m:[0m [2m459:[0m Entering router IO loop....
+[2m2026-07-24T06:56:16.966088Z[0m [34mDEBUG[0m     main [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m124:[0m Creating config processor...
+[2m2026-07-24T06:56:16.966127Z[0m [32m INFO[0m  mgmt-rt [2mdataplane::statistics[0m[2m:[0m [2m97:[0m metrics server listening on 127.0.0.1:9090
+[2m2026-07-24T06:56:16.966178Z[0m [32m INFO[0m  mgmt-rt [2mdataplane_interface_manager::monitor[0m[2m:[0m [2m124:[0m Starting interface monitor
+[2m2026-07-24T06:56:16.966314Z[0m [34mDEBUG[0m     main [2mdataplane_mgmt::processor::gwconfigdb[0m[2m:[0m [2m20:[0m Building config database...
+[2m2026-07-24T06:56:17.284493Z[0m [34mDEBUG[0m     main [2mdataplane_mgmt::processor::confbuild::internal[0m[2m:[0m [2m351:[0m Building internal config for gen 0
+[2m2026-07-24T06:56:17.284667Z[0m [34mDEBUG[0m     main [2mdataplane_config::internal::routing::vrf[0m[2m:[0m [2m147:[0m Adding VRF config for vrf: default vpcid: None tableid: None vni: None
+[2m2026-07-24T06:56:17.284790Z[0m [34mDEBUG[0m     main [2mdataplane_mgmt::processor::confbuild::internal[0m[2m:[0m [2m392:[0m Successfully built internal config for genid 0
+[2m2026-07-24T06:56:17.284953Z[0m [34mDEBUG[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m161:[0m Will start watching k8s for configuration changes
+[2m2026-07-24T06:56:17.285069Z[0m [32m INFO[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m364:[0m Starting config processor...
+[2m2026-07-24T06:56:17.285073Z[0m [34mDEBUG[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m65:[0m Initializing k8s client...
+[2m2026-07-24T06:56:17.285541Z[0m [31mERROR[0m     main [2mdataplane_mgmt::processor::k8s_client[0m[2m:[0m [2m123:[0m Failed to initialize gateway status: Client error: Failed to infer configuration: failed to infer config: in-cluster: (failed to read an incluster environment variable: environment variable not found), kubeconfig: (failed to read kubeconfig from '"/var/empty/.kube/config"': No such file or directory (os error 2))
+[2m2026-07-24T06:56:17.285733Z[0m [33m WARN[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m75:[0m Could not initialize k8s state. Will retry 10 more times
+[2m2026-07-24T06:56:22.287228Z[0m [31mERROR[0m     main [2mdataplane_mgmt::processor::k8s_client[0m[2m:[0m [2m123:[0m Failed to initialize gateway status: Client error: Failed to infer configuration: failed to infer config: in-cluster: (failed to read an incluster environment variable: environment variable not found), kubeconfig: (failed to read kubeconfig from '"/var/empty/.kube/config"': No such file or directory (os error 2))
+[2m2026-07-24T06:56:22.287393Z[0m [33m WARN[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m75:[0m Could not initialize k8s state. Will retry 9 more times
+[2m2026-07-24T06:56:27.288366Z[0m [31mERROR[0m     main [2mdataplane_mgmt::processor::k8s_client[0m[2m:[0m [2m123:[0m Failed to initialize gateway status: Client error: Failed to infer configuration: failed to infer config: in-cluster: (failed to read an incluster environment variable: environment variable not found), kubeconfig: (failed to read kubeconfig from '"/var/empty/.kube/config"': No such file or directory (os error 2))
+[2m2026-07-24T06:56:27.288545Z[0m [33m WARN[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m75:[0m Could not initialize k8s state. Will retry 8 more times
+^C[2m2026-07-24T06:56:32.289944Z[0m [31mERROR[0m     main [2mdataplane_mgmt::processor::k8s_client[0m[2m:[0m [2m123:[0m Failed to initialize gateway status: Client error: Failed to infer configuration: failed to infer config: in-cluster: (failed to read an incluster environment variable: environment variable not found), kubeconfig: (failed to read kubeconfig from '"/var/empty/.kube/config"': No such file or directory (os error 2))
+[2m2026-07-24T06:56:32.290042Z[0m [33m WARN[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m75:[0m Could not initialize k8s state. Will retry 7 more times
+[2m2026-07-24T06:56:32.290554Z[0m [32m INFO[0m  mgmt-rt [2mdataplane::runtime[0m[2m:[0m [2m152:[0m Processing signal SIGINT from signal catcher
+[2m2026-07-24T06:56:32.290832Z[0m [32m INFO[0m     main [2mdataplane_mgmt::processor::launch[0m[2m:[0m [2m80:[0m K8s init cancelled during retry backoff
+[2m2026-07-24T06:56:32.290830Z[0m [32m INFO[0m  mgmt-rt [2mdataplane::runtime[0m[2m:[0m [2m163:[0m Signal handler ended
+[2m2026-07-24T06:56:32.290959Z[0m [32m INFO[0m  mgmt-rt [2mdataplane_lifecycle[0m[2m:[0m [2m340:[0m Signal catcher ended
+[2m2026-07-24T06:56:32.291150Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291225Z[0m [32m INFO[0m     main [2mdataplane::runtime[0m[2m:[0m [2m357:[0m Mgmt init cancelled; proceeding to shutdown
+[2m2026-07-24T06:56:32.291286Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291333Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291327Z[0m [32m INFO[0m     main [2mdataplane::runtime[0m[2m:[0m [2m366:[0m Shutting down dataplane
+[2m2026-07-24T06:56:32.291368Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291399Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291429Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291412Z[0m [32m INFO[0m     main [2mdataplane_lifecycle[0m[2m:[0m [2m237:[0m drained cleanly [3msubsystem[0m[2m=[0m"workers"
+[2m2026-07-24T06:56:32.291462Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291485Z[0m [32m INFO[0m     main [2mdataplane_lifecycle[0m[2m:[0m [2m237:[0m drained cleanly [3msubsystem[0m[2m=[0m"router"
+[2m2026-07-24T06:56:32.291488Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291529Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291554Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291582Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291608Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291639Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291669Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291701Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291723Z[0m [32m INFO[0m  mgmt-rt [2mdataplane::statistics[0m[2m:[0m [2m101:[0m metrics server shutdown requested
+[2m2026-07-24T06:56:32.291729Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291763Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291788Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291786Z[0m [32m INFO[0m     main [2mdataplane_lifecycle[0m[2m:[0m [2m237:[0m drained cleanly [3msubsystem[0m[2m=[0m"metrics"
+[2m2026-07-24T06:56:32.291820Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291851Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291874Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291900Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291926Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291956Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.291962Z[0m [32m INFO[0m  mgmt-rt [2mdataplane_interface_manager::monitor[0m[2m:[0m [2m152:[0m Interface monitor got cancelled
+[2m2026-07-24T06:56:32.291985Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292014Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292020Z[0m [32m INFO[0m  mgmt-rt [2mdataplane_interface_manager::monitor[0m[2m:[0m [2m157:[0m Interface monitor is shutting down now
+[2m2026-07-24T06:56:32.292039Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292071Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292105Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292136Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292160Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292186Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292212Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292240Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292265Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292291Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292309Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292325Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292341Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292359Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292377Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292393Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292408Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292424Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292440Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292456Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292474Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292491Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292507Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292523Z[0m [33m WARN[0m  mgmt-rt [2mdataplane_mgmt::processor::proc[0m[2m:[0m [2m384:[0m Channel to config processor was closed!
+[2m2026-07-24T06:56:32.292822Z[0m [32m INFO[0m     main [2mdataplane_lifecycle[0m[2m:[0m [2m237:[0m drained cleanly [3msubsystem[0m[2m=[0m"mgmt"
+[2m2026-07-24T06:56:32.292896Z[0m [34mDEBUG[0m     main [2mdataplane_routing::router::rio[0m[2m:[0m [2m63:[0m Requesting router IO to stop..
+[2m2026-07-24T06:56:32.983740Z[0m [34mDEBUG[0m     main [2mdataplane_routing::atable::resolver[0m[2m:[0m [2m90:[0m Stopping adjacency resolver...
+[2m2026-07-24T06:56:34.978882Z[0m [34mDEBUG[0m     main [2mdataplane_routing::router[0m[2m:[0m [2m162:[0m Router 'router' is now stopped
+[2m2026-07-24T06:56:34.982394Z[0m [32m INFO[0m     main [2mdataplane::runtime[0m[2m:[0m [2m381:[0m Dataplane shutdown completed
