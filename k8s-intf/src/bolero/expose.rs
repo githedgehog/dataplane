@@ -53,6 +53,7 @@ pub fn default_expose() -> GatewayAgentPeeringsPeeringExpose {
 pub struct LegalValueExposeGenerator<'a> {
     subnets: &'a SubnetMap,
     pool: Option<&'a PrefixPool>,
+    allow_masquerade: bool,
 }
 
 impl<'a> LegalValueExposeGenerator<'a> {
@@ -61,7 +62,18 @@ impl<'a> LegalValueExposeGenerator<'a> {
         Self {
             subnets,
             pool: None,
+            allow_masquerade: false,
         }
+    }
+
+    /// Permit `from_pool` mode to generate masquerade exposes.
+    ///
+    /// `Peering::check_nat_modes` forbids masquerade on *both* sides of a peering, so this is not
+    /// decidable from one manifest and must be enabled by the caller that owns both sides.
+    #[must_use]
+    pub fn allow_masquerade(mut self) -> Self {
+        self.allow_masquerade = true;
+        self
     }
 
     /// Draw addresses from `pool`, and restrict generation to exposes that pass validation.
@@ -76,24 +88,29 @@ impl<'a> LegalValueExposeGenerator<'a> {
     /// - masquerade forbids port ranges entirely;
     /// - and, across the whole manifest, no two exposes may overlap.
     ///
-    /// This mode satisfies all of them by generating the tractable subset: one address family per
-    /// expose, `ips` drawn from the shared pool (so overlap is impossible by construction), and no
-    /// exclusions, NAT, or `vpcSubnet` references.
+    /// This mode satisfies them by generating a tractable subset: one address family per expose,
+    /// addresses drawn from the shared pool (so overlap is impossible by construction), and no
+    /// exclusions or `vpcSubnet` references.  Of the NAT modes only masquerade is generated, since
+    /// its extra obligations -- an `as` range in the same family, and no port ranges anywhere -- are
+    /// the only ones satisfiable without also controlling prefix sizes.
     ///
-    /// FIXME: extending this to NAT means generating `ips`/`as` in matched sizes per NAT mode, and
-    /// to `vpcSubnet` references means coordinating the VPC subnet generator with the same pool.
-    /// Until then, those shapes are exercised at the conversion level only
-    /// (`converters::k8s::config::expose`).
+    /// FIXME: static NAT additionally requires `ips` and `as` to cover the *same number of
+    /// addresses*, and port forwarding requires exactly one prefix per side with matching port
+    /// ranges; both need the pool to hand out sized blocks on request.  `vpcSubnet` references need
+    /// the VPC subnet generator to draw from this same pool.  Until then those shapes are exercised
+    /// at the conversion level only (`converters::k8s::config::expose`).
     #[must_use]
     pub fn from_pool(mut self, pool: &'a PrefixPool) -> Self {
         self.pool = Some(pool);
         self
     }
 
-    /// The validation-legal subset: a single family, pool-allocated `ips`, nothing else.
+    /// The validation-legal subset: a single family and pool-allocated addresses, with either no
+    /// NAT or masquerade.
     fn generate_from_pool<D: Driver>(
         d: &mut D,
         pool: &PrefixPool,
+        allow_masquerade: bool,
     ) -> Option<GatewayAgentPeeringsPeeringExpose> {
         let v4 = d.gen_bool(None)?;
         let count = d.gen_u16(Bound::Included(&1), Bound::Included(&4))?;
@@ -106,12 +123,44 @@ impl<'a> LegalValueExposeGenerator<'a> {
                 vpc_subnet: None,
             })
             .collect();
+
+        // Masquerade needs a non-empty `as` range, in the same family as `ips` and with no port
+        // ranges.  Its size need not match `ips` -- that is a static-NAT obligation -- so the two
+        // sides are drawn independently from the pool.
+        let masquerade = allow_masquerade && d.gen_bool(None)?;
+        let (r#as, nat) = if masquerade {
+            let as_count = d.gen_u16(Bound::Included(&1), Bound::Included(&4))?;
+            let as_prefixes = pool
+                .take(as_count, v4)
+                .into_iter()
+                .map(|cidr| GatewayAgentPeeringsPeeringExposeAs {
+                    cidr: Some(cidr),
+                    not: None,
+                })
+                .collect();
+            let idle_timeout_secs = d.gen_u64(Bound::Included(&1), Bound::Included(&(2 * 3600)))?;
+            (
+                Some(as_prefixes),
+                Some(GatewayAgentPeeringsPeeringExposeNat {
+                    masquerade: Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
+                        idle_timeout: Some(
+                            std::time::Duration::from_secs(idle_timeout_secs).into(),
+                        ),
+                    }),
+                    port_forward: None,
+                    r#static: None,
+                }),
+            )
+        } else {
+            (None, None)
+        };
+
         Some(GatewayAgentPeeringsPeeringExpose {
-            r#as: None,
+            r#as,
             ips: Some(ips),
             // Explicit `false` is legal and takes the same path as absent; cover both spellings.
             default: d.gen_bool(None)?.then_some(false),
-            nat: None,
+            nat,
         })
     }
 }
@@ -121,7 +170,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
         if let Some(pool) = self.pool {
-            return Self::generate_from_pool(d, pool);
+            return Self::generate_from_pool(d, pool, self.allow_masquerade);
         }
 
         let num_ips = d.gen_u16(Bound::Included(&1), Bound::Included(&16))?;

@@ -41,8 +41,9 @@ fixin = { workspace = true }
 flow-filter = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
+k8s-intf = { workspace = true, features = ["bolero"] }
 net = { workspace = true, features = ["bolero"] }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tracectl = { workspace = true }
 
 # external

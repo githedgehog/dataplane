@@ -1701,6 +1701,7 @@ dependencies = [
  "dataplane-config",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
+ "dataplane-k8s-intf",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",

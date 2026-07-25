@@ -12,6 +12,7 @@ mod packet;
 mod protocol;
 mod state;
 mod test;
+mod test_concurrency;
 
 // re exports
 pub use allocator_writer::MasqueradeConfig;

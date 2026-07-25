@@ -128,6 +128,9 @@ mod test {
             // empty list satisfies that assertion vacuously, so require a non-empty one to be
             // reachable here, where the reachability claims live.
             "bgp neighbors",
+            // `nat`'s allocator-migration concurrency test needs a config whose peerings actually
+            // masquerade; without one the allocator is never installed and the test is vacuous.
+            "masquerade expose",
         ];
 
         // An atomic bitmask rather than a collection behind a lock: `bolero` runs each case inside
@@ -170,6 +173,12 @@ mod test {
                             }
                             if exposes.len() > 1 {
                                 record("multiple exposes");
+                            }
+                            if exposes
+                                .iter()
+                                .any(|e| e.nat.as_ref().is_some_and(|n| n.masquerade.is_some()))
+                            {
+                                record("masquerade expose");
                             }
                         }
                     }

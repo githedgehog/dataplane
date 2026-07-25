@@ -16,7 +16,7 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tracing::error;
+use tracing::{error, warn};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
@@ -205,7 +205,7 @@ fn create_natpool<J: NatIpWithBitmap>(
     exclude_wellknown_ports: bool,
 ) -> NatPool<J> {
     // Build mappings for IPv6 <-> u32 bitmap translation
-    let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(
+    let mappings = create_ipv6_bitmap_mappings(
         &prefixes
             .iter()
             // FIXME: Add port range, too
@@ -213,12 +213,24 @@ fn create_natpool<J: NatIpWithBitmap>(
             .collect::<BTreeSet<Prefix>>(),
     );
 
-    // Mark all addresses as available (free) in bitmap
+    // Mark all addresses as available (free) in bitmap.
+    //
+    // IPv4 prefixes index by address directly.  IPv6 prefixes come from the mapping's `ranges`
+    // rather than from the prefixes themselves, because only the mapping knows how much of each
+    // prefix fits in the bitmap -- deriving the range from a prefix's own size would ask the bitmap
+    // for offsets it does not have.
     let mut bitmap = PoolBitmap::new();
     prefixes
         .iter()
         // FIXME: Add port range, too
-        .for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping));
+        .map(PrefixWithOptionalPorts::prefix)
+        .for_each(|prefix| bitmap.add_v4_prefix(&prefix));
+    for &(base, end) in &mappings.ranges {
+        bitmap.add_offset_range(base, end);
+    }
+
+    let bitmap_mapping = mappings.forward;
+    let reverse_bitmap_mapping = mappings.reverse;
 
     let reserved_prefixes_ports =
         build_reserved_prefixes_ports(prefixes_and_ports_to_exclude_from_pools);
@@ -259,44 +271,180 @@ fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> (I, I) {
     (addr, addr_range_end)
 }
 
-// The allocator's bitmap contains u32 only. For IPv4, it maps well to the address space. For IPv6,
-// we need some mapping to associate IPv6 addresses with u32 indices. This also means that we cannot
-// use more than 2^32 addresses for one expose, for NAT. If the prefixes we get contain more, we'll
-// just ignore the remaining addresses. Hardware limitations are such that working with 4 billion
-// allocated addresses is unreallistic anyway.
-#[allow(clippy::type_complexity)]
-fn create_ipv6_bitmap_mappings(
-    prefixes: &BTreeSet<Prefix>,
-) -> (BTreeMap<u32, u128>, BTreeMap<u128, u32>) {
-    let mut bitmap_mapping = BTreeMap::new();
-    let mut reverse_bitmap_mapping = BTreeMap::new();
-    let mut index = 0;
+/// IPv6 prefixes, projected onto the allocator's `u32` bitmap index space.
+///
+/// The bitmap indexes addresses with a `u32`. For IPv4 an address *is* its index. For IPv6 the
+/// address space is far larger, so prefixes are laid end to end in a `u32` offset space, which caps
+/// the total usable at `2^32` addresses across all of an expose's prefixes. Anything beyond that is
+/// dropped: allocating four billion addresses is not reachable in practice, and a masquerade pool
+/// does not need to offer every address of a large prefix to work.
+pub(crate) struct Ipv6BitmapMappings {
+    /// Offset -> network address of the prefix that offset falls in.
+    pub(crate) forward: BTreeMap<u32, u128>,
+    /// Network address of a prefix -> its base offset.
+    pub(crate) reverse: BTreeMap<u128, u32>,
+    /// `(first offset, last offset)` inclusive, per mapped prefix.
+    ///
+    /// Carried separately because it is the *usable* window, not the prefix's own extent: the last
+    /// prefix to fit may be truncated, and a prefix that does not fit at all is absent entirely.
+    /// The bitmap must be populated from this rather than from prefix sizes.
+    ///
+    /// An inclusive end rather than a count, because a full budget is `2^32` addresses, which is one
+    /// more than a `u32` can hold; the last *offset* is `u32::MAX` and always fits.
+    pub(crate) ranges: Vec<(u32, u32)>,
+}
+
+/// Lay `prefixes`' IPv6 members out in the bitmap's `u32` offset space.
+///
+/// Truncates the address space to `u32::MAX + 1` addresses in total, dropping whole prefixes once
+/// the budget is exhausted. A prefix is only ever mapped together with the number of its addresses
+/// that are actually representable, so no part of the allocator can be asked for an offset outside
+/// the bitmap.
+fn create_ipv6_bitmap_mappings(prefixes: &BTreeSet<Prefix>) -> Ipv6BitmapMappings {
+    /// Addresses representable by a `u32` index.
+    const BUDGET: u128 = 1 << 32;
+
+    let mut mappings = Ipv6BitmapMappings {
+        forward: BTreeMap::new(),
+        reverse: BTreeMap::new(),
+        ranges: Vec::new(),
+    };
+    let mut index: u128 = 0;
 
     for prefix in prefixes {
-        if let Prefix::IPV6(p) = prefix {
-            let start_address = p.network().to_bits();
-            bitmap_mapping.insert(index, start_address);
-            reverse_bitmap_mapping.insert(start_address, index);
-            if p.size() + u128::from(index) >= 2_u128.pow(32) {
-                break;
-            }
-            let Ok(psize) = u128::try_from(p.size()) else {
-                error!("Failed to get u128 from prefix {:#?}", p.size());
-                continue;
-            };
-            let Ok(psize_u32) = u32::try_from(psize) else {
-                error!("Failed to convert {psize} to u32");
-                continue;
-            };
-            index += psize_u32;
+        let Prefix::IPV6(p) = prefix else { continue };
+
+        let remaining = BUDGET - index;
+        if remaining == 0 {
+            warn!("Ran out of NAT bitmap space before prefix {p}; it will not be used");
+            continue;
         }
+
+        // `PrefixSize` is not always a `u128` -- a `::/0` holds `2^128` addresses -- so treat
+        // anything that does not convert as "larger than the budget", which it necessarily is.
+        let size = u128::try_from(p.size()).unwrap_or(u128::MAX);
+        let usable = size.min(remaining);
+        if usable < size {
+            warn!(
+                "NAT bitmap space exhausted within prefix {p}: using {usable} of {size} addresses"
+            );
+        }
+
+        // Exact by construction: `index < BUDGET` and `index + usable <= BUDGET`, so both the base
+        // and the inclusive end land in `0..=u32::MAX`.
+        let (Ok(base), Ok(end)) = (u32::try_from(index), u32::try_from(index + usable - 1)) else {
+            error!(
+                "Bitmap window {index}..={} exceeds u32; dropping prefix {p}",
+                index + usable - 1
+            );
+            continue;
+        };
+
+        let start_address = p.network().to_bits();
+        mappings.forward.insert(base, start_address);
+        mappings.reverse.insert(start_address, base);
+        mappings.ranges.push((base, end));
+
+        index += usable;
     }
-    (bitmap_mapping, reverse_bitmap_mapping)
+    mappings
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ReserveSets, find_masquerade_portfw_overlap};
+    use super::{ReserveSets, create_ipv6_bitmap_mappings, find_masquerade_portfw_overlap};
+    use lpm::prefix::Prefix;
+    use std::collections::BTreeSet;
+    use std::str::FromStr;
+
+    /// Addresses a `u32` bitmap index can address.
+    const BUDGET: u128 = 1 << 32;
+
+    fn v6_set(cidrs: &[&str]) -> BTreeSet<Prefix> {
+        cidrs
+            .iter()
+            .map(|c| Prefix::from_str(c).expect("test prefixes must parse"))
+            .collect()
+    }
+
+    /// The whole budget, and not one address more.
+    ///
+    /// A `/96` holds exactly `2^32` addresses, so its window runs to `u32::MAX` inclusive.  Counting
+    /// addresses rather than offsets would need `2^32`, which does not fit a `u32` -- an earlier cut
+    /// of this fix dropped the prefix outright rather than truncating it.
+    #[test]
+    fn test_prefix_of_exactly_the_budget_fills_the_bitmap() {
+        let mappings = create_ipv6_bitmap_mappings(&v6_set(&["2001:db8::/96"]));
+        assert_eq!(mappings.ranges, vec![(0, u32::MAX)]);
+        assert_eq!(mappings.forward.len(), 1);
+        assert_eq!(mappings.reverse.len(), 1);
+    }
+
+    /// A prefix wider than the bitmap is truncated to what fits, not dropped and not fatal.
+    #[test]
+    fn test_prefix_wider_than_the_budget_is_truncated() {
+        let mappings = create_ipv6_bitmap_mappings(&v6_set(&["2001:db8::/64"]));
+        assert_eq!(
+            mappings.ranges,
+            vec![(0, u32::MAX)],
+            "a /64 should yield the full budget, truncated"
+        );
+    }
+
+    /// Once the budget is gone, later prefixes are dropped rather than aliasing earlier ones.
+    #[test]
+    fn test_prefixes_after_the_budget_is_exhausted_are_dropped() {
+        let mappings = create_ipv6_bitmap_mappings(&v6_set(&["2001:db8::/64", "2001:db9::/96"]));
+        assert_eq!(mappings.ranges.len(), 1, "only the first prefix fits");
+        assert_eq!(mappings.forward.len(), 1);
+        assert_eq!(mappings.reverse.len(), 1);
+    }
+
+    /// Prefixes that fit are laid end to end with no gap and no overlap.
+    #[test]
+    fn test_prefixes_are_packed_contiguously() {
+        // Two /97s: half the budget each, so both fit exactly.
+        let mappings = create_ipv6_bitmap_mappings(&v6_set(&["2001:db8::/97", "2001:db9::/97"]));
+        let half = u32::try_from(BUDGET / 2).expect("half the budget fits a u32");
+        assert_eq!(mappings.ranges, vec![(0, half - 1), (half, u32::MAX)]);
+    }
+
+    /// Every offset a mapped window contains must round-trip back to an address, and back again.
+    #[test]
+    fn test_window_bounds_round_trip() {
+        use super::super::alloc::{map_address, map_offset};
+
+        let mappings = create_ipv6_bitmap_mappings(&v6_set(&["2001:db8::/112", "2001:db9::/112"]));
+        for &(base, end) in &mappings.ranges {
+            for offset in [base, end] {
+                let address = map_offset(offset, &mappings.forward)
+                    .unwrap_or_else(|e| panic!("offset {offset} should map to an address: {e}"));
+                let back = map_address(address, &mappings.reverse)
+                    .unwrap_or_else(|e| panic!("address {address} should map back: {e}"));
+                assert_eq!(offset, back, "round trip changed offset {offset}");
+            }
+        }
+    }
+
+    /// An address past a truncated prefix's window has no index, and says so rather than panicking.
+    ///
+    /// This is the path a flow allocated under a previous config takes when its address is no longer
+    /// representable; it must invalidate the flow, not abort the process.
+    #[test]
+    fn test_address_beyond_truncated_window_is_an_error() {
+        use super::super::alloc::map_address;
+        use std::net::Ipv6Addr;
+
+        let mappings = create_ipv6_bitmap_mappings(&v6_set(&["2001:db8::/64"]));
+        // Inside the /64, but far past the first 2^32 addresses of it.
+        let beyond =
+            Ipv6Addr::from_str("2001:db8::ffff:ffff:ffff").expect("test address must parse");
+        assert!(
+            map_address(beyond, &mappings.reverse).is_err(),
+            "an address outside the mapped window must not produce an index"
+        );
+    }
+
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 
