@@ -25,6 +25,7 @@ use crate::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering
 pub struct LegalValuePeeringsPeeringGenerator<'a> {
     subnets: &'a SubnetMap,
     allow_default: bool,
+    allow_masquerade: bool,
     pool: Option<&'a PrefixPool>,
 }
 
@@ -34,6 +35,7 @@ impl<'a> LegalValuePeeringsPeeringGenerator<'a> {
         Self {
             subnets,
             allow_default: false,
+            allow_masquerade: false,
             pool: None,
         }
     }
@@ -54,6 +56,16 @@ impl<'a> LegalValuePeeringsPeeringGenerator<'a> {
         self.pool = Some(pool);
         self
     }
+
+    /// Permit this side to masquerade.
+    ///
+    /// The caller must not enable this for both sides of the same peering; see
+    /// [`crate::bolero::expose::LegalValueExposeGenerator::allow_masquerade`].
+    #[must_use]
+    pub fn allow_masquerade(mut self) -> Self {
+        self.allow_masquerade = true;
+        self
+    }
 }
 
 impl ValueGenerator for LegalValuePeeringsPeeringGenerator<'_> {
@@ -65,6 +77,11 @@ impl ValueGenerator for LegalValuePeeringsPeeringGenerator<'_> {
         let expose_gen = match self.pool {
             Some(pool) => expose_gen.from_pool(pool),
             None => expose_gen,
+        };
+        let expose_gen = if self.allow_masquerade {
+            expose_gen.allow_masquerade()
+        } else {
+            expose_gen
         };
         let mut expose = (0..num_expose)
             .map(|_| expose_gen.generate(d))
@@ -188,6 +205,16 @@ impl LegalValuePeeringsGenerator<'_> {
         let (first, second) = match default_side {
             Some(0) => (first.allow_default_expose(), second),
             Some(1) => (first, second.allow_default_expose()),
+            _ => (first, second),
+        };
+
+        // `Peering::check_nat_modes` forbids masquerade on both sides at once, so at most one side
+        // may masquerade.  `2` means neither.  Independent of `default_side`: a manifest may hold
+        // both a default expose and a masquerading one.
+        let masquerade_side = d.gen_usize(Bound::Included(&0), Bound::Included(&2))?;
+        let (first, second) = match masquerade_side {
+            0 => (first.allow_masquerade(), second),
+            1 => (first, second.allow_masquerade()),
             _ => (first, second),
         };
 
