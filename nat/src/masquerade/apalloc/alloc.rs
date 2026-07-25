@@ -436,19 +436,23 @@ impl PoolBitmap {
         self.0.insert(index)
     }
 
-    pub(crate) fn add_prefix(&mut self, prefix: &Prefix, bitmap_mapping: &BTreeMap<u128, u32>) {
-        match prefix {
-            Prefix::IPV4(p) => {
-                let start = p.network().to_bits();
-                let end = p.last_address().to_bits();
-                self.0.insert_range(start..=end);
-            }
-            Prefix::IPV6(p) => {
-                let start = map_address(p.network(), bitmap_mapping);
-                let end = map_address(p.last_address(), bitmap_mapping);
-                self.0.insert_range(start..=end);
-            }
+    /// Mark every address of an IPv4 prefix free.  A no-op for IPv6 prefixes, whose bitmap ranges
+    /// come from [`PoolBitmap::add_offset_range`] instead.
+    pub(crate) fn add_v4_prefix(&mut self, prefix: &Prefix) {
+        // For IPv4 the bitmap index *is* the address, so the whole prefix always fits.
+        if let Prefix::IPV4(p) = prefix {
+            let start = p.network().to_bits();
+            let end = p.last_address().to_bits();
+            self.0.insert_range(start..=end);
         }
+    }
+
+    /// Mark the inclusive offset window `base..=end` free.
+    ///
+    /// Used for IPv6, where a prefix occupies a window of the offset space that may be narrower than
+    /// the prefix itself; see `setup::Ipv6BitmapMappings`.
+    pub(crate) fn add_offset_range(&mut self, base: u32, end: u32) {
+        self.0.insert_range(base..=end);
     }
 }
 
@@ -479,12 +483,34 @@ pub(crate) fn map_offset(
         .map_err(|()| AllocatorError::InternalIssue("Failed to convert offset to IPv6".to_string()))
 }
 
-// Reverse operation from map_offset()
-pub(crate) fn map_address(address: Ipv6Addr, bitmap_mapping: &BTreeMap<u128, u32>) -> u32 {
+/// Reverse operation from [`map_offset`].
+///
+/// Fallible rather than panicking, because it is reachable with an address the *current* mapping
+/// does not cover.  Re-reserving a flow's allocation during a config change (see
+/// `masquerade::flows::re_reserve_ip_and_port`) hands over an address allocated under the previous
+/// allocator, and a config change can move or drop the prefix it came from.  Returning an error
+/// there invalidates one flow; panicking would abort the process.
+pub(crate) fn map_address(
+    address: Ipv6Addr,
+    bitmap_mapping: &BTreeMap<u128, u32>,
+) -> Result<u32, AllocatorError> {
+    let address_bits = address.to_bits();
     let (prefix_start_bits, prefix_offset) = bitmap_mapping
-        .range(..=address.to_bits())
+        .range(..=address_bits)
         .next_back()
-        .expect("This should never fail");
+        .ok_or_else(|| {
+            AllocatorError::InternalIssue(format!("Address {address} is below every mapped prefix"))
+        })?;
 
-    prefix_offset + u32::try_from(address.to_bits() - prefix_start_bits).unwrap()
+    // The offset within the prefix must fit the bitmap: a prefix wider than the remaining budget is
+    // mapped with a truncated window, so an address in its tail has no index.
+    let offset_in_prefix = u32::try_from(address_bits - prefix_start_bits).map_err(|_| {
+        AllocatorError::InternalIssue(format!(
+            "Address {address} is beyond the mapped window of its prefix"
+        ))
+    })?;
+
+    prefix_offset.checked_add(offset_in_prefix).ok_or_else(|| {
+        AllocatorError::InternalIssue(format!("Bitmap offset for {address} overflows u32"))
+    })
 }

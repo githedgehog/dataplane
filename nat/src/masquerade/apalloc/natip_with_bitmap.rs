@@ -60,6 +60,6 @@ impl NatIpWithBitmap for Ipv6Addr {
         bitmap_mapping: &BTreeMap<u128, u32>,
     ) -> Result<u32, AllocatorError> {
         // Reverse operation of map_offset()
-        Ok(map_address(address, bitmap_mapping))
+        map_address(address, bitmap_mapping)
     }
 }

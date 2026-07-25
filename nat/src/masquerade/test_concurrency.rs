@@ -111,23 +111,6 @@ struct MasqTarget {
     src_ip: IpAddr,
 }
 
-/// Whether `config` contains an IPv6 masquerade range, which cannot be given to the allocator.
-///
-/// `NatAllocator::new` builds a bitmap over every masquerading peering's public range and indexes it
-/// with a `u32`, so a range wider than 2^32 addresses -- any IPv6 prefix shorter than a /96, and the
-/// pool hands out /64s -- panics during construction, before a single packet.  That is independent of
-/// concurrency; see `test_ipv6_masquerade_range_wider_than_u32_panics`.  Skip such configs here so
-/// this test reports on the race it is about rather than aborting in the allocator.
-fn has_ipv6_masquerade_range(config: &MasqueradeConfig) -> bool {
-    config.iter().any(|peering| {
-        peering.peering.local().valexp().iter().any(|expose| {
-            expose.nat().is_some_and(|nat| {
-                nat.is_masquerade() && nat.as_range.iter().any(|pfx| !pfx.prefix().is_ipv4())
-            })
-        })
-    })
-}
-
 /// Every masquerading peering in `config`, paired with a source address it will translate.
 ///
 /// Returns an empty vector when the config masquerades nothing, in which case there is no allocator
@@ -143,10 +126,9 @@ fn masquerading_targets(config: &MasqueradeConfig) -> Vec<MasqTarget> {
             // The first address of the first exposed prefix is inside what this peering translates,
             // which is all the data path needs to take an allocation.
             //
-            // IPv4 only, deliberately: allocating from an IPv6 masquerade range wider than a /96
-            // panics in `apalloc::alloc::map_address`, which indexes the range with a `u32`.  See
-            // `test_ipv6_masquerade_range_wider_than_u32_panics`.  Until that is resolved, an IPv6
-            // target would abort this test in the allocator rather than exercising the race.
+            // IPv4 only, but for the packet builder rather than the allocator: `drive_data_path`
+            // builds IPv4 TCP packets.  Wide IPv6 masquerade ranges reach the allocator either way,
+            // via `setup` building the pool for every peering in the config.
             let Some(prefix) = expose.ips().iter().next() else {
                 continue;
             };
@@ -274,15 +256,6 @@ fn run_reconfiguration_race(agent: &GatewayAgent) {
     let overlay = validated.external().overlay();
 
     let genid = validated.genid();
-
-    // Decide before touching the allocator: `setup` installs one, which is where the IPv6 panic
-    // happens.
-    let probe = MasqueradeConfig::new(overlay.vpc_table(), genid);
-    if has_ipv6_masquerade_range(&probe) {
-        return;
-    }
-    drop(probe);
-
     let (flow_table, mut alloc_writer, reader_factory, config) = setup(overlay, genid);
     let targets = masquerading_targets(&config);
     if targets.is_empty() {
@@ -337,32 +310,21 @@ async fn reconfiguration_race_preserves_allocation_uniqueness() {
         .for_each(|agent| run_reconfiguration_race(agent.as_ref()));
 }
 
-/// A validated config with a wide IPv6 masquerade range panics the allocator.
+/// A validated config with an IPv6 masquerade range wider than the bitmap can index must build.
 ///
-/// `apalloc::alloc::map_address` indexes a masquerade range's addresses with a `u32`:
+/// The allocator indexes a masquerade range's addresses with a `u32`, so an IPv6 prefix shorter than
+/// a `/96` holds more addresses than it can represent.  `create_ipv6_bitmap_mappings` truncates such
+/// a prefix to the addresses that fit, which is what the allocator has always documented; before
+/// that truncation was implemented, building the pool panicked in `map_address` on an offset that
+/// did not fit a `u32`.
 ///
-/// ```text
-/// prefix_offset + u32::try_from(address.to_bits() - prefix_start_bits).unwrap()
-/// ```
+/// Validation does not reject these ranges, so this is reachable straight from operator input: a
+/// `GatewayAgent` carrying an IPv6 masquerade `as` range validates, and under the shipped
+/// `panic = "abort"` the resulting panic took the whole process down.
 ///
-/// An IPv6 prefix shorter than a `/96` holds more than `u32::MAX` addresses, so that `unwrap`
-/// fails.  Config validation does not reject such a range -- `VpcExpose::validate` checks family
-/// consistency, sizes for static NAT, and reserved blocks, but never that a masquerade range is
-/// narrow enough for the allocator to index -- so this is reachable from operator input: a
-/// `GatewayAgent` with an IPv6 masquerade `as` range validates, and then aborts the dataplane when
-/// the allocator is built.  Under the `panic = "abort"` used in shipped builds, that is the whole
-/// process.
-///
-/// No concurrency and no packets are involved; building the allocator is enough.
-///
-/// Ignored because it documents a defect rather than asserting intended behaviour.  Two candidate
-/// fixes, and the choice is a design decision: reject over-wide masquerade ranges during validation
-/// (which makes it an operator-visible config error), or have the allocator index only the first
-/// `u32::MAX` addresses of a range (which silently caps capacity).  When one lands, drop the
-/// `ignore` and invert the assertion.
+/// No concurrency and no packets: building the allocator is enough.
 #[test]
-#[ignore = "documents a live defect: wide IPv6 masquerade ranges panic the allocator"]
-fn test_ipv6_masquerade_range_wider_than_u32_panics() {
+fn test_wide_ipv6_masquerade_range_is_truncated_not_fatal() {
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -399,6 +361,6 @@ fn test_ipv6_masquerade_range_wider_than_u32_panics() {
         .validate()
         .expect("a v6 masquerade expose is accepted by validation -- that is the point");
 
-    // Panics in `map_address` while building the bitmap.
+    // Used to panic in `map_address` while building the bitmap.
     let (_flow_table, _writer, _factory, _config) = setup(&overlay, 1);
 }
