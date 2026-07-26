@@ -299,6 +299,14 @@ fn cmd_show_packet_stats() -> Node {
     root
 }
 
+fn cmd_show_driver_status() -> Node {
+    let mut root = Node::new("driver");
+    root += Node::new("status")
+        .desc("Show the status of the packet driver")
+        .action(CliAction::ShowDriverStatus);
+    root
+}
+
 fn cmd_show_tech() -> Node {
     Node::new("tech")
         .desc("Dump dataplanes state")
@@ -320,6 +328,7 @@ fn cmd_show() -> Node {
     root += cmd_show_gateway();
     root += cmd_show_config_summary();
     root += cmd_show_packet_stats();
+    root += cmd_show_driver_status();
     root += cmd_show_tech();
     root
 }

@@ -334,6 +334,9 @@ pub enum CliAction {
     // internal config
     ShowConfigInternal,
 
+    // packet driver status
+    ShowDriverStatus,
+
     ShowTech,
 
     /* == Not supported yet == */
