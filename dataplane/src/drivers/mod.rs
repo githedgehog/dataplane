@@ -4,6 +4,8 @@
 use thiserror::Error;
 
 pub mod kernel;
+pub mod status;
+pub mod watchdog;
 
 #[derive(Error, Debug)]
 pub enum DriverError {
