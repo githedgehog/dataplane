@@ -64,6 +64,7 @@ pub struct CliSources {
     pub nat_tables: Option<Box<dyn CliDataProvider + Send>>,
     pub masquerade_state: Option<Box<dyn CliDataProvider + Send>>,
     pub pkt_stats: Option<Box<dyn CliDataProvider + Send>>,
+    pub driver_status: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {
