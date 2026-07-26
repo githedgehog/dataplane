@@ -12,6 +12,7 @@ use afpacket::tokio::RawPacketStream;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncWriteExt, Interest};
 use tokio::sync::Mutex;
+use tokio::time::{Duration, interval};
 
 use concurrency::sync::Arc;
 use concurrency::thread;
@@ -23,12 +24,14 @@ use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 
+use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
+use crate::drivers::kernel::{WorkerIfaceMonitor, WorkerMonitor};
+use crate::drivers::status::WorkerId;
+use crate::drivers::watchdog::Watchdog;
 
 use tracing::{debug, error, info, trace, warn};
-
-pub(crate) type WorkerId = usize;
 
 struct WorkerInterfaceWriter {
     if_name: String,
@@ -41,17 +44,20 @@ struct WorkerInterfaceReader {
     if_name: String,
     if_index: InterfaceIndex,
     read_fd: AsyncFd<std::os::unix::io::OwnedFd>,
+    watchdog: Watchdog,
 }
 
 type WorkerInterfaceReaders = Vec<WorkerInterfaceReader>;
 type WorkerIfTable = HashMap<InterfaceIndex, Arc<Mutex<WorkerInterfaceWriter>>>;
 
 #[allow(unsafe_code)]
+/// This function must be called from a tokio context
 fn create_worker_interface(
     id: WorkerId,
     total_workers: usize,
     if_name: &str,
     if_index: InterfaceIndex,
+    watchdog: Watchdog,
 ) -> io::Result<(WorkerInterfaceWriter, WorkerInterfaceReader)> {
     let mut sock = RawPacketStream::new()?;
     sock.bind(if_name)
@@ -120,6 +126,7 @@ fn create_worker_interface(
             if_name: String::from(if_name),
             if_index,
             read_fd,
+            watchdog,
         },
     ))
 }
@@ -159,9 +166,13 @@ impl Worker {
         if_table: Arc<HashMap<InterfaceIndex, Arc<Mutex<WorkerInterfaceWriter>>>>,
         cancel: CancellationToken,
     ) {
+        // the interval at which we'll pat the watchdog if there is no activity on the socket
+        let pat_period = Duration::from_secs(u64::from(DriverKernel::TASK_PAT_PERIOD));
+
         reader_handles.spawn_local(async move {
             let intf = intf;
             let mut pipeline = setup();
+            let mut ticker = interval(pat_period);
             loop {
                 debug!(worker = id, "awaiting packets");
 
@@ -173,7 +184,7 @@ impl Worker {
                             "cancellation observed; exiting reader"
                         );
                         break;
-                    }
+                    },
                     result = read_packets_from_interface(id, &intf) => match result {
                         Ok(packets) => packets,
                         Err(e) => {
@@ -182,8 +193,14 @@ impl Worker {
                                 rx_intf_name = intf.if_name,
                                 "Error reading packets from interface: {e}"
                             );
-                            vec![]
+                            continue;
                         }
+                    },
+                    // N.B. read_packets_from_interface() MUST be cancel-safe for this wake-up not to
+                    // cause packet loss. It currently is.
+                    _ = ticker.tick() => {
+                        intf.watchdog.pat();
+                        continue;
                     }
                 };
 
@@ -195,29 +212,73 @@ impl Worker {
                     intf.if_name
                 );
 
-                let packets = packets_vec.into_iter();
+                let mut tx_pkts: u64 = 0; // number of packets successfully sent
+                let mut tx_drops: u64 = 0; // number of packets dropped on tx
+                let rx_pkts = packets_vec.len() as u64; // number of packets received
+                if rx_pkts == 0 {
+                    // skip any further processing
+                    continue;
+                }
 
-                let mut count = 0;
+                let packets = packets_vec.into_iter();
                 let out_pkts = pipeline
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
+
+                // Computing the number of packets dropped by pipeline.
+                // The pipeline may not return to the driver all of the packets it was fed with,
+                // since it may drop some (e.g. due to routing, filtering, etc.). So, the number of
+                // packets dropped in a batch can be computed as `rx_pkts - out_pkts.len() as u64`.
+                // However, this assumes that the pipeline does not generate new packets.
+                // With the packet injection, it may happen that the pipeline outputs more packets
+                // than it was fed with. So, the injection of N packets could mask the drop of N packets
+                // by the pipeline if computed that way.
+                // The number of packets output by the pipeline in a batch is
+                //    out_pkts = in_pkts + injected_pkts - dropped
+                // So, we can compute the number of packets dropped by the pipeline as
+                //    dropped = in_pkts + injected_pkts - out_pkts
+                //
+                // Now, we can't know, here, the number of packets that were injected and those
+                // packets may be dropped by the pipeline as well. In these stats, we mostly care about
+                // incoming packets that got dropped. So, if `injected_pkts` is the number of injected
+                // packets OBSERVED at the output of the pipeline, then `dropped` is the number of packets
+                // received and dropped by the pipeline.
+                // This requires the ability to tell if an ouput packet was injected, which we'll have
+                // as those packets will be annotated.
+
+                // send each of the packets
+                let mut injected: u64 = 0;
+                let output_by_pipeline: u64 = out_pkts.len() as u64;
                 for out_pkt in out_pkts {
+                    if false {
+                        /* packet was injected by us */
+                        injected += 1;
+                    }
                     trace!(
                         worker = id,
                         rx_intf_name = intf.if_name,
                         "Tx packet after pipeline for interface {}",
                         intf.if_name
                     );
-                    tx_packet(id, &intf.if_name, &if_table, out_pkt).await;
-                    count += 1;
+                    if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
+                        tx_pkts += 1;
+                    } else {
+                        tx_drops += 1;
+                    }
                 }
+
+                let ppline_drops = rx_pkts + injected - output_by_pipeline;
 
                 tracing::debug!(
                     worker = id,
                     rx_intf_name = intf.if_name,
-                    "processed {count} packets from interface {}",
+                    "processed {tx_pkts} packets from interface {}",
                     intf.if_name
                 );
+
+                // update rx task stats
+                intf.watchdog
+                    .record(rx_pkts, tx_pkts, ppline_drops, tx_drops);
             }
         });
     }
@@ -226,14 +287,24 @@ impl Worker {
         self,
         scope: &'scope thread::Scope<'scope, '_>,
         interfaces: &[Kif],
-    ) -> Result<thread::ScopedJoinHandle<'scope, Result<WorkerId, (WorkerId, io::Error)>>, io::Error>
-    {
+    ) -> Result<WorkerMonitor<'scope>, io::Error> {
         let id = self.id;
         let total_workers = self.total_workers;
         let setup = self.setup_pipeline;
         let subsystem = self.subsystem;
         let cancel = subsystem.cancel_token();
         let interfaces = interfaces.to_vec();
+
+        // Create vector of `WorkerIfaceMonitor` with the watchdogs. We'll hand a watchdog to each
+        // interface reader and pass this vector along with the `WorkerMonitor` returned for this `Worker`
+        // for the supervisor to check. Ideally we'd create the watchdogs in the interface readers and
+        // collect them. However build_interface_table() needs to be called from the worker's tokio runtime
+        let ifmonitors: Vec<_> = interfaces
+            .iter()
+            .map(|kif| WorkerIfaceMonitor::new(&kif.name))
+            .collect();
+
+        let worker_ifmonitors = ifmonitors.clone();
 
         let thread_builder = thread::Builder::new().name(format!("dp-worker-{id}"));
         let handle_res = thread_builder.spawn_scoped(scope, move || {
@@ -245,21 +316,25 @@ impl Worker {
             // each worker has its own tokio runtime
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .build_local(tokio::runtime::LocalOptions::default())
-                .map_err(|e| (id, e))?;
+                .build_local(tokio::runtime::LocalOptions::default())?;
 
             // block on a single task to create and supervise all of this worker's interface readers
             let result = rt.block_on(async {
-                let (readers, if_table) =
-                    match build_interface_table(id, total_workers, interfaces.as_slice()) {
-                        Ok(table) => table,
-                        Err(e) => {
-                            error!(worker = id, "Error building interface table: {}", e);
-                            return Err(e);
-                        }
-                    };
+                // Build readers for interfaces and this worker's interface table
+                let (readers, if_table) = match build_interface_table(
+                    id,
+                    total_workers,
+                    interfaces.as_slice(),
+                    &worker_ifmonitors,
+                ) {
+                    Ok(table) => table,
+                    Err(e) => {
+                        error!(worker = id, "Error building interface table: {}", e);
+                        return Err(e);
+                    }
+                };
 
-                // spawn a task to read from each interface
+                // spawn tasks to read from each interface
                 let mut reader_handles = tokio::task::JoinSet::new();
                 for intf in readers {
                     Self::spawn_worker_interface_reader(
@@ -290,10 +365,11 @@ impl Worker {
                 guard.disarm();
             }
             info!(worker = id, "worker exited");
-            result.map_err(|e| (id, e))?;
-            Ok::<WorkerId, (WorkerId, io::Error)>(id)
+            result?;
+            Ok::<(), io::Error>(())
         })?;
-        Ok(handle_res)
+        let monitor = WorkerMonitor::new(id, handle_res, ifmonitors);
+        Ok(monitor)
     }
 }
 
@@ -301,11 +377,21 @@ fn build_interface_table(
     id: WorkerId,
     total_workers: usize,
     interfaces: &[Kif],
+    ifmonitors: &[WorkerIfaceMonitor],
 ) -> Result<(WorkerInterfaceReaders, Arc<WorkerIfTable>), io::Error> {
     let mut if_table = HashMap::new();
     let mut readers = Vec::new();
     for kif in interfaces {
-        let (writer, reader) = create_worker_interface(id, total_workers, &kif.name, kif.ifindex)?;
+        // find the watchdog for this interface
+        let watchdog = ifmonitors
+            .iter()
+            .find(|ifm| ifm.ifname.as_ref() == kif.name.as_str())
+            .map(|ifm| ifm.watchdog.clone())
+            .ok_or(io::Error::other("Failed to find interface watchdog"))?;
+
+        let (writer, reader) =
+            create_worker_interface(id, total_workers, &kif.name, kif.ifindex, watchdog)?;
+
         if_table.insert(kif.ifindex, Arc::new(Mutex::new(writer)));
         readers.push(reader);
     }
@@ -392,20 +478,23 @@ async fn read_packets_from_interface(
             return Err(e);
         }
     };
+    // pat the watchdog
+    intf.watchdog.pat();
+
     if !guard.ready().is_readable() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
             "Would block",
         ));
     }
-    let mut pkts = Vec::with_capacity(128);
+    let mut pkts = Vec::with_capacity(DriverKernel::MAX_RX_PKT_BATCH);
     match guard.try_io(|fd| {
         packet_recv(
             id,
             intf.if_name.as_str(),
             fd.as_raw_fd(),
             intf.if_index,
-            128,
+            DriverKernel::MAX_RX_PKT_BATCH,
             &mut pkts,
         )
         .map_err(std::convert::Into::into)
@@ -441,7 +530,7 @@ async fn tx_packet(
     rx_if_name: &str,
     if_table: &WorkerIfTable,
     pkt: Packet<TestBuffer>,
-) {
+) -> bool {
     // get outgoing interface marking. Should have one, except if packet is to be dropped.
     let Some(oif) = pkt.meta().oif else {
         match pkt.get_done() {
@@ -462,7 +551,7 @@ async fn tx_packet(
             }
             None => {} // drop impl of packet meta will log
         }
-        return;
+        return false;
     };
     // lookup interface
     let Some(outgoing_unlocked) = if_table.get(&oif) else {
@@ -472,7 +561,7 @@ async fn tx_packet(
             "TX drop: unknown oif {} (driver bug)",
             oif
         );
-        return;
+        return false;
     };
 
     // serialize and xmit
@@ -493,14 +582,15 @@ async fn tx_packet(
                     "TX failed for pkt ({len} octets) on interface '{}': {e}",
                     &outgoing.if_name
                 );
-            } else {
-                trace!(
-                    worker = id,
-                    rx_intf_name = rx_if_name,
-                    "TX {len} bytes on interface {}",
-                    &outgoing.if_name
-                );
+                return false;
             }
+            trace!(
+                worker = id,
+                rx_intf_name = rx_if_name,
+                "TX {len} bytes on interface {}",
+                &outgoing.if_name
+            );
+            true
         }
         Err(e) => {
             warn!(
@@ -508,6 +598,7 @@ async fn tx_packet(
                 rx_intf_name = rx_if_name,
                 "Serialize failed: {e:?}"
             );
+            false
         }
     }
 }

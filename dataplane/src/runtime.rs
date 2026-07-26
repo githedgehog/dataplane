@@ -6,6 +6,7 @@ use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
 use crate::drivers::kernel::DriverKernel;
+use crate::drivers::status::driver_status_access;
 use lifecycle::{
     CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
 };
@@ -239,6 +240,8 @@ pub fn main() {
 
     process_tracing_cmds(&args);
 
+    let (driver_status_writer, driver_status_reader) = driver_status_access();
+
     let shutdown = Shutdown::new();
 
     let mgmt_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -269,7 +272,8 @@ pub fn main() {
     };
 
     // start router
-    let mut setup = start_router(&shutdown.router, router_params).expect("failed to start router");
+    let mut setup = start_router(&shutdown.router, router_params, driver_status_reader)
+        .expect("failed to start router");
 
     // start bmp server if indicated via cmd line. It is fine to start it after the router since no bgp session may be up
     // until a configuration is applied, and the mgmt is not yet up.
@@ -336,6 +340,7 @@ pub fn main() {
                             args.kernel_interfaces(),
                             args.kernel_num_workers(),
                             &pipeline_factory,
+                            driver_status_writer,
                         ))
                     }
                     other => {

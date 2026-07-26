@@ -4,7 +4,6 @@
 //! Utils for task lifecycle management
 
 use super::Subsystem;
-use tracing::error;
 
 /// Drop-guard so panic-unwind, early-`?`, and unexpected normal return
 /// all reach [`Subsystem::report_fatal`]. The guard can be disarmed by calling
@@ -39,6 +38,7 @@ impl ExitGuard {
         self.armed = false;
     }
 }
+
 impl Drop for ExitGuard {
     fn drop(&mut self) {
         if !self.armed || self.subsystem.is_cancelled() {
@@ -49,7 +49,6 @@ impl Drop for ExitGuard {
         } else {
             format!("{} ({}) exited unexpectedly", self.id, self.subsystem.name)
         };
-        error!("{reason}. Reporting...");
         self.subsystem.report_fatal(&reason);
     }
 }

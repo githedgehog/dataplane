@@ -5,6 +5,7 @@ mod egress;
 mod ingress;
 mod ipforward;
 
+use super::drivers::status::DriverStatusReader;
 #[allow(unused)]
 use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
@@ -53,6 +54,7 @@ where
 pub(crate) fn start_router<Buf: PacketBufferMut>(
     router: &lifecycle::Subsystem,
     params: RouterParams,
+    driver_status: DriverStatusReader,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
@@ -85,6 +87,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         nat_tables: Some(Box::new(nattabler_factory.handle().inner())),
         masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
         pkt_stats: Some(Box::new(pkt_stats.clone())),
+        driver_status: Some(Box::new(driver_status)),
     };
 
     // create router
