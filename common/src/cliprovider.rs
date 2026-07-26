@@ -3,7 +3,6 @@
 
 //! A trait for a type that can provide CLI data
 
-use arc_swap::{ArcSwap, ArcSwapOption};
 use concurrency::slot::{Slot, SlotOption};
 use concurrency::sync::Arc;
 use left_right::ReadHandle;
@@ -59,32 +58,6 @@ where
     }
 }
 
-impl<T> CliDataProvider for ArcSwap<T>
-where
-    T: CliDataProvider,
-{
-    fn provide(&self) -> String {
-        self.load().provide()
-    }
-}
-
-impl<T> CliDataProvider for ArcSwapOption<T>
-where
-    T: CliDataProvider,
-{
-    fn provide(&self) -> String {
-        // No type annotation on `p`: `arc_swap::ArcSwapOption` always
-        // yields `std::sync::Arc<T>`, which is not the same type as
-        // `concurrency::sync::Arc<T>` under the `loom` backend.
-        // Letting inference do its job keeps this `impl` compiling on
-        // every backend.
-        self.load()
-            .as_ref()
-            .map(|p| p.provide())
-            .unwrap_or_else(|| "(none)".to_string())
-    }
-}
-
 impl<T> CliDataProvider for Slot<T>
 where
     T: CliDataProvider,
@@ -99,7 +72,12 @@ where
     T: CliDataProvider,
 {
     fn provide(&self) -> String {
-        self.load_full()
+        // No type annotation on `p`: `arc_swap::ArcSwapOption` always
+        // yields `std::sync::Arc<T>`, which is not the same type as
+        // `concurrency::sync::Arc<T>` under the `loom` backend.
+        // Letting inference do its job keeps this `impl` compiling on
+        // every backend.
+        self.load()
             .as_ref()
             .map(|p| p.provide())
             .unwrap_or_else(|| "(none)".to_string())
