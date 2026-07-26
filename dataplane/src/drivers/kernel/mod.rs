@@ -41,6 +41,21 @@ pub struct DriverKernel;
 
 #[allow(clippy::cast_possible_truncation)]
 impl DriverKernel {
+    /// How often, in seconds, a worker interface pats its watchdog even if no activity (worst case)
+    pub(crate) const TASK_PAT_PERIOD: u16 = 2;
+
+    /// Slack, in seconds, on top of the pat period before a missed pat is treated as a deadline miss.
+    pub(crate) const TASK_GRACE_PERIOD: u16 = 4;
+
+    /// Interval, in seconds, at which the supervisor will check rx task watchdogs
+    pub(crate) const TASK_CHECK_PERIOD: u16 = Self::TASK_PAT_PERIOD + Self::TASK_GRACE_PERIOD;
+
+    /// Interval, in seconds, at which the supervisor checks rx task activity, ignoring watchdogs
+    pub(crate) const TASK_POLL_PERIOD: u16 = 1;
+
+    /// Max number of packets that a RX task will attempt to read in one go
+    pub(crate) const MAX_RX_PKT_BATCH: usize = 128;
+
     /// Spawn `num_workers` worker threads into `scope`, each with its own
     /// pipeline. Bails on the first spawn failure; workers that did spawn
     /// drain via the scope join.

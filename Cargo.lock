@@ -1194,6 +1194,7 @@ dependencies = [
  "axum-server",
  "dataplane-acl-filter",
  "dataplane-args",
+ "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-dpdk",
