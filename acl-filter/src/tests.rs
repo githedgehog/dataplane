@@ -674,7 +674,7 @@ fn attach_related_flow(reply: &mut Packet<TestBuffer>, fwd_key: FlowKey) -> Arc<
     let (fwd_flow, reply_flow) = FlowInfo::related_pair(
         expiry,
         fwd_key,
-        FlowInfoFlags::default(),
+        FlowInfoFlags::default() | FlowInfoFlags::INITIATOR,
         reply_key,
         FlowInfoFlags::default(),
     );

@@ -140,12 +140,18 @@ impl From<FlowStatus> for AtomicFlowStatus {
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct FlowInfoFlags: u8 {
-        const REQ_STATIC_NAT_SRC = 0b0000_0001;      /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0000_0010;      /* Packet requires static NAT (destination) */
+        const INITIATOR     = 0b0000_0001; /* the flow is the initiator within a pair */
+        const REQ_STATIC_NAT_SRC = 0b0000_0010; /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0000_0100; /* Packet requires static NAT (destination) */
     }
 }
 
 impl FlowInfoFlags {
+    #[must_use]
+    pub const fn is_initiator(&self) -> bool {
+        self.contains(FlowInfoFlags::INITIATOR)
+    }
+
     #[must_use]
     pub const fn requires_static_nat_src(self) -> bool {
         self.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC)
@@ -290,6 +296,10 @@ impl FlowInfo {
         debug_assert!(
             key1 != key2,
             "Attempted to build two flows with identical key {key1}"
+        );
+        debug_assert!(
+            flags1.is_initiator() != flags2.is_initiator(),
+            "Exactly one of the two flows must be the initiator"
         );
 
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();

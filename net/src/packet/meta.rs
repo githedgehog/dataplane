@@ -263,6 +263,8 @@ impl PacketMeta {
     #[must_use]
     pub fn compute_flow_flags_forward(&self) -> FlowInfoFlags {
         let mut flags = FlowInfoFlags::default();
+        flags.insert(FlowInfoFlags::INITIATOR);
+
         if self.requires_static_nat_src() {
             flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
         }
