@@ -200,7 +200,7 @@ mod test {
             let (flow_1, flow_2) = FlowInfo::related_pair(
                 expires_at,
                 key_1,
-                FlowInfoFlags::default(),
+                FlowInfoFlags::default() | FlowInfoFlags::INITIATOR,
                 key_2,
                 FlowInfoFlags::default(),
             );
