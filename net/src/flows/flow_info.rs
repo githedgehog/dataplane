@@ -140,12 +140,18 @@ impl From<FlowStatus> for AtomicFlowStatus {
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct FlowInfoFlags: u8 {
-        const REQ_STATIC_NAT_SRC = 0b0000_0001;      /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0000_0010;      /* Packet requires static NAT (destination) */
+        const IS_PAIR_MASTER     = 0b0000_0001; /* the flow is the master of a pair */
+        const REQ_STATIC_NAT_SRC = 0b0000_0010; /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0000_0100; /* Packet requires static NAT (destination) */
     }
 }
 
 impl FlowInfoFlags {
+    #[must_use]
+    pub const fn is_pair_master(&self) -> bool {
+        self.contains(FlowInfoFlags::IS_PAIR_MASTER)
+    }
+
     #[must_use]
     pub const fn requires_static_nat_src(self) -> bool {
         self.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC)
@@ -282,15 +288,19 @@ impl FlowInfo {
     pub fn related_pair(
         expires_at: Instant,
         key1: FlowKey,
-        flags1: FlowInfoFlags,
+        mut flags1: FlowInfoFlags,
         key2: FlowKey,
-        flags2: FlowInfoFlags,
+        mut flags2: FlowInfoFlags,
     ) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
         // keys MUST differ
         debug_assert!(
             key1 != key2,
             "Attempted to build two flows with identical key {key1}"
         );
+
+        // make sure only one of the pairs is master
+        flags1.insert(FlowInfoFlags::IS_PAIR_MASTER);
+        flags2.remove(FlowInfoFlags::IS_PAIR_MASTER);
 
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
