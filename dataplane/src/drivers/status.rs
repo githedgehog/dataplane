@@ -133,7 +133,7 @@ impl Display for WorkerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WorkerState::Running => write!(f, "running"),
-            WorkerState::Terminated(res) => write!(f, "Terminated, result: {res}"),
+            WorkerState::Terminated(res) => write!(f, "Terminated({res})"),
         }
     }
 }
