@@ -96,6 +96,92 @@ impl DriverKernel {
         Ok(monitors)
     }
 
+    /// Join a worker given its handle, log how the thread terminated and report the outcome in a `WorkerEndResult`.
+    /// This method should only be called when we know that a worker has ended (or is about to do so due to cancellation).
+    /// Otherwise it would block the supervisor.
+    fn join_worker(
+        id: WorkerId,
+        handle: ScopedJoinHandle<'_, Result<(), std::io::Error>>,
+    ) -> WorkerEndResult {
+        match handle.join() {
+            Ok(Ok(())) => {
+                info!("Worker {id} exited successfully");
+                WorkerEndResult::Ok
+            }
+            Ok(Err(e)) => {
+                error!("Worker {id} exited with error: {e}");
+                WorkerEndResult::Failed(e.to_string())
+            }
+            Err(panic_payload) => {
+                let msg = format!("Worker {id} panicked {panic_payload:?}");
+                error!("Worker {id} panicked: {msg}");
+                WorkerEndResult::Panicked(msg)
+            }
+        }
+    }
+
+    /// Check if the `Subsystem` got cancelled (and we must shutdown). If so,
+    /// join all of the workers. This will wait for all workers to finish.
+    /// Returns `true` if the subsystem was cancelled and `false` otherwise.
+    fn must_run(
+        subsystem: &Subsystem,
+        wk_monitors: &mut Vec<WorkerMonitor<'_>>,
+        wk_status: &mut [WorkerStatus],
+    ) -> bool {
+        // we must run if were not cancelled
+        if !subsystem.is_cancelled() {
+            return true;
+        }
+        info!("Got cancelled. Will join worker(s)");
+        for (pos, monitor) in wk_monitors.iter_mut().enumerate() {
+            if let Some(handle) = monitor.handle.take() {
+                let status = &mut wk_status[pos];
+                status.state = WorkerState::Terminated(Self::join_worker(monitor.id, handle));
+            } else {
+                info!("Not joining worker {} (ended before shutdown)", monitor.id);
+            }
+        }
+        info!("All workers joined. Supervisor should terminate soon...");
+        false
+    }
+
+    /// Check the activity of the rx tasks for a worker (watchdog, if `check_watchdog` is true)
+    /// from its `WorkerMonitor` and update the corresponding `WorkerStatus`
+    fn check_worker_rx_tasks(
+        monitor: &mut WorkerMonitor,
+        wk_status: &mut WorkerStatus,
+        check_watchdog: bool,
+    ) {
+        for (idx, ifm) in monitor.intf.iter().enumerate() {
+            let rx_task_status = &mut wk_status.rx_tasks[idx];
+            debug_assert_eq!(rx_task_status.ifname, ifm.ifname);
+
+            // check the rx task activity, and watchdog, if we've been told to do so
+            let activity = ifm.watchdog.check_and_clear(check_watchdog);
+
+            // update the rx task status
+            rx_task_status.activity = activity;
+            match &rx_task_status.activity {
+                Activity::Stuck => {
+                    rx_task_status.misses += 1;
+                    rx_task_status.pps = 0.0;
+                    error!(
+                        "RX task for interface {} in worker {} did not pat the watchdog",
+                        ifm.ifname, monitor.id
+                    );
+                }
+                Activity::Active(record) => {
+                    rx_task_status.total_rx += record.rx;
+                    rx_task_status.total_tx += record.tx;
+                    rx_task_status.total_ppline_drops += record.ppline_drops;
+                    rx_task_status.total_tx_drops += record.tx_drops;
+                    rx_task_status.pps = record.rx as f64 / f64::from(Self::TASK_POLL_PERIOD);
+                }
+                Activity::Idle => rx_task_status.pps = 0.0,
+            }
+        }
+    }
+
     /// Spawn worker threads + supervisor into `scope`. The scope joins
     /// all driver threads on closure return.
     ///
@@ -134,67 +220,46 @@ impl DriverKernel {
         )?;
         debug_assert_eq!(worker_monitors.len(), num_workers);
 
-        let supervisor_subsystem = workers_subsystem.clone();
-
         // The supervisor loops over worker monitors (which include join handles) and
         // just joins-and-logs on termination; worker fatal reporting is handled by
         // the `ExitGuard` inside each worker thread.
         let supervisor_builder =
             thread::Builder::new().name("kernel-worker-supervisor".to_string());
 
-        // closure to join a worker, log its outcome, and report how it ended
-        let join_and_log = |id: WorkerId,
-                            handle: ScopedJoinHandle<'scope, Result<(), std::io::Error>>|
-         -> WorkerEndResult {
-            match handle.join() {
-                Ok(Ok(())) => {
-                    info!("Worker {id} exited successfully");
-                    WorkerEndResult::Ok
-                }
-                Ok(Err(e)) => {
-                    error!("Worker {id} exited with error: {e}");
-                    WorkerEndResult::Failed(e.to_string())
-                }
-                Err(panic_payload) => {
-                    let msg = format!("Worker {id} panicked {panic_payload:?}");
-                    error!("Worker {id} panicked: {msg}");
-                    WorkerEndResult::Panicked(msg)
-                }
-            }
-        };
-
         // the two time intervals that matter for liveness detection
         let check_period = Duration::from_secs(u64::from(Self::TASK_CHECK_PERIOD));
         let poll_period = Duration::from_secs(u64::from(Self::TASK_POLL_PERIOD));
+
+        let subsystem = workers_subsystem.clone();
 
         supervisor_builder.spawn_scoped(scope, move || {
             info!("Worker supervisor started");
 
             // build a vector of worker status from their monitors to expose their state outside of this thread
             // each WorkerStatus contains a list of RxTaskStatus
-            let mut workers_status: Vec<WorkerStatus> = worker_monitors.iter().map(|monitor| {
-                let mut ws = WorkerStatus::new(monitor.id);
-                ws.rx_tasks = monitor.intf.iter().map(|i|RxTaskStatus::new(i.ifname.clone())).collect();
-                ws
-            }).collect();
+            let mut workers_status: Vec<WorkerStatus> = worker_monitors
+                .iter()
+                .map(|monitor| {
+                    let mut ws = WorkerStatus::new(monitor.id);
+                    ws.rx_tasks = monitor
+                        .intf
+                        .iter()
+                        .map(|i| RxTaskStatus::new(i.ifname.clone()))
+                        .collect();
+                    ws
+                })
+                .collect();
 
             // the next instant when the rx tasks watchdogs should be checked.
             let mut next_watchdog_check = Instant::now().add(check_period);
 
             loop {
-                // If we got cancelled (graceful stop), join all workers and break, ending the supervisor
-                if supervisor_subsystem.is_cancelled() {
-                    info!("Got cancelled. Will join {} worker(s)", worker_monitors.len());
-                    for monitor in &mut worker_monitors {
-                        if let Some(handle) = monitor.handle.take() {
-                            join_and_log(monitor.id, handle);
-                        }
-                    }
-                    info!("All workers joined. Worker supervisor should terminate soon.");
+                // check if we must run. Otherwise (got cancelled) join all workers
+                if !Self::must_run(&subsystem, &mut worker_monitors, &mut workers_status) {
                     break;
                 }
 
-                // check time and decide if we should check whether the rx tasks patted the watchdogs.
+                // check the current time and decide if we should check whether the rx tasks patted the watchdogs.
                 // If so, compute the next time we should check them again in the future.
                 let now = Instant::now();
                 let check_watchdog = now >= next_watchdog_check;
@@ -204,6 +269,7 @@ impl DriverKernel {
                     }
                 }
 
+                // check each worker using its monitor
                 let mut any_running = false;
                 for (pos, monitor) in worker_monitors.iter_mut().enumerate() {
                     // get status object for the worker/monitor
@@ -211,48 +277,21 @@ impl DriverKernel {
 
                     if let Some(handle) = monitor.handle.take() {
                         if handle.is_finished() {
-                            let result = join_and_log(monitor.id, handle);
+                            // join the worker
+                            let result = Self::join_worker(monitor.id, handle);
                             wk_status.state = WorkerState::Terminated(result);
-                            wk_status.rx_tasks.iter_mut().for_each(|r|{
-                                    // cosmetic, clear all rx task "instantaneous" state
-                                    r.activity = Activity::Idle;
-                                    r.pps = 0.0;
-                                }
-                            );
+                            wk_status.rx_tasks.iter_mut().for_each(|r| {
+                                r.activity = Activity::Idle;
+                                r.pps = 0.0;
+                            });
                         } else {
-                            // Update the worker state
-                            wk_status.state = WorkerState::Running; // the worker is running
-                            monitor.handle = Some(handle); // restore handle (worker is still running)
-                            any_running = true; // there is at least this worker running
+                            // worker is running, update its `WorkerStatus` and restore its handle
+                            wk_status.state = WorkerState::Running;
+                            monitor.handle = Some(handle);
+                            any_running = true;
 
-                            // check the worker's rx tasks and update the corresponding status. The check can
-                            // be a regular activity check or a watchdog check, which will check and rearm the
-                            // watchdog and complain if the task did not pat it.
-                            for (idx, ifm) in monitor.intf.iter().enumerate() {
-                                let rx_task_status = &mut wk_status.rx_tasks[idx];
-                                debug_assert_eq!(rx_task_status.ifname, ifm.ifname);
-
-                                // check the rx task activity, and watchdog, if we've been told to do so
-                                let activity = ifm.watchdog.check_and_clear(check_watchdog);
-
-                                // update the rx task status
-                                rx_task_status.activity = activity;
-                                match &rx_task_status.activity {
-                                    Activity::Stuck => {
-                                        rx_task_status.misses += 1;
-                                        rx_task_status.pps = 0.0;
-                                        error!("RX task for interface {} in worker {} did not pat the watchdog", ifm.ifname, monitor.id);
-                                    }
-                                    Activity::Active(record) => {
-                                        rx_task_status.total_rx += record.rx;
-                                        rx_task_status.total_tx += record.tx;
-                                        rx_task_status.total_ppline_drops += record.ppline_drops;
-                                        rx_task_status.total_tx_drops += record.tx_drops;
-                                        rx_task_status.pps = record.rx as f64 / f64::from(Self::TASK_POLL_PERIOD);
-                                    }
-                                    Activity::Idle => rx_task_status.pps = 0.0,
-                                }
-                            }
+                            // check the worker's rx tasks and update the corresponding status
+                            Self::check_worker_rx_tasks(monitor, wk_status, check_watchdog);
                         }
                     } else {
                         // A worker monitor without a handle means that the worker was joined already
@@ -260,19 +299,27 @@ impl DriverKernel {
                     }
                 }
 
-                // publish the status of the driver
-                status_writer.publish(DriverStatus { workers: workers_status.clone() });
-
-                // No more workers running (unexpectedly, there was no cancellation).
-                // If there was cancellation, we'll notice in the next round and deal with it.
                 if !any_running {
                     error!("No more workers are running!!. Stopping...");
                     break;
                 }
 
+                // publish the status of the driver
+                status_writer.publish(DriverStatus {
+                    workers: workers_status.clone(),
+                });
+
                 // sleep for the poll period
                 thread::sleep(poll_period);
             }
+
+            // update status on termination. This is in case we
+            // want to log the last state
+            let last = DriverStatus {
+                workers: workers_status.clone(),
+            };
+            status_writer.publish(last);
+
             info!("Worker supervisor thread terminated");
         })?;
         info!("Kernel driver started successfully");
