@@ -57,25 +57,6 @@ tables per source VPC, per IP version. Think of it as splitting each peering int
 **local end** (the source's private prefixes) and its **remote end** (the peer's public
 prefixes).
 
-```mermaid
-flowchart TD
-    overlay["ValidatedOverlay"] --> loop{"for each VPC<br/>(as the source)"}
-
-    loop --> v4["VpcContext (v4)"]
-    loop --> v6["VpcContext (v6)"]
-
-    subgraph one["VpcContext for one source VPC"]
-        direction TB
-        peers{"for each peering"}
-        peers --> le["local_ends[remote_vpcd]<br/><i>source private prefixes</i><br/>action = src NatRequirement"]
-        peers --> re["remote_ends (all peers merged)<br/><i>peer public prefixes</i><br/>action = Verdict{dst_vpcd, dst NatRequirement}"]
-        peers --> def["default_remote_vpcd<br/><i>catch-all peer, if any</i>"]
-    end
-
-    v4 --> one
-    one --> table["VpcTable -> FlowFilterContext.v4 / .v6"]
-```
-
 Rules are protocol-aware by encoding the packet's L4 protocol as the first ACL key byte:
 
 - TCP/UDP rules match exactly (`mask 0xff`).
@@ -109,29 +90,6 @@ model is a two-question funnel:
    `local_ends` table _for that peer_ and match the _source_ IP/port. That yields the
    source-side NAT mode (or a `has_default` catch-all, or a miss = drop).
 
-```mermaid
-flowchart TD
-    start["lookup(src_vpcd, src_ip, dst_ip, proto, ports)"] --> ipver{"src & dst<br/>same IP version?"}
-    ipver -- no --> drop1["None (drop)"]
-    ipver -- yes --> pick["table = FlowFilterContext[src_vpcd]<br/>(v4 or v6 map)"]
-    pick -- "src_vpcd unknown" --> drop2["None (drop)"]
-
-    pick --> s1["Stage 1 - destination<br/>remote_ends.lookup(proto, dst_tuple)"]
-    s1 -- hit --> verdict["Verdict { dst_vpcd, dst_nat }"]
-    s1 -- miss --> hasdef{"default_remote_vpcd?"}
-    hasdef -- yes --> verdict2["Verdict { dst_vpcd = default, dst_nat = None }"]
-    hasdef -- no --> drop3["None (drop)"]
-
-    verdict --> s2
-    verdict2 --> s2["Stage 2 - source<br/>local_ends[dst_vpcd].lookup(proto, src_tuple)"]
-    s2 -- hit --> ok["Some((dst_vpcd, dst_nat, src_nat))"]
-    s2 -- "miss but has_default" --> ok2["Some((dst_vpcd, dst_nat, src_nat = None))"]
-    s2 -- "miss, no default" --> drop4["None (drop)"]
-
-    style ok fill:#2d6,stroke:#161,color:#000
-    style ok2 fill:#2d6,stroke:#161,color:#000
-```
-
 Why destination-first? A single source prefix can be exposed to several peers at once, so
 the source alone is ambiguous. The destination prefix is what disambiguates _which_ peering
 applies; only then can the source be validated against that specific peering's local end.
@@ -144,33 +102,6 @@ The lookup above is only reached for packets that need it. The NF first tries to
 **bypass** the lookup using flow state left by `flow-lookup`, then batches ACL lookups for
 the remaining packets and finally applies the resolved route (or drop) per packet. It is
 also responsible for **invalidating** stale flows on a config change.
-
-```mermaid
-flowchart TD
-    A["packet arrives at flow-filter"] --> B{"overlay?<br/>dst_vpcd unset?<br/>not done?"}
-    B -- no --> Z["pass through untouched"]
-    B -- yes --> C{"attached flow<br/>active & up-to-date<br/>(genid)?"}
-
-    C -- yes --> D["bypass: tag dst_vpcd + NAT<br/>flags from the flow, return]
-
-    C -- no --> E{"has IP header?"}
-    E -- no --> F["done(NotIp)"]
-    E -- yes --> G{"has src_vpcd?"}
-    G -- no --> H["done(Unroutable)"]
-    G -- yes --> I["lookup(...)  (section 3)"]
-
-    I -- None --> J["invalidate flows<br/>done(Filtered)"]
-    I -- Some --> K["set dst_vpcd + NAT flags"]
-    K --> L{"stateful + static NAT<br/>combo & first packet?"}
-    L -- yes --> M["attach flow_key<br/>(so NFs record both NAT modes)"]
-    L -- no --> N
-    M --> N{"should_invalidate_flow?<br/>(genid bumped &<br/>flow inconsistent)"}
-    N -- yes --> O["invalidate flows"]
-    N -- no --> P["done"]
-
-    style D fill:#6cf,stroke:#036,color:#000
-    style K fill:#2d6,stroke:#161,color:#000
-```
 
 ### Two subtleties worth internalizing
 
