@@ -12,7 +12,10 @@ use net::headers::{TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
+use tracectl::trace_target;
 use tracing::debug;
+
+trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 
 mod context;
 #[cfg(test)]

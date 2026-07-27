@@ -1457,7 +1457,9 @@ dependencies = [
  "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-tracectl",
  "indenter",
+ "linkme",
  "tracing",
 ]
 
