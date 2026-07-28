@@ -157,6 +157,9 @@ impl Egress {
             self.get_adj_mac(packet, destination, ifindex)
         } else {
             warn!("{nfi}: could not determine packet destination IP address");
+            // This should be a bug because if a packet was not IP, we'd have
+            // already determined that we could not process it.
+            packet.done(DoneReason::NotIp);
             None
         }
     }
