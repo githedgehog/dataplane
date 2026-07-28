@@ -54,4 +54,7 @@ pub enum RouterError {
 
     #[error("Invalid interface address: {0}")]
     IfAddressError(#[from] IfAddrError),
+
+    #[error("Invalid next-hop: {0}")]
+    InvalidNexthop(&'static str),
 }
