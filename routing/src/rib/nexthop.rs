@@ -203,27 +203,36 @@ impl Nhop {
             .any(|res| res.resolves_with(checked))
     }
 
-    /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
-    pub fn lazy_resolve(&self, vrf: &Vrf) {
+    /// Tell if a next hop requires resolution and if that's possible. If so,
+    /// return the address to resolve
+    fn needs_resolution(&self) -> Option<IpAddr> {
         if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-            return;
+            debug!("Nhop {self} requires no resolution");
+            return None;
         }
         let Some(a) = self.key.address else {
-            error!("Got forwarding nexthop with neither address nor ifindex!: {self}");
-            return;
+            error!("Found nexthop with neither address nor ifindex!: {self}");
+            return None;
         };
-        debug!("Resolving {a} with vrf '{}'...", vrf.name);
-        let (prefix, route) = vrf.lpm(a);
-        debug!("Address {a} resolves with route to {prefix}");
-        let mut resolvers = Vec::with_capacity(route.s_nhops.len());
-        for nh in &route.s_nhops {
-            if !nh.rc.resolves_with(self) {
-                debug!(" -> {}", nh.rc);
-                resolvers.push(Rc::downgrade(&nh.rc));
+        Some(a)
+    }
+
+    /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
+    pub fn lazy_resolve(&self, vrf: &Vrf) {
+        if let Some(target) = self.needs_resolution() {
+            debug!("Resolving {target} with vrf '{}'...", vrf.name);
+            let (prefix, route) = vrf.lpm(target);
+            debug!("Address {target} resolves with route to {prefix}");
+            let mut resolvers = Vec::with_capacity(route.s_nhops.len());
+            for nh in &route.s_nhops {
+                if !nh.rc.resolves_with(self) {
+                    debug!(" -> {}", nh.rc);
+                    resolvers.push(Rc::downgrade(&nh.rc));
+                }
             }
+            // update resolvers
+            self.resolvers.replace(resolvers);
         }
-        // update resolvers
-        self.resolvers.replace(resolvers);
     }
 
     /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
