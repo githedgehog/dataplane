@@ -109,20 +109,20 @@ impl RouteNhop {
             .ifindex
             .map(|i| match InterfaceIndex::try_new(i) {
                 Ok(idx) => Ok(idx),
-                Err(e) => {
-                    error!("unable to build route next hop: {e}");
-                    Err(RouterError::Internal("0 is not a valid interface index"))
-                }
+                Err(_) => Err(RouterError::InvalidNexthop("ifindex 0 is invalid!")),
             })
             .transpose()?;
+
         let encap = match &nh.encap {
             Some(e) => {
                 let mut enc = Encapsulation::try_from(e)?;
                 if let Encapsulation::Vxlan(vxlan) = &mut enc {
                     if let Some(address) = nh.address {
                         vxlan.remote = address;
+                    } else {
+                        return Err(RouterError::InvalidNexthop("Missing vxlan VTEP address"));
                     }
-                    ifindex = None;
+                    ifindex = None; // ignore ifindex
                 }
                 Some(enc)
             }
@@ -137,34 +137,43 @@ impl RouteNhop {
                 .and_then(|iftable| iftable.get_interface(k).map(|iface| iface.name.clone())),
         };
 
+        // build key for this next hop
+        let key = NhopKey::new(
+            origin,
+            nh.address,
+            ifindex,
+            encap,
+            FwAction::from(nh.fwaction),
+            ifname,
+        );
+
+        // validate next hop from its key
+        if key.fwaction == FwAction::Forward && key.ifindex.is_none() && key.address.is_none() {
+            return Err(RouterError::InvalidNexthop("Missing forwarding data"));
+        }
+
         Ok(RouteNhop {
-            key: NhopKey::new(
-                origin,
-                nh.address,
-                ifindex,
-                encap,
-                FwAction::from(nh.fwaction),
-                ifname,
-            ),
+            key,
             vrfid: nh.vrfid,
         })
     }
 }
+
 impl Route {
     #[must_use]
-    fn from_iproute(prefix: &Prefix, r: &IpRoute) -> Self {
-        let origin = if r.rtype == RouteType::Connected && prefix.is_host() {
+    fn from_iproute(prefix: &Prefix, iproute: &IpRoute) -> Self {
+        let origin = if iproute.rtype == RouteType::Connected && prefix.is_host() {
             RouteOrigin::Local
         } else {
-            RouteOrigin::from(r.rtype)
+            RouteOrigin::from(iproute.rtype)
         };
 
         Route {
             flags: RouteFlags::default(),
             origin,
-            distance: r.distance,
-            metric: r.metric,
-            s_nhops: Vec::with_capacity(1), /* shim nhops are empty here */
+            distance: iproute.distance,
+            metric: iproute.metric,
+            s_nhops: Vec::with_capacity(iproute.nhops.len()), /* shim nhops are empty here */
             tstamp: Instant::now(),
         }
     }
@@ -188,12 +197,15 @@ impl Vrf {
         rstore: &RmacStore,
         iftabler: &IfTableReader,
     ) {
-        let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
-            error!(
-                "Failed to add route from RPC!: bad prefix={} len={}",
-                iproute.prefix, iproute.prefix_len
-            );
-            return;
+        let prefix = match Prefix::try_from((iproute.prefix, iproute.prefix_len)) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(
+                    "Failed to add route to {}/{} from RPC!: {e}",
+                    iproute.prefix, iproute.prefix_len
+                );
+                return;
+            }
         };
 
         if let Some(tableid) = self.tableid
@@ -202,17 +214,36 @@ impl Vrf {
             warn!("Table id mismatch for {iproute}; vrf tableid is {tableid}");
         }
 
+        // will install route anyway (see below)
+        if iproute.nhops.is_empty() {
+            warn!(
+                "Got {:?} route to {prefix} without next-hops!",
+                iproute.rtype
+            );
+        }
+
+        // build route object and next-hops
         let route = Route::from_iproute(&prefix, iproute);
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
             match RouteNhop::from_rpc_nhop(nhop, route.origin, iftabler) {
                 Ok(nh) => nhops.push(nh),
-                Err(e) => error!("Omitting next-hop in route to {prefix}: {e}"),
+                Err(e) => error!("Omitting next-hop {nhop} in route to {prefix}: {e}"),
             }
         }
+
+        // If we failed to correctly process any next-hop for a route, install the route
+        // anyway with an action drop. This is better than not installing the route as
+        // that could break consistency (e.g. resolving via a default) and cause a loop
+        if nhops.is_empty() {
+            warn!("Route to {prefix} from RPC would have no next-hop. Will inject DROP next-hop");
+            nhops.push(RouteNhop::default());
+        }
+
         // N.B. route and next-hops are passed separately
         self.add_route_complete(&prefix, route, &nhops, vrf0, rstore);
     }
+
     pub fn del_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
         let Ok(prefix) = Prefix::try_from((iproute.prefix, iproute.prefix_len)) else {
             error!(
