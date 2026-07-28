@@ -812,8 +812,20 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
         input.filter_map(|mut packet| {
             let sdisc = packet.meta().src_vpcd;
             let ddisc = packet.meta().dst_vpcd;
-            let is_drop =
-                !(packet.get_done().unwrap_or_else(|| unreachable!()) == DoneReason::Delivered);
+            // A packet must always carry a verdict by the time it reaches this stage. If it does
+            // not, a previous stage is buggy. Mark it as an internal failure, which will account
+            // it as a drop, instead of panicking. Packets not accounted as a drop may still be
+            // dropped by the driver
+            let done_reason = match packet.get_done() {
+                Some(reason) => reason,
+                None => {
+                    error!("Found packet without Done reason. This is a bug");
+                    packet.done(DoneReason::InternalFailure);
+                    DoneReason::InternalFailure
+                }
+            };
+
+            let is_drop = done_reason != DoneReason::Delivered;
             let bytes: u64 = packet.total_len().into();
 
             match (sdisc, ddisc) {
