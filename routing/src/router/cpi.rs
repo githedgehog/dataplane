@@ -9,14 +9,13 @@ use crate::routingdb::RoutingDb;
 
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::Rio;
-use crate::router::rpc_adapt::is_evpn_route;
 
 use bytes::Bytes;
 use chrono::{DateTime, Local};
 use dplane_rpc::msg::{
-    ConnectInfo, IfAddress, IpRoute, Rmac, RpcControl, RpcMsg, RpcNotification, RpcObject, RpcOp,
-    RpcRequest, RpcResponse, RpcResultCode, VER_DP_MAJOR, VER_DP_MINOR, VER_DP_PATCH, VerInfo,
-    VrfId, WrapMsg,
+    ConnectInfo, IfAddress, IpRoute, NextHopEncap, Rmac, RouteType, RpcControl, RpcMsg,
+    RpcNotification, RpcObject, RpcOp, RpcRequest, RpcResponse, RpcResultCode, VER_DP_MAJOR,
+    VER_DP_MINOR, VER_DP_PATCH, VerInfo, VrfId, WrapMsg,
 };
 use dplane_rpc::socks::Pretty;
 use dplane_rpc::socks::RpcCachedSock;
@@ -171,6 +170,8 @@ impl RpcOperation for ConnectInfo {
     }
 }
 
+#[must_use]
+#[allow(unused)]
 fn nonlocal_nhop(iproute: &IpRoute) -> bool {
     let vrfid = iproute.vrfid;
     for nhop in &iproute.nhops {
@@ -192,6 +193,17 @@ fn on_vrf_lookup_fail(have_config: bool, vrfid: VrfId) -> RpcResultCode {
     }
 }
 
+/// Util to tell if a route is EVPN - heuristic
+#[must_use]
+#[allow(unused)]
+fn is_evpn_route(iproute: &IpRoute) -> bool {
+    if iproute.rtype != RouteType::Bgp || iproute.nhops.is_empty() {
+        false
+    } else {
+        matches!(iproute.nhops[0].encap, Some(NextHopEncap::VXLAN(_)))
+    }
+}
+
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
@@ -199,19 +211,25 @@ impl RpcOperation for IpRoute {
         let vrftable = &mut db.vrftable;
         let iftabler = &db.iftw.as_reader();
 
-        if self.vrfid != Vrf::DEFAULT_VRFID && (is_evpn_route(self) || nonlocal_nhop(self)) {
+        if self.vrfid == Vrf::DEFAULT_VRFID {
+            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
+                error!("Unable to find default VRF!");
+                return RpcResultCode::Failure;
+            };
+            vrf0.add_route_rpc(self, None, rmac_store, iftabler);
+            vrftable.refresh_non_default_fibs(rmac_store);
+        } else {
+            // this assumes that we always resolve non-default vrfs with the default vrf
+            // FIXME: generalize this. This is fine atm because non-default vrfs are always
+            // evpn-associated VRFs and we don't import routes from vrfs. However, that may
+            // no longer be the case in the future. Fixing this in general, requires changing
+            // get_with_default_mut() to return two non-default vrfs and the vrfs to use may
+            // be determined with something like `nonlocal_nhop`
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
             vrf.add_route_rpc(self, Some(vrf0), rmac_store, iftabler);
-        } else {
-            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
-                error!("Unable to find VRF with id {}", self.vrfid);
-                return RpcResultCode::Failure;
-            };
-            vrf0.add_route_rpc(self, None, rmac_store, iftabler);
-            vrftable.refresh_non_default_fibs(rmac_store);
         }
         RpcResultCode::Ok
     }
@@ -219,8 +237,13 @@ impl RpcOperation for IpRoute {
         let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
 
-        #[allow(clippy::if_not_else)]
-        if self.vrfid != Vrf::DEFAULT_VRFID {
+        if self.vrfid == Vrf::DEFAULT_VRFID {
+            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
+                return on_vrf_lookup_fail(db.have_config(), self.vrfid);
+            };
+            vrf0.del_route_rpc(self, None, rmac_store);
+            vrftable.refresh_non_default_fibs(rmac_store);
+        } else {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 return on_vrf_lookup_fail(db.have_config(), self.vrfid);
             };
@@ -230,12 +253,6 @@ impl RpcOperation for IpRoute {
                     warn!("Failed to delete vrf {}: {e}", self.vrfid);
                 }
             }
-        } else {
-            let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
-                return on_vrf_lookup_fail(db.have_config(), self.vrfid);
-            };
-            vrf0.del_route_rpc(self, None, rmac_store);
-            vrftable.refresh_non_default_fibs(rmac_store);
         }
         RpcResultCode::Ok
     }
