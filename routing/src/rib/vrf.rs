@@ -401,7 +401,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
-    pub fn add_route(
+    fn add_route(
         &mut self,
         prefix: &Prefix,
         mut route: Route,
@@ -411,13 +411,11 @@ impl Vrf {
         // register next-hops. This mutates the route adding references to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
 
-        // resolve next-hops
+        // resolve the new route next-hops. This is only for testing. In prod code,
+        // this method is only used for drop routes which require no resolution.
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
-            let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
-            if refc == 2 {
-                shim.rc.lazy_resolve(rvrf);
-            }
+            shim.rc.lazy_resolve(rvrf);
         }
 
         // store route
@@ -431,10 +429,10 @@ impl Vrf {
     /// Re-resolve the next-hops of a `Vrf`, rebuild their fibgroups and, if they changed, reflect
     /// the changes in the corresponding `Fib`
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    pub fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
+    pub(crate) fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
         let resvrf = resvrf.unwrap_or(self);
+        self.nhstore.rebuild_nhop_instructions(rstore);
         self.nhstore.lazy_resolve_all(resvrf);
-        self.nhstore.resolve_nhop_instructions(rstore);
         let changed = self.nhstore.rebuild_fibgroups(rstore);
 
         // update fib
@@ -452,7 +450,7 @@ impl Vrf {
         }
     }
 
-    pub fn add_route_complete(
+    pub(crate) fn add_route_complete(
         &mut self,
         prefix: &Prefix,
         mut route: Route,
@@ -467,7 +465,7 @@ impl Vrf {
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
             let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
-            shim.rc.build_nhop_instructions(rstore);
+            shim.rc.build_nhop_instructions(rstore); // not needed, set_fibgroup() calls it
             if refc == 2 {
                 shim.rc.lazy_resolve(rvrf);
             }
@@ -497,7 +495,7 @@ impl Vrf {
             self.deregister_shared_nexthops(&mut prior);
         }
 
-        // refresh this FIB
+        // refresh FIB
         self.refresh_fib(rstore, vrf0);
     }
 
@@ -537,7 +535,7 @@ impl Vrf {
             self.deregister_shared_nexthops(found);
         }
     }
-    pub fn del_route(&mut self, prefix: Prefix, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    pub(crate) fn del_route(&mut self, prefix: Prefix, vrf0: Option<&Vrf>, rstore: &RmacStore) {
         match prefix {
             Prefix::IPV4(p) => self.del_route_v4(p),
             Prefix::IPV6(p) => self.del_route_v6(p),
@@ -557,10 +555,12 @@ impl Vrf {
     fn get_route_v4(&self, prefix: Ipv4Prefix) -> Option<&Route> {
         self.routesv4.get(prefix)
     }
+
     #[inline]
     fn get_route_v6(&self, prefix: Ipv6Prefix) -> Option<&Route> {
         self.routesv6.get(prefix)
     }
+    #[must_use]
     pub fn get_route(&self, prefix: Prefix) -> Option<&Route> {
         match prefix {
             Prefix::IPV4(p) => self.get_route_v4(p),
@@ -573,15 +573,16 @@ impl Vrf {
     // care should be taken modifying route internals
     /////////////////////////////////////////////////////////////////////////
 
-    #[inline]
+    #[cfg(test)]
     fn get_route_v4_mut(&mut self, prefix: Ipv4Prefix) -> Option<&mut Route> {
         self.routesv4.get_mut(prefix)
     }
-    #[inline]
+    #[cfg(test)]
     fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
         self.routesv6.get_mut(prefix)
     }
     #[allow(unused)]
+    #[cfg(test)]
     pub fn get_route_mut(&mut self, prefix: Prefix) -> Option<&mut Route> {
         match prefix {
             Prefix::IPV4(p) => self.get_route_v4_mut(p),

@@ -77,9 +77,8 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Given a next-hop, build its packet instructions and resolve them
-    /// In this implementation, the next-hop owns the packet instructions
-    /// So, they are not shared and have to be resolved per next-hop.
+    /// Given a next-hop, build its packet instructions and attach them to
+    /// the next-hop,m which owns them.
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn build_nhop_instructions(&self, rstore: &RmacStore) {
         // build new instruction vector for the next-hop
