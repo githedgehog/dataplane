@@ -179,16 +179,6 @@ impl Route {
     }
 }
 
-/// Util to tell if a route is EVPN - heuristic
-#[must_use]
-pub fn is_evpn_route(iproute: &IpRoute) -> bool {
-    if iproute.rtype != RouteType::Bgp || iproute.nhops.is_empty() {
-        false
-    } else {
-        matches!(iproute.nhops[0].encap, Some(NextHopEncap::VXLAN(_)))
-    }
-}
-
 impl Vrf {
     pub fn add_route_rpc(
         &mut self,
