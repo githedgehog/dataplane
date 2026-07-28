@@ -192,7 +192,7 @@ impl Nhop {
     fn resolves_with(&self, checked: &Nhop) -> bool {
         // resolve to oneself is forbidden
         if self.key == checked.key {
-            error!("Loop detected!: {} resolves with {}", checked.key, self.key);
+            error!("Loop detected for next-hop {}!", self.key);
             return true;
         }
         // resolvers should not refer back to the checked next-hop
@@ -217,17 +217,22 @@ impl Nhop {
         Some(a)
     }
 
-    /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
+    /// Resolve a next-hop with a VRF, non-recursively; i.e. without caring whether
+    /// the next-hops that a next-hop resolve to are resolved
     pub fn lazy_resolve(&self, vrf: &Vrf) {
         if let Some(target) = self.needs_resolution() {
             debug!("Resolving {target} with vrf '{}'...", vrf.name);
+
             let (prefix, route) = vrf.lpm(target);
             debug!("Address {target} resolves with route to {prefix}");
+
+            // collect resolvers
             let mut resolvers = Vec::with_capacity(route.s_nhops.len());
-            for nh in &route.s_nhops {
-                if !nh.rc.resolves_with(self) {
-                    debug!(" -> {}", nh.rc);
-                    resolvers.push(Rc::downgrade(&nh.rc));
+            for nhop in &route.s_nhops {
+                let resolver = &nhop.rc;
+                if !resolver.resolves_with(self) {
+                    debug!(" {target} -> {resolver}");
+                    resolvers.push(Rc::downgrade(resolver));
                 }
             }
             // update resolvers
@@ -370,14 +375,22 @@ impl NhopStore {
     }
 
     /// Rebuild the instructions for each next-hop
-    pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
+    pub fn rebuild_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
             nhop.build_nhop_instructions(rstore);
         }
     }
 
-    /// Lazily resolve all next-hops in this store.
+    /// Flush all resolution state of all next-hops
+    fn flush_resolvers(&self) {
+        for nhop in self.iter() {
+            nhop.resolvers.borrow_mut().clear();
+        }
+    }
+
+    /// Flush all resolution state and lazily re-resolve all next-hops.
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
+        self.flush_resolvers();
         self.iter().for_each(|nhop| nhop.lazy_resolve(vrf));
     }
 
@@ -399,15 +412,6 @@ impl NhopStore {
     pub(crate) fn contains(&self, key: &NhopKey) -> bool {
         let nh = Nhop::from_key(key);
         self.0.contains(&nh)
-    }
-
-    /// Flush all resolution state of all next-hops
-    pub(crate) fn flush_resolvers(&self) {
-        for nhop in self.iter() {
-            nhop.resolvers.borrow_mut().clear();
-            nhop.instructions.borrow_mut().clear();
-            nhop.fibgroup.take();
-        }
     }
 
     /// Resolve a next-hop by address. If no next-hop
