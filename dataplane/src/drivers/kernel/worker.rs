@@ -225,6 +225,9 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
+                // number of packets output by pipeline
+                let num_out_pkts: u64 = out_pkts.len() as u64;
+
                 // Computing the number of packets dropped by pipeline.
                 // The pipeline may not return to the driver all of the packets it was fed with,
                 // since it may drop some (e.g. due to routing, filtering, etc.). So, the number of
@@ -234,9 +237,9 @@ impl Worker {
                 // than it was fed with. So, the injection of N packets could mask the drop of N packets
                 // by the pipeline if computed that way.
                 // The number of packets output by the pipeline in a batch is
-                //    out_pkts = in_pkts + injected_pkts - dropped
+                //    num_out_pkts = in_pkts + injected_pkts - dropped
                 // So, we can compute the number of packets dropped by the pipeline as
-                //    dropped = in_pkts + injected_pkts - out_pkts
+                //    dropped = in_pkts + injected_pkts - num_out_pkts
                 //
                 // Now, we can't know, here, the number of packets that were injected and those
                 // packets may be dropped by the pipeline as well. In these stats, we mostly care about
@@ -245,21 +248,18 @@ impl Worker {
                 // received and dropped by the pipeline.
                 // This requires the ability to tell if an ouput packet was injected, which we'll have
                 // as those packets will be annotated.
+                //
+                // An alternative to the above would be to let the pipeline not to drop any packet
+                // (currently, the last stage of stats does the actual drop). But that means that
+                // drivers would get packets that they should not transmit and they should decide.
+
+                let mut injected: u64 = 0;
 
                 // send each of the packets
-                let mut injected: u64 = 0;
-                let output_by_pipeline: u64 = out_pkts.len() as u64;
                 for out_pkt in out_pkts {
                     if false {
-                        /* packet was injected by us */
-                        injected += 1;
+                        injected += 1; // packet wasn't received but injected by pipeline
                     }
-                    trace!(
-                        worker = id,
-                        rx_intf_name = intf.if_name,
-                        "Tx packet after pipeline for interface {}",
-                        intf.if_name
-                    );
                     if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
                         tx_pkts += 1;
                     } else {
@@ -267,13 +267,12 @@ impl Worker {
                     }
                 }
 
-                let ppline_drops = rx_pkts + injected - output_by_pipeline;
+                let ppline_drops = rx_pkts + injected - num_out_pkts;
 
                 tracing::debug!(
                     worker = id,
                     rx_intf_name = intf.if_name,
-                    "processed {tx_pkts} packets from interface {}",
-                    intf.if_name
+                    "Sent {tx_pkts} packets out of {num_out_pkts}, dropped {tx_drops}",
                 );
 
                 // update rx task stats
