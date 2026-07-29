@@ -5,6 +5,7 @@
 
 mod association;
 mod bridge;
+mod managed;
 mod pci;
 mod properties;
 mod tap;
@@ -15,6 +16,8 @@ mod vtep;
 pub use association::*;
 #[allow(unused_imports)] // re-export
 pub use bridge::*;
+#[allow(unused_imports)] // re-export
+pub use managed::*;
 #[allow(unused_imports)] // re-export
 pub use pci::*;
 #[allow(unused_imports)] // re-export

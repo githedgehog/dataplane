@@ -12,9 +12,9 @@ use futures::TryStreamExt;
 use interface_manager::Manager;
 use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
-    MultiIndexInterfaceAssociationSpecMap, MultiIndexInterfaceSpecMap,
-    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TryFromLinkMessage,
-    VrfPropertiesSpec, VtepPropertiesSpec,
+    ManagedInterfaceKind, ManagedInterfaceName, MultiIndexInterfaceAssociationSpecMap,
+    MultiIndexInterfaceSpecMap, MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap,
+    TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
@@ -30,7 +30,7 @@ use rekon::{Observe, Op, Reconcile, Remove};
 use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
@@ -51,6 +51,16 @@ impl<T, U> From<&VpcManager<T>> for VpcManager<U> {
     fn from(handle: &VpcManager<T>) -> Self {
         Self::new(handle.handle.clone())
     }
+}
+
+/// Tell if the interface with this name is one the dataplane created and may therefore manage.
+///
+/// The dataplane shares its network namespace with other network managers (most notably a
+/// kubernetes CNI such as flannel, which creates a vxlan device and a bridge of its own).  Those
+/// interfaces are indistinguishable from ours by type: only the naming scheme tells them apart.
+/// See [`ManagedInterfaceName`] for the reasoning.
+fn is_ours(name: &InterfaceName) -> bool {
+    ManagedInterfaceKind::of(name).is_some()
 }
 
 #[derive(
@@ -126,27 +136,32 @@ impl Observe for VpcManager<RequiredInformationBase> {
                 }
             }
         }
+        // Index the properties of the interfaces we manage so that collisions between them can be
+        // detected.
+        //
+        // A collision is reported and nothing else: the observed interface map is the reconciler's
+        // whole view of reality, so an interface dropped from it is invisible to both passes of
+        // `reconcile`.  A stale interface hidden this way can never be collected, and a live one
+        // is create-looped against a device which is plainly already there.  Whatever a duplicate
+        // means, refusing to look at it is not the answer.
         let mut vtep_properties = MultiIndexVtepPropertiesMap::default();
         let mut vrf_properties = MultiIndexVrfPropertiesMap::default();
-        let mut indexes_to_remove = vec![];
         for (_, observation) in observations.iter() {
+            if !is_ours(&observation.name) {
+                // Foreign interfaces are not ours to collide with.  Flannel defaults to vni 1,
+                // which a VPC of ours may legitimately also use (on our own port), and reporting
+                // that as a collision would be both wrong and unactionable.
+                continue;
+            }
             match &observation.properties {
                 InterfaceProperties::Vtep(properties) => {
-                    match vtep_properties.try_insert(properties.clone()) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            error!("{err:?}");
-                            indexes_to_remove.push(observation.index);
-                        }
+                    if let Err(err) = vtep_properties.try_insert(properties.clone()) {
+                        error!("{err:?}");
                     }
                 }
                 InterfaceProperties::Vrf(properties) => {
-                    match vrf_properties.try_insert(properties.clone()) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            error!("{err:?}");
-                            indexes_to_remove.push(observation.index);
-                        }
+                    if let Err(err) = vrf_properties.try_insert(properties.clone()) {
+                        error!("{err:?}");
                     }
                 }
                 InterfaceProperties::Other
@@ -154,9 +169,6 @@ impl Observe for VpcManager<RequiredInformationBase> {
                 | InterfaceProperties::Pci(_)
                 | InterfaceProperties::Bridge(_) => { /* nothing to index */ }
             }
-        }
-        for sliced in indexes_to_remove {
-            observations.remove_by_index(&sliced);
         }
         match ob
             .interfaces(observations)
@@ -220,6 +232,12 @@ impl Reconcile for VpcManager<RequiredInformationBase> {
         let iface_handle = Manager::<Interface>::new(self.handle.clone());
         for (_, interface) in observation.interfaces.iter() {
             match requirement.interfaces.get_by_name(&interface.name) {
+                None if !is_ours(&interface.name) => {
+                    // Somebody else's interface (a CNI's vxlan device or bridge, a container
+                    // runtime's bridge, an operator's own device).  It is absent from the plan
+                    // because it was never in the plan, so leave it strictly alone.
+                    trace!("leaving foreign interface {} alone", interface.name);
+                }
                 None => match interface.properties {
                     InterfaceProperties::Other | InterfaceProperties::Pci(_) => {}
                     _ => {
@@ -306,9 +324,9 @@ fn add_interface_specs(interfaces: &mut MultiIndexInterfaceSpecMap, ifaces: &Int
         match &iface.iftype {
             InterfaceType::Ethernet(eth) => {
                 let mut tap = InterfaceSpecBuilder::default();
-                match InterfaceName::try_from(format!("{}-tap", iface.name.as_str())) {
+                match ManagedInterfaceName::new(ManagedInterfaceKind::Tap, iface.name.as_str()) {
                     Ok(name) => {
-                        tap.name(name);
+                        tap.name(name.into());
                     }
                     Err(e) => {
                         error!("{e}");
@@ -525,9 +543,29 @@ mod contract {
     use crate::vpc_manager::{RequiredInformationBase, Vpc, VpcDiscriminant};
     use bolero::{Driver, TypeGenerator};
     use interface_manager::interface::{
-        InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpec,
+        InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpec, ManagedInterfaceKind,
+        ManagedInterfaceName,
     };
-    use net::interface::AdminState;
+    use net::interface::{AdminState, InterfaceName};
+
+    /// Rename `interface` into the dataplane's own naming scheme, as the config builder does.
+    ///
+    /// Interfaces named any other way are foreign, and the reconciler (correctly) refuses to
+    /// destroy them, so a generator which produced such names would leave interfaces behind for
+    /// the next generated requirement to trip over.
+    fn managed_name(interface: &InterfaceSpec) -> Option<InterfaceName> {
+        let kind = match &interface.properties {
+            InterfacePropertiesSpec::Bridge(_) => ManagedInterfaceKind::Bridge,
+            InterfacePropertiesSpec::Vtep(_) => ManagedInterfaceKind::Vtep,
+            InterfacePropertiesSpec::Vrf(_) => ManagedInterfaceKind::Vrf,
+            InterfacePropertiesSpec::Tap => ManagedInterfaceKind::Tap,
+            // pci netdev names come from the hardware, not from us
+            InterfacePropertiesSpec::Pci(_) => return None,
+        };
+        let base = interface.name.as_ref();
+        let base = &base[..base.len().min(ManagedInterfaceName::MAX_BASE_LEN)];
+        ManagedInterfaceName::new(kind, base).ok().map(Into::into)
+    }
 
     impl TypeGenerator for VpcDiscriminant {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
@@ -562,6 +600,10 @@ mod contract {
                 let mut interface: InterfaceSpec = driver.produce()?;
                 interface.controller = None;
                 interface.admin_state = AdminState::Up;
+                let Some(name) = managed_name(&interface) else {
+                    continue;
+                };
+                interface.name = name;
                 match &interface.properties {
                     InterfacePropertiesSpec::Bridge(_) => {
                         if let Ok(bridge) = requirements.interfaces.try_insert(interface) {
