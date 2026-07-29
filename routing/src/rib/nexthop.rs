@@ -918,6 +918,88 @@ mod tests {
 
     #[cfg_attr(not(emulated), traced_test)]
     #[test]
+    fn test_nhop_instruction_build_and_fibgroup() {
+        let rmac_store = RmacStore::new();
+        let mut store = NhopStore::new();
+
+        let nh1 = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
+        let nh2 = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
+        let nh3 = store.add_nhop(&NhopKey::from_address("10.0.0.1"));
+        let nh4 = store.add_nhop(&NhopKey::with_ifindex(1));
+
+        let nh3_1 = store.add_nhop(&NhopKey::from_address("10.0.1.1"));
+        let nh5 = store.add_nhop(&NhopKey::with_ifindex(2));
+
+        nh1.add_resolver(&nh2);
+        nh2.add_resolver(&nh3);
+        nh2.add_resolver(&nh3_1);
+        nh3.add_resolver(&nh4);
+        nh3_1.add_resolver(&nh5);
+
+        // build the instructions of all next-hops
+        store.rebuild_nhop_instructions(&rmac_store);
+
+        // check: next-hop nh1 has a single instruction with its address
+        let instructions = nh1.instructions.borrow();
+        assert_eq!(instructions.len(), 1);
+        let inst = &instructions[0];
+        assert!(
+            matches!(inst, PktInstruction::Egress(e) if e.address().unwrap() == IpAddr::from_str("7.0.0.1").unwrap())
+        );
+
+        // check: the fibgroup for nh1 contains 2 fibentries, each with a single instruction egress
+        // with the right addresses and interface indices
+        let fibgroup = nh1.build_nhop_fibgroup();
+        assert_eq!(fibgroup.len(), 2);
+        let e1 = &fibgroup.entries()[0];
+        let e2 = &fibgroup.entries()[1];
+        assert_eq!(e1.len(), 1);
+        assert_eq!(e2.len(), 1);
+        assert_ne!(e1, e2);
+
+        assert!(matches!(&e1.instructions[0], PktInstruction::Egress(e)
+                if e.ifindex().unwrap().to_u32() == 1 && e.address().unwrap() == IpAddr::from_str("10.0.0.1").unwrap()
+                || e.ifindex().unwrap().to_u32() == 2 && e.address().unwrap() == IpAddr::from_str("10.0.1.1").unwrap()));
+
+        assert!(matches!(&e2.instructions[0], PktInstruction::Egress(e)
+                if e.ifindex().unwrap().to_u32() == 1 && e.address().unwrap() == IpAddr::from_str("10.0.0.1").unwrap()
+                || e.ifindex().unwrap().to_u32() == 2 && e.address().unwrap() == IpAddr::from_str("10.0.1.1").unwrap()));
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    fn test_sanity_drop_fibentry() {
+        let rmac_store = RmacStore::new();
+        let mut store = NhopStore::new();
+
+        let nh1 = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
+        let nh2 = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
+        let nh3 = store.add_nhop(&NhopKey::from_address("10.0.0.1"));
+        nh1.add_resolver(&nh2);
+        nh2.add_resolver(&nh3);
+
+        // build the instructions of all next-hops
+        store.rebuild_nhop_instructions(&rmac_store);
+
+        // check: next-hop nh1 has a single instruction with its address
+        let instructions = nh1.instructions.borrow();
+        assert_eq!(instructions.len(), 1);
+        let inst = &instructions[0];
+        assert!(
+            matches!(inst, PktInstruction::Egress(e) if e.address().unwrap() == IpAddr::from_str("7.0.0.1").unwrap())
+        );
+
+        // check: the fibgroup for nh1 contains 1 fib entry drop, in spite of the egress instruction, since
+        // the resulting fibentry would not be valid.
+        let fibgroup = nh1.build_nhop_fibgroup();
+        assert_eq!(fibgroup.len(), 1);
+        let e1 = &fibgroup.entries()[0];
+        assert_eq!(e1.len(), 1);
+        assert!(matches!(&e1.instructions[0], PktInstruction::Drop));
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
     fn test_loop_prevention() {
         let mut store = NhopStore::new();
 
