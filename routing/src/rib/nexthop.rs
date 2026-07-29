@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 #[cfg(test)]
 use std::str::FromStr;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use tracectl::trace_target;
 trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
@@ -203,10 +203,25 @@ impl Nhop {
             .any(|res| res.resolves_with(checked))
     }
 
+    /// Tell if a next-hop requires resolution
+    pub(super) fn must_be_resolved(&self) -> bool {
+        self.key.ifindex.is_none() && self.key.fwaction != FwAction::Drop
+    }
+
+    /// Tell if a next-hop requires resolution but could not be resolved
+    #[must_use]
+    pub(crate) fn is_unresolved(&self) -> bool {
+        self.must_be_resolved()
+            && self
+                .resolvers
+                .try_borrow()
+                .is_ok_and(|resolvers| resolvers.is_empty())
+    }
+
     /// Tell if a next hop requires resolution and if that's possible. If so,
     /// return the address to resolve
     fn needs_resolution(&self) -> Option<IpAddr> {
-        if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
+        if !self.must_be_resolved() {
             debug!("Nhop {self} requires no resolution");
             return None;
         }
@@ -235,7 +250,15 @@ impl Nhop {
                     resolvers.push(Rc::downgrade(resolver));
                 }
             }
-            // update resolvers
+            // warn if we got no valid resolver for the next-hop
+            if resolvers.is_empty() {
+                warn!(
+                    "Could not resolve {target} with vrf '{}': no next-hop of route to {prefix} is usable",
+                    vrf.name,
+                );
+            }
+
+            // update resolvers. N.B. resolvers may be empty
             self.resolvers.replace(resolvers);
         }
     }
@@ -431,6 +454,8 @@ impl NhopStore {
 
 #[cfg(test)]
 mod tests {
+    use crate::evpn::RmacStore;
+    use crate::fib::fibobjects::{FibEntry, PktInstruction};
     use crate::rib::nexthop::*;
     use std::rc::Rc;
     use tracing_test::traced_test;
@@ -825,6 +850,67 @@ mod tests {
         let res = store.resolve_by_addr(&("7.0.0.1".parse().unwrap()));
         assert!(res.is_some());
         println!("{res:#?}");
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    fn test_must_be_resolved() {
+        // a drop next-hop requires no resolution
+        let nhop = Nhop::from_key(&NhopKey::with_drop());
+        assert!(!nhop.must_be_resolved());
+
+        // a next-hop with only address requires resolution
+        let nhop = Nhop::from_key(&NhopKey::from_address("7.0.0.1"));
+        assert!(nhop.must_be_resolved());
+
+        // a next-hop with address and ifindex does not require resolution
+        let nhop = Nhop::from_key(&NhopKey::with_addr_ifindex("7.0.0.1", 13));
+        assert!(!nhop.must_be_resolved());
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    /// An unresolved next-hop (requiring resolution) produces a drop `FibGroup`
+    fn test_unresolved_nhop_drops_traffic() {
+        let store = build_test_nhop_store_with_drop_nexthop();
+
+        // 8.0.0.1 resolves to nothing */
+        let key = NhopKey::from_address("8.0.0.1");
+        let nhop = store.get_nhop(&key).expect("Next-hop should be there");
+        assert!(nhop.must_be_resolved());
+        assert!(nhop.is_unresolved());
+
+        let fibgroup = nhop.build_nhop_fibgroup();
+        assert_eq!(fibgroup.len(), 1, "Should get a single fib entry");
+        assert_eq!(
+            fibgroup.entries()[0],
+            FibEntry::drop_fibentry(),
+            "Traffic to an unresolved next-hop must be dropped"
+        );
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    fn test_unresolved_nhop_is_fib_ignored() {
+        let mut store = NhopStore::new();
+
+        // 7.0.0.1 resolves over interface 1 and 9.9.9.9 (unresolved) */
+        let i1 = store.add_nhop(&NhopKey::with_ifindex(1));
+        let unresolved = store.add_nhop(&NhopKey::from_address("9.9.9.9"));
+        let key = NhopKey::from_address("7.0.0.1");
+        let nhop = store.add_nhop(&key);
+        nhop.add_resolver(&i1).add_resolver(&unresolved);
+        store.rebuild_nhop_instructions(&RmacStore::new());
+        store.dump();
+
+        // Fibgroup gets only one entry over interface
+        let fibgroup = nhop.build_nhop_fibgroup();
+        assert_eq!(fibgroup.len(), 1, "Only the usable path should be there");
+        let entry = &fibgroup.entries()[0];
+        assert!(matches!(
+            entry.iter().next().expect("Should have an instruction"),
+            PktInstruction::Egress(_)
+        ));
     }
 
     #[cfg_attr(not(emulated), traced_test)]

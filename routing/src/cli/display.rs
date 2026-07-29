@@ -123,6 +123,9 @@ impl Display for Nhop {
         if self.invalid.get() {
             write!(f, " (INVALID)")?;
         }
+        if self.is_unresolved() {
+            write!(f, " (unresolved)")?;
+        }
         fmt_nhop_resolvers(f, self, 2)
     }
 }
@@ -138,6 +141,9 @@ fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> 
         for r in resolvers.iter() {
             if let Some(r) = r.upgrade().as_ref() {
                 write!(f, "\n{indent} {}", r.key)?;
+                if r.is_unresolved() {
+                    write!(f, " (UNRESOLVED)")?;
+                }
                 fmt_nhop_resolvers(f, r, depth + 1)?;
             }
         }
@@ -167,7 +173,7 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> st
     let indent = " ".repeat(tab);
 
     let sym = if depth == 0 { "NH" } else { "ref" };
-    writeln!(
+    write!(
         f,
         "{} ({}) {} = {}",
         indent,
@@ -175,6 +181,10 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> st
         sym,
         rc.key
     )?;
+    if rc.is_unresolved() {
+        write!(f, " (UNRESOLVED)")?;
+    }
+    writeln!(f)?;
     //    fmt_nhop_instruction(f, rc)?;
 
     let Ok(resolvers) = rc.resolvers.try_borrow() else {

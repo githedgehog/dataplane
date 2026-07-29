@@ -77,8 +77,7 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Given a next-hop, build its packet instructions and attach them to
-    /// the next-hop,m which owns them.
+    /// Given a next-hop, build its packet instructions and attach them to it
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn build_nhop_instructions(&self, rstore: &RmacStore) {
         // build new instruction vector for the next-hop
@@ -97,12 +96,19 @@ impl Nhop {
         let instructions = self.instructions.borrow().clone();
         entry.extend_from_slice(&instructions);
 
-        // check the instructions of the resolving next-hops
+        // check the instructions of the resolving next-hops, if any
         let Ok(resolvers) = self.resolvers.try_borrow() else {
             warn!("Warning, try-borrow failed!!!");
             return;
         };
         if resolvers.is_empty() {
+            if self.must_be_resolved() {
+                // Nhop has no resolver. This should only happen if: 1) we forgot to
+                // resolve it (BUG) or 2) we attempted resolution, but stopped it because
+                // we detected a loop.
+                warn!("Next-hop {self} is unresolved: will not use it");
+                return;
+            }
             entry.squash(); /* squash entry before committing it to the group */
             fibgroup.add(entry); /* add fib entry to group */
         } else {
@@ -113,12 +119,19 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Build a [`FibGroup`] for an [`Nhop`]
+    /// Build a [`FibGroup`] for an [`Nhop`]. If the next-hop cannot be
+    /// resolved and the fibgroup would be empty, artificially inject
+    /// an entry with action DROP so that packets hitting the route
+    /// don't get misrouted.
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn build_nhop_fibgroup(&self) -> FibGroup {
-        let mut out = FibGroup::new();
-        self.build_nhop_fibgroup_rec(&mut out, FibEntry::new());
-        out
+        let mut fibgroup = FibGroup::new();
+        self.build_nhop_fibgroup_rec(&mut fibgroup, FibEntry::new());
+        if fibgroup.is_empty() {
+            warn!("Next-hop {self} has no usable path: will add DROP fibgroup");
+            fibgroup.add(FibEntry::drop_fibentry());
+        }
+        fibgroup
     }
 
     //////////////////////////////////////////////////////////////////////
