@@ -340,29 +340,23 @@ impl Vrf {
         self.fibw.as_ref().and_then(FibWriter::get_vtep)
     }
 
-    #[inline]
-    #[must_use]
     /////////////////////////////////////////////////////////////////////////
-    /// Add next-hop if it does not exist and get a refcounted reference to it.
+    /// Register a shared next-hop for the route if not there and return a
+    /// vector of shared references to the next-hops used by the route.
     /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhop(&mut self, nhop: &RouteNhop) -> Rc<Nhop> {
-        self.nhstore.add_nhop(&nhop.key)
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    /// Register a shared next-hop for the route if not there
-    /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhops(&mut self, route: &mut Route, nhops: &[RouteNhop]) {
+    fn register_shared_nhops(&mut self, nhops: &[RouteNhop]) -> Vec<ShimNhop> {
+        let mut nhop_refs = Vec::with_capacity(nhops.len());
         for nhop in nhops {
-            let shared = self.register_shared_nhop(nhop);
+            let shared = self.nhstore.add_nhop(&nhop.key);
             let ext_vrf = if nhop.vrfid == self.vrfid {
                 None
             } else {
                 Some(nhop.vrfid)
             };
             let shim = ShimNhop::new(ext_vrf, shared);
-            route.s_nhops.push(shim);
+            nhop_refs.push(shim);
         }
+        nhop_refs
     }
 
     #[inline]
@@ -408,8 +402,8 @@ impl Vrf {
         nhops: &[RouteNhop],
         vrf0: Option<&Vrf>,
     ) {
-        // register next-hops. This mutates the route adding references to the stored next-hops
-        self.register_shared_nhops(&mut route, nhops);
+        // register next-hops and let the route keep references to the shared nexthops created/found
+        route.s_nhops = self.register_shared_nhops(nhops);
 
         // resolve the new route next-hops. This is only for testing. In prod code,
         // this method is only used for drop routes which require no resolution.
@@ -469,8 +463,8 @@ impl Vrf {
         vrf0: Option<&Vrf>,
         rstore: &RmacStore,
     ) {
-        // register next-hops. This mutates the route adding references to the stored next-hops
-        self.register_shared_nhops(&mut route, nhops);
+        // register next-hops and let the route keep references to the shared nexthops created/found
+        route.s_nhops = self.register_shared_nhops(nhops);
 
         let rvrf = vrf0.unwrap_or(self);
 

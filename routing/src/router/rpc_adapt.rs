@@ -173,7 +173,7 @@ impl Route {
             origin,
             distance: iproute.distance,
             metric: iproute.metric,
-            s_nhops: Vec::with_capacity(iproute.nhops.len()), /* shim nhops are empty here */
+            s_nhops: vec![], /* shim nhops are empty here */
             tstamp: Instant::now(),
         }
     }
@@ -212,7 +212,7 @@ impl Vrf {
             );
         }
 
-        // build route object and next-hops
+        // build route object and next-hops, as separate objects
         let route = Route::from_iproute(&prefix, iproute);
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
@@ -222,9 +222,9 @@ impl Vrf {
             }
         }
 
-        // If we failed to correctly process any next-hop for a route, install the route
-        // anyway with an action drop. This is better than not installing the route as
-        // that could break consistency (e.g. resolving via a default) and cause a loop
+        // If no next-hop was received with the route (or we could not successfully process any),
+        // install the route anyway with an action drop. This is better than not installing the
+        // route as that could break consistency (e.g. resolving via a default) and cause a loop.
         if nhops.is_empty() {
             warn!("Route to {prefix} from RPC would have no next-hop. Will inject DROP next-hop");
             nhops.push(RouteNhop::default());
