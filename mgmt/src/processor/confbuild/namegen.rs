@@ -12,6 +12,7 @@
 #![allow(unused)]
 
 use config::external::overlay::vpc::{ValidatedVpc, VpcId};
+use interface_manager::interface::{ManagedInterfaceKind, ManagedInterfaceName};
 use net::interface::InterfaceName;
 
 ////////////////////////////////////////////////////////////////////////
@@ -28,14 +29,26 @@ where
 }
 impl VpcInterfacesNames for VpcId {
     fn vrf_name(&self) -> InterfaceName {
-        InterfaceName::try_from(format!("{self}-vrf")).unwrap_or_else(|_| unreachable!())
+        managed_name(self, ManagedInterfaceKind::Vrf)
     }
     fn bridge_name(&self) -> InterfaceName {
-        InterfaceName::try_from(format!("{self}-bri")).unwrap_or_else(|_| unreachable!())
+        managed_name(self, ManagedInterfaceKind::Bridge)
     }
     fn vtep_name(&self) -> InterfaceName {
-        InterfaceName::try_from(format!("{self}-vtp")).unwrap_or_else(|_| unreachable!())
+        managed_name(self, ManagedInterfaceKind::Vtep)
     }
+}
+
+/// Name an interface of the supplied kind after this VPC.
+///
+/// Names are generated through [`ManagedInterfaceName`] so that the reconciler recognizes these
+/// interfaces as ours (and, just as importantly, does not mistake anybody else's interfaces for
+/// ours).
+fn managed_name(id: &VpcId, kind: ManagedInterfaceKind) -> InterfaceName {
+    // A `VpcId` is a short, legal, non-empty interface name fragment, so this can't fail.
+    ManagedInterfaceName::new(kind, &id.to_string())
+        .unwrap_or_else(|_| unreachable!())
+        .into()
 }
 
 ////////////////////////////////////////////////////////////////////////////

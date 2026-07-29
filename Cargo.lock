@@ -1681,6 +1681,7 @@ dependencies = [
  "multi_index_map",
  "n-vm",
  "netdev",
+ "nix 0.31.3",
  "pretty_assertions",
  "rtnetlink",
  "serde",
