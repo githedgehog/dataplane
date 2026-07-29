@@ -235,32 +235,32 @@ impl Nhop {
     /// Resolve a next-hop with a VRF, non-recursively; i.e. without caring whether
     /// the next-hops that a next-hop resolve to are resolved
     pub fn lazy_resolve(&self, vrf: &Vrf) {
-        if let Some(target) = self.needs_resolution() {
-            debug!("Resolving {target} with vrf '{}'...", vrf.name);
+        let name = &vrf.name;
+        let Some(target) = self.needs_resolution() else {
+            return;
+        };
+        let (prefix, route) = vrf.lpm(target);
+        debug!("Address {target} resolves with route to {prefix} in vrf {name}");
 
-            let (prefix, route) = vrf.lpm(target);
-            debug!("Address {target} resolves with route to {prefix}");
-
-            // collect resolvers
-            let mut resolvers = Vec::with_capacity(route.s_nhops.len());
-            for nhop in &route.s_nhops {
-                let resolver = &nhop.rc;
-                if !resolver.resolves_with(self) {
-                    debug!(" {target} -> {resolver}");
-                    resolvers.push(Rc::downgrade(resolver));
-                }
+        // collect resolvers
+        let mut resolvers = Vec::with_capacity(route.s_nhops.len());
+        for nhop in &route.s_nhops {
+            let resolver = &nhop.rc;
+            if !resolver.resolves_with(self) {
+                debug!(" {target} -> {resolver}");
+                resolvers.push(Rc::downgrade(resolver));
             }
-            // warn if we got no valid resolver for the next-hop
-            if resolvers.is_empty() {
-                warn!(
-                    "Could not resolve {target} with vrf '{}': no next-hop of route to {prefix} is usable",
-                    vrf.name,
-                );
-            }
-
-            // update resolvers. N.B. resolvers may be empty
-            self.resolvers.replace(resolvers);
         }
+        // warn if we got no valid resolver for the next-hop
+        if resolvers.is_empty() {
+            warn!(
+                "Cannot resolve address {target} with vrf {name}: {} route to {prefix} has no usable next-hop",
+                route.origin
+            );
+        }
+
+        // update resolvers (N.B: resolvers may be empty)
+        self.resolvers.replace(resolvers);
     }
 
     /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
