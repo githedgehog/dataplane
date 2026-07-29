@@ -48,7 +48,7 @@ impl Nhop {
             return instructions;
         }
 
-        // encapsulation
+        // a nexthop with encapsulation info. Will add action encap and egress object
         if let Some(encap) = self.key.encap {
             let mut encap_instr = encap;
             let ok = match encap_instr {
@@ -68,7 +68,20 @@ impl Nhop {
             }
             return instructions;
         }
-        if self.key.ifindex.is_some() {
+        // next-hop is not local, drop or encap. So it must represent either:
+        //   a) another device not directly connected (must resolve it)
+        //   b) another device, directly connected, already resolved to an interface
+        //   c) another device, directly connected but not resolved to an interface
+        // An egress object encodes these 3 possible cases.
+        //
+        // In the case of a next-hop with an address but no ifindex, we must resolve that
+        // address with an ifindex. We emit an egress instruction for its address: it is the
+        // address to resolve at layer 2 unless a next-hop deeper in the resolution chain provides
+        // one of its own, which `EgressObject::merge()` takes care of by keeping the first ifindex
+        // and the last address of the chain. Without this, the address of a recursive next-hop would
+        // never reach the fib and the egress stage would resolve the destination of the packet instead
+        // which is only correct if it is directly connected.
+        if self.key.ifindex.is_some() || self.key.address.is_some() {
             let egress =
                 EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
             instructions.push(PktInstruction::Egress(egress));
@@ -101,16 +114,26 @@ impl Nhop {
             warn!("Warning, try-borrow failed!!!");
             return;
         };
+
         if resolvers.is_empty() {
             if self.must_be_resolved() {
-                // Nhop has no resolver. This should only happen if: 1) we forgot to
-                // resolve it (BUG) or 2) we attempted resolution, but stopped it because
-                // we detected a loop.
+                // Nhop has no resolver and must be resolved. This may only happen if:
+                //  1) we forgot to resolve it (BUG) or
+                //  2) we attempted resolution but stopped because a loop was detected
                 warn!("Next-hop {self} is unresolved: will not use it");
                 return;
             }
-            entry.squash(); /* squash entry before committing it to the group */
-            fibgroup.add(entry); /* add fib entry to group */
+
+            // squash entry: this collapses egress instructions into a single one
+            entry.squash();
+
+            // validate entry and commit to the fibgroup if it is valid. If invalid,
+            // we ignore it (instead of replacing with a drop), because the group may
+            // have other valid ones and we don't want to drop if another path is viable.
+            // Only if the fibgroup is empty, will we inject a drop.
+            if entry.is_valid() {
+                fibgroup.add(entry);
+            }
         } else {
             for resolver in resolvers.iter().filter_map(Weak::upgrade) {
                 resolver.build_nhop_fibgroup_rec(fibgroup, entry.clone());
@@ -128,7 +151,7 @@ impl Nhop {
         let mut fibgroup = FibGroup::new();
         self.build_nhop_fibgroup_rec(&mut fibgroup, FibEntry::new());
         if fibgroup.is_empty() {
-            warn!("Next-hop {self} has no usable path: will add DROP fibgroup");
+            warn!("Next-hop {self} has empty fibgroup: will add DROP FibEntry");
             fibgroup.add(FibEntry::drop_fibentry());
         }
         fibgroup

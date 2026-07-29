@@ -68,7 +68,7 @@ impl EgressObject {
 ///     to weigh paths on the forwarding path.
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct FibGroup {
-    pub(crate) entries: Vec<FibEntry>,
+    entries: Vec<FibEntry>,
 }
 
 impl FibGroup {
@@ -126,6 +126,13 @@ impl FibGroup {
     pub fn entries(&self) -> &Vec<FibEntry> {
         &self.entries
     }
+
+    /// Provide a mutable reference to the vector of [`FibEntry`]s in a [`FibGroup`]
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn entries_mut(&mut self) -> &mut Vec<FibEntry> {
+        &mut self.entries
+    }
 }
 
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -173,6 +180,35 @@ impl FibEntry {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PktInstruction> {
         self.instructions.iter_mut()
     }
+
+    /// Tell if a `FibEntry` is well-formed to process a packet.
+    /// A single instruction entry can only be valid if it is a drop, a local delivery, or
+    /// an egress with a known interface index. A multi-instruction one must end with
+    /// an egress object and known interface index.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        match self.instructions.len() {
+            0 => false,
+            1 => {
+                let inst = &self.instructions[0];
+                match inst {
+                    PktInstruction::Drop | PktInstruction::Local(_) => true,
+                    PktInstruction::Egress(e) => e.ifindex.is_some(),
+                    PktInstruction::Encap(_) => false,
+                }
+            }
+            _ => {
+                let inst = self.instructions.last().unwrap_or_else(|| unreachable!());
+                match inst {
+                    PktInstruction::Egress(e) => e.ifindex().is_some(),
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    /// Compress all of the `Egress` instructions of a `FibEntry` into a single
+    /// one, provided that the interface index could be resolved
     pub(crate) fn squash(&mut self) {
         if self.instructions.len() == 1 {
             return;

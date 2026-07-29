@@ -221,7 +221,7 @@ impl FibRoute {
         for g in &self.0 {
             let group = unsafe { &*g.get() };
             if index < group.len() {
-                return &group.entries[index];
+                return &group.entries()[index];
             }
             index -= group.len();
         }
@@ -279,7 +279,7 @@ pub mod tests {
     // builds a fibgroup with several entries
     pub(crate) fn build_fibgroup(entries: &[FibEntry]) -> FibGroup {
         let mut fibgroup = FibGroup::new();
-        fibgroup.entries.extend_from_slice(entries);
+        fibgroup.entries_mut().extend_from_slice(entries);
         fibgroup
     }
 
@@ -303,8 +303,8 @@ pub mod tests {
             // (scoped since we mutate the store later on)
             let stored = store.get(&nhkey).unwrap();
             assert_eq!(stored.len(), 1);
-            assert_eq!(stored.entries[0].len(), 1);
-            assert_eq!(stored.entries[0], entry);
+            assert_eq!(stored.entries()[0].len(), 1);
+            assert_eq!(stored.entries()[0], entry);
             println!("{stored}");
         }
 
