@@ -420,10 +420,13 @@ impl NhopStore {
     /// Rebuild the fibgroup for every next-hop. This method visits every next-hop and
     /// rebuilds its fibgroup. It returns a vector with only those next-hops whose
     /// fibgroup changed. We return a Vector and not an iterator to force the rebuild
-    /// of the fibgroups.
-    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<&Rc<Nhop>> {
+    /// of the fibgroups. N.B. we hand out weak references and not owning ones so as to
+    /// not alter the strong count of the next-hops, which tells how many routes use them
+    /// and determines if a next-hop can be removed (see `NhopStore::del_nhop()`).
+    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<Weak<Nhop>> {
         self.iter()
             .filter(|nhop| nhop.set_fibgroup(rstore))
+            .map(Rc::downgrade)
             .collect()
     }
 }
