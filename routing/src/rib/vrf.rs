@@ -6,7 +6,7 @@
 use bitflags::bitflags;
 use std::hash::Hash;
 use std::net::IpAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use tracing::debug;
 
 #[cfg(test)]
@@ -425,28 +425,39 @@ impl Vrf {
         };
     }
 
+    /// Rebuild all next-hop state. This is where consistency is maintained
+    fn refresh_nhops(&self, rstore: &RmacStore, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
+        let resvrf = resvrf.unwrap_or(self);
+        self.nhstore.rebuild_nhop_instructions(rstore);
+        self.nhstore.lazy_resolve_all(resvrf);
+        self.nhstore.rebuild_fibgroups(rstore)
+    }
+
+    /// Apply the given changes to a fib
+    fn update_fib(fibw: &mut FibWriter, changes: &[Weak<Nhop>]) {
+        if changes.is_empty() {
+            return;
+        }
+        let mut count = 0;
+        for nhop in changes.iter().filter_map(Weak::upgrade) {
+            let fibgroup = &nhop.fibgroup.borrow();
+            debug!("Updating fib group for nhop {}...", nhop.key);
+            fibw.register_fibgroup(&nhop.key, fibgroup, false);
+            count += 1;
+        }
+        if count > 0 {
+            fibw.publish();
+        }
+    }
+
     ////////////////////////////////////////////////////////////////////////////////////////////////
     /// Re-resolve the next-hops of a `Vrf`, rebuild their fibgroups and, if they changed, reflect
     /// the changes in the corresponding `Fib`
     ////////////////////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn refresh_fib(&mut self, rstore: &RmacStore, resvrf: Option<&Vrf>) {
-        let resvrf = resvrf.unwrap_or(self);
-        self.nhstore.rebuild_nhop_instructions(rstore);
-        self.nhstore.lazy_resolve_all(resvrf);
-        let changed = self.nhstore.rebuild_fibgroups(rstore);
-
-        // update fib
+        let changes = self.refresh_nhops(rstore, resvrf);
         if let Some(fibw) = &mut self.fibw {
-            let mut count = 0;
-            for nhop in changed {
-                let fibgroup = &nhop.fibgroup.borrow();
-                debug!("Updating fib group for nhop {}...", nhop.key);
-                fibw.register_fibgroup(&nhop.key, fibgroup, false);
-                count += 1;
-            }
-            if count > 0 {
-                fibw.publish();
-            }
+            Self::update_fib(fibw, &changes);
         }
     }
 
@@ -461,8 +472,10 @@ impl Vrf {
         // register next-hops. This mutates the route adding references to the stored next-hops
         self.register_shared_nhops(&mut route, nhops);
 
-        // resolve the next-hops of the received route
         let rvrf = vrf0.unwrap_or(self);
+
+        // resolve the next-hops of the received route: none of this is needed since we
+        // call refresh_fib at the end. Leaving it for future optimizations.
         for shim in &route.s_nhops {
             let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
             shim.rc.build_nhop_instructions(rstore); // not needed, set_fibgroup() calls it
@@ -471,7 +484,8 @@ impl Vrf {
             }
         }
 
-        // update fib
+        // update fib: this is not needed if we always call refresh fib.
+        // Leaving it for future optimizations.
         if let Some(fibw) = &mut self.fibw {
             let mut nhkeys = Vec::with_capacity(route.s_nhops.len());
             for shim in &route.s_nhops {
