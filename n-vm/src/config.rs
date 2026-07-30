@@ -349,6 +349,45 @@ pub struct VmConfig {
     pub guest_hugepages: GuestHugePageConfig,
     /// NIC model for all network interfaces in the VM.
     pub nic_model: NicModel,
+    /// The test's own source path (`file!()`) when it opted in to a
+    /// writable corpus directory via `#[corpus]`; `None` otherwise.
+    ///
+    /// Cargo records `file!()` relative to the workspace root (e.g.
+    /// `mgmt/tests/reconcile.rs`), which is exactly what is needed to locate
+    /// the sibling `__fuzz__` directory on both the host and inside the
+    /// guest.  Carried as the raw path rather than a pre-computed directory
+    /// so that both tiers derive it identically from one constant.
+    pub corpus_source_file: Option<&'static str>,
+}
+
+impl VmConfig {
+    /// The corpus directory for this test, relative to the workspace root.
+    ///
+    /// `None` when the test did not opt in, or when its source path has no
+    /// parent directory to hang `__fuzz__` off.
+    #[must_use]
+    pub fn corpus_rel_dir(&self) -> Option<std::path::PathBuf> {
+        let file = self.corpus_source_file?;
+        let parent = std::path::Path::new(file).parent()?;
+        Some(parent.join(n_vm_protocol::CORPUS_DIR_NAME))
+    }
+
+    /// The absolute path at which the corpus directory appears *inside the
+    /// guest*, given that the workspace is mounted at
+    /// `/{VM_WORKSPACE_DIR}`.
+    ///
+    /// Both the host tier (which bind-mounts the directory) and the
+    /// container tier (which puts this on the kernel command line) compute
+    /// it from the same compile-time constant, so they cannot disagree.
+    #[must_use]
+    pub fn corpus_guest_path(&self) -> Option<String> {
+        let rel = self.corpus_rel_dir()?;
+        Some(format!(
+            "/{workspace}/{rel}",
+            workspace = n_vm_protocol::VM_WORKSPACE_DIR,
+            rel = rel.display(),
+        ))
+    }
 }
 
 impl VmConfig {
@@ -479,6 +518,7 @@ pub(crate) fn build_kernel_cmdline(
     iommu: bool,
     guest_hugepages: &GuestHugePageConfig,
     arch: Arch,
+    corpus_mount: Option<&str>,
 ) -> String {
     let vsock_cmdline = vsock.kernel_cmdline_fragment();
 
@@ -499,6 +539,13 @@ pub(crate) fn build_kernel_cmdline(
     let iommu_params = arch.virtual_iommu().map_or("", |l| l.kernel_params);
     let console_params = arch.console_kernel_params();
 
+    // Where `n-it` should mount the writable corpus share.  Absent unless
+    // the test opted in via `#[corpus]`, in which case the guest never sees
+    // a writable filesystem backed by the source tree at all.
+    let corpus_fragment = corpus_mount.map_or_else(String::new, |path| {
+        format!("{key}={path} ", key = n_vm_protocol::CMDLINE_CORPUS_MOUNT)
+    });
+
     format!(
         "{iommu_params} \
          {noiommu_fragment}\
@@ -507,6 +554,7 @@ pub(crate) fn build_kernel_cmdline(
          rootfstype=virtiofs \
          root=root \
          {hugepage_fragment}\
+         {corpus_fragment}\
          {vsock_cmdline} \
          init={INIT_BINARY_PATH} \
          -- {vm_bin_path} {test_name} --exact --no-capture --format=terse",
@@ -662,8 +710,15 @@ mod tests {
             size: GuestHugePageSize::Huge1G,
             count: 1,
         };
-        let cmdline =
-            build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &hp, Arch::X86_64);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &hp,
+            Arch::X86_64,
+            None,
+        );
         assert!(
             cmdline.contains("hugepages=1"),
             "cmdline should configure hugepage count: {cmdline}",
@@ -685,8 +740,15 @@ mod tests {
             size: GuestHugePageSize::Huge2M,
             count: 512,
         };
-        let cmdline =
-            build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &hp, Arch::X86_64);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &hp,
+            Arch::X86_64,
+            None,
+        );
         assert!(
             cmdline.contains("hugepages=512"),
             "cmdline should configure hugepage count: {cmdline}",
@@ -711,6 +773,7 @@ mod tests {
             false,
             &GuestHugePageConfig::None,
             Arch::X86_64,
+            None,
         );
         assert!(
             !cmdline.contains("hugepagesz"),
@@ -732,6 +795,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             cmdline.contains(&format!("init={INIT_BINARY_PATH}")),
@@ -749,6 +813,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             cmdline.contains("-- /test/bin my::test --exact"),
@@ -767,6 +832,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             cmdline.contains(&fragment),
@@ -784,6 +850,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             cmdline.contains("vfio.enable_unsafe_noiommu_mode=1"),
@@ -801,6 +868,7 @@ mod tests {
             true,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             !cmdline.contains("noiommu"),
@@ -824,6 +892,7 @@ mod tests {
                 iommu,
                 &DEFAULT_HP,
                 Arch::X86_64,
+                None,
             );
             assert!(x86.contains("intel_iommu=on"), "x86 (iommu={iommu}): {x86}");
 
@@ -834,6 +903,7 @@ mod tests {
                 iommu,
                 &DEFAULT_HP,
                 Arch::Aarch64,
+                None,
             );
             assert!(
                 !arm.contains("intel_iommu"),
@@ -852,6 +922,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(x86.contains("console=ttyS0"), "x86: {x86}");
 
@@ -862,6 +933,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::Aarch64,
+            None,
         );
         assert!(arm.contains("console=ttyAMA0"), "aarch64: {arm}");
         assert!(!arm.contains("ttyS0"), "aarch64 must not use ttyS0: {arm}");
@@ -877,6 +949,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             cmdline.contains("rootfstype=virtiofs"),
@@ -895,6 +968,7 @@ mod tests {
             false,
             &DEFAULT_HP,
             Arch::X86_64,
+            None,
         );
         assert!(
             cmdline.contains("--no-capture"),

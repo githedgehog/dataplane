@@ -520,6 +520,48 @@ pub const VM_ROOT_SHARE_PATH: &str = "/vm.root";
 /// The virtiofs tag used to identify the root filesystem inside the guest.
 pub const VIRTIOFS_ROOT_TAG: &str = "root";
 
+/// Path to the Unix socket of the *writable* virtiofs daemon.
+///
+/// A second daemon exists so the writable window is enforced by the
+/// server rather than by guest cooperation.  The root daemon keeps
+/// `--readonly`, so it cannot write anywhere no matter what the guest
+/// does with its mount flags; this one has no `--readonly` but its
+/// `--shared-dir` *is* the corpus directory, so it cannot see anything
+/// else.
+///
+/// The threat model is the point: the reason to fuzz inside a VM is that
+/// the test is deliberately trying to make code malfunction against a real
+/// kernel.  A guest-side `mount -o remount,rw` must not be able to reach
+/// the developer's source tree.
+pub const VIRTIOFSD_CORPUS_SOCKET_PATH: &str = "/vm/virtiofsd-corpus.sock";
+
+/// The virtiofs tag identifying the writable corpus share in the guest.
+pub const VIRTIOFS_CORPUS_TAG: &str = "corpus";
+
+/// Container path at which the host corpus directory is bind-mounted, so
+/// that the writable virtiofs daemon can serve it.
+pub const CORPUS_SHARE_PATH: &str = "/vm.corpus";
+
+/// Directory name, relative to a test's source directory, that holds
+/// generated fuzz corpora and crash artifacts.
+///
+/// This is `bolero`'s layout: it writes under
+/// `<dir of file!()>/__fuzz__/<name>`.  Granularity is this directory
+/// rather than the per-test subdirectory beneath it, because the per-test
+/// name comes from `bolero`'s own `fuzz_dir()` derivation (which strips
+/// `test_`/`fuzz_` affixes and is computed from the call site's
+/// `type_name`).  Depending on that would couple the mount layout to
+/// `bolero` internals; a `__fuzz__` directory exists only to hold corpora,
+/// so it is already a tight enough blast radius.
+pub const CORPUS_DIR_NAME: &str = "__fuzz__";
+
+/// Kernel command-line key carrying the guest path at which the writable
+/// corpus share should be mounted.
+///
+/// Absent when the test did not opt in via `#[corpus]`, in which case
+/// `n-it` mounts nothing and the guest stays entirely read-only.
+pub const CMDLINE_CORPUS_MOUNT: &str = "n_it.corpus_mount";
+
 /// Well-known directory inside the VM guest where the test binary
 /// directory is mounted.
 ///
