@@ -1,6 +1,6 @@
-error: #[network] must be used together with #[in_vm] and must appear below it on the same function; e.g.
+error: #[network] must be used together with #[n_vm::test] and must appear below it on the same function; e.g.
 
-       #[in_vm(qemu)]
+       #[n_vm::test(qemu)]
        #[network(nic_model = "e1000")]
        fn my_test() { ... }
  --> tests/compile_fail/standalone_network.rs:4:1

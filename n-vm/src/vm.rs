@@ -202,7 +202,7 @@ pub struct VmTestOutput<B: HypervisorBackend> {
 
 impl<B: HypervisorBackend> std::fmt::Display for VmTestOutput<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "=============== in_vm TEST RESULTS ===============")?;
+        writeln!(f, "=============== n_vm::test RESULTS ===============")?;
         writeln!(f, "--------------- {} events ---------------", B::NAME)?;
         write!(f, "{}", self.hypervisor_events)?;
         self.hypervisor.fmt_sections(f, B::NAME)?;
