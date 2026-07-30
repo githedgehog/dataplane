@@ -36,7 +36,7 @@ pub use dispatch::{
     run_container_tier, run_host_tier,
 };
 pub use error::{ContainerError, VmError};
-pub use n_vm_macros::{guest, hypervisor, network, test};
+pub use n_vm_macros::{corpus, guest, hypervisor, network, test};
 pub use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_IN_VM,
     ENV_MARKER_VALUE, ENV_TEST_ROOT, ENV_VM_ROOT, HYPERVISOR_API_SOCKET_PATH, INIT_BINARY_PATH,

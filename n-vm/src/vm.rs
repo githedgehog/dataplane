@@ -8,9 +8,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use n_vm_protocol::{
-    KERNEL_CONSOLE_SOCKET_PATH, TestResult, VIRTIOFS_ROOT_TAG, VIRTIOFSD_BINARY_PATH,
-    VIRTIOFSD_SOCKET_PATH, VM_GUEST_CID, VM_ROOT_SHARE_PATH, VsockAllocation, VsockChannel,
-    VsockCid, VsockPort,
+    CORPUS_SHARE_PATH, KERNEL_CONSOLE_SOCKET_PATH, TestResult, VIRTIOFS_CORPUS_TAG,
+    VIRTIOFS_ROOT_TAG, VIRTIOFSD_BINARY_PATH, VIRTIOFSD_CORPUS_SOCKET_PATH, VIRTIOFSD_SOCKET_PATH,
+    VM_GUEST_CID, VM_ROOT_SHARE_PATH, VsockAllocation, VsockChannel, VsockCid, VsockPort,
 };
 use rand::RngExt;
 use tokio::io::AsyncReadExt;
@@ -220,8 +220,13 @@ impl<B: HypervisorBackend> std::fmt::Display for VmTestOutput<B> {
 pub struct TestVm<B: HypervisorBackend> {
     /// The hypervisor child process.
     hypervisor: tokio::process::Child,
-    /// The virtiofsd child process.
+    /// The virtiofsd child process serving the read-only root share.
     virtiofsd: tokio::process::Child,
+    /// The virtiofsd child process serving the writable corpus share.
+    ///
+    /// `None` unless the test opted in via `#[corpus]`.  Held only so that
+    /// `kill_on_drop` tears the daemon down with the VM.
+    _corpus_virtiofsd: Option<tokio::process::Child>,
     /// Backend-specific handle for lifecycle control.
     controller: B::Controller,
     /// Background task watching hypervisor lifecycle events.
@@ -241,18 +246,34 @@ pub struct TestVm<B: HypervisorBackend> {
 }
 
 impl<B: HypervisorBackend> TestVm<B> {
-    /// Spawns virtiofsd for the read-only VM root share.
-    async fn launch_virtiofsd(path: impl AsRef<Path>) -> Result<tokio::process::Child, VmError> {
+    /// Spawns a virtiofs daemon for one share.
+    ///
+    /// `writable` is the security boundary for the corpus share, and it is
+    /// deliberately enforced here rather than by the guest's mount flags: a
+    /// fuzz target exists to drive code into misbehaving against a real
+    /// kernel, so a guest-side `mount -o remount,rw` must not be able to
+    /// reach the developer's source tree.  The root daemon keeps
+    /// `--readonly` and therefore cannot write anywhere at all; the corpus
+    /// daemon can write, but its `--shared-dir` is a single `__fuzz__`
+    /// directory, so there is nothing else for it to reach.
+    async fn launch_virtiofsd(
+        path: impl AsRef<Path>,
+        tag: &str,
+        socket: &str,
+        writable: bool,
+    ) -> Result<tokio::process::Child, VmError> {
         let uid = nix::unistd::getuid().as_raw();
         let gid = nix::unistd::getgid().as_raw();
-        tokio::process::Command::new(VIRTIOFSD_BINARY_PATH)
-            .arg("--shared-dir")
-            .arg(path.as_ref())
-            .arg("--readonly")
+        let mut command = tokio::process::Command::new(VIRTIOFSD_BINARY_PATH);
+        command.arg("--shared-dir").arg(path.as_ref());
+        if !writable {
+            command.arg("--readonly");
+        }
+        command
             .arg("--tag")
-            .arg(VIRTIOFS_ROOT_TAG)
+            .arg(tag)
             .arg("--socket-path")
-            .arg(VIRTIOFSD_SOCKET_PATH)
+            .arg(socket)
             .arg("--announce-submounts")
             .arg("--sandbox=none")
             .arg("--rlimit-nofile=0")
@@ -267,9 +288,8 @@ impl<B: HypervisorBackend> TestVm<B> {
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(VmError::VirtiofsdSpawn)
+            .kill_on_drop(true);
+        command.spawn().map_err(VmError::VirtiofsdSpawn)
     }
 
     /// Spawns a background task that reads the kernel serial console.
@@ -309,13 +329,38 @@ impl<B: HypervisorBackend> TestVm<B> {
             params.arch,
         );
 
-        let mut virtiofsd = Self::launch_virtiofsd(VM_ROOT_SHARE_PATH).await?;
+        let mut virtiofsd = Self::launch_virtiofsd(
+            VM_ROOT_SHARE_PATH,
+            VIRTIOFS_ROOT_TAG,
+            VIRTIOFSD_SOCKET_PATH,
+            false,
+        )
+        .await?;
 
         // virtiofsd creates its socket asynchronously after process start.
         if let Err(err) = wait_for_socket(VIRTIOFSD_SOCKET_PATH).await {
             config::drain_child_stderr(&mut virtiofsd, "virtiofsd").await;
             return Err(err);
         }
+
+        // A second daemon for the writable corpus share, present only when
+        // the host tier bind-mounted one (i.e. the test used `#[corpus]`).
+        let corpus_virtiofsd = if std::path::Path::new(CORPUS_SHARE_PATH).is_dir() {
+            let mut child = Self::launch_virtiofsd(
+                CORPUS_SHARE_PATH,
+                VIRTIOFS_CORPUS_TAG,
+                VIRTIOFSD_CORPUS_SOCKET_PATH,
+                true,
+            )
+            .await?;
+            if let Err(err) = wait_for_socket(VIRTIOFSD_CORPUS_SOCKET_PATH).await {
+                config::drain_child_stderr(&mut child, "virtiofsd-corpus").await;
+                return Err(err);
+            }
+            Some(child)
+        } else {
+            None
+        };
 
         // Bind readers before boot so guest-side vsock connects succeed.
         let init_trace = B::spawn_vsock_reader(&params.vsock.init_trace)?;
@@ -330,6 +375,7 @@ impl<B: HypervisorBackend> TestVm<B> {
         Ok(Self {
             hypervisor: launched.child,
             virtiofsd,
+            _corpus_virtiofsd: corpus_virtiofsd,
             controller: launched.controller,
             event_watcher: launched.event_watcher,
             init_trace,
@@ -346,6 +392,10 @@ impl<B: HypervisorBackend> TestVm<B> {
         let Self {
             hypervisor,
             virtiofsd,
+            // Dropped here, which kills the corpus daemon now that the guest
+            // is finished with it.  Its output is not collected: it serves a
+            // single directory and has no verdict to report.
+            _corpus_virtiofsd,
             controller,
             event_watcher,
             init_trace,

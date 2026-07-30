@@ -690,6 +690,28 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
 
+    // `#[corpus]` is a bare marker: its presence grants the guest write
+    // access to the `__fuzz__` directory beside this test's source file.
+    // The path itself is `file!()`, expanded at the call site rather than
+    // here, because a proc macro sees only tokens -- rustc is what knows
+    // which file it is compiling.
+    let corpus_attr = match extract_unique_attr(&mut func.attrs, "corpus") {
+        Ok(attr) => attr,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    if let Some(attr) = &corpus_attr
+        && !matches!(attr.meta, syn::Meta::Path(_))
+    {
+        return syn::Error::new_spanned(attr, "#[corpus] takes no arguments")
+            .to_compile_error()
+            .into();
+    }
+    let corpus_source_file = if corpus_attr.is_some() {
+        quote! { ::core::option::Option::Some(::core::file!()) }
+    } else {
+        quote! { ::core::option::Option::None }
+    };
+
     if network_args.requires_qemu && backend.name != "qemu" {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
@@ -818,6 +840,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
                 host_page_size: #host_page_size,
                 guest_hugepages: #guest_hugepages,
                 nic_model: #nic_model,
+                corpus_source_file: #corpus_source_file,
             };
 
             // Tier 2: Docker container -> VM.  The backend and acceleration
@@ -871,6 +894,41 @@ pub fn guest(_attr: TokenStream, input: TokenStream) -> TokenStream {
          #[n_vm::test]\n\
          #[guest(hugepage_size = \"2m\", hugepage_count = 512)]\n\
          fn my_test() { ... }",
+    )
+    .to_compile_error();
+
+    let input2: proc_macro2::TokenStream = input.into();
+    quote! {
+        #error
+        #input2
+    }
+    .into()
+}
+
+/// Companion attribute opting a test in to a writable corpus directory,
+/// consumed by [`test`].
+///
+/// Grants the guest write access to the `__fuzz__` directory beside the
+/// test's own source file -- and to nothing else -- so that a fuzzer can
+/// persist generated inputs and crash artifacts back to the source tree.
+///
+/// This is opt-in and spelled out at the call site on purpose.  The guest
+/// is otherwise entirely read-only, which is much of the reason to run a
+/// test in a VM at all: a fuzz target is deliberately trying to make code
+/// misbehave against a real kernel, and it must not be able to damage the
+/// developer's working tree.  Marking the tests that do write makes that
+/// grant reviewable rather than ambient.
+///
+/// Takes no arguments.
+#[proc_macro_attribute]
+pub fn corpus(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let error = syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "#[corpus] must be used together with #[n_vm::test] and must \
+         appear below it on the same function; e.g.\n\n\
+         #[n_vm::test]\n\
+         #[corpus]\n\
+         fn my_fuzz_test() { ... }",
     )
     .to_compile_error();
 
