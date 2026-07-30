@@ -311,11 +311,18 @@ impl IpForwarder {
         egress: &EgressObject,
     ) {
         let meta = packet.meta_mut();
-        if let Some(ifindex) = egress.ifindex() {
-            meta.oif = Some(*ifindex);
-        }
-        if let Some(addr) = egress.address() {
-            meta.nh_addr = Some(*addr);
+        meta.oif = *egress.ifindex(); // may be None
+        meta.nh_addr = *egress.address(); // may be None
+        if meta.oif.is_some() {
+            debug!(
+                "Marked packet to send via interface {:?} ({:?})",
+                meta.oif,
+                egress.ifname()
+            );
+        } else {
+            // We should not see this log if we squash all of the
+            // egress instructions and have one with an outgoing interface
+            warn!("Packet hit egress object without outgoing interface");
         }
     }
 
