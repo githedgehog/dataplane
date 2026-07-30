@@ -9,7 +9,7 @@
 //! 1. **Mount essential filesystems** -- `/proc`, `/sys`, `/tmp`, `/run`, and
 //!    `/sys/fs/cgroup` with appropriate security flags.
 //! 2. **Spawn the test binary** as a child process with the `IN_VM=YES`
-//!    environment variable, causing the `#[in_vm]` macro to execute the test
+//!    environment variable, causing the `#[n_vm::test]` macro to execute the test
 //!    body directly.
 //! 3. **Forward signals** -- benign signals (SIGHUP, SIGUSR1, etc.) are
 //!    forwarded to the test process; failure signals (SIGINT, SIGPIPE, etc.)

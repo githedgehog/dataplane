@@ -406,8 +406,7 @@ pub mod test {
         println!("{rendered}");
     }
 
-    #[n_vm::in_vm]
-    #[tokio::test]
+    #[n_vm::test]
     async fn test_sample_config() {
         // Applying the config builds the rte_acl-backed ACL filter and flow-filter contexts, which
         // need the EAL up
