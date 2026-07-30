@@ -1,0 +1,5 @@
+error: unknown NIC model `rtl8139` in #[network]; valid values are: "virtio_net", "e1000", "e1000e"
+ --> tests/compile_fail/unknown_nic_model.rs:5:29
+  |
+5 | #[n_vm::network(nic_model = "rtl8139")]
+  |                             ^^^^^^^^^

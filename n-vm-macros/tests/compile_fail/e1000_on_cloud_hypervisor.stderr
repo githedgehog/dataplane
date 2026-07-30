@@ -1,0 +1,7 @@
+error: the selected NIC model requires the QEMU backend, but the current backend is `cloud_hypervisor`; use #[in_vm(qemu)] with emulated NIC models like e1000 or e1000e
+ --> tests/compile_fail/e1000_on_cloud_hypervisor.rs:4:1
+  |
+4 | #[n_vm::in_vm]
+  | ^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `n_vm::in_vm` (in Nightly builds, run with -Z macro-backtrace for more info)

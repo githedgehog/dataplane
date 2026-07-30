@@ -1,0 +1,5 @@
+error: unknown tokio runtime flavor `bogus`; expected "current_thread" or "multi_thread"
+ --> tests/compile_fail/tokio_test_attr.rs:5:24
+  |
+5 | #[tokio::test(flavor = "bogus")]
+  |                        ^^^^^^^

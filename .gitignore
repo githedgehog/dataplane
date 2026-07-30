@@ -22,3 +22,5 @@ result*/**
 /bin
 sysroot
 devroot
+testroot
+vmroot
