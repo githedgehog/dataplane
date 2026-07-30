@@ -14,8 +14,9 @@ use bollard::query_parameters::{
     StartContainerOptions,
 };
 use n_vm_protocol::{
-    CONTAINER_PLATFORM, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE,
-    ENV_WORKSPACE, ScratchRoots, VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR, VM_WORKSPACE_DIR,
+    CONTAINER_PLATFORM, CORPUS_SHARE_PATH, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER,
+    ENV_MARKER_VALUE, ENV_WORKSPACE, ScratchRoots, VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR,
+    VM_WORKSPACE_DIR,
 };
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -245,6 +246,7 @@ impl ContainerParams {
         backend: EffectiveBackend,
         accel: Accel,
         qemu_user: Option<&str>,
+        corpus_host_dir: Option<&Path>,
     ) -> ContainerCreateBody {
         ContainerCreateBody {
             entrypoint: None,
@@ -274,7 +276,7 @@ impl ContainerParams {
                 }),
                 auto_remove: Some(false),
                 readonly_rootfs: Some(true),
-                mounts: Some(self.build_mounts()),
+                mounts: Some(self.build_mounts(corpus_host_dir)),
                 tmpfs: Some(self.build_tmpfs()),
                 privileged: Some(false),
                 cap_add: Some(REQUIRED_CAPS.iter().map(|&c| c.into()).collect()),
@@ -327,20 +329,26 @@ impl ContainerParams {
     }
 
     /// Builds the bind mounts for the test binary directory.
-    fn build_mounts(&self) -> Vec<bollard::models::Mount> {
+    fn build_mounts(&self, corpus_host_dir: Option<&Path>) -> Vec<bollard::models::Mount> {
         let bin_dir = self.bin_dir_str();
         let mut mounts = vec![
             Self::read_only_bind_mount(bin_dir, bin_dir.to_owned()),
             Self::read_only_bind_mount(bin_dir, format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}")),
         ];
 
-        mounts.extend(Self::build_scratch_mounts(&self.scratch_roots));
+        mounts.extend(Self::build_scratch_mounts(
+            &self.scratch_roots,
+            corpus_host_dir,
+        ));
 
         mounts
     }
 
     /// Builds the additional bind mounts required in scratch mode.
-    fn build_scratch_mounts(roots: &ScratchRoots) -> Vec<bollard::models::Mount> {
+    fn build_scratch_mounts(
+        roots: &ScratchRoots,
+        corpus_host_dir: Option<&Path>,
+    ) -> Vec<bollard::models::Mount> {
         let test_root = roots
             .test_root
             .to_str()
@@ -410,6 +418,18 @@ impl ContainerParams {
                 workspace,
                 format!("{VM_ROOT_SHARE_PATH}/{VM_WORKSPACE_DIR}"),
             ));
+        }
+
+        // The one writable window into the source tree, for tests that
+        // opted in with `#[corpus]`.  Mounted *outside* the root share so
+        // that the read-only virtiofs daemon never serves it: a separate
+        // daemon shares this path and only this path, which keeps the
+        // read/write split enforced by the server rather than by the
+        // guest's mount flags.
+        if let Some(corpus) = corpus_host_dir
+            && let Some(corpus) = corpus.to_str()
+        {
+            mounts.push(Self::rw_bind_mount(corpus, CORPUS_SHARE_PATH.to_owned()));
         }
 
         mounts
@@ -932,7 +952,40 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // container config (which references it by tag).
         ensure_scratch_image(&client).await?;
 
-        let config = params.build_config(backend, accel, qemu_user.as_deref());
+        // Resolve (and create) the corpus directory for a `#[corpus]` test.
+        // Created here, on the host, as the invoking user: the guest sees the
+        // workspace read-only and so cannot create it, and creating it here
+        // keeps ownership right without relying on virtiofsd's uid squashing
+        // for the directory itself.
+        //
+        // A failure to create it is not fatal -- the test still runs, just
+        // without a writable corpus -- because losing the ability to save an
+        // input is far less bad than failing a test run outright.
+        let corpus_host_dir = match (workspace_root(), vm_config.corpus_rel_dir()) {
+            (Some(workspace), Some(rel)) => {
+                let dir = workspace.join(rel);
+                match std::fs::create_dir_all(&dir) {
+                    Ok(()) => Some(dir),
+                    Err(err) => {
+                        tracing::warn!(
+                            path = %dir.display(),
+                            %err,
+                            "could not create corpus directory; \
+                             the guest will have no writable corpus",
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        let config = params.build_config(
+            backend,
+            accel,
+            qemu_user.as_deref(),
+            corpus_host_dir.as_deref(),
+        );
 
         // The guard is armed at creation -- if anything between here and
         // the explicit cleanup panics or returns early, the CleanupThread
@@ -1021,7 +1074,7 @@ mod tests {
     #[test]
     fn config_uses_scratch_image() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         assert_eq!(config.image.as_deref(), Some(SCRATCH_IMAGE_TAG));
     }
 
@@ -1048,7 +1101,7 @@ mod tests {
 
     #[test]
     fn config_propagates_backend_and_accel_env() {
-        let config = sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg, None);
+        let config = sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg, None, None);
         let env = config.env.as_ref().expect("env");
         assert!(
             env.iter().any(|e| e == "N_VM_BACKEND=qemu"),
@@ -1063,7 +1116,7 @@ mod tests {
     #[test]
     fn config_disables_networking() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         assert_eq!(config.network_disabled, Some(true));
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.network_mode.as_deref(), Some("none"));
@@ -1072,7 +1125,7 @@ mod tests {
     #[test]
     fn config_sets_environment_variables() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         let env = config.env.as_ref().expect("env should be set");
         let expected = format!("{ENV_IN_TEST_CONTAINER}={ENV_MARKER_VALUE}");
         assert!(
@@ -1088,7 +1141,7 @@ mod tests {
     #[test]
     fn config_runs_as_root() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         // The container runs as root so that capabilities in the
         // bounding set are effective without ambient-cap gymnastics.
         assert_eq!(config.user.as_deref(), Some("0:0"));
@@ -1097,7 +1150,7 @@ mod tests {
     #[test]
     fn config_passes_device_groups() {
         let params = sample_params();
-        let config = params.build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+        let config = params.build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         let host = config.host_config.as_ref().expect("host_config");
         let groups = host.group_add.as_ref().expect("group_add");
         // The sample_params use GIDs 36 and 108.
@@ -1108,7 +1161,7 @@ mod tests {
     #[test]
     fn config_is_unprivileged_with_minimal_caps() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.privileged, Some(false));
 
@@ -1145,7 +1198,7 @@ mod tests {
     #[test]
     fn config_has_readonly_rootfs() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.readonly_rootfs, Some(true));
     }
@@ -1153,7 +1206,7 @@ mod tests {
     #[test]
     fn config_does_not_auto_remove_and_never_restarts() {
         let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.auto_remove, Some(false));
         let restart = host.restart_policy.as_ref().expect("restart_policy");
@@ -1206,7 +1259,7 @@ mod tests {
     #[test]
     fn mounts_include_bin_dir_at_original_path() {
         let params = sample_params();
-        let mounts = params.build_mounts();
+        let mounts = params.build_mounts(None);
         let direct = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/target/debug/deps"));
@@ -1222,7 +1275,7 @@ mod tests {
     #[test]
     fn mounts_include_bin_dir_at_vm_test_bin_dir() {
         let params = sample_params();
-        let mounts = params.build_mounts();
+        let mounts = params.build_mounts(None);
         let expected_target = format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}");
         let mirror = mounts
             .iter()
@@ -1242,7 +1295,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
         let nix_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/nix/store"));
@@ -1261,7 +1314,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
         let vm_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some(VM_ROOT_SHARE_PATH));
@@ -1280,7 +1333,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
         // At minimum we expect /nix/store, /vm.root, and /dev/hugepages.
         // testroot subdirectory mounts depend on what's on disk, so
         // we can't assert an exact count, but we can verify invariants
@@ -1321,7 +1374,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
         let hp_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/dev/hugepages"));
@@ -1341,7 +1394,7 @@ mod tests {
     #[test]
     fn all_mounts_are_private_non_recursive_bind_mounts() {
         let params = sample_params();
-        let mounts = params.build_mounts();
+        let mounts = params.build_mounts(None);
         for mount in &mounts {
             assert_eq!(mount.typ, Some(bollard::models::MountTypeEnum::BIND),);
             let opts = mount.bind_options.as_ref().expect("bind_options");

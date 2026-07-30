@@ -30,6 +30,7 @@ use tracing::info;
 use tracing_test::traced_test;
 
 #[n_vm::test]
+#[n_vm::corpus]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 #[cfg_attr(not(emulated), traced_test)]
 fn reconcile_fuzz() {

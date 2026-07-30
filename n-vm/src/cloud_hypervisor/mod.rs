@@ -41,7 +41,8 @@ use cloud_hypervisor_client::models::{
 use command_fds::{CommandFdExt, FdMapping};
 use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH,
-    VHOST_VSOCK_SOCKET_PATH, VIRTIOFS_ROOT_TAG, VIRTIOFSD_SOCKET_PATH, VsockChannel,
+    VHOST_VSOCK_SOCKET_PATH, VIRTIOFS_CORPUS_TAG, VIRTIOFS_ROOT_TAG, VIRTIOFSD_CORPUS_SOCKET_PATH,
+    VIRTIOFSD_SOCKET_PATH, VsockChannel,
 };
 use tracing::{debug, error};
 
@@ -279,7 +280,9 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
         cpus: Some(build_cpu_config()),
         memory: Some(build_memory_config(params.vm_config.host_page_size)),
         net: Some(build_network_configs(params.vm_config.iommu)),
-        fs: Some(build_fs_config()),
+        fs: Some(build_fs_config(
+            params.vm_config.corpus_source_file.is_some(),
+        )),
         // The virtio-console is disabled: test stdout/stderr travel
         // over dedicated VsockChannels (TEST_STDOUT / TEST_STDERR).
         console: Some(ConsoleConfig::new(Mode::Off)),
@@ -314,6 +317,7 @@ fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
             params.vm_config.iommu,
             &params.vm_config.guest_hugepages,
             params.arch,
+            params.vm_config.corpus_guest_path().as_deref(),
         )),
         ..Default::default()
     }
@@ -429,15 +433,30 @@ fn build_network_configs(iommu: bool) -> Vec<NetConfig> {
 
 /// Builds the virtiofs filesystem configuration for sharing the container
 /// filesystem into the VM.
-fn build_fs_config() -> Vec<FsConfig> {
-    vec![FsConfig {
+fn build_fs_config(corpus: bool) -> Vec<FsConfig> {
+    let mut shares = vec![FsConfig {
         tag: VIRTIOFS_ROOT_TAG.into(),
         socket: VIRTIOFSD_SOCKET_PATH.into(),
         num_queues: 1,
         queue_size: config::VIRTIOFS_QUEUE_SIZE as i32,
         id: Some(VIRTIOFS_ROOT_TAG.into()),
         ..Default::default()
-    }]
+    }];
+
+    // Second share, served by a separate (writable) virtiofsd, for tests
+    // that opted in via `#[corpus]`.
+    if corpus {
+        shares.push(FsConfig {
+            tag: VIRTIOFS_CORPUS_TAG.into(),
+            socket: VIRTIOFSD_CORPUS_SOCKET_PATH.into(),
+            num_queues: 1,
+            queue_size: config::VIRTIOFS_QUEUE_SIZE as i32,
+            id: Some(VIRTIOFS_CORPUS_TAG.into()),
+            ..Default::default()
+        });
+    }
+
+    shares
 }
 
 /// Builds the platform metadata configuration, embedding the test binary
@@ -738,7 +757,7 @@ mod tests {
 
     #[test]
     fn fs_config_uses_virtiofs_root_tag_and_socket() {
-        let fs = build_fs_config();
+        let fs = build_fs_config(false);
         assert_eq!(fs.len(), 1);
         let entry = &fs[0];
         assert_eq!(entry.tag, VIRTIOFS_ROOT_TAG);
