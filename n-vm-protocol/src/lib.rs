@@ -532,6 +532,42 @@ pub const VIRTIOFS_ROOT_TAG: &str = "root";
 /// `/{VM_TEST_BIN_DIR}/{binary_name}`.
 pub const VM_TEST_BIN_DIR: &str = "test-bin";
 
+/// Well-known directory inside the VM guest where the host's cargo
+/// workspace root is mounted read-write, and which `n-it` makes the test
+/// process's working directory.
+///
+/// This exists for tooling that resolves paths captured at compile time.
+/// `bolero` is the motivating case: `bolero::check!()` records `file!()`
+/// (which cargo makes *workspace-root* relative, e.g.
+/// `mgmt/tests/reconcile.rs`) and later canonicalizes it to locate a
+/// corpus directory.  Nothing resolves in a guest whose working directory
+/// is `/` and which cannot see the source tree, so the test aborts before
+/// generating a single input.
+///
+/// Mounting the workspace at a *fixed* guest path and running the test
+/// from it is enough: the relative `file!()` then canonicalizes against
+/// this directory.  Matching the host's absolute workspace path inside the
+/// guest would also work -- `bolero` falls back to walking
+/// `CARGO_MANIFEST_DIR`'s ancestors -- but that path varies per developer
+/// and per CI runner, so it cannot be baked into the `vmroot` derivation
+/// that has to pre-create the mount point.
+///
+/// Currently mounted **read-only**: virtiofsd serves the whole root share
+/// with `--readonly`, so the guest cannot write here even though the
+/// directory appears as its own mount (`--announce-submounts` makes it
+/// one).  That is sufficient to read an existing corpus, but generated
+/// inputs and crash artifacts cannot yet persist back to the host tree.
+pub const VM_WORKSPACE_DIR: &str = "workspace";
+
+/// Environment variable naming the host cargo workspace root to mount at
+/// [`VM_WORKSPACE_DIR`].
+///
+/// When unset, the workspace root is discovered by walking up from the
+/// current directory looking for a `Cargo.toml` that declares
+/// `[workspace]` -- cargo runs tests with the working directory set to the
+/// *package* root, not the workspace root, so the walk is necessary.
+pub const ENV_WORKSPACE: &str = "N_VM_WORKSPACE";
+
 // == Binary paths (inside the container) ==
 
 // NOTE: the guest kernel image and `qemu-system-<arch>` binary paths are

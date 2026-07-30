@@ -9,9 +9,10 @@
 
 use std::io::Write;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::path::Path;
 use std::process::Stdio;
 
-use n_vm_protocol::{ENV_IN_VM, ENV_MARKER_VALUE, TestResult};
+use n_vm_protocol::{ENV_IN_VM, ENV_MARKER_VALUE, TestResult, VM_WORKSPACE_DIR};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
@@ -91,20 +92,36 @@ pub async fn spawn_main_process() -> Result<Child, SpawnError> {
     let stdout_stdio = vsock_stream_to_stdio(stdout_stream);
     let stderr_stdio = vsock_stream_to_stdio(stderr_stream);
 
-    let child = Command::new(
+    let mut command = Command::new(
         args.next()
             .expect("argv[1] missing: no test binary specified"),
-    )
-    .args(args)
-    .kill_on_drop(true)
-    .stdin(Stdio::inherit())
-    .stdout(stdout_stdio)
-    .stderr(stderr_stdio)
-    .env(ENV_IN_VM, ENV_MARKER_VALUE)
-    .env("PATH", "/bin")
-    .env("LD_LIBRARY_PATH", "/lib")
-    .env("RUST_BACKTRACE", "1")
-    .spawn()?;
+    );
+    command
+        .args(args)
+        .kill_on_drop(true)
+        .stdin(Stdio::inherit())
+        .stdout(stdout_stdio)
+        .stderr(stderr_stdio)
+        .env(ENV_IN_VM, ENV_MARKER_VALUE)
+        .env("PATH", "/bin")
+        .env("LD_LIBRARY_PATH", "/lib")
+        .env("RUST_BACKTRACE", "1");
+
+    // Run from the shared cargo workspace when the container tier mounted
+    // one.  PID 1 starts at `/`, which resolves nothing: tooling that
+    // captured a workspace-relative path at compile time (`file!()`, which
+    // bolero canonicalizes to locate its corpus) needs the workspace root
+    // as the working directory.  Absent for an out-of-workspace caller, in
+    // which case `/` is left alone.
+    let workspace = Path::new("/").join(VM_WORKSPACE_DIR);
+    if workspace.is_dir() {
+        debug!("running main process from {}", workspace.display());
+        command.current_dir(&workspace);
+    } else {
+        debug!("no {} directory; leaving cwd at /", workspace.display());
+    }
+
+    let child = command.spawn()?;
 
     if let Some(pid) = child.id() {
         debug!("main process spawned with PID: {pid}");
