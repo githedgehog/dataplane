@@ -57,8 +57,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use n_vm_protocol::{
-    HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH, VIRTIOFS_ROOT_TAG,
-    VIRTIOFSD_SOCKET_PATH, VsockAllocation, VsockChannel,
+    HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH, VIRTIOFS_CORPUS_TAG, VIRTIOFS_ROOT_TAG,
+    VIRTIOFSD_CORPUS_SOCKET_PATH, VIRTIOFSD_SOCKET_PATH, VsockAllocation, VsockChannel,
 };
 use tracing::{debug, error, warn};
 
@@ -495,7 +495,7 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     push_memory_args(&mut args, params.vm_config.host_page_size);
     push_iommu_args(&mut args, iommu, arch);
     push_kernel_args(&mut args, params);
-    push_fs_args(&mut args);
+    push_fs_args(&mut args, params.vm_config.corpus_source_file.is_some());
     push_vsock_args(&mut args, &params.vsock, iommu);
     push_network_args(&mut args, iommu, params.vm_config.nic_model);
     push_serial_args(&mut args);
@@ -665,6 +665,7 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
         params.vm_config.iommu,
         &params.vm_config.guest_hugepages,
         params.arch,
+        params.vm_config.corpus_guest_path().as_deref(),
     );
 
     args.extend([
@@ -686,7 +687,7 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
 /// separate userspace process (virtiofsd) rather than through QEMU's
 /// emulated IOMMU data path.  The Intel IOMMU's `caching-mode=on`
 /// (set in [`push_iommu_args`]) covers this case instead.
-fn push_fs_args(args: &mut Vec<String>) {
+fn push_fs_args(args: &mut Vec<String>, corpus: bool) {
     args.extend([
         "-chardev".into(),
         format!("socket,id=virtiofs0,path={VIRTIOFSD_SOCKET_PATH}"),
@@ -697,6 +698,21 @@ fn push_fs_args(args: &mut Vec<String>) {
             qs = config::VIRTIOFS_QUEUE_SIZE,
         ),
     ]);
+
+    // Second share, served by a separate (writable) virtiofsd, for tests
+    // that opted in via `#[corpus]`.
+    if corpus {
+        args.extend([
+            "-chardev".into(),
+            format!("socket,id=virtiofs1,path={VIRTIOFSD_CORPUS_SOCKET_PATH}"),
+            "-device".into(),
+            format!(
+                "vhost-user-fs-pci,queue-size={qs},\
+                 chardev=virtiofs1,tag={VIRTIOFS_CORPUS_TAG}",
+                qs = config::VIRTIOFS_QUEUE_SIZE,
+            ),
+        ]);
+    }
 }
 
 /// Vsock device for guest-to-host communication.
@@ -1142,7 +1158,7 @@ mod tests {
     #[test]
     fn fs_args_use_virtiofs_tag_and_socket() {
         let mut args = Vec::new();
-        push_fs_args(&mut args);
+        push_fs_args(&mut args, false);
         let chardev = args
             .iter()
             .find(|a| a.starts_with("socket,id=virtiofs0"))
@@ -1551,7 +1567,7 @@ mod tests {
     #[test]
     fn fs_device_never_has_iommu_platform() {
         let mut args = Vec::new();
-        push_fs_args(&mut args);
+        push_fs_args(&mut args, false);
         let device = args
             .iter()
             .find(|a| a.starts_with("vhost-user-fs-pci"))

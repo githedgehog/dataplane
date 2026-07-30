@@ -108,3 +108,34 @@ async fn tokio_test_multi_thread() {
     let contents = handle.await.unwrap();
     assert!(contents.contains("Linux"));
 }
+
+/// The writable corpus window must be exactly one directory wide.
+///
+/// This is the security boundary that makes `#[corpus]` acceptable at all:
+/// a fuzz target is deliberately provoking misbehaviour, so it must be able
+/// to save inputs without being able to damage the rest of the developer's
+/// source tree.  The split is enforced by *which virtiofs daemon serves
+/// which path* -- the root daemon runs `--readonly` and the corpus daemon's
+/// `--shared-dir` is the corpus directory alone -- so it holds regardless of
+/// what the guest does with its own mount flags.
+#[n_vm::test]
+#[n_vm::corpus]
+fn corpus_is_writable_and_rest_of_workspace_is_not() {
+    let cwd = std::env::current_dir().expect("workspace should be the working directory");
+
+    let corpus = cwd.join("n-vm/tests/__fuzz__");
+    let probe = corpus.join(".write_probe");
+    std::fs::write(&probe, b"probe").expect("the corpus directory must be writable");
+    std::fs::remove_file(&probe).expect("the corpus probe must be removable");
+
+    // Anything else under the workspace is served by the read-only daemon.
+    for path in [cwd.join(".write_probe"), cwd.join("n-vm/.write_probe")] {
+        let err =
+            std::fs::write(&path, b"probe").expect_err("only the corpus directory may be writable");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::ReadOnlyFilesystem,
+            "writing {path:?} should fail as read-only, got {err}",
+        );
+    }
+}
