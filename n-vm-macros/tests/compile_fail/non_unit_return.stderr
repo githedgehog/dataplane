@@ -1,4 +1,4 @@
-error: #[in_vm] functions must return `()`; the generated dispatch branches use bare `return;` statements
+error: #[n_vm::test] functions must return `()`; the generated dispatch branches use bare `return;` statements
  --> tests/compile_fail/non_unit_return.rs:5:22
   |
 5 | fn non_unit_return() -> i32 {

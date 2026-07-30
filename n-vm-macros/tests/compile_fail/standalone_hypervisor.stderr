@@ -1,6 +1,6 @@
-error: #[hypervisor] must be used together with #[in_vm] and must appear below it on the same function; e.g.
+error: #[hypervisor] must be used together with #[n_vm::test] and must appear below it on the same function; e.g.
 
-       #[in_vm]
+       #[n_vm::test]
        #[hypervisor(iommu, host_pages = "4k")]
        fn my_test() { ... }
  --> tests/compile_fail/standalone_hypervisor.rs:4:1

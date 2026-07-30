@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Runtime helpers called by code generated from `#[in_vm]`.
+//! Runtime helpers called by code generated from `#[n_vm::test]`.
 //!
 //! The macro keeps only tier selection in generated code. Container launch,
 //! VM launch, runtime setup, and error formatting live here as normal Rust.
@@ -46,7 +46,7 @@ pub fn block_on_in_guest<F: Future<Output = ()>>(f: F) {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("failed to build tokio runtime for async #[in_vm] test body")
+        .expect("failed to build tokio runtime for async #[n_vm::test] test body")
         .block_on(f);
 }
 
@@ -63,7 +63,7 @@ pub fn block_on_in_guest_multi_thread<F: Future<Output = ()>>(worker_threads: Op
     }
     builder
         .build()
-        .expect("failed to build multi-threaded tokio runtime for async #[in_vm] test body")
+        .expect("failed to build multi-threaded tokio runtime for async #[n_vm::test] test body")
         .block_on(f);
 }
 
@@ -114,7 +114,7 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
         .enable_io()
         .enable_time()
         .build()
-        .expect("failed to build tokio runtime for #[in_vm] container tier");
+        .expect("failed to build tokio runtime for #[n_vm::test] container tier");
 
     let _guard = runtime.enter();
 
@@ -137,7 +137,7 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
 
 /// Host-tier dispatch: launch a Docker container and re-run the test inside it.
 ///
-/// `requested` is the backend the test asked for via `#[in_vm]`.  It is
+/// `requested` is the backend the test asked for via `#[n_vm::test]`.  It is
 /// resolved against the Docker daemon's architecture and the requested
 /// capabilities: a cross-arch guest runs under QEMU/TCG, a test that
 /// *explicitly* requires cloud-hypervisor on a cross-arch host is skipped,

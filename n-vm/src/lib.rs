@@ -4,7 +4,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
-//! Runtime support for `#[in_vm]` tests.
+//! Runtime support for `#[n_vm::test]` tests.
 //!
 //! The host tier starts a Docker container, the container tier boots a VM
 //! through a [`HypervisorBackend`], and the guest tier runs under `n-it`.
@@ -36,7 +36,7 @@ pub use dispatch::{
     run_container_tier, run_host_tier,
 };
 pub use error::{ContainerError, VmError};
-pub use n_vm_macros::{guest, hypervisor, in_vm, network};
+pub use n_vm_macros::{guest, hypervisor, network, test};
 pub use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_IN_VM,
     ENV_MARKER_VALUE, ENV_TEST_ROOT, ENV_VM_ROOT, HYPERVISOR_API_SOCKET_PATH, INIT_BINARY_PATH,
