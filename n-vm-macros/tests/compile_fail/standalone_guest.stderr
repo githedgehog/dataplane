@@ -1,0 +1,11 @@
+error: #[guest] must be used together with #[in_vm] and must appear below it on the same function; e.g.
+
+       #[in_vm]
+       #[guest(hugepage_size = "2m", hugepage_count = 512)]
+       fn my_test() { ... }
+ --> tests/compile_fail/standalone_guest.rs:4:1
+  |
+4 | #[n_vm::guest(hugepage_size = "2m", hugepage_count = 512)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `n_vm::guest` (in Nightly builds, run with -Z macro-backtrace for more info)

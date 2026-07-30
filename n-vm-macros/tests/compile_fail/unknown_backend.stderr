@@ -1,0 +1,5 @@
+error: unknown #[in_vm] backend `not_a_real_backend`; valid backends are: `cloud_hypervisor`, `qemu`
+ --> tests/compile_fail/unknown_backend.rs:4:15
+  |
+4 | #[n_vm::in_vm(not_a_real_backend)]
+  |               ^^^^^^^^^^^^^^^^^^

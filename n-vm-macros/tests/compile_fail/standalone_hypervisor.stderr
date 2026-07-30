@@ -1,0 +1,11 @@
+error: #[hypervisor] must be used together with #[in_vm] and must appear below it on the same function; e.g.
+
+       #[in_vm]
+       #[hypervisor(iommu, host_pages = "4k")]
+       fn my_test() { ... }
+ --> tests/compile_fail/standalone_hypervisor.rs:4:1
+  |
+4 | #[n_vm::hypervisor(iommu)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `n_vm::hypervisor` (in Nightly builds, run with -Z macro-backtrace for more info)
