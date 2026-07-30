@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use n_vm::in_vm;
-
 fn hugepages_total() -> u64 {
     std::fs::read_to_string("/proc/meminfo")
         .unwrap()
@@ -13,14 +11,13 @@ fn hugepages_total() -> u64 {
         .unwrap_or(0)
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 fn test_which_runs_in_vm() {
     assert_eq!(2 + 2, 4);
 }
 
-// NOTE: there is deliberately no `#[in_vm] #[should_panic]` negative
-// control here.  `#[should_panic]` does not compose with `#[in_vm]` (the
+// NOTE: there is deliberately no `#[n_vm::test] #[should_panic]` negative
+// control here.  `#[should_panic]` does not compose with `#[n_vm::test]` (the
 // body runs in a separate VM-guest process across three dispatch tiers, so
 // the panic is absorbed inconsistently) and the macro now rejects it.  The
 // "does the harness actually detect failures" property is covered at the
@@ -28,55 +25,47 @@ fn test_which_runs_in_vm() {
 // `n_vm_protocol::TestResult` parse tests: an absent/failed verdict ->
 // failure), not by a panicking end-to-end test.
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 fn root_filesystem_in_vm_is_read_only() {
     let error = std::fs::File::create_new("/some.file").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ReadOnlyFilesystem);
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 fn run_filesystem_in_vm_is_read_write() {
     std::fs::File::create_new("/run/some.file").unwrap();
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 fn tmp_filesystem_in_vm_is_read_write() {
     std::fs::File::create_new("/tmp/some.file").unwrap();
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 #[hypervisor(iommu)]
 fn test_which_runs_in_vm_with_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-#[in_vm(qemu)]
-#[test]
+#[n_vm::test(qemu)]
 #[hypervisor(iommu)]
 fn test_which_runs_in_vm_with_qemu_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 #[hypervisor(host_pages = "4k")]
 fn vm_boots_with_standard_host_pages() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-#[in_vm(qemu)]
-#[test]
+#[n_vm::test(qemu)]
 #[hypervisor(host_pages = "4k")]
 fn vm_boots_with_standard_host_pages_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 #[guest(hugepage_size = "none")]
 fn vm_boots_without_guest_hugepages() {
     assert_eq!(
@@ -86,8 +75,7 @@ fn vm_boots_without_guest_hugepages() {
     );
 }
 
-#[in_vm]
-#[test]
+#[n_vm::test]
 #[guest(hugepage_size = "2m", hugepage_count = 64)]
 fn vm_boots_with_2m_guest_hugepages() {
     assert_eq!(
@@ -97,8 +85,7 @@ fn vm_boots_with_2m_guest_hugepages() {
     );
 }
 
-#[in_vm(qemu)]
-#[test]
+#[n_vm::test(qemu)]
 #[hypervisor(iommu, host_pages = "4k")]
 #[guest(hugepage_size = "2m", hugepage_count = 64)]
 async fn vm_boots_with_4k_host_and_2m_guest_hugepages_on_qemu() {
@@ -109,15 +96,13 @@ async fn vm_boots_with_4k_host_and_2m_guest_hugepages_on_qemu() {
     );
 }
 
-#[in_vm]
-#[tokio::test]
+#[n_vm::test]
 async fn tokio_test_current_thread_default() {
     let contents = tokio::fs::read_to_string("/proc/version").await.unwrap();
     assert!(contents.contains("Linux"));
 }
 
-#[in_vm]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[n_vm::test(multi_thread, worker_threads = 2)]
 async fn tokio_test_multi_thread() {
     let handle = tokio::spawn(async { tokio::fs::read_to_string("/proc/version").await.unwrap() });
     let contents = handle.await.unwrap();

@@ -264,7 +264,7 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
     debug_assert!(
         !params.vm_config.nic_model.requires_qemu(),
         "cloud-hypervisor does not support NIC model {:?}; \
-         use #[in_vm(qemu)] for emulated NIC models",
+         use #[n_vm::test(qemu)] for emulated NIC models",
         params.vm_config.nic_model,
     );
 

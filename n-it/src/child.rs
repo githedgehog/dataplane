@@ -43,7 +43,7 @@ fn vsock_stream_to_stdio(stream: vsock::VsockStream) -> Stdio {
 /// Spawns the test binary as the main child process.
 ///
 /// Reads the binary path and test name from the kernel command line
-/// arguments (passed via `init=`), sets `IN_VM=YES` so the `#[in_vm]`
+/// arguments (passed via `init=`), sets `IN_VM=YES` so the `#[n_vm::test]`
 /// macro executes the test body directly, and redirects stdout/stderr to
 /// dedicated vsock streams ([`VsockChannel::TEST_STDOUT`] and
 /// [`VsockChannel::TEST_STDERR`]).

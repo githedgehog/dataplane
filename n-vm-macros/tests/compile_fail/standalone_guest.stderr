@@ -1,6 +1,6 @@
-error: #[guest] must be used together with #[in_vm] and must appear below it on the same function; e.g.
+error: #[guest] must be used together with #[n_vm::test] and must appear below it on the same function; e.g.
 
-       #[in_vm]
+       #[n_vm::test]
        #[guest(hugepage_size = "2m", hugepage_count = 512)]
        fn my_test() { ... }
  --> tests/compile_fail/standalone_guest.rs:4:1
