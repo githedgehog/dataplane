@@ -754,6 +754,19 @@ let
     # /nix/store/{hash}-glibc-X.Y/lib; with /nix/store bind-mounted
     # through virtiofsd, those paths resolve correctly inside the VM.
     mkdir -p $out/nix/store
+
+    # Empty mount point for the host's cargo workspace (see
+    # VM_WORKSPACE_DIR in n-vm-protocol).  The container tier bind-mounts
+    # the workspace root here and n-it makes it the test process's working
+    # directory, so that paths captured at compile time relative to the
+    # workspace root -- `file!()`, which bolero records and later
+    # canonicalizes to find its corpus -- resolve inside the guest.
+    #
+    # Pre-created for the same reason as /nix/store above: this derivation
+    # is a read-only nix store path, so Docker cannot create the mount
+    # point itself.
+    # Must match VM_WORKSPACE_DIR in n-vm-protocol.
+    mkdir -p $out/workspace
   '';
 
 
