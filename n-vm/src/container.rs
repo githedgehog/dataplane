@@ -3,7 +3,7 @@
 
 //! Docker container management for the host tier of `#[n_vm::test]` tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bollard::models::{
     ContainerCreateBody, DeviceMapping, HostConfig, MountBindOptions, RestartPolicy,
@@ -15,7 +15,7 @@ use bollard::query_parameters::{
 };
 use n_vm_protocol::{
     CONTAINER_PLATFORM, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE,
-    ScratchRoots, VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR,
+    ENV_WORKSPACE, ScratchRoots, VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR, VM_WORKSPACE_DIR,
 };
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -24,6 +24,34 @@ use tracing::warn;
 use crate::backend::{BackendResolution, EffectiveBackend, RequestedBackend, is_cross_arch};
 use crate::config::Accel;
 use crate::error::ContainerError;
+
+/// Resolves the host cargo workspace root to share with the guest.
+///
+/// Prefers [`ENV_WORKSPACE`]; otherwise walks up from the current directory
+/// for a `Cargo.toml` declaring `[workspace]`.  The walk is required because
+/// cargo runs a test with the working directory set to the *package* root,
+/// while `file!()` is recorded relative to the *workspace* root.
+///
+/// Returns `None` when no workspace is found, which is not an error: a
+/// caller outside a cargo workspace simply gets no `/workspace` in the
+/// guest.
+fn workspace_root() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var(ENV_WORKSPACE) {
+        let path = PathBuf::from(dir);
+        return path.canonicalize().ok().or(Some(path));
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    cwd.ancestors()
+        .find(|dir| {
+            let manifest = dir.join("Cargo.toml");
+            std::fs::read_to_string(&manifest).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| line.trim_start().starts_with("[workspace"))
+            })
+        })
+        .map(Path::to_path_buf)
+}
 
 /// Docker image tag for the locally-created empty container image.
 ///
@@ -362,6 +390,27 @@ impl ContainerParams {
             "/dev/hugepages",
             "/dev/hugepages".to_owned(),
         ));
+
+        // The cargo workspace, so that compile-time-captured relative paths
+        // (`file!()`) resolve in the guest -- see `VM_WORKSPACE_DIR`.
+        //
+        // Read-only, matching what the guest actually gets: virtiofsd serves
+        // the whole share with `--readonly`, so a read-write bind mount here
+        // would claim an access the guest does not have.  Enough for reading
+        // an existing corpus; persisting newly-generated inputs back to the
+        // host tree needs the virtiofsd flag relaxed as well.
+        //
+        // Absent for an out-of-workspace caller, in which case the guest
+        // simply has no /workspace and `n-it` leaves the working directory
+        // alone.
+        if let Some(workspace) = workspace_root()
+            && let Some(workspace) = workspace.to_str()
+        {
+            mounts.push(Self::read_only_bind_mount(
+                workspace,
+                format!("{VM_ROOT_SHARE_PATH}/{VM_WORKSPACE_DIR}"),
+            ));
+        }
 
         mounts
     }

@@ -744,6 +744,14 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     // attributes (`#[wrap(...)]`, `#[traced_test]`, ...) apply to it and
     // nowhere else.  `async` is preserved on the inner function and driven
     // by an explicit runtime, since the outer dispatch function is `fn`.
+    //
+    // Only wrap when there is something to route, because the wrapper is
+    // observable: anything deriving a name from its own call site sees the
+    // extra frame.  `bolero` builds its on-disk corpus directory from
+    // `type_name` of a probe function declared at the `check!()` site, so an
+    // unconditional wrapper would bake `__n_vm_guest_body` into that path
+    // and make it churn whenever this macro's internals are renamed.
+    let wrap_body = !body_attrs.is_empty();
     let asyncness = if is_async {
         quote! { async }
     } else {
@@ -768,10 +776,28 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         quote! { __n_vm_guest_body(); }
     };
 
-    let tier3_body = quote! {
-        #(#body_attrs)*
-        #asyncness fn __n_vm_guest_body() #block
-        #invoke_guest_body
+    let tier3_body = if wrap_body {
+        quote! {
+            #(#body_attrs)*
+            #asyncness fn __n_vm_guest_body() #block
+            #invoke_guest_body
+        }
+    } else if is_async {
+        // No attributes to route, so drive the body directly and leave the
+        // call site's apparent path unchanged.
+        if runtime.multi_thread {
+            let workers = match runtime.worker_threads {
+                Some(n) => quote! { ::core::option::Option::Some(#n) },
+                None => quote! { ::core::option::Option::None },
+            };
+            quote! {
+                ::n_vm::block_on_in_guest_multi_thread(#workers, async #block);
+            }
+        } else {
+            quote! { ::n_vm::block_on_in_guest(async #block); }
+        }
+    } else {
+        quote! { #block }
     };
 
     quote! {
