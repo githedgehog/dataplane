@@ -1,0 +1,5 @@
+error: duplicate #[hypervisor] attribute
+ --> tests/compile_fail/duplicate_hypervisor.rs:6:1
+  |
+6 | #[n_vm::hypervisor(host_pages = "4k")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,35 @@
+[package]
+name = "dataplane-n-vm"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[lib]
+name = "n_vm"
+
+[dependencies]
+# internal
+n-vm-macros = { workspace = true }
+n-vm-protocol = { workspace = true }
+
+# external
+cloud-hypervisor-client = { workspace = true, default-features = false, features = [] }
+command-fds = { workspace = true, default-features = false, features = ["tokio"] }
+bollard = { workspace = true, default-features = false, features = ["pipe", "ssl_providerless"] }
+futures = { workspace = true, default-features = false, features = ["default"] }
+nix = { workspace = true, default-features = false, features = ["signal", "user"] }
+qapi-qmp = { workspace = true, default-features = false, features = [] }
+qapi-spec = { workspace = true, default-features = false, features = [] }
+miette = { workspace = true, default-features = false, features = ["derive", "fancy"] }
+rand = { workspace = true, default-features = false, features = ["thread_rng"] }
+rtnetlink = { workspace = true, default-features = false, features = ["tokio_socket"] }
+serde = { workspace = true, default-features = false, features = ["derive"] }
+serde_json = { workspace = true, default-features = false, features = ["std"] }
+thiserror = { workspace = true, default-features = false, features = [] }
+tokio = { workspace = true, default-features = false, features = ["rt", "process", "macros", "fs", "net", "time", "io-util", "io-std", "rt-multi-thread"] }
+tokio-stream = { workspace = true, default-features = false, features = [] }
+tokio-util = { workspace = true, default-features = false, features = ["codec"] }
+tokio-vsock = { workspace = true, default-features = false, features = [] }
+tracing = { workspace = true, default-features = false, features = [] }
+tracing-subscriber = { workspace = true, default-features = false, features = ["fmt"] }
