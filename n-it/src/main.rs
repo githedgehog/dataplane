@@ -40,6 +40,18 @@ use tokio_vsock::VMADDR_CID_HOST;
 /// [`vsock_allocation`].
 static VSOCK_ALLOCATION: OnceLock<VsockAllocation> = OnceLock::new();
 
+/// Guest path at which the writable corpus share should be mounted.
+///
+/// Populated during early init from the kernel command line, and empty
+/// unless the test opted in via `#[corpus]` -- in which case the guest has
+/// no writable view of the source tree at all.
+static CORPUS_MOUNT: OnceLock<Option<String>> = OnceLock::new();
+
+/// Returns the corpus mount path parsed from the kernel command line.
+pub(crate) fn corpus_mount() -> Option<&'static str> {
+    CORPUS_MOUNT.get().and_then(|v| v.as_deref())
+}
+
 /// Returns the vsock allocation parsed from the kernel command line.
 ///
 /// # Panics
@@ -128,6 +140,20 @@ fn main() -> Infallible {
         VSOCK_ALLOCATION
             .set(alloc)
             .expect("VSOCK_ALLOCATION already initialized");
+
+        let corpus = cmdline
+            .split_whitespace()
+            .find_map(|tok| {
+                tok.strip_prefix(n_vm_protocol::CMDLINE_CORPUS_MOUNT)
+                    .and_then(|rest| rest.strip_prefix('='))
+            })
+            .map(str::to_owned);
+        if let Some(path) = &corpus {
+            eprintln!("writable corpus share requested at {path}");
+        }
+        CORPUS_MOUNT
+            .set(corpus)
+            .expect("CORPUS_MOUNT already initialized");
 
         let alloc = vsock_allocation();
         eprintln!(
