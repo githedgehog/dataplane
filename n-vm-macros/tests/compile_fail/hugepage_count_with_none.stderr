@@ -1,0 +1,5 @@
+error: hugepage_count cannot be specified when hugepage_size = "none"; hugepages are disabled
+ --> tests/compile_fail/hugepage_count_with_none.rs:5:56
+  |
+5 | #[n_vm::guest(hugepage_size = "none", hugepage_count = 4)]
+  |                                                        ^

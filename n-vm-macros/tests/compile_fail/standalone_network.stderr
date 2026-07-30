@@ -1,0 +1,11 @@
+error: #[network] must be used together with #[in_vm] and must appear below it on the same function; e.g.
+
+       #[in_vm(qemu)]
+       #[network(nic_model = "e1000")]
+       fn my_test() { ... }
+ --> tests/compile_fail/standalone_network.rs:4:1
+  |
+4 | #[n_vm::network(nic_model = "e1000")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `n_vm::network` (in Nightly builds, run with -Z macro-backtrace for more info)

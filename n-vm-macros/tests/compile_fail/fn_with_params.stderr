@@ -1,0 +1,5 @@
+error: #[in_vm] functions must take no parameters; the function is re-invoked by name as `fn()` inside the VM guest
+ --> tests/compile_fail/fn_with_params.rs:5:19
+  |
+5 | fn fn_with_params(_x: u32) {}
+  |                   ^^^^^^^
