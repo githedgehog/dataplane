@@ -406,7 +406,6 @@ pub mod test {
         println!("{rendered}");
     }
 
-    #[ignore = "temporarily disabled during vm test runner refactor"]
     #[n_vm::in_vm]
     #[tokio::test]
     async fn test_sample_config() {

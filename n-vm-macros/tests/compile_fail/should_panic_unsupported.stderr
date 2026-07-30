@@ -1,0 +1,5 @@
+error: #[should_panic] is not supported with #[in_vm]: the test body runs in a separate VM-guest process across three dispatch tiers, so panic semantics do not compose.  Assert the failure condition inside the test body instead (e.g. `assert!(result.is_err())`).
+ --> tests/compile_fail/should_panic_unsupported.rs:5:1
+  |
+5 | #[should_panic]
+  | ^^^^^^^^^^^^^^^

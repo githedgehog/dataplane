@@ -228,10 +228,19 @@ pre-flight: (check-dependencies) (fmt "--check") (test) (lint) (doctest)
     echo "pre flight checks pass"
 
 [script]
-test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
+test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
-    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
+    # Export scratch-container roots when the symlinks exist so that
+    # #[in_vm] tests use the nix-built testroot/vmroot automatically.
+    if [[ -e testroot && -e vmroot ]]; then
+        export N_VM_TEST_ROOT="$(pwd)/testroot"
+        export N_VM_VM_ROOT="$(pwd)/vmroot"
+    fi
+    # `--no-tests pass`: a single-package archive whose only test(s) are
+    # `#[cfg_attr(emulated, ignore)]` (e.g. n-vm-macros' trybuild test under
+    # cross) runs zero tests; treat that as success, matching `test-each`.
+    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) --no-tests pass {{ filter }}
 
 # List the bolero targets `just fuzz` can run. Args go to `cargo bolero list`
 [script]
@@ -362,11 +371,11 @@ test-each *args: (build "tests.pkg" args)
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
     {{ _just_debuggable_ }}
 
-# Create devroot and sysroot symlinks for local development
+# Create devroot, sysroot, testroot, and vmroot symlinks for local development
 [script]
 setup-roots *args:
     {{ _just_debuggable_ }}
-    for root in devroot sysroot; do
+    for root in devroot sysroot testroot vmroot; do
       nix build -f default.nix "${root}" \
         --argstr default-features '{{ default_features }}' \
         --argstr features '{{ features }}' \
@@ -1243,6 +1252,12 @@ doctest package="" *args: (build (if package == "" { "doctests.all" } else { "do
 [script]
 coverage *args:
     {{ _just_debuggable_ }}
+    # Export scratch-container roots when the symlinks exist so that
+    # #[in_vm] tests use the nix-built testroot/vmroot automatically.
+    if [[ -e testroot && -e vmroot ]]; then
+      export N_VM_TEST_ROOT="$(pwd)/testroot"
+      export N_VM_VM_ROOT="$(pwd)/vmroot"
+    fi
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
     declare -r out="./target/nextest/coverage"
