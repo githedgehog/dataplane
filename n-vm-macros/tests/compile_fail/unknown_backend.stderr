@@ -1,5 +1,5 @@
-error: unknown #[in_vm] backend `not_a_real_backend`; valid backends are: `cloud_hypervisor`, `qemu`
- --> tests/compile_fail/unknown_backend.rs:4:15
+error: unknown #[n_vm::test] option `not_a_real_backend`; expected a backend (`cloud_hypervisor`, `qemu`), a runtime flavor (`current_thread`, `multi_thread`), or `worker_threads = N`.  VM options live on companion attributes (#[hypervisor(...)], #[guest(...)], #[network(...)])
+ --> tests/compile_fail/unknown_backend.rs:4:14
   |
-4 | #[n_vm::in_vm(not_a_real_backend)]
-  |               ^^^^^^^^^^^^^^^^^^
+4 | #[n_vm::test(not_a_real_backend)]
+  |              ^^^^^^^^^^^^^^^^^^

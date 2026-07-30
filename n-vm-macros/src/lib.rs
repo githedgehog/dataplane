@@ -6,35 +6,41 @@
 //! Attribute macros for running tests inside the `n-vm` nested test
 //! environment.
 //!
-//! `#[in_vm]` rewrites a `fn()` or `async fn()` test into a three-tier
+//! `#[n_vm::test]` rewrites a `fn()` or `async fn()` test into a three-tier
 //! dispatch:
 //!
 //! - host: start a Docker container;
 //! - container: boot the selected hypervisor backend;
 //! - VM guest: run the original test body under `n-it`.
 //!
-//! Use `#[in_vm]` for the default cloud-hypervisor backend or
-//! `#[in_vm(qemu)]` for QEMU.  Companion attributes must sit below
-//! `#[in_vm]` so this macro can consume them:
+//! It *is* the test attribute -- it injects `#[test]` itself, so there is no
+//! companion `#[test]` or `#[tokio::test]` to write (or to get in the wrong
+//! order).  Use `#[n_vm::test]` for the default cloud-hypervisor backend or
+//! `#[n_vm::test(qemu)]` for QEMU.  Companion attributes must sit below it
+//! so this macro can consume them:
 //!
 //! ```ignore
-//! #[in_vm(qemu)]
-//! #[test]
+//! #[n_vm::test(qemu)]
 //! #[hypervisor(iommu, host_pages = "4k")]
 //! #[guest(hugepage_size = "2m", hugepage_count = 512)]
 //! #[network(nic_model = "e1000")]
 //! fn test_dpdk() {}
 //! ```
 //!
-//! `#[tokio::test]` is accepted on async tests; the macro rewrites it to
-//! `#[test]` and uses its `flavor` / `worker_threads` values when
-//! constructing the guest-tier runtime.
+//! An `async fn` runs on a tokio runtime in the guest.  The shape comes from
+//! this attribute's own arguments -- a current-thread runtime by default, or
+//! `#[n_vm::test(multi_thread)]` / `#[n_vm::test(multi_thread,
+//! worker_threads = 4)]` for the multi-threaded scheduler.
 //!
-//! An `async fn` carrying a plain `#[test]` (which bare rustc would
-//! reject) is also accepted: the macro strips `async` and runs the body
-//! on a current-thread runtime in the guest.  Tests that need tokio's
-//! multi-thread scheduler must say so explicitly via
-//! `#[tokio::test(flavor = "multi_thread")]`.
+//! # Attribute routing
+//!
+//! Attributes below this one decorate the *test body* and are emitted onto an
+//! inner function that only the guest tier calls.  That matters for anything
+//! with side effects: `#[wrap(with_caps(...))]` needs privileges the guest
+//! has and the host does not, so running it on the host tier would fail
+//! before a VM ever booted.  The exceptions are the harness-level attributes
+//! (`#[cfg]`, `#[ignore]`, doc comments), which stay on the generated
+//! dispatch function where libtest and rustdoc can see them.
 
 extern crate proc_macro;
 
@@ -85,66 +91,162 @@ struct BackendInfo {
     explicit: bool,
 }
 
-fn parse_in_vm_backend(attr: TokenStream) -> syn::Result<BackendInfo> {
+/// Everything `#[n_vm::test(...)]` accepts in its own argument list: the
+/// hypervisor backend plus the guest-tier tokio runtime shape.
+///
+/// The runtime options live here rather than on a companion
+/// `#[tokio::test]` because this macro *is* the test attribute -- there is
+/// no second attribute left to read them from.
+struct TestArgs {
+    backend: BackendInfo,
+    runtime: RuntimeConfig,
+}
+
+#[derive(Default)]
+struct RuntimeConfig {
+    multi_thread: bool,
+    worker_threads: Option<usize>,
+    /// Span of the option that asked for a multi-threaded runtime, so a
+    /// `worker_threads` without `multi_thread` can be reported precisely.
+    workers_span: Option<proc_macro2::Span>,
+}
+
+fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
+    let mut backend: Option<BackendInfo> = None;
+    let mut runtime = RuntimeConfig::default();
+
     if attr.is_empty() {
-        return Ok(BackendInfo {
-            name: DEFAULT_BACKEND_NAME,
-            explicit: false,
+        return Ok(TestArgs {
+            backend: BackendInfo {
+                name: DEFAULT_BACKEND_NAME,
+                explicit: false,
+            },
+            runtime,
         });
     }
 
     use syn::parse::Parser;
-    let parser = syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated;
-    let punctuated = parser.parse(attr).map_err(|_| {
+    let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
+    let metas = parser.parse(attr).map_err(|_| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
             format!(
-                "#[in_vm] expects an optional backend identifier; \
-                 valid backends are: {}",
+                "#[n_vm::test] expects an optional backend identifier and \
+                 runtime options; valid backends are: {}; runtime options \
+                 are `current_thread`, `multi_thread`, `worker_threads = N`",
                 known_backend_list(),
             ),
         )
     })?;
 
-    let idents: Vec<syn::Ident> = punctuated.into_iter().collect();
+    for meta in metas {
+        match &meta {
+            syn::Meta::Path(path) => {
+                let Some(ident) = path.get_ident() else {
+                    return Err(syn::Error::new_spanned(path, unknown_option_msg("")));
+                };
+                let name = ident.to_string();
 
-    if idents.len() > 1 {
-        return Err(syn::Error::new_spanned(
-            &idents[1],
-            "only one backend identifier is allowed in #[in_vm]; \
-             VM options have moved to companion attributes \
-             (#[hypervisor(...)], #[guest(...)], #[network(...)])",
+                match name.as_str() {
+                    "current_thread" => runtime.multi_thread = false,
+                    "multi_thread" => runtime.multi_thread = true,
+                    _ => {
+                        if let Some(hint) = migration_hint(&name) {
+                            return Err(syn::Error::new_spanned(
+                                ident,
+                                format!(
+                                    "`{name}` has moved out of #[n_vm::test(...)] -- \
+                                     use {hint} instead",
+                                ),
+                            ));
+                        }
+                        let Some((resolved, _path)) = resolve_backend(&name) else {
+                            return Err(syn::Error::new_spanned(ident, unknown_option_msg(&name)));
+                        };
+                        if let Some(prev) = &backend {
+                            return Err(syn::Error::new_spanned(
+                                ident,
+                                format!(
+                                    "duplicate backend in #[n_vm::test]: `{prev}` was \
+                                     already selected; only one backend is allowed",
+                                    prev = prev.name,
+                                ),
+                            ));
+                        }
+                        backend = Some(BackendInfo {
+                            name: resolved,
+                            explicit: true,
+                        });
+                    }
+                }
+            }
+            syn::Meta::NameValue(nv) => {
+                if nv.path.is_ident("worker_threads") {
+                    let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(int),
+                        ..
+                    }) = &nv.value
+                    else {
+                        return Err(syn::Error::new_spanned(
+                            &nv.value,
+                            "worker_threads must be an integer literal",
+                        ));
+                    };
+                    runtime.worker_threads = Some(int.base10_parse()?);
+                    runtime.workers_span = Some(nv.path.segments[0].ident.span());
+                } else {
+                    let name = nv
+                        .path
+                        .get_ident()
+                        .map(ToString::to_string)
+                        .unwrap_or_default();
+                    return Err(syn::Error::new_spanned(&nv.path, unknown_option_msg(&name)));
+                }
+            }
+            syn::Meta::List(list) => {
+                let name = list
+                    .path
+                    .get_ident()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                return Err(syn::Error::new_spanned(
+                    &list.path,
+                    unknown_option_msg(&name),
+                ));
+            }
+        }
+    }
+
+    // `worker_threads` only means anything to the multi-threaded scheduler;
+    // silently ignoring it on a current-thread runtime would misrepresent
+    // what the test actually runs on.
+    if runtime.worker_threads.is_some() && !runtime.multi_thread {
+        return Err(syn::Error::new(
+            runtime
+                .workers_span
+                .unwrap_or_else(proc_macro2::Span::call_site),
+            "worker_threads requires `multi_thread`; a current-thread \
+             runtime has no worker pool to size",
         ));
     }
 
-    let ident = &idents[0];
-    let ident_str = ident.to_string();
+    Ok(TestArgs {
+        backend: backend.unwrap_or(BackendInfo {
+            name: DEFAULT_BACKEND_NAME,
+            explicit: false,
+        }),
+        runtime,
+    })
+}
 
-    if let Some(hint) = migration_hint(&ident_str) {
-        return Err(syn::Error::new_spanned(
-            ident,
-            format!(
-                "`{ident_str}` has moved out of #[in_vm(...)] -- \
-                 use {hint} instead",
-            ),
-        ));
-    }
-
-    if let Some((name, _path)) = resolve_backend(&ident_str) {
-        Ok(BackendInfo {
-            name,
-            explicit: true,
-        })
-    } else {
-        Err(syn::Error::new_spanned(
-            ident,
-            format!(
-                "unknown #[in_vm] backend `{ident_str}`; \
-                 valid backends are: {}",
-                known_backend_list(),
-            ),
-        ))
-    }
+fn unknown_option_msg(name: &str) -> String {
+    format!(
+        "unknown #[n_vm::test] option `{name}`; expected a backend ({}), \
+         a runtime flavor (`current_thread`, `multi_thread`), or \
+         `worker_threads = N`.  VM options live on companion attributes \
+         (#[hypervisor(...)], #[guest(...)], #[network(...)])",
+        known_backend_list(),
+    )
 }
 
 struct HypervisorArgs {
@@ -407,59 +509,28 @@ fn parse_network_attr(attr: &syn::Attribute) -> syn::Result<NetworkArgs> {
     Ok(args)
 }
 
-#[derive(Default)]
-struct TokioTestConfig {
-    multi_thread: bool,
-    worker_threads: Option<usize>,
-}
-
-fn parse_tokio_test_attr(attr: &syn::Attribute) -> syn::Result<TokioTestConfig> {
-    let mut config = TokioTestConfig::default();
-
-    if matches!(&attr.meta, syn::Meta::Path(_)) {
-        return Ok(config);
-    }
-
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("flavor") {
-            let value: syn::LitStr = meta.value()?.parse()?;
-            match value.value().as_str() {
-                "current_thread" => {
-                    config.multi_thread = false;
-                }
-                "multi_thread" => {
-                    config.multi_thread = true;
-                }
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        &value,
-                        format!(
-                            "unknown tokio runtime flavor `{other}`; \
-                             expected \"current_thread\" or \"multi_thread\"",
-                        ),
-                    ));
-                }
-            }
-            Ok(())
-        } else if meta.path.is_ident("worker_threads") {
-            let lit: syn::LitInt = meta.value()?.parse()?;
-            config.worker_threads = Some(lit.base10_parse()?);
-            Ok(())
-        } else {
-            if meta.input.peek(syn::Token![=]) {
-                let _: syn::Expr = meta.value()?.parse()?;
-            }
-            Ok(())
-        }
-    })?;
-
-    Ok(config)
-}
-
 fn is_tokio_test_attr(attr: &syn::Attribute) -> bool {
     let path = attr.path();
     let segs: Vec<_> = path.segments.iter().collect();
     segs.len() == 2 && segs[0].ident == "tokio" && segs[1].ident == "test"
+}
+
+/// Attributes that libtest (or rustdoc) must see on the generated dispatch
+/// function rather than on the inner guest body.
+///
+/// `cfg` gates whether the test exists at all, `ignore` is read by the test
+/// harness, and doc comments belong on the item a reader navigates to.
+/// Everything else is treated as decorating the *body* -- see the routing
+/// comment in [`test`] for why that default matters.
+///
+/// `cfg_attr` is deliberately body-level: it most often expands to a body
+/// wrapper (`#[cfg_attr(not(emulated), traced_test)]`), and we cannot know
+/// what it expands to from here.  A conditional `ignore` therefore has to be
+/// written as a plain `#[ignore]`.
+const HARNESS_ATTRS: &[&str] = &["cfg", "ignore", "doc"];
+
+fn is_harness_attr(attr: &syn::Attribute) -> bool {
+    HARNESS_ATTRS.iter().any(|name| attr.path().is_ident(name))
 }
 
 const KNOWN_ATTR_PREFIXES: &[&str] = &["n_vm", "n_vm_macros"];
@@ -508,23 +579,57 @@ fn extract_and_parse<T: Default>(
     }
 }
 
-/// Rewrites a `#[test]` or `#[tokio::test]` function to run inside an
-/// ephemeral VM.
+/// Declares a test that runs inside an ephemeral VM.
 ///
-/// Accepts `#[in_vm]`, `#[in_vm(cloud_hypervisor)]`, or `#[in_vm(qemu)]`.
+/// This *is* the test attribute -- it injects `#[test]` itself, so do not
+/// add one.  A `fn` runs its body directly in the guest; an `async fn`
+/// runs on a tokio runtime whose shape comes from this attribute's own
+/// arguments (`current_thread` by default).
+///
+/// ```ignore
+/// #[n_vm::test]                                  // cloud-hypervisor, sync
+/// fn plain() {}
+///
+/// #[n_vm::test(qemu, multi_thread, worker_threads = 4)]
+/// #[hypervisor(iommu, host_pages = "4k")]
+/// async fn fancy() {}
+/// ```
+///
 /// The decorated function must take no parameters and return `()`.
 /// Companion attributes `#[hypervisor]`, `#[guest]`, and `#[network]`
-/// configure the VM when placed below `#[in_vm]`.
+/// configure the VM when placed below this one.
 #[proc_macro_attribute]
-pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let backend = match parse_in_vm_backend(attr) {
-        Ok(info) => info,
+pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let TestArgs { backend, runtime } = match parse_test_args(attr) {
+        Ok(args) => args,
         Err(err) => return err.to_compile_error().into(),
     };
 
     let mut func = parse_macro_input!(input as syn::ItemFn);
 
-    // `#[should_panic]` cannot compose with `#[in_vm]`: the test body runs
+    // This macro owns the test attribute, so a user-written `#[test]` or
+    // `#[tokio::test]` is always a mistake -- and a silent one if we just
+    // dropped it, because `#[tokio::test]` would have carried runtime
+    // options we no longer read.  Reject both with the migration.
+    if let Some(bad) = func
+        .attrs
+        .iter()
+        .find(|a| a.path().is_ident("test") || is_tokio_test_attr(a))
+    {
+        let is_tokio = is_tokio_test_attr(bad);
+        let hint = if is_tokio {
+            "#[n_vm::test] already provides the test harness and the guest \
+             tokio runtime: remove #[tokio::test] and move its options into \
+             #[n_vm::test(...)] (e.g. `#[n_vm::test(multi_thread, \
+             worker_threads = 4)]`)"
+        } else {
+            "#[n_vm::test] already provides the test harness: remove the \
+             #[test] attribute"
+        };
+        return syn::Error::new_spanned(bad, hint).to_compile_error().into();
+    }
+
+    // `#[should_panic]` cannot compose with `#[n_vm::test]`: the test body runs
     // in a separate VM-guest process, and the generated function is run by
     // libtest at all three dispatch tiers (host, container, guest).  A
     // panic is absorbed at whichever tier produces it, so `should_panic`
@@ -538,7 +643,7 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
     {
         return syn::Error::new_spanned(
             attr,
-            "#[should_panic] is not supported with #[in_vm]: the test body runs \
+            "#[should_panic] is not supported with #[n_vm::test]: the test body runs \
              in a separate VM-guest process across three dispatch tiers, so panic \
              semantics do not compose.  Assert the failure condition inside the \
              test body instead (e.g. `assert!(result.is_err())`).",
@@ -549,27 +654,10 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let is_async = func.sig.asyncness.is_some();
 
-    let tokio_config = if let Some(idx) = func.attrs.iter().position(is_tokio_test_attr) {
-        let tokio_attr = func.attrs.remove(idx);
-        let config = match parse_tokio_test_attr(&tokio_attr) {
-            Ok(c) => c,
-            Err(err) => return err.to_compile_error().into(),
-        };
-
-        let has_test_attr = func.attrs.iter().any(|a| a.path().is_ident("test"));
-        if !has_test_attr {
-            func.attrs.push(syn::parse_quote!(#[test]));
-        }
-
-        Some(config)
-    } else {
-        None
-    };
-
     if !func.sig.inputs.is_empty() {
         return syn::Error::new_spanned(
             &func.sig.inputs,
-            "#[in_vm] functions must take no parameters; \
+            "#[n_vm::test] functions must take no parameters; \
              the function is re-invoked by name as `fn()` inside the VM guest",
         )
         .to_compile_error()
@@ -579,7 +667,7 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
     if !matches!(func.sig.output, ReturnType::Default) {
         return syn::Error::new_spanned(
             &func.sig.output,
-            "#[in_vm] functions must return `()`; \
+            "#[n_vm::test] functions must return `()`; \
              the generated dispatch branches use bare `return;` statements",
         )
         .to_compile_error()
@@ -607,7 +695,7 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
             proc_macro2::Span::call_site(),
             format!(
                 "the selected NIC model requires the QEMU backend, but the \
-                 current backend is `{backend}`; use #[in_vm(qemu)] with \
+                 current backend is `{backend}`; use #[n_vm::test(qemu)] with \
                  emulated NIC models like e1000 or e1000e",
                 backend = backend.name,
             ),
@@ -616,25 +704,21 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
         .into();
     }
 
-    // A bare `#[in_vm]` with neither `#[test]` nor `#[tokio::test]` compiles
-    // to an ordinary function that libtest never collects, so the test
-    // silently never runs -- the worst failure mode for a test harness.
-    // Require an explicit test attribute so the mistake is a clear error.
-    // Checked last so the more specific diagnostics above take precedence.
-    if tokio_config.is_none() && !func.attrs.iter().any(|a| a.path().is_ident("test")) {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[in_vm] requires a test attribute: add #[test] (or #[tokio::test]); \
-             without one the generated function is never collected by libtest and \
-             the test silently never runs",
-        )
-        .to_compile_error()
-        .into();
-    }
+    // Split the remaining attributes by which tier they belong to.
+    //
+    // Anything left on the generated dispatch function runs at *every*
+    // tier -- host, container, and guest.  That is wrong for the common
+    // case: `#[wrap(with_caps([CAP_NET_ADMIN]))]` exists precisely because
+    // the body needs privileges it can only have inside the guest, and
+    // running it on the unprivileged host tier fails with EPERM before a VM
+    // is ever started.  So only harness-level attributes (the ones libtest
+    // itself must see) stay outside; everything else moves onto an inner
+    // function that only the guest branch calls.
+    let (harness_attrs, body_attrs): (Vec<_>, Vec<_>) =
+        func.attrs.iter().cloned().partition(is_harness_attr);
 
     let block = &func.block;
     let vis = &func.vis;
-    let attrs = &func.attrs;
     let ident = &func.sig.ident;
 
     let mut sig = func.sig.clone();
@@ -656,33 +740,43 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
     let guest_hugepages = &guest_args.guest_hugepages;
     let nic_model = &network_args.nic_model;
 
-    let tier3_body = if is_async {
-        match tokio_config {
-            Some(TokioTestConfig {
-                multi_thread: true,
-                worker_threads,
-            }) => {
-                let workers = match worker_threads {
-                    Some(n) => quote! { ::core::option::Option::Some(#n) },
-                    None => quote! { ::core::option::Option::None },
-                };
-                quote! {
-                    ::n_vm::block_on_in_guest_multi_thread(
-                        #workers,
-                        async { #block },
-                    );
-                }
+    // The guest body becomes a nested function so that body-level
+    // attributes (`#[wrap(...)]`, `#[traced_test]`, ...) apply to it and
+    // nowhere else.  `async` is preserved on the inner function and driven
+    // by an explicit runtime, since the outer dispatch function is `fn`.
+    let asyncness = if is_async {
+        quote! { async }
+    } else {
+        quote! {}
+    };
+    let invoke_guest_body = if is_async {
+        if runtime.multi_thread {
+            let workers = match runtime.worker_threads {
+                Some(n) => quote! { ::core::option::Option::Some(#n) },
+                None => quote! { ::core::option::Option::None },
+            };
+            quote! {
+                ::n_vm::block_on_in_guest_multi_thread(
+                    #workers,
+                    __n_vm_guest_body(),
+                );
             }
-            _ => {
-                quote! { ::n_vm::block_on_in_guest(async { #block }); }
-            }
+        } else {
+            quote! { ::n_vm::block_on_in_guest(__n_vm_guest_body()); }
         }
     } else {
-        quote! { #block }
+        quote! { __n_vm_guest_body(); }
+    };
+
+    let tier3_body = quote! {
+        #(#body_attrs)*
+        #asyncness fn __n_vm_guest_body() #block
+        #invoke_guest_body
     };
 
     quote! {
-        #(#attrs)*
+        #[test]
+        #(#harness_attrs)*
         #vis #sig {
             // Tier 3: VM guest
             if ::n_vm::is_in_vm() {
@@ -715,16 +809,16 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Companion attribute for hypervisor options consumed by [`in_vm`].
+/// Companion attribute for hypervisor options consumed by [`test`].
 ///
 /// Supports `iommu` and `host_pages = "4k" | "2m" | "1g"`.
 #[proc_macro_attribute]
 pub fn hypervisor(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let error = syn::Error::new(
         proc_macro2::Span::call_site(),
-        "#[hypervisor] must be used together with #[in_vm] and must \
+        "#[hypervisor] must be used together with #[n_vm::test] and must \
          appear below it on the same function; e.g.\n\n\
-         #[in_vm]\n\
+         #[n_vm::test]\n\
          #[hypervisor(iommu, host_pages = \"4k\")]\n\
          fn my_test() { ... }",
     )
@@ -738,7 +832,7 @@ pub fn hypervisor(_attr: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Companion attribute for guest kernel options consumed by [`in_vm`].
+/// Companion attribute for guest kernel options consumed by [`test`].
 ///
 /// Supports `hugepage_size = "none" | "2m" | "1g"` and
 /// `hugepage_count = N`.
@@ -746,9 +840,9 @@ pub fn hypervisor(_attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn guest(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let error = syn::Error::new(
         proc_macro2::Span::call_site(),
-        "#[guest] must be used together with #[in_vm] and must \
+        "#[guest] must be used together with #[n_vm::test] and must \
          appear below it on the same function; e.g.\n\n\
-         #[in_vm]\n\
+         #[n_vm::test]\n\
          #[guest(hugepage_size = \"2m\", hugepage_count = 512)]\n\
          fn my_test() { ... }",
     )
@@ -762,17 +856,17 @@ pub fn guest(_attr: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Companion attribute for network options consumed by [`in_vm`].
+/// Companion attribute for network options consumed by [`test`].
 ///
 /// Supports `nic_model = "virtio_net" | "e1000" | "e1000e"`.
-/// Emulated Intel NICs require `#[in_vm(qemu)]`.
+/// Emulated Intel NICs require `#[n_vm::test(qemu)]`.
 #[proc_macro_attribute]
 pub fn network(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let error = syn::Error::new(
         proc_macro2::Span::call_site(),
-        "#[network] must be used together with #[in_vm] and must \
+        "#[network] must be used together with #[n_vm::test] and must \
          appear below it on the same function; e.g.\n\n\
-         #[in_vm(qemu)]\n\
+         #[n_vm::test(qemu)]\n\
          #[network(nic_model = \"e1000\")]\n\
          fn my_test() { ... }",
     )

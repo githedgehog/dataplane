@@ -88,7 +88,7 @@ pub trait HypervisorBackend: Send + Sized + 'static {
     fn spawn_vsock_reader(channel: &VsockChannel) -> Result<AbortOnDrop<String>, VmError>;
 }
 
-/// The backend a test *requested* (via `#[in_vm]`), before resolving it
+/// The backend a test *requested* (via `#[n_vm::test]`), before resolving it
 /// against the host architecture.
 ///
 /// [`Default`](Self::Default) means the test did not name a backend; it
@@ -99,10 +99,10 @@ pub enum RequestedBackend {
     /// No backend named: prefer cloud-hypervisor, fall back to QEMU/TCG
     /// for a cross-arch guest.
     Default,
-    /// Explicitly `#[in_vm(cloud_hypervisor)]`: cannot emulate, so skipped
+    /// Explicitly `#[n_vm::test(cloud_hypervisor)]`: cannot emulate, so skipped
     /// for a cross-arch guest.
     CloudHypervisor,
-    /// Explicitly `#[in_vm(qemu)]`: emulates a cross-arch guest via TCG.
+    /// Explicitly `#[n_vm::test(qemu)]`: emulates a cross-arch guest via TCG.
     Qemu,
 }
 

@@ -225,8 +225,7 @@ mod test {
         support::{SupportedDevice, SupportedVendor},
     };
 
-    #[test]
-    #[n_vm::in_vm]
+    #[n_vm::test]
     fn collect_them_all_and_bind_them() {
         let system = Node::scan_all();
         let nics: Vec<_> = system
@@ -251,8 +250,7 @@ mod test {
         assert_eq!(nics.len(), 3, "expected exactly 3 virtio network cards");
     }
 
-    #[test]
-    #[n_vm::in_vm]
+    #[n_vm::test]
     fn bind_fabric_nics_and_skip_mgmt_nic() {
         let system = Node::scan_all();
         let mgmt_nic_pci_address = "0000:00:02.0".try_into().unwrap();
@@ -279,8 +277,7 @@ mod test {
         assert_eq!(nics.len(), 2, "expected exactly 2 virtio network cards");
     }
 
-    #[test]
-    #[n_vm::in_vm]
+    #[n_vm::test]
     fn bind_nic_test() {
         let system = Node::scan_all();
         let target_pci_address = "0001:00:02.0".try_into().unwrap();
