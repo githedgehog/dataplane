@@ -5,6 +5,8 @@
 
 use std::path::Path;
 
+use n_vm_protocol::VIRTIOFS_CORPUS_TAG;
+
 use nix::errno::Errno;
 use nix::mount::{MntFlags, MsFlags, mount};
 use nix::unistd::sync;
@@ -109,8 +111,46 @@ pub fn mount_essential_filesystems() -> Result<(), MountError> {
             Err(e) => return Err(e),
         }
     }
+    mount_corpus_share();
     debug!("all essential filesystems mounted successfully");
     Ok(())
+}
+
+/// Mounts the writable corpus share over its read-only counterpart in the
+/// workspace, when the container tier provided one.
+///
+/// The workspace itself arrives over the read-only virtiofs daemon, so this
+/// overmounts a single `__fuzz__` directory with a share from the *writable*
+/// daemon.  The read/write split is therefore enforced by which daemon
+/// serves which path -- nothing the guest does to its own mount flags can
+/// widen it, which is the point: a fuzz target is deliberately provoking
+/// misbehaviour and must not be able to damage the developer's source tree.
+///
+/// Best-effort.  A test whose corpus cannot be mounted still runs; it just
+/// cannot persist new inputs, which is far better than failing the run.
+fn mount_corpus_share() {
+    let Some(target) = crate::corpus_mount() else {
+        return;
+    };
+
+    // The mount point comes from the read-only workspace share, so it exists
+    // only if the host actually created the directory.
+    if !Path::new(target).is_dir() {
+        warn!("corpus mount point {target} does not exist in the guest; skipping");
+        return;
+    }
+
+    debug!("mounting writable corpus share at {target}");
+    match nix::mount::mount(
+        Some(VIRTIOFS_CORPUS_TAG),
+        target,
+        Some("virtiofs"),
+        nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
+        None::<&str>,
+    ) {
+        Ok(()) => debug!("corpus share mounted read-write at {target}"),
+        Err(e) => warn!("failed to mount corpus share at {target}: {e}"),
+    }
 }
 
 /// Performs a single mount with security flags, optionally creating the
