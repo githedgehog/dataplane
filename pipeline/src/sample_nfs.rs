@@ -19,7 +19,7 @@ use tracectl::tdebug;
 use tracing::{debug, trace};
 
 const PKT_DUMP_TARGET: &str = "pkt-dump";
-custom_target!(PKT_DUMP_TARGET, LevelFilter::OFF, &["pipeline"]);
+custom_target!(PKT_DUMP_TARGET, LevelFilter::OFF, &[]);
 
 /// Network function that uses [`debug!`] to print the parsed packet headers.
 pub struct InspectHeaders;
