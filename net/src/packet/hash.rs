@@ -38,7 +38,16 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                         udp.source().hash(state);
                         udp.destination().hash(state);
                     }
-                    &Transport::Icmp4(_) | &Transport::Icmp6(_) => {}
+                    Transport::Icmp4(icmp4) => {
+                        if let Some(id) = icmp4.identifier() {
+                            id.hash(state);
+                        }
+                    }
+                    Transport::Icmp6(icmp6) => {
+                        if let Some(id) = icmp6.identifier() {
+                            id.hash(state);
+                        }
+                    }
                 }
             }
         }
