@@ -47,7 +47,6 @@ use match_action::{
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use net::vxlan::Vni;
-#[cfg(test)]
 use std::cmp::Reverse;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -188,17 +187,40 @@ pub(super) enum Backend {
     Reference,
 }
 
-/// One backend-neutral, already-lowered rule: priority, field predicates, action.
-struct NeutralRule<A> {
+/// One backend-neutral, already-lowered rule.
+///
+/// `fields` is the erased form the backends consume; `rule` is the same rule with its field types
+/// intact, which is what the table retains for the CLI (see [`RuleRow`]).
+struct NeutralRule<K: MatchKey, A> {
     priority: u32,
     fields: Vec<FieldPredicate>,
+    rule: K::Rule,
     action: A,
 }
 
-/// A built table. The `Dpdk` variant is production (and exposes `lookup_batch` for the batched
+/// One retained rule, in match order. Keeping the *typed* rule (rather than the erased predicates,
+/// or nothing at all) is what lets the CLI render a VNI as a VNI and a protocol as `TCP`, without
+/// decoding bytes or trusting field position.
+pub(super) struct RuleRow<K: MatchKey, A> {
+    pub(super) priority: u32,
+    pub(super) rule: K::Rule,
+    pub(super) action: A,
+}
+
+/// A built table: a classifier plus the rules it was built from.
+///
+/// The rules are retained unconditionally. An rte_acl context is opaque once built -- it cannot be
+/// asked what is in it -- so without this the production CLI can only report a rule count, which is
+/// precisely the situation in which an operator most wants the rules.
+pub(super) struct AnyTable<K: MatchKey, A> {
+    classifier: Classifier<K, A>,
+    rules: Box<[RuleRow<K, A>]>,
+}
+
+/// The classifier backing a table. `Dpdk` is production (and exposes `lookup_batch` for the batched
 /// fast path); `Reference` is the test/opt-in linear-scan oracle; `Empty` matches nothing.
 #[allow(clippy::large_enum_variant)] // backend reprs differ in size; boxing would add a hot-path indirection
-pub(super) enum AnyTable<K: MatchKey, A> {
+enum Classifier<K: MatchKey, A> {
     /// No rules: every lookup misses. Used for the default context and zero-rule tables (avoids
     /// asking rte_acl to build an empty context).
     Empty,
@@ -208,26 +230,34 @@ pub(super) enum AnyTable<K: MatchKey, A> {
 }
 
 impl<K: MatchKey, A> AnyTable<K, A> {
+    /// A table that matches nothing.
+    pub(super) fn empty() -> Self {
+        Self {
+            classifier: Classifier::Empty,
+            rules: Box::new([]),
+        }
+    }
+
     // Single-key lookup: only the test oracle uses it (production runs lookup_batch()).
     #[cfg(test)]
     fn lookup(&self, key: &K) -> Option<&A> {
-        match self {
-            AnyTable::Empty => None,
-            AnyTable::Dpdk(table) => table.lookup(key),
-            AnyTable::Reference(table) => table.lookup(key),
+        match &self.classifier {
+            Classifier::Empty => None,
+            Classifier::Dpdk(table) => table.lookup(key),
+            Classifier::Reference(table) => table.lookup(key),
         }
     }
 
     /// Classify a batch of keys (`keys.len() <= MAX_BATCH`, `out.len() == keys.len()`), writing one
     /// result per key. The `Dpdk` backend does this in a single rte_acl call; the others loop.
     fn lookup_batch<'a>(&'a self, keys: &[K], out: &mut [Option<&'a A>]) {
-        match self {
-            AnyTable::Empty => out.iter_mut().for_each(|slot| *slot = None),
-            AnyTable::Dpdk(table) => table
+        match &self.classifier {
+            Classifier::Empty => out.iter_mut().for_each(|slot| *slot = None),
+            Classifier::Dpdk(table) => table
                 .lookup_batch(keys, out)
                 .expect("caller chunks to MAX_BATCH with a matching output length"),
             #[cfg(test)]
-            AnyTable::Reference(table) => {
+            Classifier::Reference(table) => {
                 for (key, slot) in keys.iter().zip(out.iter_mut()) {
                     *slot = table.lookup(key);
                 }
@@ -236,31 +266,22 @@ impl<K: MatchKey, A> AnyTable<K, A> {
     }
 
     pub(super) fn len(&self) -> usize {
-        match self {
-            AnyTable::Empty => 0,
-            AnyTable::Dpdk(table) => table.actions().len(),
-            #[cfg(test)]
-            AnyTable::Reference(table) => table.len(),
-        }
+        self.rules.len()
     }
 
-    /// The reference-backend rules, for display; `None` for the (opaque) rte_acl / empty tables.
-    #[cfg(test)]
-    pub(super) fn reference_rules(&self) -> Option<&[RefRule<A>]> {
-        match self {
-            AnyTable::Reference(table) => Some(table.rules()),
-            _ => None,
-        }
+    /// The rules this table was built from, highest priority (= match order) first.
+    pub(super) fn rules(&self) -> &[RuleRow<K, A>] {
+        &self.rules
     }
 }
 
 impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self {
-            AnyTable::Empty => "empty",
-            AnyTable::Dpdk(_) => "dpdk",
+        let kind = match self.classifier {
+            Classifier::Empty => "empty",
+            Classifier::Dpdk(_) => "dpdk",
             #[cfg(test)]
-            AnyTable::Reference(_) => "reference",
+            Classifier::Reference(_) => "reference",
         };
         write!(f, "AnyTable::{kind}({} rules)", self.len())
     }
@@ -281,17 +302,33 @@ fn table_name(base: &str) -> String {
 }
 
 /// Build one table from backend-neutral rules using the selected backend.
-fn build_table<K: MatchKey, A>(
+fn build_table<K: MatchKey, A: Copy>(
     backend: Backend,
     base_name: &str,
-    rules: Vec<NeutralRule<A>>,
-) -> Result<AnyTable<K, A>, String> {
-    match backend {
+    mut rules: Vec<NeutralRule<K, A>>,
+) -> Result<AnyTable<K, A>, String>
+where
+    K::Rule: Copy,
+{
+    // Descending priority is match order. The reference backend needs it (it is first-match, so
+    // this is what reproduces rte_acl's highest-priority-wins), and the CLI dump reads top-down.
+    // rte_acl takes each priority explicitly, so the order is immaterial to it.
+    rules.sort_by_key(|rule| Reverse(rule.priority));
+    let rows: Box<[RuleRow<K, A>]> = rules
+        .iter()
+        .map(|rule| RuleRow {
+            priority: rule.priority,
+            rule: rule.rule,
+            action: rule.action,
+        })
+        .collect();
+
+    let classifier = match backend {
         Backend::Dpdk => {
             // A zero-rule table matches nothing; represent it as Empty rather than asking rte_acl
             // to build an empty context
             if rules.is_empty() {
-                return Ok(AnyTable::Empty);
+                return Ok(AnyTable::empty());
             }
             let specs = K::field_specs();
             let max = NonZero::new(u32::try_from(rules.len()).unwrap_or(u32::MAX)).unwrap();
@@ -317,22 +354,22 @@ fn build_table<K: MatchKey, A>(
                 );
             }
             install_table::<K, A>(&table_name(base_name), max, specs_out)
-                .map(AnyTable::Dpdk)
-                .map_err(|e| e.to_string())
+                .map(Classifier::Dpdk)
+                .map_err(|e| e.to_string())?
         }
         #[cfg(test)]
         Backend::Reference => {
-            // The reference backend is first-match on insertion order; sort descending by priority
-            // so first-match reproduces rte_acl's highest-priority-wins (longest-prefix-match)
-            let mut rules = rules;
-            rules.sort_by_key(|r| Reverse(r.priority));
             let rules = rules
                 .into_iter()
                 .map(|r| RefRule::new(r.fields, r.action))
                 .collect();
-            Ok(AnyTable::Reference(ReferenceTable::new(rules)))
+            Classifier::Reference(ReferenceTable::new(rules))
         }
-    }
+    };
+    Ok(AnyTable {
+        classifier,
+        rules: rows,
+    })
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -356,8 +393,8 @@ fn rule_priority(ip_range: Prefix, port_forwarding: bool) -> u32 {
 /// Lower a stage-1 (remote) rule into the v4 or v6 bucket according to its prefix.
 #[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
 fn emit_remote(
-    v4: &mut Vec<NeutralRule<Verdict>>,
-    v6: &mut Vec<NeutralRule<Verdict>>,
+    v4: &mut Vec<NeutralRule<RemoteKey<Ipv4Addr>, Verdict>>,
+    v6: &mut Vec<NeutralRule<RemoteKey<Ipv6Addr>, Verdict>>,
     src_vni: Vni,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
@@ -370,30 +407,30 @@ fn emit_remote(
     );
     match ip_range {
         Prefix::IPV4(prefix) => {
-            let fields = RemoteKeyRule::<Ipv4Addr> {
+            let rule = RemoteKeyRule::<Ipv4Addr> {
                 proto: MaskSpec::from((proto_value, proto_mask)),
                 src_vni: ExactSpec::new(src_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
-            }
-            .into_backend_fields::<Erased>();
+            };
             v4.push(NeutralRule {
                 priority,
-                fields,
+                fields: rule.into_backend_fields::<Erased>(),
+                rule,
                 action,
             });
         }
         Prefix::IPV6(prefix) => {
-            let fields = RemoteKeyRule::<Ipv6Addr> {
+            let rule = RemoteKeyRule::<Ipv6Addr> {
                 proto: MaskSpec::from((proto_value, proto_mask)),
                 src_vni: ExactSpec::new(src_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
-            }
-            .into_backend_fields::<Erased>();
+            };
             v6.push(NeutralRule {
                 priority,
-                fields,
+                fields: rule.into_backend_fields::<Erased>(),
+                rule,
                 action,
             });
         }
@@ -403,8 +440,8 @@ fn emit_remote(
 /// Lower a stage-2 (local) rule into the v4 or v6 bucket according to its prefix.
 #[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
 fn emit_local(
-    v4: &mut Vec<NeutralRule<NatMode>>,
-    v6: &mut Vec<NeutralRule<NatMode>>,
+    v4: &mut Vec<NeutralRule<LocalKey<Ipv4Addr>, NatMode>>,
+    v6: &mut Vec<NeutralRule<LocalKey<Ipv6Addr>, NatMode>>,
     src_vni: Vni,
     dst_vni: Vni,
     ip_range: Prefix,
@@ -417,32 +454,32 @@ fn emit_local(
     let priority = rule_priority(ip_range, false);
     match ip_range {
         Prefix::IPV4(prefix) => {
-            let fields = LocalKeyRule::<Ipv4Addr> {
+            let rule = LocalKeyRule::<Ipv4Addr> {
                 proto: MaskSpec::from((proto_value, proto_mask)),
                 src_vni: ExactSpec::new(src_vni),
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
-            }
-            .into_backend_fields::<Erased>();
+            };
             v4.push(NeutralRule {
                 priority,
-                fields,
+                fields: rule.into_backend_fields::<Erased>(),
+                rule,
                 action,
             });
         }
         Prefix::IPV6(prefix) => {
-            let fields = LocalKeyRule::<Ipv6Addr> {
+            let rule = LocalKeyRule::<Ipv6Addr> {
                 proto: MaskSpec::from((proto_value, proto_mask)),
                 src_vni: ExactSpec::new(src_vni),
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
-            }
-            .into_backend_fields::<Erased>();
+            };
             v6.push(NeutralRule {
                 priority,
-                fields,
+                fields: rule.into_backend_fields::<Erased>(),
+                rule,
                 action,
             });
         }
@@ -451,10 +488,10 @@ fn emit_local(
 
 #[derive(Default)]
 struct RuleSet {
-    remote_v4: Vec<NeutralRule<Verdict>>,
-    remote_v6: Vec<NeutralRule<Verdict>>,
-    local_v4: Vec<NeutralRule<NatMode>>,
-    local_v6: Vec<NeutralRule<NatMode>>,
+    remote_v4: Vec<NeutralRule<RemoteKey<Ipv4Addr>, Verdict>>,
+    remote_v6: Vec<NeutralRule<RemoteKey<Ipv6Addr>, Verdict>>,
+    local_v4: Vec<NeutralRule<LocalKey<Ipv4Addr>, NatMode>>,
+    local_v6: Vec<NeutralRule<LocalKey<Ipv6Addr>, NatMode>>,
 }
 
 impl RuleSet {
@@ -565,10 +602,10 @@ pub struct FlowFilterContext {
 impl Default for FlowFilterContext {
     fn default() -> Self {
         Self {
-            remote_v4: AnyTable::Empty,
-            local_v4: AnyTable::Empty,
-            remote_v6: AnyTable::Empty,
-            local_v6: AnyTable::Empty,
+            remote_v4: AnyTable::empty(),
+            local_v4: AnyTable::empty(),
+            remote_v6: AnyTable::empty(),
+            local_v6: AnyTable::empty(),
         }
     }
 }

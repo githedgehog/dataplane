@@ -6,6 +6,7 @@
 #![cfg(test)]
 
 use super::LookupResult;
+use super::tables::RuleRow;
 use crate::test_utils::*;
 use crate::{FlowFilterContext, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
@@ -565,16 +566,12 @@ fn discrepancy_overlapping_contiguous_prefixes() {
     assert_eq!(r.dst_nat, None);
 
     // Check there are no /32 prefixes in the remote-side rules
-    let rules = ctx.remote_v4.reference_rules().unwrap();
-    for rule in rules {
-        let dst_prefix = rule.fields()[2].as_prefix().unwrap();
-        assert_ne!(dst_prefix.1, 32);
+    for RuleRow { rule, .. } in ctx.remote_v4.rules() {
+        assert_ne!(rule.dst_ip.len, 32);
     }
     // Check there are no /32 prefixes in the local-side rules
-    let rules = ctx.local_v4.reference_rules().unwrap();
-    for rule in rules {
-        let src_prefix = rule.fields()[3].as_prefix().unwrap();
-        assert_ne!(src_prefix.1, 32);
+    for RuleRow { rule, .. } in ctx.local_v4.rules() {
+        assert_ne!(rule.src_ip.len, 32);
     }
 }
 
@@ -756,4 +753,52 @@ fn reference_and_dpdk_backends_agree() {
         );
         assert_eq!(ref_out[i], single, "batched != single at index {i}");
     }
+}
+
+/// The CLI dump is produced from the retained (typed) rules, not from the classifier, so the
+/// opaque production backend must render exactly what the reference oracle renders. If these ever
+/// diverge, the rendering has started depending on the backend again -- which is the state that
+/// left the production CLI able to report only a rule count.
+#[test]
+#[dpdk::with_eal]
+fn display_is_identical_across_backends() {
+    use super::tables::{Backend, FlowFilterContext};
+
+    let ov = overlay(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            (
+                "vpc2",
+                vec![
+                    expose("90.0.0.0/24"),
+                    expose_masquerade("192.168.70.0/24", "70.0.0.0/24"),
+                    expose_port_forwarding(
+                        "192.168.80.5/32",
+                        (22, 22),
+                        "80.0.0.5/32",
+                        (2222, 2222),
+                        Some(L4Protocol::Tcp),
+                    ),
+                ],
+            ),
+        )],
+    );
+
+    let reference = FlowFilterContext::build(&ov, Backend::Reference).expect("reference build");
+    let dpdk = FlowFilterContext::build(&ov, Backend::Dpdk).expect("dpdk build");
+    assert_eq!(reference.to_string(), dpdk.to_string());
+
+    // Each field is rendered by its own type: a VNI as a VNI, a protocol by keyword, a wildcard
+    // mask as `*` -- none of it decoded from erased bytes.
+    let dump = dpdk.to_string();
+    assert!(
+        dump.contains("proto=TCP, src_vni=100, dst_ip=80.0.0.5/32, dst_port=2222"),
+        "unexpected rule rendering:\n{dump}"
+    );
+    assert!(
+        dump.contains("-> VNI(200), NAT: port-forwarding"),
+        "unexpected action rendering:\n{dump}"
+    );
 }

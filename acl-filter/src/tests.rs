@@ -1053,6 +1053,45 @@ mod dpdk_backend {
         );
     }
 
+    /// The CLI dump is produced from the retained (typed) rules, not from the classifier, so the
+    /// opaque production backend must render exactly what the reference oracle renders. If these
+    /// ever diverge, the rendering has started depending on the backend again -- the state that
+    /// left the production CLI able to report only a rule count.
+    #[test]
+    #[dpdk::with_eal]
+    fn display_is_identical_across_backends() {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![rule(
+                "allow-tcp",
+                AclAction::Allow,
+                AclScope::Packet,
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            )],
+        );
+        let overlay = overlay(
+            &[("vpc1", VNI1), ("vpc2", VNI2)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose(V1_IPS)]),
+                ("vpc2", vec![expose(V2_IPS)]),
+                Some(acl),
+            )],
+        );
+
+        let reference = AclFilterContext::for_test(&overlay);
+        let dpdk = AclFilterContext::for_test_dpdk(&overlay).expect("rte_acl backend build");
+        assert_eq!(reference.to_string(), dpdk.to_string());
+
+        // Each field is rendered by its own type -- a protocol by keyword, a VNI as a VNI -- rather
+        // than decoded out of erased bytes by field position.
+        let dump = dpdk.to_string();
+        assert!(
+            dump.contains(&format!("proto=TCP, src_vni={VNI1}, dst_vni={VNI2}")),
+            "unexpected rule rendering:\n{dump}"
+        );
+    }
+
     #[test]
     #[dpdk::with_eal]
     fn dpdk_agrees_with_reference() {
