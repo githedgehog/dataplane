@@ -5,11 +5,21 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use fixed_size::FixedSize;
 
+use crate::ip::NextHeader;
 use crate::ipv4::UnicastIpv4Addr;
 use crate::ipv6::UnicastIpv6Addr;
 use crate::tcp::TcpPort;
 use crate::udp::UdpPort;
 use crate::vxlan::Vni;
+
+/// One byte, and exactly the wire byte: an IP protocol number is 8 bits wherever it appears.
+/// (Contrast [`Vni`] below, whose key encoding is padded.)
+impl FixedSize for NextHeader {
+    const SIZE: usize = 1;
+    fn write_be(&self, out: &mut [u8]) {
+        self.as_u8().write_be(out);
+    }
+}
 
 impl FixedSize for TcpPort {
     const SIZE: usize = 2;
@@ -40,6 +50,15 @@ impl FixedSize for UnicastIpv6Addr {
     }
 }
 
+/// The VNI right-aligned in **4** big-endian bytes, leading byte always zero.
+///
+/// # Note
+///
+/// This is deliberately *not* the VXLAN wire encoding, which is 24 bits (3 bytes). `FixedSize`
+/// exists to lay values out as classifier (match/action) key fields, and a classifier field must
+/// be 1, 2, or 4 bytes wide -- `rte_acl` rejects anything else when the table is built -- so there
+/// is no 3-byte option to pick. Do not reach for [`FixedSize::write_be`] to serialize a VXLAN
+/// header: it will write a byte too many.
 impl FixedSize for Vni {
     const SIZE: usize = 4;
     fn write_be(&self, out: &mut [u8]) {
@@ -72,6 +91,14 @@ mod tests {
             .unwrap()
             .write_be(&mut buf);
         assert_eq!(buf, [10, 0, 1, 2]);
+    }
+
+    #[test]
+    fn next_header_writes_one_wire_byte() {
+        assert_eq!(<NextHeader as FixedSize>::SIZE, 1);
+        let mut buf = [0u8; 1];
+        NextHeader::TCP.write_be(&mut buf);
+        assert_eq!(buf, [NextHeader::TCP.as_u8()]);
     }
 
     #[test]
