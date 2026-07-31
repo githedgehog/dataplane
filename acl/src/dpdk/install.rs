@@ -7,7 +7,7 @@ use match_action::MatchKey;
 
 use crate::dpdk::dyn_table::{DynInstallError, DynRuleSpec, dispatch_build_classifier};
 use crate::dpdk::layout::{LayoutError, plan_layout};
-use crate::dpdk::lookup::{DpdkAclLookup, MAX_USER_KEY_BYTES, StrideTooSmall};
+use crate::dpdk::lookup::{DpdkAclLookup, MAX_USER_KEY_BYTES, StrideError};
 use crate::dpdk::rule::RuleSpec;
 
 /// Install a typed ACL table.
@@ -57,5 +57,5 @@ pub enum InstallError {
     #[error(transparent)]
     Build(#[from] DynInstallError),
     #[error(transparent)]
-    Stride(#[from] StrideTooSmall),
+    Stride(#[from] StrideError),
 }

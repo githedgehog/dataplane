@@ -252,7 +252,26 @@ fn chunk_shape_checked(size: usize, user_index: usize) -> Result<(u32, usize), L
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dpdk::lookup::MAX_USER_KEY_BYTES;
     use dpdk::acl::AclBuildConfig;
+
+    /// No layout this planner can emit can outgrow the lookup path's key buffers.
+    ///
+    /// `DpdkAclLookup::new` rejects such a layout, so this is not the thing standing between us
+    /// and an out-of-bounds access -- it is what keeps that rejection unreachable. The margin is
+    /// zero (`4 * MAX_FIELDS == MAX_USER_KEY_BYTES` exactly), so raising `MAX_FIELDS` or lowering
+    /// `MAX_USER_KEY_BYTES` by any amount starts failing table builds at runtime. Fail here
+    /// instead, at the constants, where the fix is obvious.
+    #[test]
+    fn planner_can_never_outgrow_the_lookup_key_buffers() {
+        // Every def advances the stride by at most 4 bytes, and there are at most MAX_FIELDS defs.
+        let worst_case_stride = 4 * MAX_FIELDS;
+        assert!(
+            worst_case_stride <= MAX_USER_KEY_BYTES,
+            "a maximal layout ({worst_case_stride} bytes) would exceed the lookup key buffer \
+             ({MAX_USER_KEY_BYTES} bytes): raise MAX_USER_KEY_BYTES to match 4 * MAX_FIELDS",
+        );
+    }
 
     fn spec(name: &'static str, kind: FieldKind, size: usize, offset: usize) -> FieldSpec {
         FieldSpec {
