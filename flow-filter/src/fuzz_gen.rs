@@ -122,17 +122,85 @@ impl ExposeSpec {
     }
 }
 
+/// An exclusion (`not` / `not_as`) punched out of an expose's block.
+///
+/// Exclusions are collapsed away during validation: `VpcExpose::validate` subtracts them and
+/// normalizes, so a `ValidatedExpose` carries a *fan* of disjoint prefixes of differing lengths
+/// rather than the one block that was written. That fan is the input shape the rest of the crate
+/// most depends on and least often sees -- `rule_priority` orders purely by prefix length, and its
+/// correctness rests on config guaranteeing that rules which can both match a packet never share
+/// one. A block with a single host punched out expands to prefixes of every length from /25 to /32
+/// at once, which is as hard as that ordering gets.
+///
+/// Every variant stays inside the block's upper half. Host `.1` of every block must survive,
+/// because [`derive_routing_probes`] aims its guaranteed-routing probes there, and an exclusion
+/// that swallowed it would turn those probes into misses.
+#[derive(Debug, Clone, Copy, TypeGenerator)]
+pub(crate) enum ExcludeSel {
+    None,
+    /// The block's upper half (a `/25`, or `/121` for v6).
+    UpperHalf,
+    /// The block's second quarter, leaving runs on both sides of the hole.
+    SecondQuarter,
+    /// A single host in the upper half: the widest fan of prefix lengths a single exclusion can
+    /// produce.
+    UpperHost(u8),
+}
+
+impl ExcludeSel {
+    /// The prefix to exclude from block `n`, or `None` to leave the block whole.
+    fn resolve(self, n: u8, public: bool, v6: bool) -> Option<String> {
+        let (net4, net6) = if public { (20, "db9") } else { (10, "db8") };
+        Some(match (self, v6) {
+            (ExcludeSel::None, _) => return None,
+            (ExcludeSel::UpperHalf, false) => format!("{net4}.{n}.0.128/25"),
+            (ExcludeSel::UpperHalf, true) => format!("2001:{net6}:0:{n:x}::80/121"),
+            (ExcludeSel::SecondQuarter, false) => format!("{net4}.{n}.0.64/26"),
+            (ExcludeSel::SecondQuarter, true) => format!("2001:{net6}:0:{n:x}::40/122"),
+            // Force the host into the upper half so that host .1 (and the nested port-forwarding
+            // host, FW_HOST) are never the one removed.
+            (ExcludeSel::UpperHost(h), false) => {
+                format!("{net4}.{n}.0.{}/32", h | 0x80)
+            }
+            (ExcludeSel::UpperHost(h), true) => {
+                format!("2001:{net6}:0:{n:x}::{:x}/128", h | 0x80)
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, TypeGenerator)]
+pub(crate) struct ExposeEntry {
+    spec: ExposeSpec,
+    /// Punched out of this expose's block(s). Ignored for port forwarding, which config forbids
+    /// exclusions on outright.
+    exclude: ExcludeSel,
+}
+
+impl ExposeEntry {
+    const fn plain() -> Self {
+        Self {
+            spec: ExposeSpec::Plain,
+            exclude: ExcludeSel::None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, TypeGenerator)]
 pub(crate) struct ManifestSpec {
     /// Up to two expose specs (some expand to two actual exposes).
-    exposes: [Option<ExposeSpec>; 2],
+    exposes: [Option<ExposeEntry>; 2],
     /// Whether the manifest carries a default (catch-all) expose.
     default: bool,
 }
 
 impl ManifestSpec {
-    fn expose_specs(&self) -> impl Iterator<Item = ExposeSpec> + '_ {
+    fn entries(&self) -> impl Iterator<Item = ExposeEntry> + '_ {
         self.exposes.iter().flatten().copied()
+    }
+
+    fn expose_specs(&self) -> impl Iterator<Item = ExposeSpec> + '_ {
+        self.entries().map(|entry| entry.spec)
     }
 
     fn is_empty(&self) -> bool {
@@ -153,8 +221,8 @@ impl ManifestSpec {
     /// stateful and static NAT, which is the sole case in which the NF retains a flow key.
     fn strip_stateful_nat(&mut self) {
         for slot in self.exposes.iter_mut().flatten() {
-            if slot.is_stateful() {
-                *slot = ExposeSpec::StaticNat;
+            if slot.spec.is_stateful() {
+                slot.spec = ExposeSpec::StaticNat;
             }
         }
     }
@@ -162,7 +230,7 @@ impl ManifestSpec {
     fn drop_default(&mut self) {
         self.default = false;
         if self.is_empty() {
-            self.exposes[0] = Some(ExposeSpec::Plain);
+            self.exposes[0] = Some(ExposeEntry::plain());
         }
     }
 }
@@ -199,11 +267,11 @@ impl OverlaySpec {
             spec.peerings[0] = Some(PeeringSpec {
                 v6: false,
                 local: ManifestSpec {
-                    exposes: [Some(ExposeSpec::Plain), None],
+                    exposes: [Some(ExposeEntry::plain()), None],
                     default: false,
                 },
                 remote: ManifestSpec {
-                    exposes: [Some(ExposeSpec::Plain), None],
+                    exposes: [Some(ExposeEntry::plain()), None],
                     default: false,
                 },
             });
@@ -211,7 +279,7 @@ impl OverlaySpec {
         for peering in spec.peerings.iter_mut().flatten() {
             for manifest in [&mut peering.local, &mut peering.remote] {
                 if manifest.is_empty() {
-                    manifest.exposes[0] = Some(ExposeSpec::Plain);
+                    manifest.exposes[0] = Some(ExposeEntry::plain());
                 }
             }
             // A default expose cannot face another default expose within one peering.
@@ -332,19 +400,27 @@ fn vpc_name(index: usize) -> String {
 
 fn build_manifest(vpc_name: &str, spec: &ManifestSpec, v6: bool, blocks: &mut u8) -> VpcManifest {
     let mut exposes = Vec::new();
-    for expose_spec in spec.expose_specs() {
+    for entry in spec.entries() {
         let n = *blocks;
         *blocks += 1;
-        match expose_spec {
-            ExposeSpec::Plain => exposes.push(plain(n, v6)),
-            ExposeSpec::StaticNat => exposes.push(static_nat(n, v6)),
-            ExposeSpec::Masquerade => exposes.push(masquerade(n, v6)),
+        let exclude = entry.exclude;
+        match entry.spec {
+            ExposeSpec::Plain => exposes.push(excluding(plain(n, v6), n, v6, exclude)),
+            ExposeSpec::StaticNat => {
+                exposes.push(excluding_both(static_nat(n, v6), n, v6, exclude));
+            }
+            ExposeSpec::Masquerade => {
+                exposes.push(excluding_both(masquerade(n, v6), n, v6, exclude));
+            }
+            // Port forwarding forbids exclusion prefixes outright, so only the masquerade half of
+            // these pairs takes one -- which is also what keeps the nested overlap intact, since
+            // every exclusion stays in the block's upper half and FW_HOST is in the lower.
             ExposeSpec::MasqueradeNestingPortFw(proto) => {
-                exposes.push(masquerade(n, v6));
+                exposes.push(excluding_both(masquerade(n, v6), n, v6, exclude));
                 exposes.push(portfw_host(n, v6, proto));
             }
             ExposeSpec::MasqueradeSameLenPortFw(proto) => {
-                exposes.push(masquerade(n, v6));
+                exposes.push(excluding_both(masquerade(n, v6), n, v6, exclude));
                 exposes.push(portfw_block(n, v6, proto));
             }
             ExposeSpec::PortForwarding(proto) => exposes.push(portfw_host(n, v6, proto)),
@@ -399,6 +475,33 @@ pub(crate) fn block_addr(n: u8, host: u8, public: bool, v6: bool) -> IpAddr {
         let net = if public { 20 } else { 10 };
         format!("{net}.{n}.0.{host}").parse().unwrap()
     }
+}
+
+/// Punch `exclude` out of an expose's private prefixes only. For a plain expose there is no public
+/// side to keep in step; validation collapses the exclusion away, leaving a fan of prefixes.
+fn excluding(expose: VpcExpose, n: u8, v6: bool, exclude: ExcludeSel) -> VpcExpose {
+    match exclude.resolve(n, false, v6) {
+        Some(prefix) => expose.not(prefix.as_str().into()),
+        None => expose,
+    }
+}
+
+/// Punch the same-shaped `exclude` out of both the private and the public prefixes.
+///
+/// Symmetry is not cosmetic: static NAT requires an equal address count on the two sides
+/// (`ConfigError::MismatchedPrefixSizes`), so an exclusion applied to one side only would fail
+/// validation for every static-NAT expose the generator emits.
+fn excluding_both(expose: VpcExpose, n: u8, v6: bool, exclude: ExcludeSel) -> VpcExpose {
+    let Some(private) = exclude.resolve(n, false, v6) else {
+        return expose;
+    };
+    let Some(public) = exclude.resolve(n, true, v6) else {
+        unreachable!("resolve is None only for ExcludeSel::None, handled above");
+    };
+    expose
+        .not(private.as_str().into())
+        .not_as(public.as_str().into())
+        .unwrap_or_else(|e| unreachable!("exclusion on an expose with a public range: {e}"))
 }
 
 fn plain(n: u8, v6: bool) -> VpcExpose {
