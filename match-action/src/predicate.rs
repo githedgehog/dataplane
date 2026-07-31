@@ -167,7 +167,7 @@ impl FieldPredicate {
         }
     }
 }
-fn be_bytes<T: FixedSize>(value: &T) -> FieldBytes {
+pub(crate) fn be_bytes<T: FixedSize>(value: &T) -> FieldBytes {
     let mut buf = [0u8; MAX_FIELD_BYTES];
     value.write_be(&mut buf);
     buf[..T::SIZE].iter().copied().collect()
