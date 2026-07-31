@@ -1598,3 +1598,193 @@ mod adversarial_headers {
         }
     }
 }
+
+// -------------------------------------------------------------------------------------------------
+// Documented behaviour: IPv6 extension headers hide the transport protocol.
+//
+// Found by the adversarial-header suite above, which reaches these keys in the thousands per run.
+// Pinned here as its own test because a fuzz run that merely agrees with the config oracle does not
+// say *what* the configuration means for these packets, and the answer is surprising enough that a
+// future change to it should be deliberate.
+
+/// `Net::next_header()` reports the IPv6 header's own next-header field. When any extension header
+/// is present that field names the *extension*, not the transport -- while `try_transport()` still
+/// walks the chain and finds the real ports.
+///
+/// So an IPv6 packet carrying TCP behind a hop-by-hop header presents the lookup key
+/// `(proto = HOPOPT, ports = the TCP ports)`. A protocol-restricted expose lowers to an exact match
+/// on the protocol byte, so it cannot match such a packet, and the traffic is dropped rather than
+/// port-forwarded. That is fail-closed, but it is a functional gap: legitimate TCP over IPv6 with
+/// extension headers does not reach a TCP-restricted port-forwarding destination.
+#[test]
+fn ipv6_extension_header_masks_the_transport_protocol() {
+    use net::headers::builder::HeaderStack;
+    use net::headers::{TryIp, TryTransport};
+    use net::ipv6::UnicastIpv6Addr;
+    use net::tcp::TcpPort;
+
+    let with_hop_by_hop = || {
+        HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|ip| {
+                ip.set_source(UnicastIpv6Addr::new(v6("2001:db8::1")).unwrap());
+                ip.set_destination(v6("2001:db9::5"));
+            })
+            .hop_by_hop(|_| {})
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(1234u16).unwrap());
+                tcp.set_destination(TcpPort::try_from(80u16).unwrap());
+            })
+            .build_headers()
+            .unwrap()
+    };
+
+    // The mechanism: the protocol byte names the extension header, but the ports are still found.
+    let probe_packet = packet(Some(vpcd(100)), with_hop_by_hop());
+    let net = probe_packet.try_ip().unwrap();
+    assert_eq!(
+        net.next_header(),
+        net::ip::NextHeader::new(0),
+        "an extension header should occupy the next-header field",
+    );
+    assert_eq!(
+        probe_packet
+            .try_transport()
+            .and_then(|t| t.dst_port())
+            .map(std::num::NonZero::get),
+        Some(80),
+        "the transport header is still reachable behind the extension header",
+    );
+
+    // The consequence: a TCP-restricted destination expose cannot match it.
+    let tcp_only = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            (
+                "vpc2",
+                vec![expose_port_forwarding(
+                    "2001:db9::5/128",
+                    (22, 22),
+                    "2001:db9::5/128",
+                    (80, 80),
+                    Some(L4Protocol::Tcp),
+                )],
+            ),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(tcp_only);
+    let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "a TCP-restricted expose does not see this packet as TCP, so nothing covers it",
+    );
+
+    // The same packet routes when the covering expose is not protocol-restricted, which confirms
+    // the protocol byte -- not the address or the port -- is what excluded it above.
+    let any_proto = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc2", vec![expose("2001:db9::/32")]),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(any_proto);
+    let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
+
+// -------------------------------------------------------------------------------------------------
+// Documented behaviour: two more edges the adversarial-header and burst suites reach constantly
+// but never pin, because a property test can only say "the NF agreed with the config", not "and
+// here is what the config means".
+
+/// A packet with no usable transport ports looks up with port `0`, and config forbids port `0` in
+/// an expose's ranges -- so a port-restricted expose can never match one.
+///
+/// This is not an exotic case: an ICMP packet, a non-first fragment, and (per
+/// [`ipv6_extension_header_masks_the_transport_protocol`]) anything behind an IPv6 extension header
+/// all present portless keys. The adversarial-header suite generates thousands per run. The effect
+/// is fail-closed, but it means port-forwarded destinations are unreachable by such traffic --
+/// including the ICMP errors that path MTU discovery depends on.
+#[test]
+fn portless_packet_cannot_match_a_port_restricted_expose() {
+    // vpc2 publishes 80.0.0.5 only as a port-forwarding destination on public port 2222.
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("10.0.0.5"), v4("80.0.0.5")),
+        ),
+    );
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "a portless packet cannot match the port-restricted expose that publishes this address",
+    );
+    assert_eq!(out.meta().dst_vpcd, None);
+
+    // The same address and protocol route once a covering expose carries no port constraint, which
+    // confirms the port -- not the address or the protocol -- is what excluded it.
+    let unrestricted = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            ("vpc2", vec![expose("80.0.0.0/24")]),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(unrestricted);
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("10.0.0.5"), v4("80.0.0.5")),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
+
+/// A flow whose generation is *newer* than the pipeline's is trusted for bypass.
+///
+/// `dst_vpcd_from_valid_flow` rejects only `flow_genid < genid`, so a flow tagged with a generation
+/// the filter has not yet observed short-circuits the tables entirely. That is deliberate -- it is
+/// the "small transient period" the function's comment describes, where a reconfiguring control
+/// plane has already stamped flows with the new generation but this worker still reads the old one,
+/// and treating those as stale would tear down every flow the new config just blessed.
+///
+/// Pinned because it is the one direction of the genid comparison nothing else covers, and because
+/// it is asymmetric in a way that reads like a bug until the transient is explained: the bypass
+/// here wins over what the tables say, exactly as an equal-generation flow would.
+#[test]
+fn flow_from_a_newer_generation_is_honored_for_bypass() {
+    let (mut flow_filter, _writer) = make_flow_filter(source_nat_context());
+
+    // A destination the current tables do not cover at all: without the flow this would be
+    // Filtered, so honouring the flow is observable rather than incidental.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("9.9.9.9"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    flow.set_genid(9);
+
+    let out = run(&mut flow_filter, p);
+    assert!(
+        !out.is_done(),
+        "a newer-generation flow must bypass the tables: {:?}",
+        out.get_done(),
+    );
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert_eq!(
+        flow.status(),
+        FlowStatus::Active,
+        "the bypass path must not invalidate the flow it just honoured",
+    );
+}
