@@ -67,7 +67,8 @@ fn consider<T>(best: &mut Option<(Precedence, T)>, precedence: Precedence, value
 }
 
 /// Answer a route lookup directly from the validated overlay.
-fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
+/// Shared by the context and NF metadata property tests.
+pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
     let Some(src_vpc) = overlay
         .vpc_table()
         .values()
