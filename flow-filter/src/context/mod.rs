@@ -9,8 +9,10 @@ use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 
 mod display;
+// Not private: the NF-level property test in `crate::tests` predicts a packet's stamped metadata
+// from this module's config oracle, so that the config's meaning of a route is stated once.
 #[cfg(test)]
-mod fuzz;
+pub(crate) mod fuzz;
 mod tables;
 #[cfg(test)]
 mod tests;

@@ -67,7 +67,11 @@ fn consider<T>(best: &mut Option<(Precedence, T)>, precedence: Precedence, value
 }
 
 /// Answer a route lookup directly from the validated overlay.
-fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
+///
+/// Exposed to the crate because the NF-level property test
+/// (`tests::nf_metadata_matches_config_oracle`) predicts a packet's stamped metadata from this same
+/// answer: the config's meaning of a route should be stated in exactly one place.
+pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
     let Some(src_vpc) = overlay
         .vpc_table()
         .values()
