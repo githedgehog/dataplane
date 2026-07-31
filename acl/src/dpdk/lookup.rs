@@ -51,22 +51,39 @@ where
     /// Construct a lookup table from a built classifier, its action table, and
     /// the planned layout.
     ///
-    /// Returns [`StrideTooSmall`] if `layout.stride` is smaller than the
-    /// classifier's `min_input_size`. This is the keystone invariant: once it
-    /// holds, packing a key into a `stride`-sized buffer always yields at least
-    /// `min_input_size` valid bytes, which is what makes the `unsafe` classify
-    /// calls below sound (see `development/code/unsafe-code.md` -- `unsafe` used
-    /// only to build a safe abstraction with local reasoning).
+    /// Bounds `layout.stride` from both sides, which is what every buffer on the
+    /// lookup path relies on:
+    ///
+    /// - Not below the classifier's `min_input_size`, so packing a key into a
+    ///   `stride`-sized buffer always yields at least `min_input_size` valid
+    ///   bytes. That is what makes the `unsafe` classify calls below sound (see
+    ///   `development/code/unsafe-code.md` -- `unsafe` used only to build a safe
+    ///   abstraction with local reasoning).
+    /// - Not above [`MAX_USER_KEY_BYTES`], so `ZEROS[..stride]` is in bounds and
+    ///   neither the single-key buffer nor the batch arena can overflow.
+    ///
+    /// The upper bound holds today by construction -- `plan_layout` emits at
+    /// most `MAX_FIELDS` defs of at most 4 bytes, and `4 * MAX_FIELDS` is
+    /// exactly `MAX_USER_KEY_BYTES` -- but with no margin whatsoever, and the
+    /// buffers that depend on it are two files away from the constant that
+    /// grants it. Checking here fails the build of a table that could not be
+    /// looked up, rather than panicking on the hot path once per packet.
     pub fn new(
         classifier: Arc<dyn DynClassifier>,
         actions: Vec<A>,
         layout: DpdkLayout,
-    ) -> Result<Self, StrideTooSmall> {
+    ) -> Result<Self, StrideError> {
         let required = classifier.min_input_size();
         if layout.stride < required {
-            return Err(StrideTooSmall {
+            return Err(StrideError::TooSmall {
                 stride: layout.stride,
                 required,
+            });
+        }
+        if layout.stride > MAX_USER_KEY_BYTES {
+            return Err(StrideError::TooLarge {
+                stride: layout.stride,
+                limit: MAX_USER_KEY_BYTES,
             });
         }
         Ok(Self {
@@ -207,11 +224,14 @@ where
     }
 }
 
+/// A planned layout whose stride cannot back a sound lookup. See [`DpdkAclLookup::new`].
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "DpdkAclLookup layout stride={stride} is smaller than the context's min_input_size={required}"
-)]
-pub struct StrideTooSmall {
-    pub stride: usize,
-    pub required: usize,
+pub enum StrideError {
+    #[error(
+        "DpdkAclLookup layout stride={stride} is smaller than the context's \
+         min_input_size={required}"
+    )]
+    TooSmall { stride: usize, required: usize },
+    #[error("DpdkAclLookup layout stride={stride} exceeds MAX_USER_KEY_BYTES={limit}")]
+    TooLarge { stride: usize, limit: usize },
 }
