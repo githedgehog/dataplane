@@ -1126,6 +1126,29 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
     }
 }
 
+/// The lookup key a packet presents, as a [`Probe`] the config oracle can answer.
+///
+/// Deliberately the same extraction `FlowFilter::classify` performs, through the same public
+/// accessors: this is how a test asks "what did the NF see", not an independent re-derivation of
+/// it. Returns `None` for a packet with no IP layer, which never reaches the tables at all.
+fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Option<Probe> {
+    use net::headers::{TryIp, TryTransport};
+    use std::num::NonZero;
+
+    let net = pkt.try_ip()?;
+    Some(Probe {
+        src_vpcd,
+        src_ip: net.src_addr(),
+        dst_ip: net.dst_addr(),
+        proto: net.next_header(),
+        ports: pkt.try_transport().and_then(|t| {
+            t.src_port()
+                .map(NonZero::get)
+                .zip(t.dst_port().map(NonZero::get))
+        }),
+    })
+}
+
 fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
     if pkt.is_done() {
         return NfOutcome::Dropped(pkt.get_done());
@@ -1271,4 +1294,406 @@ fn nf_metadata_matches_config_oracle() {
     assert!(natted >= 1, "no route ever carried a NAT requirement");
     assert!(flow_keyed >= 1, "the flow-key case was never reached");
     assert!(dropped >= 1, "no packet was ever dropped");
+}
+
+// -------------------------------------------------------------------------------------------------
+// Adversarial header stacks.
+//
+// `classify` is this NF's parser-facing edge -- it is the only place that reaches into a packet's
+// headers -- and every test above it feeds exactly four hand-built shapes (v4 TCP/UDP/ICMP and a
+// bare Ethernet frame). Nothing exercised a VLAN tag, an IPv6 extension-header chain, a fragment,
+// an authentication header, or the fuzzed remainder of any header's fields.
+//
+// `net` already ships a bolero header-stack generator; this points it at the NF. What the test can
+// honestly claim is bounded: `probe_from_packet` extracts the lookup key with the same public
+// accessors `classify` uses, so this does not independently verify that extraction. Its value is
+// that (a) no header stack the generator can build makes the NF panic, (b) the fail-closed and
+// burst-structural invariants hold on stacks nobody hand-picked, and (c) the route -> metadata
+// mapping still holds for keys that *only* exotic stacks produce -- an extension-header protocol
+// number, a portless IP packet, a fragment. Those keys are unreachable from the four hand-built
+// shapes, and they are what the coverage counters below insist on reaching.
+
+mod adversarial_headers {
+    use super::{
+        NfOutcome, expected_outcome, make_flow_filter, observed_outcome, probe_from_packet,
+    };
+    use crate::context::FlowFilterContext;
+    use crate::context::fuzz::oracle_lookup;
+    use crate::test_utils::{expose, expose_masquerade, expose_static, overlay, peering, vpcd};
+    use bolero::{Driver, ValueGenerator};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use config::external::overlay::ValidatedOverlay;
+    use net::buffer::TestBuffer;
+    use net::headers::Headers;
+    use net::headers::builder::ChainBase;
+    use net::ip::NextHeader;
+    use net::ipv4::UnicastIpv4Addr;
+    use net::ipv6::UnicastIpv6Addr;
+    use net::packet::{DoneReason, Packet, VpcDiscriminant};
+    use net::parse::DeParse;
+    use pipeline::NetworkFunction;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// The source VPC every generated packet claims.
+    fn src_vpcd() -> VpcDiscriminant {
+        vpcd(100)
+    }
+
+    /// A two-peering overlay whose prefixes the generated stacks aim at: a v4 peering carrying one
+    /// expose of each source NAT mode, and a v6 peering so the v6 stacks have somewhere to land.
+    /// Both manifests of a peering are single-version, as validation requires.
+    fn wire_overlay() -> ValidatedOverlay {
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+            vec![
+                peering(
+                    "vpc1-to-vpc2",
+                    (
+                        "vpc1",
+                        vec![
+                            expose("1.0.0.0/24"),
+                            expose_static("2.0.0.0/24", "20.0.0.0/24"),
+                            expose_masquerade("3.0.0.0/24", "30.0.0.0/24"),
+                        ],
+                    ),
+                    ("vpc2", vec![expose("5.0.0.0/24")]),
+                ),
+                peering(
+                    "vpc1-to-vpc3",
+                    ("vpc1", vec![expose("2001:db8::/32")]),
+                    ("vpc3", vec![expose("2001:db9::/32")]),
+                ),
+            ],
+        )
+    }
+
+    // Address pinning. Every other field of every header stays fuzzed; only the addresses are
+    // steered, because a uniformly random address never lands in a configured prefix and the whole
+    // run would collapse into destination misses. The fuzzed low byte is kept, so host selection
+    // (and with it the port-range and prefix-length edges) still comes from the driver.
+
+    fn pin_v4(ip: &mut net::ipv4::Ipv4) {
+        let src = ip.source().inner().octets();
+        // 1/2/3 are the plain, static-NAT and masquerade source exposes; 4 is covered by none.
+        let src_net = src[0] % 4 + 1;
+        ip.set_source(
+            UnicastIpv4Addr::new(Ipv4Addr::new(src_net, 0, 0, src[3]))
+                .unwrap_or_else(|e| unreachable!("pinned v4 source is unicast: {e:?}")),
+        );
+        let dst = ip.destination().octets();
+        // 5 is the peer's expose; 9 is nowhere.
+        let dst_net = if dst[0].is_multiple_of(4) { 9 } else { 5 };
+        ip.set_destination(Ipv4Addr::new(dst_net, 0, 0, dst[3]));
+    }
+
+    fn pin_v6(ip: &mut net::ipv6::Ipv6) {
+        let src = ip.source().inner().octets();
+        ip.set_source(
+            UnicastIpv6Addr::new(Ipv6Addr::new(
+                0x2001,
+                0x0db8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                u16::from(src[15]),
+            ))
+            .unwrap_or_else(|e| unreachable!("pinned v6 source is unicast: {e:?}")),
+        );
+        let dst = ip.destination().octets();
+        // Half the destinations land in the peer's expose, half nowhere near it.
+        let net = if dst[0].is_multiple_of(4) {
+            0x0dbf
+        } else {
+            0x0db9
+        };
+        ip.set_destination(Ipv6Addr::new(
+            0x2001,
+            net,
+            0,
+            0,
+            0,
+            0,
+            0,
+            u16::from(dst[15]),
+        ));
+    }
+
+    /// One header stack per shape. Each is its own concrete generator type (`ValueGenerator` has a
+    /// generic method and so is not object-safe), which is why this dispatches through a `match`
+    /// rather than a table of boxed generators.
+    struct AnyStack;
+
+    impl ValueGenerator for AnyStack {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Headers> {
+            match driver.produce::<u8>()? % 10 {
+                // No IP layer at all: the NotIp path.
+                0 => ChainBase::new().eth(|_| {}).generate(driver),
+                1 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .tcp(|_| {})
+                    .generate(driver),
+                2 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .udp(|_| {})
+                    .generate(driver),
+                3 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .icmp4(|_| {})
+                    .generate(driver),
+                // A VLAN tag between the Ethernet and IP layers.
+                4 => ChainBase::new()
+                    .eth(|_| {})
+                    .vlan(|_| {})
+                    .ipv4(pin_v4)
+                    .tcp(|_| {})
+                    .generate(driver),
+                // An IPv4 authentication header ahead of the transport.
+                5 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .ipv4_auth(|_| {})
+                    .tcp(|_| {})
+                    .generate(driver),
+                6 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .tcp(|_| {})
+                    .generate(driver),
+                7 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .udp(|_| {})
+                    .generate(driver),
+                // IPv6 extension-header chains, ahead of a transport header.
+                8 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .hop_by_hop(|_| {})
+                    .tcp(|_| {})
+                    .generate(driver),
+                9 => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .fragment(|_| {})
+                    .udp(|_| {})
+                    .generate(driver),
+                _ => unreachable!("modulo 10"),
+            }
+        }
+    }
+
+    /// Serialize generated headers into a parseable overlay packet. Returns `None` when the stack
+    /// cannot round-trip through a `TestBuffer` (too large, or not re-parseable) -- those are
+    /// counted, so a run that silently discarded everything cannot pass.
+    fn wire_packet(headers: &Headers) -> Option<Packet<TestBuffer>> {
+        let mut buffer = TestBuffer::new();
+        headers.deparse(buffer.as_mut()).ok()?;
+        let mut packet = Packet::new(buffer).ok()?;
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(src_vpcd());
+        Some(packet)
+    }
+
+    /// However exotic the headers, a flowless packet leaves the NF with exactly the metadata the
+    /// configuration predicts for the key that packet presents -- and a packet with no IP layer is
+    /// dropped as `NotIp` without ever reaching the tables.
+    #[test]
+    fn arbitrary_header_stacks_uphold_the_config_contract() {
+        // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not
+        // const.
+        static UNPARSEABLE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NOT_IP: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PORTLESS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static EXOTIC_PROTO: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let overlay = wire_overlay();
+
+        bolero::check!()
+            .with_generator(AnyStack)
+            .for_each(|headers: &Headers| {
+                // Built inside the closure: the filter holds a classifier, which is not unwind-safe
+                // and so cannot be captured across bolero's catch_unwind boundary.
+                let (mut flow_filter, _writer) =
+                    make_flow_filter(FlowFilterContext::for_test(&overlay));
+
+                let Some(packet) = wire_packet(headers) else {
+                    UNPARSEABLE.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+
+                // Extract the key before the NF consumes the packet.
+                let probe = probe_from_packet(&packet, src_vpcd());
+                if let Some(probe) = probe.as_ref() {
+                    if probe.ports.is_none() {
+                        PORTLESS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if !matches!(
+                        probe.proto,
+                        NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+                    ) {
+                        EXOTIC_PROTO.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    NOT_IP.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let out = flow_filter
+                    .process([packet].into_iter())
+                    .next()
+                    .unwrap_or_else(|| unreachable!("enforce keeps Filtered and NotIp packets"));
+
+                let expected = match probe.as_ref() {
+                    // No IP layer: dropped before any table is consulted.
+                    None => NfOutcome::Dropped(Some(DoneReason::NotIp)),
+                    Some(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
+                };
+                assert_eq!(
+                    observed_outcome(&out),
+                    expected,
+                    "NF diverged from the configuration on {headers:?}",
+                );
+
+                match expected {
+                    NfOutcome::Routed { .. } => ROUTED.fetch_add(1, Ordering::Relaxed),
+                    NfOutcome::Dropped(_) => DROPPED.fetch_add(1, Ordering::Relaxed),
+                };
+            });
+
+        let counts = [
+            ("unparseable", &UNPARSEABLE),
+            ("not-IP", &NOT_IP),
+            ("portless IP", &PORTLESS),
+            ("non-transport proto", &EXOTIC_PROTO),
+            ("routed", &ROUTED),
+            ("dropped", &DROPPED),
+        ]
+        .map(|(label, counter)| (label, counter.load(Ordering::Relaxed)));
+        eprintln!(
+            "coverage: {}",
+            counts
+                .iter()
+                .map(|(label, n)| format!("{n} {label}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        // The point of the suite is the keys the hand-built shapes cannot produce. If the generator
+        // stops reaching them -- or starts failing to round-trip everything -- this must fail
+        // rather than pass on a diet of ordinary v4 TCP.
+        for (label, count) in counts {
+            if label == "unparseable" {
+                continue;
+            }
+            assert!(count >= 1, "no {label} packet was ever generated");
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Documented behaviour: IPv6 extension headers hide the transport protocol.
+//
+// Found by the adversarial-header suite above, which reaches these keys in the thousands per run.
+// Pinned here as its own test because a fuzz run that merely agrees with the config oracle does not
+// say *what* the configuration means for these packets, and the answer is surprising enough that a
+// future change to it should be deliberate.
+
+/// `Net::next_header()` reports the IPv6 header's own next-header field. When any extension header
+/// is present that field names the *extension*, not the transport -- while `try_transport()` still
+/// walks the chain and finds the real ports.
+///
+/// So an IPv6 packet carrying TCP behind a hop-by-hop header presents the lookup key
+/// `(proto = HOPOPT, ports = the TCP ports)`. A protocol-restricted expose lowers to an exact match
+/// on the protocol byte, so it cannot match such a packet, and the traffic is dropped rather than
+/// port-forwarded. That is fail-closed, but it is a functional gap: legitimate TCP over IPv6 with
+/// extension headers does not reach a TCP-restricted port-forwarding destination.
+#[test]
+fn ipv6_extension_header_masks_the_transport_protocol() {
+    use net::headers::builder::HeaderStack;
+    use net::headers::{TryIp, TryTransport};
+    use net::ipv6::UnicastIpv6Addr;
+    use net::tcp::TcpPort;
+
+    let with_hop_by_hop = || {
+        HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|ip| {
+                ip.set_source(UnicastIpv6Addr::new(v6("2001:db8::1")).unwrap());
+                ip.set_destination(v6("2001:db9::5"));
+            })
+            .hop_by_hop(|_| {})
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(1234u16).unwrap());
+                tcp.set_destination(TcpPort::try_from(80u16).unwrap());
+            })
+            .build_headers()
+            .unwrap()
+    };
+
+    // The mechanism: the protocol byte names the extension header, but the ports are still found.
+    let probe_packet = packet(Some(vpcd(100)), with_hop_by_hop());
+    let net = probe_packet.try_ip().unwrap();
+    assert_eq!(
+        net.next_header(),
+        net::ip::NextHeader::new(0),
+        "an extension header should occupy the next-header field",
+    );
+    assert_eq!(
+        probe_packet
+            .try_transport()
+            .and_then(|t| t.dst_port())
+            .map(std::num::NonZero::get),
+        Some(80),
+        "the transport header is still reachable behind the extension header",
+    );
+
+    // The consequence: a TCP-restricted destination expose cannot match it.
+    let tcp_only = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            (
+                "vpc2",
+                vec![expose_port_forwarding(
+                    "2001:db9::5/128",
+                    (22, 22),
+                    "2001:db9::5/128",
+                    (80, 80),
+                    Some(L4Protocol::Tcp),
+                )],
+            ),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(tcp_only);
+    let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "a TCP-restricted expose does not see this packet as TCP, so nothing covers it",
+    );
+
+    // The same packet routes when the covering expose is not protocol-restricted, which confirms
+    // the protocol byte -- not the address or the port -- is what excluded it above.
+    let any_proto = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc2", vec![expose("2001:db9::/32")]),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(any_proto);
+    let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
 }

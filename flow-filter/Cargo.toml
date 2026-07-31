@@ -32,4 +32,6 @@ acl = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 dpdk = { workspace = true, features = ["test"] }
 lpm = { workspace = true, features = ["testing"] }
-net = { workspace = true, features = ["builder"] }
+# "bolero" exposes net's fuzz header-stack generator (net::headers::builder::ChainBase), which
+# drives the adversarial-header suite against the NF's parser-facing edge.
+net = { workspace = true, features = ["builder", "bolero"] }
