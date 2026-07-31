@@ -365,3 +365,43 @@ fn reference_lookup_matches_config_oracle() {
             }
         });
 }
+
+/// Require generated exclusions to produce multi-length prefix fans.
+/// Removing one host from a `/24` must produce lengths `/25` through `/32`.
+#[test]
+fn exclusions_reach_the_config_as_multi_length_prefix_fans() {
+    use std::collections::BTreeSet;
+
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
+    static WIDEST_SPREAD: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    bolero::check!()
+        .with_type::<OverlaySpec>()
+        .for_each(|overlay_spec| {
+            let built = overlay_spec.build();
+            for vpc in built.overlay.vpc_table().values() {
+                for peering in vpc.peerings() {
+                    let exposes = peering
+                        .local()
+                        .valexp()
+                        .iter()
+                        .chain(peering.remote().valexp());
+                    for expose in exposes {
+                        for set in [expose.ips(), expose.public_ips()] {
+                            let lengths: BTreeSet<u8> =
+                                set.iter().map(|p| p.prefix().length()).collect();
+                            WIDEST_SPREAD.fetch_max(lengths.len() as u64, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        });
+
+    let spread = WIDEST_SPREAD.load(Ordering::Relaxed);
+    eprintln!("coverage: widest prefix-length spread in a single expose: {spread}");
+    assert!(
+        spread >= 8,
+        "exclusions never produced a full prefix-length fan (widest spread was {spread}); \
+         the generator is emitting single-block exposes and the priority ordering is untested",
+    );
+}
