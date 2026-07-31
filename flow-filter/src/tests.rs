@@ -1607,3 +1607,156 @@ mod adversarial_headers {
         }
     }
 }
+
+// Protocol, port, and flow-generation edge cases.
+
+/// IPv6 extension headers occupy `Net::next_header()`, while `try_transport()` still finds the TCP
+/// ports. Protocol-restricted exposes therefore do not match TCP behind an extension header.
+#[test]
+fn ipv6_extension_header_masks_the_transport_protocol() {
+    use net::headers::builder::HeaderStack;
+    use net::headers::{TryIp, TryTransport};
+    use net::ipv6::UnicastIpv6Addr;
+    use net::tcp::TcpPort;
+
+    let with_hop_by_hop = || {
+        HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|ip| {
+                ip.set_source(UnicastIpv6Addr::new(v6("2001:db8::1")).unwrap());
+                ip.set_destination(v6("2001:db9::5"));
+            })
+            .hop_by_hop(|_| {})
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(1234u16).unwrap());
+                tcp.set_destination(TcpPort::try_from(80u16).unwrap());
+            })
+            .build_headers()
+            .unwrap()
+    };
+
+    // The protocol is hop-by-hop while transport parsing still reaches TCP.
+    let probe_packet = packet(Some(vpcd(100)), with_hop_by_hop());
+    let net = probe_packet.try_ip().unwrap();
+    assert_eq!(
+        net.next_header(),
+        net::ip::NextHeader::new(0),
+        "an extension header should occupy the next-header field",
+    );
+    assert_eq!(
+        probe_packet
+            .try_transport()
+            .and_then(|t| t.dst_port())
+            .map(std::num::NonZero::get),
+        Some(80),
+        "the transport header is still reachable behind the extension header",
+    );
+
+    // A TCP-restricted expose sees the hop-by-hop protocol.
+    let tcp_only = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            (
+                "vpc2",
+                vec![expose_port_forwarding(
+                    "2001:db9::5/128",
+                    (22, 22),
+                    "2001:db9::5/128",
+                    (80, 80),
+                    Some(L4Protocol::Tcp),
+                )],
+            ),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(tcp_only);
+    let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "a TCP-restricted expose does not see this packet as TCP, so nothing covers it",
+    );
+
+    // An unrestricted expose confirms that the address remains routable.
+    let any_proto = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("2001:db8::/32")]),
+            ("vpc2", vec![expose("2001:db9::/32")]),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(any_proto);
+    let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
+
+/// Portless packets use port `0`, which cannot match a configured port range.
+/// This prevents ICMP and ICMPv6 from reaching port-forwarded destinations.
+#[test]
+fn portless_packet_cannot_match_a_port_restricted_expose() {
+    // vpc2 publishes 80.0.0.5 only as a port-forwarding destination on public port 2222.
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("10.0.0.5"), v4("80.0.0.5")),
+        ),
+    );
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "a portless packet cannot match the port-restricted expose that publishes this address",
+    );
+    assert_eq!(out.meta().dst_vpcd, None);
+
+    // An unrestricted expose confirms that only the port constraint prevents routing.
+    let unrestricted = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            ("vpc2", vec![expose("80.0.0.0/24")]),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(unrestricted);
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("10.0.0.5"), v4("80.0.0.5")),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
+
+/// A flow newer than the worker's config generation bypasses the tables during config propagation.
+#[test]
+fn flow_from_a_newer_generation_is_honored_for_bypass() {
+    let (mut flow_filter, _writer) = make_flow_filter(source_nat_context());
+
+    // Use an uncovered destination so bypass is observable.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("9.9.9.9"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    flow.set_genid(9);
+
+    let out = run(&mut flow_filter, p);
+    assert!(
+        !out.is_done(),
+        "a newer-generation flow must bypass the tables: {:?}",
+        out.get_done(),
+    );
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert_eq!(
+        flow.status(),
+        FlowStatus::Active,
+        "the bypass path must not invalidate the flow it just honoured",
+    );
+}

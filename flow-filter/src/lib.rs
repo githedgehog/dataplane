@@ -350,8 +350,8 @@ impl FlowFilter {
             return None;
         };
 
-        // The flow has the same generation id as the current config. Small transient period aside,
-        // this means that the flow is up-to-date and we can bypass the filter
+        // Current and newer-generation flows bypass the filter. Workers may observe a new config
+        // generation after flows have already been stamped with it.
         debug!("{nfi}: Packet can bypass flow filter thanks to flow information");
         Some(dst_vpcd)
     }
