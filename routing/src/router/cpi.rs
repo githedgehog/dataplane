@@ -261,11 +261,16 @@ impl RpcOperation for Rmac {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &mut db.rmac_store;
+        let vrftable = &mut db.vrftable;
         let Ok(rmac) = RmacEntry::try_from(self) else {
-            error!("Failed to store rmac entry {self}");
+            error!("Failed to parse rmac entry {self}");
             return RpcResultCode::Failure;
         };
-        rmac_store.add_rmac_entry(rmac);
+        let vni = rmac.vni;
+        if rmac_store.add_rmac_entry(rmac) {
+            // refresh the vrf for that vni
+            vrftable.refresh_fibs_by_vni(&[vni], &db.rmac_store);
+        }
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
