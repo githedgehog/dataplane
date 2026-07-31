@@ -66,26 +66,31 @@ impl RmacStore {
 
     //////////////////////////////////////////////////////////////////
     /// Add a `RmacEntry` to the rmac store. This method never fails.
+    /// Returns true if a `RmacEntry` was newly inserted or updated.
     //////////////////////////////////////////////////////////////////
-    pub fn add_rmac_entry(&mut self, entry: RmacEntry) {
+    #[must_use]
+    pub fn add_rmac_entry(&mut self, entry: RmacEntry) -> bool {
         let vni = entry.vni;
         let mac = entry.mac;
         let address = entry.address;
         if let Some(old) = self.table.insert((entry.address, entry.vni), entry) {
-            if old.mac == mac {
-                debug!("Refreshed rmac for vni:{vni} ip:{address} as {mac}");
-            } else {
+            let was_updated = old.mac != mac;
+            if was_updated {
                 debug!(
                     "Changed rmac for vni:{vni} ip:{address} {} -> {mac}",
                     old.mac
                 );
+            } else {
+                debug!("Refreshed rmac for vni:{vni} ip:{address} as {mac}");
             }
             if let Some(stale_t) = &old.stale_t {
                 debug!("The rmac was stale for {}s", stale_t.elapsed().as_secs());
                 self.stale = self.stale.saturating_sub(1);
             }
+            was_updated
         } else {
             debug!("Registered rmac {mac} for vni:{vni} ip:{address}");
+            true
         }
     }
 
@@ -272,13 +277,13 @@ pub(crate) mod tests {
         );
 
         // add to store
-        store.add_rmac_entry(rmac1.clone());
-        store.add_rmac_entry(rmac2.clone());
-        store.add_rmac_entry(rmac3.clone());
+        assert!(store.add_rmac_entry(rmac1.clone()));
+        assert!(store.add_rmac_entry(rmac2.clone()));
+        assert!(store.add_rmac_entry(rmac3.clone()));
         assert_eq!(store.len(), 3);
 
         // add duplicate
-        store.add_rmac_entry(rmac3.clone());
+        assert!(!store.add_rmac_entry(rmac3.clone()));
         assert_eq!(store.len(), 3, "Duplicate should not be stored");
 
         // remove first: won't be deleted since it is not marked as stale
@@ -308,7 +313,7 @@ pub(crate) mod tests {
         // replace/update second: mac should be changed and entry no longer be invalid
         let mut rmac2_modified_mac = rmac2.clone();
         rmac2_modified_mac.mac = Mac::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        store.add_rmac_entry(rmac2_modified_mac.clone());
+        assert!(store.add_rmac_entry(rmac2_modified_mac.clone()));
         assert_eq!(store.stale(), 0);
 
         // get second and check that its MAC was updated
