@@ -1109,6 +1109,26 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
     }
 }
 
+/// Extract the lookup key seen by `FlowFilter::classify`.
+/// Returns `None` for packets without an IP layer.
+fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Option<Probe> {
+    use net::headers::{TryIp, TryTransport};
+    use std::num::NonZero;
+
+    let net = pkt.try_ip()?;
+    Some(Probe {
+        src_vpcd,
+        src_ip: net.src_addr(),
+        dst_ip: net.dst_addr(),
+        proto: net.next_header(),
+        ports: pkt.try_transport().and_then(|t| {
+            t.src_port()
+                .map(NonZero::get)
+                .zip(t.dst_port().map(NonZero::get))
+        }),
+    })
+}
+
 fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
     if pkt.is_done() {
         return NfOutcome::Dropped(pkt.get_done());
@@ -1254,5 +1274,336 @@ fn nf_metadata_matches_config_oracle() {
     );
     for (label, count) in counts {
         assert!(count >= 1, "the {label} case was never reached");
+    }
+}
+
+// Generated header-stack coverage for packet classification.
+
+mod adversarial_headers {
+    use super::{
+        NfOutcome, expected_outcome, make_flow_filter, observed_outcome, probe_from_packet,
+    };
+    use crate::context::FlowFilterContext;
+    use crate::context::fuzz::oracle_lookup;
+    use crate::test_utils::{expose, expose_masquerade, expose_static, overlay, peering, vpcd};
+    use bolero::{Driver, ValueGenerator};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use config::external::overlay::ValidatedOverlay;
+    use net::buffer::TestBuffer;
+    use net::headers::Headers;
+    use net::headers::builder::ChainBase;
+    use net::ip::NextHeader;
+    use net::ipv4::UnicastIpv4Addr;
+    use net::ipv6::UnicastIpv6Addr;
+    use net::packet::{DoneReason, Packet, VpcDiscriminant};
+    use net::parse::DeParse;
+    use pipeline::NetworkFunction;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// Source VPC for generated packets.
+    fn src_vpcd() -> VpcDiscriminant {
+        vpcd(100)
+    }
+
+    /// Overlay with IPv4 NAT modes and an IPv6 route for generated packets.
+    fn wire_overlay() -> ValidatedOverlay {
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+            vec![
+                peering(
+                    "vpc1-to-vpc2",
+                    (
+                        "vpc1",
+                        vec![
+                            expose("1.0.0.0/24"),
+                            expose_static("2.0.0.0/24", "20.0.0.0/24"),
+                            expose_masquerade("3.0.0.0/24", "30.0.0.0/24"),
+                        ],
+                    ),
+                    ("vpc2", vec![expose("5.0.0.0/24")]),
+                ),
+                peering(
+                    "vpc1-to-vpc3",
+                    ("vpc1", vec![expose("2001:db8::/32")]),
+                    ("vpc3", vec![expose("2001:db9::/32")]),
+                ),
+            ],
+        )
+    }
+
+    // Pin network prefixes while leaving host bits and all other fields generated.
+
+    fn pin_v4(ip: &mut net::ipv4::Ipv4) {
+        let src = ip.source().inner().octets();
+        // Networks 1-3 select each source NAT mode; network 4 misses.
+        let src_net = src[0] % 4 + 1;
+        ip.set_source(
+            UnicastIpv4Addr::new(Ipv4Addr::new(src_net, 0, 0, src[3]))
+                .unwrap_or_else(|e| unreachable!("pinned v4 source is unicast: {e:?}")),
+        );
+        let dst = ip.destination().octets();
+        // Network 5 routes; network 9 misses.
+        let dst_net = if dst[0].is_multiple_of(4) { 9 } else { 5 };
+        ip.set_destination(Ipv4Addr::new(dst_net, 0, 0, dst[3]));
+    }
+
+    fn pin_v6(ip: &mut net::ipv6::Ipv6) {
+        let src = ip.source().inner().octets();
+        ip.set_source(
+            UnicastIpv6Addr::new(Ipv6Addr::new(
+                0x2001,
+                0x0db8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                u16::from(src[15]),
+            ))
+            .unwrap_or_else(|e| unreachable!("pinned v6 source is unicast: {e:?}")),
+        );
+        let dst = ip.destination().octets();
+        // Route three quarters of destinations and miss the rest.
+        let net = if dst[0].is_multiple_of(4) {
+            0x0dbf
+        } else {
+            0x0db9
+        };
+        ip.set_destination(Ipv6Addr::new(
+            0x2001,
+            net,
+            0,
+            0,
+            0,
+            0,
+            0,
+            u16::from(dst[15]),
+        ));
+    }
+
+    /// Header shapes, named so coverage can be required for each one.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Shape {
+        /// No IP layer at all: the `NotIp` path.
+        NoIp,
+        V4Tcp,
+        V4Udp,
+        V4Icmp,
+        /// A VLAN tag between the Ethernet and IP layers.
+        VlanV4Tcp,
+        /// An IPv4 authentication header ahead of the transport.
+        V4AuthTcp,
+        V6Tcp,
+        V6Udp,
+        /// IPv6 extension-header chains, ahead of a transport header.
+        V6HopByHopTcp,
+        V6FragmentUdp,
+    }
+
+    impl Shape {
+        /// Every shape, in selector and counter order.
+        const ALL: [Shape; 10] = [
+            Shape::NoIp,
+            Shape::V4Tcp,
+            Shape::V4Udp,
+            Shape::V4Icmp,
+            Shape::VlanV4Tcp,
+            Shape::V4AuthTcp,
+            Shape::V6Tcp,
+            Shape::V6Udp,
+            Shape::V6HopByHopTcp,
+            Shape::V6FragmentUdp,
+        ];
+    }
+
+    /// Generate one concrete header stack for each shape.
+    /// `ValueGenerator` is not object-safe, so generation dispatches with a `match`.
+    struct AnyStack;
+
+    impl ValueGenerator for AnyStack {
+        type Output = (Shape, Headers);
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<(Shape, Headers)> {
+            let selector = usize::from(driver.produce::<u8>()?) % Shape::ALL.len();
+            let shape = Shape::ALL[selector];
+            let headers = match shape {
+                Shape::NoIp => ChainBase::new().eth(|_| {}).generate(driver),
+                Shape::V4Tcp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .tcp(|_| {})
+                    .generate(driver),
+                Shape::V4Udp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .udp(|_| {})
+                    .generate(driver),
+                Shape::V4Icmp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .icmp4(|_| {})
+                    .generate(driver),
+                Shape::VlanV4Tcp => ChainBase::new()
+                    .eth(|_| {})
+                    .vlan(|_| {})
+                    .ipv4(pin_v4)
+                    .tcp(|_| {})
+                    .generate(driver),
+                Shape::V4AuthTcp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(pin_v4)
+                    .ipv4_auth(|_| {})
+                    .tcp(|_| {})
+                    .generate(driver),
+                Shape::V6Tcp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .tcp(|_| {})
+                    .generate(driver),
+                Shape::V6Udp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .udp(|_| {})
+                    .generate(driver),
+                Shape::V6HopByHopTcp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .hop_by_hop(|_| {})
+                    .tcp(|_| {})
+                    .generate(driver),
+                Shape::V6FragmentUdp => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv6(pin_v6)
+                    .fragment(|_| {})
+                    .udp(|_| {})
+                    .generate(driver),
+            }?;
+            Some((shape, headers))
+        }
+    }
+
+    /// Serialize and parse a generated overlay packet.
+    fn wire_packet(headers: &Headers) -> Option<Packet<TestBuffer>> {
+        let mut buffer = TestBuffer::new();
+        headers.deparse(buffer.as_mut()).ok()?;
+        let mut packet = Packet::new(buffer).ok()?;
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(src_vpcd());
+        Some(packet)
+    }
+
+    /// Check generated header stacks against the config oracle.
+    #[test]
+    fn arbitrary_header_stacks_uphold_the_config_contract() {
+        // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not
+        // const.
+        static UNPARSEABLE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NOT_IP: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PORTLESS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static EXOTIC_PROTO: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Packets reaching the NF, indexed by [`Shape`].
+        static BY_SHAPE: LazyLock<[AtomicU64; Shape::ALL.len()]> =
+            LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+
+        let overlay = wire_overlay();
+
+        bolero::check!().with_generator(AnyStack).for_each(
+            |(shape, headers): &(Shape, Headers)| {
+                // The classifier is not safe to capture across Bolero's unwind boundary.
+                let (mut flow_filter, _writer) =
+                    make_flow_filter(FlowFilterContext::for_test(&overlay));
+
+                let Some(packet) = wire_packet(headers) else {
+                    UNPARSEABLE.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                BY_SHAPE[*shape as usize].fetch_add(1, Ordering::Relaxed);
+
+                // Extract the key before the NF consumes the packet.
+                let probe = probe_from_packet(&packet, src_vpcd());
+                if let Some(probe) = probe.as_ref() {
+                    if probe.ports.is_none() {
+                        PORTLESS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if !matches!(
+                        probe.proto,
+                        NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+                    ) {
+                        EXOTIC_PROTO.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    NOT_IP.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let out = flow_filter
+                    .process([packet].into_iter())
+                    .next()
+                    .unwrap_or_else(|| unreachable!("enforce keeps Filtered and NotIp packets"));
+
+                let expected = match probe.as_ref() {
+                    // No IP layer: dropped before any table is consulted.
+                    None => NfOutcome::Dropped(Some(DoneReason::NotIp)),
+                    Some(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
+                };
+                assert_eq!(
+                    observed_outcome(&out),
+                    expected,
+                    "NF diverged from the configuration on {shape:?} stack {headers:?}",
+                );
+
+                match expected {
+                    NfOutcome::Routed { .. } => ROUTED.fetch_add(1, Ordering::Relaxed),
+                    NfOutcome::Dropped(_) => DROPPED.fetch_add(1, Ordering::Relaxed),
+                };
+            },
+        );
+
+        let counts = [
+            ("unparseable", &UNPARSEABLE),
+            ("not-IP", &NOT_IP),
+            ("portless IP", &PORTLESS),
+            ("non-transport proto", &EXOTIC_PROTO),
+            ("routed", &ROUTED),
+            ("dropped", &DROPPED),
+        ]
+        .map(|(label, counter)| (label, counter.load(Ordering::Relaxed)));
+        eprintln!(
+            "coverage: {}",
+            counts
+                .iter()
+                .map(|(label, n)| format!("{n} {label}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        let by_shape =
+            Shape::ALL.map(|shape| (shape, BY_SHAPE[shape as usize].load(Ordering::Relaxed)));
+        eprintln!(
+            "coverage by shape: {}",
+            by_shape
+                .iter()
+                .map(|(shape, n)| format!("{n} {shape:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        // Require every outcome class produced by generated stacks.
+        for (label, count) in counts {
+            if label == "unparseable" {
+                continue;
+            }
+            assert!(count >= 1, "no {label} packet was ever generated");
+        }
+        // Require every shape to round-trip through `wire_packet` and reach the NF.
+        for (shape, count) in by_shape {
+            assert!(
+                count >= 1,
+                "no {shape:?} packet ever reached the NF: the shape is no longer generated, or no \
+                 longer round-trips through a TestBuffer",
+            );
+        }
     }
 }

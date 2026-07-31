@@ -32,4 +32,5 @@ acl = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
 dpdk = { workspace = true, features = ["test"] }
 lpm = { workspace = true, features = ["testing"] }
-net = { workspace = true, features = ["builder"] }
+# Enable generated header stacks for classifier tests.
+net = { workspace = true, features = ["builder", "bolero"] }
