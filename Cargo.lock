@@ -1243,6 +1243,7 @@ dependencies = [
 name = "dataplane-acl-filter"
 version = "0.24.0"
 dependencies = [
+ "bolero",
  "dataplane-acl",
  "dataplane-common",
  "dataplane-concurrency",

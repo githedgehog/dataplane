@@ -22,6 +22,10 @@ mod context;
 mod display;
 
 #[cfg(test)]
+mod fuzz;
+#[cfg(test)]
+mod fuzz_gen;
+#[cfg(test)]
 mod tests;
 
 pub use access::{
