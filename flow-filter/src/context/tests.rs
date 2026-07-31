@@ -801,4 +801,21 @@ fn display_is_identical_across_backends() {
         dump.contains("-> VNI(200), NAT: port-forwarding"),
         "unexpected action rendering:\n{dump}"
     );
+
+    // The index is the operator-facing precedence claim -- `[0]` is consulted first -- so the dump
+    // must read in match order. Within one table that is longest-prefix-first: the port-forwarding
+    // /32 outranks the /24s it is nested among.
+    let remote_v4 = dump
+        .split("local v4 (source")
+        .next()
+        .expect("split yields at least one element");
+    let rank = |needle: &str| {
+        remote_v4
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing from the remote v4 table:\n{remote_v4}"))
+    };
+    assert!(
+        rank("80.0.0.5/32") < rank("70.0.0.0/24") && rank("80.0.0.5/32") < rank("90.0.0.0/24"),
+        "rules are not rendered in precedence order:\n{remote_v4}"
+    );
 }

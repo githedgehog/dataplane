@@ -56,6 +56,13 @@ mod render {
 
     struct Table<'a, K: MatchKey, A>(&'a AnyTable<K, A>);
 
+    /// Rules as a numbered list in match order: `[0]` is consulted first.
+    ///
+    /// The index is the rank, not the internal priority value. A priority is a computed encoding
+    /// of (prefix length, port-forwarding bit) that means nothing outside the table builder and is
+    /// not stable across releases -- printing it invites an operator to read precedence out of an
+    /// opaque number, or to compare two numbers whose scale may have changed underneath them. The
+    /// rank answers the question they actually have: which rule wins.
     impl<K: MatchKey, A: ActionDisplay> Display for Table<'_, K, A>
     where
         K::Rule: Display,
@@ -64,13 +71,8 @@ mod render {
             if self.0.len() == 0 {
                 return writeln!(f, "(no rules)");
             }
-            for RuleRow {
-                priority,
-                rule,
-                action,
-            } in self.0.rules()
-            {
-                write!(f, "[{priority}] {rule} -> ")?;
+            for (idx, RuleRow { rule, action }) in self.0.rules().iter().enumerate() {
+                write!(f, "[{idx}] {rule} -> ")?;
                 action.fmt_action(f)?;
                 writeln!(f)?;
             }

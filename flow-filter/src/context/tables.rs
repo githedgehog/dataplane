@@ -201,8 +201,12 @@ struct NeutralRule<K: MatchKey, A> {
 /// One retained rule, in match order. Keeping the *typed* rule (rather than the erased predicates,
 /// or nothing at all) is what lets the CLI render a VNI as a VNI and a protocol as `TCP`, without
 /// decoding bytes or trusting field position.
+///
+/// The rule's priority is deliberately not carried here. It is an internal encoding of
+/// (prefix length, port-forwarding bit) -- see [`rule_priority`] -- with no meaning outside this
+/// module and no stability across releases. Position in [`AnyTable::rules`] already expresses the
+/// only thing the priority says that an operator can act on: which rule is consulted first.
 pub(super) struct RuleRow<K: MatchKey, A> {
-    pub(super) priority: u32,
     pub(super) rule: K::Rule,
     pub(super) action: A,
 }
@@ -269,7 +273,7 @@ impl<K: MatchKey, A> AnyTable<K, A> {
         self.rules.len()
     }
 
-    /// The rules this table was built from, highest priority (= match order) first.
+    /// The rules this table was built from, in match order: index 0 is consulted first.
     pub(super) fn rules(&self) -> &[RuleRow<K, A>] {
         &self.rules
     }
@@ -313,11 +317,14 @@ where
     // Descending priority is match order. The reference backend needs it (it is first-match, so
     // this is what reproduces rte_acl's highest-priority-wins), and the CLI dump reads top-down.
     // rte_acl takes each priority explicitly, so the order is immaterial to it.
+    //
+    // The sort is stable, so equal-priority rules keep the order the overlay walk emitted them in.
+    // That only decides the *display* order among them: rules that can both match a packet never
+    // share a priority (see rule_priority), so ties are rules that partition the key space.
     rules.sort_by_key(|rule| Reverse(rule.priority));
     let rows: Box<[RuleRow<K, A>]> = rules
         .iter()
         .map(|rule| RuleRow {
-            priority: rule.priority,
             rule: rule.rule,
             action: rule.action,
         })
