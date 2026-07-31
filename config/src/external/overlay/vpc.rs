@@ -151,8 +151,7 @@ impl ValidatedPeering {
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {
-        // If stateful NAT is set up on one side of the peering, we don't support NAT (static or
-        // stateful) on the other side.
+        // Stateful NAT cannot appear on both sides; static NAT is compatible with every mode.
         let mut local_has_masquerading = false;
         let mut local_has_port_forwarding = false;
         for expose in self.local.valexp() {

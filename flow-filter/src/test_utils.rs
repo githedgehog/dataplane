@@ -200,6 +200,34 @@ pub(crate) fn build_icmp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> Headers {
         .unwrap()
 }
 
+pub(crate) fn build_udp_packet_v6(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> Headers {
+    HeaderStack::new()
+        .eth(|_| {})
+        .ipv6(|ip| {
+            ip.set_source(UnicastIpv6Addr::new(src).unwrap());
+            ip.set_destination(dst);
+        })
+        .udp(|udp| {
+            udp.set_source(UdpPort::try_from(sport).unwrap());
+            udp.set_destination(UdpPort::try_from(dport).unwrap());
+        })
+        .build_headers()
+        .unwrap()
+}
+
+/// Build an ICMPv6 packet with an `ICMP6` next header.
+pub(crate) fn build_icmp_packet_v6(src: Ipv6Addr, dst: Ipv6Addr) -> Headers {
+    HeaderStack::new()
+        .eth(|_| {})
+        .ipv6(|ip| {
+            ip.set_source(UnicastIpv6Addr::new(src).unwrap());
+            ip.set_destination(dst);
+        })
+        .icmp6(|_| {})
+        .build_headers()
+        .unwrap()
+}
+
 pub(crate) fn build_tcp_packet_v6(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> Headers {
     HeaderStack::new()
         .eth(|_| {})
