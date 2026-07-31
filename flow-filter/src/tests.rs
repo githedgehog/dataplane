@@ -5,13 +5,14 @@
 
 #![cfg(test)]
 
-use crate::FlowFilter;
 use crate::context::{FlowFilterContext, FlowFilterContextWriter};
+use crate::fuzz_gen::Probe;
 use crate::test_utils::{
     build_icmp_packet, build_nonip_packet, build_tcp_packet, build_tcp_packet_v6, build_udp_packet,
     context, expose, expose_masquerade, expose_port_forwarding, expose_static, peering, v4, v6,
     vpcd,
 };
+use crate::{FlowFilter, LookupResult, NatRequirement};
 use concurrency::sync::Arc;
 use lpm::prefix::L4Protocol;
 use net::FlowKey;
@@ -1060,4 +1061,198 @@ fn burst_processing_upholds_structural_invariants() {
                 }
             }
         });
+}
+
+// Generated-overlay metadata oracle for packets without attached flows.
+
+/// What the NF must leave on a flowless packet.
+#[derive(Debug, PartialEq, Eq)]
+enum NfOutcome {
+    /// Dropped for this reason, with no destination stamped.
+    Dropped(Option<DoneReason>),
+    Routed {
+        dst_vpcd: Option<VpcDiscriminant>,
+        masquerade: bool,
+        static_nat_src: bool,
+        static_nat_dst: bool,
+        port_forwarding: bool,
+        /// Whether the pre-translation flow key was retained.
+        flow_key: bool,
+    },
+}
+
+/// Convert a config lookup into the expected flowless-packet outcome.
+fn expected_outcome(result: LookupResult) -> NfOutcome {
+    let (dst_vpcd, dst_nat, src_nat) = match result {
+        LookupResult::Route(route) => route,
+        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => {
+            return NfOutcome::Dropped(Some(DoneReason::Filtered));
+        }
+    };
+    if dst_nat == Some(NatRequirement::Masquerade) {
+        return NfOutcome::Dropped(Some(DoneReason::Filtered));
+    }
+
+    let masquerade = src_nat == Some(NatRequirement::Masquerade);
+    let static_nat_src = src_nat == Some(NatRequirement::Static);
+    let static_nat_dst = dst_nat == Some(NatRequirement::Static);
+    let port_forwarding = src_nat == Some(NatRequirement::PortForwarding)
+        || dst_nat == Some(NatRequirement::PortForwarding);
+    NfOutcome::Routed {
+        dst_vpcd: Some(dst_vpcd),
+        masquerade,
+        static_nat_src,
+        static_nat_dst,
+        port_forwarding,
+        // Combined stateful and static NAT retains the pre-translation addresses.
+        flow_key: (masquerade || port_forwarding) && (static_nat_src || static_nat_dst),
+    }
+}
+
+fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
+    if pkt.is_done() {
+        return NfOutcome::Dropped(pkt.get_done());
+    }
+    let meta = pkt.meta();
+    NfOutcome::Routed {
+        dst_vpcd: meta.dst_vpcd,
+        masquerade: meta.requires_masquerade(),
+        static_nat_src: meta.requires_static_nat_src(),
+        static_nat_dst: meta.requires_static_nat_dst(),
+        port_forwarding: meta.requires_port_forwarding(),
+        flow_key: meta.flow_key.is_some(),
+    }
+}
+
+/// Build a packet and normalize its probe to the values carried on the wire.
+/// Returns `None` when the source and destination use different IP versions.
+fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
+    use crate::test_utils::{build_icmp_packet_v6, build_udp_packet_v6};
+    use net::ip::NextHeader;
+
+    let mut probe = *probe;
+    if let Some((sport, dport)) = probe.ports.as_mut() {
+        *sport = (*sport).max(1);
+        *dport = (*dport).max(1);
+    }
+
+    let headers = match (probe.src_ip, probe.dst_ip) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => match probe.ports {
+            Some((sp, dp)) if probe.proto == NextHeader::TCP => build_tcp_packet(src, dst, sp, dp),
+            Some((sp, dp)) if probe.proto == NextHeader::UDP => build_udp_packet(src, dst, sp, dp),
+            _ => {
+                probe.proto = NextHeader::ICMP;
+                probe.ports = None;
+                build_icmp_packet(src, dst)
+            }
+        },
+        (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => match probe.ports {
+            Some((sp, dp)) if probe.proto == NextHeader::TCP => {
+                build_tcp_packet_v6(src, dst, sp, dp)
+            }
+            Some((sp, dp)) if probe.proto == NextHeader::UDP => {
+                build_udp_packet_v6(src, dst, sp, dp)
+            }
+            _ => {
+                probe.proto = NextHeader::ICMP6;
+                probe.ports = None;
+                build_icmp_packet_v6(src, dst)
+            }
+        },
+        _ => return None,
+    };
+    Some((packet(Some(probe.src_vpcd), headers), probe))
+}
+
+/// Check flowless-packet metadata against the config oracle for generated overlays.
+/// Each routing, drop, NAT, and flow-key outcome must be reached.
+#[test]
+fn nf_metadata_matches_config_oracle() {
+    use crate::context::fuzz::oracle_lookup;
+    use crate::fuzz_gen::{OverlaySpec, ProbeSpec};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
+    static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MASQUERADE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static STATIC_SRC: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static STATIC_DST: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PORT_FORWARDING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static FLOW_KEYED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    bolero::check!()
+        .with_type::<(OverlaySpec, [ProbeSpec; 8])>()
+        .for_each(|(overlay_spec, probe_specs)| {
+            // The classifier is not safe to capture across Bolero's unwind boundary.
+            let built = overlay_spec.build();
+            let (mut flow_filter, _writer) =
+                make_flow_filter(FlowFilterContext::for_test(&built.overlay));
+
+            // Derived probes cover routes; generated probes add misses and edge cases.
+            let derived = built.routing_probes.iter().copied();
+            let generated = probe_specs.iter().map(|spec| spec.resolve(built.blocks));
+            for probe in derived.chain(generated) {
+                let Some((pkt, probe)) = probe_packet(&probe) else {
+                    continue;
+                };
+                let expected = expected_outcome(oracle_lookup(&built.overlay, &probe));
+                assert_eq!(
+                    observed_outcome(&run(&mut flow_filter, pkt)),
+                    expected,
+                    "stamped metadata diverges from the configuration for {probe:?}\n\
+                     spec: {overlay_spec:?}",
+                );
+
+                match expected {
+                    NfOutcome::Dropped(_) => {
+                        DROPPED.fetch_add(1, Ordering::Relaxed);
+                    }
+                    NfOutcome::Routed {
+                        masquerade,
+                        static_nat_src,
+                        static_nat_dst,
+                        port_forwarding,
+                        flow_key,
+                        ..
+                    } => {
+                        ROUTED.fetch_add(1, Ordering::Relaxed);
+                        for (hit, counter) in [
+                            (masquerade, &MASQUERADE),
+                            (static_nat_src, &STATIC_SRC),
+                            (static_nat_dst, &STATIC_DST),
+                            (port_forwarding, &PORT_FORWARDING),
+                            (flow_key, &FLOW_KEYED),
+                        ] {
+                            if hit {
+                                counter.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+    let counts = [
+        ("routed", &ROUTED),
+        ("dropped", &DROPPED),
+        ("masquerade", &MASQUERADE),
+        ("static NAT (src)", &STATIC_SRC),
+        ("static NAT (dst)", &STATIC_DST),
+        ("port forwarding", &PORT_FORWARDING),
+        ("retaining a flow key", &FLOW_KEYED),
+    ]
+    .map(|(label, counter)| (label, counter.load(Ordering::Relaxed)));
+    eprintln!(
+        "coverage: {}",
+        counts
+            .iter()
+            .map(|(label, n)| format!("{n} {label}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for (label, count) in counts {
+        assert!(count >= 1, "the {label} case was never reached");
+    }
 }

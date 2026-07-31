@@ -10,7 +10,7 @@ use config::external::overlay::ValidatedOverlay;
 
 mod display;
 #[cfg(test)]
-mod fuzz;
+pub(crate) mod fuzz;
 mod tables;
 #[cfg(test)]
 mod tests;

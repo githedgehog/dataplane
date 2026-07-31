@@ -71,6 +71,14 @@ impl FwProto {
             FwProto::Udp => Some(L4Protocol::Udp),
         }
     }
+
+    /// A protocol accepted by this expose. Generated `Any` probes use TCP.
+    fn probe_next_header(self) -> NextHeader {
+        match self {
+            FwProto::Any | FwProto::Tcp => NextHeader::TCP,
+            FwProto::Udp => NextHeader::UDP,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, TypeGenerator)]
@@ -95,10 +103,6 @@ impl ExposeSpec {
         !matches!(self, ExposeSpec::Plain | ExposeSpec::StaticNat)
     }
 
-    fn has_nat(self) -> bool {
-        !matches!(self, ExposeSpec::Plain)
-    }
-
     /// Whether this expose gives the source side of a route an unconstrained, connection-initiating
     /// match: a plain / static-nat / masquerade private block (a `/24` or `/120` with no port
     /// constraint, `can_init_connection`). Port forwarding cannot initiate, so a pure
@@ -110,10 +114,19 @@ impl ExposeSpec {
         )
     }
 
-    /// Where a destination address this expose matches lives, or `None` if it only matches
-    /// port-forwarded destinations (skipped -- those need a specific public port). `Some(true)`
-    /// means the public block (NAT exposes translate destinations into it); `Some(false)` means the
-    /// private block (a plain expose's public IPs are its private IPs).
+    /// Protocols for probes targeting this expose's port-forwarded destination.
+    fn portfw_protos(self) -> Vec<FwProto> {
+        match self {
+            ExposeSpec::Plain | ExposeSpec::StaticNat | ExposeSpec::Masquerade => Vec::new(),
+            ExposeSpec::PortForwarding(proto)
+            | ExposeSpec::MasqueradeNestingPortFw(proto)
+            | ExposeSpec::MasqueradeSameLenPortFw(proto) => vec![proto],
+            ExposeSpec::PortFwProtoPair => vec![FwProto::Tcp, FwProto::Udp],
+        }
+    }
+
+    /// Whether a matching destination uses the public or private block.
+    /// Returns `None` for exposes that require a port-forwarding probe.
     fn dest_public_space(self) -> Option<bool> {
         match self {
             ExposeSpec::Plain => Some(false),
@@ -147,14 +160,13 @@ impl ManifestSpec {
         self.expose_specs().any(ExposeSpec::is_stateful)
     }
 
-    fn has_nat(&self) -> bool {
-        self.expose_specs().any(ExposeSpec::has_nat)
-    }
-
-    fn strip_nat(&mut self) {
+    /// Replace every stateful-NAT expose with a static-NAT one.
+    ///
+    /// This makes both peering sides compatible while retaining static-NAT combinations.
+    fn strip_stateful_nat(&mut self) {
         for slot in self.exposes.iter_mut().flatten() {
-            if slot.has_nat() {
-                *slot = ExposeSpec::Plain;
+            if slot.is_stateful() {
+                *slot = ExposeSpec::StaticNat;
             }
         }
     }
@@ -218,11 +230,9 @@ impl OverlaySpec {
             if peering.local.default && peering.remote.default {
                 peering.remote.drop_default();
             }
-            // Stateful NAT on one side of a peering forbids any NAT on the other side.
-            if peering.local.has_stateful() && peering.remote.has_nat() {
-                peering.remote.strip_nat();
-            } else if peering.remote.has_stateful() && peering.local.has_nat() {
-                peering.local.strip_nat();
+            // At most one side of a peering may use stateful NAT.
+            if peering.local.has_stateful() && peering.remote.has_stateful() {
+                peering.remote.strip_stateful_nat();
             }
         }
         // Each VPC may see at most one default destination across all of its peerings. A default
@@ -296,9 +306,9 @@ impl OverlaySpec {
     }
 }
 
-/// Append one guaranteed-routing probe for each (source-capable local expose, matchable remote
-/// expose) pair of a peering. The source lands at host `.1` of a can-init private block and the
-/// destination at host `.1` of the peer's matching block
+/// Append a routing probe for each compatible pair of local and remote exposes.
+///
+/// Port-forwarding probes target [`FW_HOST`] and [`FW_PUBLIC_PORTS`]. Other probes use host `.1`.
 fn derive_routing_probes(
     out: &mut Vec<Probe>,
     src_vni: u32,
@@ -313,16 +323,26 @@ fn derive_routing_probes(
         }
         let src_ip = block_addr(local_base + li as u8, 1, false, v6);
         for (ri, rspec) in remote.expose_specs().enumerate() {
-            let Some(dst_public) = rspec.dest_public_space() else {
-                continue;
-            };
-            out.push(Probe {
-                src_vpcd,
-                src_ip,
-                dst_ip: block_addr(remote_base + ri as u8, 1, dst_public, v6),
-                proto: NextHeader::TCP,
-                ports: Some((1, 1)),
-            });
+            let dst_block = remote_base + ri as u8;
+            if let Some(dst_public) = rspec.dest_public_space() {
+                out.push(Probe {
+                    src_vpcd,
+                    src_ip,
+                    dst_ip: block_addr(dst_block, 1, dst_public, v6),
+                    proto: NextHeader::TCP,
+                    ports: Some((1, 1)),
+                });
+            }
+            for proto in rspec.portfw_protos() {
+                out.push(Probe {
+                    src_vpcd,
+                    src_ip,
+                    dst_ip: block_addr(dst_block, FW_HOST, true, v6),
+                    proto: proto.probe_next_header(),
+                    // Source exposes do not constrain ports.
+                    ports: Some((1, FW_PUBLIC_PORTS.0)),
+                });
+            }
         }
     }
 }
