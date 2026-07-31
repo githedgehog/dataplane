@@ -498,6 +498,87 @@ fn ipv6_lookup() {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Non-regression test: a prior implementation of the flow-filter stage used to have a bug. For a
+// setup with:
+//
+// - vpc2 and vpc3 exposing overlapping prefixes to vpc1, and
+// - vpc3's exposed prefixes being contained within vpc2's exposed prefixes to vpc1, and
+// - vpc2's exposed prefixes containing contiguous prefixes that could be merged into a single
+//   parent prefix,
+//
+// then we would merge entries in the temporary list of overlapping prefixes used to compute table
+// entries, resulting in a discrepency between (merged) prefixes for vpc2's context and (split)
+// prefixes for vpc3's context. In our example here, the context table would contain, for source
+// vpc1, among other entries, one entry for 10.0.2.0/31 (dst: vpc2), and additional entries for
+// 10.0.2.2/32 plus 10.0.2.3/32 (dst: vpc3), instead of one single block for 10.0.2.2/31 and
+// multiple destination matches. This would result in the flow-filter picking always the same
+// incomplete entry and failing to find the destination VPC for some IPs with multiple matching
+// entries (there should never have been multiple matching entries in the context table).
+//
+// The current implementation works differently and does not rely on splitting/merging prefixes, but
+// we keep this test anyway to be sure this doesn't reproduce.
+#[test]
+fn discrepancy_overlapping_contiguous_prefixes() {
+    let ctx = context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.2.0/24")]),
+                ("vpc2", vec![expose("20.0.0.0/24")]),
+            ),
+            peering(
+                "vpc1-to-vpc3",
+                (
+                    "vpc1",
+                    vec![expose_multi(&[
+                        // Contiguous prefixes, which could also be expressed as a single parent
+                        // prefix 10.0.2.2/31; and that are contained within 10.0.2.0/24 exposed
+                        // to vpc1 by vpc2
+                        "10.0.2.2/32",
+                        "10.0.2.3/32",
+                    ])],
+                ),
+                ("vpc3", vec![expose("30.0.0.0/24")]),
+            ),
+        ],
+    );
+
+    let r = route(
+        &ctx,
+        vpcd(100),
+        &build_tcp_packet(v4("10.0.2.2"), v4("30.0.0.1"), 9999, 80),
+    )
+    .expect("request: single matching destination in table should be found based on src/dst IPs");
+    assert_eq!(r.dst_vpcd, vpcd(300));
+    assert_eq!(r.src_nat, None);
+    assert_eq!(r.dst_nat, None);
+
+    let r = route(
+        &ctx,
+        vpcd(300),
+        &build_tcp_packet(v4("30.0.0.1"), v4("10.0.2.2"), 80, 9999),
+    )
+    .expect("reply: single matching destination in table should be found based on src/dst IPs");
+    assert_eq!(r.dst_vpcd, vpcd(100));
+    assert_eq!(r.src_nat, None);
+    assert_eq!(r.dst_nat, None);
+
+    // Check there are no /32 prefixes in the remote-side rules
+    let rules = ctx.remote_v4.reference_rules().unwrap();
+    for rule in rules {
+        let dst_prefix = rule.fields()[2].as_prefix().unwrap();
+        assert_ne!(dst_prefix.1, 32);
+    }
+    // Check there are no /32 prefixes in the local-side rules
+    let rules = ctx.local_v4.reference_rules().unwrap();
+    for rule in rules {
+        let src_prefix = rule.fields()[3].as_prefix().unwrap();
+        assert_ne!(src_prefix.1, 32);
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
 // Differential: the rte_acl (Dpdk) backend must agree with the reference oracle on every probe.
 // This validates the wide-key encoding and the prefix-length priority scheme against real rte_acl.
 
