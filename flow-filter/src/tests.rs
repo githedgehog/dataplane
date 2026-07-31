@@ -1697,3 +1697,94 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
 }
+
+// -------------------------------------------------------------------------------------------------
+// Documented behaviour: two edges the adversarial-header and burst suites reach constantly but
+// never pin, because a property test can only say "the NF agreed with the config", not "and here is
+// what the config means".
+
+/// A packet with no usable transport ports looks up with port `0`, and config forbids port `0` in
+/// an expose's ranges -- so a port-restricted expose can never match one.
+///
+/// This is not an exotic case: an ICMP packet, a non-first fragment, and (per
+/// [`ipv6_extension_header_masks_the_transport_protocol`]) anything behind an IPv6 extension header
+/// all present portless keys. The adversarial-header suite generates thousands per run. The effect
+/// is fail-closed, but it means port-forwarded destinations are unreachable by such traffic --
+/// including the ICMP errors that path MTU discovery depends on.
+#[test]
+fn portless_packet_cannot_match_a_port_restricted_expose() {
+    // vpc2 publishes 80.0.0.5 only as a port-forwarding destination on public port 2222.
+    let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("10.0.0.5"), v4("80.0.0.5")),
+        ),
+    );
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "a portless packet cannot match the port-restricted expose that publishes this address",
+    );
+    assert_eq!(out.meta().dst_vpcd, None);
+
+    // The same address and protocol route once a covering expose carries no port constraint, which
+    // confirms the port -- not the address or the protocol -- is what excluded it.
+    let unrestricted = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            ("vpc2", vec![expose("80.0.0.0/24")]),
+        )],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(unrestricted);
+    let out = run(
+        &mut flow_filter,
+        packet(
+            Some(vpcd(100)),
+            build_icmp_packet(v4("10.0.0.5"), v4("80.0.0.5")),
+        ),
+    );
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+}
+
+/// A flow whose generation is *newer* than the pipeline's is trusted for bypass.
+///
+/// `dst_vpcd_from_valid_flow` rejects only `flow_genid < genid`, so a flow tagged with a generation
+/// the filter has not yet observed short-circuits the tables entirely. That is deliberate -- it is
+/// the "small transient period" the function's comment describes, where a reconfiguring control
+/// plane has already stamped flows with the new generation but this worker still reads the old one,
+/// and treating those as stale would tear down every flow the new config just blessed.
+///
+/// Pinned because it is the one direction of the genid comparison nothing else covers, and because
+/// it is asymmetric in a way that reads like a bug until the transient is explained: the bypass
+/// here wins over what the tables say, exactly as an equal-generation flow would.
+#[test]
+fn flow_from_a_newer_generation_is_honored_for_bypass() {
+    let (mut flow_filter, _writer) = make_flow_filter(source_nat_context());
+
+    // A destination the current tables do not cover at all: without the flow this would be
+    // Filtered, so honouring the flow is observable rather than incidental.
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.5"), v4("9.9.9.9"), 1234, 5678),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    flow.set_genid(9);
+
+    let out = run(&mut flow_filter, p);
+    assert!(
+        !out.is_done(),
+        "a newer-generation flow must bypass the tables: {:?}",
+        out.get_done(),
+    );
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert_eq!(
+        flow.status(),
+        FlowStatus::Active,
+        "the bypass path must not invalidate the flow it just honoured",
+    );
+}
