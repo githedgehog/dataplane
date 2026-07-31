@@ -58,6 +58,15 @@ pub(crate) fn expose(ip: &str) -> VpcExpose {
     VpcExpose::empty().ip(ip.into())
 }
 
+/// Plain expose (no NAT): the listed prefixes are both private and public.
+pub(crate) fn expose_multi(ips: &[&str]) -> VpcExpose {
+    let mut expose = VpcExpose::empty();
+    for &ip in ips {
+        expose = expose.ip(ip.into());
+    }
+    expose
+}
+
 /// Default expose (catch-all): matches anything not matched by another expose.
 pub(crate) fn expose_default() -> VpcExpose {
     VpcExpose::empty().set_default()
