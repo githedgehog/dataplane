@@ -5,13 +5,14 @@
 
 #![cfg(test)]
 
-use crate::FlowFilter;
 use crate::context::{FlowFilterContext, FlowFilterContextWriter};
+use crate::fuzz_gen::Probe;
 use crate::test_utils::{
     build_icmp_packet, build_nonip_packet, build_tcp_packet, build_tcp_packet_v6, build_udp_packet,
     context, expose, expose_masquerade, expose_port_forwarding, expose_static, peering, v4, v6,
     vpcd,
 };
+use crate::{FlowFilter, LookupResult, NatRequirement};
 use concurrency::sync::Arc;
 use lpm::prefix::L4Protocol;
 use net::FlowKey;
@@ -1060,4 +1061,214 @@ fn burst_processing_upholds_structural_invariants() {
                 }
             }
         });
+}
+
+// -------------------------------------------------------------------------------------------------
+// End-to-end config oracle: from a generated configuration all the way to a packet's metadata.
+//
+// The context property tests stop at a `LookupResult`. The step after it -- turning that result
+// into the destination and NAT flags the downstream NFs act on -- was covered only by hand-written
+// examples, so the mapping was never checked against a configuration nobody chose. This closes
+// that last hop: the route is predicted by the *same* config oracle the context suite uses (see
+// `context::fuzz::oracle_lookup`), and only the `LookupResult` -> metadata step is restated here.
+//
+// Scope: packets with no attached flow. Everything a flow contributes -- bypass, invalidation, and
+// the reply paths that let an established flow overrule a miss -- is deliberately excluded, since
+// that logic is not a function of the configuration and is covered by
+// `invalidation_decision_matches_spec` and the flow tests above.
+
+/// What the NF must leave on a flowless packet.
+#[derive(Debug, PartialEq, Eq)]
+enum NfOutcome {
+    /// Dropped for this reason, with no destination stamped.
+    Dropped(Option<DoneReason>),
+    Routed {
+        dst_vpcd: Option<VpcDiscriminant>,
+        masquerade: bool,
+        static_nat_src: bool,
+        static_nat_dst: bool,
+        port_forwarding: bool,
+        /// Whether the pre-translation flow key was retained.
+        flow_key: bool,
+    },
+}
+
+/// The outcome the configuration predicts, given the route it resolves to.
+///
+/// Without a flow to vouch for it, every miss drops: a destination miss because no peering covers
+/// the packet, a source miss because only an established port-forwarding flow could excuse one. A
+/// masquerade destination drops for the same reason -- it cannot accept a new connection.
+fn expected_outcome(result: LookupResult) -> NfOutcome {
+    let (dst_vpcd, dst_nat, src_nat) = match result {
+        LookupResult::Route(route) => route,
+        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => {
+            return NfOutcome::Dropped(Some(DoneReason::Filtered));
+        }
+    };
+    if dst_nat == Some(NatRequirement::Masquerade) {
+        return NfOutcome::Dropped(Some(DoneReason::Filtered));
+    }
+
+    let masquerade = src_nat == Some(NatRequirement::Masquerade);
+    let static_nat_src = src_nat == Some(NatRequirement::Static);
+    let static_nat_dst = dst_nat == Some(NatRequirement::Static);
+    let port_forwarding = src_nat == Some(NatRequirement::PortForwarding)
+        || dst_nat == Some(NatRequirement::PortForwarding);
+    NfOutcome::Routed {
+        dst_vpcd: Some(dst_vpcd),
+        masquerade,
+        static_nat_src,
+        static_nat_dst,
+        port_forwarding,
+        // Stateful NAT combined with static NAT is the one case that needs the original addresses
+        // kept, so the right flow-table entries can be built later.
+        flow_key: (masquerade || port_forwarding) && (static_nat_src || static_nat_dst),
+    }
+}
+
+fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
+    if pkt.is_done() {
+        return NfOutcome::Dropped(pkt.get_done());
+    }
+    let meta = pkt.meta();
+    NfOutcome::Routed {
+        dst_vpcd: meta.dst_vpcd,
+        masquerade: meta.requires_masquerade(),
+        static_nat_src: meta.requires_static_nat_src(),
+        static_nat_dst: meta.requires_static_nat_dst(),
+        port_forwarding: meta.requires_port_forwarding(),
+        flow_key: meta.flow_key.is_some(),
+    }
+}
+
+/// Realize a probe as a real packet, together with the probe as that packet actually carries it.
+///
+/// Not every probe is a packet. Source and destination must agree on IP version (the lookup treats
+/// a mismatch as a destination miss, but no such packet exists on the wire), ports on the wire are
+/// non-zero (0 is the wildcard the lookup substitutes for a portless packet), and ICMP over v6 is a
+/// different next header than over v4. Where the packet cannot carry the probe verbatim, the probe
+/// is adjusted to match -- so the oracle is always asked about the packet that was really built.
+fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
+    use crate::test_utils::{build_icmp_packet_v6, build_udp_packet_v6};
+    use net::ip::NextHeader;
+
+    let mut probe = *probe;
+    if let Some((sport, dport)) = probe.ports.as_mut() {
+        *sport = (*sport).max(1);
+        *dport = (*dport).max(1);
+    }
+
+    let headers = match (probe.src_ip, probe.dst_ip) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => match probe.ports {
+            Some((sp, dp)) if probe.proto == NextHeader::TCP => build_tcp_packet(src, dst, sp, dp),
+            Some((sp, dp)) if probe.proto == NextHeader::UDP => build_udp_packet(src, dst, sp, dp),
+            _ => {
+                probe.proto = NextHeader::ICMP;
+                probe.ports = None;
+                build_icmp_packet(src, dst)
+            }
+        },
+        (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => match probe.ports {
+            Some((sp, dp)) if probe.proto == NextHeader::TCP => {
+                build_tcp_packet_v6(src, dst, sp, dp)
+            }
+            Some((sp, dp)) if probe.proto == NextHeader::UDP => {
+                build_udp_packet_v6(src, dst, sp, dp)
+            }
+            _ => {
+                probe.proto = NextHeader::ICMP6;
+                probe.ports = None;
+                build_icmp_packet_v6(src, dst)
+            }
+        },
+        _ => return None,
+    };
+    Some((packet(Some(probe.src_vpcd), headers), probe))
+}
+
+/// The metadata the NF stamps on a flowless packet is exactly what the configuration predicts, for
+/// every probe of every generated overlay.
+///
+/// Coverage is asserted, not assumed: the counters fail the test if a time-boxed run never routed a
+/// packet, never applied a NAT requirement, or never reached the flow-key case (which needs a route
+/// requiring both stateful and static NAT, and so exists only on masquerade-opposite-static-NAT
+/// peerings).
+#[test]
+fn nf_metadata_matches_config_oracle() {
+    use crate::context::fuzz::oracle_lookup;
+    use crate::fuzz_gen::{OverlaySpec, ProbeSpec};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
+    static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static NATTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static FLOW_KEYED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    bolero::check!()
+        .with_type::<(OverlaySpec, [ProbeSpec; 8])>()
+        .for_each(|(overlay_spec, probe_specs)| {
+            // Built inside the closure: the filter holds a classifier, which is not unwind-safe and
+            // so cannot be captured across bolero's catch_unwind boundary.
+            let built = overlay_spec.build();
+            let (mut flow_filter, _writer) =
+                make_flow_filter(FlowFilterContext::for_test(&built.overlay));
+
+            // The overlay's own derived probes route by construction, which is where the NAT flags
+            // actually get exercised; the generated probes supply the misses and the edges.
+            let derived = built.routing_probes.iter().copied();
+            let generated = probe_specs.iter().map(|spec| spec.resolve(built.blocks));
+            for probe in derived.chain(generated) {
+                let Some((pkt, probe)) = probe_packet(&probe) else {
+                    continue;
+                };
+                let expected = expected_outcome(oracle_lookup(&built.overlay, &probe));
+                assert_eq!(
+                    observed_outcome(&run(&mut flow_filter, pkt)),
+                    expected,
+                    "stamped metadata diverges from the configuration for {probe:?}\n\
+                     spec: {overlay_spec:?}",
+                );
+
+                match expected {
+                    NfOutcome::Dropped(_) => {
+                        DROPPED.fetch_add(1, Ordering::Relaxed);
+                    }
+                    NfOutcome::Routed {
+                        masquerade,
+                        static_nat_src,
+                        static_nat_dst,
+                        port_forwarding,
+                        flow_key,
+                        ..
+                    } => {
+                        ROUTED.fetch_add(1, Ordering::Relaxed);
+                        if masquerade || static_nat_src || static_nat_dst || port_forwarding {
+                            NATTED.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if flow_key {
+                            FLOW_KEYED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        });
+
+    let (routed, natted) = (
+        ROUTED.load(Ordering::Relaxed),
+        NATTED.load(Ordering::Relaxed),
+    );
+    let (flow_keyed, dropped) = (
+        FLOW_KEYED.load(Ordering::Relaxed),
+        DROPPED.load(Ordering::Relaxed),
+    );
+    eprintln!(
+        "coverage: {routed} routed ({natted} with a NAT requirement, \
+         {flow_keyed} retaining a flow key), {dropped} dropped"
+    );
+    assert!(routed >= 1, "no packet was ever routed");
+    assert!(natted >= 1, "no route ever carried a NAT requirement");
+    assert!(flow_keyed >= 1, "the flow-key case was never reached");
+    assert!(dropped >= 1, "no packet was ever dropped");
 }

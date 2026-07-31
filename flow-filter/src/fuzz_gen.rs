@@ -95,10 +95,6 @@ impl ExposeSpec {
         !matches!(self, ExposeSpec::Plain | ExposeSpec::StaticNat)
     }
 
-    fn has_nat(self) -> bool {
-        !matches!(self, ExposeSpec::Plain)
-    }
-
     /// Whether this expose gives the source side of a route an unconstrained, connection-initiating
     /// match: a plain / static-nat / masquerade private block (a `/24` or `/120` with no port
     /// constraint, `can_init_connection`). Port forwarding cannot initiate, so a pure
@@ -147,14 +143,18 @@ impl ManifestSpec {
         self.expose_specs().any(ExposeSpec::is_stateful)
     }
 
-    fn has_nat(&self) -> bool {
-        self.expose_specs().any(ExposeSpec::has_nat)
-    }
-
-    fn strip_nat(&mut self) {
+    /// Replace every stateful-NAT expose with a static-NAT one.
+    ///
+    /// Config forbids stateful NAT on *both* sides of a peering, but static NAT opposite stateful
+    /// is explicitly permitted (see `ValidatedPeering::validate_nat_combinations`: "no NAT or
+    /// static NAT only is compatible with all other modes on the other side"). Downgrading rather
+    /// than flattening to plain is what keeps masquerade-opposite-static-NAT peerings in the
+    /// generated population -- and those are the only ones that produce a route requiring both
+    /// stateful and static NAT, which is the sole case in which the NF retains a flow key.
+    fn strip_stateful_nat(&mut self) {
         for slot in self.exposes.iter_mut().flatten() {
-            if slot.has_nat() {
-                *slot = ExposeSpec::Plain;
+            if slot.is_stateful() {
+                *slot = ExposeSpec::StaticNat;
             }
         }
     }
@@ -218,11 +218,10 @@ impl OverlaySpec {
             if peering.local.default && peering.remote.default {
                 peering.remote.drop_default();
             }
-            // Stateful NAT on one side of a peering forbids any NAT on the other side.
-            if peering.local.has_stateful() && peering.remote.has_nat() {
-                peering.remote.strip_nat();
-            } else if peering.remote.has_stateful() && peering.local.has_nat() {
-                peering.local.strip_nat();
+            // Stateful NAT on one side of a peering forbids stateful NAT on the other. Static NAT
+            // opposite stateful is legal, so only the stateful side is downgraded.
+            if peering.local.has_stateful() && peering.remote.has_stateful() {
+                peering.remote.strip_stateful_nat();
             }
         }
         // Each VPC may see at most one default destination across all of its peerings. A default
