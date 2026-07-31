@@ -20,7 +20,7 @@ pub mod rule;
 #[cfg(feature = "bolero")]
 pub mod generator;
 
-pub use field::FixedSize;
+pub use field::{FixedSize, MaskBits};
 pub use predicate::{Erased, FieldBytes, FieldPredicate, MAX_FIELD_BYTES};
 pub use rule::{
     Accepts, Backend, ExactSpec, IntoBackendField, IsUniversal, MaskSpec, PrefixSpec, RangeSpec,

@@ -61,9 +61,13 @@ impl NextHeader {
     pub const AUTH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
 
     /// Generate a new [`NextHeader`]
+    ///
+    /// `const` so that callers can build associated constants from it (see this type's
+    /// `MaskBits` impl). `IpNumber`'s `From<u8>` is the identity wrapper, so constructing it
+    /// directly is the same value by another spelling.
     #[must_use]
-    pub fn new(inner: u8) -> Self {
-        Self(IpNumber::from(inner))
+    pub const fn new(inner: u8) -> Self {
+        Self(IpNumber(inner))
     }
 
     /// Return the [`NextHeader`] represented as a `u8`

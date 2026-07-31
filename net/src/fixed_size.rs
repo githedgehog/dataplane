@@ -3,7 +3,7 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use fixed_size::FixedSize;
+use fixed_size::{FixedSize, MaskBits};
 
 use crate::ip::NextHeader;
 use crate::ipv4::UnicastIpv4Addr;
@@ -19,6 +19,15 @@ impl FixedSize for NextHeader {
     fn write_be(&self, out: &mut [u8]) {
         self.as_u8().write_be(out);
     }
+}
+
+/// Every 8-bit pattern is a valid IP protocol number, so both mask constants are honest values of
+/// the type -- which is what makes `NextHeader` sound to use as a masked key field. Note that
+/// neither constant is a *protocol*: they exist so that a rule can say "match every bit" or "match
+/// none" without a caller having to write `NextHeader::new(0xff)` and imply protocol 255.
+impl MaskBits for NextHeader {
+    const ALL_BITS: Self = NextHeader::new(u8::MAX);
+    const NO_BITS: Self = NextHeader::new(0);
 }
 
 impl FixedSize for TcpPort {
@@ -91,6 +100,14 @@ mod tests {
             .unwrap()
             .write_be(&mut buf);
         assert_eq!(buf, [10, 0, 1, 2]);
+    }
+
+    /// The mask constants are bit patterns, so they are pinned as bytes: `ALL_BITS` must be every
+    /// bit and `NO_BITS` none, since that is all `rte_acl` sees of them.
+    #[test]
+    fn next_header_mask_bits_are_all_ones_and_all_zeros() {
+        assert_eq!(<NextHeader as MaskBits>::ALL_BITS.as_u8(), 0xff);
+        assert_eq!(<NextHeader as MaskBits>::NO_BITS.as_u8(), 0x00);
     }
 
     #[test]

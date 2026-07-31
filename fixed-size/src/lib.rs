@@ -17,6 +17,41 @@ pub trait FixedSize: Copy {
     fn write_be(&self, out: &mut [u8]);
 }
 
+/// The two bit patterns a bitmask match field is built from: every bit significant, or none.
+///
+/// A mask is a *bit pattern*, not a value of the domain type it constrains -- `0xff` is not a
+/// protocol number. With nowhere to put these, a caller has to mint a fake `Self` to say "match
+/// every bit" (`NextHeader::new(0xff)`), which places a value that means nothing into a field
+/// typed as though it did.
+///
+/// # Implementing
+///
+/// Implement this only for types where *every* bit pattern of the type's width is a valid
+/// inhabitant, since [`ALL_BITS`](Self::ALL_BITS) and [`NO_BITS`](Self::NO_BITS) must both be
+/// legal values. That is the same condition that makes a type sound to use as a bitmask field at
+/// all, so a type that cannot implement this is a type that should not be masked: `TcpPort` is
+/// `NonZero`, so it has no `NO_BITS`, and `Vni` is both non-zero and capped at 24 bits, so it has
+/// neither constant. Neither is ever a masked field, and neither can accidentally become one.
+pub trait MaskBits: FixedSize {
+    /// Every bit significant: the field matches only if it equals the value exactly.
+    const ALL_BITS: Self;
+    /// No bit significant: the field is a wildcard and matches anything.
+    const NO_BITS: Self;
+}
+
+macro_rules! impl_mask_bits_for_uint {
+    ($($ty:ty),* $(,)?) => {$(
+        impl MaskBits for $ty {
+            const ALL_BITS: Self = <$ty>::MAX;
+            const NO_BITS: Self = 0;
+        }
+    )*};
+}
+
+// The unsigned integers are the natural bitmask carriers: every bit pattern is a valid value, and
+// `MAX` / `0` are unambiguous. Domain newtypes implement `MaskBits` next to their `FixedSize` impl.
+impl_mask_bits_for_uint!(u8, u16, u32, u64, u128);
+
 impl FixedSize for u8 {
     const SIZE: usize = 1;
     fn write_be(&self, out: &mut [u8]) {

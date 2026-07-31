@@ -102,18 +102,13 @@ struct Query<I> {
     dst_port: u16,
 }
 
-/// Lower a config L4 protocol to a `(value, mask)` bitmask predicate: a specific protocol matches
-/// exactly (every bit significant); "any" wildcards (no bit significant).
-///
-/// The mask is spelled as a `NextHeader` only because [`MaskSpec<T>`](MaskSpec) types the mask like
-/// the value it constrains: it is a bit pattern, not a protocol number.
-fn proto_mask(proto: L4Protocol) -> (NextHeader, NextHeader) {
-    let all_bits = NextHeader::new(0xff);
-    let no_bits = NextHeader::new(0x00);
+/// Lower a config L4 protocol to a bitmask predicate: a specific protocol matches exactly (every
+/// bit significant); "any" wildcards the field (no bit significant).
+fn proto_mask(proto: L4Protocol) -> MaskSpec<NextHeader> {
     match proto {
-        L4Protocol::Tcp => (NextHeader::TCP, all_bits),
-        L4Protocol::Udp => (NextHeader::UDP, all_bits),
-        L4Protocol::Any => (no_bits, no_bits),
+        L4Protocol::Tcp => MaskSpec::exact(NextHeader::TCP),
+        L4Protocol::Udp => MaskSpec::exact(NextHeader::UDP),
+        L4Protocol::Any => MaskSpec::wildcard(),
     }
 }
 
@@ -405,7 +400,7 @@ fn emit_remote(
     src_vni: Vni,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
-    (proto_value, proto_mask): (NextHeader, NextHeader),
+    proto: MaskSpec<NextHeader>,
     action: Verdict,
 ) {
     let priority = rule_priority(
@@ -415,7 +410,7 @@ fn emit_remote(
     match ip_range {
         Prefix::IPV4(prefix) => {
             let rule = RemoteKeyRule::<Ipv4Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
+                proto,
                 src_vni: ExactSpec::new(src_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
@@ -429,7 +424,7 @@ fn emit_remote(
         }
         Prefix::IPV6(prefix) => {
             let rule = RemoteKeyRule::<Ipv6Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
+                proto,
                 src_vni: ExactSpec::new(src_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
@@ -453,7 +448,7 @@ fn emit_local(
     dst_vni: Vni,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
-    (proto_value, proto_mask): (NextHeader, NextHeader),
+    proto: MaskSpec<NextHeader>,
     action: NatMode,
 ) {
     // Port-forwarding sources are never emitted into the local tables, so the tie-break bit is
@@ -462,7 +457,7 @@ fn emit_local(
     match ip_range {
         Prefix::IPV4(prefix) => {
             let rule = LocalKeyRule::<Ipv4Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
+                proto,
                 src_vni: ExactSpec::new(src_vni),
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
@@ -477,7 +472,7 @@ fn emit_local(
         }
         Prefix::IPV6(prefix) => {
             let rule = LocalKeyRule::<Ipv6Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
+                proto,
                 src_vni: ExactSpec::new(src_vni),
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
@@ -830,13 +825,16 @@ fn lookup_versioned<I: FixedSize + Copy>(
 mod unit_tests {
     use super::*;
 
+    /// Asserted at the bit level rather than against `MaskSpec::exact`/`wildcard`, which would
+    /// restate `proto_mask`'s own definition: what matters is that "exact" really is every bit and
+    /// "wildcard" really is none, since rte_acl sees only those bytes.
     #[test]
     fn proto_mask_makes_every_bit_significant_except_for_any() {
-        let all_bits = NextHeader::new(0xff);
-        let no_bits = NextHeader::new(0x00);
-        assert_eq!(proto_mask(L4Protocol::Tcp), (NextHeader::TCP, all_bits));
-        assert_eq!(proto_mask(L4Protocol::Udp), (NextHeader::UDP, all_bits));
-        assert_eq!(proto_mask(L4Protocol::Any), (no_bits, no_bits));
+        let tcp = proto_mask(L4Protocol::Tcp);
+        assert_eq!((tcp.value, tcp.mask.as_u8()), (NextHeader::TCP, 0xff));
+        let udp = proto_mask(L4Protocol::Udp);
+        assert_eq!((udp.value, udp.mask.as_u8()), (NextHeader::UDP, 0xff));
+        assert_eq!(proto_mask(L4Protocol::Any).mask.as_u8(), 0x00);
     }
 
     #[test]
@@ -860,11 +858,14 @@ mod unit_tests {
     /// the `Any` rules and nothing else, purely by virtue of their zero mask.
     #[test]
     fn proto_lowering_matches_direct_semantics() {
+        use match_action::Accepts;
+
         bolero::check!().with_type::<u8>().for_each(|&raw| {
             let packet = NextHeader::new(raw);
             for rule in [L4Protocol::Tcp, L4Protocol::Udp, L4Protocol::Any] {
-                let (value, mask) = proto_mask(rule);
-                let lowered = (packet.as_u8() & mask.as_u8()) == (value.as_u8() & mask.as_u8());
+                // Ask the spec itself rather than re-deriving the mask comparison here: this is
+                // the same `Accepts` impl the reference backend matches through.
+                let lowered = proto_mask(rule).accepts(&packet);
                 let direct = match rule {
                     L4Protocol::Any => true,
                     L4Protocol::Tcp => packet == NextHeader::TCP,

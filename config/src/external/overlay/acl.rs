@@ -27,23 +27,18 @@ pub enum AclProtoMatch {
     Any,
 }
 
-/// Lower a protocol match to a `(value, mask)` bitmask predicate on the 1-byte protocol key field.
-/// A specific protocol matches exactly (every bit significant); `Any` wildcards the field (no bit
+/// Lower a protocol match to a bitmask predicate on the 1-byte protocol key field. A specific
+/// protocol matches exactly (every bit significant); `Any` wildcards the field (no bit
 /// significant), so a single key field expresses "any protocol" without fanning rules across
 /// per-protocol tables. This is also what lets the protocol byte be the rte_acl-mandated 1-byte
 /// first field (a `#[mask]` byte lowers to the same `Bitmask` field type as `#[exact]`).
-///
-/// The mask is spelled as a `NextHeader` only because `MaskSpec<T>` types the mask like the value
-/// it constrains: it is a bit pattern, not a protocol number.
 impl From<AclProtoMatch> for MaskSpec<NextHeader> {
     fn from(proto: AclProtoMatch) -> Self {
-        let all_bits = NextHeader::new(u8::MAX);
-        let no_bits = NextHeader::new(0);
         match proto {
-            AclProtoMatch::Tcp => MaskSpec::new(NextHeader::TCP, all_bits),
-            AclProtoMatch::Udp => MaskSpec::new(NextHeader::UDP, all_bits),
-            AclProtoMatch::Other(p) => MaskSpec::new(NextHeader::new(p), all_bits),
-            AclProtoMatch::Any => MaskSpec::new(no_bits, no_bits),
+            AclProtoMatch::Tcp => MaskSpec::exact(NextHeader::TCP),
+            AclProtoMatch::Udp => MaskSpec::exact(NextHeader::UDP),
+            AclProtoMatch::Other(p) => MaskSpec::exact(NextHeader::new(p)),
+            AclProtoMatch::Any => MaskSpec::wildcard(),
         }
     }
 }
