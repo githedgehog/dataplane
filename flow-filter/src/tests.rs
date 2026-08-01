@@ -1101,13 +1101,14 @@ enum NfOutcome {
 fn expected_outcome(result: LookupResult) -> NfOutcome {
     let (dst_vpcd, dst_nat, src_nat) = match result {
         LookupResult::Route(route) => route,
-        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => {
+        // A masquerade destination needs a flow to vouch for it, and these suites run flowless
+        // packets, so it always drops -- as do both misses.
+        LookupResult::MasqueradeDestination(_)
+        | LookupResult::SourceMiss(_)
+        | LookupResult::DestinationMiss => {
             return NfOutcome::Dropped(Some(DoneReason::Filtered));
         }
     };
-    if dst_nat == Some(NatRequirement::Masquerade) {
-        return NfOutcome::Dropped(Some(DoneReason::Filtered));
-    }
 
     let masquerade = src_nat == Some(NatRequirement::Masquerade);
     let static_nat_src = src_nat == Some(NatRequirement::Static);
@@ -1146,6 +1147,8 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
                 .map(NonZero::get)
                 .zip(t.dst_port().map(NonZero::get))
         }),
+        // These suites run flowless packets, so there is no candidate to verify.
+        flow_dst_vpcd: None,
     })
 }
 

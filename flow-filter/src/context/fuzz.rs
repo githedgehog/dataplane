@@ -17,6 +17,7 @@ use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::vpcpeering::ValidatedExpose;
 use lpm::prefix::{IpPrefix, L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -111,6 +112,27 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
         return LookupResult::DestinationMiss;
     };
 
+    // A masquerade destination is verified against the flow's candidate, not resolved from the
+    // address. Two peers may masquerade behind one range -- config permits it and models the
+    // destination as a *set* of routes -- so "which VPC owns this address" has no unique answer.
+    // "Does this VPC masquerade this address for this source" does, and it is asked directly of
+    // the config here: find the peering to the flow's claimed VPC and check whether one of its
+    // masquerade exposes covers the destination.
+    if dst_nat == Some(NatRequirement::Masquerade) {
+        let verified = probe.flow_dst_vpcd.filter(|candidate| {
+            src_vpc
+                .peerings()
+                .iter()
+                .filter(|p| VpcDiscriminant::from_vni(p.remote_vni()) == *candidate)
+                .flat_map(|p| p.remote().valexp())
+                .filter(|expose| expose.has_masquerade())
+                .filter(|expose| proto_allows(expose.nat_proto(), probe.proto))
+                .flat_map(ValidatedExpose::public_ips)
+                .any(|prefix| prefix_allows(prefix, probe.dst_ip, dport))
+        });
+        return LookupResult::MasqueradeDestination(verified);
+    }
+
     // Stage 2: the source against that peering's private prefixes. Port-forwarding sources are
     // excluded (they cannot initiate); a default expose acts as a /0 of the peering's version.
     let peering = src_vpc
@@ -165,6 +187,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
     static ROUTES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static SOURCE_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static DESTINATION_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MASQUERADE_DESTINATIONS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
     bolero::check!()
         .with_type::<(OverlaySpec, [ProbeSpec; 40])>()
@@ -179,21 +202,9 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
             // may not get enough of them during a time-boxed bolero run on a loaded CI runner to
             // get meaningful coverage.
             for probe in &built.routing_probes {
-                let want = reference.lookup(
-                    probe.src_vpcd,
-                    probe.src_ip,
-                    probe.dst_ip,
-                    probe.proto,
-                    probe.ports,
-                );
+                let want = reference.lookup(&probe.input());
                 assert_eq!(
-                    dpdk.lookup(
-                        probe.src_vpcd,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports
-                    ),
+                    dpdk.lookup(&probe.input()),
                     want,
                     "backends disagree on derived routing probe {probe:?}\nspec: {overlay_spec:?}",
                 );
@@ -204,43 +215,46 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                 ROUTES.fetch_add(1, Ordering::Relaxed);
             }
 
+            // Derived masquerade probes: each names the peer that really masquerades its
+            // destination, so stage 3 must confirm it. This is the hit path -- a verification table
+            // that matched nothing would still pass every "must drop" assertion in this suite.
+            for probe in &built.masquerade_probes {
+                let want = reference.lookup(&probe.input());
+                assert_eq!(
+                    dpdk.lookup(&probe.input()),
+                    want,
+                    "backends disagree on derived masquerade probe {probe:?}\nspec: {overlay_spec:?}",
+                );
+                assert_eq!(
+                    want,
+                    LookupResult::MasqueradeDestination(probe.flow_dst_vpcd),
+                    "a masquerade destination did not verify against its own peer: {probe:?}\nspec: {overlay_spec:?}",
+                );
+                MASQUERADE_DESTINATIONS.fetch_add(1, Ordering::Relaxed);
+            }
+
             let probes: Vec<Probe> = probe_specs
                 .iter()
                 .map(|p| p.resolve(built.blocks))
                 .collect();
             let inputs: Vec<LookupInput> = probes
                 .iter()
-                .map(|p| LookupInput {
-                    src_vpcd: p.src_vpcd,
-                    src_ip: p.src_ip,
-                    dst_ip: p.dst_ip,
-                    proto: p.proto,
-                    ports: p.ports,
-                })
+                .map(|p| p.input())
                 .collect();
 
             let mut expected = Vec::with_capacity(probes.len());
             for probe in &probes {
-                let want = reference.lookup(
-                    probe.src_vpcd,
-                    probe.src_ip,
-                    probe.dst_ip,
-                    probe.proto,
-                    probe.ports,
-                );
+                let want = reference.lookup(&probe.input());
                 assert_eq!(
-                    dpdk.lookup(
-                        probe.src_vpcd,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports
-                    ),
+                    dpdk.lookup(&probe.input()),
                     want,
                     "backends disagree on single lookup of {probe:?}\nspec: {overlay_spec:?}",
                 );
                 match want {
                     LookupResult::Route(_) => ROUTES.fetch_add(1, Ordering::Relaxed),
+                    LookupResult::MasqueradeDestination(_) => {
+                        MASQUERADE_DESTINATIONS.fetch_add(1, Ordering::Relaxed)
+                    }
                     LookupResult::SourceMiss(_) => SOURCE_MISSES.fetch_add(1, Ordering::Relaxed),
                     LookupResult::DestinationMiss => {
                         DESTINATION_MISSES.fetch_add(1, Ordering::Relaxed)
@@ -263,6 +277,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
             // 33 inputs of one version make the first chunk a full MAX_BATCH.
             let all_miss: Vec<LookupInput> = (0..33u8)
                 .map(|i| LookupInput {
+                    flow_dst_vpcd: None,
                     src_vpcd: bogus_vpcd(),
                     src_ip: format!("10.0.0.{i}").parse().unwrap(),
                     dst_ip: "10.0.0.99".parse().unwrap(),
@@ -279,10 +294,15 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
         });
 
     eprintln!(
-        "coverage: {} routes, {} source misses, {} destination misses",
+        "coverage: {} routes, {} masquerade destinations, {} source misses, {} destination misses",
         ROUTES.load(Ordering::Relaxed),
+        MASQUERADE_DESTINATIONS.load(Ordering::Relaxed),
         SOURCE_MISSES.load(Ordering::Relaxed),
         DESTINATION_MISSES.load(Ordering::Relaxed),
+    );
+    assert!(
+        MASQUERADE_DESTINATIONS.load(Ordering::Relaxed) >= 1,
+        "no masquerade destination was ever reached, so stage 3 went untested",
     );
     assert!(ROUTES.load(Ordering::Relaxed) >= 1, "no full routes at all");
     assert!(
@@ -313,29 +333,14 @@ fn batched_lookup_matches_single_lookup() {
                 .iter()
                 .map(|p| p.resolve(built.blocks))
                 .collect();
-            let inputs: Vec<LookupInput> = probes
-                .iter()
-                .map(|p| LookupInput {
-                    src_vpcd: p.src_vpcd,
-                    src_ip: p.src_ip,
-                    dst_ip: p.dst_ip,
-                    proto: p.proto,
-                    ports: p.ports,
-                })
-                .collect();
+            let inputs: Vec<LookupInput> = probes.iter().map(|p| p.input()).collect();
 
             let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
             tables.lookup_batch(&inputs, &mut out);
             for (i, probe) in probes.iter().enumerate() {
                 assert_eq!(
                     out[i],
-                    tables.lookup(
-                        probe.src_vpcd,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports
-                    ),
+                    tables.lookup(&probe.input()),
                     "batch slot {i} != single lookup for {probe:?}\nspec: {overlay_spec:?}",
                 );
             }
@@ -355,13 +360,7 @@ fn reference_lookup_matches_config_oracle() {
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(built.blocks);
                 assert_eq!(
-                    tables.lookup(
-                        probe.src_vpcd,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports
-                    ),
+                    tables.lookup(&probe.input()),
                     oracle_lookup(&built.overlay, &probe),
                     "reference tables disagree with the config oracle on {probe:?}\nspec: {overlay_spec:?}",
                 );

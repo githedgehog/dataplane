@@ -148,6 +148,11 @@ impl FlowFilter {
                     .map(NonZero::get)
                     .zip(t.dst_port().map(NonZero::get))
             }),
+            // The candidate destination for a masquerade destination, which the tables verify
+            // rather than resolve. Passed in even when the flow is stale or inactive: the tables
+            // only answer whether the configuration permits it, and this function re-checks the
+            // flow's own state before acting on the answer.
+            flow_dst_vpcd: attached_flow.as_ref().and_then(|flow| flow.dst_vpcd),
         };
         Classification::Lookup {
             input,
@@ -174,6 +179,30 @@ impl FlowFilter {
         let nfi = &self.name;
         let (dst_vpcd, dst_nat_mode, src_nat_mode) = match result {
             LookupResult::Route(route) => route,
+            // A masquerade destination cannot accept a new connection, so only reply traffic on an
+            // established flow may pass -- and only towards the VPC the tables confirmed
+            // masquerades this destination for this source. The tables cannot name that VPC from
+            // the address alone (two peers may masquerade behind one range), so they verified the
+            // candidate the flow supplied; `None` means no candidate, or one the configuration
+            // does not agree with. Either way nothing vouches for the packet.
+            LookupResult::MasqueradeDestination(verified) => {
+                if let Some(dst_vpcd) = verified
+                    && let Some(flow) =
+                        active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_masquerade)
+                {
+                    debug!(
+                        "{nfi}: Masquerade destination {dst_vpcd} confirmed by established flow"
+                    );
+                    Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
+                    return;
+                }
+                debug!(
+                    "{nfi}: Masquerade destination with no flow vouching for it, dropping packet (cannot initiate a connection towards a masquerade expose)"
+                );
+                packet.invalidate_flows();
+                packet.done(DoneReason::Filtered);
+                return;
+            }
             LookupResult::SourceMiss(dst_vpcd) => {
                 // Port-forwarding sources are deliberately absent from the local tables; reply
                 // traffic from one rides its established flow.
@@ -196,24 +225,6 @@ impl FlowFilter {
                 return;
             }
         };
-
-        // A masquerade destination cannot accept new connections; its rule is in the table only
-        // so that reply traffic on an established masquerade flow is distinguishable from a
-        // destination no peering covers.
-        if dst_nat_mode == Some(NatRequirement::Masquerade) {
-            if let Some(flow) = active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_masquerade)
-            {
-                debug!("{nfi}: Masquerade destination allowed by established flow");
-                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
-                return;
-            }
-            debug!(
-                "{nfi}: Masquerade destination with no established flow, dropping packet (cannot initiate a connection towards a masquerade expose)"
-            );
-            packet.invalidate_flows();
-            packet.done(DoneReason::Filtered);
-            return;
-        }
 
         debug!(
             "{nfi}: Packet matches peering configuration, found VPC {dst_vpcd} and NAT modes {src_nat_mode:?} (src), {dst_nat_mode:?} (dst)"

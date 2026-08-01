@@ -5,8 +5,8 @@
 
 #![cfg(test)]
 
-use super::LookupResult;
 use super::tables::RuleRow;
+use super::{LookupInput, LookupResult};
 use crate::test_utils::*;
 use crate::{FlowFilterContext, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
@@ -38,13 +38,25 @@ fn route(
             .map(NonZero::get)
             .zip(t.dst_port().map(NonZero::get))
     });
-    match context.lookup(src_vpcd, src_ip, dst_ip, proto, ports) {
+    let input = LookupInput {
+        src_vpcd,
+        src_ip,
+        dst_ip,
+        proto,
+        ports,
+        flow_dst_vpcd: None,
+    };
+    match context.lookup(&input) {
         LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
             dst_vpcd,
             dst_nat,
             src_nat,
         }),
-        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => None,
+        // This helper probes without a flow, so a masquerade destination has no candidate to
+        // verify and nothing may pass -- the same "no route" answer as a miss.
+        LookupResult::MasqueradeDestination(_)
+        | LookupResult::SourceMiss(_)
+        | LookupResult::DestinationMiss => None,
     }
 }
 
@@ -285,16 +297,31 @@ fn dst_side_overlay() -> FlowFilterContext {
 fn dst_side_nat_modes() {
     let ctx = dst_side_overlay();
 
-    // Masquerade destination: resolves at table level as a marker (the NF only lets it through
-    // for reply traffic on an established masquerade flow; see crate::tests)
-    let masq = route(
-        &ctx,
-        vpcd(100),
-        &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
-    )
-    .expect("masquerade destination resolves as a marker");
-    assert_eq!(masq.dst_vpcd, vpcd(200));
-    assert_eq!(masq.dst_nat, Some(NatRequirement::Masquerade));
+    // Masquerade destination: never a route. The address alone cannot name a VPC (two peers may
+    // masquerade behind one range), so the tables verify a candidate the packet's flow supplies.
+    let masq_input = |flow_dst_vpcd| LookupInput {
+        src_vpcd: vpcd(100),
+        src_ip: std::net::IpAddr::V4(v4("10.0.0.5")),
+        dst_ip: std::net::IpAddr::V4(v4("70.0.0.10")),
+        proto: net::ip::NextHeader::TCP,
+        ports: Some((1234, 5678)),
+        flow_dst_vpcd,
+    };
+    // No candidate: nothing vouches for the packet.
+    assert_eq!(
+        ctx.lookup(&masq_input(None)),
+        LookupResult::MasqueradeDestination(None),
+    );
+    // The peer that really masquerades this destination: confirmed.
+    assert_eq!(
+        ctx.lookup(&masq_input(Some(vpcd(200)))),
+        LookupResult::MasqueradeDestination(Some(vpcd(200))),
+    );
+    // Any other VPC: refused, whether or not it is peered at all.
+    assert_eq!(
+        ctx.lookup(&masq_input(Some(vpcd(300)))),
+        LookupResult::MasqueradeDestination(None),
+    );
 
     // Port-forwarding destination (matching proto + port): returned
     let pf = route(
@@ -714,10 +741,17 @@ fn reference_and_dpdk_backends_agree() {
     ];
 
     for &(vni, src_ip, dst_ip, proto, ports) in probes {
-        let src_vpcd = vpcd(vni);
+        let input = LookupInput {
+            src_vpcd: vpcd(vni),
+            src_ip,
+            dst_ip,
+            proto,
+            ports,
+            flow_dst_vpcd: None,
+        };
         assert_eq!(
-            reference.lookup(src_vpcd, src_ip, dst_ip, proto, ports),
-            dpdk.lookup(src_vpcd, src_ip, dst_ip, proto, ports),
+            reference.lookup(&input),
+            dpdk.lookup(&input),
             "backends disagree on {src_ip} -> {dst_ip} ({proto:?}) from vni {vni}",
         );
     }
@@ -728,6 +762,7 @@ fn reference_and_dpdk_backends_agree() {
     let inputs: Vec<LookupInput> = std::iter::repeat_n(probes, 5)
         .flatten()
         .map(|&(vni, src_ip, dst_ip, proto, ports)| LookupInput {
+            flow_dst_vpcd: None,
             src_vpcd: vpcd(vni),
             src_ip,
             dst_ip,
@@ -744,13 +779,7 @@ fn reference_and_dpdk_backends_agree() {
     assert_eq!(ref_out, dpdk_out, "batched backends disagree");
 
     for (i, input) in inputs.iter().enumerate() {
-        let single = reference.lookup(
-            input.src_vpcd,
-            input.src_ip,
-            input.dst_ip,
-            input.proto,
-            input.ports,
-        );
+        let single = reference.lookup(input);
         assert_eq!(ref_out[i], single, "batched != single at index {i}");
     }
 }
