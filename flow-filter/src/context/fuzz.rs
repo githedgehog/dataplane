@@ -55,16 +55,43 @@ fn prefix_allows(prefix: &PrefixWithOptionalPorts, ip: IpAddr, port: u16) -> boo
 /// equal-length ties. Mirrors `rule_priority` without sharing its encoding.
 type Precedence = (u8, bool);
 
-/// Keep the strictly-better candidate; equal precedence between candidates that can match the
-/// same packet is a generator invariant violation, so fail loudly rather than pick one.
-fn consider<T>(best: &mut Option<(Precedence, T)>, precedence: Precedence, value: T) {
+/// Keep the strictly-better candidate.
+///
+/// Two candidates at equal precedence are only acceptable when they agree on the answer. Config
+/// permits exactly one such tie: two peers masquerading behind the same public range, which
+/// `VpcRoute::can_overlap` exempts. Both then say "masquerade destination", and since a masquerade
+/// destination is verified against the flow rather than resolved from the address (see
+/// [`StageOne`]), they say the *same* thing and the tie is harmless.
+///
+/// A tie whose candidates disagree is a real ambiguity -- the tables would have to pick one, and
+/// nothing says which -- so fail loudly rather than let a test pass on a coin flip.
+fn consider<T: PartialEq + std::fmt::Debug>(
+    best: &mut Option<(Precedence, T)>,
+    precedence: Precedence,
+    value: T,
+) {
     match best {
-        Some((current, _)) if *current == precedence => {
-            panic!("ambiguous match at precedence {precedence:?}: generator invariant violated")
+        Some((current, existing)) if *current == precedence => {
+            assert!(
+                *existing == value,
+                "ambiguous match at precedence {precedence:?}: {existing:?} vs {value:?}",
+            );
         }
         Some((current, _)) if *current > precedence => {}
         _ => *best = Some((precedence, value)),
     }
+}
+
+/// What a stage-1 match says about a destination.
+///
+/// [`StageOne::Masquerade`] deliberately carries no VPC. A masquerade public address does not
+/// identify one -- config lets two peers share a range -- so the destination is verified against
+/// the flow's candidate instead. Dropping the VPC here is what makes two overlapping masquerade
+/// exposes compare equal, and so what makes the overlap a benign tie rather than an ambiguity.
+#[derive(Debug, PartialEq, Eq)]
+enum StageOne {
+    Masquerade,
+    Resolved(VpcDiscriminant, Option<NatRequirement>),
 }
 
 /// Answer a route lookup directly from the validated overlay.
@@ -87,7 +114,7 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
 
     // Stage 1: the destination against every peer's public prefixes. Masquerade exposes are
     // included (marker rules); a default expose acts as a /0 of the peering's IP version.
-    let mut verdict: Option<(Precedence, (VpcDiscriminant, Option<NatRequirement>))> = None;
+    let mut verdict: Option<(Precedence, StageOne)> = None;
     for peering in src_vpc.peerings() {
         let dst_vpcd = VpcDiscriminant::from_vni(peering.remote_vni());
         for expose in peering.remote().valexp() {
@@ -96,19 +123,24 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
             }
             for prefix in expose.public_ips() {
                 if prefix_allows(prefix, probe.dst_ip, dport) {
+                    let matched = if expose.has_masquerade() {
+                        StageOne::Masquerade
+                    } else {
+                        StageOne::Resolved(dst_vpcd, NatRequirement::from_expose(expose))
+                    };
                     consider(
                         &mut verdict,
                         (prefix.prefix().length(), expose.has_port_forwarding()),
-                        (dst_vpcd, NatRequirement::from_expose(expose)),
+                        matched,
                     );
                 }
             }
         }
         if peering.remote().has_default_expose() && probe.dst_ip.is_ipv4() == peering.is_v4() {
-            consider(&mut verdict, (0, false), (dst_vpcd, None));
+            consider(&mut verdict, (0, false), StageOne::Resolved(dst_vpcd, None));
         }
     }
-    let Some((_, (dst_vpcd, dst_nat))) = verdict else {
+    let Some((_, matched)) = verdict else {
         return LookupResult::DestinationMiss;
     };
 
@@ -118,7 +150,7 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
     // "Does this VPC masquerade this address for this source" does, and it is asked directly of
     // the config here: find the peering to the flow's claimed VPC and check whether one of its
     // masquerade exposes covers the destination.
-    if dst_nat == Some(NatRequirement::Masquerade) {
+    let StageOne::Resolved(dst_vpcd, dst_nat) = matched else {
         let verified = probe.flow_dst_vpcd.filter(|candidate| {
             src_vpc
                 .peerings()
@@ -131,7 +163,7 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
                 .any(|prefix| prefix_allows(prefix, probe.dst_ip, dport))
         });
         return LookupResult::MasqueradeDestination(verified);
-    }
+    };
 
     // Stage 2: the source against that peering's private prefixes. Port-forwarding sources are
     // excluded (they cannot initiate); a default expose acts as a /0 of the peering's version.
@@ -235,7 +267,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
 
             let probes: Vec<Probe> = probe_specs
                 .iter()
-                .map(|p| p.resolve(built.blocks))
+                .map(|p| p.resolve(&built))
                 .collect();
             let inputs: Vec<LookupInput> = probes
                 .iter()
@@ -329,10 +361,7 @@ fn batched_lookup_matches_single_lookup() {
             let tables = FlowFilterContext::build(&built.overlay, Backend::Reference)
                 .expect("reference build");
 
-            let probes: Vec<Probe> = probe_specs
-                .iter()
-                .map(|p| p.resolve(built.blocks))
-                .collect();
+            let probes: Vec<Probe> = probe_specs.iter().map(|p| p.resolve(&built)).collect();
             let inputs: Vec<LookupInput> = probes.iter().map(|p| p.input()).collect();
 
             let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
@@ -358,7 +387,7 @@ fn reference_lookup_matches_config_oracle() {
             let tables =
                 FlowFilterContext::build(&built.overlay, Backend::Reference).expect("reference build");
             for probe_spec in probe_specs {
-                let probe = probe_spec.resolve(built.blocks);
+                let probe = probe_spec.resolve(&built);
                 assert_eq!(
                     tables.lookup(&probe.input()),
                     oracle_lookup(&built.overlay, &probe),
@@ -417,5 +446,60 @@ fn exclusions_reach_the_config_as_multi_length_prefix_fans() {
         spread >= 8,
         "exclusions never produced a full prefix-length fan (widest spread was {spread}); \
          the generator is emitting single-block exposes and the priority ordering is untested",
+    );
+}
+
+/// Generated overlays really do contain cross-peering masquerade overlaps.
+///
+/// The shape this whole verification stage exists for: one VPC with two peers masquerading behind
+/// the same public range, so a destination address maps to two VPCs at once. Config permits it and
+/// models it as a set of routes per destination; stage 1 cannot represent that, which is why the
+/// destination is verified against the flow rather than resolved.
+///
+/// Asserted because the generator used to exclude this deliberately. Without it every property
+/// above passes on overlay shapes where a destination happens to be unambiguous, and the ambiguity
+/// -- the only thing stage 3 exists to handle -- is never built.
+#[test]
+fn cross_peering_masquerade_overlaps_are_generated() {
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
+    static OVERLAPS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    bolero::check!()
+        .with_type::<OverlaySpec>()
+        .for_each(|overlay_spec| {
+            let built = overlay_spec.build();
+            for vpc in built.overlay.vpc_table().values() {
+                // Every masquerade destination this VPC can address, with the peer advertising it.
+                let mut destinations: Vec<(Prefix, VpcDiscriminant)> = Vec::new();
+                for peering in vpc.peerings() {
+                    let dst_vpcd = VpcDiscriminant::from_vni(peering.remote_vni());
+                    for expose in peering.remote().valexp() {
+                        if !expose.has_masquerade() {
+                            continue;
+                        }
+                        for prefix in expose.public_ips() {
+                            destinations.push((prefix.prefix(), dst_vpcd));
+                        }
+                    }
+                }
+                // An overlap is the same destination claimed by two different peers -- exactly the
+                // case where the address alone cannot name the destination VPC.
+                let overlapping = destinations.iter().enumerate().any(|(i, (prefix, vpcd))| {
+                    destinations[i + 1..]
+                        .iter()
+                        .any(|(other, other_vpcd)| other == prefix && other_vpcd != vpcd)
+                });
+                if overlapping {
+                    OVERLAPS.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+    let overlaps = OVERLAPS.load(Ordering::Relaxed);
+    eprintln!("coverage: {overlaps} VPCs facing an ambiguous masquerade destination");
+    assert!(
+        overlaps >= 1,
+        "no cross-peering masquerade overlap was ever generated; \
+         the verification stage is untested by the property suite",
     );
 }

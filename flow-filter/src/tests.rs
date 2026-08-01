@@ -1244,7 +1244,7 @@ fn nf_metadata_matches_config_oracle() {
             // The overlay's own derived probes route by construction, which is where the NAT flags
             // actually get exercised; the generated probes supply the misses and the edges.
             let derived = built.routing_probes.iter().copied();
-            let generated = probe_specs.iter().map(|spec| spec.resolve(built.blocks));
+            let generated = probe_specs.iter().map(|spec| spec.resolve(&built));
             for probe in derived.chain(generated) {
                 let Some((pkt, probe)) = probe_packet(&probe) else {
                     continue;
