@@ -74,7 +74,7 @@ impl FwProto {
     }
 }
 
-#[derive(Debug, Clone, Copy, TypeGenerator)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TypeGenerator)]
 pub(crate) enum ExposeSpec {
     Plain,
     StaticNat,
@@ -259,6 +259,14 @@ pub(crate) struct PeeringSpec {
 #[derive(Debug, Clone, Copy, TypeGenerator)]
 pub(crate) struct OverlaySpec {
     peerings: [Option<PeeringSpec>; 4],
+    /// Put every plain-masquerade expose's public side in one shared range, so peers of the same
+    /// VPC advertise overlapping masquerade destinations.
+    ///
+    /// Overlay-level rather than per-peering because the overlap only exists between *two*
+    /// peerings of one VPC. Config permits it (`VpcRoute::can_overlap` exempts
+    /// masquerade/masquerade) and it is the one destination the tables cannot resolve from the
+    /// address -- only verify against a flow's candidate.
+    shared_masquerade_pool: bool,
 }
 
 /// A materialized overlay plus the number of allocated prefix blocks (probe specs map their
@@ -266,6 +274,9 @@ pub(crate) struct OverlaySpec {
 pub(crate) struct BuiltOverlay {
     pub(crate) overlay: ValidatedOverlay,
     pub(crate) blocks: u8,
+    /// Whether masquerade destinations live in the shared pool, so probes know the block is worth
+    /// addressing at all.
+    pub(crate) shared_masquerade_pool: bool,
     pub(crate) routing_probes: Vec<Probe>,
     /// Probes at a masquerade destination, each carrying the *correct* candidate on its flow.
     /// Every one must verify, which is what keeps stage 3's hit path exercised: a verification
@@ -297,6 +308,38 @@ impl OverlaySpec {
             for manifest in [&mut peering.local, &mut peering.remote] {
                 if manifest.is_empty() {
                     manifest.exposes[0] = Some(ExposeEntry::plain());
+                }
+            }
+            // Shared-pool mode. The overlap only exists when *two* peers of one VPC masquerade
+            // behind the same range, and left to chance that is well under 1% of generated
+            // overlays -- far too rare to catch a regression. So within this mode it is arranged
+            // rather than hoped for: every peering's remote side leads with a plain masquerade
+            // expose, which puts every peer of a given VPC on the shared range.
+            //
+            // The local side is stripped of stateful NAT because config forbids it on both sides of
+            // a peering, and the normalization below would otherwise undo the masquerade just
+            // installed. The second expose slot is left alone, so manifests keep some variety, and
+            // the other half of generated overlays are untouched by any of this.
+            if spec.shared_masquerade_pool {
+                peering.local.strip_stateful_nat();
+                peering.remote.exposes[0] = Some(ExposeEntry {
+                    spec: ExposeSpec::Masquerade,
+                    exclude: peering.remote.exposes[0]
+                        .map_or(ExcludeSel::None, |entry| entry.exclude),
+                });
+                // Two shared-pool masquerade exposes in one manifest would claim the same public
+                // range, which `check_public_prefixes_dont_overlap` rejects. The overlap we want is
+                // across peerings, so keep at most one per manifest.
+                for manifest in [&mut peering.local, &mut peering.remote] {
+                    let mut seen = false;
+                    for entry in manifest.exposes.iter_mut().flatten() {
+                        if entry.spec == ExposeSpec::Masquerade {
+                            if seen {
+                                entry.spec = ExposeSpec::StaticNat;
+                            }
+                            seen = true;
+                        }
+                    }
                 }
             }
             // A default expose cannot face another default expose within one peering.
@@ -348,15 +391,28 @@ impl OverlaySpec {
             // build_manifest assigns one block per expose spec, in order, so the block index of
             // expose spec `i` is `base + i`. Record each side's base before it advances.
             let local_base = blocks;
-            let local = build_manifest(&vpc_name(a), &peering.local, peering.v6, &mut blocks);
+            let local = build_manifest(
+                &vpc_name(a),
+                &peering.local,
+                peering.v6,
+                spec.shared_masquerade_pool,
+                &mut blocks,
+            );
             let remote_base = blocks;
-            let remote = build_manifest(&vpc_name(b), &peering.remote, peering.v6, &mut blocks);
+            let remote = build_manifest(
+                &vpc_name(b),
+                &peering.remote,
+                peering.v6,
+                spec.shared_masquerade_pool,
+                &mut blocks,
+            );
             derive_routing_probes(
                 &mut routing_probes,
                 &mut masquerade_probes,
                 VNIS[a],
                 VNIS[b],
                 peering.v6,
+                spec.shared_masquerade_pool,
                 (local_base, &peering.local),
                 (remote_base, &peering.remote),
             );
@@ -378,6 +434,7 @@ impl OverlaySpec {
         BuiltOverlay {
             overlay,
             blocks,
+            shared_masquerade_pool: spec.shared_masquerade_pool,
             routing_probes,
             masquerade_probes,
         }
@@ -394,6 +451,7 @@ fn derive_routing_probes(
     src_vni: u32,
     remote_vni: u32,
     v6: bool,
+    shared_masquerade_pool: bool,
     (local_base, local): (u8, &ManifestSpec),
     (remote_base, remote): (u8, &ManifestSpec),
 ) {
@@ -408,7 +466,12 @@ fn derive_routing_probes(
             let Some(dst_public) = rspec.dest_public_space() else {
                 continue;
             };
-            let dst_ip = block_addr(remote_base + ri as u8, 1, dst_public, v6);
+            let dst_block = if rspec == ExposeSpec::Masquerade && shared_masquerade_pool {
+                SHARED_MASQUERADE_BLOCK
+            } else {
+                remote_base + ri as u8
+            };
+            let dst_ip = block_addr(dst_block, 1, dst_public, v6);
             if rspec.dest_is_masquerade() {
                 // A masquerade destination never routes. It is reachable only by reply traffic
                 // whose flow names this very peer, so the probe carries that candidate and must
@@ -440,7 +503,13 @@ fn vpc_name(index: usize) -> String {
     format!("vpc{}", index + 1)
 }
 
-fn build_manifest(vpc_name: &str, spec: &ManifestSpec, v6: bool, blocks: &mut u8) -> VpcManifest {
+fn build_manifest(
+    vpc_name: &str,
+    spec: &ManifestSpec,
+    v6: bool,
+    shared_masquerade_pool: bool,
+    blocks: &mut u8,
+) -> VpcManifest {
     let mut exposes = Vec::new();
     for entry in spec.entries() {
         let n = *blocks;
@@ -451,18 +520,27 @@ fn build_manifest(vpc_name: &str, spec: &ManifestSpec, v6: bool, blocks: &mut u8
             ExposeSpec::StaticNat => {
                 exposes.push(excluding_both(static_nat(n, v6), n, v6, exclude));
             }
+            // Only the plain variant joins the shared pool. The two combined variants exist to
+            // pin the nested and equal-length overlaps against their *own* block, which moving
+            // the public side would dissolve.
+            ExposeSpec::Masquerade if shared_masquerade_pool => {
+                // The public side lives in the shared block, so an exclusion keyed on `n`
+                // would not overlap it. Masquerade has no size-equality requirement between
+                // its two sides, so excluding from the private side alone is legal.
+                exposes.push(excluding(masquerade(n, v6, true), n, v6, exclude));
+            }
             ExposeSpec::Masquerade => {
-                exposes.push(excluding_both(masquerade(n, v6), n, v6, exclude));
+                exposes.push(excluding_both(masquerade(n, v6, false), n, v6, exclude));
             }
             // Port forwarding forbids exclusion prefixes outright, so only the masquerade half of
             // these pairs takes one -- which is also what keeps the nested overlap intact, since
             // every exclusion stays in the block's upper half and FW_HOST is in the lower.
             ExposeSpec::MasqueradeNestingPortFw(proto) => {
-                exposes.push(excluding_both(masquerade(n, v6), n, v6, exclude));
+                exposes.push(excluding_both(masquerade(n, v6, false), n, v6, exclude));
                 exposes.push(portfw_host(n, v6, proto));
             }
             ExposeSpec::MasqueradeSameLenPortFw(proto) => {
-                exposes.push(excluding_both(masquerade(n, v6), n, v6, exclude));
+                exposes.push(excluding_both(masquerade(n, v6, false), n, v6, exclude));
                 exposes.push(portfw_block(n, v6, proto));
             }
             ExposeSpec::PortForwarding(proto) => exposes.push(portfw_host(n, v6, proto)),
@@ -559,12 +637,31 @@ fn static_nat(n: u8, v6: bool) -> VpcExpose {
         .unwrap()
 }
 
-fn masquerade(n: u8, v6: bool) -> VpcExpose {
+/// The public block every shared-pool masquerade expose translates into.
+///
+/// Deliberately outside the per-expose pool (`blocks` never reaches 200), so it collides with
+/// nothing except other shared-pool masquerade exposes -- which is the entire point.
+const SHARED_MASQUERADE_BLOCK: u8 = 200;
+
+/// A masquerade expose. `shared_pool` puts its *public* side in a range every other shared-pool
+/// masquerade expose also uses, while leaving its private side in its own block.
+///
+/// That is the cross-peering overlap config permits and `VpcRoute::can_overlap` exempts: two peers
+/// masquerading behind one public range. It is generated on purpose because the destination it
+/// produces cannot be resolved from the address -- only verified against a flow's candidate -- and
+/// a generator that never built one left the whole verification path untested by the property
+/// suite.
+fn masquerade(n: u8, v6: bool, shared_pool: bool) -> VpcExpose {
+    let public = if shared_pool {
+        SHARED_MASQUERADE_BLOCK
+    } else {
+        n
+    };
     VpcExpose::empty()
         .make_masquerade(None)
         .unwrap()
         .ip(private_block(n, v6).as_str().into())
-        .as_range(public_block(n, v6).as_str().into())
+        .as_range(public_block(public, v6).as_str().into())
         .unwrap()
 }
 
@@ -646,6 +743,12 @@ pub(crate) struct ProbeSpec {
     src_public: bool,
     src_host: u8,
     dst_block: u8,
+    /// Aim the destination at the shared masquerade pool instead of a per-expose block.
+    ///
+    /// Without this no generated probe ever reaches a shared-pool masquerade destination -- the
+    /// pool sits outside the `0..blocks` range the selectors are reduced into -- so the ambiguous
+    /// destinations the overlay generator works to build would never actually be looked up.
+    dst_shared_masquerade: bool,
     dst_public: bool,
     dst_host: u8,
     proto: ProbeProto,
@@ -683,8 +786,13 @@ impl Probe {
 }
 
 impl ProbeSpec {
-    pub(crate) fn resolve(&self, blocks: u8) -> Probe {
-        let nblocks = blocks.max(1);
+    pub(crate) fn resolve(&self, built: &BuiltOverlay) -> Probe {
+        let nblocks = built.blocks.max(1);
+        let dst_block = if self.dst_shared_masquerade && built.shared_masquerade_pool {
+            SHARED_MASQUERADE_BLOCK
+        } else {
+            self.dst_block % nblocks
+        };
         let vni = match self.vni_sel as usize % (VNIS.len() + 1) {
             i if i < VNIS.len() => VNIS[i],
             _ => BOGUS_VNI,
@@ -698,12 +806,7 @@ impl ProbeSpec {
                 self.src_public,
                 self.v6,
             ),
-            dst_ip: block_addr(
-                self.dst_block % nblocks,
-                self.dst_host,
-                self.dst_public,
-                dst_v6,
-            ),
+            dst_ip: block_addr(dst_block, self.dst_host, self.dst_public, dst_v6),
             proto: self.proto.next_header(),
             ports: match self.proto {
                 ProbeProto::Icmp => None,

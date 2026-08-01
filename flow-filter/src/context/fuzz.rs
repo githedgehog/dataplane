@@ -267,7 +267,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
 
             let probes: Vec<Probe> = probe_specs
                 .iter()
-                .map(|p| p.resolve(built.blocks))
+                .map(|p| p.resolve(&built))
                 .collect();
             let inputs: Vec<LookupInput> = probes
                 .iter()
@@ -361,10 +361,7 @@ fn batched_lookup_matches_single_lookup() {
             let tables = FlowFilterContext::build(&built.overlay, Backend::Reference)
                 .expect("reference build");
 
-            let probes: Vec<Probe> = probe_specs
-                .iter()
-                .map(|p| p.resolve(built.blocks))
-                .collect();
+            let probes: Vec<Probe> = probe_specs.iter().map(|p| p.resolve(&built)).collect();
             let inputs: Vec<LookupInput> = probes.iter().map(|p| p.input()).collect();
 
             let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
@@ -390,7 +387,7 @@ fn reference_lookup_matches_config_oracle() {
             let tables =
                 FlowFilterContext::build(&built.overlay, Backend::Reference).expect("reference build");
             for probe_spec in probe_specs {
-                let probe = probe_spec.resolve(built.blocks);
+                let probe = probe_spec.resolve(&built);
                 assert_eq!(
                     tables.lookup(&probe.input()),
                     oracle_lookup(&built.overlay, &probe),
@@ -449,5 +446,60 @@ fn exclusions_reach_the_config_as_multi_length_prefix_fans() {
         spread >= 8,
         "exclusions never produced a full prefix-length fan (widest spread was {spread}); \
          the generator is emitting single-block exposes and the priority ordering is untested",
+    );
+}
+
+/// Generated overlays really do contain cross-peering masquerade overlaps.
+///
+/// The shape this whole verification stage exists for: one VPC with two peers masquerading behind
+/// the same public range, so a destination address maps to two VPCs at once. Config permits it and
+/// models it as a set of routes per destination; stage 1 cannot represent that, which is why the
+/// destination is verified against the flow rather than resolved.
+///
+/// Asserted because the generator used to exclude this deliberately. Without it every property
+/// above passes on overlay shapes where a destination happens to be unambiguous, and the ambiguity
+/// -- the only thing stage 3 exists to handle -- is never built.
+#[test]
+fn cross_peering_masquerade_overlaps_are_generated() {
+    // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
+    static OVERLAPS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    bolero::check!()
+        .with_type::<OverlaySpec>()
+        .for_each(|overlay_spec| {
+            let built = overlay_spec.build();
+            for vpc in built.overlay.vpc_table().values() {
+                // Every masquerade destination this VPC can address, with the peer advertising it.
+                let mut destinations: Vec<(Prefix, VpcDiscriminant)> = Vec::new();
+                for peering in vpc.peerings() {
+                    let dst_vpcd = VpcDiscriminant::from_vni(peering.remote_vni());
+                    for expose in peering.remote().valexp() {
+                        if !expose.has_masquerade() {
+                            continue;
+                        }
+                        for prefix in expose.public_ips() {
+                            destinations.push((prefix.prefix(), dst_vpcd));
+                        }
+                    }
+                }
+                // An overlap is the same destination claimed by two different peers -- exactly the
+                // case where the address alone cannot name the destination VPC.
+                let overlapping = destinations.iter().enumerate().any(|(i, (prefix, vpcd))| {
+                    destinations[i + 1..]
+                        .iter()
+                        .any(|(other, other_vpcd)| other == prefix && other_vpcd != vpcd)
+                });
+                if overlapping {
+                    OVERLAPS.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+    let overlaps = OVERLAPS.load(Ordering::Relaxed);
+    eprintln!("coverage: {overlaps} VPCs facing an ambiguous masquerade destination");
+    assert!(
+        overlaps >= 1,
+        "no cross-peering masquerade overlap was ever generated; \
+         the verification stage is untested by the property suite",
     );
 }
