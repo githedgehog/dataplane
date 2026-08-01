@@ -287,12 +287,37 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
 // is a thin wrapper over an otherwise-const atomic.
 static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
-/// A process-unique rte_acl context name (rte_acl rejects duplicate names).
+/// The longest name rte_acl accepts (`RTE_ACL_NAMESIZE` less its NUL).
+const MAX_TABLE_NAME: usize = 31;
+/// The longest `base` [`table_name`] may be given, so that the name fits for *every* counter value.
+const MAX_TABLE_BASE: usize = 9;
+
+/// A process-unique rte_acl context name (rte_acl rejects duplicate names, and names over
+/// [`MAX_TABLE_NAME`] bytes).
+///
+/// The name has to be both unique and short, and the bound must hold for every value the counter
+/// can take -- not merely the values a given run is expected to reach. A short prefix, a `base` of
+/// at most [`MAX_TABLE_BASE`] bytes, and a hexadecimal counter (16 bytes at most for a `u64`) give
+/// `3 + 9 + 1 + 16 = 29`, which fits with room to spare.
+///
+/// This is not hypothetical. With the previous `flow_filter_` prefix, a 13-byte base and a decimal
+/// counter, names passed 31 bytes once the counter reached 100_000 -- which a long fuzz run
+/// reached, and which a long-lived process rebuilding its tables on every configuration change
+/// would reach eventually. The failure mode was that every subsequent table build failed, so
+/// reconfiguration stopped working.
 fn table_name(base: &str) -> String {
-    format!(
-        "flow_filter_{base}_{}",
-        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
-    )
+    debug_assert!(
+        base.len() <= MAX_TABLE_BASE,
+        "table base {base:?} is {} bytes, over the {MAX_TABLE_BASE}-byte budget",
+        base.len(),
+    );
+    let name = format!("ff_{base}_{:x}", TABLE_SEQ.fetch_add(1, Ordering::Relaxed));
+    debug_assert!(
+        name.len() <= MAX_TABLE_NAME,
+        "table name {name:?} is {} bytes, over rte_acl's {MAX_TABLE_NAME}-byte limit",
+        name.len(),
+    );
+    name
 }
 
 /// Build one table from backend-neutral rules using the selected backend.
@@ -835,6 +860,34 @@ mod unit_tests {
     fn remote_key_has_four_fields_local_has_five() {
         assert_eq!(RemoteKey::<Ipv4Addr>::N, 4);
         assert_eq!(LocalKey::<Ipv4Addr>::N, 5);
+    }
+
+    /// Every name `table_name` can produce fits rte_acl's limit, for every counter value.
+    ///
+    /// Asserted over `u64::MAX` rather than over the counter's current value: the point is that no
+    /// amount of running can push a name over the limit, which is exactly the property the previous
+    /// decimal scheme lacked.
+    #[test]
+    fn table_names_fit_the_rte_acl_limit_for_every_counter_value() {
+        for base in [
+            "remote_v4",
+            "local_v4",
+            "remote_v6",
+            "local_v6",
+            "masq_v4",
+            "masq_v6",
+        ] {
+            assert!(
+                base.len() <= MAX_TABLE_BASE,
+                "base {base:?} is over the {MAX_TABLE_BASE}-byte budget",
+            );
+            let longest = format!("ff_{base}_{:x}", u64::MAX);
+            assert!(
+                longest.len() <= MAX_TABLE_NAME,
+                "{longest:?} is {} bytes, over the {MAX_TABLE_NAME}-byte limit",
+                longest.len(),
+            );
+        }
     }
 
     #[test]
