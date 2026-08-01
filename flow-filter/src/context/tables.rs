@@ -66,6 +66,19 @@ type Route = (VpcDiscriminant, NatMode, NatMode);
 pub(crate) enum LookupResult {
     /// Both stages matched.
     Route(Route),
+    /// The destination is a masquerade public address.
+    ///
+    /// Carries a destination VPC only when the packet's flow named one and stage 3 confirmed that
+    /// this VPC masquerades this destination for this source. `None` means nothing vouched for the
+    /// packet -- no flow, or a flow whose VPC the configuration does not agree owns this address.
+    ///
+    /// This is separate from [`LookupResult::Route`] because a masquerade public address does not
+    /// identify a VPC on its own: config permits two peers to masquerade behind one range and
+    /// models the result as a set of routes per destination, which stage 1 cannot represent. The
+    /// destination here is therefore *verified*, never *resolved* -- see [`MasqueradeKey`]. A
+    /// masquerade destination also cannot accept a new connection, so there is no source NAT to
+    /// report: the flow carries the state such a packet needs.
+    MasqueradeDestination(Option<VpcDiscriminant>),
     /// Stage 1 resolved the destination VPC, but the source matched nothing.
     SourceMiss(VpcDiscriminant),
     /// Stage 1 matched nothing: no peering covers this destination (also used for IP-version
@@ -82,6 +95,12 @@ pub(crate) struct LookupInput {
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(u16, u16)>,
+    /// The destination VPC recorded on the packet's flow, if it has one.
+    ///
+    /// An input to the lookup, not an output: it is the candidate stage 3 verifies when stage 1
+    /// reports a masquerade destination. Carried here rather than consulted in the NF so the
+    /// verification stays on the batched path with the other two stages.
+    pub(crate) flow_dst_vpcd: Option<VpcDiscriminant>,
 }
 
 /// Result of a stage-1 (remote/destination) match.
@@ -100,6 +119,8 @@ struct Query<I> {
     dst_ip: I,
     src_port: u16,
     dst_port: u16,
+    /// The candidate destination VPC from the packet's flow (see [`LookupInput::flow_dst_vpcd`]).
+    flow_dst_vni: Option<Vni>,
 }
 
 /// Lower a config L4 protocol to a bitmask predicate: a specific protocol matches exactly (every
@@ -160,6 +181,32 @@ pub(super) struct LocalKey<I> {
     #[range]
     #[cli(column_name = "src-port")]
     src_port: u16,
+}
+
+/// Stage-3 key: "does `dst_vni` masquerade this destination for `src_vni`?"
+///
+/// The question stage 1 cannot answer. A masquerade public address does not identify a VPC: config
+/// lets two peers masquerade behind the same range (`VpcRoute::can_overlap` exempts
+/// masquerade/masquerade), and models the result as a *set* of routes per destination
+/// (`VpcRouteSet` is a `Vec`). Stage 1's `Verdict` holds one `dst_vpcd`, so lowering that set into
+/// stage 1 collapses it and rte_acl's highest-priority-wins picks arbitrarily.
+///
+/// So this key carries `dst_vni` as an *input* rather than producing it. "Which VPC owns this
+/// address?" has no unique answer; "does this VPC own this address for me?" does. The candidate
+/// comes from the packet's flow -- the only thing that can distinguish two connections to the same
+/// masquerade address -- and this table says whether the configuration agrees.
+#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
+pub(super) struct MasqueradeKey<I> {
+    #[mask]
+    proto: NextHeader,
+    #[exact]
+    src_vni: Vni,
+    #[exact]
+    dst_vni: Vni,
+    #[prefix]
+    dst_ip: I,
+    #[range]
+    dst_port: u16,
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -508,12 +555,62 @@ fn emit_local(
     }
 }
 
+/// Lower a stage-3 (masquerade-verification) rule into the v4 or v6 bucket according to its prefix.
+fn emit_masquerade(
+    v4: &mut Vec<NeutralRule<MasqueradeKey<Ipv4Addr>, ()>>,
+    v6: &mut Vec<NeutralRule<MasqueradeKey<Ipv6Addr>, ()>>,
+    src_vni: Vni,
+    dst_vni: Vni,
+    ip_range: Prefix,
+    port_range: RangeSpec<u16>,
+    proto: MaskSpec<NextHeader>,
+) {
+    // Every rule here answers the same yes/no question, so nothing competes: the key pins both
+    // VNIs exactly, and within one peering a destination is covered by at most one masquerade
+    // expose. The priority is pure prefix length, as elsewhere.
+    let priority = rule_priority(ip_range, false);
+    match ip_range {
+        Prefix::IPV4(prefix) => {
+            let rule = MasqueradeKeyRule::<Ipv4Addr> {
+                proto,
+                src_vni: ExactSpec::new(src_vni),
+                dst_vni: ExactSpec::new(dst_vni),
+                dst_ip: PrefixSpec::from(prefix),
+                dst_port: port_range,
+            };
+            v4.push(NeutralRule {
+                priority,
+                fields: rule.into_backend_fields::<Erased>(),
+                rule,
+                action: (),
+            });
+        }
+        Prefix::IPV6(prefix) => {
+            let rule = MasqueradeKeyRule::<Ipv6Addr> {
+                proto,
+                src_vni: ExactSpec::new(src_vni),
+                dst_vni: ExactSpec::new(dst_vni),
+                dst_ip: PrefixSpec::from(prefix),
+                dst_port: port_range,
+            };
+            v6.push(NeutralRule {
+                priority,
+                fields: rule.into_backend_fields::<Erased>(),
+                rule,
+                action: (),
+            });
+        }
+    }
+}
+
 #[derive(Default)]
 struct RuleSet {
     remote_v4: Vec<NeutralRule<RemoteKey<Ipv4Addr>, Verdict>>,
     remote_v6: Vec<NeutralRule<RemoteKey<Ipv6Addr>, Verdict>>,
     local_v4: Vec<NeutralRule<LocalKey<Ipv4Addr>, NatMode>>,
     local_v6: Vec<NeutralRule<LocalKey<Ipv6Addr>, NatMode>>,
+    masquerade_v4: Vec<NeutralRule<MasqueradeKey<Ipv4Addr>, ()>>,
+    masquerade_v6: Vec<NeutralRule<MasqueradeKey<Ipv6Addr>, ()>>,
 }
 
 impl RuleSet {
@@ -553,6 +650,20 @@ impl RuleSet {
                             proto,
                             action,
                         );
+                        // Stage 3: the same prefix, keyed additionally on the peer's VNI, so a
+                        // masquerade destination can be *verified* against a candidate VPC rather
+                        // than resolved from the address (which two peers may share).
+                        if action.nat_mode == Some(NatRequirement::Masquerade) {
+                            emit_masquerade(
+                                &mut rules.masquerade_v4,
+                                &mut rules.masquerade_v6,
+                                src_vni,
+                                remote_vni,
+                                prefix.prefix(),
+                                prefix.into(),
+                                proto,
+                            );
+                        }
                     }
                 }
                 if peering.remote().has_default_expose() {
@@ -619,6 +730,8 @@ pub struct FlowFilterContext {
     pub(super) local_v4: AnyTable<LocalKey<Ipv4Addr>, NatMode>,
     pub(super) remote_v6: AnyTable<RemoteKey<Ipv6Addr>, Verdict>,
     pub(super) local_v6: AnyTable<LocalKey<Ipv6Addr>, NatMode>,
+    pub(super) masquerade_v4: AnyTable<MasqueradeKey<Ipv4Addr>, ()>,
+    pub(super) masquerade_v6: AnyTable<MasqueradeKey<Ipv6Addr>, ()>,
 }
 
 impl Default for FlowFilterContext {
@@ -628,6 +741,8 @@ impl Default for FlowFilterContext {
             local_v4: AnyTable::empty(),
             remote_v6: AnyTable::empty(),
             local_v6: AnyTable::empty(),
+            masquerade_v4: AnyTable::empty(),
+            masquerade_v6: AnyTable::empty(),
         }
     }
 }
@@ -639,6 +754,8 @@ impl fmt::Debug for FlowFilterContext {
             .field("local_v4", &self.local_v4)
             .field("remote_v6", &self.remote_v6)
             .field("local_v6", &self.local_v6)
+            .field("masquerade_v4", &self.masquerade_v4)
+            .field("masquerade_v6", &self.masquerade_v6)
             .finish()
     }
 }
@@ -656,53 +773,54 @@ impl FlowFilterContext {
             local_v4: build_table(backend, "local_v4", rules.local_v4)?,
             remote_v6: build_table(backend, "remote_v6", rules.remote_v6)?,
             local_v6: build_table(backend, "local_v6", rules.local_v6)?,
+            masquerade_v4: build_table(backend, "masq_v4", rules.masquerade_v4)?,
+            masquerade_v6: build_table(backend, "masq_v6", rules.masquerade_v6)?,
         })
     }
 
-    // Single-key lookup: the readable per-packet oracle used by tests; production runs
-    // lookup_batch. The differential test cross-checks the two against each other.
+    /// Single-key lookup: the readable per-packet oracle used by tests; production runs
+    /// [`lookup_batch`](Self::lookup_batch). The differential test cross-checks the two against
+    /// each other, which is why both take the same [`LookupInput`] and share [`lookup_one`]'s
+    /// stage logic rather than restating it.
     #[cfg(test)]
-    pub(super) fn lookup(
-        &self,
-        src_vpcd: VpcDiscriminant,
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
-        proto: NextHeader,
-        ports: Option<(u16, u16)>,
-    ) -> LookupResult {
-        let src_vni = key_vni(src_vpcd);
-        let (src_port, dst_port) = ports.unzip();
-        let src_port = src_port.unwrap_or(0);
-        let dst_port = dst_port.unwrap_or(0);
+    pub(super) fn lookup(&self, input: &LookupInput) -> LookupResult {
+        let src_vni = key_vni(input.src_vpcd);
+        let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
+        let flow_dst_vni = input.flow_dst_vpcd.map(key_vni);
 
-        match (src_ip, dst_ip) {
+        match (input.src_ip, input.dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => lookup_one(
                 &self.remote_v4,
                 &self.local_v4,
+                &self.masquerade_v4,
                 &Query {
                     src_vni,
-                    proto,
+                    proto: input.proto,
                     src_ip,
                     dst_ip,
                     src_port,
                     dst_port,
+                    flow_dst_vni,
                 },
             ),
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => lookup_one(
                 &self.remote_v6,
                 &self.local_v6,
+                &self.masquerade_v6,
                 &Query {
                     src_vni,
-                    proto,
+                    proto: input.proto,
                     src_ip,
                     dst_ip,
                     src_port,
                     dst_port,
+                    flow_dst_vni,
                 },
             ),
             _ => {
                 debug!(
-                    "Source and destination IP versions do not match: src_ip={src_ip:?}, dst_ip={dst_ip:?}",
+                    "Source and destination IP versions do not match: src_ip={:?}, dst_ip={:?}",
+                    input.src_ip, input.dst_ip,
                 );
                 LookupResult::DestinationMiss
             }
@@ -727,6 +845,7 @@ impl FlowFilterContext {
             let proto = input.proto;
             let src_vni = key_vni(input.src_vpcd);
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
+            let flow_dst_vni = input.flow_dst_vpcd.map(key_vni);
             match (input.src_ip, input.dst_ip) {
                 (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                     v4_idx.push(i);
@@ -737,6 +856,7 @@ impl FlowFilterContext {
                         dst_ip,
                         src_port,
                         dst_port,
+                        flow_dst_vni,
                     });
                 }
                 (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
@@ -748,34 +868,49 @@ impl FlowFilterContext {
                         dst_ip,
                         src_port,
                         dst_port,
+                        flow_dst_vni,
                     });
                 }
                 _ => { /* version mismatch: leave "out[i] = DestinationMiss" */ }
             }
         }
 
-        lookup_versioned(&self.remote_v4, &self.local_v4, &v4_q, &v4_idx, out);
-        lookup_versioned(&self.remote_v6, &self.local_v6, &v6_q, &v6_idx, out);
+        lookup_versioned(
+            &self.remote_v4,
+            &self.local_v4,
+            &self.masquerade_v4,
+            &v4_q,
+            &v4_idx,
+            out,
+        );
+        lookup_versioned(
+            &self.remote_v6,
+            &self.local_v6,
+            &self.masquerade_v6,
+            &v6_q,
+            &v6_idx,
+            out,
+        );
     }
 }
 
-/// Resolve one query against one IP version's tables: stage 1 (destination -> [`Verdict`]), then
-/// stage 2 (source -> source NAT) for a stage-1 hit.
+/// One query's stages, for a single IP version: the unbatched twin of [`lookup_versioned`].
 ///
-/// The two versions ran identical bodies over differently-typed tables, so the lookup sequence was
-/// stated twice and had to be edited twice. `Query<I>` already carries exactly these fields for the
-/// batched path; reusing it lets the single-key path say the sequence once.
-///
-/// Test-only, like its caller: production always runs the batched path.
+/// Kept as its own function so the stage *logic* -- in particular which of stage 2 and stage 3 a
+/// stage-1 hit needs -- is written once. The batched path differs only in gathering keys across a
+/// burst before each rte_acl call; if the two ever disagree about the stages themselves, the
+/// differential property test is comparing two different questions.
 #[cfg(test)]
 fn lookup_one<I: FixedSize + Copy>(
     remote: &AnyTable<RemoteKey<I>, Verdict>,
     local: &AnyTable<LocalKey<I>, NatMode>,
+    masquerade: &AnyTable<MasqueradeKey<I>, ()>,
     q: &Query<I>,
 ) -> LookupResult
 where
     RemoteKey<I>: MatchKey,
     LocalKey<I>: MatchKey,
+    MasqueradeKey<I>: MatchKey,
 {
     let Some(verdict) = remote.lookup(&RemoteKey {
         proto: q.proto,
@@ -785,6 +920,24 @@ where
     }) else {
         return LookupResult::DestinationMiss;
     };
+
+    // A masquerade destination is verified against the flow's candidate, never resolved from the
+    // address: see `MasqueradeKey`. No candidate, or one the configuration does not agree with,
+    // means nothing vouches for the packet.
+    if verdict.nat_mode == Some(NatRequirement::Masquerade) {
+        let verified = q.flow_dst_vni.filter(|dst_vni| {
+            masquerade
+                .lookup(&MasqueradeKey {
+                    proto: q.proto,
+                    src_vni: q.src_vni,
+                    dst_vni: *dst_vni,
+                    dst_ip: q.dst_ip,
+                    dst_port: q.dst_port,
+                })
+                .is_some()
+        });
+        return LookupResult::MasqueradeDestination(verified.map(VpcDiscriminant::from_vni));
+    }
 
     match local.lookup(&LocalKey {
         proto: q.proto,
@@ -798,18 +951,31 @@ where
     }
 }
 
-/// The two-pass batched lookup for one IP version. `queries[k]` corresponds to output slot
-/// `out[idx[k]]`. Runs in `MAX_BATCH`-sized rte_acl calls: stage 1 (destination -> [`Verdict`]),
-/// then stage 2 (source -> source NAT) over the stage-1 hits only.
+/// The batched lookup for one IP version. `queries[k]` corresponds to output slot `out[idx[k]]`.
+/// Runs in `MAX_BATCH`-sized rte_acl calls:
+///
+/// - stage 1 (destination -> [`Verdict`]) for every query;
+/// - then, over the stage-1 hits, exactly one of:
+///   - stage 3 (masquerade verification) when the verdict is a masquerade destination, because such
+///     an address does not identify a VPC and the one stage 1 reports is an arbitrary pick among
+///     the peers sharing it -- see [`MasqueradeKey`];
+///   - stage 2 (source -> source NAT) otherwise.
+///
+/// The two are mutually exclusive: a masquerade destination cannot accept a new connection, so the
+/// only traffic reaching it rides a flow that already carries its own NAT state, and no source NAT
+/// needs resolving. Splitting them keeps both on the batched path and keeps each rte_acl call
+/// asking a single question.
 fn lookup_versioned<I: FixedSize + Copy>(
     remote: &AnyTable<RemoteKey<I>, Verdict>,
     local: &AnyTable<LocalKey<I>, NatMode>,
+    masquerade: &AnyTable<MasqueradeKey<I>, ()>,
     queries: &[Query<I>],
     idx: &[usize],
     out: &mut [LookupResult],
 ) where
     RemoteKey<I>: MatchKey,
     LocalKey<I>: MatchKey,
+    MasqueradeKey<I>: MatchKey,
 {
     for (q_chunk, i_chunk) in queries.chunks(MAX_BATCH).zip(idx.chunks(MAX_BATCH)) {
         // Stage 1: destination -> Verdict.
@@ -825,12 +991,31 @@ fn lookup_versioned<I: FixedSize + Copy>(
         let mut verdicts: Vec<Option<&Verdict>> = vec![None; q_chunk.len()];
         remote.lookup_batch(&remote_keys, &mut verdicts);
 
-        // Stage 2: for the hits only, source -> source NAT.
+        // Partition the stage-1 hits by which question they still need answered.
         let mut local_keys: Vec<LocalKey<I>> = Vec::new();
         let mut hit_pos: Vec<usize> = Vec::new();
+        let mut masquerade_keys: Vec<MasqueradeKey<I>> = Vec::new();
+        let mut masquerade_pos: Vec<usize> = Vec::new();
         for (pos, verdict) in verdicts.iter().enumerate() {
-            if let Some(verdict) = verdict {
-                let q = &q_chunk[pos];
+            let Some(verdict) = verdict else { continue };
+            let q = &q_chunk[pos];
+            if verdict.nat_mode == Some(NatRequirement::Masquerade) {
+                // Verify the flow's candidate rather than trusting the verdict's dst_vpcd. With no
+                // candidate there is nothing to verify, and nothing may pass: settle it here rather
+                // than sending a key the table cannot answer.
+                let Some(flow_dst_vni) = q.flow_dst_vni else {
+                    out[i_chunk[pos]] = LookupResult::MasqueradeDestination(None);
+                    continue;
+                };
+                masquerade_keys.push(MasqueradeKey {
+                    proto: q.proto,
+                    src_vni: q.src_vni,
+                    dst_vni: flow_dst_vni,
+                    dst_ip: q.dst_ip,
+                    dst_port: q.dst_port,
+                });
+                masquerade_pos.push(pos);
+            } else {
                 local_keys.push(LocalKey {
                     proto: q.proto,
                     src_vni: q.src_vni,
@@ -841,6 +1026,22 @@ fn lookup_versioned<I: FixedSize + Copy>(
                 hit_pos.push(pos);
             }
         }
+
+        // Stage 3: does the flow's VPC masquerade this destination for this source?
+        let mut verified: Vec<Option<&()>> = vec![None; masquerade_keys.len()];
+        masquerade.lookup_batch(&masquerade_keys, &mut verified);
+        for (hit, &pos) in masquerade_pos.iter().enumerate() {
+            let q = &q_chunk[pos];
+            // A hit means the configuration agrees the flow's VPC owns this address; only then is
+            // the candidate promoted to the answer.
+            out[i_chunk[pos]] = LookupResult::MasqueradeDestination(
+                verified[hit]
+                    .and(q.flow_dst_vni)
+                    .map(VpcDiscriminant::from_vni),
+            );
+        }
+
+        // Stage 2: for the remaining hits, source -> source NAT.
         let mut nat_modes: Vec<Option<&NatMode>> = vec![None; local_keys.len()];
         local.lookup_batch(&local_keys, &mut nat_modes);
 

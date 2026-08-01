@@ -25,6 +25,7 @@
 
 #![cfg(test)]
 
+use crate::context::LookupInput;
 use bolero::TypeGenerator;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -103,6 +104,18 @@ impl ExposeSpec {
         !matches!(
             self,
             ExposeSpec::PortForwarding(_) | ExposeSpec::PortFwProtoPair
+        )
+    }
+
+    /// Whether a destination this expose matches is a *masquerade* destination: one the tables can
+    /// only verify against a flow's candidate, never resolve from the address. Such a destination
+    /// never yields a route, so it needs its own derived probes.
+    fn dest_is_masquerade(self) -> bool {
+        matches!(
+            self,
+            ExposeSpec::Masquerade
+                | ExposeSpec::MasqueradeNestingPortFw(_)
+                | ExposeSpec::MasqueradeSameLenPortFw(_)
         )
     }
 
@@ -254,6 +267,10 @@ pub(crate) struct BuiltOverlay {
     pub(crate) overlay: ValidatedOverlay,
     pub(crate) blocks: u8,
     pub(crate) routing_probes: Vec<Probe>,
+    /// Probes at a masquerade destination, each carrying the *correct* candidate on its flow.
+    /// Every one must verify, which is what keeps stage 3's hit path exercised: a verification
+    /// table that matched nothing would still satisfy every "this must drop" assertion elsewhere.
+    pub(crate) masquerade_probes: Vec<Probe>,
 }
 
 impl OverlaySpec {
@@ -324,6 +341,7 @@ impl OverlaySpec {
         let mut peering_table = VpcPeeringTable::new();
         let mut blocks: u8 = 0;
         let mut routing_probes = Vec::new();
+        let mut masquerade_probes = Vec::new();
         for (slot, peering) in spec.peerings.iter().enumerate() {
             let Some(peering) = peering else { continue };
             let (a, b) = PEERING_PAIRS[slot];
@@ -335,7 +353,9 @@ impl OverlaySpec {
             let remote = build_manifest(&vpc_name(b), &peering.remote, peering.v6, &mut blocks);
             derive_routing_probes(
                 &mut routing_probes,
+                &mut masquerade_probes,
                 VNIS[a],
+                VNIS[b],
                 peering.v6,
                 (local_base, &peering.local),
                 (remote_base, &peering.remote),
@@ -359,6 +379,7 @@ impl OverlaySpec {
             overlay,
             blocks,
             routing_probes,
+            masquerade_probes,
         }
     }
 }
@@ -366,14 +387,18 @@ impl OverlaySpec {
 /// Append one guaranteed-routing probe for each (source-capable local expose, matchable remote
 /// expose) pair of a peering. The source lands at host `.1` of a can-init private block and the
 /// destination at host `.1` of the peer's matching block
+#[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
 fn derive_routing_probes(
     out: &mut Vec<Probe>,
+    masquerade_out: &mut Vec<Probe>,
     src_vni: u32,
+    remote_vni: u32,
     v6: bool,
     (local_base, local): (u8, &ManifestSpec),
     (remote_base, remote): (u8, &ManifestSpec),
 ) {
     let src_vpcd = VpcDiscriminant::from_vni(Vni::new_checked(src_vni).unwrap());
+    let remote_vpcd = VpcDiscriminant::from_vni(Vni::new_checked(remote_vni).unwrap());
     for (li, lspec) in local.expose_specs().enumerate() {
         if !lspec.source_capable() {
             continue;
@@ -383,12 +408,29 @@ fn derive_routing_probes(
             let Some(dst_public) = rspec.dest_public_space() else {
                 continue;
             };
+            let dst_ip = block_addr(remote_base + ri as u8, 1, dst_public, v6);
+            if rspec.dest_is_masquerade() {
+                // A masquerade destination never routes. It is reachable only by reply traffic
+                // whose flow names this very peer, so the probe carries that candidate and must
+                // come back verified.
+                masquerade_out.push(Probe {
+                    src_vpcd,
+                    src_ip,
+                    dst_ip,
+                    proto: NextHeader::TCP,
+                    ports: Some((1, 1)),
+                    flow_dst_vpcd: Some(remote_vpcd),
+                });
+                continue;
+            }
             out.push(Probe {
                 src_vpcd,
                 src_ip,
-                dst_ip: block_addr(remote_base + ri as u8, 1, dst_public, v6),
+                dst_ip,
                 proto: NextHeader::TCP,
                 ports: Some((1, 1)),
+                // No flow: these probes assert a route resolves from the tables alone.
+                flow_dst_vpcd: None,
             });
         }
     }
@@ -609,6 +651,8 @@ pub(crate) struct ProbeSpec {
     proto: ProbeProto,
     sport: PortSel,
     dport: PortSel,
+    /// Which VPC the packet's flow claims as its destination, if any.
+    flow_dst_sel: Option<u8>,
 }
 
 /// A resolved probe: the arguments of one route lookup.
@@ -619,6 +663,23 @@ pub(crate) struct Probe {
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(u16, u16)>,
+    /// The destination VPC the packet's flow claims, if any -- the candidate the tables verify for
+    /// a masquerade destination. Generated independently of the rest of the probe, so it covers
+    /// having no candidate, the right one, a wrong-but-real one, and one no VPC uses.
+    pub(crate) flow_dst_vpcd: Option<VpcDiscriminant>,
+}
+
+impl Probe {
+    pub(crate) fn input(&self) -> LookupInput {
+        LookupInput {
+            src_vpcd: self.src_vpcd,
+            src_ip: self.src_ip,
+            dst_ip: self.dst_ip,
+            proto: self.proto,
+            ports: self.ports,
+            flow_dst_vpcd: self.flow_dst_vpcd,
+        }
+    }
 }
 
 impl ProbeSpec {
@@ -648,6 +709,13 @@ impl ProbeSpec {
                 ProbeProto::Icmp => None,
                 _ => Some((self.sport.resolve(), self.dport.resolve())),
             },
+            flow_dst_vpcd: self.flow_dst_sel.map(|sel| {
+                let vni = match sel as usize % (VNIS.len() + 1) {
+                    i if i < VNIS.len() => VNIS[i],
+                    _ => BOGUS_VNI,
+                };
+                VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap())
+            }),
         }
     }
 }

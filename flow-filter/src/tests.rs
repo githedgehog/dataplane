@@ -1101,13 +1101,14 @@ enum NfOutcome {
 fn expected_outcome(result: LookupResult) -> NfOutcome {
     let (dst_vpcd, dst_nat, src_nat) = match result {
         LookupResult::Route(route) => route,
-        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => {
+        // A masquerade destination needs a flow to vouch for it, and these suites run flowless
+        // packets, so it always drops -- as do both misses.
+        LookupResult::MasqueradeDestination(_)
+        | LookupResult::SourceMiss(_)
+        | LookupResult::DestinationMiss => {
             return NfOutcome::Dropped(Some(DoneReason::Filtered));
         }
     };
-    if dst_nat == Some(NatRequirement::Masquerade) {
-        return NfOutcome::Dropped(Some(DoneReason::Filtered));
-    }
 
     let masquerade = src_nat == Some(NatRequirement::Masquerade);
     let static_nat_src = src_nat == Some(NatRequirement::Static);
@@ -1146,6 +1147,8 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
                 .map(NonZero::get)
                 .zip(t.dst_port().map(NonZero::get))
         }),
+        // These suites run flowless packets, so there is no candidate to verify.
+        flow_dst_vpcd: None,
     })
 }
 
@@ -1787,4 +1790,124 @@ fn flow_from_a_newer_generation_is_honored_for_bypass() {
         FlowStatus::Active,
         "the bypass path must not invalidate the flow it just honoured",
     );
+}
+
+// -------------------------------------------------------------------------------------------------
+// Cross-peering masquerade overlap.
+//
+// Config lets two peers masquerade behind the same public range (`VpcRoute::can_overlap` exempts
+// masquerade/masquerade) and models the result as a *set* of routes per destination
+// (`VpcRouteSet` is a `Vec`). Stage 1 holds one destination VPC per match, so lowering that set
+// into it collapses the set and rte_acl's highest-priority-wins picks arbitrarily -- which used to
+// mean every masquerade reply toward the losing peer was dropped and its flow torn down.
+//
+// The destination for such traffic is now verified against the candidate the packet's flow names,
+// never resolved from the address.
+
+/// vpc1 peers with vpc2 and vpc3; both peers masquerade behind the *same* public range.
+fn shared_masquerade_range_context() -> FlowFilterContext {
+    context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                (
+                    "vpc2",
+                    vec![expose_masquerade("192.168.0.0/24", "20.0.0.0/24")],
+                ),
+            ),
+            peering(
+                "vpc1-to-vpc3",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                (
+                    "vpc3",
+                    vec![expose_masquerade("192.168.1.0/24", "20.0.0.0/24")],
+                ),
+            ),
+        ],
+    )
+}
+
+/// Reply traffic reaches *whichever* peer the flow names, not whichever rule happens to sort first.
+///
+/// Both directions must work. Before the verification stage one of these two was always dropped and
+/// its flow cancelled -- deterministically, but arbitrarily, and differently under rte_acl than
+/// under the reference backend, since equal-priority ties are unspecified there.
+#[test]
+fn masquerade_replies_reach_both_peers_sharing_a_public_range() {
+    for peer in [200u32, 300u32] {
+        let (mut flow_filter, _writer) = make_flow_filter(shared_masquerade_range_context());
+        // Advance the generation so the flow is outdated and the bypass in `classify` is refused:
+        // this must be answered by the tables, which is where the ambiguity lived.
+        set_genid(&mut flow_filter, 5);
+
+        let mut p = packet(
+            Some(vpcd(100)),
+            build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+        );
+        let flow = attach_flow(&mut p, Some(vpcd(peer)), true, true, false);
+        let out = run(&mut flow_filter, p);
+
+        assert!(
+            !out.is_done(),
+            "reply on an established masquerade flow to VNI {peer} was dropped: {:?}",
+            out.get_done(),
+        );
+        assert_eq!(
+            out.meta().dst_vpcd,
+            Some(vpcd(peer)),
+            "reply was sent to the wrong peer",
+        );
+        assert!(out.meta().requires_masquerade());
+        assert_ne!(
+            flow.status(),
+            FlowStatus::Cancelled,
+            "a valid flow to VNI {peer} was torn down",
+        );
+    }
+}
+
+/// A flow naming a VPC that does not masquerade the destination is still refused.
+///
+/// This is the staleness check the old destination-equality comparison was also providing, and it
+/// must survive: verification asks the configuration, so a candidate the configuration does not
+/// agree with is rejected exactly as an unrelated one is. vpc3 masquerades `20.0.0.0/24` but not
+/// `40.0.0.0/24`, so a flow claiming vpc3 cannot carry traffic to the latter.
+#[test]
+fn masquerade_reply_is_refused_when_the_flow_names_the_wrong_peer() {
+    let ctx = context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                (
+                    "vpc2",
+                    vec![expose_masquerade("192.168.0.0/24", "40.0.0.0/24")],
+                ),
+            ),
+            peering(
+                "vpc1-to-vpc3",
+                ("vpc1", vec![expose("10.0.0.0/24")]),
+                (
+                    "vpc3",
+                    vec![expose_masquerade("192.168.1.0/24", "20.0.0.0/24")],
+                ),
+            ),
+        ],
+    );
+    let (mut flow_filter, _writer) = make_flow_filter(ctx);
+    set_genid(&mut flow_filter, 5);
+
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("10.0.0.5"), v4("40.0.0.5"), 1234, 80),
+    );
+    // The destination belongs to vpc2's masquerade range; the flow claims vpc3.
+    let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
+    let out = run(&mut flow_filter, p);
+
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
 }
