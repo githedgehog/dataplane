@@ -18,10 +18,8 @@
 //!   tie that the port-forwarding tie-break bit resolves),
 //! - two port-forwarding exposes sharing prefixes and ports, distinguished only by L4 protocol.
 //!
-//! Deliberately out of scope: cross-peering masquerade/masquerade destination overlaps (legal,
-//! but the winning destination VPC of the resulting equal-priority marker rules is unspecified,
-//! and benign only because the NF gates masquerade verdicts on the flow's destination), and
-//! mixed-IP-version manifests (they currently pass validation but yield one-sided tables).
+//! Cross-peering masquerade destination overlaps are out of scope because their equal-priority
+//! winner is unspecified. Mixed-IP manifests are rejected by config validation.
 
 #![cfg(test)]
 

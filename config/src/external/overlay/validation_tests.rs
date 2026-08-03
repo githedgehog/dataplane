@@ -741,6 +741,55 @@ mod test {
     // VpcManifest validation, overlap and NAT checks
     // ==================================================================================
 
+    // Reject mixed versions across exposes, not only within one expose.
+    #[test]
+    fn test_manifest_mixing_ip_versions_rejected() {
+        let mut manifest = VpcManifest::new("VPC-1");
+        manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/24".into()));
+        manifest.add_expose(VpcExpose::empty().ip("2001:db8::/32".into()));
+        let result = manifest.validate();
+        assert!(
+            matches!(result, Err(ConfigError::Forbidden(_))),
+            "a manifest mixing IPv4 and IPv6 exposes must be rejected: {result:?}",
+        );
+    }
+
+    // The result must not depend on expose order.
+    #[test]
+    fn test_manifest_mixing_ip_versions_rejected_either_order() {
+        let mut manifest = VpcManifest::new("VPC-1");
+        manifest.add_expose(VpcExpose::empty().ip("2001:db8::/32".into()));
+        manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/24".into()));
+        assert!(matches!(
+            manifest.validate(),
+            Err(ConfigError::Forbidden(_))
+        ));
+    }
+
+    // Default exposes do not constrain the manifest's IP version.
+    #[test]
+    fn test_manifest_default_expose_does_not_constrain_ip_version() {
+        for ip in ["10.0.0.0/24", "2001:db8::/32"] {
+            let mut manifest = VpcManifest::new("VPC-1");
+            manifest.add_expose(VpcExpose::empty().set_default());
+            manifest.add_expose(VpcExpose::empty().ip(ip.into()));
+            let result = manifest.validate();
+            assert!(
+                result.is_ok(),
+                "a default expose alongside {ip} must be accepted: {result:?}",
+            );
+        }
+    }
+
+    // IPv6-only manifests remain valid.
+    #[test]
+    fn test_manifest_single_ip_version_accepted() {
+        let mut v6 = VpcManifest::new("VPC-1");
+        v6.add_expose(VpcExpose::empty().ip("2001:db8::/32".into()));
+        v6.add_expose(VpcExpose::empty().ip("2001:db9::/32".into()));
+        assert!(v6.validate().is_ok());
+    }
+
     // Two no-NAT exposes with disjoint ips passes
     #[test]
     fn test_no_nat_disjoint_ips_passes() {

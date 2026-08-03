@@ -692,6 +692,7 @@ impl VpcManifest {
             valid_manifest_candidate.valexp.push(expose.validate()?);
         }
 
+        valid_manifest_candidate.validate_single_ip_version()?;
         valid_manifest_candidate.validate_expose_collisions()?;
         Ok(valid_manifest_candidate)
     }
@@ -774,6 +775,31 @@ impl ValidatedManifest {
     #[must_use]
     pub fn is_default_only(&self) -> bool {
         self.valexp.len() == 1 && self.valexp.first().is_some_and(ValidatedExpose::is_default)
+    }
+
+    /// Reject manifests containing both IPv4 and IPv6 exposes.
+    /// Default exposes are version-neutral.
+    fn validate_single_ip_version(&self) -> ConfigResult {
+        let mut version: Option<bool> = None;
+        for expose in &self.valexp {
+            // A default expose has no IP version.
+            let is_v4 = if expose.is_v4() {
+                true
+            } else if expose.is_v6() {
+                false
+            } else {
+                continue;
+            };
+            match version {
+                Some(seen) if seen != is_v4 => {
+                    return Err(ConfigError::Forbidden(
+                        "A manifest cannot mix IPv4 and IPv6 expose blocks",
+                    ));
+                }
+                _ => version = Some(is_v4),
+            }
+        }
+        Ok(())
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {
