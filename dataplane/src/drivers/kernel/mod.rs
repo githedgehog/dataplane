@@ -14,6 +14,7 @@
 
 mod fanout;
 mod kif;
+mod sockstats;
 mod worker;
 
 use std::ops::Add;

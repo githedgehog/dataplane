@@ -27,6 +27,7 @@ use pipeline::{DynPipeline, NetworkFunction};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
+use crate::drivers::kernel::sockstats;
 use crate::drivers::kernel::{WorkerIfaceMonitor, WorkerMonitor};
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
@@ -527,6 +528,20 @@ async fn read_packets_from_interface(
             }
         },
         Err(_wouldblock) => (),
+    }
+
+    // Ask the kernel what it dropped on the socket while we were away. This is
+    // read-and-clear, so it must be polled on each pass or the counts pile up.
+    match sockstats::get_kernel_drops(fd.get_ref()) {
+        Ok(drops) => counters.kernel_drops += drops,
+        Err(e) => {
+            debug!(
+                worker = id,
+                rx_intf_name = intf.if_name,
+                "Unable to read socket statistics on interface {}: {e}",
+                intf.if_name
+            );
+        }
     }
 
     trace!(
