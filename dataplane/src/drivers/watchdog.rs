@@ -31,6 +31,10 @@ struct WatchdogInner {
     tx: AtomicU64,           // number of packets sent by task
     ppline_drops: AtomicU64, // number of packets dropped by task pipeline
     tx_drops: AtomicU64,     // number of tx failures
+    parse_errors: AtomicU64, // number of frames we failed to parse
+    truncated: AtomicU64,    // number of frames larger than the rx buffer
+    zero_len: AtomicU64,     // number of zero-length reads
+    kernel_drops: AtomicU64, // number of frames the kernel dropped on the socket
 }
 
 /// A lock-free liveness + activity watchdog.
@@ -55,6 +59,10 @@ impl Watchdog {
         accumulate(&self.0.tx, counters.tx);
         accumulate(&self.0.ppline_drops, counters.ppline_drops);
         accumulate(&self.0.tx_drops, counters.tx_drops);
+        accumulate(&self.0.parse_errors, counters.parse_errors);
+        accumulate(&self.0.truncated, counters.truncated);
+        accumulate(&self.0.zero_len, counters.zero_len);
+        accumulate(&self.0.kernel_drops, counters.kernel_drops);
     }
 
     /// Supervisor: read the counters of a watchdog (and zero them), along with the
@@ -69,6 +77,10 @@ impl Watchdog {
             tx: self.0.tx.swap(0, Ordering::Relaxed),
             ppline_drops: self.0.ppline_drops.swap(0, Ordering::Relaxed),
             tx_drops: self.0.tx_drops.swap(0, Ordering::Relaxed),
+            parse_errors: self.0.parse_errors.swap(0, Ordering::Relaxed),
+            truncated: self.0.truncated.swap(0, Ordering::Relaxed),
+            zero_len: self.0.zero_len.swap(0, Ordering::Relaxed),
+            kernel_drops: self.0.kernel_drops.swap(0, Ordering::Relaxed),
         };
         let patted = if check_and_rearm {
             !self.0.armed.swap(true, Ordering::Relaxed)
@@ -119,6 +131,14 @@ pub struct RxCounters {
     pub ppline_drops: u64,
     /// Pkts received dropped on tx
     pub tx_drops: u64,
+    /// Frames received but that we failed to parse
+    pub parse_errors: u64,
+    /// Frames received but larger than the rx buffer
+    pub truncated: u64,
+    /// Zero-length reads on the socket
+    pub zero_len: u64,
+    /// Frames the kernel dropped on the socket before we could read them
+    pub kernel_drops: u64,
 }
 
 impl std::fmt::Display for Activity {

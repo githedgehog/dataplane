@@ -281,6 +281,7 @@ impl Worker {
                     tx: tx_pkts,
                     ppline_drops,
                     tx_drops,
+                    ..RxCounters::default()
                 });
             }
         });

@@ -30,6 +30,10 @@ pub struct RxTaskStatus {
     pub total_tx: u64,
     pub total_ppline_drops: u64,
     pub total_tx_drops: u64,
+    pub total_parse_errors: u64,
+    pub total_truncated: u64,
+    pub total_zero_len: u64,
+    pub total_kernel_drops: u64,
     pub pps: f64,
 }
 impl RxTaskStatus {
@@ -43,6 +47,10 @@ impl RxTaskStatus {
             total_tx: 0,
             total_ppline_drops: 0,
             total_tx_drops: 0,
+            total_parse_errors: 0,
+            total_truncated: 0,
+            total_zero_len: 0,
+            total_kernel_drops: 0,
             pps: 0.,
         }
     }
@@ -140,7 +148,13 @@ impl Display for WorkerState {
 
 macro_rules! RX_TASK_TBL_FMT {
     () => {
-        "   {:<16}  {:<6}  {:>14}  {:>20}  {:>20}  {:>12}  {:>8}  {:>9}"
+        "   {:<16}  {:<6}  {:>14}  {:>20}  {:>20}  {:>9}"
+    };
+}
+
+macro_rules! RX_DROP_TBL_FMT {
+    () => {
+        "   {:<16}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}  {:>12}"
     };
 }
 
@@ -150,7 +164,7 @@ fn fmt_rx_task_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
-            "iface", "status", "pps", "pkt-rx", "pkt-tx", "ppline-drops", "tx-drops", "wd-misses"
+            "iface", "status", "pps", "pkt-rx", "pkt-tx", "wd-misses"
         )
     )
 }
@@ -162,14 +176,41 @@ fn fmt_rx_task(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
         "{}",
         format_args!(
             RX_TASK_TBL_FMT!(),
+            rx.ifname, rx.activity, pps, rx.total_rx, rx.total_tx, rx.misses
+        )
+    )
+}
+
+fn fmt_rx_drop_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            RX_DROP_TBL_FMT!(),
+            "iface",
+            "ppline-drops",
+            "tx-drops",
+            "parse-err",
+            "truncated",
+            "zero-len",
+            "kernel-drops"
+        )
+    )
+}
+
+fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            RX_DROP_TBL_FMT!(),
             rx.ifname,
-            rx.activity,
-            pps,
-            rx.total_rx,
-            rx.total_tx,
             rx.total_ppline_drops,
             rx.total_tx_drops,
-            rx.misses
+            rx.total_parse_errors,
+            rx.total_truncated,
+            rx.total_zero_len,
+            rx.total_kernel_drops
         )
     )
 }
@@ -187,13 +228,23 @@ impl Display for DriverStatus {
             return writeln!(f, " (no workers)");
         }
 
+        writeln!(f, " rx tasks")?;
         fmt_rx_task_heading(f)?;
         for worker in &self.workers {
             writeln!(f, " worker {}: {}", worker.worker, worker.state)?;
             for rx in &worker.rx_tasks {
                 fmt_rx_task(f, rx)?;
             }
-            writeln!(f)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, " rx drops")?;
+        fmt_rx_drop_heading(f)?;
+        for worker in &self.workers {
+            writeln!(f, " worker {}", worker.worker)?;
+            for rx in &worker.rx_tasks {
+                fmt_rx_drop(f, rx)?;
+            }
         }
         Ok(())
     }
