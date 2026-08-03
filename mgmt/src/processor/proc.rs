@@ -327,7 +327,7 @@ impl ConfigProcessor {
                     dst_vpc: dst_name,
                     packets: fs.ctr.packets,
                     bytes: fs.ctr.bytes,
-                    drops: 0,
+                    drops: fs.drops.packets,
                     pps: fs.rate.pps,
                     bps: fs.rate.bps,
                 },
