@@ -176,6 +176,8 @@ impl Worker {
             loop {
                 debug!(worker = id, "awaiting packets");
 
+                let mut counters = RxCounters::default();
+
                 let packets_vec = tokio::select! {
                     () = cancel.cancelled() => {
                         info!(
@@ -185,7 +187,7 @@ impl Worker {
                         );
                         break;
                     },
-                    result = read_packets_from_interface(id, &intf) => match result {
+                    result = read_packets_from_interface(id, &intf, &mut counters) => match result {
                         Ok(packets) => packets,
                         Err(e) => {
                             error!(
@@ -193,11 +195,12 @@ impl Worker {
                                 rx_intf_name = intf.if_name,
                                 "Error reading packets from interface: {e}"
                             );
-                            continue;
+                            Vec::new()
                         }
                     },
                     // N.B. read_packets_from_interface() MUST be cancel-safe for this wake-up not to
-                    // cause packet loss. It currently is.
+                    // cause packet loss, nor loss of the counters it fills. It currently is: it only
+                    // awaits before reading anything from the socket.
                     _ = ticker.tick() => {
                         intf.watchdog.pat();
                         continue;
@@ -215,8 +218,10 @@ impl Worker {
                 let mut tx_pkts: u64 = 0; // number of packets successfully sent
                 let mut tx_drops: u64 = 0; // number of packets dropped on tx
                 let rx_pkts = packets_vec.len() as u64; // number of packets received
+                counters.rx = rx_pkts;
                 if rx_pkts == 0 {
-                    // skip any further processing
+                    // nothing to process, but the read may have hit errors worth reporting
+                    intf.watchdog.record(&counters);
                     continue;
                 }
 
@@ -276,13 +281,10 @@ impl Worker {
                 );
 
                 // update rx task stats
-                intf.watchdog.record(&RxCounters {
-                    rx: rx_pkts,
-                    tx: tx_pkts,
-                    ppline_drops,
-                    tx_drops,
-                    ..RxCounters::default()
-                });
+                counters.tx = tx_pkts;
+                counters.ppline_drops = ppline_drops;
+                counters.tx_drops = tx_drops;
+                intf.watchdog.record(&counters);
             }
         });
     }
@@ -411,6 +413,7 @@ fn packet_recv(
     if_index: InterfaceIndex,
     max_to_read: usize,
     pkts: &mut Vec<Box<Packet<TestBuffer>>>,
+    counters: &mut RxCounters,
 ) -> Result<(), nix::Error> {
     let mut raw = [0u8; 9600];
     let mut ret = Ok(());
@@ -441,6 +444,7 @@ fn packet_recv(
                     }
                     Err(e) => {
                         // Parsing errors happen; avoid logspam for loopback
+                        counters.parse_errors += 1;
                         if if_name != "lo" {
                             error!(
                                 worker = id,
@@ -468,6 +472,7 @@ fn packet_recv(
 async fn read_packets_from_interface(
     id: WorkerId,
     intf: &WorkerInterfaceReader,
+    counters: &mut RxCounters,
 ) -> Result<Vec<Box<Packet<TestBuffer>>>, io::Error> {
     let fd = &intf.read_fd;
     let mut guard = match fd.readable().await {
@@ -500,6 +505,7 @@ async fn read_packets_from_interface(
             intf.if_index,
             DriverKernel::MAX_RX_PKT_BATCH,
             &mut pkts,
+            counters,
         )
         .map_err(std::convert::Into::into)
     }) {

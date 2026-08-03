@@ -87,7 +87,7 @@ impl Watchdog {
         } else {
             true // assume it was patted since we don't check/care
         };
-        let activity = if counters.rx > 0 {
+        let activity = if counters.saw_frames() {
             Activity::Active
         } else if patted {
             Activity::Idle
@@ -139,6 +139,15 @@ pub struct RxCounters {
     pub zero_len: u64,
     /// Frames the kernel dropped on the socket before we could read them
     pub kernel_drops: u64,
+}
+
+impl RxCounters {
+    /// Tell if the task saw any frame, including ones it could not make use of.
+    /// Frames dropped by the kernel don't count: the task never saw them.
+    #[must_use]
+    pub fn saw_frames(&self) -> bool {
+        self.rx > 0 || self.parse_errors > 0 || self.truncated > 0 || self.zero_len > 0
+    }
 }
 
 impl std::fmt::Display for Activity {
