@@ -574,14 +574,28 @@ async fn tx_packet(
                 "TXing {len} bytes on interface {}",
                 &outgoing.if_name
             );
-            if let Err(e) = outgoing.sock.write(out.as_ref()).await {
-                warn!(
-                    worker = id,
-                    rx_intf_name = rx_if_name,
-                    "TX failed for pkt ({len} octets) on interface '{}': {e}",
-                    &outgoing.if_name
-                );
-                return false;
+            match outgoing.sock.write(out.as_ref()).await {
+                Ok(written) if written == len => {}
+                Ok(written) => {
+                    // One write is one frame on a packet socket, so we can't complete a partial
+                    // write with a second one: the remainder would go out as its own frame.
+                    warn!(
+                        worker = id,
+                        rx_intf_name = rx_if_name,
+                        "TX wrote {written} of {len} octets on interface '{}'. Dropping packet",
+                        &outgoing.if_name
+                    );
+                    return false;
+                }
+                Err(e) => {
+                    warn!(
+                        worker = id,
+                        rx_intf_name = rx_if_name,
+                        "TX failed for pkt ({len} octets) on interface '{}': {e}",
+                        &outgoing.if_name
+                    );
+                    return false;
+                }
             }
             trace!(
                 worker = id,
