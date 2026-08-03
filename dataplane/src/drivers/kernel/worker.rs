@@ -405,6 +405,48 @@ fn build_interface_table(
     Ok((readers, Arc::new(if_table)))
 }
 
+/// Build a [`Packet`] out of a frame just read from a socket. `bytes` is the length the
+/// kernel reported for the frame, which may be more than what we read into `raw`.
+/// Returns `None` if the frame could not be used, and counts why.
+fn build_packet(
+    id: WorkerId,
+    if_name: &str,
+    raw: &[u8],
+    bytes: usize,
+    if_index: InterfaceIndex,
+    counters: &mut RxCounters,
+) -> Option<Box<Packet<TestBuffer>>> {
+    if raw.len() < bytes {
+        counters.truncated += 1;
+        error!(
+            worker = id,
+            rx_intf_name = if_name,
+            "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, truncating",
+            raw.len()
+        );
+    }
+    let buf = TestBuffer::from_raw_data(&raw[..std::cmp::min(raw.len(), bytes)]);
+    match Packet::new(buf) {
+        Ok(mut incoming) => {
+            incoming.meta_mut().iif = Some(if_index);
+            Some(Box::new(incoming))
+        }
+        Err(e) => {
+            // Parsing errors happen; avoid logspam for loopback
+            counters.parse_errors += 1;
+            if if_name != "lo" {
+                error!(
+                    worker = id,
+                    rx_intf_name = if_name,
+                    "Failed to parse packet on '{}': {e}",
+                    if_name
+                );
+            }
+            None
+        }
+    }
+}
+
 /// Tries to receive frames from the indicated interface and builds `Packet`s
 /// out of them. Returns a vector of [`Packet`]s.
 fn packet_recv(
@@ -432,34 +474,8 @@ fn packet_recv(
             }
             Ok(bytes) => {
                 trace!("Received packet with {} bytes on {}", bytes, if_name);
-                // build TestBuffer and parse
-                if raw.len() < bytes {
-                    counters.truncated += 1;
-                    error!(
-                        worker = id,
-                        rx_intf_name = if_name,
-                        "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, truncating",
-                        raw.len()
-                    );
-                }
-                let buf = TestBuffer::from_raw_data(&raw[..std::cmp::min(raw.len(), bytes)]);
-                match Packet::new(buf) {
-                    Ok(mut incoming) => {
-                        incoming.meta_mut().iif = Some(if_index);
-                        pkts.push(Box::new(incoming));
-                    }
-                    Err(e) => {
-                        // Parsing errors happen; avoid logspam for loopback
-                        counters.parse_errors += 1;
-                        if if_name != "lo" {
-                            error!(
-                                worker = id,
-                                rx_intf_name = if_name,
-                                "Failed to parse packet on '{}': {e}",
-                                if_name
-                            );
-                        }
-                    }
+                if let Some(pkt) = build_packet(id, if_name, &raw, bytes, if_index, counters) {
+                    pkts.push(pkt);
                 }
             }
             Err(e) if e == nix::errno::Errno::EWOULDBLOCK => {
@@ -651,5 +667,70 @@ async fn tx_packet(
             );
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{RxCounters, build_packet};
+    use net::buffer::test_buffer::TestBuffer;
+    use net::interface::InterfaceIndex;
+    use net::packet::Packet;
+    use net::packet::test_utils::build_test_ipv4_packet;
+
+    const IF_INDEX: u32 = 1;
+    const IF_NAME: &str = "test0";
+
+    fn if_index() -> InterfaceIndex {
+        InterfaceIndex::try_new(IF_INDEX).expect("bad interface index")
+    }
+
+    fn build_test_frame() -> Packet<TestBuffer> {
+        build_test_ipv4_packet(64).expect("failed to build test packet")
+    }
+
+    /// A frame we can parse is returned, and tagged with the interface it came from.
+    #[test]
+    fn good_frame_is_not_counted_as_an_error() {
+        let packet = build_test_frame();
+        let buf = packet.serialize().expect("failed to serialize test packet");
+        let raw = buf.as_ref();
+
+        let mut counters = RxCounters::default();
+        let built = build_packet(0, IF_NAME, raw, raw.len(), if_index(), &mut counters)
+            .expect("valid frame should be built");
+
+        assert_eq!(built.meta().iif, Some(if_index()));
+        assert_eq!(counters.parse_errors, 0);
+        assert_eq!(counters.truncated, 0);
+    }
+
+    /// A frame we cannot parse is dropped, and counted.
+    #[test]
+    fn unparseable_frame_is_counted() {
+        let raw = [0xffu8; 4];
+
+        let mut counters = RxCounters::default();
+        let built = build_packet(0, IF_NAME, &raw, raw.len(), if_index(), &mut counters);
+
+        assert!(built.is_none());
+        assert_eq!(counters.parse_errors, 1);
+        assert_eq!(counters.truncated, 0);
+    }
+
+    /// A frame longer than what we read is counted, whether or not we can parse it.
+    #[test]
+    fn oversize_frame_is_counted() {
+        let packet = build_test_frame();
+        let buf = packet.serialize().expect("failed to serialize test packet");
+        let raw = buf.as_ref();
+
+        let mut counters = RxCounters::default();
+        // the kernel tells us the frame was longer than what it copied for us
+        let built = build_packet(0, IF_NAME, raw, raw.len() + 1, if_index(), &mut counters);
+
+        assert!(built.is_some());
+        assert_eq!(counters.truncated, 1);
+        assert_eq!(counters.parse_errors, 0);
     }
 }
