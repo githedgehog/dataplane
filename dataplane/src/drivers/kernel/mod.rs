@@ -160,6 +160,10 @@ impl DriverKernel {
             // check the rx task activity, and watchdog, if we've been told to do so
             let (counters, activity) = ifm.watchdog.check_and_clear(check_watchdog);
 
+            // The counters have been cleared by the read above, so accumulate them whatever
+            // the activity: dropping them here would lose them for good.
+            rx_task_status.accumulate(&counters);
+
             // update the rx task status
             rx_task_status.activity = activity;
             match rx_task_status.activity {
@@ -172,14 +176,6 @@ impl DriverKernel {
                     );
                 }
                 Activity::Active => {
-                    rx_task_status.total_rx += counters.rx;
-                    rx_task_status.total_tx += counters.tx;
-                    rx_task_status.total_ppline_drops += counters.ppline_drops;
-                    rx_task_status.total_tx_drops += counters.tx_drops;
-                    rx_task_status.total_parse_errors += counters.parse_errors;
-                    rx_task_status.total_truncated += counters.truncated;
-                    rx_task_status.total_zero_len += counters.zero_len;
-                    rx_task_status.total_kernel_drops += counters.kernel_drops;
                     rx_task_status.pps = counters.rx as f64 / f64::from(Self::TASK_POLL_PERIOD);
                 }
                 Activity::Idle => rx_task_status.pps = 0.0,

@@ -159,3 +159,70 @@ impl std::fmt::Display for Activity {
         })
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::{Activity, RxCounters, Watchdog};
+
+    /// A watchdog reports the counters it holds, whatever the activity it denotes.
+    /// Anything it does not report is lost, since reading clears them.
+    #[test]
+    fn counters_are_reported_when_not_active() {
+        // tx drops, but nothing received: this is not activity for the task
+        let watchdog = Watchdog::new();
+        watchdog.pat();
+        watchdog.record(&RxCounters {
+            tx_drops: 7,
+            kernel_drops: 3,
+            ..RxCounters::default()
+        });
+
+        let (counters, activity) = watchdog.check_and_clear(true);
+        assert!(matches!(activity, Activity::Idle));
+        assert_eq!(counters.tx_drops, 7);
+        assert_eq!(counters.kernel_drops, 3);
+
+        // same, for a task that failed to pat the watchdog
+        watchdog.record(&RxCounters {
+            ppline_drops: 5,
+            ..RxCounters::default()
+        });
+        let (counters, activity) = watchdog.check_and_clear(true);
+        assert!(matches!(activity, Activity::Stuck));
+        assert_eq!(counters.ppline_drops, 5);
+    }
+
+    /// Reading the counters clears them.
+    #[test]
+    fn counters_are_cleared_when_read() {
+        let watchdog = Watchdog::new();
+        watchdog.record(&RxCounters {
+            rx: 4,
+            parse_errors: 2,
+            ..RxCounters::default()
+        });
+
+        let (counters, _) = watchdog.check_and_clear(false);
+        assert_eq!(counters.rx, 4);
+        assert_eq!(counters.parse_errors, 2);
+
+        let (counters, _) = watchdog.check_and_clear(false);
+        assert_eq!(counters.rx, 0);
+        assert_eq!(counters.parse_errors, 0);
+    }
+
+    /// Frames we could not parse mean the task is busy, not idle.
+    #[test]
+    fn parse_errors_count_as_activity() {
+        let watchdog = Watchdog::new();
+        watchdog.pat();
+        watchdog.record(&RxCounters {
+            parse_errors: 9,
+            ..RxCounters::default()
+        });
+
+        let (counters, activity) = watchdog.check_and_clear(true);
+        assert!(matches!(activity, Activity::Active));
+        assert_eq!(counters.parse_errors, 9);
+    }
+}
