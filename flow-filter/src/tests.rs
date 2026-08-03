@@ -1061,3 +1061,181 @@ fn burst_processing_upholds_structural_invariants() {
             }
         });
 }
+
+// =================================================================================================
+// REPRODUCTION: cross-peering masquerade destination overlap
+//
+// NOT FOR MERGE. This module exists to demonstrate a defect and is expected to FAIL in CI. It is a
+// discussion aid, not a regression test.
+//
+// ------------------------------------------------------------------------------------------------
+// The configuration
+//
+// vpc1 peers with vpc2 and with vpc3. Both peers masquerade behind the SAME public range,
+// 20.0.0.0/24, out of their own (distinct) private ranges. That is a plausible deployment: NAT
+// pools are drawn from private or CGNAT space, and two independent peers have no reason to
+// coordinate their choice.
+//
+// Config permits this deliberately. `VpcRoute::can_overlap` in
+// config/src/external/overlay/vpcrouting.rs exempts masquerade/masquerade from the
+// destination-overlap check that rejects every other kind of collision:
+//
+//     fn can_overlap(&self, other: &VpcRoute) -> bool {
+//         if self.dstvpc == other.dstvpc { return true; }
+//         if self.is_masquerade() && other.is_masquerade() { return true; }   // <-- here
+//         self.is_default() ^ other.is_default()
+//     }
+//
+// and it models the outcome as a *set* of routes per destination prefix:
+//
+//     struct VpcRouteSet(Vec<VpcRoute>);
+//
+// ------------------------------------------------------------------------------------------------
+// The defect
+//
+// The flow-filter lowers that one-to-many relation into a one-to-one table. Stage 1 is
+// `RemoteKey -> Verdict`, and `Verdict` holds exactly one `dst_vpcd`. The two peers therefore
+// produce two rules with identical match sets and identical priorities (`rule_priority` is a
+// function of prefix length and the port-forwarding bit, both equal here) that disagree only about
+// the destination VPC. Which one wins is decided by tie-break: stable-sort position under the
+// reference backend, and formally unspecified under rte_acl -- so the two backends need not even
+// agree with each other.
+//
+// `apply_route` then requires the packet's flow to agree with that arbitrary winner, so masquerade
+// reply traffic toward the *losing* peer is dropped and its flow torn down. One of the two peers
+// simply does not work, permanently and silently.
+//
+// The underlying reason is that a masquerade public address is not a routable identifier. It names
+// a NAT pool. It can never accept a new connection, so the only legitimate traffic to it is reply
+// traffic, which by construction rides a flow -- and the flow is the only thing that can tell two
+// connections to the same address apart. The address alone cannot answer "which VPC?", so the
+// table is being asked a question that has no unique answer.
+mod repro_masquerade_overlap {
+    use super::{attach_flow, make_flow_filter, packet, run, set_genid};
+    use crate::context::FlowFilterContext;
+    use crate::test_utils::{
+        build_tcp_packet, expose, expose_masquerade, overlay, peering, v4, vpcd,
+    };
+    use net::flows::FlowStatus;
+
+    /// The shared masquerade public range both peers translate into.
+    const SHARED_PUBLIC: &str = "20.0.0.0/24";
+
+    /// vpc1 (VNI 100) peers with vpc2 (VNI 200) and vpc3 (VNI 300); both peers masquerade behind
+    /// `SHARED_PUBLIC` out of distinct private ranges.
+    fn shared_masquerade_overlay() -> config::external::overlay::ValidatedOverlay {
+        overlay(
+            &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+            vec![
+                peering(
+                    "vpc1-to-vpc2",
+                    ("vpc1", vec![expose("10.0.0.0/24")]),
+                    (
+                        "vpc2",
+                        vec![expose_masquerade("192.168.0.0/24", SHARED_PUBLIC)],
+                    ),
+                ),
+                peering(
+                    "vpc1-to-vpc3",
+                    ("vpc1", vec![expose("10.0.0.0/24")]),
+                    (
+                        "vpc3",
+                        vec![expose_masquerade("192.168.1.0/24", SHARED_PUBLIC)],
+                    ),
+                ),
+            ],
+        )
+    }
+
+    /// Establishes that the configuration above is legal. This test PASSES; it is here so the
+    /// failure below cannot be dismissed as an invalid configuration.
+    ///
+    /// The printed table shows the two rules the overlap produces: same source VNI, same
+    /// destination prefix, same protocol and port wildcards, both masquerade -- differing only in
+    /// the destination VPC they name.
+    #[test]
+    fn config_permits_two_peers_sharing_one_masquerade_range() {
+        let overlay = shared_masquerade_overlay();
+        let dump = FlowFilterContext::for_test(&overlay).to_string();
+        println!("{dump}");
+
+        // Matched loosely on purpose: the rendering of these tables is itself under discussion, so
+        // this should not break on a formatting change.
+        let ambiguous = dump
+            .lines()
+            .filter(|line| line.contains(SHARED_PUBLIC) && line.contains("masquerade"))
+            .count();
+        assert_eq!(
+            ambiguous, 2,
+            "expected both peers to claim {SHARED_PUBLIC}; the overlap is the premise of the \
+             failing test below\n{dump}",
+        );
+    }
+
+    /// EXPECTED TO FAIL.
+    ///
+    /// Reply traffic on an established masquerade flow must reach whichever peer the flow names.
+    /// One of the two peers works and the other is dropped, with its flow cancelled. Which one
+    /// loses is arbitrary -- it falls out of rule ordering, not out of anything in the packet.
+    ///
+    /// The genid is advanced so the flow is outdated and the fast-path bypass in `classify` is
+    /// refused. That forces the question to the tables, which is where the ambiguity lives. This is
+    /// not a contrivance: it is what every packet sees after any configuration change.
+    #[test]
+    fn masquerade_reply_reaches_the_peer_its_flow_names() {
+        let overlay = shared_masquerade_overlay();
+        let mut outcomes = Vec::new();
+
+        for peer in [200u32, 300u32] {
+            let (mut flow_filter, _writer) =
+                make_flow_filter(FlowFilterContext::for_test(&overlay));
+            set_genid(&mut flow_filter, 5);
+
+            // vpc1 replies to the shared masquerade address, riding the flow it established with
+            // this peer.
+            let mut p = packet(
+                Some(vpcd(100)),
+                build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+            );
+            let flow = attach_flow(&mut p, Some(vpcd(peer)), true, true, false);
+            let out = run(&mut flow_filter, p);
+
+            outcomes.push((
+                peer,
+                out.get_done(),
+                out.meta().dst_vpcd,
+                flow.status() == FlowStatus::Cancelled,
+            ));
+        }
+
+        let report = outcomes
+            .iter()
+            .map(|(peer, done, dst, cancelled)| {
+                format!(
+                    "  flow -> VNI {peer}: done={done:?}, dst_vpcd={dst:?}, flow_cancelled={cancelled}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for (peer, done, dst, cancelled) in &outcomes {
+            assert!(
+                done.is_none(),
+                "reply on an established masquerade flow to VNI {peer} was dropped.\n\n\
+                 Both peers masquerade behind {SHARED_PUBLIC}, so stage 1 holds two rules with \
+                 identical match sets and identical priorities that disagree on the destination \
+                 VPC. Whichever the tie-break happens to pick is the only peer that works; the \
+                 other's reply traffic is dropped and its flow cancelled.\n\n{report}\n",
+            );
+            assert_eq!(
+                *dst,
+                Some(vpcd(*peer)),
+                "reply was routed to the wrong peer\n\n{report}\n",
+            );
+            assert!(
+                !cancelled,
+                "a valid flow to VNI {peer} was torn down\n\n{report}\n",
+            );
+        }
+    }
+}
