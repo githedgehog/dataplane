@@ -157,11 +157,11 @@ impl DriverKernel {
             debug_assert_eq!(rx_task_status.ifname, ifm.ifname);
 
             // check the rx task activity, and watchdog, if we've been told to do so
-            let activity = ifm.watchdog.check_and_clear(check_watchdog);
+            let (counters, activity) = ifm.watchdog.check_and_clear(check_watchdog);
 
             // update the rx task status
             rx_task_status.activity = activity;
-            match &rx_task_status.activity {
+            match rx_task_status.activity {
                 Activity::Stuck => {
                     rx_task_status.misses += 1;
                     rx_task_status.pps = 0.0;
@@ -170,12 +170,12 @@ impl DriverKernel {
                         ifm.ifname, monitor.id
                     );
                 }
-                Activity::Active(record) => {
-                    rx_task_status.total_rx += record.rx;
-                    rx_task_status.total_tx += record.tx;
-                    rx_task_status.total_ppline_drops += record.ppline_drops;
-                    rx_task_status.total_tx_drops += record.tx_drops;
-                    rx_task_status.pps = record.rx as f64 / f64::from(Self::TASK_POLL_PERIOD);
+                Activity::Active => {
+                    rx_task_status.total_rx += counters.rx;
+                    rx_task_status.total_tx += counters.tx;
+                    rx_task_status.total_ppline_drops += counters.ppline_drops;
+                    rx_task_status.total_tx_drops += counters.tx_drops;
+                    rx_task_status.pps = counters.rx as f64 / f64::from(Self::TASK_POLL_PERIOD);
                 }
                 Activity::Idle => rx_task_status.pps = 0.0,
             }

@@ -49,50 +49,22 @@ impl Watchdog {
         self.0.armed.store(false, Ordering::Relaxed);
     }
 
-    /// Task: record packets rx and tx
-    pub fn record(&self, rx: u64, tx: u64, ppline_drops: u64, tx_drops: u64) {
-        if rx > 0 {
-            let _ = self
-                .0
-                .rx
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_add(rx))
-                });
-        }
-        if tx > 0 {
-            let _ = self
-                .0
-                .tx
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_add(tx))
-                });
-        }
-        if ppline_drops > 0 {
-            let _ = self
-                .0
-                .ppline_drops
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_add(ppline_drops))
-                });
-        }
-        if tx_drops > 0 {
-            let _ = self
-                .0
-                .tx_drops
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_add(tx_drops))
-                });
-        }
+    /// Task: record the counters for a batch
+    pub fn record(&self, counters: &RxCounters) {
+        accumulate(&self.0.rx, counters.rx);
+        accumulate(&self.0.tx, counters.tx);
+        accumulate(&self.0.ppline_drops, counters.ppline_drops);
+        accumulate(&self.0.tx_drops, counters.tx_drops);
     }
 
-    /// Supervisor: check the activity count of a watchdog (and zero it).
-    /// If `check_and_rearm` is true, check if the watchdog was patted and
-    /// re-arm it. The status is abstracted in [`Activity`]. If `check_and_rearm`
-    /// is false, the watchdog check (and re-arm) is omitted, meaning that this
-    /// method will never return `Activity::Stuck` in that case.
+    /// Supervisor: read the counters of a watchdog (and zero them), along with the
+    /// activity they denote. If `check_and_rearm` is true, check if the watchdog was
+    /// patted and re-arm it. If it is false, the watchdog check (and re-arm) is
+    /// omitted, meaning that this method will never return `Activity::Stuck` in that
+    /// case.
     #[must_use]
-    pub fn check_and_clear(&self, check_and_rearm: bool) -> Activity {
-        let record = ActivityRecord {
+    pub fn check_and_clear(&self, check_and_rearm: bool) -> (RxCounters, Activity) {
+        let counters = RxCounters {
             rx: self.0.rx.swap(0, Ordering::Relaxed),
             tx: self.0.tx.swap(0, Ordering::Relaxed),
             ppline_drops: self.0.ppline_drops.swap(0, Ordering::Relaxed),
@@ -103,31 +75,42 @@ impl Watchdog {
         } else {
             true // assume it was patted since we don't check/care
         };
-        if record.rx > 0 {
-            Activity::Active(record)
+        let activity = if counters.rx > 0 {
+            Activity::Active
         } else if patted {
             Activity::Idle
         } else {
             debug_assert!(check_and_rearm);
             Activity::Stuck
-        }
+        };
+        (counters, activity)
+    }
+}
+
+/// Add `val` to `counter`, saturating instead of wrapping.
+fn accumulate(counter: &AtomicU64, val: u64) {
+    if val > 0 {
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(val))
+        });
     }
 }
 
 /// The state of a [`Watchdog`] as observed by a supervisor when it checks it [`Watchdog::check_and_clear`].
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum Activity {
     /// Watchdog was not patted
     Stuck,
     /// Watchdog was patted but task reported no work
     Idle,
     /// Task reported progress
-    Active(ActivityRecord),
+    Active,
 }
 
-/// An activity record from a workers' rx task
-#[derive(Debug, Clone)]
-pub struct ActivityRecord {
+/// The counters a worker's rx task reports on its [`Watchdog`], and that the
+/// supervisor reads back from it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RxCounters {
     /// Pkts received
     pub rx: u64,
     /// Pkts successfully tx'ed
@@ -143,7 +126,7 @@ impl std::fmt::Display for Activity {
         f.pad(match self {
             Activity::Stuck => "Stuck!",
             Activity::Idle => "Idle",
-            Activity::Active(_) => "Active",
+            Activity::Active => "Active",
         })
     }
 }

@@ -29,7 +29,7 @@ use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
 use crate::drivers::kernel::{WorkerIfaceMonitor, WorkerMonitor};
 use crate::drivers::status::WorkerId;
-use crate::drivers::watchdog::Watchdog;
+use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -276,8 +276,12 @@ impl Worker {
                 );
 
                 // update rx task stats
-                intf.watchdog
-                    .record(rx_pkts, tx_pkts, ppline_drops, tx_drops);
+                intf.watchdog.record(&RxCounters {
+                    rx: rx_pkts,
+                    tx: tx_pkts,
+                    ppline_drops,
+                    tx_drops,
+                });
             }
         });
     }
