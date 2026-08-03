@@ -175,6 +175,10 @@ impl DriverKernel {
                     rx_task_status.total_tx += counters.tx;
                     rx_task_status.total_ppline_drops += counters.ppline_drops;
                     rx_task_status.total_tx_drops += counters.tx_drops;
+                    rx_task_status.total_parse_errors += counters.parse_errors;
+                    rx_task_status.total_truncated += counters.truncated;
+                    rx_task_status.total_zero_len += counters.zero_len;
+                    rx_task_status.total_kernel_drops += counters.kernel_drops;
                     rx_task_status.pps = counters.rx as f64 / f64::from(Self::TASK_POLL_PERIOD);
                 }
                 Activity::Idle => rx_task_status.pps = 0.0,
