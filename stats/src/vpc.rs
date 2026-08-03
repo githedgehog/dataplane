@@ -122,6 +122,7 @@ pub struct VpcMetricsSpec {
     pub total: BasicActionSpec,
     pub drops: BasicActionSpec,
     pub peering: HashMap<VpcDiscriminant, BasicActionSpec>,
+    pub peering_drops: HashMap<VpcDiscriminant, BasicActionSpec>,
 }
 
 impl VpcMetricsSpec {
@@ -151,6 +152,15 @@ impl VpcMetricsSpec {
                                 (*dst_disc, BasicActionSpec::new("vpc", labels))
                             })
                             .collect(),
+                        peering_drops: vpc_data
+                            .iter()
+                            .map(|(dst_disc, dst_name, labels)| {
+                                let mut labels = labels.clone();
+                                labels.push(("from".to_string(), src_name.clone()));
+                                labels.push(("to".to_string(), dst_name.clone()));
+                                (*dst_disc, BasicActionSpec::new("vpc_pair_drops", labels))
+                            })
+                            .collect(),
                     },
                 )
             })
@@ -163,6 +173,7 @@ pub struct RegisteredVpcMetrics {
     pub total: RegisteredBasicAction,
     pub drops: RegisteredBasicAction,
     pub peering: BTreeMap<VpcDiscriminant, RegisteredBasicAction>,
+    pub peering_drops: BTreeMap<VpcDiscriminant, RegisteredBasicAction>,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,6 +181,7 @@ pub struct VpcMetrics<T> {
     pub total: BasicAction<T>,
     pub drops: BasicAction<T>,
     pub peering: BTreeMap<VpcDiscriminant, BasicAction<T>>,
+    pub peering_drops: BTreeMap<VpcDiscriminant, BasicAction<T>>,
 }
 
 impl Specification for VpcMetricsSpec {
@@ -181,6 +193,11 @@ impl Specification for VpcMetricsSpec {
             drops: self.drops.build(),
             peering: self
                 .peering
+                .into_iter()
+                .map(|(disc, spec)| (disc, spec.build()))
+                .collect(),
+            peering_drops: self
+                .peering_drops
                 .into_iter()
                 .map(|(disc, spec)| (disc, spec.build()))
                 .collect(),
@@ -234,5 +251,13 @@ impl RegisteredVpcMetrics {
 
     pub fn peers(&self) -> impl Iterator<Item = (&VpcDiscriminant, &RegisteredBasicAction)> {
         self.peering.iter()
+    }
+
+    pub fn peer_drops(&self, disc: &VpcDiscriminant) -> Option<&RegisteredBasicAction> {
+        self.peering_drops.get(disc)
+    }
+
+    pub fn peers_drops(&self) -> impl Iterator<Item = (&VpcDiscriminant, &RegisteredBasicAction)> {
+        self.peering_drops.iter()
     }
 }

@@ -490,6 +490,19 @@ impl StatsCollector {
                     .add_vpc_drops(src, tx_summary.drops.packets, tx_summary.drops.bytes)
                     .await;
             }
+
+            // Per-pair (VPC->VPC) drops, for the drop matrix.
+            for (&dst, &drops) in tx_summary.pair_drops.iter() {
+                if !self.alive_vpcs.contains(&dst) {
+                    debug!("skipping pair drop stats for removed VPC {dst}");
+                    continue;
+                }
+                if drops.packets != 0 || drops.bytes != 0 {
+                    self.vpc_store
+                        .add_pair_drops(src, dst, drops.packets, drops.bytes)
+                        .await;
+                }
+            }
         }
 
         // Push this *apportioned per-batch* snapshot into the SG window.
@@ -501,11 +514,15 @@ impl StatsCollector {
             if !self.alive_vpcs.contains(&src) || !self.alive_vpcs.contains(&dst) {
                 continue;
             }
-            if let Some(metrics) = self.metrics.get(&src)
-                && let Some(action) = metrics.peering.get(&dst)
-            {
-                action.tx.packet.count.metric.set(fs.ctr.packets as f64);
-                action.tx.byte.count.metric.set(fs.ctr.bytes as f64);
+            if let Some(metrics) = self.metrics.get(&src) {
+                if let Some(action) = metrics.peering.get(&dst) {
+                    action.tx.packet.count.metric.set(fs.ctr.packets as f64);
+                    action.tx.byte.count.metric.set(fs.ctr.bytes as f64);
+                }
+                if let Some(action) = metrics.peering_drops.get(&dst) {
+                    action.tx.packet.count.metric.set(fs.drops.packets as f64);
+                    action.tx.byte.count.metric.set(fs.drops.bytes as f64);
+                }
             }
         }
 
@@ -654,6 +671,7 @@ where
 #[derive(Debug, Default, Clone)]
 pub struct TransmitSummary<T> {
     pub drops: PacketAndByte<T>,
+    pub pair_drops: SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<T>>,
     pub dst: SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<T>>,
 }
 
@@ -665,6 +683,7 @@ impl<T> TransmitSummary<T> {
     {
         Self {
             drops: PacketAndByte::<T>::default(),
+            pair_drops: SmallMap::new(),
             dst: SmallMap::new(),
         }
     }
@@ -828,55 +847,52 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             let is_drop = done_reason != DoneReason::Delivered;
             let bytes: u64 = packet.total_len().into();
 
-            match (sdisc, ddisc) {
-                (Some(src), Some(dst)) => match self.update.vpc.get_mut(&src) {
-                    None => {
-                        let mut tx_summary = TransmitSummary::new();
-                        if is_drop {
-                            tx_summary.drops.packets = 1;
-                            tx_summary.drops.bytes = bytes;
-                        } else {
-                            tx_summary
-                                .dst
-                                .insert(dst, PacketAndByte { packets: 1, bytes });
-                        }
-                        self.update.vpc.insert(src, tx_summary);
+            fn bump(
+                map: &mut SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<u64>>,
+                key: VpcDiscriminant,
+                bytes: u64,
+            ) {
+                match map.get_mut(&key) {
+                    Some(e) => {
+                        e.packets += 1;
+                        e.bytes += bytes;
                     }
-                    Some(tx_summary) => match tx_summary.dst.get_mut(&dst) {
-                        None => {
-                            if is_drop {
-                                tx_summary.drops.packets += 1;
-                                tx_summary.drops.bytes += bytes;
-                            } else {
-                                tx_summary
-                                    .dst
-                                    .insert(dst, PacketAndByte { packets: 1, bytes });
-                            }
+                    None => {
+                        map.insert(key, PacketAndByte { packets: 1, bytes });
+                    }
+                }
+            }
+
+            match sdisc {
+                Some(src) => {
+                    let tx_summary = self
+                        .update
+                        .vpc
+                        .entry(src)
+                        .or_insert_with(TransmitSummary::new);
+                    if is_drop {
+                        // Per-VPC total drops: covers every drop from this source, including
+                        // those whose destination VPC could not be resolved.
+                        tx_summary.drops.packets += 1;
+                        tx_summary.drops.bytes += bytes;
+                        // Per-pair (VPC->VPC) drop matrix: only when the destination is known.
+                        if let Some(dst) = ddisc {
+                            bump(&mut tx_summary.pair_drops, dst, bytes);
                         }
-                        Some(dst) => {
-                            if is_drop {
-                                tx_summary.drops.packets += 1;
-                                tx_summary.drops.bytes += bytes;
-                            } else {
-                                dst.packets += 1;
-                                dst.bytes += bytes;
-                            }
-                        }
-                    },
-                },
-                (None, Some(ddisc)) => {
-                    warn!(
+                    } else if let Some(dst) = ddisc {
+                        bump(&mut tx_summary.dst, dst, bytes);
+                    } else {
+                        trace!(
+                            "missing dest discriminant for delivered packet with source discriminant: {src:?}"
+                        );
+                    }
+                }
+                None => match ddisc {
+                    Some(ddisc) => warn!(
                         "missing source discriminant for packet with dest discriminant: {ddisc:?}"
-                    );
-                }
-                (Some(sdisc), None) => {
-                    trace!(
-                        "missing dest discriminant for packet with source discriminant: {sdisc:?}"
-                    );
-                }
-                (None, None) => {
-                    trace!("no source or dest discriminants for packet");
-                }
+                    ),
+                    None => trace!("no source or dest discriminants for packet"),
+                },
             }
             packet.meta_mut().set_keep(false); /* no longer disable enforce */
             packet.enforce()
@@ -984,11 +1000,18 @@ mod contract {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let mut summary = TransmitSummary {
                 drops: driver.produce()?,
+                pair_drops: SmallMap::default(),
                 dst: SmallMap::default(),
             };
             let num_src = driver.produce::<u8>()? % 16;
             for _ in 0..num_src {
                 summary.dst.insert(driver.produce()?, driver.produce()?);
+            }
+            let num_drops = driver.produce::<u8>()? % 16;
+            for _ in 0..num_drops {
+                summary
+                    .pair_drops
+                    .insert(driver.produce()?, driver.produce()?);
             }
             Some(summary)
         }
