@@ -14,7 +14,7 @@ use concurrency::sync::Arc;
 use std::fmt::Display;
 
 use crate::drivers::kernel::DriverKernel;
-use crate::drivers::watchdog::Activity;
+use crate::drivers::watchdog::{Activity, RxCounters};
 
 // The unique Id of a worker
 pub(crate) type WorkerId = usize;
@@ -53,6 +53,19 @@ impl RxTaskStatus {
             total_kernel_drops: 0,
             pps: 0.,
         }
+    }
+
+    /// Add the counters read from a rx task watchdog to the totals. Reading a watchdog
+    /// clears it, so this must be called for every read, whatever the activity reported.
+    pub fn accumulate(&mut self, counters: &RxCounters) {
+        self.total_rx += counters.rx;
+        self.total_tx += counters.tx;
+        self.total_ppline_drops += counters.ppline_drops;
+        self.total_tx_drops += counters.tx_drops;
+        self.total_parse_errors += counters.parse_errors;
+        self.total_truncated += counters.truncated;
+        self.total_zero_len += counters.zero_len;
+        self.total_kernel_drops += counters.kernel_drops;
     }
 }
 
@@ -247,5 +260,38 @@ impl Display for DriverStatus {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Arc, RxCounters, RxTaskStatus};
+
+    /// Every counter read from a watchdog must make it to the totals.
+    #[test]
+    fn accumulate_keeps_every_counter() {
+        let mut status = RxTaskStatus::new(Arc::from("eth0"));
+        let counters = RxCounters {
+            rx: 1,
+            tx: 2,
+            ppline_drops: 3,
+            tx_drops: 4,
+            parse_errors: 5,
+            truncated: 6,
+            zero_len: 7,
+            kernel_drops: 8,
+        };
+
+        status.accumulate(&counters);
+        status.accumulate(&counters);
+
+        assert_eq!(status.total_rx, 2);
+        assert_eq!(status.total_tx, 4);
+        assert_eq!(status.total_ppline_drops, 6);
+        assert_eq!(status.total_tx_drops, 8);
+        assert_eq!(status.total_parse_errors, 10);
+        assert_eq!(status.total_truncated, 12);
+        assert_eq!(status.total_zero_len, 14);
+        assert_eq!(status.total_kernel_drops, 16);
     }
 }
