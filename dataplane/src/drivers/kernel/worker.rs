@@ -548,7 +548,14 @@ async fn tx_packet(
                     done_reason
                 );
             }
-            None => {} // drop impl of packet meta will log
+            None => {
+                // The drop impl of the packet metadata also logs this, but without context.
+                error!(
+                    worker = id,
+                    rx_intf_name = rx_if_name,
+                    "Dropping packet with no verdict (pipeline bug)"
+                );
+            }
         }
         return false;
     };
