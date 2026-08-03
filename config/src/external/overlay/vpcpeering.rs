@@ -692,6 +692,7 @@ impl VpcManifest {
             valid_manifest_candidate.valexp.push(expose.validate()?);
         }
 
+        valid_manifest_candidate.validate_single_ip_version()?;
         valid_manifest_candidate.validate_expose_collisions()?;
         Ok(valid_manifest_candidate)
     }
@@ -774,6 +775,45 @@ impl ValidatedManifest {
     #[must_use]
     pub fn is_default_only(&self) -> bool {
         self.valexp.len() == 1 && self.valexp.first().is_some_and(ValidatedExpose::is_default)
+    }
+
+    /// Every expose in a manifest must use the same IP version.
+    ///
+    /// `VpcExpose::validate` already enforces this *within* one expose, but nothing enforced it
+    /// *across* them, so a manifest could hold a v4 and a v6 expose at once. That is not a
+    /// supported configuration, and both the flow-filter and the ACL filter rely on it not being
+    /// one: each reads a single IP version off the peering (via [`ValidatedManifest::is_v4`]) and
+    /// files its rules accordingly.
+    ///
+    /// The gap was not visible from those call sites because [`ValidatedManifest::is_v4`] is `any`,
+    /// not `all` -- a mixed manifest answers `true` to both `is_v4` and `is_v6`, so
+    /// `ValidatedPeering::validate_ip_version`, which compares only `is_v4`, accepted two mixed
+    /// manifests as agreeing. Enforcing it here makes the invariant those lowerings assume actually
+    /// true, and true in one place rather than defended against in several.
+    ///
+    /// A default expose names no address, so it belongs to no version and is skipped: a manifest of
+    /// one default expose is legal, and `validate_ip_version` already has a carve-out for it.
+    fn validate_single_ip_version(&self) -> ConfigResult {
+        let mut version: Option<bool> = None;
+        for expose in &self.valexp {
+            // `is_v4`/`is_v6` are both false for a default expose, which has no prefixes.
+            let is_v4 = if expose.is_v4() {
+                true
+            } else if expose.is_v6() {
+                false
+            } else {
+                continue;
+            };
+            match version {
+                Some(seen) if seen != is_v4 => {
+                    return Err(ConfigError::Forbidden(
+                        "A manifest cannot mix IPv4 and IPv6 expose blocks",
+                    ));
+                }
+                _ => version = Some(is_v4),
+            }
+        }
+        Ok(())
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {
