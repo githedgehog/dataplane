@@ -424,7 +424,11 @@ fn packet_recv(
             &mut raw,
             nix::sys::socket::MsgFlags::MSG_DONTWAIT | nix::sys::socket::MsgFlags::MSG_TRUNC,
         ) {
-            Ok(0) => break, // no more
+            Ok(0) => {
+                // Treated as "no more to read".
+                counters.zero_len += 1;
+                break;
+            }
             Ok(bytes) => {
                 trace!("Received packet with {} bytes on {}", bytes, if_name);
                 // build TestBuffer and parse
