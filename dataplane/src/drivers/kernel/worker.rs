@@ -429,10 +429,11 @@ fn packet_recv(
                 trace!("Received packet with {} bytes on {}", bytes, if_name);
                 // build TestBuffer and parse
                 if raw.len() < bytes {
+                    counters.truncated += 1;
                     error!(
                         worker = id,
                         rx_intf_name = if_name,
-                        "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, trunctating",
+                        "Received packet with {bytes} bytes on {if_name} but raw buffer is only {} bytes, truncating",
                         raw.len()
                     );
                 }
