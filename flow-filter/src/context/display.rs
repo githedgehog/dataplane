@@ -6,7 +6,7 @@
 //! Tables retain typed rules for backend-independent display. Each field's type controls its
 //! formatting, keeping values coupled to their key fields.
 
-use super::tables::FlowFilterContext;
+use super::tables::{FlowFilterContext, Route};
 
 impl crate::NatRequirement {
     fn label(self) -> &'static str {
@@ -21,6 +21,25 @@ impl crate::NatRequirement {
 impl std::fmt::Display for crate::NatRequirement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.label())
+    }
+}
+
+fn nat_mode_label(mode: crate::NatMode) -> &'static str {
+    match mode {
+        Some(nat) => nat.label(),
+        None => "--",
+    }
+}
+
+impl std::fmt::Display for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "dst-vpcd: {} local: {} remote: {}",
+            self.dst_vpcd,
+            nat_mode_label(self.src_nat_mode),
+            nat_mode_label(self.dst_nat_mode),
+        )
     }
 }
 

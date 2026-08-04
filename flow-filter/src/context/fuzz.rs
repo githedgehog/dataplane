@@ -21,6 +21,7 @@ use config::external::overlay::ValidatedOverlay;
 use lpm::prefix::{IpPrefix, L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
+use std::fmt;
 use std::net::IpAddr;
 
 // -------------------------------------------------------------------------------------------------
@@ -51,13 +52,19 @@ fn prefix_allows(prefix: &PrefixWithOptionalPorts, ip: IpAddr, port: u16) -> boo
             .is_none_or(|r| r.start() <= port && port <= r.end())
 }
 
-/// Rule precedence, in structural form: longest prefix first, port forwarding breaking
+/// Stage-1 precedence, in structural form: longest prefix first, port forwarding breaking
 /// equal-length ties. Mirrors `rule_priority` without sharing its encoding.
 type Precedence = (u8, bool);
 
+/// Stage-2 precedence: non-port-forwarding band first (`true` sorts above `false`), then longest
+/// prefix within a band. Mirrors `local_rule_priority` -- note the fields are ordered the opposite
+/// way round from [`Precedence`], because there the band dominates prefix length rather than
+/// breaking ties in it.
+type LocalPrecedence = (bool, u8);
+
 /// Keep the strictly-better candidate; equal precedence between candidates that can match the
 /// same packet is a generator invariant violation, so fail loudly rather than pick one.
-fn consider<T>(best: &mut Option<(Precedence, T)>, precedence: Precedence, value: T) {
+fn consider<P: Copy + Ord + fmt::Debug, T>(best: &mut Option<(P, T)>, precedence: P, value: T) {
     match best {
         Some((current, _)) if *current == precedence => {
             panic!("ambiguous match at precedence {precedence:?}: generator invariant violated")
@@ -82,11 +89,18 @@ fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
     let (sport, dport) = probe.ports.unwrap_or((0, 0));
 
     // Stage 1: the destination against every peer's public prefixes. Masquerade exposes are
-    // included (marker rules); a default expose acts as a /0 of the peering's IP version.
+    // excluded: they cannot receive connections, so they are withheld from the remote tables
+    // entirely and such a destination is a plain miss. A default expose acts as a /0 of the
+    // peering's IP version.
     let mut verdict: Option<(Precedence, (VpcDiscriminant, Option<NatRequirement>))> = None;
     for peering in src_vpc.peerings() {
         let dst_vpcd = VpcDiscriminant::from_vni(peering.remote_vni());
-        for expose in peering.remote().valexp() {
+        for expose in peering
+            .remote()
+            .valexp()
+            .iter()
+            .filter(|expose| !expose.has_masquerade())
+        {
             if !proto_allows(expose.nat_proto(), probe.proto) {
                 continue;
             }
@@ -108,20 +122,17 @@ fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
         return LookupResult::DestinationMiss;
     };
 
-    // Stage 2: the source against that peering's private prefixes. Port-forwarding sources are
-    // excluded (they cannot initiate); a default expose acts as a /0 of the peering's version.
+    // Stage 2: the source against that peering's private prefixes. Every expose participates,
+    // port-forwarding included: the tables carry them so that the NF sees a source NAT mode of
+    // `PortForwarding` (which it gates on flow state) instead of an indistinguishable source
+    // miss. A default expose acts as a /0 of the peering's version.
     let peering = src_vpc
         .peerings()
         .iter()
         .find(|p| VpcDiscriminant::from_vni(p.remote_vni()) == dst_vpcd)
         .unwrap_or_else(|| unreachable!("stage 1 hit implies a peering to the verdict VPC"));
-    let mut src_nat: Option<(Precedence, Option<NatRequirement>)> = None;
-    for expose in peering
-        .local()
-        .valexp()
-        .iter()
-        .filter(|expose| expose.can_init_connection())
-    {
+    let mut src_nat: Option<(LocalPrecedence, Option<NatRequirement>)> = None;
+    for expose in peering.local().valexp().iter() {
         if !proto_allows(expose.nat_proto(), probe.proto) {
             continue;
         }
@@ -129,14 +140,14 @@ fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
             if prefix_allows(prefix, probe.src_ip, sport) {
                 consider(
                     &mut src_nat,
-                    (prefix.prefix().length(), false),
+                    (!expose.has_port_forwarding(), prefix.prefix().length()),
                     NatRequirement::from_expose(expose),
                 );
             }
         }
     }
     if peering.local().has_default_expose() && probe.src_ip.is_ipv4() == peering.is_v4() {
-        consider(&mut src_nat, (0, false), None);
+        consider(&mut src_nat, (true, 0), None);
     }
     match src_nat {
         Some((_, src_nat)) => LookupResult::Route(Route::new(dst_vpcd, dst_nat, src_nat)),

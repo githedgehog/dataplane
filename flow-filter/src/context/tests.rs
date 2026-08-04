@@ -15,13 +15,13 @@ use net::headers::Headers;
 use net::packet::VpcDiscriminant;
 use std::num::NonZero;
 
-// Extract the 5-tuple from headers (as the pipeline does) and run the route lookup for a packet
+// Extract the 5-tuple from headers (as the pipeline does) and run the lookup for a packet
 // originating from a given source VPC.
-fn route(
+fn lookup_result(
     context: &FlowFilterContext,
     src_vpcd: VpcDiscriminant,
     headers: &Headers,
-) -> Option<Route> {
+) -> LookupResult {
     let net = headers.net().unwrap();
     let src_ip = net.src_addr();
     let dst_ip = net.dst_addr();
@@ -31,7 +31,17 @@ fn route(
             .map(NonZero::get)
             .zip(t.dst_port().map(NonZero::get))
     });
-    match context.lookup(src_vpcd, src_ip, dst_ip, proto, ports) {
+    context.lookup(src_vpcd, src_ip, dst_ip, proto, ports)
+}
+
+// The resolved route, collapsing both misses into `None`. Tests that need to tell the two apart
+// (the NF's fallback differs) use `lookup_result` instead.
+fn route(
+    context: &FlowFilterContext,
+    src_vpcd: VpcDiscriminant,
+    headers: &Headers,
+) -> Option<Route> {
+    match lookup_result(context, src_vpcd, headers) {
         LookupResult::Route(route) => Some(route),
         LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => None,
     }
@@ -274,16 +284,16 @@ fn dst_side_overlay() -> FlowFilterContext {
 fn dst_side_nat_modes() {
     let ctx = dst_side_overlay();
 
-    // Masquerade destination: resolves at table level as a marker (the NF only lets it through
-    // for reply traffic on an established masquerade flow; see crate::tests)
+    // Masquerade destination: no route is found
     let masq = route(
         &ctx,
         vpcd(100),
         &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
-    )
-    .expect("masquerade destination resolves as a marker");
-    assert_eq!(masq.dst_vpcd, vpcd(200));
-    assert_eq!(masq.dst_nat_mode, Some(NatRequirement::Masquerade));
+    );
+    assert!(masq.is_none());
+
+    // (see `masquerade_destination_is_absent_from_the_remote_tables` for why, and for which
+    // flavour of miss the NF relies on here)
 
     // Port-forwarding destination (matching proto + port): returned
     let pf = route(
@@ -305,6 +315,51 @@ fn dst_side_nat_modes() {
         ),
         None,
     );
+}
+
+// A masquerade expose cannot receive new connections, so it is deliberately absent from the
+// remote (stage-1) tables. The NF depends on both halves of that, and neither is visible from
+// `route_packet`, so pin them here:
+//
+// - No `Verdict` can carry `Masquerade`, which is why `route_packet` has no masquerade branch at
+//   all. If a masquerade expose is ever emitted into the remote tables again, that branch has to
+//   come back with it -- otherwise such a destination is silently *allowed* with no flow check.
+// - The miss is a `DestinationMiss`, not a `SourceMiss`. Only the destination-miss arm resolves
+//   reply traffic against an established masquerade flow; a source miss drops unconditionally.
+#[test]
+fn masquerade_destination_is_absent_from_the_remote_tables() {
+    let ctx = dst_side_overlay();
+
+    // The overlay is v4, so the v4 remote table is where a masquerade verdict could appear.
+    for RuleRow { action, .. } in ctx.remote_v4.rules() {
+        assert_ne!(
+            action.nat_mode,
+            Some(NatRequirement::Masquerade),
+            "a masquerade expose reached the remote tables",
+        );
+    }
+
+    // The masquerade public range resolves to nothing at all -- not to a marker, and not to a
+    // source miss.
+    assert_eq!(
+        lookup_result(
+            &ctx,
+            vpcd(100),
+            &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
+        ),
+        LookupResult::DestinationMiss,
+    );
+
+    // Only the masquerade expose is withheld: its siblings in the same peering still route, so a
+    // filter that dropped too much would fail here rather than pass silently.
+    let plain = route(
+        &ctx,
+        vpcd(100),
+        &build_tcp_packet(v4("10.0.0.5"), v4("90.0.0.10"), 1234, 5678),
+    )
+    .expect("the plain expose in the same peering still routes");
+    assert_eq!(plain.dst_vpcd, vpcd(200));
+    assert_eq!(plain.dst_nat_mode, None);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -857,16 +912,24 @@ fn display_is_identical_across_backends() {
         "the remote v4 section ran past its own table:\n{remote_v4}"
     );
 
+    // The masquerade public range is not installed at all (see
+    // `masquerade_destination_is_absent_from_the_remote_tables`), so it must not be rendered: an
+    // operator reading this dump would otherwise believe that destination is reachable.
+    assert!(
+        !remote_v4.contains("70.0.0.0/24"),
+        "the masquerade public range must not appear in the remote v4 dump:\n{remote_v4}"
+    );
+
     // The index is the operator-facing precedence claim -- `[0]` is consulted first -- so the dump
     // must read in match order. Within one table that is longest-prefix-first: the port-forwarding
-    // /32 outranks the /24s it is nested among.
+    // /32 outranks the /24 it is nested among.
     let rank = |needle: &str| {
         remote_v4
             .find(needle)
             .unwrap_or_else(|| panic!("{needle} missing from the remote v4 table:\n{remote_v4}"))
     };
     assert!(
-        rank("80.0.0.5/32") < rank("70.0.0.0/24") && rank("80.0.0.5/32") < rank("90.0.0.0/24"),
+        rank("80.0.0.5/32") < rank("90.0.0.0/24"),
         "rules are not rendered in precedence order:\n{remote_v4}"
     );
 }

@@ -18,13 +18,19 @@
 //! longest-prefix-match (encoded in the rule priority, see [`rule_priority`])
 //! handles it uniformly.
 //!
-//! Masquerade destinations are kept in the remote tables even though they cannot
-//! accept new connections: their [`Verdict`] marks reply traffic on established
-//! masquerade flows as distinguishable from a destination no peering covers, and
-//! the NF gates them on flow state. Port-forwarding sources stay out of the local
-//! tables (a covering expose must answer for connection initiation), so a stage-2
-//! miss is reported distinctly (see [`LookupResult`]) for the NF to resolve
-//! against flow state.
+//! Neither direction of a stateful-NAT session can be settled by prefix matching
+//! alone, and the two directions are handled differently:
+//!
+//! - Masquerade destinations cannot accept new connections, so they are withheld
+//!   from the remote tables entirely: such a destination is an ordinary
+//!   [`LookupResult::DestinationMiss`], and the NF resolves reply traffic on an
+//!   established masquerade flow from there. A [`Verdict`] can therefore never
+//!   carry [`NatRequirement::Masquerade`].
+//! - Port-forwarding sources cannot initiate connections, but they *are* kept in
+//!   the local tables, so that reply traffic from one is distinguishable from a
+//!   source no expose covers. They rank below every other source rule (see
+//!   [`local_rule_priority`]), which makes them a pure fallback, and the NF gates
+//!   the resulting [`NatRequirement::PortForwarding`] on flow state.
 
 use crate::{NatMode, NatRequirement};
 use acl::dpdk::dyn_table::predicate_to_chunks;
@@ -58,7 +64,7 @@ use tracing::debug;
 /// results can be extracted and the context guard dropped before packet metadata is mutated.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Route {
+pub struct Route {
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) dst_nat_mode: NatMode,
     pub(crate) src_nat_mode: NatMode,
@@ -77,11 +83,11 @@ impl Route {
         }
     }
 }
-
-/// One lookup outcome. The two miss variants are distinct because the NF's fallback differs:
-/// a destination miss means no peering covers the packet at all (drop, fail closed), while a
-/// source miss can still be legitimate reply traffic from a port-forwarding-only source, whose
-/// rules are deliberately absent from the local tables (the NF resolves it against flow state).
+/// One lookup outcome. The two miss variants are distinct because the NF's fallback differs: a
+/// destination miss can still be reply traffic on an established masquerade flow (masquerade
+/// destinations are withheld from the remote tables, so the NF resolves them against flow state),
+/// while a source miss means no expose covers the source at all -- port-forwarding sources are in
+/// the local tables, as the lowest-priority band, so reaching here is a genuine miss (drop).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LookupResult {
     /// Both stages matched.
@@ -407,6 +413,27 @@ fn rule_priority(ip_range: Prefix, port_forwarding: bool) -> u32 {
     ((u32::from(ip_range.length()) + 1) << 1) | u32::from(port_forwarding)
 }
 
+/// Stage-2 (local) rule priority: a port-forwarding source ranks below *every* non-port-forwarding
+/// source, whatever prefix lengths are involved.
+///
+/// A port-forwarding expose cannot answer for connection initiation, so on the source side it is a
+/// pure fallback -- consulted only when no other expose covers the source, which is exactly the
+/// established-reply case the NF gates on flow state. Prefix length cannot express that on its own:
+/// a forwarded host prefix is *longer* than the block it is nested in, so plain
+/// longest-prefix-match would let it capture traffic that a covering masquerade or plain expose
+/// must answer for. Hence a band bit above everything [`rule_priority`] can produce (its maximum is
+/// length 128 with the tie bit set, `((128 + 1) << 1) | 1` = 259), which therefore dominates it.
+/// Within a band, ordering stays pure prefix-length.
+fn local_rule_priority(ip_range: Prefix, port_forwarding: bool) -> u32 {
+    const NON_PORT_FORWARDING_BAND: u32 = 1 << 9;
+    rule_priority(ip_range, false)
+        | if port_forwarding {
+            0
+        } else {
+            NON_PORT_FORWARDING_BAND
+        }
+}
+
 /// Lower a stage-1 (remote) rule into the v4 or v6 bucket according to its prefix.
 #[allow(clippy::too_many_arguments)] // internal builder; grouping the fields would not aid clarity
 fn emit_remote(
@@ -466,9 +493,7 @@ fn emit_local(
     proto: MaskSpec<NextHeader>,
     action: NatMode,
 ) {
-    // Port-forwarding sources are never emitted into the local tables, so the tie-break bit is
-    // always clear here; local rules keep pure prefix-length ordering.
-    let priority = rule_priority(ip_range, false);
+    let priority = local_rule_priority(ip_range, action == Some(NatRequirement::PortForwarding));
     match ip_range {
         Prefix::IPV4(prefix) => {
             let rule = LocalKeyRule::<Ipv4Addr> {
@@ -527,12 +552,13 @@ impl RuleSet {
                     }
                 };
 
-                // Stage 1: peer's public prefixes -> Verdict{dst VPC, dst NAT}. Masquerade
-                // destinations cannot receive connections, but their rules stay in the table:
-                // a masquerade Verdict lets the NF tell reply traffic on an established
-                // masquerade flow apart from a destination no peering covers (which must drop).
-                // The NF only accepts a masquerade Verdict when the packet rides such a flow.
-                for expose in peering.remote().valexp() {
+                // Stage 1: peer's public prefixes -> Verdict{dst VPC, dst NAT}
+                for expose in peering
+                    .remote()
+                    .valexp()
+                    .iter()
+                    .filter(|expose| !expose.has_masquerade())
+                {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = Verdict {
                         nat_mode: NatRequirement::from_expose(expose),
@@ -565,14 +591,8 @@ impl RuleSet {
                     );
                 }
 
-                // Stage 2: source's private prefixes -> source NAT mode. Port-forwarding sources
-                // cannot initiate connections, so they are excluded here.
-                for expose in peering
-                    .local()
-                    .valexp()
-                    .iter()
-                    .filter(|expose| expose.can_init_connection())
-                {
+                // Stage 2: source's private prefixes -> source NAT mode.
+                for expose in peering.local().valexp().iter() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = NatRequirement::from_expose(expose);
                     for prefix in expose.ips() {
@@ -916,6 +936,44 @@ mod unit_tests {
                      ({len_a}, {fw_a}) vs ({len_b}, {fw_b})",
                 );
                 assert!(prio_a >= 1, "priority must be a valid rte_acl priority");
+            });
+    }
+
+    /// `local_rule_priority` puts port-forwarding sources in a strictly lower band: a
+    /// non-port-forwarding rule outranks a port-forwarding one at *every* pair of prefix lengths
+    /// (which plain longest-prefix-match would not do -- a forwarded host prefix is longer than the
+    /// block it nests in), and within a band longest prefix still wins. Every produced value must
+    /// still install as an rte_acl priority.
+    #[test]
+    fn local_priority_ranks_port_forwarding_below_every_other_source() {
+        use lpm::prefix::{IpPrefix, Ipv6Prefix};
+        use std::net::Ipv6Addr;
+        let prefix_of_len = |len: u8| {
+            Prefix::IPV6(Ipv6Prefix::new(Ipv6Addr::UNSPECIFIED, len).expect("valid length"))
+        };
+        bolero::check!()
+            .with_type::<(u8, bool, u8, bool)>()
+            .for_each(|&(len_a, fw_a, len_b, fw_b)| {
+                let (len_a, len_b) = (len_a % 129, len_b % 129);
+                let prio_a = local_rule_priority(prefix_of_len(len_a), fw_a);
+                let prio_b = local_rule_priority(prefix_of_len(len_b), fw_b);
+                assert_eq!(
+                    prio_a.cmp(&prio_b),
+                    (!fw_a, len_a).cmp(&(!fw_b, len_b)),
+                    "local priority order diverges from (non-port-forwarding, length) order for \
+                     ({len_a}, {fw_a}) vs ({len_b}, {fw_b})",
+                );
+                if fw_a && !fw_b {
+                    assert!(
+                        prio_a < prio_b,
+                        "a /{len_a} port-forwarding source must lose to a /{len_b} non-forwarding \
+                         source, whatever the lengths",
+                    );
+                }
+                assert!(
+                    i32::try_from(prio_a).is_ok_and(|p| Priority::new(p).is_ok()),
+                    "local priority {prio_a} is not installable as an rte_acl priority",
+                );
             });
     }
 }

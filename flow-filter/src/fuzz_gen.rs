@@ -80,8 +80,9 @@ pub(crate) enum ExposeSpec {
     Masquerade,
     /// Masquerade plus a port-forwarding host prefix nested inside its blocks (legal overlap).
     MasqueradeNestingPortFw(FwProto),
-    /// Masquerade plus a port-forwarding block of the SAME prefix length (legal overlap; the
-    /// equal-length rte_acl priority tie that the port-forwarding bit must break).
+    /// Masquerade plus a port-forwarding block of the SAME prefix length (legal overlap). On the
+    /// source side this is the case that plain longest-prefix-match cannot decide, so the
+    /// port-forwarding priority band has to: the masquerade expose must win.
     MasqueradeSameLenPortFw(FwProto),
     PortForwarding(FwProto),
     /// Two port-forwarding exposes sharing prefixes and ports, distinguished only by protocol
@@ -99,10 +100,11 @@ impl ExposeSpec {
         !matches!(self, ExposeSpec::Plain)
     }
 
-    /// Whether this expose gives the source side of a route an unconstrained, connection-initiating
-    /// match: a plain / static-nat / masquerade private block (a `/24` or `/120` with no port
-    /// constraint, `can_init_connection`). Port forwarding cannot initiate, so a pure
-    /// port-forwarding expose is not source-capable.
+    /// Whether this expose gives the source side of a route an unconstrained match: a plain /
+    /// static-nat / masquerade private block (a `/24` or `/120` with no port constraint). A pure
+    /// port-forwarding expose is excluded -- it is in the local tables now, but only as a host
+    /// prefix constrained to the forwarded ports, which a derived probe's host `.1` and ports
+    /// `(1, 1)` do not match.
     fn source_capable(self) -> bool {
         !matches!(
             self,
@@ -110,18 +112,24 @@ impl ExposeSpec {
         )
     }
 
-    /// Where a destination address this expose matches lives, or `None` if it only matches
-    /// port-forwarded destinations (skipped -- those need a specific public port). `Some(true)`
-    /// means the public block (NAT exposes translate destinations into it); `Some(false)` means the
-    /// private block (a plain expose's public IPs are its private IPs).
+    /// Where a destination address this expose matches lives, or `None` if it matches no
+    /// destination a derived probe can reach. `Some(true)` means the public block (NAT exposes
+    /// translate destinations into it); `Some(false)` means the private block (a plain expose's
+    /// public IPs are its private IPs).
+    ///
+    /// Two kinds yield `None`. Port-forwarded destinations need a specific public port, which a
+    /// derived probe does not carry. And masquerade destinations cannot receive connections at
+    /// all, so they are withheld from the remote tables -- including the masquerade half of the
+    /// composite kinds, whose port-forwarding half is only reachable at the forwarded port.
     fn dest_public_space(self) -> Option<bool> {
         match self {
             ExposeSpec::Plain => Some(false),
-            ExposeSpec::StaticNat
-            | ExposeSpec::Masquerade
+            ExposeSpec::StaticNat => Some(true),
+            ExposeSpec::Masquerade
             | ExposeSpec::MasqueradeNestingPortFw(_)
-            | ExposeSpec::MasqueradeSameLenPortFw(_) => Some(true),
-            ExposeSpec::PortForwarding(_) | ExposeSpec::PortFwProtoPair => None,
+            | ExposeSpec::MasqueradeSameLenPortFw(_)
+            | ExposeSpec::PortForwarding(_)
+            | ExposeSpec::PortFwProtoPair => None,
         }
     }
 }

@@ -3,7 +3,8 @@
 
 #![doc = include_str!("../README.md")]
 
-use concurrency::sync::Arc;
+use crate::context::Route;
+use concurrency::sync::{Arc, Weak};
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
@@ -13,7 +14,7 @@ use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 use tracectl::trace_target;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 
@@ -44,6 +45,7 @@ enum Classification {
     /// Drop the packet (Setting the DoneReason in its metadatas is done in place).
     Drop,
     /// Needs a table lookup; carries the query and any attached flow summary (for phase C).
+    /// `LookupInput` may be built from the packet or the master flow in the reverse direction
     Lookup {
         input: LookupInput,
         flow_summary: Option<FlowSummary>,
@@ -100,14 +102,95 @@ impl FlowFilter {
         let tables = self.tables.load();
         tables.lookup_batch(&inputs, &mut results);
 
-        for (item, result) in work.iter().zip(results) {
+        // `work`, `inputs` and `results` are aligned by index
+        for (i, item) in work.iter().enumerate() {
             self.apply_route(
                 &mut burst[item.idx],
-                result,
                 item.flow_summary.as_ref(),
-                genid,
+                inputs[i],
+                results[i],
             );
         }
+    }
+
+    fn get_packet_flow_state<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> Option<FlowSummary> {
+        let nfi = &self.name;
+        let flow_info = packet.meta().flow_info.as_ref()?;
+        if flow_info.status() != FlowStatus::Active {
+            debug!("{nfi}: Packet hit non-active flow. Will ignore flow");
+            return None;
+        }
+        let Some(summary) = FlowSummary::from_flow_info(flow_info) else {
+            error!("{nfi}: Bad flow summary: missing src or dst vpc discriminant. This is a bug");
+            packet.invalidate_flows();
+            return None;
+        };
+        // packet hits a sane, active flow, but we have not yet checked if the flow
+        // is compatible with the current generation id or not
+        Some(summary)
+    }
+
+    /// Build a `LookupInput` from the flow key that led to the creation of this flow
+    fn build_lookup_key_from_flow(summary: &FlowSummary) -> Option<LookupInput> {
+        let flow_info = summary.flow_info.related.as_ref().and_then(Weak::upgrade)?;
+        if !flow_info.get_flags().is_pair_master() {
+            error!("Related flow of a non-master flow is not the master. This is a bug");
+            return None;
+        }
+        // related flow could be inactive (unlikely)
+        if flow_info.status() != FlowStatus::Active {
+            debug!("Won't use related flow: it is not active");
+            return None;
+        }
+        let key = flow_info.flowkey();
+        let input = LookupInput {
+            src_vpcd: key.src_vpcd().unwrap_or_else(|| unreachable!()),
+            src_ip: *key.src_ip(),
+            dst_ip: *key.dst_ip(),
+            proto: key.proto(),
+            ports: key.ports().map(|(s, d)| (s.get(), d.get())),
+        };
+        debug!("Will validate flow {key}");
+        Some(input)
+    }
+
+    /// Build a `LookupInput` from the packet. This assumes that the packet is IP and
+    /// that it is annotated with the src vpcd
+    fn build_lookup_key_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> LookupInput {
+        let net = packet.try_ip().unwrap_or_else(|| unreachable!());
+        LookupInput {
+            src_vpcd: packet.meta().src_vpcd.unwrap_or_else(|| unreachable!()),
+            src_ip: net.src_addr(),
+            dst_ip: net.dst_addr(),
+            proto: net.next_header(),
+            ports: packet.try_transport().and_then(|t| {
+                t.src_port()
+                    .map(NonZero::get)
+                    .zip(t.dst_port().map(NonZero::get))
+            }),
+        }
+    }
+
+    #[inline]
+    fn packet_is_valid<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) -> bool {
+        let nfi = &self.name;
+
+        // disqualify non-ip
+        if packet.try_ip().is_none() {
+            debug!("{nfi}: No IP header found, dropping packet");
+            packet.done(DoneReason::NotIp);
+            return false;
+        };
+        // disqualify unknown origin
+        if packet.meta().src_vpcd.is_none() {
+            debug!("{nfi}: Missing source VPC discriminant, dropping packet");
+            packet.done(DoneReason::Unroutable);
+            return false;
+        };
+        true
     }
 
     /// Phase A: decide what a single overlay packet needs. Tags bypass packets in place; returns
@@ -118,112 +201,129 @@ impl FlowFilter {
         genid: i64,
     ) -> Classification {
         let nfi = &self.name;
-        let flow_summary = FlowSummary::from_meta(packet.meta());
-        if let Some(summary) = flow_summary.as_ref() {
-            // Bypass flow-filter if packet has up-to-date active flow-info
-            if let Some(dst_vpcd) = self.dst_vpcd_from_valid_flow(summary, genid) {
-                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, summary);
-                return Classification::Bypassed;
-            }
+
+        if !self.packet_is_valid(packet) {
+            return Classification::Drop;
         }
 
-        let Some(net) = packet.try_ip() else {
-            debug!("{nfi}: No IP headers found, dropping packet");
-            packet.done(DoneReason::NotIp);
-            return Classification::Drop;
-        };
-        let Some(src_vpcd) = packet.meta().src_vpcd else {
-            debug!("{nfi}: Missing source VPC discriminant, dropping packet");
-            packet.done(DoneReason::Unroutable);
-            return Classification::Drop;
-        };
+        // Get the flow info that the packet matched. If packet matched no flow or it did but the flow is not
+        // active, we ignore it and the flow filter always evaluates the packet.
+        // If the packet matched an active flow, there are two possiblities:
+        //    1) the flow is up-to-date (in terms of genid): the packet can bypass the flow filter confidently.
+        //    2) the flow is not up-to-date: the packet can't' bypass the flow filter since we don't know if
+        //       the flow should still be allowed nor the current treatment.
+        // In case (2) it may happen that we cannot determine if the packet is "routable" nor the treatment it
+        // should get under a new config because it may not correspond to the flow that initiated the communication.
+        // In that case, we ask the flow filter if a packet (in the reverse direction) that would have initiated the
+        // flow would still be routable. If that packet would be denied, we know the packet/flow must be dropped.
+        // If such a packet would be allowed (we get a route), we trust the possibly out-dated flow if its treatment is
+        // compatible with the route hit by such a packet.
 
-        let input = LookupInput {
-            src_vpcd,
-            src_ip: net.src_addr(),
-            dst_ip: net.dst_addr(),
-            proto: net.next_header(),
-            ports: packet.try_transport().and_then(|t| {
-                t.src_port()
-                    .map(NonZero::get)
-                    .zip(t.dst_port().map(NonZero::get))
-            }),
-        };
-        Classification::Lookup {
-            input,
-            flow_summary,
+        // Build a flow summary from the packet: we only get one if the packet hit an active, valid flow (might be out-dated)
+        let flow_summary = self.get_packet_flow_state(packet);
+        if let Some(summary) = flow_summary.as_ref() {
+            let flowkey = summary.flow_info.flowkey();
+            debug!("{nfi}: Packet matched active flow ({flowkey})");
+            if summary.genid < genid {
+                let master = summary.is_master_flow;
+                debug!("{nfi}: Flow ({flowkey}) (master: {master}) could be out-dated");
+                let input = if master {
+                    Some(Self::build_lookup_key_from_packet(packet))
+                } else {
+                    Self::build_lookup_key_from_flow(summary)
+                };
+                if let Some(input) = input {
+                    Classification::Lookup {
+                        input,
+                        flow_summary,
+                    }
+                } else {
+                    warn!("{nfi}: Could not build lookup key from master flow. Will drop");
+                    packet.done(DoneReason::Unroutable);
+                    packet.invalidate_flows();
+                    Classification::Drop
+                }
+            } else {
+                debug!("{nfi}: Flow ({flowkey}) is up-to-date. Will bypass flow-filter");
+                Self::tag_for_bypass(packet.meta_mut(), summary);
+                Classification::Bypassed
+            }
+        } else {
+            debug!("{nfi}: Packet did not match any active flow");
+            let input = Self::build_lookup_key_from_packet(packet);
+            Classification::Lookup {
+                input,
+                flow_summary,
+            }
         }
     }
 
-    /// Phase C: apply a resolved route (or drop on a miss) to a single packet.
-    ///
-    /// The tables cannot answer for reply traffic of established stateful-NAT sessions: masquerade
-    /// destinations only appear as marker rules (they cannot accept new connections) and
-    /// port-forwarding sources are absent altogether (they cannot initiate). For those two cases
-    /// -- and only those -- an active flow carrying the matching NAT state lets the packet
-    /// through, exactly as the flow-bypass path would. The flow's validity under the new
-    /// configuration remains the stateful NFs' responsibility; a genuine miss (no peering covers
-    /// the packet) still drops and invalidates.
-    fn apply_route<Buf: PacketBufferMut>(
+    /// The NAT requirements of a route
+    fn route_nat_requirements(route: &Route) -> PacketMeta {
+        let mut meta = PacketMeta::default();
+        Self::set_nat_requirements(&mut meta, route.src_nat_mode, route.dst_nat_mode);
+        meta
+    }
+
+    fn validate_flow_from_reverse_route<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        result: LookupResult,
-        flow_summary: Option<&FlowSummary>,
-        genid: i64,
+        flow_summary: &FlowSummary,
+        route: &Route,
+        input: LookupInput,
     ) {
         let nfi = &self.name;
-        let route = match result {
-            LookupResult::Route(route) => route,
-            LookupResult::SourceMiss(dst_vpcd) => {
-                // Port-forwarding sources are deliberately absent from the local tables; reply
-                // traffic from one rides its established flow.
-                if let Some(flow) =
-                    active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_port_forwarding)
-                {
-                    debug!("{nfi}: Source allowed by established port-forwarding flow");
-                    Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
-                    return;
-                }
-                debug!("{nfi}: Source not allowed towards {dst_vpcd}, dropping packet");
-                packet.invalidate_flows();
-                packet.done(DoneReason::Filtered);
-                return;
-            }
-            LookupResult::DestinationMiss => {
-                debug!("{nfi}: Could not determine destination VPC, dropping packet");
-                packet.invalidate_flows();
-                packet.done(DoneReason::Filtered);
-                return;
-            }
-        };
+        debug!("{nfi}: Reverse flow would match route {route}");
 
-        let dst_nat_mode = route.dst_nat_mode;
-        let src_nat_mode = route.src_nat_mode;
-        let dst_vpcd = route.dst_vpcd;
-
-        // A masquerade destination cannot accept new connections; its rule is in the table only
-        // so that reply traffic on an established masquerade flow is distinguishable from a
-        // destination no peering covers.
-        if dst_nat_mode == Some(NatRequirement::Masquerade) {
-            if let Some(flow) = active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_masquerade)
-            {
-                debug!("{nfi}: Masquerade destination allowed by established flow");
-                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
-                return;
-            }
+        // The initiating direction must point back to where the packet came from
+        if route.dst_vpcd != flow_summary.src_vpcd {
             debug!(
-                "{nfi}: Masquerade destination with no established flow, dropping packet (cannot initiate a connection towards a masquerade expose)"
+                "{nfi}: Flow origin {} differs from route dst {}. Will drop",
+                flow_summary.src_vpcd, route.dst_vpcd
             );
+            packet.done(DoneReason::Filtered);
+            packet.invalidate_flows();
+            return;
+        }
+
+        // check if the flow should be invalidated because it does not have the state required
+        // to process the flow according to the route requirements
+        let requirements = Self::route_nat_requirements(route);
+        if self.should_invalidate_flow(&requirements, input.src_vpcd, Some(flow_summary)) {
             packet.invalidate_flows();
             packet.done(DoneReason::Filtered);
             return;
         }
 
-        debug!(
-            "{nfi}: Packet matches peering configuration, found VPC {dst_vpcd} and NAT modes {src_nat_mode:?} (src), {dst_nat_mode:?} (dst)"
-        );
-        packet.meta_mut().dst_vpcd = Some(dst_vpcd);
-        Self::set_nat_requirements(packet.meta_mut(), src_nat_mode, dst_nat_mode);
+        // use the original flow to guide the packet
+        let flowkey = flow_summary.flow_info.flowkey();
+        debug!("{nfi}: Evaluated flow {flowkey} seems valid. Will let packet through");
+        Self::tag_for_bypass(packet.meta_mut(), flow_summary);
+    }
+
+    fn route_packet<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        route: &Route,
+        flow_summary: Option<&FlowSummary>,
+    ) {
+        let nfi = &self.name;
+        debug!("{nfi}: Packet matches route {route}");
+
+        // Annotate destination and requirements in packet
+        packet.meta_mut().dst_vpcd = Some(route.dst_vpcd);
+        Self::set_nat_requirements(packet.meta_mut(), route.src_nat_mode, route.dst_nat_mode);
+
+        // if originator requires port-forwarding and the packet has no active port-forwarding flow,
+        // drop the packet since port-forwarding should not initiate flows.
+        if route.src_nat_mode == Some(NatRequirement::PortForwarding)
+            && !has_active_pfw_flow(flow_summary)
+        {
+            debug!("{nfi}: dropping packet without active port-forwarding flow");
+            packet.done(DoneReason::Filtered);
+            packet.invalidate_flows();
+            return;
+        }
 
         // Port forwarding or masquerading used in combination with static NAT need to keep track of
         // the initial IP addresses for creating the right flow table entries, so we may have to
@@ -240,17 +340,55 @@ impl FlowFilter {
         // lacks the NAT context and state to do so. Therefore, it should not upgrade flow to newer
         // gen ids. However, it can (and must) invalidate flows in some cases, because no other
         // network function will do it otherwise.
-        if self.should_invalidate_flow(packet.meta(), dst_vpcd, genid, flow_summary) {
+        if self.should_invalidate_flow(packet.meta(), route.dst_vpcd, flow_summary) {
             packet.invalidate_flows();
         }
     }
 
-    fn tag_for_bypass(
-        meta: &mut PacketMeta,
-        dst_vpcd: VpcDiscriminant,
-        flow_summary: &FlowSummary,
+    /// Phase C: apply a resolved route (or drop on a miss) to a single packet.
+    /// The input `LookupInput` may not correspond to the packet but to the flow
+    /// in the reverse direction that initiated the flow that this packet matched.
+    fn apply_route<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        flow_summary: Option<&FlowSummary>,
+        input: LookupInput,
+        result: LookupResult,
     ) {
-        meta.dst_vpcd = Some(dst_vpcd);
+        let nfi = &self.name;
+        match result {
+            LookupResult::Route(route) => {
+                if let Some(s) = flow_summary.filter(|s| !s.is_master_flow) {
+                    // if the packet did not hit a master (initiating) flow, we queried for the reverse
+                    // flow and the route we get here is not for this packet but for a packet in the reverse
+                    // direction. If we got here, that means that the reverse flow (the initiating) is allowed
+                    // with the current config. But, the fact that such a packet is allowed does not imply that
+                    // the flow the present packet matched is valid. We must check if the flow would be
+                    // compatible with that route in terms of destination and packet treatment (nat mode).
+                    self.validate_flow_from_reverse_route(packet, s, &route, input);
+                    return;
+                }
+                // We got a route for the packet, so we know where to send it and how to process it.
+                self.route_packet(packet, &route, flow_summary);
+            }
+            LookupResult::DestinationMiss => {
+                let dst = input.dst_ip;
+                debug!("{nfi}: Failed to determine dst VPC for dst {dst}. Will drop");
+                packet.invalidate_flows();
+                packet.done(DoneReason::Filtered);
+            }
+            LookupResult::SourceMiss(dst_vpcd) => {
+                let src = input.src_ip;
+                let svpc = input.src_vpcd;
+                debug!("{nfi}: Source {src} @ {svpc} is not allowed to VPC {dst_vpcd}. Will drop");
+                packet.invalidate_flows();
+                packet.done(DoneReason::Filtered);
+            }
+        }
+    }
+
+    fn tag_for_bypass(meta: &mut PacketMeta, flow_summary: &FlowSummary) {
+        meta.dst_vpcd = Some(flow_summary.dst_vpcd);
         if flow_summary.needs_masquerade {
             meta.set_masquerade(true);
         }
@@ -294,17 +432,13 @@ impl FlowFilter {
         &self,
         meta: &PacketMeta,
         new_dst_vpcd: VpcDiscriminant,
-        genid: i64,
         flow_summary: Option<&FlowSummary>,
     ) -> bool {
         let Some(flow_summary) = flow_summary else {
             return false;
         };
-        if flow_summary.genid == genid {
-            return false;
-        }
         let (nfi, flowkey) = (&self.name, flow_summary.flow_info.flowkey());
-        if flow_summary.dst_vpcd != Some(new_dst_vpcd) {
+        if flow_summary.dst_vpcd != new_dst_vpcd {
             debug!("{nfi}: Outdated flow {flowkey} (new dst: {new_dst_vpcd}) will be invalidated.");
             return true;
         }
@@ -326,39 +460,6 @@ impl FlowFilter {
         // address B, the above won't invalidate the flow, but the NF should (or it should update
         // the flow accordingly).
         false
-    }
-
-    fn dst_vpcd_from_valid_flow(
-        &self,
-        flow_summary: &FlowSummary,
-        genid: i64,
-    ) -> Option<VpcDiscriminant> {
-        let nfi = &self.name;
-        if flow_summary.flow_info.status() != FlowStatus::Active {
-            debug!("{nfi}: Packet has inactive flow information");
-            return None;
-        }
-        let flow_genid = flow_summary.flow_info.genid();
-        if flow_genid < genid && !flow_summary.needs_masquerade {
-            // If a packet belongs to a masqueraded flow, we have to let it through, temporarily, even if the
-            // flow is out-dated in terms of generation Id: the flow filter does not have the knowledge to
-            // forbid that flow. That's the responsibility of the masquerade stage.
-            debug!(
-                "{nfi}: Packet has outdated flow information from a prior configuration ({flow_genid} < {genid})"
-            );
-            return None;
-        }
-
-        let Some(dst_vpcd) = flow_summary.dst_vpcd else {
-            error!("{nfi}: Flow info does not specify dst VPC. This is a bug. Ignoring it...");
-            flow_summary.flow_info.invalidate_pair();
-            return None;
-        };
-
-        // The flow has the same generation id as the current config (small transient period aside), or
-        // it is masquerading. So, packet can bypass the flow filter.
-        debug!("{nfi}: Packet can bypass flow filter thanks to flow information");
-        Some(dst_vpcd)
     }
 }
 
@@ -382,22 +483,23 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
 
 #[derive(Debug, Clone)]
 struct FlowSummary {
+    is_master_flow: bool,
     genid: i64,
-    dst_vpcd: Option<VpcDiscriminant>,
+    src_vpcd: VpcDiscriminant,
+    dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
     flow_info: Arc<FlowInfo>,
 }
 
 impl FlowSummary {
-    fn from_meta(meta: &PacketMeta) -> Option<Self> {
-        let Some(flow_info) = &meta.flow_info else {
-            return None;
-        };
+    fn from_flow_info(flow_info: &Arc<FlowInfo>) -> Option<Self> {
         let locked_info = flow_info.locked.read();
         Some(Self {
+            is_master_flow: flow_info.get_flags().is_pair_master(),
             genid: flow_info.genid(),
-            dst_vpcd: locked_info.dst_vpcd,
+            src_vpcd: flow_info.flowkey().src_vpcd()?,
+            dst_vpcd: locked_info.dst_vpcd?,
             needs_masquerade: locked_info.nat_state.is_some(),
             needs_port_forwarding: locked_info.port_fw_state.is_some(),
             flow_info: flow_info.clone(),
@@ -405,21 +507,12 @@ impl FlowSummary {
     }
 }
 
-/// The flow, if it is active, agrees with the lookup on the destination VPC, and carries the
-/// stateful-NAT state selected by `has_state`. Such a flow vouches for reply traffic that the
-/// tables cannot answer for (see [`FlowFilter::apply_route`]). No genid check: an up-to-date flow
-/// would have bypassed the lookup already, and an outdated one is exactly the case where the flow
-/// must speak for the packet; the stateful NFs remain the authority on the state itself.
-fn active_stateful_flow(
-    flow_summary: Option<&FlowSummary>,
-    dst_vpcd: VpcDiscriminant,
-    has_state: impl Fn(&FlowSummary) -> bool,
-) -> Option<&FlowSummary> {
-    flow_summary.filter(|flow| {
-        flow.flow_info.status() == FlowStatus::Active
-            && flow.dst_vpcd == Some(dst_vpcd)
-            && has_state(flow)
-    })
+fn has_active_pfw_flow(summary: Option<&FlowSummary>) -> bool {
+    summary
+        .filter(|summary| {
+            summary.flow_info.status() == FlowStatus::Active && summary.needs_port_forwarding
+        })
+        .is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

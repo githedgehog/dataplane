@@ -33,3 +33,4 @@ bolero = { workspace = true, features = ["std"] }
 dpdk = { workspace = true, features = ["test"] }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["builder"] }
+tracing-test = { workspace = true }

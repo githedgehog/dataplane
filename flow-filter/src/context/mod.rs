@@ -15,8 +15,8 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-pub use tables::FlowFilterContext;
 use tables::PRODUCTION_BACKEND;
+pub use tables::{FlowFilterContext, Route};
 pub(crate) use tables::{LookupInput, LookupResult};
 
 impl TryFrom<&ValidatedOverlay> for FlowFilterContext {

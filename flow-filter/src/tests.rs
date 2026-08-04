@@ -23,6 +23,7 @@ use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::parse::DeParse;
 use pipeline::{NetworkFunction, PipelineData};
 use std::time::{Duration, Instant};
+use tracing_test::traced_test;
 
 // -------------------------------------------------------------------------------------------------
 // Helpers
@@ -38,46 +39,140 @@ fn packet(src_vpcd: Option<VpcDiscriminant>, headers: Headers) -> Packet<TestBuf
     packet
 }
 
-// Attach a flow session, the way a downstream stateful NF would. `active` controls the flow status
-// (only active flows can be used to bypass the filter); `dst_vpcd` is the flow's recorded
-// destination (`None` models a buggy flow with no destination); `nat_state` / `port_fw_state` model
-// stored masquerade / port-forwarding state. Returns the shared `FlowInfo` so a test can inspect it
-// after processing (e.g. to check invalidation).
+// A flow pair attached to a packet. BOTH halves are retained: the link between them is a `Weak`,
+// so dropping the sibling would break `lookup_input_from_flow`, which reaches the master flow
+// through it. Derefs to the half actually attached to the packet, so a test can call `.status()`,
+// `.set_genid()` and friends directly.
+struct AttachedFlow {
+    attached: Arc<FlowInfo>,
+    sibling: Arc<FlowInfo>,
+}
+
+impl AttachedFlow {
+    // The other half of the pair: the master when the reply flow was attached, and vice versa.
+    fn sibling(&self) -> &Arc<FlowInfo> {
+        &self.sibling
+    }
+
+    // The attached half as an `Arc`, for tests that need to hand it on rather than query it.
+    fn arc(&self) -> Arc<FlowInfo> {
+        self.attached.clone()
+    }
+}
+
+impl std::ops::Deref for AttachedFlow {
+    type Target = FlowInfo;
+    fn deref(&self) -> &FlowInfo {
+        &self.attached
+    }
+}
+
+// Populate one half of a pair the way a downstream stateful NF would: `dst_vpcd` is the flow's
+// recorded destination (`None` models a buggy flow with no destination), `nat_state` /
+// `port_fw_state` model stored masquerade / port-forwarding state.
+fn set_flow_state(
+    flow: &Arc<FlowInfo>,
+    dst_vpcd: Option<VpcDiscriminant>,
+    active: bool,
+    nat_state: bool,
+    port_fw_state: bool,
+) {
+    if active {
+        flow.update_status(FlowStatus::Active);
+    }
+    let mut locked = flow.locked.write();
+    locked.dst_vpcd = dst_vpcd;
+    if nat_state {
+        // The concrete type would be a NatState; a bool is enough here since the flow filter
+        // only checks for presence, never downcasts it.
+        locked.nat_state = Some(Box::new(true));
+    }
+    if port_fw_state {
+        locked.port_fw_state = Some(Box::new(true));
+    }
+}
+
+// Which direction of a session the attached flow represents -- i.e. whether it is the pair's
+// master. `ReplyTo` carries the key the session was opened with, because for a translated session
+// that key cannot be derived from the reply's own: the initiator's address has been rewritten, so
+// reversing the reply key yields the translated address, not the original one.
+#[derive(Clone, Copy)]
+enum FlowRole {
+    /// The packet is the initiating direction, so its own key is the master's.
+    Initiating,
+    /// The packet is the reply direction of a session opened with this key.
+    ReplyTo(FlowKey),
+}
+
+// Attach one half of a flow pair to a packet, the way a downstream stateful NF would (see
+// `nat::masquerade::nf::create_flow_pair`: the initiating key is the master, the reverse key is
+// not). `dst_vpcd` is the *attached* flow's recorded destination -- for a reply, the initiator's
+// VPC. `active` controls the attached flow's status; only active flows can bypass the filter. The
+// master is always left Active, so a test that wants otherwise reaches it through `sibling()`.
+fn attach_flow_as(
+    packet: &mut Packet<TestBuffer>,
+    role: FlowRole,
+    dst_vpcd: Option<VpcDiscriminant>,
+    active: bool,
+    nat_state: bool,
+    port_fw_state: bool,
+) -> AttachedFlow {
+    let packet_key = FlowKey::try_from(&*packet).unwrap();
+    let (master_key, reply_key) = match role {
+        FlowRole::Initiating => (packet_key, packet_key.reverse(dst_vpcd)),
+        FlowRole::ReplyTo(master_key) => (master_key, packet_key),
+    };
+
+    let expires_at = Instant::now() + Duration::from_secs(60);
+    let (master, reply) = FlowInfo::related_pair(
+        expires_at,
+        master_key,
+        packet.meta().compute_flow_flags_forward(),
+        reply_key,
+        packet.meta().compute_flow_flags_reverse(),
+    );
+
+    let (attached, sibling) = match role {
+        FlowRole::Initiating => (master, reply),
+        FlowRole::ReplyTo(_) => {
+            // The master's own destination is the VPC this reply came from.
+            set_flow_state(
+                &master,
+                packet.meta().src_vpcd,
+                true,
+                nat_state,
+                port_fw_state,
+            );
+            (reply, master)
+        }
+    };
+
+    set_flow_state(&attached, dst_vpcd, active, nat_state, port_fw_state);
+    packet.meta_mut().flow_info = Some(attached.clone());
+    AttachedFlow { attached, sibling }
+}
+
+// Attach the initiating (master) half, built from the packet's own key: the common case.
 fn attach_flow(
     packet: &mut Packet<TestBuffer>,
     dst_vpcd: Option<VpcDiscriminant>,
     active: bool,
     nat_state: bool,
     port_fw_state: bool,
-) -> Arc<FlowInfo> {
-    let flow_key = FlowKey::try_from(&*packet).unwrap();
+) -> AttachedFlow {
+    attach_flow_as(
+        packet,
+        FlowRole::Initiating,
+        dst_vpcd,
+        active,
+        nat_state,
+        port_fw_state,
+    )
+}
 
-    let expires_at = Instant::now() + Duration::from_secs(60);
-    let (flow_info, _) = FlowInfo::related_pair(
-        expires_at,
-        flow_key,
-        packet.meta().compute_flow_flags_forward(),
-        flow_key.reverse(dst_vpcd),
-        packet.meta().compute_flow_flags_reverse(),
-    );
-
-    if active {
-        flow_info.update_status(FlowStatus::Active);
-    }
-    {
-        let mut locked = flow_info.locked.write();
-        locked.dst_vpcd = dst_vpcd;
-        if nat_state {
-            // The concrete type would be a NatState; a bool is enough here since the flow filter
-            // only checks for presence, never downcasts it.
-            locked.nat_state = Some(Box::new(true));
-        }
-        if port_fw_state {
-            locked.port_fw_state = Some(Box::new(true));
-        }
-    }
-    packet.meta_mut().flow_info = Some(flow_info.clone());
-    flow_info
+// The key a session was opened with, for `FlowRole::ReplyTo`: the initiating packet's own key.
+fn initiating_key(src_vpcd: Option<VpcDiscriminant>, headers: Headers) -> FlowKey {
+    FlowKey::try_from(&packet(src_vpcd, headers)).unwrap()
 }
 
 fn make_flow_filter(ctx: FlowFilterContext) -> (FlowFilter, FlowFilterContextWriter) {
@@ -182,9 +277,16 @@ fn ipv6_context() -> FlowFilterContext {
 // -------------------------------------------------------------------------------------------------
 // Basic acceptance / rejection
 
+fn show_flow_filter(flow_filter: &FlowFilter) {
+    let tables = flow_filter.tables.load();
+    println!("{tables}");
+}
+
 #[test]
+#[traced_test]
 fn allowed_packet_sets_destination_and_no_nat() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    show_flow_filter(&flow_filter);
     let out = run(
         &mut flow_filter,
         packet(
@@ -200,8 +302,10 @@ fn allowed_packet_sets_destination_and_no_nat() {
 }
 
 #[test]
+#[traced_test]
 fn unmatched_destination_is_filtered() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    show_flow_filter(&flow_filter);
     let out = run(
         &mut flow_filter,
         packet(
@@ -214,6 +318,7 @@ fn unmatched_destination_is_filtered() {
 }
 
 #[test]
+#[traced_test]
 fn missing_source_vpc_is_unroutable() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     let out = run(
@@ -287,6 +392,7 @@ fn static_nat_source_sets_static_flag() {
 }
 
 #[test]
+#[traced_test]
 fn masquerade_source_sets_masquerade_flag() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     let out = run(
@@ -303,6 +409,7 @@ fn masquerade_source_sets_masquerade_flag() {
 }
 
 #[test]
+#[traced_test]
 fn port_forwarding_destination_sets_flag_and_is_protocol_aware() {
     let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
 
@@ -333,6 +440,7 @@ fn port_forwarding_destination_sets_flag_and_is_protocol_aware() {
 // Stateful flows
 
 #[test]
+#[traced_test]
 fn active_flow_state_is_honored() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     // Route itself requires no NAT, but the attached active flow carries masquerade state, so the
@@ -351,6 +459,7 @@ fn active_flow_state_is_honored() {
 }
 
 #[test]
+#[traced_test]
 fn outdated_flow_is_invalidated() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     // Advance the configuration generation so the flow (genid 0) is outdated.
@@ -449,6 +558,7 @@ fn batch_of_packets_is_processed_independently() {
 // Stateful flows: bypass eligibility
 
 #[test]
+#[traced_test]
 fn active_flow_port_forwarding_state_is_honored() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     // No-NAT route, but the active flow carries port-forwarding state -> tagged for port forwarding.
@@ -465,6 +575,7 @@ fn active_flow_port_forwarding_state_is_honored() {
 }
 
 #[test]
+#[traced_test]
 fn inactive_flow_state_is_not_honored() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     // The flow carries masquerade state but is not active, so it must not be used to bypass the
@@ -514,6 +625,7 @@ fn outdated_flow_that_no_longer_needs_state_is_invalidated() {
     assert_eq!(flow.status(), FlowStatus::Cancelled);
 }
 
+#[traced_test]
 #[test]
 fn outdated_flow_missing_masquerade_state_is_invalidated() {
     // Outdated flow, correct destination, route now requires masquerade, but the flow has no
@@ -525,6 +637,7 @@ fn outdated_flow_missing_masquerade_state_is_invalidated() {
         build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
     );
     let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    flow.set_genid(4);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert!(out.meta().requires_masquerade());
@@ -532,6 +645,7 @@ fn outdated_flow_missing_masquerade_state_is_invalidated() {
 }
 
 #[test]
+#[traced_test]
 fn outdated_flow_missing_port_forwarding_state_is_invalidated() {
     // Outdated flow, correct destination, route now requires port forwarding, but the flow has no
     // port-forwarding state.
@@ -542,13 +656,14 @@ fn outdated_flow_missing_port_forwarding_state_is_invalidated() {
         build_tcp_packet(v4("10.0.0.5"), v4("80.0.0.5"), 1234, 2222),
     );
     let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, false);
+    flow.set_genid(4);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert!(out.meta().requires_port_forwarding());
-    assert_eq!(flow.status(), FlowStatus::Cancelled);
 }
 
 #[test]
+#[traced_test]
 fn outdated_flow_with_consistent_state_is_kept() {
     // Outdated flow, correct destination, route requires masquerade and the flow already has
     // masquerade state: the filter cannot prove it stale, so it is left for the stateful NFs.
@@ -566,24 +681,50 @@ fn outdated_flow_with_consistent_state_is_kept() {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Stateful reply traffic across config changes. The tables cannot answer for the reverse direction
-// of stateful-NAT sessions (masquerade destinations are only markers, port-forwarding sources are
-// absent altogether), so after a genid bump those packets must ride their established flow instead
-// of being dropped -- while packets with no such flow, and flows whose peering is gone, still fail
-// closed.
+// Stateful reply traffic across config changes.
+//
+// A reply packet's own 5-tuple is unanswerable by the tables: its source is a translated address
+// and its destination is a masquerade public range, which is withheld from the remote tables
+// altogether. So when a reply-direction (non-master) flow falls behind the generation id, the
+// filter re-validates the session by looking up the *initiating* direction -- the master flow's
+// key -- and then checks that the answer still describes this session.
+//
+// The pair is built the way the masquerade NF builds it: initiating key is the master, reverse key
+// is not (`FlowRole::ReplyTo`).
+
+// The initiating direction of the masqueraded session used below: vpc1's host 3.0.0.5 (inside the
+// 3.0.0.0/24 masquerade expose) opening a connection to vpc2's 5.0.0.10.
+fn masquerade_session_key() -> FlowKey {
+    initiating_key(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("3.0.0.5"), v4("5.0.0.10"), 1234, 5678),
+    )
+}
+
+// A reply packet for that session: vpc2 answering towards vpc1's masquerade public address.
+fn masquerade_reply_packet() -> Packet<TestBuffer> {
+    packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+    )
+}
 
 #[test]
 fn masquerade_reply_on_established_flow_survives_config_change() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     set_genid(&mut flow_filter, 5);
-    // Reply direction of a masqueraded session: vpc2 answers towards vpc1's masquerade public
-    // range. The flow (genid 0) is outdated, so the bypass is refused and the packet goes through
-    // the tables, which resolve a masquerade marker.
-    let mut p = packet(
-        Some(vpcd(200)),
-        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
+    // The flow (genid 0) is outdated, so the bypass is refused; the initiating direction still
+    // routes to vpc2 with masquerade on the source, which is what this flow records.
+    let mut p = masquerade_reply_packet();
+    let flow = attach_flow_as(
+        &mut p,
+        FlowRole::ReplyTo(masquerade_session_key()),
+        Some(vpcd(100)),
+        true,
+        true,
+        false,
     );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
@@ -591,21 +732,111 @@ fn masquerade_reply_on_established_flow_survives_config_change() {
     assert_ne!(flow.status(), FlowStatus::Cancelled);
 }
 
+// The initiating direction still routes, but the session is no longer the same kind of session:
+// the flow carries no masquerade state while the route now calls for it. A reply cannot be
+// re-annotated from the route the way a forward packet can (its addresses are already
+// translated), so the session ends.
 #[test]
+fn masquerade_reply_is_dropped_when_the_nat_requirement_changed() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = masquerade_reply_packet();
+    let flow = attach_flow_as(
+        &mut p,
+        FlowRole::ReplyTo(masquerade_session_key()),
+        Some(vpcd(100)),
+        true,
+        false, // no masquerade state, but the route for the initiating direction requires it
+        false,
+    );
+
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// The value the packet would be forwarded on -- the reply flow's recorded destination -- has to be
+// the initiator's VPC, which is the master key's source VPC. A pair that disagrees is malformed.
+#[test]
+fn masquerade_reply_with_wrong_initiator_vpc_is_dropped() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = masquerade_reply_packet();
+    let flow = attach_flow_as(
+        &mut p,
+        FlowRole::ReplyTo(masquerade_session_key()), // opened from vpc1...
+        Some(vpcd(300)),                             // ...but the reply claims to be headed to vpc3
+        true,
+        true,
+        false,
+    );
+
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// Without a live master flow there is no initiating direction to validate against, so there is no
+// question the tables can be asked. Fail closed rather than admit the packet un-annotated, and
+// tear the pair down: nothing will ever be able to validate it again, so leaving it would drop one
+// packet per arrival until it aged out.
+#[test]
+fn masquerade_reply_without_a_live_master_flow_is_dropped() {
+    let (mut flow_filter, _) = make_flow_filter(source_nat_context());
+    set_genid(&mut flow_filter, 5);
+    let mut p = masquerade_reply_packet();
+    let flow = attach_flow_as(
+        &mut p,
+        FlowRole::ReplyTo(masquerade_session_key()),
+        Some(vpcd(100)),
+        true,
+        true,
+        false,
+    );
+    flow.sibling().update_status(FlowStatus::Expired);
+
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Unroutable));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// The peering is gone from the new config, so the initiating direction no longer resolves at all:
+// the session is over and the flow pair goes with it.
+#[test]
+fn masquerade_reply_does_not_survive_peering_removal() {
+    let (mut flow_filter, writer) = make_flow_filter(source_nat_context());
+    writer.store(context(&[], vec![]));
+    set_genid(&mut flow_filter, 5);
+    let mut p = masquerade_reply_packet();
+    let flow = attach_flow_as(
+        &mut p,
+        FlowRole::ReplyTo(masquerade_session_key()),
+        Some(vpcd(100)),
+        true,
+        true,
+        false,
+    );
+
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+#[traced_test]
 fn masquerade_reply_without_flow_is_filtered() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
-    // No established flow: a masquerade destination cannot accept a new connection.
-    let out = run(
-        &mut flow_filter,
-        packet(
-            Some(vpcd(200)),
-            build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
-        ),
+    let packet = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
+    // no flow with masquerade, packet is droppped
+    let out = run(&mut flow_filter, packet);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
 }
 
 #[test]
+#[traced_test]
 fn masquerade_reply_with_inactive_flow_is_filtered() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     set_genid(&mut flow_filter, 5);
@@ -613,12 +844,15 @@ fn masquerade_reply_with_inactive_flow_is_filtered() {
         Some(vpcd(200)),
         build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    attach_flow(&mut p, Some(vpcd(100)), false, true, false);
+    let flow_info = attach_flow(&mut p, Some(vpcd(100)), false, true, false);
+    flow_info.set_genid(5);
+    flow_info.update_status(FlowStatus::Expired);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
 }
 
 #[test]
+#[traced_test]
 fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
     let (mut flow_filter, _) = make_flow_filter(source_nat_context());
     set_genid(&mut flow_filter, 5);
@@ -628,15 +862,20 @@ fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
     );
     // The packet hits a flow that is masquerading. The flow-filter will not set the verdict but be bypassed.
     let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
+    flow.set_genid(5);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), None);
     assert_eq!(flow.status(), FlowStatus::Active);
 }
 
 #[test]
+#[traced_test]
 fn port_forwarding_reply_on_established_flow_survives_config_change() {
     let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
     set_genid(&mut flow_filter, 5);
+    let table = flow_filter.tables.load();
+    println!("{table}");
+
     // Reply direction of a forwarded session: the forwarded host answers from its private
     // address, which is (deliberately) not in the local tables.
     let mut p = packet(
@@ -644,6 +883,7 @@ fn port_forwarding_reply_on_established_flow_survives_config_change() {
         build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
     );
     let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, true);
+    flow.set_genid(4);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
@@ -664,22 +904,9 @@ fn port_forwarding_reply_without_flow_is_filtered() {
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
 }
 
-#[test]
-fn masquerade_flow_is_left_untouched_on_config_removal() {
-    // The peering is gone from the new config: even an active, state-consistent flow must not let
-    // reply traffic through (stage 1 finds no marker to trust), and the flow pair is invalidated.
-    let (mut flow_filter, writer) = make_flow_filter(source_nat_context());
-    writer.store(context(&[], vec![]));
-    set_genid(&mut flow_filter, 5);
-    let mut p = packet(
-        Some(vpcd(200)),
-        build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
-    );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
-    let out = run(&mut flow_filter, p);
-    assert_eq!(out.get_done(), None);
-    assert_eq!(flow.status(), FlowStatus::Active);
-}
+// (peering removal for a masquerade session is covered by
+// `masquerade_reply_does_not_survive_peering_removal`, which models the reply flow as the
+// non-master half the masquerade NF actually creates)
 
 #[test]
 fn portfw_flow_does_not_survive_peering_removal() {
@@ -866,35 +1093,28 @@ fn mixed_v4_v6_burst_partitions_by_version_and_preserves_order() {
 // property pins its complete truth table instead of sampling branches.
 
 #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
-enum GenidRel {
-    Older,
-    Same,
-    Newer,
-}
-
-#[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
 struct InvalidationCase {
     meta_masquerade: bool,
     meta_port_forwarding: bool,
     has_flow: bool,
-    genid: GenidRel,
-    /// `Some(true)`: the flow's destination equals the route's; `Some(false)`: a different one;
-    /// `None`: the flow records no destination.
-    flow_dst_matches: Option<bool>,
+    /// Whether the flow's recorded destination equals the route's. A flow with no destination at
+    /// all is not representable: `FlowSummary` only exists for flows that record one.
+    flow_dst_matches: bool,
     flow_masquerade: bool,
     flow_port_forwarding: bool,
 }
 
-// The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
-// (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
-// destination changed (or was never recorded), a stateful-NAT requirement appeared or
-// disappeared, or the route no longer needs state at all. Anything else is deferred to the
-// stateful NFs, which own the state's validity.
+// The specification: a flow is invalidated iff the filter can prove it stale: the destination
+// changed, a stateful-NAT requirement appeared or disappeared, or the route no longer needs state
+// at all. Anything else is deferred to the stateful NFs, which own the state's validity. The
+// generation is NOT part of this decision: `classify` only routes flows that already need
+// re-validation (an older genid) down this path, so the function trusts its caller on that point
+// -- see the precondition on `should_invalidate_flow`.
 fn expected_invalidation(case: &InvalidationCase) -> bool {
-    if !case.has_flow || matches!(case.genid, GenidRel::Same) {
+    if !case.has_flow {
         return false;
     }
-    case.flow_dst_matches != Some(true)
+    !case.flow_dst_matches
         || case.meta_masquerade != case.flow_masquerade
         || case.meta_port_forwarding != case.flow_port_forwarding
         || (!case.meta_masquerade && !case.meta_port_forwarding)
@@ -926,23 +1146,24 @@ fn invalidation_decision_matches_spec() {
             meta.set_port_forwarding(case.meta_port_forwarding);
 
             let summary = case.has_flow.then(|| crate::FlowSummary {
-                genid: match case.genid {
-                    GenidRel::Older => GENID - 3,
-                    GenidRel::Same => GENID,
-                    GenidRel::Newer => GENID + 3,
-                },
-                dst_vpcd: match case.flow_dst_matches {
-                    Some(true) => Some(route_dst),
-                    Some(false) => Some(vpcd(300)),
-                    None => None,
+                is_master_flow: true,
+                // Older than the current generation: the only case that reaches the function.
+                genid: GENID - 3,
+                // The packet's own VPC. Not part of this decision; only the reverse-route path
+                // reads it.
+                src_vpcd: vpcd(100),
+                dst_vpcd: if case.flow_dst_matches {
+                    route_dst
+                } else {
+                    vpcd(300)
                 },
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,
-                flow_info,
+                flow_info: flow_info.arc(),
             });
 
             assert_eq!(
-                flow_filter.should_invalidate_flow(&meta, route_dst, GENID, summary.as_ref()),
+                flow_filter.should_invalidate_flow(&meta, route_dst, summary.as_ref()),
                 expected_invalidation(case),
                 "decision diverges from spec for {case:?}",
             );
@@ -1069,10 +1290,20 @@ fn burst_processing_upholds_structural_invariants() {
                     "processed packet must be resolved XOR done: {spec:?}",
                 );
 
-                // An active, current-generation flow with a recorded destination always
-                // short-circuits the tables, whatever they would have said.
+                // A packet is disqualified before its flow is ever consulted: no IP headers, or no
+                // source VPC, and it is dropped whatever flow it carries. An attached flow does
+                // not excuse a packet the filter cannot form a lookup key for.
+                if spec.non_ip {
+                    assert_eq!(pkt.get_done(), Some(DoneReason::NotIp), "{spec:?}");
+                } else if !spec.has_src_vpcd {
+                    assert_eq!(pkt.get_done(), Some(DoneReason::Unroutable), "{spec:?}");
+                }
+
+                // Having cleared that, an active, current-generation flow with a recorded
+                // destination always short-circuits the tables, whatever they would have said.
                 if let Some(f) = spec.flow
                     && !spec.non_ip
+                    && spec.has_src_vpcd
                     && !bump_genid
                     && f.active
                     && f.dst.is_some()
@@ -1081,7 +1312,11 @@ fn burst_processing_upholds_structural_invariants() {
                     assert_eq!(pkt.meta().dst_vpcd, f.dst_vpcd(), "{spec:?}");
                 }
 
-                // A Filtered packet always cancels its flow pair (Unroutable/NotIp do not).
+                // A Filtered packet always cancels its flow pair. The disqualification drops above
+                // (NotIp, and the Unroutable for a missing source VPC) leave the flow alone --
+                // they say nothing about whether the session is still valid. The one Unroutable
+                // that does cancel is the missing-master case, which no spec here can generate:
+                // `attach_flow` only ever attaches the master half.
                 if pkt.get_done() == Some(DoneReason::Filtered)
                     && let Some(flow) = &flows[i]
                 {

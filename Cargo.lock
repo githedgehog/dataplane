@@ -1453,6 +1453,7 @@ dependencies = [
  "indenter",
  "linkme",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
