@@ -56,7 +56,27 @@ use tracing::debug;
 
 /// A resolved route: destination VPC, destination NAT mode, source NAT mode. All `Copy`, so batch
 /// results can be extracted and the context guard dropped before packet metadata is mutated.
-type Route = (VpcDiscriminant, NatMode, NatMode);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Route {
+    pub(crate) dst_vpcd: VpcDiscriminant,
+    pub(crate) dst_nat_mode: NatMode,
+    pub(crate) src_nat_mode: NatMode,
+}
+impl Route {
+    #[must_use]
+    pub(crate) fn new(
+        dst_vpcd: VpcDiscriminant,
+        dst_nat_mode: NatMode,
+        src_nat_mode: NatMode,
+    ) -> Self {
+        Self {
+            dst_vpcd,
+            dst_nat_mode,
+            src_nat_mode,
+        }
+    }
+}
 
 /// One lookup outcome. The two miss variants are distinct because the NF's fallback differs:
 /// a destination miss means no peering covers the packet at all (drop, fail closed), while a
@@ -667,9 +687,11 @@ impl FlowFilterContext {
                     src_ip,
                     src_port,
                 }) {
-                    Some(nat_mode) => {
-                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
-                    }
+                    Some(nat_mode) => LookupResult::Route(Route::new(
+                        verdict.dst_vpcd,
+                        verdict.nat_mode,
+                        *nat_mode,
+                    )),
                     None => LookupResult::SourceMiss(verdict.dst_vpcd),
                 }
             }
@@ -689,9 +711,11 @@ impl FlowFilterContext {
                     src_ip,
                     src_port,
                 }) {
-                    Some(nat_mode) => {
-                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
-                    }
+                    Some(nat_mode) => LookupResult::Route(Route::new(
+                        verdict.dst_vpcd,
+                        verdict.nat_mode,
+                        *nat_mode,
+                    )),
                     None => LookupResult::SourceMiss(verdict.dst_vpcd),
                 }
             }
@@ -806,7 +830,7 @@ fn lookup_versioned<I: FixedSize + Copy>(
             let verdict = verdicts[pos].unwrap_or_else(|| unreachable!("hit_pos tracks Some"));
             out[i_chunk[pos]] = match nat_modes[hit] {
                 Some(nat_mode) => {
-                    LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                    LookupResult::Route(Route::new(verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
                 }
                 None => LookupResult::SourceMiss(verdict.dst_vpcd),
             };

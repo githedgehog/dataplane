@@ -172,7 +172,7 @@ impl FlowFilter {
         genid: i64,
     ) {
         let nfi = &self.name;
-        let (dst_vpcd, dst_nat_mode, src_nat_mode) = match result {
+        let route = match result {
             LookupResult::Route(route) => route,
             LookupResult::SourceMiss(dst_vpcd) => {
                 // Port-forwarding sources are deliberately absent from the local tables; reply
@@ -196,6 +196,10 @@ impl FlowFilter {
                 return;
             }
         };
+
+        let dst_nat_mode = route.dst_nat_mode;
+        let src_nat_mode = route.src_nat_mode;
+        let dst_vpcd = route.dst_vpcd;
 
         // A masquerade destination cannot accept new connections; its rule is in the table only
         // so that reply traffic on an established masquerade flow is distinguishable from a

@@ -7,20 +7,13 @@
 
 use super::LookupResult;
 use super::tables::RuleRow;
+use crate::context::tables::Route;
 use crate::test_utils::*;
-use crate::{FlowFilterContext, NatMode, NatRequirement};
+use crate::{FlowFilterContext, NatRequirement};
 use lpm::prefix::L4Protocol;
 use net::headers::Headers;
 use net::packet::VpcDiscriminant;
 use std::num::NonZero;
-
-// Wrapper for the result of a lookup
-#[derive(Debug, PartialEq, Eq)]
-struct Route {
-    dst_vpcd: VpcDiscriminant,
-    dst_nat: NatMode,
-    src_nat: NatMode,
-}
 
 // Extract the 5-tuple from headers (as the pipeline does) and run the route lookup for a packet
 // originating from a given source VPC.
@@ -39,11 +32,7 @@ fn route(
             .zip(t.dst_port().map(NonZero::get))
     });
     match context.lookup(src_vpcd, src_ip, dst_ip, proto, ports) {
-        LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
-            dst_vpcd,
-            dst_nat,
-            src_nat,
-        }),
+        LookupResult::Route(route) => Some(route),
         LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => None,
     }
 }
@@ -98,8 +87,8 @@ fn packet_allowed() {
     )
     .expect("packet should be allowed");
     assert_eq!(r.dst_vpcd, vpcd(200));
-    assert_eq!(r.dst_nat, None);
-    assert_eq!(r.src_nat, None);
+    assert_eq!(r.dst_nat_mode, None);
+    assert_eq!(r.src_nat_mode, None);
 }
 
 #[test]
@@ -137,8 +126,8 @@ fn default_remote_expose_is_catch_all() {
     )
     .expect("default expose should match");
     assert_eq!(r.dst_vpcd, vpcd(200));
-    assert_eq!(r.dst_nat, None);
-    assert_eq!(r.src_nat, None);
+    assert_eq!(r.dst_nat_mode, None);
+    assert_eq!(r.src_nat_mode, None);
 }
 
 #[test]
@@ -229,30 +218,30 @@ fn nat_modes_source_and_destination() {
     // (src NAT, dst NAT) for valid combinations. Source carries private IPs, destination carries
     // public IPs.
     let none_none = lookup("1.0.0.5", "5.0.0.10");
-    assert_eq!(none_none.src_nat, None);
-    assert_eq!(none_none.dst_nat, None);
+    assert_eq!(none_none.src_nat_mode, None);
+    assert_eq!(none_none.dst_nat_mode, None);
 
     let static_static = lookup("2.0.0.5", "60.0.0.10");
-    assert_eq!(static_static.src_nat, Some(NatRequirement::Static));
-    assert_eq!(static_static.dst_nat, Some(NatRequirement::Static));
+    assert_eq!(static_static.src_nat_mode, Some(NatRequirement::Static));
+    assert_eq!(static_static.dst_nat_mode, Some(NatRequirement::Static));
 
     let masq_none = lookup("3.0.0.5", "5.0.0.10");
-    assert_eq!(masq_none.src_nat, Some(NatRequirement::Masquerade));
-    assert_eq!(masq_none.dst_nat, None);
+    assert_eq!(masq_none.src_nat_mode, Some(NatRequirement::Masquerade));
+    assert_eq!(masq_none.dst_nat_mode, None);
 
     let none_static = lookup("1.0.0.5", "60.0.0.10");
-    assert_eq!(none_static.src_nat, None);
-    assert_eq!(none_static.dst_nat, Some(NatRequirement::Static));
+    assert_eq!(none_static.src_nat_mode, None);
+    assert_eq!(none_static.dst_nat_mode, Some(NatRequirement::Static));
 
     let static_none = lookup("2.0.0.5", "5.0.0.10");
-    assert_eq!(static_none.src_nat, Some(NatRequirement::Static));
-    assert_eq!(static_none.dst_nat, None);
+    assert_eq!(static_none.src_nat_mode, Some(NatRequirement::Static));
+    assert_eq!(static_none.dst_nat_mode, None);
 
     // Masquerade source towards the default (no-NAT) destination.
     let masq_default = lookup("3.0.0.5", "99.0.0.10");
     assert_eq!(masq_default.dst_vpcd, vpcd(200));
-    assert_eq!(masq_default.src_nat, Some(NatRequirement::Masquerade));
-    assert_eq!(masq_default.dst_nat, None);
+    assert_eq!(masq_default.src_nat_mode, Some(NatRequirement::Masquerade));
+    assert_eq!(masq_default.dst_nat_mode, None);
 }
 
 // Destination-side NAT: a masquerade destination is filtered (cannot receive
@@ -294,7 +283,7 @@ fn dst_side_nat_modes() {
     )
     .expect("masquerade destination resolves as a marker");
     assert_eq!(masq.dst_vpcd, vpcd(200));
-    assert_eq!(masq.dst_nat, Some(NatRequirement::Masquerade));
+    assert_eq!(masq.dst_nat_mode, Some(NatRequirement::Masquerade));
 
     // Port-forwarding destination (matching proto + port): returned
     let pf = route(
@@ -304,8 +293,8 @@ fn dst_side_nat_modes() {
     )
     .expect("port forwarding destination should match");
     assert_eq!(pf.dst_vpcd, vpcd(200));
-    assert_eq!(pf.dst_nat, Some(NatRequirement::PortForwarding));
-    assert_eq!(pf.src_nat, None);
+    assert_eq!(pf.dst_nat_mode, Some(NatRequirement::PortForwarding));
+    assert_eq!(pf.src_nat_mode, None);
 
     // Port-forwarding destination, wrong port: no match.
     assert_eq!(
@@ -334,7 +323,7 @@ fn protocol_awareness() {
     ] {
         let r = route(&ctx, vpcd(100), &headers).expect("plain expose matches any protocol");
         assert_eq!(r.dst_vpcd, vpcd(200));
-        assert_eq!(r.dst_nat, None);
+        assert_eq!(r.dst_nat_mode, None);
     }
 
     // TCP packet matches the TCP-only port-forwarding destination
@@ -345,8 +334,8 @@ fn protocol_awareness() {
     )
     .expect("TCP port-forwarding destination should match");
     assert_eq!(r.dst_vpcd, vpcd(200));
-    assert_eq!(r.src_nat, None);
-    assert_eq!(r.dst_nat, Some(NatRequirement::PortForwarding));
+    assert_eq!(r.src_nat_mode, None);
+    assert_eq!(r.dst_nat_mode, Some(NatRequirement::PortForwarding));
 
     // TCP-only port forwarding: a UDP packet in the same range does not match
     assert_eq!(
@@ -391,8 +380,8 @@ fn source_default_expose_is_catch_all() {
     )
     .expect("local default expose should match the source");
     assert_eq!(r.dst_vpcd, vpcd(200));
-    assert_eq!(r.src_nat, None);
-    assert_eq!(r.dst_nat, None);
+    assert_eq!(r.src_nat_mode, None);
+    assert_eq!(r.dst_nat_mode, None);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -423,7 +412,7 @@ fn port_forwarding_any_protocol_matches_tcp_and_udp() {
     ] {
         let r = route(&ctx, vpcd(100), &headers).expect("any-protocol port forwarding matches");
         assert_eq!(r.dst_vpcd, vpcd(200));
-        assert_eq!(r.dst_nat, Some(NatRequirement::PortForwarding));
+        assert_eq!(r.dst_nat_mode, Some(NatRequirement::PortForwarding));
     }
 }
 
@@ -462,8 +451,8 @@ fn source_port_forwarding_is_excluded_and_falls_back_to_masquerade() {
     )
     .expect("source resolves via the masquerade expose");
     assert_eq!(r.dst_vpcd, vpcd(200));
-    assert_eq!(r.src_nat, Some(NatRequirement::Masquerade));
-    assert_eq!(r.dst_nat, None);
+    assert_eq!(r.src_nat_mode, Some(NatRequirement::Masquerade));
+    assert_eq!(r.dst_nat_mode, None);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -552,8 +541,8 @@ fn discrepancy_overlapping_contiguous_prefixes() {
     )
     .expect("request: single matching destination in table should be found based on src/dst IPs");
     assert_eq!(r.dst_vpcd, vpcd(300));
-    assert_eq!(r.src_nat, None);
-    assert_eq!(r.dst_nat, None);
+    assert_eq!(r.src_nat_mode, None);
+    assert_eq!(r.dst_nat_mode, None);
 
     let r = route(
         &ctx,
@@ -562,8 +551,8 @@ fn discrepancy_overlapping_contiguous_prefixes() {
     )
     .expect("reply: single matching destination in table should be found based on src/dst IPs");
     assert_eq!(r.dst_vpcd, vpcd(100));
-    assert_eq!(r.src_nat, None);
-    assert_eq!(r.dst_nat, None);
+    assert_eq!(r.src_nat_mode, None);
+    assert_eq!(r.dst_nat_mode, None);
 
     // Check there are no /32 prefixes in the remote-side rules
     for RuleRow { rule, .. } in ctx.remote_v4.rules() {

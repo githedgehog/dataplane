@@ -13,6 +13,7 @@
 
 use super::tables::{Backend, FlowFilterContext, LookupInput, LookupResult};
 use crate::NatRequirement;
+use crate::context::tables::Route;
 use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
@@ -138,7 +139,7 @@ fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
         consider(&mut src_nat, (0, false), None);
     }
     match src_nat {
-        Some((_, src_nat)) => LookupResult::Route((dst_vpcd, dst_nat, src_nat)),
+        Some((_, src_nat)) => LookupResult::Route(Route::new(dst_vpcd, dst_nat, src_nat)),
         None => LookupResult::SourceMiss(dst_vpcd),
     }
 }
