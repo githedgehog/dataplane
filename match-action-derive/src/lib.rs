@@ -214,6 +214,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut rule_field_universal_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_displays: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_display_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
+    let mut rule_field_names: Vec<TokenStream2> = Vec::with_capacity(n);
+    let mut rule_field_fmt_arms: Vec<TokenStream2> = Vec::with_capacity(n);
     for (i, field) in fields.iter().enumerate() {
         let name = field
             .ident
@@ -251,6 +253,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         });
         rule_field_display_bounds.push(quote! {
             #crate_path::#spec<#ty>: ::core::fmt::Display
+        });
+        // The same fields again, but reachable one at a time. A caller laying rules out in columns
+        // has to know each value's rendered width before it can pad anything, and the whole-rule
+        // `Display` above hands back a finished string -- see `match_action::RuleFields`.
+        rule_field_names.push(quote! { #name_str });
+        rule_field_fmt_arms.push(quote! {
+            #i => ::core::fmt::Display::fmt(&self.#name, f),
         });
     }
     // Phantom fields are carried through to the rule verbatim so that any generic
@@ -377,6 +386,25 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 #(#rule_field_displays)*
                 ::core::result::Result::Ok(())
+            }
+        }
+        impl #impl_generics #crate_path::RuleFields for #rule_ident #ty_generics
+        #merged_where_display
+        {
+            const FIELD_NAMES: &'static [&'static str] = &[#(#rule_field_names),*];
+
+            fn fmt_field(
+                &self,
+                index: usize,
+                f: &mut ::core::fmt::Formatter<'_>,
+            ) -> ::core::fmt::Result {
+                match index {
+                    #(#rule_field_fmt_arms)*
+                    // Out of range. `FIELD_NAMES` bounds every legitimate call, so this is a
+                    // caller bug; report it as a formatting failure rather than panicking inside
+                    // a `Display` impl.
+                    _ => ::core::result::Result::Err(::core::fmt::Error),
+                }
             }
         }
     };
