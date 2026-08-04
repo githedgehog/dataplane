@@ -49,6 +49,73 @@ fn overlap_nanos(a_start: Instant, a_end: Instant, b_start: Instant, b_end: Inst
     end.duration_since(start).as_nanos()
 }
 
+/// Accumulate a `(packets, bytes)` value into a per-destination `SmallMap` entry.
+#[inline]
+fn add_into_map(
+    map: &mut SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<u64>>,
+    key: VpcDiscriminant,
+    value: PacketAndByte<u64>,
+) {
+    match map.get_mut(&key) {
+        Some(e) => *e += value,
+        None => {
+            map.insert(key, value);
+        }
+    }
+}
+
+/// Apportion a single `(packets, bytes)` value for `src` across the overlapping outstanding batch
+/// `slices`, using the same integer-safe split as forward-traffic apportionment (the remainder
+/// goes to the last overlapping batch). `apply` places each per-batch share into the appropriate
+/// field of that batch's `TransmitSummary` (e.g. the source drop total, or a per-pair entry).
+fn apportion_into_batches(
+    slices: &mut [&mut BatchSummary<u64>],
+    overlaps: &[u128],
+    total_ov: u128,
+    last_idx: Option<usize>,
+    src: VpcDiscriminant,
+    value: PacketAndByte<u64>,
+    mut apply: impl FnMut(&mut TransmitSummary<u64>, PacketAndByte<u64>),
+) {
+    if (value.packets == 0 && value.bytes == 0) || total_ov == 0 {
+        return;
+    }
+    let mut rem_pkts = value.packets;
+    let mut rem_bytes = value.bytes;
+    for (i, batch) in slices.iter_mut().enumerate() {
+        let ov = overlaps[i];
+        if ov == 0 {
+            continue;
+        }
+        let is_last = Some(i) == last_idx;
+        let pkts_in = if is_last {
+            rem_pkts
+        } else {
+            let v = ((value.packets as u128) * ov / total_ov) as u64;
+            rem_pkts = rem_pkts.saturating_sub(v);
+            v
+        };
+        let bytes_in = if is_last {
+            rem_bytes
+        } else {
+            let v = ((value.bytes as u128) * ov / total_ov) as u64;
+            rem_bytes = rem_bytes.saturating_sub(v);
+            v
+        };
+        if pkts_in == 0 && bytes_in == 0 {
+            continue;
+        }
+        let tx = batch.vpc.entry(src).or_insert_with(TransmitSummary::new);
+        apply(
+            tx,
+            PacketAndByte {
+                packets: pkts_in,
+                bytes: bytes_in,
+            },
+        );
+    }
+}
+
 /// Take a synchronous snapshot of `(disc, name)` pairs from the VPC map reader.
 fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Vec<(VpcDiscriminant, String)> {
     match reader.enter() {
@@ -64,40 +131,31 @@ fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Vec<(VpcDiscriminant
     }
 }
 
+/// Base id of the per-pair (VPC->VPC) drops metric family. Shared with
+/// [`crate::vpc::VpcMetricsSpec::new`], which registers these gauges under the same base.
+pub(crate) const PAIR_DROPS_METRIC_BASE: &str = "vpc_pair_drops";
+
+/// Zero the four gauges (`{base}_packet_count`, `{base}_packet_rate`, `{base}_byte_count`,
+/// `{base}_byte_rate`) for the given label set. Used to clear series belonging to VPCs/peerings
+/// that have been removed, so they don't export stale values indefinitely.
 #[inline]
-fn vpc_id_packet_count() -> &'static str {
-    "vpc_packet_count"
-}
-#[inline]
-fn vpc_id_packet_rate() -> &'static str {
-    "vpc_packet_rate"
-}
-#[inline]
-fn vpc_id_byte_count() -> &'static str {
-    "vpc_byte_count"
-}
-#[inline]
-fn vpc_id_byte_rate() -> &'static str {
-    "vpc_byte_rate"
+fn set_gauges_to_zero(base: &str, labels: Vec<(String, String)>) {
+    for (suffix, unit) in [
+        ("_packet_count", Unit::Count),
+        ("_packet_rate", Unit::BitsPerSecond),
+        ("_byte_count", Unit::Count),
+        ("_byte_rate", Unit::BitsPerSecond),
+    ] {
+        let gauge: crate::register::Registered<metrics::Gauge> =
+            MetricSpec::new(format!("{base}{suffix}"), unit, labels.clone()).register();
+        gauge.metric.set(0.0);
+    }
 }
 
+/// Zero the `vpc_*` gauge family (per-VPC totals/drops and per-pair traffic) for the given labels.
 #[inline]
 fn set_vpc_gauges_to_zero(labels: Vec<(String, String)>) {
-    let packet_count: crate::register::Registered<metrics::Gauge> =
-        MetricSpec::new(vpc_id_packet_count(), Unit::Count, labels.clone()).register();
-    packet_count.metric.set(0.0);
-
-    let packet_rate: crate::register::Registered<metrics::Gauge> =
-        MetricSpec::new(vpc_id_packet_rate(), Unit::BitsPerSecond, labels.clone()).register();
-    packet_rate.metric.set(0.0);
-
-    let byte_count: crate::register::Registered<metrics::Gauge> =
-        MetricSpec::new(vpc_id_byte_count(), Unit::Count, labels.clone()).register();
-    byte_count.metric.set(0.0);
-
-    let byte_rate: crate::register::Registered<metrics::Gauge> =
-        MetricSpec::new(vpc_id_byte_rate(), Unit::BitsPerSecond, labels).register();
-    byte_rate.metric.set(0.0);
+    set_gauges_to_zero("vpc", labels);
 }
 
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
@@ -261,16 +319,20 @@ impl StatsCollector {
                 set_vpc_gauges_to_zero(vec![("total".to_string(), removed_name.clone())]);
                 set_vpc_gauges_to_zero(vec![("drops".to_string(), removed_name.clone())]);
 
-                // peering series in both directions
+                // peering series (traffic and per-pair drops) in both directions
                 for other_name in &alive_names {
-                    set_vpc_gauges_to_zero(vec![
+                    let fwd = vec![
                         ("from".to_string(), removed_name.clone()),
                         ("to".to_string(), other_name.clone()),
-                    ]);
-                    set_vpc_gauges_to_zero(vec![
+                    ];
+                    let rev = vec![
                         ("from".to_string(), other_name.clone()),
                         ("to".to_string(), removed_name.clone()),
-                    ]);
+                    ];
+                    set_vpc_gauges_to_zero(fwd.clone());
+                    set_vpc_gauges_to_zero(rev.clone());
+                    set_gauges_to_zero(PAIR_DROPS_METRIC_BASE, fwd);
+                    set_gauges_to_zero(PAIR_DROPS_METRIC_BASE, rev);
                 }
 
                 self.known_names.remove(&disc);
@@ -417,6 +479,47 @@ impl StatsCollector {
                     }
                 });
             });
+
+            // Drops are collected per source (a total that also includes drops whose destination
+            // VPC could not be resolved) and per (src,dst) pair. Neither is rate-smoothed, but both
+            // must reach `submit_expired` via the outstanding batches, so apportion them across the
+            // same overlapping slices as forward traffic.
+            let upd_start = update.summary.start;
+            let upd_end = update.start() + update.duration;
+            let overlaps: Vec<u128> = slices
+                .iter()
+                .map(|b| overlap_nanos(b.start, b.planned_end, upd_start, upd_end))
+                .collect();
+            let total_ov: u128 = overlaps.iter().copied().sum();
+            let last_idx = overlaps
+                .iter()
+                .enumerate()
+                .rfind(|&(_, &ov)| ov > 0)
+                .map(|(i, _)| i);
+
+            update.summary.vpc.iter().for_each(|(src, summary)| {
+                for (dst, drops) in summary.pair_drops.iter() {
+                    let dst = *dst;
+                    apportion_into_batches(
+                        &mut slices,
+                        &overlaps,
+                        total_ov,
+                        last_idx,
+                        *src,
+                        *drops,
+                        |tx, v| add_into_map(&mut tx.pair_drops, dst, v),
+                    );
+                }
+                apportion_into_batches(
+                    &mut slices,
+                    &overlaps,
+                    total_ov,
+                    last_idx,
+                    *src,
+                    summary.drops,
+                    |tx, v| tx.drops += v,
+                );
+            });
         }
 
         let current_time = Instant::now();
@@ -522,6 +625,10 @@ impl StatsCollector {
                 if let Some(action) = metrics.peering_drops.get(&dst) {
                     action.tx.packet.count.metric.set(fs.drops.packets as f64);
                     action.tx.byte.count.metric.set(fs.drops.bytes as f64);
+                    // Drops are count-only; no rate is computed. Pin the rate gauges to 0 so
+                    // the registered `_rate` series never export a stale/misleading value.
+                    action.tx.packet.rate.metric.set(0.0);
+                    action.tx.byte.rate.metric.set(0.0);
                 }
             }
         }
@@ -555,6 +662,10 @@ impl StatsCollector {
                     .count
                     .metric
                     .set(fs.drops.bytes as f64);
+                // Drops are count-only; pin the registered rate gauges to 0 so they never
+                // export a stale/misleading value.
+                metrics.drops.tx.packet.rate.metric.set(0.0);
+                metrics.drops.tx.byte.rate.metric.set(0.0);
             }
         }
 
@@ -1214,5 +1325,109 @@ mod drop_stats_tests {
             s.pair_drops.get(&c).map(|x| (x.packets, x.bytes)),
             Some((1, len))
         );
+    }
+
+    fn batch(offset_secs: u64) -> BatchSummary<u64> {
+        BatchSummary::<u64>::new(Instant::now() + Duration::from_secs(offset_secs))
+    }
+
+    #[test]
+    fn apportion_splits_proportionally_and_preserves_totals() {
+        // Overlaps 1:2:3 across three batches; remainder lands in the last overlapping batch.
+        let (mut b0, mut b1, mut b2) = (batch(1), batch(2), batch(3));
+        let mut slices: Vec<&mut BatchSummary<u64>> = vec![&mut b0, &mut b1, &mut b2];
+        let src = vpcd(7);
+
+        apportion_into_batches(
+            &mut slices,
+            &[1, 2, 3],
+            6,
+            Some(2),
+            src,
+            PacketAndByte {
+                packets: 10,
+                bytes: 100,
+            },
+            |tx, v| tx.drops += v,
+        );
+        drop(slices);
+
+        // 10 -> 1,3,(rem)6 ; 100 -> 16,33,(rem)51
+        assert_eq!(
+            b0.vpc.get(&src).map(|t| (t.drops.packets, t.drops.bytes)),
+            Some((1, 16))
+        );
+        assert_eq!(
+            b1.vpc.get(&src).map(|t| (t.drops.packets, t.drops.bytes)),
+            Some((3, 33))
+        );
+        assert_eq!(
+            b2.vpc.get(&src).map(|t| (t.drops.packets, t.drops.bytes)),
+            Some((6, 51))
+        );
+
+        // No packets or bytes are lost or duplicated across the apportionment.
+        let sum_p: u64 = [&b0, &b1, &b2]
+            .iter()
+            .filter_map(|b| b.vpc.get(&src))
+            .map(|t| t.drops.packets)
+            .sum();
+        let sum_b: u64 = [&b0, &b1, &b2]
+            .iter()
+            .filter_map(|b| b.vpc.get(&src))
+            .map(|t| t.drops.bytes)
+            .sum();
+        assert_eq!((sum_p, sum_b), (10, 100));
+    }
+
+    #[test]
+    fn apportion_pair_drops_into_dst_entry() {
+        let (mut b0, mut b1) = (batch(1), batch(2));
+        let mut slices: Vec<&mut BatchSummary<u64>> = vec![&mut b0, &mut b1];
+        let (src, dst) = (vpcd(1), vpcd(2));
+
+        apportion_into_batches(
+            &mut slices,
+            &[1, 1],
+            2,
+            Some(1),
+            src,
+            PacketAndByte {
+                packets: 4,
+                bytes: 40,
+            },
+            |tx, v| add_into_map(&mut tx.pair_drops, dst, v),
+        );
+        drop(slices);
+
+        let got: u64 = [&b0, &b1]
+            .iter()
+            .filter_map(|b| b.vpc.get(&src))
+            .filter_map(|t| t.pair_drops.get(&dst))
+            .map(|c| c.packets)
+            .sum();
+        assert_eq!(got, 4);
+    }
+
+    #[test]
+    fn apportion_no_overlap_records_nothing() {
+        let mut b0 = batch(1);
+        let mut slices: Vec<&mut BatchSummary<u64>> = vec![&mut b0];
+        let src = vpcd(9);
+
+        apportion_into_batches(
+            &mut slices,
+            &[0],
+            0,
+            None,
+            src,
+            PacketAndByte {
+                packets: 5,
+                bytes: 50,
+            },
+            |tx, v| tx.drops += v,
+        );
+        drop(slices);
+        assert!(b0.vpc.is_empty());
     }
 }
