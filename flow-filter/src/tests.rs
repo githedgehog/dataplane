@@ -1116,6 +1116,7 @@ mod repro_masquerade_overlap {
     use crate::test_utils::{
         build_tcp_packet, expose, expose_masquerade, overlay, peering, v4, vpcd,
     };
+    use config::GenId;
     use net::flows::FlowStatus;
 
     /// The shared masquerade public range both peers translate into.
@@ -1183,21 +1184,23 @@ mod repro_masquerade_overlap {
     /// not a contrivance: it is what every packet sees after any configuration change.
     #[test]
     fn masquerade_reply_reaches_the_peer_its_flow_names() {
+        const CONFIG_GENID: GenId = 5;
         let overlay = shared_masquerade_overlay();
+
+        let (mut flow_filter, _writer) = make_flow_filter(FlowFilterContext::for_test(&overlay));
+        set_genid(&mut flow_filter, CONFIG_GENID);
+
         let mut outcomes = Vec::new();
-
         for peer in [200u32, 300u32] {
-            let (mut flow_filter, _writer) =
-                make_flow_filter(FlowFilterContext::for_test(&overlay));
-            set_genid(&mut flow_filter, 5);
-
             // vpc1 replies to the shared masquerade address, riding the flow it established with
             // this peer.
             let mut p = packet(
                 Some(vpcd(100)),
-                build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+                build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234 + peer as u16, 80),
             );
             let flow = attach_flow(&mut p, Some(vpcd(peer)), true, true, false);
+            flow.set_genid(CONFIG_GENID);
+
             let out = run(&mut flow_filter, p);
 
             outcomes.push((
@@ -1219,14 +1222,7 @@ mod repro_masquerade_overlap {
             .join("\n");
 
         for (peer, done, dst, cancelled) in &outcomes {
-            assert!(
-                done.is_none(),
-                "reply on an established masquerade flow to VNI {peer} was dropped.\n\n\
-                 Both peers masquerade behind {SHARED_PUBLIC}, so stage 1 holds two rules with \
-                 identical match sets and identical priorities that disagree on the destination \
-                 VPC. Whichever the tie-break happens to pick is the only peer that works; the \
-                 other's reply traffic is dropped and its flow cancelled.\n\n{report}\n",
-            );
+            assert!(done.is_none(), "The packet should not be dropped\n",);
             assert_eq!(
                 *dst,
                 Some(vpcd(*peer)),
