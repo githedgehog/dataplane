@@ -676,50 +676,30 @@ impl FlowFilterContext {
         let dst_port = dst_port.unwrap_or(0);
 
         match (src_ip, dst_ip) {
-            (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let Some(verdict) = self.remote_v4.lookup(&RemoteKey {
-                    proto,
+            (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => lookup_one(
+                &self.remote_v4,
+                &self.local_v4,
+                &Query {
                     src_vni,
-                    dst_ip,
-                    dst_port,
-                }) else {
-                    return LookupResult::DestinationMiss;
-                };
-                match self.local_v4.lookup(&LocalKey {
                     proto,
-                    src_vni,
-                    dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip,
-                    src_port,
-                }) {
-                    Some(nat_mode) => {
-                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
-                    }
-                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
-                }
-            }
-            (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let Some(verdict) = self.remote_v6.lookup(&RemoteKey {
-                    proto,
-                    src_vni,
                     dst_ip,
-                    dst_port,
-                }) else {
-                    return LookupResult::DestinationMiss;
-                };
-                match self.local_v6.lookup(&LocalKey {
-                    proto,
-                    src_vni,
-                    dst_vni: key_vni(verdict.dst_vpcd),
-                    src_ip,
                     src_port,
-                }) {
-                    Some(nat_mode) => {
-                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
-                    }
-                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
-                }
-            }
+                    dst_port,
+                },
+            ),
+            (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => lookup_one(
+                &self.remote_v6,
+                &self.local_v6,
+                &Query {
+                    src_vni,
+                    proto,
+                    src_ip,
+                    dst_ip,
+                    src_port,
+                    dst_port,
+                },
+            ),
             _ => {
                 debug!(
                     "Source and destination IP versions do not match: src_ip={src_ip:?}, dst_ip={dst_ip:?}",
@@ -776,6 +756,45 @@ impl FlowFilterContext {
 
         lookup_versioned(&self.remote_v4, &self.local_v4, &v4_q, &v4_idx, out);
         lookup_versioned(&self.remote_v6, &self.local_v6, &v6_q, &v6_idx, out);
+    }
+}
+
+/// Resolve one query against one IP version's tables: stage 1 (destination -> [`Verdict`]), then
+/// stage 2 (source -> source NAT) for a stage-1 hit.
+///
+/// The two versions ran identical bodies over differently-typed tables, so the lookup sequence was
+/// stated twice and had to be edited twice. `Query<I>` already carries exactly these fields for the
+/// batched path; reusing it lets the single-key path say the sequence once.
+///
+/// Test-only, like its caller: production always runs the batched path.
+#[cfg(test)]
+fn lookup_one<I: FixedSize + Copy>(
+    remote: &AnyTable<RemoteKey<I>, Verdict>,
+    local: &AnyTable<LocalKey<I>, NatMode>,
+    q: &Query<I>,
+) -> LookupResult
+where
+    RemoteKey<I>: MatchKey,
+    LocalKey<I>: MatchKey,
+{
+    let Some(verdict) = remote.lookup(&RemoteKey {
+        proto: q.proto,
+        src_vni: q.src_vni,
+        dst_ip: q.dst_ip,
+        dst_port: q.dst_port,
+    }) else {
+        return LookupResult::DestinationMiss;
+    };
+
+    match local.lookup(&LocalKey {
+        proto: q.proto,
+        src_vni: q.src_vni,
+        dst_vni: key_vni(verdict.dst_vpcd),
+        src_ip: q.src_ip,
+        src_port: q.src_port,
+    }) {
+        Some(nat_mode) => LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode)),
+        None => LookupResult::SourceMiss(verdict.dst_vpcd),
     }
 }
 
