@@ -1055,3 +1055,164 @@ mod contract {
         }
     }
 }
+
+#[cfg(test)]
+mod drop_stats_tests {
+    use super::*;
+    use net::buffer::TestBuffer;
+    use net::packet::test_utils::build_test_ipv4_packet;
+    use net::vxlan::Vni;
+
+    fn vpcd(vni: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(Vni::new_checked(vni).expect("valid vni"))
+    }
+
+    /// Length (in bytes) of every packet produced by `mk_packet` / `build_test_ipv4_packet(64)`.
+    /// All test packets are identical in size, so per-packet byte totals are exact multiples.
+    fn packet_len() -> u64 {
+        build_test_ipv4_packet(64)
+            .expect("build packet")
+            .total_len()
+            .into()
+    }
+
+    fn mk_packet(
+        src: Option<VpcDiscriminant>,
+        dst: Option<VpcDiscriminant>,
+        done: Option<DoneReason>,
+    ) -> Packet<TestBuffer> {
+        let mut p = build_test_ipv4_packet(64).expect("build packet");
+        p.meta_mut().src_vpcd = src;
+        p.meta_mut().dst_vpcd = dst;
+        if let Some(reason) = done {
+            p.done(reason);
+        }
+        p
+    }
+
+    /// A `Stats` NF whose batch will never auto-flush during a test (far-future schedule),
+    /// so the accumulated `update.vpc` can be inspected directly.
+    fn new_stats() -> Stats {
+        let (s, _r) = kanal::bounded(16);
+        Stats::with_delivery_schedule("test", PacketStatsWriter(s), Duration::from_secs(3600))
+    }
+
+    /// Drive packets through the NF and drop the (lazy) output so accumulation runs and the
+    /// mutable borrow of `stats` ends.
+    fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
+        let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+    }
+
+    #[test]
+    fn delivered_pair_counts_forward_only() {
+        let (a, b) = (vpcd(100), vpcd(200));
+        let mut stats = new_stats();
+        run(
+            &mut stats,
+            vec![mk_packet(Some(a), Some(b), Some(DoneReason::Delivered))],
+        );
+
+        let s = stats.update.vpc.get(&a).expect("src summary present");
+        assert_eq!(s.dst.get(&b).map(|c| c.packets), Some(1));
+        assert_eq!(s.dst.get(&b).map(|c| c.bytes), Some(packet_len()));
+        assert_eq!(s.drops.packets, 0);
+        assert!(s.pair_drops.get(&b).is_none());
+    }
+
+    #[test]
+    fn dropped_known_dst_counts_both_axes() {
+        let (a, b) = (vpcd(100), vpcd(200));
+        let mut stats = new_stats();
+        run(
+            &mut stats,
+            vec![mk_packet(Some(a), Some(b), Some(DoneReason::Filtered))],
+        );
+
+        let s = stats.update.vpc.get(&a).expect("src summary present");
+        // No forward traffic recorded for a drop.
+        assert!(s.dst.get(&b).is_none());
+        // Per-VPC total drops and per-pair drops both incremented.
+        assert_eq!(s.drops.packets, 1);
+        assert_eq!(s.drops.bytes, packet_len());
+        assert_eq!(s.pair_drops.get(&b).map(|c| c.packets), Some(1));
+        assert_eq!(s.pair_drops.get(&b).map(|c| c.bytes), Some(packet_len()));
+    }
+
+    #[test]
+    fn dropped_unknown_dst_counts_per_vpc_only() {
+        let a = vpcd(100);
+        let mut stats = new_stats();
+        run(
+            &mut stats,
+            vec![mk_packet(Some(a), None, Some(DoneReason::Filtered))],
+        );
+
+        let s = stats.update.vpc.get(&a).expect("src summary present");
+        // Attributed to the source VPC total, but placed in no (src->dst) cell.
+        assert_eq!(s.drops.packets, 1);
+        assert!(s.pair_drops.is_empty());
+        assert!(s.dst.is_empty());
+    }
+
+    #[test]
+    fn missing_verdict_is_counted_as_drop() {
+        // A packet reaching the Stats stage without a done reason is a bug elsewhere; it must be
+        // accounted as a drop rather than panicking or being lost.
+        let (a, b) = (vpcd(100), vpcd(200));
+        let mut stats = new_stats();
+        run(&mut stats, vec![mk_packet(Some(a), Some(b), None)]);
+
+        let s = stats.update.vpc.get(&a).expect("src summary present");
+        assert_eq!(s.drops.packets, 1);
+        assert_eq!(s.pair_drops.get(&b).map(|c| c.packets), Some(1));
+    }
+
+    #[test]
+    fn missing_src_records_nothing() {
+        let b = vpcd(200);
+        let mut stats = new_stats();
+        run(
+            &mut stats,
+            vec![mk_packet(None, Some(b), Some(DoneReason::Filtered))],
+        );
+        assert!(stats.update.vpc.is_empty());
+    }
+
+    #[test]
+    fn mixed_batch_accumulates() {
+        let (a, b, c) = (vpcd(1), vpcd(2), vpcd(3));
+        let len = packet_len();
+        let mut stats = new_stats();
+
+        let mut pkts = Vec::new();
+        for _ in 0..2 {
+            pkts.push(mk_packet(Some(a), Some(b), Some(DoneReason::Delivered)));
+        }
+        for _ in 0..3 {
+            pkts.push(mk_packet(Some(a), Some(b), Some(DoneReason::Filtered)));
+        }
+        pkts.push(mk_packet(Some(a), Some(c), Some(DoneReason::RouteDrop)));
+        pkts.push(mk_packet(Some(a), None, Some(DoneReason::RouteDrop)));
+        run(&mut stats, pkts);
+
+        let s = stats.update.vpc.get(&a).expect("src summary present");
+        // Forward traffic: only the 2 delivered a->b packets.
+        assert_eq!(
+            s.dst.get(&b).map(|x| (x.packets, x.bytes)),
+            Some((2, 2 * len))
+        );
+        assert!(s.dst.get(&c).is_none());
+        // Per-VPC total drops: 3 (a->b) + 1 (a->c) + 1 (a->unknown) = 5.
+        assert_eq!(s.drops.packets, 5);
+        assert_eq!(s.drops.bytes, 5 * len);
+        // Per-pair drop matrix: known destinations only.
+        assert_eq!(
+            s.pair_drops.get(&b).map(|x| (x.packets, x.bytes)),
+            Some((3, 3 * len))
+        );
+        assert_eq!(
+            s.pair_drops.get(&c).map(|x| (x.packets, x.bytes)),
+            Some((1, len))
+        );
+    }
+}
