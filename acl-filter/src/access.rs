@@ -25,12 +25,15 @@ impl TryFrom<&ValidatedOverlay> for AclFilterContext {
 
 #[cfg(test)]
 impl AclFilterContext {
-    /// Build a context using the reference backend, for tests that want the fast, EAL-free oracle.
-    /// Production goes through [`TryFrom`], which uses the rte_acl backend.
+    /// Build an EAL-free reference context for tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the validated overlay cannot be lowered.
     pub(crate) fn for_test(overlay: &ValidatedOverlay) -> Self {
         use crate::context::Backend;
-        let acls = AclTables::build(overlay, Backend::Reference)
-            .expect("reference backend build is infallible");
+        let acls =
+            AclTables::build(overlay, Backend::Reference).expect("validated overlay must lower");
         Self { acls }
     }
 
