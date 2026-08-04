@@ -13,6 +13,7 @@ use crate::test_utils::{
     vpcd,
 };
 use concurrency::sync::Arc;
+use config::GenId;
 use lpm::prefix::L4Protocol;
 use net::FlowKey;
 use net::buffer::TestBuffer;
@@ -625,11 +626,11 @@ fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
         Some(vpcd(200)),
         build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    // The flow's recorded destination does not match what the tables resolve: stale, drop.
+    // The packet hits a flow that is masquerading. The flow-filter will not set the verdict but be bypassed.
     let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
     let out = run(&mut flow_filter, p);
-    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
-    assert_eq!(flow.status(), FlowStatus::Cancelled);
+    assert_eq!(out.get_done(), None);
+    assert_eq!(flow.status(), FlowStatus::Active);
 }
 
 #[test]
@@ -664,7 +665,7 @@ fn port_forwarding_reply_without_flow_is_filtered() {
 }
 
 #[test]
-fn stateful_flow_does_not_survive_peering_removal() {
+fn masquerade_flow_is_left_untouched_on_config_removal() {
     // The peering is gone from the new config: even an active, state-consistent flow must not let
     // reply traffic through (stage 1 finds no marker to trust), and the flow pair is invalidated.
     let (mut flow_filter, writer) = make_flow_filter(source_nat_context());
@@ -676,6 +677,34 @@ fn stateful_flow_does_not_survive_peering_removal() {
     );
     let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
     let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), None);
+    assert_eq!(flow.status(), FlowStatus::Active);
+}
+
+#[test]
+fn portfw_flow_does_not_survive_peering_removal() {
+    const GENID: GenId = 5;
+    let (mut flow_filter, writer) = make_flow_filter(dst_port_forwarding_context());
+    set_genid(&mut flow_filter, GENID);
+
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("10.0.0.1"), v4("80.0.0.5"), 5678, 2222),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    flow.set_genid(GENID);
+    let second_packet = p.clone();
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), None);
+    assert_eq!(flow.status(), FlowStatus::Active);
+
+    // config is updated, new packet (second_packet) arrives, still pointing to non-updated flow
+    // the packet is dropped since its flow is out-dated and it does not bypass the flow filter,
+    // which decides to drop it.
+    writer.store(context(&[], vec![]));
+    set_genid(&mut flow_filter, GENID + 1);
+
+    let out = run(&mut flow_filter, second_packet);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
     assert_eq!(flow.status(), FlowStatus::Cancelled);
 }
