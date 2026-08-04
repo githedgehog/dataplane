@@ -212,9 +212,8 @@ impl<I> AclKey<I> {
     }
 }
 
-/// Lower a single rule to backend-neutral field predicates for the concrete IP version of its
-/// prefixes. Returns `None` if the source and destination prefixes disagree on IP version, which
-/// the config validation already rules out for a well-formed peering.
+/// Lower one rule to backend-neutral predicates.
+/// Returns `None` if either prefix does not match `T`.
 fn rule_predicates<T: IpVersion>(
     proto: AclProtoMatch,
     src_vni: Vni,
@@ -270,14 +269,20 @@ impl IpVersion for Ipv6Addr {
     }
 }
 
-/// Lower all rules for one IP version into `(predicates, action)` pairs, preserving order (which is
-/// the precedence). A missing prefix or port range becomes the wildcard for that field.
-fn lower_rules<T: IpVersion>(
-    rules: &[PeeringAclRule],
-) -> Vec<(AclKeyRule<T>, Vec<FieldPredicate>, LookupResult)> {
+/// A typed rule, its backend predicates, and its action.
+type LoweredRule<T> = (AclKeyRule<T>, Vec<FieldPredicate>, LookupResult);
+
+/// Lower rules for `T` in first-match order.
+/// Missing prefixes and port ranges become wildcards.
+///
+/// # Errors
+///
+/// Returns an error if a prefix has the wrong IP version.
+/// Validation should make this unreachable; returning an error avoids silently dropping the rule.
+fn lower_rules<T: IpVersion>(rules: &[PeeringAclRule]) -> Result<Vec<LoweredRule<T>>, ConfigError> {
     rules
         .iter()
-        .filter_map(|rule| {
+        .map(|rule| {
             let (key_rule, fields) = rule_predicates(
                 rule.proto,
                 rule.src_vni,
@@ -288,8 +293,21 @@ fn lower_rules<T: IpVersion>(
                     .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
                 rule.dst_port_range
                     .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
-            )?;
-            Some((
+            )
+            .ok_or_else(|| {
+                let (src, dst) = (rule.src_ip_range, rule.dst_ip_range);
+                error!(
+                    "ACL rule for {} -> {} does not match the IP version of the table it was \
+                     filed under (src {src:?}, dst {dst:?}); refusing the configuration",
+                    rule.src_vni, rule.dst_vni,
+                );
+                ConfigError::FailureApply(format!(
+                    "ACL rule for VNI {} -> {} has prefixes (src {src:?}, dst {dst:?}) that do \
+                     not match the table's IP version",
+                    rule.src_vni, rule.dst_vni,
+                ))
+            })?;
+            Ok((
                 key_rule,
                 fields,
                 LookupResult {
@@ -494,12 +512,18 @@ impl Default for AclTables {
 impl AclTables {
     pub(super) fn build(overlay: &ValidatedOverlay, backend: Backend) -> Result<Self, ConfigError> {
         let ruleset = PeeringAclRuleSet::from(overlay);
-        let v4 =
-            build_table::<AclKey<Ipv4Addr>, _>(backend, "v4", lower_rules::<Ipv4Addr>(&ruleset.v4))
-                .map_err(ConfigError::FailureApply)?;
-        let v6 =
-            build_table::<AclKey<Ipv6Addr>, _>(backend, "v6", lower_rules::<Ipv6Addr>(&ruleset.v6))
-                .map_err(ConfigError::FailureApply)?;
+        let v4 = build_table::<AclKey<Ipv4Addr>, _>(
+            backend,
+            "v4",
+            lower_rules::<Ipv4Addr>(&ruleset.v4)?,
+        )
+        .map_err(ConfigError::FailureApply)?;
+        let v6 = build_table::<AclKey<Ipv6Addr>, _>(
+            backend,
+            "v6",
+            lower_rules::<Ipv6Addr>(&ruleset.v6)?,
+        )
+        .map_err(ConfigError::FailureApply)?;
         Ok(Self {
             v4,
             v6,
