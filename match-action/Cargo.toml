@@ -11,6 +11,12 @@ bolero = { workspace = true, optional = true }
 fixed-size = { workspace = true, features = [] }
 match-action-derive = { workspace = true, optional = true }
 
+[dev-dependencies]
+# Property tests in the default test suite. The `bolero` *feature* above gates the public
+# `generator` module and is a separate concern: this dev-dep only makes the harness available to
+# `cfg(test)` builds, so property tests here run under a plain `cargo nextest run`.
+bolero = { workspace = true, features = ["std"] }
+
 [features]
 default = ["derive"]
 derive = ["dep:match-action-derive"]
