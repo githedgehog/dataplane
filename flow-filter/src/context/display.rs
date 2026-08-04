@@ -3,9 +3,8 @@
 
 //! Display implementations for the routing context tables.
 //!
-//! In production (rte_acl backend) the rules are baked into an opaque classifier, so only a rule
-//! count is shown per table. In test / `reference`-feature builds the reference backend keeps the
-//! rules, so the field predicates + action are rendered in full.
+//! Tables retain typed rules for backend-independent display. Each field's type controls its
+//! formatting, keeping values coupled to their key fields.
 
 use super::tables::FlowFilterContext;
 
@@ -26,151 +25,105 @@ impl std::fmt::Display for crate::NatRequirement {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Production (rte_acl / opaque): a one-line summary per table.
+// Rendering: one section per table, each rule on a line, in match order.
 
-#[cfg(not(test))]
 mod render {
+    use super::super::tables::{AnyTable, RuleRow, Verdict};
     use super::FlowFilterContext;
+    use crate::NatRequirement;
     use common::cliprovider::{CliSource, Heading};
-    use std::fmt::{self, Display, Formatter};
+    use indenter::indented;
+    use match_action::{Field, MatchKey, RuleFields, write_grid};
+    use std::fmt::{self, Display, Formatter, Write};
 
     impl CliSource for FlowFilterContext {}
 
     impl Display for FlowFilterContext {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             Heading("Routing context (flow filter)").fmt(f)?;
-            writeln!(f, "remote v4: {} rules", self.remote_v4.len())?;
-            writeln!(f, "local  v4: {} rules", self.local_v4.len())?;
-            writeln!(f, "remote v6: {} rules", self.remote_v6.len())?;
-            writeln!(f, "local  v6: {} rules", self.local_v6.len())
-        }
-    }
-}
-
-// -------------------------------------------------------------------------------------------------
-// Test / `reference` builds: full per-rule rendering when the reference backend holds the rules.
-
-#[cfg(test)]
-mod render {
-    use super::super::tables::{AnyTable, Verdict};
-    use super::FlowFilterContext;
-    use crate::NatRequirement;
-    use common::cliprovider::Heading;
-    use indenter::indented;
-    use match_action::{FieldPredicate, MatchKey};
-    use std::fmt::{self, Display, Formatter, Write};
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    impl Display for FlowFilterContext {
-        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            Heading("Routing context (flow filter)").fmt(f)?;
-            writeln!(f, "remote v4 (destination -> dst VPC + dst NAT):")?;
+            writeln!(f, "Remote v4 (destination -> dst VPC + dst NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.remote_v4))?;
-            writeln!(f, "local v4 (source -> src NAT):")?;
+            writeln!(f, "Local v4 (source -> src NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.local_v4))?;
-            writeln!(f, "remote v6 (destination -> dst VPC + dst NAT):")?;
+            writeln!(f, "Remote v6 (destination -> dst VPC + dst NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.remote_v6))?;
-            writeln!(f, "local v6 (source -> src NAT):")?;
+            writeln!(f, "Local v6 (source -> src NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.local_v6))
         }
     }
 
     struct Table<'a, K: MatchKey, A>(&'a AnyTable<K, A>);
 
-    impl<K: MatchKey, A: ActionDisplay> Display for Table<'_, K, A> {
+    /// Rules as a table in match order: `[0]` is consulted first.
+    ///
+    /// The rank column is the rule's position, not its internal priority value. A priority is a
+    /// computed encoding of (prefix length, port-forwarding bit) that means nothing outside the
+    /// table builder and is not stable across releases -- printing it invites an operator to read
+    /// precedence out of an opaque number, or to compare two numbers whose scale may have changed
+    /// underneath them. The rank answers the question they actually have: which rule wins.
+    ///
+    /// Key columns come from the rule's own fields, action columns from [`ActionColumns`], with a
+    /// `|` between the two so it is obvious which half is matched on and which half is the result.
+    impl<K: MatchKey, A: ActionColumns> Display for Table<'_, K, A>
+    where
+        K::Rule: RuleFields,
+    {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            let Some(rules) = self.0.reference_rules() else {
-                return writeln!(f, "({} rules)", self.0.len());
-            };
-            if rules.is_empty() {
+            if self.0.len() == 0 {
                 return writeln!(f, "(no rules)");
             }
-            for rule in rules {
-                for (i, pred) in rule.fields().iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    fmt_predicate(f, pred)?;
+
+            let key_fields = <K::Rule as RuleFields>::FIELD_NAMES;
+            let mut headings: Vec<&str> =
+                Vec::with_capacity(key_fields.len() + A::HEADINGS.len() + 2);
+            headings.push("rank");
+            headings.extend_from_slice(key_fields);
+            headings.push("|");
+            headings.extend_from_slice(A::HEADINGS);
+
+            let mut rows: Vec<Vec<String>> = Vec::with_capacity(self.0.len());
+            for (rank, RuleRow { rule, action }) in self.0.rules().iter().enumerate() {
+                let mut row = Vec::with_capacity(headings.len());
+                row.push(format!("[{rank}]"));
+                for index in 0..key_fields.len() {
+                    row.push(Field::of(rule, index).to_string());
                 }
-                write!(f, " -> ")?;
-                rule.action().fmt_action(f)?;
-                writeln!(f)?;
+                row.push("|".to_string());
+                action.columns(&mut row);
+                rows.push(row);
             }
-            Ok(())
+            write_grid(f, &headings, &rows)
         }
     }
 
-    fn fmt_predicate(f: &mut Formatter<'_>, pred: &FieldPredicate) -> fmt::Result {
-        if let Some((bytes, len)) = pred.as_prefix() {
-            match bytes.len() {
-                4 => write!(
-                    f,
-                    "{}/{len}",
-                    Ipv4Addr::from(<[u8; 4]>::try_from(bytes).unwrap())
-                ),
-                16 => write!(
-                    f,
-                    "{}/{len}",
-                    Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap())
-                ),
-                _ => write!(f, "{bytes:02x?}/{len}"),
-            }
-        } else if let Some((min, max)) = pred.as_range() {
-            let (Some(lo), Some(hi)) = (read_u16(min), read_u16(max)) else {
-                return write!(f, "range {min:02x?}..={max:02x?}");
-            };
-            if lo == 0 && hi == u16::MAX {
-                write!(f, "ports *")
-            } else if lo == hi {
-                write!(f, "port {lo}")
-            } else {
-                write!(f, "ports {lo}..={hi}")
-            }
-        } else if let Some(bytes) = pred.as_exact() {
-            write!(f, "{bytes:02x?}")
-        } else if let Some((value, mask)) = pred.as_mask() {
-            if mask.iter().all(|&b| b == 0) {
-                write!(f, "*")
-            } else {
-                write!(f, "{value:02x?}/{mask:02x?}")
-            }
-        } else {
-            Ok(())
+    /// An action, as the columns it occupies.
+    ///
+    /// A trait rather than `Display` because one action type is the alias
+    /// `Option<NatRequirement>`, which this crate cannot implement `Display` for -- and because a
+    /// columnar layout needs the cells separately anyway.
+    trait ActionColumns {
+        const HEADINGS: &'static [&'static str];
+        fn columns(&self, row: &mut Vec<String>);
+    }
+
+    impl ActionColumns for Verdict {
+        const HEADINGS: &'static [&'static str] = &["to", "NAT"];
+
+        fn columns(&self, row: &mut Vec<String>) {
+            row.push(self.dst_vpcd.to_string());
+            row.push(nat_mode(&self.nat_mode));
         }
     }
 
-    fn read_u16(bytes: &[u8]) -> Option<u16> {
-        if let [hi, lo] = bytes {
-            Some(u16::from_be_bytes([*hi, *lo]))
-        } else {
-            None
+    impl ActionColumns for Option<NatRequirement> {
+        const HEADINGS: &'static [&'static str] = &["NAT"];
+
+        fn columns(&self, row: &mut Vec<String>) {
+            row.push(nat_mode(self));
         }
     }
 
-    // Dedicated trait (rather than `Display`) because one action type is the alias
-    // `Option<NatRequirement>`, for which we cannot implement `Display`.
-    trait ActionDisplay {
-        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result;
-    }
-
-    impl ActionDisplay for Verdict {
-        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            write!(f, "{}, NAT: ", self.dst_vpcd)?;
-            fmt_nat_mode(f, &self.nat_mode)
-        }
-    }
-
-    impl ActionDisplay for Option<NatRequirement> {
-        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            write!(f, "NAT: ")?;
-            fmt_nat_mode(f, self)
-        }
-    }
-
-    fn fmt_nat_mode(f: &mut Formatter<'_>, nat: &Option<NatRequirement>) -> fmt::Result {
-        match nat {
-            Some(nat) => write!(f, "{nat}"),
-            None => write!(f, "-"),
-        }
+    fn nat_mode(nat: &Option<NatRequirement>) -> String {
+        nat.map_or_else(|| "-".to_string(), |nat| nat.to_string())
     }
 }

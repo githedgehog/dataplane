@@ -18,7 +18,8 @@ use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, Validat
 use dpdk::acl::{CategoryMask, Priority};
 use lookup::Lookup;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
-use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MaskSpec, MatchKey, RangeSpec};
+use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MatchKey, PrefixSpec, RangeSpec};
+use net::ip::NextHeader;
 use net::vxlan::Vni;
 use std::collections::HashMap;
 use std::fmt;
@@ -167,25 +168,31 @@ impl From<&ValidatedOverlay> for PeeringAclRuleSet {
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 pub(super) struct AclKey<I> {
     #[mask]
-    proto: u8,
+    proto: NextHeader,
     #[exact]
-    src_vni: u32,
+    #[cli(column_name = "src-vni")]
+    src_vni: Vni,
     #[exact]
-    dst_vni: u32,
+    #[cli(column_name = "dst-vni")]
+    dst_vni: Vni,
     #[prefix]
+    #[cli(column_name = "source")]
     src_ip_range: I,
     #[prefix]
+    #[cli(column_name = "destination")]
     dst_ip_range: I,
     #[range]
+    #[cli(column_name = "src-port")]
     src_port_range: u16,
     #[range]
+    #[cli(column_name = "dst-port")]
     dst_port_range: u16,
 }
 
 impl<I> AclKey<I> {
     #[must_use]
     fn new(
-        proto: u8,
+        proto: NextHeader,
         src_vni: Vni,
         dst_vni: Vni,
         src_ip: I,
@@ -195,8 +202,8 @@ impl<I> AclKey<I> {
     ) -> Self {
         Self {
             proto,
-            src_vni: src_vni.as_u32(),
-            dst_vni: dst_vni.as_u32(),
+            src_vni,
+            dst_vni,
             src_ip_range: src_ip,
             dst_ip_range: dst_ip,
             src_port_range: src_port.unwrap_or(0),
@@ -208,7 +215,7 @@ impl<I> AclKey<I> {
 /// Lower a single rule to backend-neutral field predicates for the concrete IP version of its
 /// prefixes. Returns `None` if the source and destination prefixes disagree on IP version, which
 /// the config validation already rules out for a well-formed peering.
-fn rule_predicates(
+fn rule_predicates<T: IpVersion>(
     proto: AclProtoMatch,
     src_vni: Vni,
     dst_vni: Vni,
@@ -216,73 +223,75 @@ fn rule_predicates(
     dst_ip_range: Prefix,
     src_port_range: RangeSpec<u16>,
     dst_port_range: RangeSpec<u16>,
-) -> Option<Vec<FieldPredicate>> {
-    let proto: MaskSpec<u8> = proto.into();
-    match (src_ip_range, dst_ip_range) {
-        (Prefix::IPV4(src_ip_range), Prefix::IPV4(dst_ip_range)) => Some(
-            AclKeyRule {
-                proto,
-                src_vni: ExactSpec::new(src_vni.as_u32()),
-                dst_vni: ExactSpec::new(dst_vni.as_u32()),
-                src_ip_range: src_ip_range.into(),
-                dst_ip_range: dst_ip_range.into(),
-                src_port_range,
-                dst_port_range,
-            }
-            .into_backend_fields::<Erased>(),
-        ),
-        (Prefix::IPV6(src_ip_range), Prefix::IPV6(dst_ip_range)) => Some(
-            AclKeyRule {
-                proto,
-                src_vni: ExactSpec::new(src_vni.as_u32()),
-                dst_vni: ExactSpec::new(dst_vni.as_u32()),
-                src_ip_range: src_ip_range.into(),
-                dst_ip_range: dst_ip_range.into(),
-                src_port_range,
-                dst_port_range,
-            }
-            .into_backend_fields::<Erased>(),
-        ),
-        _ => None,
-    }
+) -> Option<(AclKeyRule<T>, Vec<FieldPredicate>)> {
+    let rule = AclKeyRule {
+        proto: proto.into(),
+        src_vni: ExactSpec::new(src_vni),
+        dst_vni: ExactSpec::new(dst_vni),
+        src_ip_range: T::prefix_spec(src_ip_range)?,
+        dst_ip_range: T::prefix_spec(dst_ip_range)?,
+        src_port_range,
+        dst_port_range,
+    };
+    Some((rule, rule.into_backend_fields::<Erased>()))
 }
 
-pub(super) trait Wildcardable {
+/// Per-IP-version behaviour for the address key fields: the wildcard prefix, and narrowing a
+/// version-agnostic [`Prefix`] to this version. `prefix_spec` returns `None` for the other
+/// version, which is what keeps each table to a single address width.
+pub(super) trait IpVersion: FixedSize {
     fn wildcard() -> Prefix;
+    fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>>;
 }
 
-impl Wildcardable for Ipv4Addr {
+impl IpVersion for Ipv4Addr {
     fn wildcard() -> Prefix {
         Prefix::root_v4()
     }
+
+    fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>> {
+        match prefix {
+            Prefix::IPV4(prefix) => Some(prefix.into()),
+            Prefix::IPV6(_) => None,
+        }
+    }
 }
 
-impl Wildcardable for Ipv6Addr {
+impl IpVersion for Ipv6Addr {
     fn wildcard() -> Prefix {
         Prefix::root_v6()
+    }
+
+    fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>> {
+        match prefix {
+            Prefix::IPV6(prefix) => Some(prefix.into()),
+            Prefix::IPV4(_) => None,
+        }
     }
 }
 
 /// Lower all rules for one IP version into `(predicates, action)` pairs, preserving order (which is
 /// the precedence). A missing prefix or port range becomes the wildcard for that field.
-fn lower_rules<T: FixedSize + Wildcardable>(
+fn lower_rules<T: IpVersion>(
     rules: &[PeeringAclRule],
-) -> Vec<(Vec<FieldPredicate>, LookupResult)> {
+) -> Vec<(AclKeyRule<T>, Vec<FieldPredicate>, LookupResult)> {
     rules
         .iter()
         .filter_map(|rule| {
+            let (key_rule, fields) = rule_predicates(
+                rule.proto,
+                rule.src_vni,
+                rule.dst_vni,
+                rule.src_ip_range.unwrap_or_else(T::wildcard),
+                rule.dst_ip_range.unwrap_or_else(T::wildcard),
+                rule.src_port_range
+                    .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
+                rule.dst_port_range
+                    .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
+            )?;
             Some((
-                rule_predicates(
-                    rule.proto,
-                    rule.src_vni,
-                    rule.dst_vni,
-                    rule.src_ip_range.unwrap_or_else(T::wildcard),
-                    rule.dst_ip_range.unwrap_or_else(T::wildcard),
-                    rule.src_port_range
-                        .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
-                    rule.dst_port_range
-                        .unwrap_or(lpm::prefix::with_ports::PORT_RANGE_WILDCARD),
-                )?,
+                key_rule,
+                fields,
                 LookupResult {
                     action: rule.action,
                     log: rule.log,
@@ -308,13 +317,26 @@ pub(super) enum Backend {
     Reference,
 }
 
-/// A built ACL table for one IP version.
+/// A classifier and its rules for one IP version.
+pub(super) struct AnyTable<K: MatchKey, A> {
+    classifier: Classifier<K, A>,
+    /// Typed rules in precedence order, retained because rte_acl cannot expose installed rules.
+    rules: Box<[RuleRow<K, A>]>,
+}
+
+/// A typed rule and its action, retained for display.
+pub(super) struct RuleRow<K: MatchKey, A> {
+    pub(super) rule: K::Rule,
+    pub(super) action: A,
+}
+
+/// The classifier backing a table.
 ///
 /// `Empty` matches nothing -- used for the default context and any zero-rule table, so we never
 /// ask rte_acl to build an empty context. `Dpdk` is the production rte_acl classifier. `Reference`
 /// is the `cfg(test)` linear-scan oracle that drives the fast, EAL-free semantic suite.
-#[allow(clippy::large_enum_variant)] // test only
-pub(super) enum AnyTable<K: MatchKey, A> {
+#[allow(clippy::large_enum_variant)] // backend reprs differ in size; boxing would add an indirection
+enum Classifier<K: MatchKey, A> {
     Empty,
     Dpdk(DpdkAclLookup<K, A>),
     #[cfg(test)]
@@ -322,44 +344,42 @@ pub(super) enum AnyTable<K: MatchKey, A> {
 }
 
 impl<K: MatchKey, A> AnyTable<K, A> {
+    /// A table that matches nothing.
+    fn empty() -> Self {
+        Self {
+            classifier: Classifier::Empty,
+            rules: Box::new([]),
+        }
+    }
+
     /// Single-key lookup -- the per-packet production path (acl-filter classifies one packet at a
     /// time rather than in batches).
     fn lookup(&self, key: &K) -> Option<&A> {
-        match self {
-            AnyTable::Empty => None,
-            AnyTable::Dpdk(table) => table.lookup(key),
+        match &self.classifier {
+            Classifier::Empty => None,
+            Classifier::Dpdk(table) => table.lookup(key),
             #[cfg(test)]
-            AnyTable::Reference(table) => table.lookup(key),
+            Classifier::Reference(table) => table.lookup(key),
         }
     }
 
     pub(super) fn len(&self) -> usize {
-        match self {
-            AnyTable::Empty => 0,
-            AnyTable::Dpdk(table) => table.actions().len(),
-            #[cfg(test)]
-            AnyTable::Reference(table) => table.len(),
-        }
+        self.rules.len()
     }
 
-    /// The reference-backend rules, for the full CLI dump; `None` for the (opaque) rte_acl and
-    /// empty tables.
-    #[cfg(test)]
-    pub(super) fn reference_rules(&self) -> Option<&[RefRule<A>]> {
-        match self {
-            AnyTable::Reference(table) => Some(table.rules()),
-            _ => None,
-        }
+    /// The rules this table was built from, in precedence (first-match) order.
+    pub(super) fn rules(&self) -> &[RuleRow<K, A>] {
+        &self.rules
     }
 }
 
 impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self {
-            AnyTable::Empty => "empty",
-            AnyTable::Dpdk(_) => "dpdk",
+        let kind = match self.classifier {
+            Classifier::Empty => "empty",
+            Classifier::Dpdk(_) => "dpdk",
             #[cfg(test)]
-            AnyTable::Reference(_) => "reference",
+            Classifier::Reference(_) => "reference",
         };
         write!(f, "AnyTable::{kind}({} rules)", self.len())
     }
@@ -378,24 +398,35 @@ fn table_name(base: &str) -> String {
 }
 
 /// Build one table for the selected backend from rules in precedence (insertion) order.
-fn build_table<K: MatchKey, A>(
+fn build_table<K: MatchKey, A: Clone>(
     backend: Backend,
     base_name: &str,
-    rules: Vec<(Vec<FieldPredicate>, A)>,
-) -> Result<AnyTable<K, A>, String> {
-    match backend {
+    rules: Vec<(K::Rule, Vec<FieldPredicate>, A)>,
+) -> Result<AnyTable<K, A>, String>
+where
+    K::Rule: Copy,
+{
+    let rows: Box<[RuleRow<K, A>]> = rules
+        .iter()
+        .map(|(rule, _, action)| RuleRow {
+            rule: *rule,
+            action: action.clone(),
+        })
+        .collect();
+
+    let classifier = match backend {
         Backend::Dpdk => {
             // A zero-rule table matches nothing; represent it as `Empty` rather than asking
             // rte_acl to build an empty context.
             if rules.is_empty() {
-                return Ok(AnyTable::Empty);
+                return Ok(AnyTable::empty());
             }
             let n = rules.len();
             let max = NonZero::new(u32::try_from(n).unwrap_or(u32::MAX))
                 .ok_or_else(|| "zero-rule table reached the dpdk builder".to_string())?;
             let specs = K::field_specs();
             let mut rule_specs = Vec::with_capacity(n);
-            for (i, (fields, action)) in rules.into_iter().enumerate() {
+            for (i, (_, fields, action)) in rules.into_iter().enumerate() {
                 // Positional first-match: the first matching rule wins. rte_acl returns the
                 // highest-priority match, so priority descends with insertion index (rule 0 gets
                 // the highest priority). Distinct priorities keep the outcome deterministic.
@@ -416,8 +447,8 @@ fn build_table<K: MatchKey, A>(
                 rule_specs.push(spec);
             }
             install_table::<K, A>(&table_name(base_name), max, rule_specs)
-                .map(AnyTable::Dpdk)
-                .map_err(|e| e.to_string())
+                .map(Classifier::Dpdk)
+                .map_err(|e| e.to_string())?
         }
         #[cfg(test)]
         Backend::Reference => {
@@ -425,11 +456,15 @@ fn build_table<K: MatchKey, A>(
             // precedence we want -- no priority sort needed.
             let rules = rules
                 .into_iter()
-                .map(|(fields, action)| RefRule::new(fields, action))
+                .map(|(_, fields, action)| RefRule::new(fields, action))
                 .collect();
-            Ok(AnyTable::Reference(ReferenceTable::new(rules)))
+            Classifier::Reference(ReferenceTable::new(rules))
         }
-    }
+    };
+    Ok(AnyTable {
+        classifier,
+        rules: rows,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -449,8 +484,8 @@ pub(super) struct AclTables {
 impl Default for AclTables {
     fn default() -> Self {
         Self {
-            v4: AnyTable::Empty,
-            v6: AnyTable::Empty,
+            v4: AnyTable::empty(),
+            v6: AnyTable::empty(),
             default_actions: HashMap::new(),
         }
     }
@@ -479,7 +514,7 @@ impl AclTables {
 impl AclTables {
     #[must_use]
     pub(super) fn lookup(&self, p: &PacketSummary) -> Option<&LookupResult> {
-        let proto = p.proto.as_u8();
+        let proto = p.proto;
         let (src_ports, dst_ports) = p.ports.unzip();
         match (p.src_ip, p.dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {

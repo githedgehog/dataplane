@@ -19,7 +19,9 @@ use crate::rule::{ExactSpec, MaskSpec, PrefixSpec, RangeSpec};
 /// [`FIELD_NAMES`](RuleFields::FIELD_NAMES) in key order indexing
 /// [`fmt_field`](RuleFields::fmt_field) to measure and align individual fields.
 pub trait RuleFields {
-    /// The rule's field names, in key order.
+    /// The name each field is displayed under, in key order.
+    ///
+    /// The field's own identifier, unless it carries `#[cli(column_name = "...")]`.
     const FIELD_NAMES: &'static [&'static str];
 
     /// Render the field at `index`, or fail if there is no such field.

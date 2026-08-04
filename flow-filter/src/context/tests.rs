@@ -6,6 +6,7 @@
 #![cfg(test)]
 
 use super::LookupResult;
+use super::tables::RuleRow;
 use crate::test_utils::*;
 use crate::{FlowFilterContext, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
@@ -565,16 +566,12 @@ fn discrepancy_overlapping_contiguous_prefixes() {
     assert_eq!(r.dst_nat, None);
 
     // Check there are no /32 prefixes in the remote-side rules
-    let rules = ctx.remote_v4.reference_rules().unwrap();
-    for rule in rules {
-        let dst_prefix = rule.fields()[2].as_prefix().unwrap();
-        assert_ne!(dst_prefix.1, 32);
+    for RuleRow { rule, .. } in ctx.remote_v4.rules() {
+        assert_ne!(rule.dst_ip.len, 32);
     }
     // Check there are no /32 prefixes in the local-side rules
-    let rules = ctx.local_v4.reference_rules().unwrap();
-    for rule in rules {
-        let src_prefix = rule.fields()[3].as_prefix().unwrap();
-        assert_ne!(src_prefix.1, 32);
+    for RuleRow { rule, .. } in ctx.local_v4.rules() {
+        assert_ne!(rule.src_ip.len, 32);
     }
 }
 
@@ -756,4 +753,131 @@ fn reference_and_dpdk_backends_agree() {
         );
         assert_eq!(ref_out[i], single, "batched != single at index {i}");
     }
+}
+
+/// Retained typed rules must render identically across backends.
+#[test]
+#[dpdk::with_eal]
+fn display_is_identical_across_backends() {
+    use super::tables::{Backend, FlowFilterContext};
+
+    let ov = overlay(
+        &[("vpc1", 100), ("vpc2", 200)],
+        vec![peering(
+            "vpc1-to-vpc2",
+            ("vpc1", vec![expose("10.0.0.0/24")]),
+            (
+                "vpc2",
+                vec![
+                    expose("90.0.0.0/24"),
+                    expose_masquerade("192.168.70.0/24", "70.0.0.0/24"),
+                    expose_port_forwarding(
+                        "192.168.80.5/32",
+                        (22, 22),
+                        "80.0.0.5/32",
+                        (2222, 2222),
+                        Some(L4Protocol::Tcp),
+                    ),
+                ],
+            ),
+        )],
+    );
+
+    let reference = FlowFilterContext::build(&ov, Backend::Reference).expect("reference build");
+    let dpdk = FlowFilterContext::build(&ov, Backend::Dpdk).expect("dpdk build");
+    assert_eq!(reference.to_string(), dpdk.to_string());
+
+    // Assert cell values without pinning widths, which depend on every value in the table.
+    let dump = dpdk.to_string();
+
+    // Every assertion below is scoped to one section. The four tables share column names and some
+    // of their values, so a search over the whole dump answers with the first table's rows whatever
+    // it was asked about, and the later tables go unchecked.
+    //
+    // A section heading is written at the left margin with its table indented under it, so a
+    // section ends at the first line that is not indented. Finding the end that way means a test
+    // that reads one section does not have to name the section that follows it.
+    let section = |heading: &str| -> String {
+        let mut lines = dump.lines().skip_while(|line| !line.starts_with(heading));
+        let head = lines
+            .next()
+            .unwrap_or_else(|| panic!("no {heading:?} section in:\n{dump}"));
+        std::iter::once(head)
+            .chain(lines.take_while(|line| line.starts_with("  ")))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let cells = |section: &str, prefix: &str| -> Vec<String> {
+        section
+            .lines()
+            .find(|line| line.trim_start().starts_with(prefix))
+            .unwrap_or_else(|| panic!("no row starting {prefix:?} in:\n{section}"))
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    };
+    let remote_v4 = section("Remote v4");
+    let local_v4 = section("Local v4");
+
+    assert_eq!(
+        cells(&remote_v4, "rank"),
+        [
+            "rank",
+            "proto",
+            "src-vni",
+            "destination",
+            "dst-port",
+            "|",
+            "to",
+            "NAT"
+        ],
+        "unexpected heading row:\n{remote_v4}"
+    );
+    assert_eq!(
+        cells(&remote_v4, "[0]"),
+        [
+            "[0]",
+            "TCP",
+            "100",
+            "80.0.0.5/32",
+            "2222",
+            "|",
+            "VNI(200)",
+            "port-forwarding"
+        ],
+        "unexpected rule rendering:\n{remote_v4}"
+    );
+
+    // The local table too: its key carries a second VNI and its action is a bare NAT mode, so it
+    // exercises a different `ActionColumns` impl.
+    assert_eq!(
+        cells(&local_v4, "rank"),
+        [
+            "rank", "proto", "src-vni", "dst-vni", "source", "src-port", "|", "NAT"
+        ],
+        "unexpected local heading row:\n{local_v4}"
+    );
+
+    // The heading assertions above would still pass if a section ran past its own table, since they
+    // read its first heading row and stop. The ordering assertion below would not: it compares
+    // positions, so a section that swallowed the table after it could order two rules that are not
+    // even in the same table and call the result precedence. Pin the boundary directly -- `dst-vni`
+    // is a local-table column, and the local table is the one that follows.
+    assert!(
+        !remote_v4.contains("dst-vni"),
+        "the remote v4 section ran past its own table:\n{remote_v4}"
+    );
+
+    // The index is the operator-facing precedence claim -- `[0]` is consulted first -- so the dump
+    // must read in match order. Within one table that is longest-prefix-first: the port-forwarding
+    // /32 outranks the /24s it is nested among.
+    let rank = |needle: &str| {
+        remote_v4
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing from the remote v4 table:\n{remote_v4}"))
+    };
+    assert!(
+        rank("80.0.0.5/32") < rank("70.0.0.0/24") && rank("80.0.0.5/32") < rank("90.0.0.0/24"),
+        "rules are not rendered in precedence order:\n{remote_v4}"
+    );
 }
