@@ -46,6 +46,7 @@ use match_action::{
 };
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
+use net::vxlan::Vni;
 #[cfg(test)]
 use std::cmp::Reverse;
 use std::fmt;
@@ -91,62 +92,49 @@ pub(super) struct Verdict {
     pub(super) dst_vpcd: VpcDiscriminant,
 }
 
-/// A single IP-version's batched query (already lowered: proto byte + `u32` VNI + concrete addr).
+/// A single IP-version's batched query (partitioned by IP version, so the address type is
+/// concrete; every other field is carried verbatim from the [`LookupInput`]).
 struct Query<I> {
-    src_vpcd: u32,
-    proto: u8,
+    src_vni: Vni,
+    proto: NextHeader,
     src_ip: I,
     dst_ip: I,
     src_port: u16,
     dst_port: u16,
 }
 
-// IP protocol numbers. The flow-filter only ever emits rules for TCP, UDP, or "any" (see
-// L4Protocol), so a non-TCP/UDP packet only ever needs to match an any-proto (mask 0x00) rule --
-// any sentinel byte other than TCP/UDP works for it.
-const PROTO_TCP: u8 = NextHeader::TCP.as_u8();
-const PROTO_UDP: u8 = NextHeader::UDP.as_u8();
-const PROTO_OTHER: u8 = 0;
-
-/// Lower a config L4 protocol to a `(value, mask)` bitmask predicate:
-/// a specific protocol matches exactly (`mask 0xff`); "any" wildcards (`mask 0x00`).
-fn proto_mask(proto: L4Protocol) -> (u8, u8) {
+/// Lower a config L4 protocol to a bitmask predicate: a specific protocol matches exactly (every
+/// bit significant); "any" wildcards the field (no bit significant).
+fn proto_mask(proto: L4Protocol) -> MaskSpec<NextHeader> {
     match proto {
-        L4Protocol::Tcp => (PROTO_TCP, 0xff),
-        L4Protocol::Udp => (PROTO_UDP, 0xff),
-        L4Protocol::Any => (0, 0x00),
+        L4Protocol::Tcp => MaskSpec::exact(NextHeader::TCP),
+        L4Protocol::Udp => MaskSpec::exact(NextHeader::UDP),
+        L4Protocol::Any => MaskSpec::wildcard(),
     }
 }
 
-/// Map a packet's next-header to the proto key byte (inverse of `proto_mask`).
-fn proto_byte(next_header: NextHeader) -> u8 {
-    match next_header {
-        NextHeader::TCP => PROTO_TCP,
-        NextHeader::UDP => PROTO_UDP,
-        _ => PROTO_OTHER,
-    }
-}
-
-/// A `VpcDiscriminant` as the `u32` carried in an exact key field.
-fn vpcd_u32(vpcd: VpcDiscriminant) -> u32 {
+/// The VNI that keys the tables.
+fn key_vni(vpcd: VpcDiscriminant) -> Vni {
     match vpcd {
-        VpcDiscriminant::VNI(vni) => vni.as_u32(),
+        VpcDiscriminant::VNI(vni) => vni,
     }
 }
 
 // -------------------------------------------------------------------------------------------------
 // Keys.
 //
-// "proto" is first because rte_acl requires a one-byte first field; a #[mask] byte satisfies that
-// (it lowers to the same Bitmask field type as #[exact]). VNIs are exact u32 fields.
+// "proto" is first because rte_acl requires a one-byte first field; a #[mask] NextHeader satisfies
+// that (one byte, and it lowers to the same Bitmask field type as #[exact]). VNIs are exact 4-byte
+// fields -- see the FixedSize impl on Vni: the key encoding is padded to 4 bytes because classifier
+// fields must be 1, 2, or 4 bytes wide, so it is NOT the 24-bit VXLAN wire encoding.
 
 /// Stage-1 key: "which peer does this destination belong to, for this source VPC?"
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 pub(super) struct RemoteKey<I> {
     #[mask]
-    proto: u8,
+    proto: NextHeader,
     #[exact]
-    src_vpcd: u32,
+    src_vni: Vni,
     #[prefix]
     dst_ip: I,
     #[range]
@@ -157,11 +145,11 @@ pub(super) struct RemoteKey<I> {
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 pub(super) struct LocalKey<I> {
     #[mask]
-    proto: u8,
+    proto: NextHeader,
     #[exact]
-    src_vpcd: u32,
+    src_vni: Vni,
     #[exact]
-    dst_vpcd: u32,
+    dst_vni: Vni,
     #[prefix]
     src_ip: I,
     #[range]
@@ -357,10 +345,10 @@ fn rule_priority(ip_range: Prefix, port_forwarding: bool) -> u32 {
 fn emit_remote(
     v4: &mut Vec<NeutralRule<Verdict>>,
     v6: &mut Vec<NeutralRule<Verdict>>,
-    src_vpcd: u32,
+    src_vni: Vni,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
-    (proto_value, proto_mask): (u8, u8),
+    proto: MaskSpec<NextHeader>,
     action: Verdict,
 ) {
     let priority = rule_priority(
@@ -370,8 +358,8 @@ fn emit_remote(
     match ip_range {
         Prefix::IPV4(prefix) => {
             let fields = RemoteKeyRule::<Ipv4Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
-                src_vpcd: ExactSpec::new(src_vpcd),
+                proto,
+                src_vni: ExactSpec::new(src_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
             }
@@ -384,8 +372,8 @@ fn emit_remote(
         }
         Prefix::IPV6(prefix) => {
             let fields = RemoteKeyRule::<Ipv6Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
-                src_vpcd: ExactSpec::new(src_vpcd),
+                proto,
+                src_vni: ExactSpec::new(src_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
             }
@@ -404,11 +392,11 @@ fn emit_remote(
 fn emit_local(
     v4: &mut Vec<NeutralRule<NatMode>>,
     v6: &mut Vec<NeutralRule<NatMode>>,
-    src_vpcd: u32,
-    dst_vpcd: u32,
+    src_vni: Vni,
+    dst_vni: Vni,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
-    (proto_value, proto_mask): (u8, u8),
+    proto: MaskSpec<NextHeader>,
     action: NatMode,
 ) {
     // Port-forwarding sources are never emitted into the local tables, so the tie-break bit is
@@ -417,9 +405,9 @@ fn emit_local(
     match ip_range {
         Prefix::IPV4(prefix) => {
             let fields = LocalKeyRule::<Ipv4Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
-                src_vpcd: ExactSpec::new(src_vpcd),
-                dst_vpcd: ExactSpec::new(dst_vpcd),
+                proto,
+                src_vni: ExactSpec::new(src_vni),
+                dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
             }
@@ -432,9 +420,9 @@ fn emit_local(
         }
         Prefix::IPV6(prefix) => {
             let fields = LocalKeyRule::<Ipv6Addr> {
-                proto: MaskSpec::from((proto_value, proto_mask)),
-                src_vpcd: ExactSpec::new(src_vpcd),
-                dst_vpcd: ExactSpec::new(dst_vpcd),
+                proto,
+                src_vni: ExactSpec::new(src_vni),
+                dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
             }
@@ -460,10 +448,10 @@ impl RuleSet {
     fn from_overlay(overlay: &ValidatedOverlay) -> Self {
         let mut rules = Self::default();
         for vpc in overlay.vpc_table().values() {
-            let src_vpcd = vpcd_u32(VpcDiscriminant::VNI(vpc.vni()));
+            let src_vni = vpc.vni();
             for peering in vpc.peerings() {
-                let remote_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
-                let remote_u32 = vpcd_u32(remote_vpcd);
+                let remote_vni = overlay.vpc_table().get_remote_vni(peering);
+                let remote_vpcd = VpcDiscriminant::from_vni(remote_vni);
                 let default_ip = || {
                     if peering.is_v4() {
                         Prefix::root_v4()
@@ -487,7 +475,7 @@ impl RuleSet {
                         emit_remote(
                             &mut rules.remote_v4,
                             &mut rules.remote_v6,
-                            src_vpcd,
+                            src_vni,
                             prefix.prefix(),
                             prefix.into(),
                             proto,
@@ -499,10 +487,10 @@ impl RuleSet {
                     emit_remote(
                         &mut rules.remote_v4,
                         &mut rules.remote_v6,
-                        src_vpcd,
+                        src_vni,
                         default_ip(),
                         PORT_RANGE_WILDCARD,
-                        (0, 0x00),
+                        proto_mask(L4Protocol::Any),
                         Verdict {
                             nat_mode: None,
                             dst_vpcd: remote_vpcd,
@@ -524,8 +512,8 @@ impl RuleSet {
                         emit_local(
                             &mut rules.local_v4,
                             &mut rules.local_v6,
-                            src_vpcd,
-                            remote_u32,
+                            src_vni,
+                            remote_vni,
                             prefix.prefix(),
                             prefix.into(),
                             proto,
@@ -537,11 +525,11 @@ impl RuleSet {
                     emit_local(
                         &mut rules.local_v4,
                         &mut rules.local_v6,
-                        src_vpcd,
-                        remote_u32,
+                        src_vni,
+                        remote_vni,
                         default_ip(),
                         PORT_RANGE_WILDCARD,
-                        (0, 0x00),
+                        proto_mask(L4Protocol::Any),
                         None,
                     );
                 }
@@ -610,8 +598,7 @@ impl FlowFilterContext {
         proto: NextHeader,
         ports: Option<(u16, u16)>,
     ) -> LookupResult {
-        let proto = proto_byte(proto);
-        let src = vpcd_u32(src_vpcd);
+        let src_vni = key_vni(src_vpcd);
         let (src_port, dst_port) = ports.unzip();
         let src_port = src_port.unwrap_or(0);
         let dst_port = dst_port.unwrap_or(0);
@@ -620,7 +607,7 @@ impl FlowFilterContext {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                 let Some(verdict) = self.remote_v4.lookup(&RemoteKey {
                     proto,
-                    src_vpcd: src,
+                    src_vni,
                     dst_ip,
                     dst_port,
                 }) else {
@@ -628,8 +615,8 @@ impl FlowFilterContext {
                 };
                 match self.local_v4.lookup(&LocalKey {
                     proto,
-                    src_vpcd: src,
-                    dst_vpcd: vpcd_u32(verdict.dst_vpcd),
+                    src_vni,
+                    dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip,
                     src_port,
                 }) {
@@ -642,7 +629,7 @@ impl FlowFilterContext {
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
                 let Some(verdict) = self.remote_v6.lookup(&RemoteKey {
                     proto,
-                    src_vpcd: src,
+                    src_vni,
                     dst_ip,
                     dst_port,
                 }) else {
@@ -650,8 +637,8 @@ impl FlowFilterContext {
                 };
                 match self.local_v6.lookup(&LocalKey {
                     proto,
-                    src_vpcd: src,
-                    dst_vpcd: vpcd_u32(verdict.dst_vpcd),
+                    src_vni,
+                    dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip,
                     src_port,
                 }) {
@@ -685,14 +672,14 @@ impl FlowFilterContext {
 
         for (i, input) in inputs.iter().enumerate() {
             out[i] = LookupResult::DestinationMiss;
-            let proto = proto_byte(input.proto);
-            let src_vpcd = vpcd_u32(input.src_vpcd);
+            let proto = input.proto;
+            let src_vni = key_vni(input.src_vpcd);
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
             match (input.src_ip, input.dst_ip) {
                 (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                     v4_idx.push(i);
                     v4_q.push(Query {
-                        src_vpcd,
+                        src_vni,
                         proto,
                         src_ip,
                         dst_ip,
@@ -703,7 +690,7 @@ impl FlowFilterContext {
                 (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
                     v6_idx.push(i);
                     v6_q.push(Query {
-                        src_vpcd,
+                        src_vni,
                         proto,
                         src_ip,
                         dst_ip,
@@ -739,7 +726,7 @@ fn lookup_versioned<I: FixedSize + Copy>(
             .iter()
             .map(|q| RemoteKey {
                 proto: q.proto,
-                src_vpcd: q.src_vpcd,
+                src_vni: q.src_vni,
                 dst_ip: q.dst_ip,
                 dst_port: q.dst_port,
             })
@@ -755,8 +742,8 @@ fn lookup_versioned<I: FixedSize + Copy>(
                 let q = &q_chunk[pos];
                 local_keys.push(LocalKey {
                     proto: q.proto,
-                    src_vpcd: q.src_vpcd,
-                    dst_vpcd: vpcd_u32(verdict.dst_vpcd),
+                    src_vni: q.src_vni,
+                    dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip: q.src_ip,
                     src_port: q.src_port,
                 });
@@ -786,14 +773,15 @@ fn lookup_versioned<I: FixedSize + Copy>(
 mod unit_tests {
     use super::*;
 
+    /// Asserted at the bit level rather than against `MaskSpec::exact`/`wildcard`, which would
+    /// restate `proto_mask`'s own definition. rte_acl sees only these bytes.
     #[test]
-    fn proto_mask_and_byte_roundtrip() {
-        assert_eq!(proto_mask(L4Protocol::Tcp), (PROTO_TCP, 0xff));
-        assert_eq!(proto_mask(L4Protocol::Udp), (PROTO_UDP, 0xff));
-        assert_eq!(proto_mask(L4Protocol::Any), (0, 0x00));
-        assert_eq!(proto_byte(NextHeader::TCP), PROTO_TCP);
-        assert_eq!(proto_byte(NextHeader::UDP), PROTO_UDP);
-        assert_eq!(proto_byte(NextHeader::ICMP), PROTO_OTHER);
+    fn proto_mask_makes_every_bit_significant_except_for_any() {
+        let tcp = proto_mask(L4Protocol::Tcp);
+        assert_eq!((tcp.value, tcp.mask.as_u8()), (NextHeader::TCP, 0xff));
+        let udp = proto_mask(L4Protocol::Udp);
+        assert_eq!((udp.value, udp.mask.as_u8()), (NextHeader::UDP, 0xff));
+        assert_eq!(proto_mask(L4Protocol::Any).mask.as_u8(), 0x00);
     }
 
     #[test]
@@ -810,17 +798,19 @@ mod unit_tests {
     }
 
     /// The masked-byte lowering of the protocol constraint is equivalent to its direct
-    /// semantics for EVERY possible packet protocol and every rule protocol. In particular this
-    /// pins the `PROTO_OTHER = 0` sentinel: protocol 0 (IPv6 hop-by-hop) shares the sentinel
-    /// byte with every other non-TCP/UDP protocol and must match exactly the `Any` rules.
+    /// semantics for EVERY possible packet protocol and every rule protocol.
+    ///
+    /// Protocols other than TCP and UDP match only the zero-mask `Any` rules.
     #[test]
     fn proto_lowering_matches_direct_semantics() {
+        use match_action::Accepts;
+
         bolero::check!().with_type::<u8>().for_each(|&raw| {
             let packet = NextHeader::new(raw);
-            let byte = proto_byte(packet);
             for rule in [L4Protocol::Tcp, L4Protocol::Udp, L4Protocol::Any] {
-                let (value, mask) = proto_mask(rule);
-                let lowered = (byte & mask) == (value & mask);
+                // Ask the spec rather than re-deriving the comparison: this is the same `Accepts`
+                // impl the reference backend matches through.
+                let lowered = proto_mask(rule).accepts(&packet);
                 let direct = match rule {
                     L4Protocol::Any => true,
                     L4Protocol::Tcp => packet == NextHeader::TCP,
