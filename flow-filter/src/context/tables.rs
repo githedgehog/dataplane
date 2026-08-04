@@ -141,10 +141,13 @@ pub(super) struct RemoteKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
+    #[cli(column_name = "src-vni")]
     src_vni: Vni,
     #[prefix]
+    #[cli(column_name = "destination")]
     dst_ip: I,
     #[range]
+    #[cli(column_name = "dst-port")]
     dst_port: u16,
 }
 
@@ -154,12 +157,16 @@ pub(super) struct LocalKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
+    #[cli(column_name = "src-vni")]
     src_vni: Vni,
     #[exact]
+    #[cli(column_name = "dst-vni")]
     dst_vni: Vni,
     #[prefix]
+    #[cli(column_name = "source")]
     src_ip: I,
     #[range]
+    #[cli(column_name = "src-port")]
     src_port: u16,
 }
 

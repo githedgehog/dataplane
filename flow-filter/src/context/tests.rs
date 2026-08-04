@@ -791,15 +791,66 @@ fn display_is_identical_across_backends() {
     assert_eq!(reference.to_string(), dpdk.to_string());
 
     // Each field is rendered by its own type: a VNI as a VNI, a protocol by keyword, a wildcard
-    // mask as `*` -- none of it decoded from erased bytes.
+    // mask as `*` -- none of it decoded from erased bytes. Asserted on the cells of the row rather
+    // than on the exact spacing, so this pins how values render without pinning column widths,
+    // which shift whenever a wider value appears anywhere in the same table.
     let dump = dpdk.to_string();
-    assert!(
-        dump.contains("proto=TCP, src_vni=100, dst_ip=80.0.0.5/32, dst_port=2222"),
+    let cells = |prefix: &str| -> Vec<String> {
+        dump.lines()
+            .find(|line| line.trim_start().starts_with(prefix))
+            .unwrap_or_else(|| panic!("no row starting {prefix:?} in:\n{dump}"))
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        cells("rank"),
+        [
+            "rank",
+            "proto",
+            "src-vni",
+            "destination",
+            "dst-port",
+            "|",
+            "to",
+            "NAT"
+        ],
+        "unexpected heading row:\n{dump}"
+    );
+    assert_eq!(
+        cells("[0]"),
+        [
+            "[0]",
+            "TCP",
+            "100",
+            "80.0.0.5/32",
+            "2222",
+            "|",
+            "VNI(200)",
+            "port-forwarding"
+        ],
         "unexpected rule rendering:\n{dump}"
     );
-    assert!(
-        dump.contains("-> VNI(200), NAT: port-forwarding"),
-        "unexpected action rendering:\n{dump}"
+
+    // The local table too: its key carries a second VNI and its action is a bare NAT mode, so it
+    // exercises a different `ActionColumns` impl -- one that nothing above would notice was wrong,
+    // since `cells` finds the first matching row and that is always the remote table's.
+    let local = dump
+        .split("Local v4")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no local v4 section in:\n{dump}"));
+    let local_headings: Vec<&str> = local
+        .lines()
+        .find(|line| line.trim_start().starts_with("rank"))
+        .unwrap_or_else(|| panic!("no local heading row in:\n{dump}"))
+        .split_whitespace()
+        .collect();
+    assert_eq!(
+        local_headings,
+        [
+            "rank", "proto", "src-vni", "dst-vni", "source", "src-port", "|", "NAT"
+        ],
+        "unexpected local heading row:\n{dump}"
     );
 
     // The index is the operator-facing precedence claim -- `[0]` is consulted first -- so the dump

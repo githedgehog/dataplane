@@ -29,7 +29,10 @@ use crate::rule::{ExactSpec, MaskSpec, PrefixSpec, RangeSpec};
 /// order and indexes [`fmt_field`](RuleFields::fmt_field), so a caller can check that the fields
 /// are the ones it expects rather than trusting position.
 pub trait RuleFields {
-    /// The rule's field names, in key order.
+    /// The name each field is displayed under, in key order.
+    ///
+    /// The field's own identifier, unless it carries `#[cli(column_name = "...")]` -- so a heading
+    /// is declared next to the field it heads rather than in a table in the consumer.
     const FIELD_NAMES: &'static [&'static str];
 
     /// Render the field at `index`, or fail if there is no such field.

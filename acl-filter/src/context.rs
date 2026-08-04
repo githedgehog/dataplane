@@ -170,16 +170,22 @@ pub(super) struct AclKey<I> {
     #[mask]
     proto: NextHeader,
     #[exact]
+    #[cli(column_name = "src-vni")]
     src_vni: Vni,
     #[exact]
+    #[cli(column_name = "dst-vni")]
     dst_vni: Vni,
     #[prefix]
+    #[cli(column_name = "source")]
     src_ip_range: I,
     #[prefix]
+    #[cli(column_name = "destination")]
     dst_ip_range: I,
     #[range]
+    #[cli(column_name = "src-port")]
     src_port_range: u16,
     #[range]
+    #[cli(column_name = "dst-port")]
     dst_port_range: u16,
 }
 

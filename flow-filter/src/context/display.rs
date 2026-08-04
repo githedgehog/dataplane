@@ -35,7 +35,7 @@ mod render {
     use crate::NatRequirement;
     use common::cliprovider::{CliSource, Heading};
     use indenter::indented;
-    use match_action::MatchKey;
+    use match_action::{Field, MatchKey, RuleFields, write_grid};
     use std::fmt::{self, Display, Formatter, Write};
 
     impl CliSource for FlowFilterContext {}
@@ -43,67 +43,89 @@ mod render {
     impl Display for FlowFilterContext {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             Heading("Routing context (flow filter)").fmt(f)?;
-            writeln!(f, "remote v4 (destination -> dst VPC + dst NAT):")?;
+            writeln!(f, "Remote v4 (destination -> dst VPC + dst NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.remote_v4))?;
-            writeln!(f, "local v4 (source -> src NAT):")?;
+            writeln!(f, "Local v4 (source -> src NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.local_v4))?;
-            writeln!(f, "remote v6 (destination -> dst VPC + dst NAT):")?;
+            writeln!(f, "Remote v6 (destination -> dst VPC + dst NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.remote_v6))?;
-            writeln!(f, "local v6 (source -> src NAT):")?;
+            writeln!(f, "Local v6 (source -> src NAT):")?;
             write!(indented(f).with_str("  "), "{}", Table(&self.local_v6))
         }
     }
 
     struct Table<'a, K: MatchKey, A>(&'a AnyTable<K, A>);
 
-    /// Rules as a numbered list in match order: `[0]` is consulted first.
+    /// Rules as a table in match order: `[0]` is consulted first.
     ///
-    /// The index is the rank, not the internal priority value. A priority is a computed encoding
-    /// of (prefix length, port-forwarding bit) that means nothing outside the table builder and is
-    /// not stable across releases -- printing it invites an operator to read precedence out of an
-    /// opaque number, or to compare two numbers whose scale may have changed underneath them. The
-    /// rank answers the question they actually have: which rule wins.
-    impl<K: MatchKey, A: ActionDisplay> Display for Table<'_, K, A>
+    /// The rank column is the rule's position, not its internal priority value. A priority is a
+    /// computed encoding of (prefix length, port-forwarding bit) that means nothing outside the
+    /// table builder and is not stable across releases -- printing it invites an operator to read
+    /// precedence out of an opaque number, or to compare two numbers whose scale may have changed
+    /// underneath them. The rank answers the question they actually have: which rule wins.
+    ///
+    /// Key columns come from the rule's own fields, action columns from [`ActionColumns`], with a
+    /// `|` between the two so it is obvious which half is matched on and which half is the result.
+    impl<K: MatchKey, A: ActionColumns> Display for Table<'_, K, A>
     where
-        K::Rule: Display,
+        K::Rule: RuleFields,
     {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             if self.0.len() == 0 {
                 return writeln!(f, "(no rules)");
             }
-            for (idx, RuleRow { rule, action }) in self.0.rules().iter().enumerate() {
-                write!(f, "[{idx}] {rule} -> ")?;
-                action.fmt_action(f)?;
-                writeln!(f)?;
+
+            let key_fields = <K::Rule as RuleFields>::FIELD_NAMES;
+            let mut headings: Vec<&str> =
+                Vec::with_capacity(key_fields.len() + A::HEADINGS.len() + 2);
+            headings.push("rank");
+            headings.extend_from_slice(key_fields);
+            headings.push("|");
+            headings.extend_from_slice(A::HEADINGS);
+
+            let mut rows: Vec<Vec<String>> = Vec::with_capacity(self.0.len());
+            for (rank, RuleRow { rule, action }) in self.0.rules().iter().enumerate() {
+                let mut row = Vec::with_capacity(headings.len());
+                row.push(format!("[{rank}]"));
+                for index in 0..key_fields.len() {
+                    row.push(Field::of(rule, index).to_string());
+                }
+                row.push("|".to_string());
+                action.columns(&mut row);
+                rows.push(row);
             }
-            Ok(())
+            write_grid(f, &headings, &rows)
         }
     }
 
-    // Dedicated trait (rather than `Display`) because one action type is the alias
-    // `Option<NatRequirement>`, for which we cannot implement `Display`.
-    trait ActionDisplay {
-        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result;
+    /// An action, as the columns it occupies.
+    ///
+    /// A trait rather than `Display` because one action type is the alias
+    /// `Option<NatRequirement>`, which this crate cannot implement `Display` for -- and because a
+    /// columnar layout needs the cells separately anyway.
+    trait ActionColumns {
+        const HEADINGS: &'static [&'static str];
+        fn columns(&self, row: &mut Vec<String>);
     }
 
-    impl ActionDisplay for Verdict {
-        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            write!(f, "{}, NAT: ", self.dst_vpcd)?;
-            fmt_nat_mode(f, &self.nat_mode)
+    impl ActionColumns for Verdict {
+        const HEADINGS: &'static [&'static str] = &["to", "NAT"];
+
+        fn columns(&self, row: &mut Vec<String>) {
+            row.push(self.dst_vpcd.to_string());
+            row.push(nat_mode(&self.nat_mode));
         }
     }
 
-    impl ActionDisplay for Option<NatRequirement> {
-        fn fmt_action(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            write!(f, "NAT: ")?;
-            fmt_nat_mode(f, self)
+    impl ActionColumns for Option<NatRequirement> {
+        const HEADINGS: &'static [&'static str] = &["NAT"];
+
+        fn columns(&self, row: &mut Vec<String>) {
+            row.push(nat_mode(self));
         }
     }
 
-    fn fmt_nat_mode(f: &mut Formatter<'_>, nat: &Option<NatRequirement>) -> fmt::Result {
-        match nat {
-            Some(nat) => write!(f, "{nat}"),
-            None => write!(f, "-"),
-        }
+    fn nat_mode(nat: &Option<NatRequirement>) -> String {
+        nat.map_or_else(|| "-".to_string(), |nat| nat.to_string())
     }
 }

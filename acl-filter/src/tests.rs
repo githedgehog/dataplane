@@ -1084,11 +1084,57 @@ mod dpdk_backend {
         assert_eq!(reference.to_string(), dpdk.to_string());
 
         // Each field is rendered by its own type -- a protocol by keyword, a VNI as a VNI -- rather
-        // than decoded out of erased bytes by field position.
+        // than decoded out of erased bytes by field position. Asserted on the cells of the rule's
+        // row rather than on the exact spacing, so this pins the rendering of the values without
+        // pinning the column widths, which move whenever a wider value appears anywhere in a table.
         let dump = dpdk.to_string();
-        assert!(
-            dump.contains(&format!("proto=TCP, src_vni={VNI1}, dst_vni={VNI2}")),
+        let rule_row = dump
+            .lines()
+            .find(|line| line.trim_start().starts_with("[0]"))
+            .unwrap_or_else(|| panic!("no rule row in:\n{dump}"));
+        let cells: Vec<&str> = rule_row.split_whitespace().collect();
+        assert_eq!(
+            cells,
+            [
+                "[0]",
+                "TCP",
+                &VNI1.to_string(),
+                &VNI2.to_string(),
+                V1_IPS,
+                V2_IPS,
+                "*",
+                "*",
+                "|",
+                "Allow",
+                "Packet",
+                "log",
+            ],
             "unexpected rule rendering:\n{dump}"
+        );
+
+        // The heading row names the same columns, in the same order, so a reader can tell which
+        // value is which without counting fields against the key definition.
+        let headings = dump
+            .lines()
+            .find(|line| line.trim_start().starts_with("rank"))
+            .unwrap_or_else(|| panic!("no heading row in:\n{dump}"));
+        assert_eq!(
+            headings.split_whitespace().collect::<Vec<_>>(),
+            [
+                "rank",
+                "proto",
+                "src-vni",
+                "dst-vni",
+                "source",
+                "destination",
+                "src-port",
+                "dst-port",
+                "|",
+                "action",
+                "scope",
+                "log",
+            ],
+            "unexpected heading row:\n{dump}"
         );
     }
 

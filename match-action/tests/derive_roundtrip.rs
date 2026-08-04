@@ -396,3 +396,63 @@ fn wrapper_field_bounds_the_field_type_not_its_parameter() {
         tagged: ExactSpec::new(Tag(0xDEAD_BEEF, PhantomData)),
     };
 }
+
+/// `#[cli(column_name = "...")]` changes only how a field is *displayed*.
+///
+/// The point is that a column heading lives next to the field it heads, rather than in a lookup
+/// table in whichever crate happens to be rendering. Without it, a consumer has to map field names
+/// to headings by string, which duplicates the mapping in every consumer and silently falls back to
+/// a raw identifier when a field is renamed.
+mod column_name {
+    use core::net::Ipv4Addr;
+    use dataplane_match_action::{ExactSpec, Field, MatchKey, PrefixSpec, RuleFields};
+
+    #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
+    struct Key {
+        #[exact]
+        proto: u8,
+        #[exact]
+        #[cli(column_name = "src-vni")]
+        src_vni: u32,
+        #[prefix]
+        #[cli(column_name = "destination")]
+        dst_ip: Ipv4Addr,
+    }
+
+    fn rule() -> KeyRule {
+        KeyRule {
+            proto: ExactSpec::new(6u8),
+            src_vni: ExactSpec::new(100u32),
+            dst_ip: PrefixSpec::new(Ipv4Addr::new(10, 0, 0, 0), 24),
+        }
+    }
+
+    #[test]
+    fn named_fields_report_their_heading_and_the_rest_their_identifier() {
+        assert_eq!(KeyRule::FIELD_NAMES, ["proto", "src-vni", "destination"]);
+    }
+
+    /// The whole-rule `Display` uses the same labels, so the two renderings cannot disagree about
+    /// what a field is called.
+    #[test]
+    fn the_whole_rule_display_uses_the_same_labels() {
+        assert_eq!(
+            rule().to_string(),
+            "proto=6, src-vni=100, destination=10.0.0.0/24"
+        );
+    }
+
+    /// Renaming is display-only: field order, values, and the key encoding are untouched.
+    #[test]
+    fn naming_a_column_does_not_disturb_the_key() {
+        let values: Vec<String> = (0..KeyRule::FIELD_NAMES.len())
+            .map(|i| Field::of(&rule(), i).to_string())
+            .collect();
+        assert_eq!(values, ["6", "100", "10.0.0.0/24"]);
+
+        // The runtime field specs keep the *identifiers*: they describe the key's structure, which
+        // a display label has no business changing.
+        let spec_names: Vec<&str> = Key::field_specs().iter().map(|spec| spec.name).collect();
+        assert_eq!(spec_names, ["proto", "src_vni", "dst_ip"]);
+    }
+}
