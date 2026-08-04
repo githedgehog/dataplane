@@ -67,7 +67,7 @@ impl Kind {
 /// `Display` is mandatory because a classifier an operator cannot inspect is one they cannot
 /// debug; a field type missing it shows up as an unsatisfied `MaskSpec<T>: Display` bound on the
 /// generated rule struct.
-#[proc_macro_derive(MatchKey, attributes(prefix, mask, range, exact, phantom))]
+#[proc_macro_derive(MatchKey, attributes(prefix, mask, range, exact, phantom, cli))]
 pub fn derive_match_key(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand(&input) {
@@ -245,11 +245,12 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #crate_path::#spec<#ty>: #crate_path::IsUniversal
         });
         // Each field renders as `name=spec`, comma-separated, in key order. The name comes from
-        // the struct field itself, so the label can never drift from the value it labels.
-        let name_str = name.to_string();
+        // the struct field itself, or its `#[cli(column_name = "...")]`, so the label can never
+        // drift from the value it labels.
+        let display_name = parse_field_column_name(field)?.unwrap_or_else(|| name.to_string());
         let separator = if i == 0 { "" } else { ", " };
         rule_field_displays.push(quote! {
-            ::core::write!(f, "{}{}={}", #separator, #name_str, self.#name)?;
+            ::core::write!(f, "{}{}={}", #separator, #display_name, self.#name)?;
         });
         rule_field_display_bounds.push(quote! {
             #crate_path::#spec<#ty>: ::core::fmt::Display
@@ -257,7 +258,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // The same fields again, reachable one at a time: a columnar caller needs each value's
         // width before it can pad, and the whole-rule `Display` above hands back a finished
         // string. See `match_action::RuleFields`.
-        rule_field_names.push(quote! { #name_str });
+        rule_field_names.push(quote! { #display_name });
         rule_field_fmt_arms.push(quote! {
             #i => ::core::fmt::Display::fmt(&self.#name, f),
         });
@@ -427,6 +428,43 @@ fn is_phantom_data_type(ty: &Type) -> bool {
         return seg.ident == "PhantomData";
     }
     false
+}
+
+/// The heading a field is shown under, from `#[cli(column_name = "...")]`, or `None` for the
+/// field's own name.
+///
+/// Only display is affected: the field keeps its identifier everywhere else, including in
+/// `FieldSpec`, which describes the key's structure to the layout planner.
+///
+/// This keeps a heading next to the field it heads rather than in a lookup table in whichever
+/// crate happens to be rendering.
+fn parse_field_column_name(field: &Field) -> syn::Result<Option<String>> {
+    let mut found: Option<String> = None;
+    for attr in &field.attrs {
+        if !attr.path().is_ident("cli") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("column_name") {
+                return Err(meta.error(
+                    r#"unrecognised #[cli(..)] option; the only one is column_name = "...""#,
+                ));
+            }
+            if found.is_some() {
+                return Err(meta.error(r#"duplicate #[cli(column_name = "...")] on one field"#));
+            }
+            let value: syn::LitStr = meta.value()?.parse()?;
+            let name = value.value();
+            if name.is_empty() {
+                return Err(
+                    meta.error("column_name cannot be empty; omit it to use the field's own name")
+                );
+            }
+            found = Some(name);
+            Ok(())
+        })?;
+    }
+    Ok(found)
 }
 
 fn parse_field_role(field: &Field) -> syn::Result<FieldRole> {

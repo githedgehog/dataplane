@@ -1053,6 +1053,85 @@ mod dpdk_backend {
         );
     }
 
+    /// Retained typed rules must render identically across backends.
+    #[test]
+    #[dpdk::with_eal]
+    fn display_is_identical_across_backends() {
+        let acl = Acl::new(
+            AclAction::Deny,
+            vec![rule(
+                "allow-tcp",
+                AclAction::Allow,
+                AclScope::Packet,
+                pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+            )],
+        );
+        let overlay = overlay(
+            &[("vpc1", VNI1), ("vpc2", VNI2)],
+            vec![peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose(V1_IPS)]),
+                ("vpc2", vec![expose(V2_IPS)]),
+                Some(acl),
+            )],
+        );
+
+        let reference = AclFilterContext::for_test(&overlay);
+        let dpdk = AclFilterContext::for_test_dpdk(&overlay).expect("rte_acl backend build");
+        assert_eq!(reference.to_string(), dpdk.to_string());
+
+        // Assert cell values without pinning widths, which depend on every value in the table.
+        let dump = dpdk.to_string();
+        let rule_row = dump
+            .lines()
+            .find(|line| line.trim_start().starts_with("[0]"))
+            .unwrap_or_else(|| panic!("no rule row in:\n{dump}"));
+        let cells: Vec<&str> = rule_row.split_whitespace().collect();
+        assert_eq!(
+            cells,
+            [
+                "[0]",
+                "TCP",
+                &VNI1.to_string(),
+                &VNI2.to_string(),
+                V1_IPS,
+                V2_IPS,
+                "*",
+                "*",
+                "|",
+                "Allow",
+                "Packet",
+                "log",
+            ],
+            "unexpected rule rendering:\n{dump}"
+        );
+
+        // The heading row names the same columns, in the same order, so a reader can tell which
+        // value is which without counting fields against the key definition.
+        let headings = dump
+            .lines()
+            .find(|line| line.trim_start().starts_with("rank"))
+            .unwrap_or_else(|| panic!("no heading row in:\n{dump}"));
+        assert_eq!(
+            headings.split_whitespace().collect::<Vec<_>>(),
+            [
+                "rank",
+                "proto",
+                "src-vni",
+                "dst-vni",
+                "source",
+                "destination",
+                "src-port",
+                "dst-port",
+                "|",
+                "action",
+                "scope",
+                "log",
+            ],
+            "unexpected heading row:\n{dump}"
+        );
+    }
+
     #[test]
     #[dpdk::with_eal]
     fn dpdk_agrees_with_reference() {
