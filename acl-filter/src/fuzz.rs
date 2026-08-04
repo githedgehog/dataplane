@@ -80,6 +80,13 @@ fn side_allows(set: &PrefixPortsSet, ip: IpAddr, port: u16) -> bool {
 }
 
 fn rule_matches(rule: &ValidatedAclRule, packet: &PacketSummary) -> bool {
+    // A packet whose two addresses disagree on IP version does not exist on the wire, and
+    // `AclTables::lookup` refuses one outright rather than consulting either table. The two sides
+    // below are checked independently, so without this the oracle could claim a rule matches an
+    // impossible packet -- which probe generation reaches directly via `Stray::CrossVersion`.
+    if packet.src_ip.is_ipv4() != packet.dst_ip.is_ipv4() {
+        return false;
+    }
     let pattern = rule.pattern();
     let (sport, dport) = packet.ports.unwrap_or((0, 0));
     proto_allows(pattern.proto(), packet.proto)
@@ -215,7 +222,7 @@ fn reference_lookup_matches_config_oracle() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let tables = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("the reference backend cannot fail, and rule lowering must accept a validated overlay");
 
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(&built);
@@ -270,7 +277,7 @@ fn earlier_rules_win_over_later_matching_rules() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let tables = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("the reference backend cannot fail, and rule lowering must accept a validated overlay");
 
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(&built);
@@ -326,7 +333,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let reference = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("the reference backend cannot fail, and rule lowering must accept a validated overlay");
             let dpdk =
                 AclTables::build(&built.overlay, Backend::Dpdk).expect("rte_acl backend build");
 
@@ -365,7 +372,7 @@ fn absent_acl_and_absent_peering_have_no_default_action() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let tables = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("the reference backend cannot fail, and rule lowering must accept a validated overlay");
 
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(&built);

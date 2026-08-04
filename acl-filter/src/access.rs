@@ -27,10 +27,18 @@ impl TryFrom<&ValidatedOverlay> for AclFilterContext {
 impl AclFilterContext {
     /// Build a context using the reference backend, for tests that want the fast, EAL-free oracle.
     /// Production goes through [`TryFrom`], which uses the rte_acl backend.
+    ///
+    /// # Panics
+    ///
+    /// The reference backend itself cannot fail, but rule lowering runs before the backend is
+    /// chosen and rejects a rule whose prefixes do not match the table it was filed under. Config
+    /// makes that unreachable for a validated overlay, so a panic here is a finding rather than a
+    /// configuration error.
     pub(crate) fn for_test(overlay: &ValidatedOverlay) -> Self {
         use crate::context::Backend;
-        let acls = AclTables::build(overlay, Backend::Reference)
-            .expect("reference backend build is infallible");
+        let acls = AclTables::build(overlay, Backend::Reference).expect(
+            "the reference backend cannot fail, and rule lowering must accept a validated overlay",
+        );
         Self { acls }
     }
 
