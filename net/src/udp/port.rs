@@ -18,6 +18,12 @@ use std::num::NonZero;
 #[serde(try_from = "u16", into = "u16")]
 pub struct UdpPort(NonZero<u16>);
 
+impl std::fmt::Display for UdpPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.get())
+    }
+}
+
 /// Errors which may occur in the creation or parsing of a [`UdpPort`].
 #[repr(transparent)]
 #[derive(
