@@ -13,7 +13,7 @@ use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 use tracectl::trace_target;
-use tracing::debug;
+use tracing::{debug, error};
 
 trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 
@@ -118,11 +118,11 @@ impl FlowFilter {
         genid: i64,
     ) -> Classification {
         let nfi = &self.name;
-        let attached_flow = FlowSummary::from_meta(packet.meta());
-        if let Some(flow_summary) = attached_flow.as_ref() {
+        let flow_summary = FlowSummary::from_meta(packet.meta());
+        if let Some(summary) = flow_summary.as_ref() {
             // Bypass flow-filter if packet has up-to-date active flow-info
-            if let Some(dst_vpcd) = self.dst_vpcd_from_valid_flow(flow_summary, genid) {
-                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow_summary);
+            if let Some(dst_vpcd) = self.dst_vpcd_from_valid_flow(summary, genid) {
+                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, summary);
                 return Classification::Bypassed;
             }
         }
@@ -151,7 +151,7 @@ impl FlowFilter {
         };
         Classification::Lookup {
             input,
-            flow_summary: attached_flow,
+            flow_summary,
         }
     }
 
@@ -335,7 +335,10 @@ impl FlowFilter {
             return None;
         }
         let flow_genid = flow_summary.flow_info.genid();
-        if flow_genid < genid {
+        if flow_genid < genid && !flow_summary.needs_masquerade {
+            // If a packet belongs to a masqueraded flow, we have to let it through, temporarily, even if the
+            // flow is out-dated in terms of generation Id: the flow filter does not have the knowledge to
+            // forbid that flow. That's the responsibility of the masquerade stage.
             debug!(
                 "{nfi}: Packet has outdated flow information from a prior configuration ({flow_genid} < {genid})"
             );
@@ -343,15 +346,13 @@ impl FlowFilter {
         }
 
         let Some(dst_vpcd) = flow_summary.dst_vpcd else {
-            debug!(
-                "{nfi}: Flow information does not specify destination VPC. This is a bug. Ignoring it..."
-            );
+            error!("{nfi}: Flow info does not specify dst VPC. This is a bug. Ignoring it...");
             flow_summary.flow_info.invalidate_pair();
             return None;
         };
 
-        // The flow has the same generation id as the current config. Small transient period aside,
-        // this means that the flow is up-to-date and we can bypass the filter
+        // The flow has the same generation id as the current config (small transient period aside), or
+        // it is masquerading. So, packet can bypass the flow filter.
         debug!("{nfi}: Packet can bypass flow filter thanks to flow information");
         Some(dst_vpcd)
     }
