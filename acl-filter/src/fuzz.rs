@@ -191,7 +191,7 @@ fn reference_lookup_matches_config_oracle() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let tables = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("validated overlay must lower");
 
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(&built);
@@ -234,7 +234,7 @@ fn earlier_rules_win_over_later_matching_rules() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let tables = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("validated overlay must lower");
 
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(&built);
@@ -287,7 +287,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let reference = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("validated overlay must lower");
             let dpdk =
                 AclTables::build(&built.overlay, Backend::Dpdk).expect("rte_acl backend build");
 
@@ -324,7 +324,7 @@ fn absent_acl_and_absent_peering_have_no_default_action() {
         .for_each(|(overlay_spec, probe_specs)| {
             let built = overlay_spec.build();
             let tables = AclTables::build(&built.overlay, Backend::Reference)
-                .expect("reference backend build is infallible");
+                .expect("validated overlay must lower");
 
             for probe_spec in probe_specs {
                 let probe = probe_spec.resolve(&built);
