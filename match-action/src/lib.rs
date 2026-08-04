@@ -12,6 +12,7 @@
 #![allow(missing_docs)]
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+pub mod display;
 pub mod field;
 pub mod predicate;
 pub mod rule;
@@ -46,6 +47,11 @@ pub struct FieldSpec {
     pub offset: usize,
 }
 pub trait MatchKey: Sized {
+    /// The rule (predicate) form of this key: one spec per match field, still typed.
+    /// A table can therefore retain the rules it was built from in a form that renders itself,
+    /// without decoding erased bytes back into domain types.
+    type Rule;
+
     const N: usize;
     const KEY_SIZE: usize;
     fn field_specs() -> &'static [FieldSpec];

@@ -350,6 +350,7 @@ mod tests {
     fn rejects_user_field_count_mismatch_in_new() {
         struct Five;
         impl MatchKey for Five {
+            type Rule = ();
             const N: usize = 5;
             const KEY_SIZE: usize = 13;
             fn field_specs() -> &'static [FieldSpec] {

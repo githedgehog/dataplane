@@ -14,6 +14,12 @@ use std::num::NonZero;
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct TcpPort(NonZero<u16>);
 
+impl std::fmt::Display for TcpPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.get())
+    }
+}
+
 /// Errors which may occur in the creation or parsing of a [`TcpPort`].
 #[repr(transparent)]
 #[derive(

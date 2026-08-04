@@ -22,6 +22,12 @@ impl IpProto {
     const TCP: Self = IpProto(6);
 }
 
+impl core::fmt::Display for IpProto {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl FixedSize for IpProto {
     const SIZE: usize = 1;
     fn write_be(&self, out: &mut [u8]) {

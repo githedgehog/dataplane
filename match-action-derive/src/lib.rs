@@ -54,6 +54,19 @@ impl Kind {
     }
 }
 
+/// Derive [`MatchKey`] for a struct of match fields.
+///
+/// Alongside the trait impl this emits a companion `<Name>Rule` struct -- the same fields, each
+/// wrapped in the spec for its match flavor -- carrying `into_backend_fields`, `accepts`,
+/// `is_universal`, and `Display`.
+///
+/// # Field type requirements
+///
+/// Every match field's type must implement `FixedSize` (its key layout) *and* `Display` (how it
+/// is shown to a human).
+/// `Display` is mandatory because a classifier an operator cannot inspect is one they cannot
+/// debug; a field type missing it shows up as an unsatisfied `MaskSpec<T>: Display` bound on the
+/// generated rule struct.
 #[proc_macro_derive(MatchKey, attributes(prefix, mask, range, exact, phantom))]
 pub fn derive_match_key(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -199,6 +212,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut rule_field_universal: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_accept_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
     let mut rule_field_universal_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
+    let mut rule_field_displays: Vec<TokenStream2> = Vec::with_capacity(n);
+    let mut rule_field_display_bounds: Vec<TokenStream2> = Vec::with_capacity(n);
     for (i, field) in fields.iter().enumerate() {
         let name = field
             .ident
@@ -226,6 +241,16 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         });
         rule_field_universal_bounds.push(quote! {
             #crate_path::#spec<#ty>: #crate_path::IsUniversal
+        });
+        // Each field renders as `name=spec`, comma-separated, in key order. The name comes from
+        // the struct field itself, so the label can never drift from the value it labels.
+        let name_str = name.to_string();
+        let separator = if i == 0 { "" } else { ", " };
+        rule_field_displays.push(quote! {
+            ::core::write!(f, "{}{}={}", #separator, #name_str, self.#name)?;
+        });
+        rule_field_display_bounds.push(quote! {
+            #crate_path::#spec<#ty>: ::core::fmt::Display
         });
     }
     // Phantom fields are carried through to the rule verbatim so that any generic
@@ -279,6 +304,11 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #(#existing_predicates,)*
             #(#rule_field_universal_bounds,)*
     };
+    let merged_where_display = quote! {
+        where
+            #(#existing_predicates,)*
+            #(#rule_field_display_bounds,)*
+    };
 
     let expanded = quote! {
         const _: () = {
@@ -289,6 +319,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
 
             impl #impl_generics #crate_path::MatchKey for #key_ident #ty_generics #where_clause {
+                type Rule = #rule_ident #ty_generics;
+
                 const N: usize = #n_literal;
                 const KEY_SIZE: usize = #key_size_expr;
 
@@ -337,6 +369,14 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #[must_use]
             pub fn is_universal(&self) -> bool {
                 #(#rule_field_universal) && *
+            }
+        }
+        impl #impl_generics ::core::fmt::Display for #rule_ident #ty_generics
+        #merged_where_display
+        {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                #(#rule_field_displays)*
+                ::core::result::Result::Ok(())
             }
         }
     };
