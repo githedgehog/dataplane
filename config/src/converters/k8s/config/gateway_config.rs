@@ -152,7 +152,10 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
 
 #[cfg(test)]
 mod test {
+    use std::num::NonZero;
+
     use k8s_intf::bolero::LegalValue;
+    use k8s_intf::bolero::mutate::Mutated;
     use k8s_intf::gateway_agent_crd::GatewayAgent;
 
     use crate::ExternalConfig;
@@ -167,6 +170,118 @@ mod test {
 
                 assert_eq!(external_config.genid, ga.metadata.generation.unwrap());
                 // Other assertions are implicit via the unwrap of the conversion
+            });
+    }
+
+    /// A legal `GatewayAgent` must not merely convert -- it must validate.
+    ///
+    /// `LegalValue` is only worth the name if it agrees with the system's own definition of a
+    /// valid config.  Stopping at `try_from` would leave every rule in `ExternalConfig::validate`
+    /// (and everything it delegates to, notably the overlay and its peerings) unfuzzed, and would
+    /// let cross-reference bugs in the generators hide as silent under-coverage.
+    #[test]
+    fn test_gateway_config_validates() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|ga| {
+                let ga = ga.as_ref();
+                let external_config = ExternalConfig::try_from(ga).unwrap();
+                let genid = external_config.genid;
+
+                let validated = external_config
+                    .validate()
+                    .unwrap_or_else(|e| panic!("legal config failed validation: {e}"));
+
+                assert_eq!(validated.genid(), genid);
+                assert_eq!(
+                    validated.external().gwname(),
+                    ga.metadata.name.as_ref().unwrap()
+                );
+            });
+    }
+
+    /// `fabricBFD` must reach every underlay BGP neighbor, or none of them.
+    ///
+    /// The flag is applied by a fan-out loop after the underlay has already been converted, so it
+    /// is exactly the kind of post-hoc mutation that a per-subtree converter test cannot see.
+    #[test]
+    fn test_fabric_bfd_fans_out_to_all_neighbors() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|ga| {
+                let ga = ga.as_ref();
+                let expected = ga.spec.config.as_ref().and_then(|c| c.fabric_bfd);
+                let external_config = ExternalConfig::try_from(ga).unwrap();
+
+                let Some(bgp) = external_config.underlay.vrf.bgp.as_ref() else {
+                    return;
+                };
+                match expected {
+                    // Only `Some(true)` turns BFD on; absent and `Some(false)` both leave the
+                    // neighbours as the underlay converter produced them.
+                    Some(true) => assert!(
+                        bgp.neighbors.iter().all(|n| n.bfd),
+                        "fabricBFD set but some neighbors have bfd off"
+                    ),
+                    _ => assert!(
+                        bgp.neighbors.iter().all(|n| !n.bfd),
+                        "fabricBFD unset but some neighbors have bfd on"
+                    ),
+                }
+            });
+    }
+
+    /// A config with one thing deliberately wrong must be *rejected*, never panic.
+    ///
+    /// The property is deliberately coarse. Asserting a specific error variant per mutation would
+    /// pin down the current phrasing of every guard and break on harmless refactors; asserting only
+    /// "does not panic" would pass even if the config plane silently accepted a dangling reference.
+    /// Rejection is the property that actually matters: bad config from outside the dataplane must
+    /// not be applied.
+    ///
+    /// A mutation that found nothing to corrupt (no peerings to break a group reference in, say)
+    /// leaves the config legal, and is required to still validate.
+    #[test]
+    fn test_mutated_config_is_rejected() {
+        bolero::check!().with_type::<Mutated>().for_each(|mutated| {
+            let result = ExternalConfig::try_from(mutated.agent())
+                .and_then(|c| c.validate().map_err(Into::into));
+
+            if mutated.is_noop() {
+                assert!(
+                    result.is_ok(),
+                    "{:?} changed nothing, so the config should still be valid: {:?}",
+                    mutated.mutation(),
+                    result.err(),
+                );
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{:?} was applied but the config was still accepted",
+                    mutated.mutation(),
+                );
+            }
+        });
+    }
+
+    /// `flowTableCapacity` must survive the `u32` -> `NonZero<usize>` narrowing intact.
+    #[test]
+    fn test_flow_table_capacity_conversion() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|ga| {
+                let ga = ga.as_ref();
+                let expected = ga
+                    .spec
+                    .gateway
+                    .as_ref()
+                    .and_then(|gw| gw.flow_table_capacity);
+                let external_config = ExternalConfig::try_from(ga).unwrap();
+
+                assert_eq!(
+                    external_config.flow_table_capacity.map(NonZero::get),
+                    expected.map(|c| c as usize),
+                );
             });
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+pub mod acl;
 pub mod bgp;
 pub mod crd;
 pub mod expose;
@@ -8,6 +9,7 @@ pub mod gateway;
 pub mod gwgroups;
 pub mod interface;
 pub mod logs;
+pub mod mutate;
 pub mod peering;
 pub mod spec;
 pub mod support;
