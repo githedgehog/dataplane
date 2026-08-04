@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::{FieldKind, FixedSize};
+use crate::{FieldKind, FixedSize, MaskBits};
 pub trait RuleField {
     const KIND: FieldKind;
     type Value: FixedSize;
@@ -84,6 +84,30 @@ impl<T: FixedSize> MaskSpec<T> {
     }
 }
 
+impl<T: MaskBits> MaskSpec<T> {
+    /// Match `value` and nothing else: every bit significant.
+    ///
+    /// Prefer this to `new(value, all_ones)`, which makes the caller spell an all-ones bit pattern
+    /// as a `T` -- and `NextHeader::new(0xff)` is not a protocol.
+    #[must_use]
+    pub const fn exact(value: T) -> Self {
+        Self {
+            value,
+            mask: T::ALL_BITS,
+        }
+    }
+
+    /// Match anything: no bit significant. Renders as `*` and lets one key field express "any"
+    /// without fanning rules across per-value tables.
+    #[must_use]
+    pub const fn wildcard() -> Self {
+        Self {
+            value: T::NO_BITS,
+            mask: T::NO_BITS,
+        }
+    }
+}
+
 impl<T: FixedSize> RuleField for MaskSpec<T> {
     const KIND: FieldKind = FieldKind::Mask;
     type Value = T;
@@ -147,6 +171,20 @@ impl<T: FixedSize> IsUniversal for PrefixSpec<T> {
 mod tests {
     use super::*;
     use core::net::{Ipv4Addr, Ipv6Addr};
+
+    /// The constructors are defined by what they match, not by the bits they store.
+    /// Exhaustive over `u8`, so "nothing else" covers all 256 inputs rather than a sample.
+    #[test]
+    fn exact_and_wildcard_match_what_they_claim() {
+        let exact = MaskSpec::exact(6u8);
+        let wildcard = MaskSpec::<u8>::wildcard();
+        for probe in 0..=u8::MAX {
+            assert_eq!(exact.accepts(&probe), probe == 6, "probe {probe}");
+            assert!(wildcard.accepts(&probe), "probe {probe}");
+        }
+        assert!(wildcard.is_universal());
+        assert!(!exact.is_universal());
+    }
 
     #[test]
     fn prefix_spec_accepts_max_v4_length() {
