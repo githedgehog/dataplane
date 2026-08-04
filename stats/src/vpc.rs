@@ -158,7 +158,13 @@ impl VpcMetricsSpec {
                                 let mut labels = labels.clone();
                                 labels.push(("from".to_string(), src_name.clone()));
                                 labels.push(("to".to_string(), dst_name.clone()));
-                                (*dst_disc, BasicActionSpec::new("vpc_pair_drops", labels))
+                                (
+                                    *dst_disc,
+                                    BasicActionSpec::new(
+                                        crate::dpstats::PAIR_DROPS_METRIC_BASE,
+                                        labels,
+                                    ),
+                                )
                             })
                             .collect(),
                     },
@@ -251,13 +257,5 @@ impl RegisteredVpcMetrics {
 
     pub fn peers(&self) -> impl Iterator<Item = (&VpcDiscriminant, &RegisteredBasicAction)> {
         self.peering.iter()
-    }
-
-    pub fn peer_drops(&self, disc: &VpcDiscriminant) -> Option<&RegisteredBasicAction> {
-        self.peering_drops.get(disc)
-    }
-
-    pub fn peers_drops(&self) -> impl Iterator<Item = (&VpcDiscriminant, &RegisteredBasicAction)> {
-        self.peering_drops.iter()
     }
 }
