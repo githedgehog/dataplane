@@ -9,7 +9,7 @@ use concurrency::concurrency_mode;
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
     use crate::masquerade::allocator_writer::MasqueradeConfig;
-    use crate::masquerade::apalloc::alloc::IpAllocator;
+    use crate::masquerade::apalloc::alloc::{IpAllocator, PoolSet};
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
@@ -68,14 +68,28 @@ mod context {
         protocol: NextHeader,
         src_ip: Ipv4Addr,
     ) -> &IpAllocator<Ipv4Addr> {
-        pool.get(&PoolTableKey::new(
-            protocol,
-            src_vpcd,
-            dst_vpcd,
-            src_ip,
-            Ipv4Addr::from_str("255.255.255.255").unwrap(),
-        ))
-        .unwrap()
+        let pool_set = pool
+            .get(&PoolTableKey::new(
+                protocol,
+                src_vpcd,
+                dst_vpcd,
+                src_ip,
+                Ipv4Addr::from_str("255.255.255.255").unwrap(),
+            ))
+            .unwrap();
+        sole_region(pool_set)
+    }
+
+    // The public ranges in most of these fixtures do not overlap, so each expose owns exactly one
+    // region and the tests can look straight at its allocator.
+    pub fn sole_region(pool_set: &PoolSet<Ipv4Addr>) -> &IpAllocator<Ipv4Addr> {
+        let mut regions = pool_set.regions();
+        let region = regions.next().expect("expose has no region");
+        assert!(
+            regions.next().is_none(),
+            "expose was cut into more than one region"
+        );
+        region.allocator()
     }
 
     fn build_context() -> ValidatedVpcTable {
@@ -258,6 +272,80 @@ mod context {
         let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
         NatAllocator::new(config)
     }
+
+    // Two VPCs peering with the same destination VPC, masquerading onto public ranges that overlap
+    // *partially*: VPC-1 takes 10.1.0.0/30 (.0 through .3) and VPC-2 takes 10.1.0.2/31 (.2 and
+    // .3). Neither range contains the other, so no single range identifies the shared space.
+    fn build_context_partial_overlap() -> ValidatedVpcTable {
+        let masquerade_manifest = |name: &str, private: &str, public: &str| {
+            VpcManifest::with_exposes(
+                name,
+                vec![
+                    VpcExpose::empty()
+                        .make_masquerade(None)
+                        .unwrap()
+                        .ip(private.into())
+                        .as_range(public.into())
+                        .unwrap(),
+                ],
+            )
+        };
+        let remote =
+            VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        let vpc3 = Vpc::new("VPC-3", "11111", vni3().as_u32()).unwrap();
+
+        vpc1.peerings.push(Peering {
+            name: "partial_peering1".into(),
+            local: masquerade_manifest("VPC-1", "1.1.0.0/16", "10.1.0.0/30"),
+            remote: remote.clone(),
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+        vpc2.peerings.push(Peering {
+            name: "partial_peering2".into(),
+            local: masquerade_manifest("VPC-2", "2.1.0.0/16", "10.1.0.2/31"),
+            remote,
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.add(vpc3).unwrap();
+
+        vpctable.validate().unwrap()
+    }
+
+    pub fn build_allocator_partial_overlap() -> NatAllocator {
+        let vpc_table = build_context_partial_overlap();
+        let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
+        NatAllocator::new(config)
+    }
+
+    pub fn get_pool_set_v4(
+        pool: &PoolTable<Ipv4Addr, Ipv4Addr>,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+        protocol: NextHeader,
+        src_ip: Ipv4Addr,
+    ) -> &PoolSet<Ipv4Addr> {
+        pool.get(&PoolTableKey::new(
+            protocol,
+            src_vpcd,
+            dst_vpcd,
+            src_ip,
+            Ipv4Addr::from_str("255.255.255.255").unwrap(),
+        ))
+        .unwrap()
+    }
 }
 
 mod tests {
@@ -317,6 +405,7 @@ mod tests {
 mod std_tests {
     use super::context::*;
     use crate::masquerade::apalloc::PoolTableKey;
+    use crate::masquerade::apalloc::alloc::PoolRegion;
     use net::ip::NextHeader;
 
     #[test]
@@ -363,7 +452,7 @@ mod std_tests {
 
         assert_eq!(allocator.pools_src66.0.len(), 0);
 
-        let ip_allocator = allocator
+        let pool_set = allocator
             .pools_src44
             .get(&PoolTableKey::new(
                 NextHeader::TCP,
@@ -373,7 +462,7 @@ mod std_tests {
                 addr_v4("255.255.255.255"),
             ))
             .unwrap();
-        let (bitmap, in_use) = ip_allocator.get_pool_clone_for_tests();
+        let (bitmap, in_use) = sole_region(pool_set).get_pool_clone_for_tests();
 
         assert!(bitmap.contains_range(addr_v4_bits("10.1.0.0")..=addr_v4_bits("10.1.0.2")));
         assert_eq!(bitmap.len(), 3);
@@ -598,6 +687,124 @@ mod std_tests {
             addr_v4("10.2.0.0"),
             "traffic from VPC-2 was not masqueraded onto the range VPC-2 exposes"
         );
+    }
+
+    // Partially overlapping public ranges are cut so that the shared part becomes a region of its
+    // own. VPC-1 keeps an exclusive region for the half only it claims, plus the shared one;
+    // VPC-2 only ever sees the shared one.
+    #[test]
+    fn test_partial_overlap_is_cut_into_regions() {
+        let allocator = build_allocator_partial_overlap();
+
+        let for_vpc1 = get_pool_set_v4(
+            &allocator.pools_src44,
+            vpcd1(),
+            vpcd3(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        );
+        let vpc1_ranges: Vec<_> = for_vpc1.regions().map(PoolRegion::range).collect();
+        assert_eq!(vpc1_ranges.len(), 2, "VPC-1 should own two regions");
+        // The exclusive region is offered first.
+        assert_eq!(vpc1_ranges[0].start, u128::from(addr_v4_bits("10.1.0.0")));
+        assert_eq!(vpc1_ranges[0].end, u128::from(addr_v4_bits("10.1.0.1")));
+        assert_eq!(vpc1_ranges[1].start, u128::from(addr_v4_bits("10.1.0.2")));
+        assert_eq!(vpc1_ranges[1].end, u128::from(addr_v4_bits("10.1.0.3")));
+
+        let for_vpc2 = get_pool_set_v4(
+            &allocator.pools_src44,
+            vpcd2(),
+            vpcd3(),
+            NextHeader::TCP,
+            addr_v4("2.1.0.1"),
+        );
+        let vpc2_ranges: Vec<_> = for_vpc2.regions().map(PoolRegion::range).collect();
+        assert_eq!(
+            vpc2_ranges.len(),
+            1,
+            "VPC-2 should only own the shared region"
+        );
+        assert_eq!(vpc2_ranges[0].start, u128::from(addr_v4_bits("10.1.0.2")));
+        assert_eq!(vpc2_ranges[0].end, u128::from(addr_v4_bits("10.1.0.3")));
+    }
+
+    // The shared region is one allocator, not a copy per VPC: an address VPC-2 takes from it is no
+    // longer free in the view VPC-1 has of that same region. This is what stops the two from
+    // handing out the same public address and port.
+    #[test]
+    fn test_partial_overlap_shares_one_allocator_for_the_shared_region() {
+        let allocator = build_allocator_partial_overlap();
+
+        let taken = allocator
+            .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .unwrap();
+        // VPC-2 can only allocate from the shared region.
+        assert_eq!(taken.allocation.ip(), addr_v4("10.1.0.2"));
+
+        let for_vpc1 = get_pool_set_v4(
+            &allocator.pools_src44,
+            vpcd1(),
+            vpcd3(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.1"),
+        );
+        let shared = for_vpc1.regions().nth(1).expect("no shared region");
+        let (bitmap, in_use) = shared.allocator().get_pool_clone_for_tests();
+        assert!(
+            !bitmap.contains(addr_v4_bits("10.1.0.2")),
+            "VPC-1 still sees an address VPC-2 has taken from the shared region"
+        );
+        assert_eq!(in_use.len(), 1);
+    }
+
+    // Allocation prefers space a VPC has to itself, so the shared region stays available for the
+    // VPC that has nowhere else to go.
+    #[test]
+    fn test_partial_overlap_prefers_exclusive_space() {
+        let allocator = build_allocator_partial_overlap();
+
+        let from_vpc1 = allocator
+            .allocate_v4(vpcd1(), vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
+            .unwrap();
+        assert_eq!(
+            from_vpc1.allocation.ip(),
+            addr_v4("10.1.0.0"),
+            "VPC-1 should have drawn from the region it does not share"
+        );
+
+        let from_vpc2 = allocator
+            .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .unwrap();
+        assert_ne!(
+            (
+                from_vpc1.allocation.ip(),
+                from_vpc1.allocation.port().as_u16()
+            ),
+            (
+                from_vpc2.allocation.ip(),
+                from_vpc2.allocation.port().as_u16()
+            ),
+        );
+    }
+
+    // Whichever region it draws from, a VPC may only ever be given an address its own expose
+    // declares.
+    #[test]
+    fn test_partial_overlap_never_allocates_outside_the_configured_range() {
+        let allocator = build_allocator_partial_overlap();
+
+        let mut held = Vec::new();
+        for _ in 0..16 {
+            let allocation = allocator
+                .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+                .unwrap();
+            let ip = allocation.allocation.ip();
+            assert!(
+                ip == addr_v4("10.1.0.2") || ip == addr_v4("10.1.0.3"),
+                "VPC-2 was given {ip}, which is outside the range it exposes"
+            );
+            held.push(allocation);
+        }
     }
 
     // Both VPCs keep their own entry, rather than the second overwriting the first.
