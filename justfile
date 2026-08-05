@@ -170,6 +170,32 @@ test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" 
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
+# List the bolero targets `just fuzz` can run. Args go to `cargo bolero list`
+[script]
+fuzz-list *args="":
+    {{ _just_debuggable_ }}
+    cargo bolero list {{ _cargo_feature_flags }} {{ args }}
+
+# Fuzz one bolero target under libfuzzer. See development/code/running-tests.md
+[script]
+fuzz target time="60s" *args="":
+    {{ _just_debuggable_ }}
+    # libfuzzer wants a nightly compiler for its sanitizer coverage flags, while the
+    # pinned toolchain is stable; --rustc-bootstrap bridges that. cargo-bolero already
+    # builds with the fuzz profile and links AddressSanitizer unless told otherwise, so
+    # a plain `just fuzz` is already an asan run. Findings land in a gitignored
+    # `__fuzz__` directory beside the test.
+    #
+    # `sanitize=thread` additionally rebuilds std: thread instrumentation changes the
+    # ABI, so a std left uninstrumented fails the build on a mismatch against `core`.
+    # asan does not need that, and skipping the std rebuild keeps it far quicker.
+    # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
+    # the executions per second in exchange for only catching what the test asserts.
+    cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
+        {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
+        {{ _cargo_feature_flags }} {{ args }}
+
 # Build and run the criterion benches. The rte_acl benches are gated behind the
 # `dpdk` feature, so run `just features=dpdk bench` to exercise them; a plain
 # `just bench` builds them as empty `main()` and only runs the reference benches.
