@@ -160,4 +160,4 @@ macro_rules! with_std {
     ($($item:item)*) => {};
 }
 
-pub use concurrency_macros::{concurrency_mode, test};
+pub use concurrency_macros::{concurrency_mode, model_test, test};

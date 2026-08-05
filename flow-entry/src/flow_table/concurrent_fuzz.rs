@@ -296,7 +296,7 @@ impl Scenario {
 /// Drive one bolero shape per iteration through [`concurrency::stress`]:
 /// a single direct run on the std backend (real OS threads — build with
 /// `just test sanitize=thread`), or the full portfolio under shuttle.
-#[test]
+#[concurrency::model_test]
 fn stress_test_concurrency_model() {
     // Single-threaded runtime is enough: we never need the timer task to
     // run, only a context for `insert`'s `tokio::task::spawn` to succeed.
