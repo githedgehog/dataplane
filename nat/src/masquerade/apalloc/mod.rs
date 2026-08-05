@@ -93,18 +93,32 @@ pub use port_alloc::AllocatedPort;
 // PoolTableKey
 ///////////////////////////////////////////////////////////////////////////////
 
+/// Identifies the pool serving a private source address.
+///
+/// A private address only means anything within the VPC it belongs to: two VPCs routinely use the
+/// same private space, which is much of the point of NAT. Both discriminants are therefore part of
+/// the key, and both are ordered before the address, so that the range lookup in
+/// [`PoolTable::get`] scans within a single pair of VPCs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
+    src_vpcd: VpcDiscriminant,
     dst_vpcd: VpcDiscriminant,
     addr: I,
     addr_range_end: I,
 }
 
 impl<I: NatIp> PoolTableKey<I> {
-    fn new(protocol: NextHeader, dst_vpcd: VpcDiscriminant, addr: I, addr_range_end: I) -> Self {
+    fn new(
+        protocol: NextHeader,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+        addr: I,
+        addr_range_end: I,
+    ) -> Self {
         Self {
             protocol,
+            src_vpcd,
             dst_vpcd,
             addr,
             addr_range_end,
@@ -133,6 +147,7 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         match self.0.range(..=key).next_back() {
             Some((k, v))
                 if k.addr_range_end >= key.addr
+                    && k.src_vpcd == key.src_vpcd
                     && k.dst_vpcd == key.dst_vpcd
                     && k.protocol == key.protocol =>
             {
@@ -145,18 +160,19 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     fn get_entry(
         &self,
         protocol: NextHeader,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         addr: I,
     ) -> Option<&alloc::IpAllocator<J>> {
-        let key = PoolTableKey::new(protocol, dst_vpcd, addr, max_range::<I>());
+        let key = PoolTableKey::new(protocol, src_vpcd, dst_vpcd, addr, max_range::<I>());
         self.get(&key)
     }
 
     fn add_entry(&mut self, key: PoolTableKey<I>, allocator: alloc::IpAllocator<J>) {
         if self.0.contains_key(&key) {
             warn!(
-                "Overwriting NAT pool entry {key:?}: the same private prefix is masqueraded by \
-                 more than one expose towards the same peer VPC"
+                "Overwriting NAT pool entry {key:?}: within one VPC, the same private prefix is \
+                 masqueraded by more than one expose towards the same peer VPC"
             );
         }
         self.0.insert(key, allocator);
@@ -233,6 +249,7 @@ impl NatAllocator {
         for nat_peering in config.iter() {
             allocator.add_peering_addresses(
                 &nat_peering.peering,
+                nat_peering.src_vpcd,
                 nat_peering.dst_vpcd,
                 &mut registries,
             );
@@ -258,44 +275,57 @@ impl NatAllocator {
 
     fn allocate_v4(
         &self,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: Ipv4Addr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src44)
+        Self::allocate_from_tables(
+            src_ip.into(),
+            src_vpcd,
+            dst_vpcd,
+            next_header,
+            &self.pools_src44,
+        )
     }
 
     fn allocate_v6(
         &self,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: Ipv6Addr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src66)
+        Self::allocate_from_tables(
+            src_ip.into(),
+            src_vpcd,
+            dst_vpcd,
+            next_header,
+            &self.pools_src66,
+        )
     }
 
     /// Allocate an IP address and port for the given source IP, dispatching on IP version.
     pub(crate) fn allocate(
         &self,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: IpAddr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<Allocation>, AllocatorError> {
         match src_ip {
-            IpAddr::V4(ip) => {
-                self.allocate_v4(dst_vpcd, ip, next_header)
-                    .map(|r| AllocationResult {
-                        allocation: Allocation::V4(r.allocation),
-                        idle_timeout: r.idle_timeout,
-                    })
-            }
-            IpAddr::V6(ip) => {
-                self.allocate_v6(dst_vpcd, ip, next_header)
-                    .map(|r| AllocationResult {
-                        allocation: Allocation::V6(r.allocation),
-                        idle_timeout: r.idle_timeout,
-                    })
-            }
+            IpAddr::V4(ip) => self
+                .allocate_v4(src_vpcd, dst_vpcd, ip, next_header)
+                .map(|r| AllocationResult {
+                    allocation: Allocation::V4(r.allocation),
+                    idle_timeout: r.idle_timeout,
+                }),
+            IpAddr::V6(ip) => self
+                .allocate_v6(src_vpcd, dst_vpcd, ip, next_header)
+                .map(|r| AllocationResult {
+                    allocation: Allocation::V6(r.allocation),
+                    idle_timeout: r.idle_timeout,
+                }),
         }
     }
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
@@ -306,6 +336,7 @@ impl NatAllocator {
     }
     fn allocate_from_tables<I: NatIpWithBitmap>(
         src_ip: IpAddr,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         next_header: NextHeader,
         pools_src: &PoolTable<I, I>,
@@ -317,6 +348,7 @@ impl NatAllocator {
         let pool = pools_src
             .get_entry(
                 next_header,
+                src_vpcd,
                 dst_vpcd,
                 NatIp::try_from_addr(src_ip).map_err(|()| {
                     AllocatorError::InternalIssue("Failed to convert src IP address".to_string())
@@ -341,34 +373,46 @@ impl NatAllocator {
     fn reserve_ipv4_port(
         &self,
         protocol: NextHeader,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: Ipv4Addr,
         ip: Ipv4Addr,
         port: NatPort,
     ) -> Result<AllocatedPort<Ipv4Addr>, AllocatorError> {
-        let Some(pool) = self.pools_src44.get_entry(protocol, dst_vpcd, src_ip) else {
-            warn!("No pool found for proto:{protocol} dst-vpcd:{dst_vpcd} and src:{src_ip}");
+        let Some(pool) = self
+            .pools_src44
+            .get_entry(protocol, src_vpcd, dst_vpcd, src_ip)
+        else {
+            warn!(
+                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{src_ip}"
+            );
             return Err(AllocatorError::NoPoolFound);
         };
 
-        debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
+        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {src_ip}");
         pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {port}: {e}"))
     }
     fn reserve_ipv6_port(
         &self,
         protocol: NextHeader,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: Ipv6Addr,
         ip: Ipv6Addr,
         port: NatPort,
     ) -> Result<AllocatedPort<Ipv6Addr>, AllocatorError> {
-        let Some(pool) = self.pools_src66.get_entry(protocol, dst_vpcd, src_ip) else {
-            warn!("No pool found for proto:{protocol} dst-vpcd:{dst_vpcd} and src:{src_ip}");
+        let Some(pool) = self
+            .pools_src66
+            .get_entry(protocol, src_vpcd, dst_vpcd, src_ip)
+        else {
+            warn!(
+                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{src_ip}"
+            );
             return Err(AllocatorError::NoPoolFound);
         };
 
-        debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
+        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {src_ip}");
         pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {port}: {e}"))
     }
@@ -377,18 +421,19 @@ impl NatAllocator {
     pub(crate) fn reserve_port(
         &self,
         protocol: NextHeader,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_ip: IpAddr,
         ip: IpAddr,
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
-        debug!("Re-reserving {ip} {protocol}:{port}, dst_vpcd:{dst_vpcd}");
+        debug!("Re-reserving {ip} {protocol}:{port}, src_vpcd:{src_vpcd} dst_vpcd:{dst_vpcd}");
         let allocation = match (src_ip, ip) {
             (IpAddr::V4(src), IpAddr::V4(allocated)) => self
-                .reserve_ipv4_port(protocol, dst_vpcd, src, allocated, port)
+                .reserve_ipv4_port(protocol, src_vpcd, dst_vpcd, src, allocated, port)
                 .map(Allocation::V4)?,
             (IpAddr::V6(src), IpAddr::V6(allocated)) => self
-                .reserve_ipv6_port(protocol, dst_vpcd, src, allocated, port)
+                .reserve_ipv6_port(protocol, src_vpcd, dst_vpcd, src, allocated, port)
                 .map(Allocation::V6)?,
             _ => {
                 return Err(AllocatorError::InternalIssue(format!(
@@ -425,6 +470,9 @@ mod tests {
     fn vpcd(vpc_id: u32) -> VpcDiscriminant {
         VpcDiscriminant::VNI(Vni::new_checked(vpc_id).unwrap())
     }
+    fn vpcd1() -> VpcDiscriminant {
+        vpcd(1)
+    }
     fn vpcd2() -> VpcDiscriminant {
         vpcd(2)
     }
@@ -432,20 +480,24 @@ mod tests {
         vpcd(3)
     }
 
-    // Ensure that keys are sorted first by L4 protocol type, then by VPC IDs, and then by IP
-    // address. This is essential to make sure we can lookup for entries associated with prefixes
-    // for a given ID in the pool tables.
+    // Ensure that keys are sorted first by L4 protocol type, then by the source and destination
+    // VPC IDs, and only then by IP address. This is essential to make sure we can lookup for
+    // entries associated with prefixes for a given pair of IDs in the pool tables: the range scan
+    // in PoolTable::get relies on every key of a given (protocol, source, destination) group being
+    // contiguous, and on addresses of another group never falling between them.
     #[allow(clippy::too_many_lines)]
     #[test]
     fn test_key_order() {
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
@@ -454,12 +506,14 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -468,12 +522,14 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 2),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -482,12 +538,14 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(2, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 255, 255, 255),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -498,12 +556,14 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::UDP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -512,16 +572,75 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
+            vpcd1(),
             vpcd3(),
             Ipv4Addr::new(2, 2, 2, 2),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::UDP,
+            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         assert!(key1 < key2);
+
+        // Mixing source VPCs. The source discriminant outranks both the destination and the
+        // address, so the entries of one source VPC never interleave with those of another.
+
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            vpcd1(),
+            vpcd3(),
+            Ipv4Addr::new(2, 2, 2, 2),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            vpcd2(),
+            vpcd2(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 1, 1),
+        );
+        assert!(key1 < key2);
+
+        // ... but it does not outrank the protocol.
+
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            vpcd3(),
+            vpcd2(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::UDP,
+            vpcd1(),
+            vpcd2(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(255, 255, 255, 255),
+        );
+        assert!(key1 < key2);
+
+        // Two source VPCs using the same private address are distinct keys, which is the whole
+        // point of carrying the source discriminant: a private address only means something
+        // within the VPC it belongs to.
+
+        let key1 = PoolTableKey::new(
+            NextHeader::TCP,
+            vpcd1(),
+            vpcd3(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 255, 255),
+        );
+        let key2 = PoolTableKey::new(
+            NextHeader::TCP,
+            vpcd2(),
+            vpcd3(),
+            Ipv4Addr::new(1, 1, 1, 1),
+            Ipv4Addr::new(1, 1, 255, 255),
+        );
+        assert_ne!(key1, key2);
     }
 }

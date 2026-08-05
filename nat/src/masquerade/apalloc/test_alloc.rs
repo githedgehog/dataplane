@@ -43,7 +43,6 @@ mod context {
     pub fn vni3() -> Vni {
         Vni::new_checked(300).unwrap()
     }
-    #[allow(dead_code)]
     pub fn vpcd1() -> VpcDiscriminant {
         VpcDiscriminant::from_vni(vni1())
     }
@@ -64,12 +63,14 @@ mod context {
 
     pub fn get_ip_allocator_v4(
         pool: &mut PoolTable<Ipv4Addr, Ipv4Addr>,
+        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         protocol: NextHeader,
         src_ip: Ipv4Addr,
     ) -> &IpAllocator<Ipv4Addr> {
         pool.get(&PoolTableKey::new(
             protocol,
+            src_vpcd,
             dst_vpcd,
             src_ip,
             Ipv4Addr::from_str("255.255.255.255").unwrap(),
@@ -200,6 +201,63 @@ mod context {
         let config = MasqueradeConfig::new(&vpc_table).set_randomize(false);
         NatAllocator::new(config, 1)
     }
+
+    // Two VPCs using the *same* private prefix, each peering with the same destination VPC and
+    // masquerading onto a public range of its own. Tenants reusing private address space is
+    // ordinary, and is much of what NAT is for, so both are entitled to their own pool.
+    fn build_context_overlapping_private_prefixes() -> ValidatedVpcTable {
+        let masquerade_manifest = |name: &str, public: &str| {
+            VpcManifest::with_exposes(
+                name,
+                vec![
+                    VpcExpose::empty()
+                        .make_masquerade(None)
+                        .unwrap()
+                        .ip("192.168.0.0/16".into())
+                        .as_range(public.into())
+                        .unwrap(),
+                ],
+            )
+        };
+        let remote =
+            VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        let vpc3 = Vpc::new("VPC-3", "11111", vni3().as_u32()).unwrap();
+
+        vpc1.peerings.push(Peering {
+            name: "overlapping_peering1".into(),
+            local: masquerade_manifest("VPC-1", "10.1.0.0/30"),
+            remote: remote.clone(),
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+        vpc2.peerings.push(Peering {
+            name: "overlapping_peering2".into(),
+            local: masquerade_manifest("VPC-2", "10.2.0.0/30"),
+            remote,
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.add(vpc3).unwrap();
+
+        vpctable.validate().unwrap()
+    }
+
+    pub fn build_allocator_overlapping_private_prefixes() -> NatAllocator {
+        let vpc_table = build_context_overlapping_private_prefixes();
+        let config = MasqueradeConfig::new(&vpc_table).set_randomize(false);
+        NatAllocator::new(config, 1)
+    }
 }
 
 mod tests {
@@ -220,17 +278,17 @@ mod tests {
 
         handles.push(thread::spawn(move || {
             let _allocation1 = allocator1
-                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                 .unwrap();
         }));
         handles.push(thread::spawn(move || {
             let _allocation2 = allocator2
-                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                 .unwrap();
         }));
         handles.push(thread::spawn(move || {
             let _allocation3 = allocator3
-                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                 .unwrap();
         }));
 
@@ -244,6 +302,7 @@ mod tests {
         let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator_again.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -308,6 +367,7 @@ mod std_tests {
             .pools_src44
             .get(&PoolTableKey::new(
                 NextHeader::TCP,
+                vpcd1(),
                 vpcd2(),
                 addr_v4("1.1.0.0"),
                 addr_v4("255.255.255.255"),
@@ -328,6 +388,7 @@ mod std_tests {
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -337,7 +398,7 @@ mod std_tests {
         assert_eq!(in_use.len(), 0); // None allocated yet
 
         let alloc_result = allocator
-            .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+            .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
             .unwrap();
         println!("{alloc_result}");
 
@@ -345,6 +406,7 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -358,6 +420,7 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -374,6 +437,7 @@ mod std_tests {
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -384,6 +448,7 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
@@ -394,13 +459,14 @@ mod std_tests {
 
         // Allocate for TCP
         let tcp_allocation = allocator
-            .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+            .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
             .unwrap();
         println!("{tcp_allocation}");
 
         // Check number of allocated IPs for TCP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -412,6 +478,7 @@ mod std_tests {
         // Check number of allocated IPs for UDP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
@@ -422,13 +489,14 @@ mod std_tests {
 
         // Allocate for UDP
         let udp_allocation = allocator
-            .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::UDP)
+            .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::UDP)
             .unwrap();
         println!("{udp_allocation}");
 
         // Check number of allocated IPs for TCP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -440,6 +508,7 @@ mod std_tests {
         // Check number of allocated IPs for UDP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
+            vpcd1(),
             vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
@@ -457,10 +526,10 @@ mod std_tests {
         let allocator = build_allocator_shared_public_range();
 
         let alloc_a = allocator
-            .allocate_v4(vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
+            .allocate_v4(vpcd1(), vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
             .unwrap();
         let alloc_b = allocator
-            .allocate_v4(vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .allocate_v4(vpcd2(), vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
             .unwrap();
 
         assert_ne!(
@@ -488,12 +557,13 @@ mod std_tests {
             .count();
         assert_eq!(tcp_entries, 2);
 
-        for src in ["1.1.0.1", "2.1.0.1"] {
+        for (src_vpcd, src) in [(vpcd1(), "1.1.0.1"), (vpcd2(), "2.1.0.1")] {
             assert!(
                 allocator
                     .pools_src44
                     .get(&PoolTableKey::new(
                         NextHeader::TCP,
+                        src_vpcd,
                         vpcd3(),
                         addr_v4(src),
                         addr_v4("255.255.255.255"),
@@ -502,6 +572,46 @@ mod std_tests {
                 "no pool found for private source {src}"
             );
         }
+    }
+
+    // Two VPCs may use the same private address space, so a private prefix on its own does not
+    // identify a pool. Each VPC has to be masqueraded onto the public range its own expose
+    // declares, rather than whichever expose happened to be registered last.
+    #[test]
+    fn test_overlapping_private_prefixes_use_their_own_pool() {
+        let allocator = build_allocator_overlapping_private_prefixes();
+
+        let from_vpc1 = allocator
+            .allocate_v4(vpcd1(), vpcd3(), addr_v4("192.168.0.1"), NextHeader::TCP)
+            .unwrap();
+        let from_vpc2 = allocator
+            .allocate_v4(vpcd2(), vpcd3(), addr_v4("192.168.0.1"), NextHeader::TCP)
+            .unwrap();
+
+        assert_eq!(
+            from_vpc1.allocation.ip(),
+            addr_v4("10.1.0.0"),
+            "traffic from VPC-1 was not masqueraded onto the range VPC-1 exposes"
+        );
+        assert_eq!(
+            from_vpc2.allocation.ip(),
+            addr_v4("10.2.0.0"),
+            "traffic from VPC-2 was not masqueraded onto the range VPC-2 exposes"
+        );
+    }
+
+    // Both VPCs keep their own entry, rather than the second overwriting the first.
+    #[test]
+    fn test_overlapping_private_prefixes_keep_separate_entries() {
+        let allocator = build_allocator_overlapping_private_prefixes();
+
+        let tcp_entries = allocator
+            .pools_src44
+            .0
+            .keys()
+            .filter(|k| k.protocol == NextHeader::TCP && k.dst_vpcd == vpcd3())
+            .count();
+        assert_eq!(tcp_entries, 2);
     }
 }
 
@@ -522,12 +632,12 @@ mod concurrency_tests {
 
         let t1 = thread::spawn(move || {
             let _allocation1 = allocator1
-                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                 .unwrap();
         });
         let t2 = thread::spawn(move || {
             let _allocation2 = allocator2
-                .allocate_v4(vpcd2(), addr_v4("1.2.0.0"), NextHeader::TCP)
+                .allocate_v4(vpcd1(), vpcd2(), addr_v4("1.2.0.0"), NextHeader::TCP)
                 .unwrap();
         });
         t1.join().unwrap();
