@@ -153,6 +153,12 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     }
 
     fn add_entry(&mut self, key: PoolTableKey<I>, allocator: alloc::IpAllocator<J>) {
+        if self.0.contains_key(&key) {
+            warn!(
+                "Overwriting NAT pool entry {key:?}: the same private prefix is masqueraded by \
+                 more than one expose towards the same peer VPC"
+            );
+        }
         self.0.insert(key, allocator);
     }
 }
@@ -220,8 +226,16 @@ impl NatAllocator {
             pools_src66: PoolTable::new(),
             randomize: config.randomize(),
         };
+        // Pools are identified by the public range they allocate from, so that exposes
+        // masquerading onto the same range share one allocator rather than each handing out the
+        // whole range on its own. The registries are only needed while building.
+        let mut registries = setup::PoolRegistries::default();
         for nat_peering in config.iter() {
-            allocator.add_peering_addresses(&nat_peering.peering, nat_peering.dst_vpcd);
+            allocator.add_peering_addresses(
+                &nat_peering.peering,
+                nat_peering.dst_vpcd,
+                &mut registries,
+            );
         }
         allocator.config = config;
         allocator
