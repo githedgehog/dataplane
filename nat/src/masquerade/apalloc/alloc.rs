@@ -9,14 +9,15 @@
 //!
 //! See also the architecture diagram at the top of mod.rs.
 
+use super::region::AddrInterval;
 use super::{NatIpWithBitmap, port_alloc};
 use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use lpm::prefix::PortRange;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{IpPrefix, PortRange, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
@@ -47,10 +48,6 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, NatPool<I>> {
         self.pool.read()
-    }
-
-    pub(crate) fn idle_timeout(&self) -> Duration {
-        self.pool.read().idle_timeout()
     }
 
     fn deallocate_ip(&self, ip: I) {
@@ -137,6 +134,94 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     pub fn get_pool_clone_for_tests(&self) -> (RoaringBitmap, VecDeque<Weak<AllocatedIp<I>>>) {
         let pool = self.pool.read();
         (pool.bitmap.0.clone(), pool.in_use.clone())
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PoolSet
+///////////////////////////////////////////////////////////////////////////////
+
+/// One region of the public address space, and the allocator that owns it.
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRegion<I: NatIpWithBitmap> {
+    range: AddrInterval,
+    allocator: IpAllocator<I>,
+}
+
+impl<I: NatIpWithBitmap> PoolRegion<I> {
+    pub(crate) fn range(&self) -> AddrInterval {
+        self.range
+    }
+
+    pub(crate) fn allocator(&self) -> &IpAllocator<I> {
+        &self.allocator
+    }
+}
+
+/// What a single expose may allocate from: the regions its public range covers, in the order to
+/// try them, plus the settings that belong to the expose rather than to the address space.
+///
+/// An expose's range is exactly the union of its regions, so allocating from any of them yields an
+/// address the expose is configured for, and regions shared with another expose are backed by one
+/// allocator, so no address is handed out twice.
+#[derive(Debug, Clone)]
+pub(crate) struct PoolSet<I: NatIpWithBitmap> {
+    regions: Vec<PoolRegion<I>>,
+    idle_timeout: Duration,
+}
+
+impl<I: NatIpWithBitmap> PoolSet<I> {
+    pub(crate) fn new(idle_timeout: Duration) -> Self {
+        Self {
+            regions: Vec::new(),
+            idle_timeout,
+        }
+    }
+
+    pub(crate) fn push_region(&mut self, range: AddrInterval, allocator: IpAllocator<I>) {
+        self.regions.push(PoolRegion { range, allocator });
+    }
+
+    pub(crate) fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    pub(crate) fn regions(&self) -> impl Iterator<Item = &PoolRegion<I>> {
+        self.regions.iter()
+    }
+
+    /// Allocate from the first region with room. Regions are ordered so that those the expose has
+    /// to itself are tried first, leaving shared space for exposes that have nowhere else to go.
+    pub(crate) fn allocate(
+        &self,
+        allow_null: bool,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        let mut last_error = None;
+        for region in &self.regions {
+            match region.allocator.allocate(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(e) => {
+                    debug!("Region {:?} could not allocate: {e}", region.range);
+                    last_error = Some(e);
+                }
+            }
+        }
+        Err(last_error.unwrap_or(AllocatorError::NoFreeIp))
+    }
+
+    /// Reserve a specific address and port, which has to come from the region owning that address.
+    pub(crate) fn reserve(
+        &self,
+        ip: I,
+        port: NatPort,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        let bits = ip.to_addr_bits();
+        let region = self
+            .regions
+            .iter()
+            .find(|region| region.range.contains(bits))
+            .ok_or(AllocatorError::NoPoolFound)?;
+        region.allocator.reserve(ip, port)
     }
 }
 
@@ -235,26 +320,43 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
     reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
-    idle_timeout: Duration,
     exclude_wellknown_ports: bool,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
-    pub(crate) fn new(
-        bitmap: PoolBitmap,
-        bitmap_mapping: BTreeMap<u32, u128>,
-        reverse_bitmap_mapping: BTreeMap<u128, u32>,
+    /// Build the pool covering one contiguous region of the public address space.
+    ///
+    /// Pools own a region rather than an expose's range, because ranges from different exposes
+    /// overlap and a public address may only be handed out by one pool.
+    pub(crate) fn for_range(
+        range: AddrInterval,
         reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
-        idle_timeout: Duration,
         exclude_wellknown_ports: bool,
     ) -> Self {
+        // Index the region from its own start. IPv4 indexes its bitmap by the address bits and
+        // ignores the mapping; IPv6 cannot fit its space in a u32, so indices count from the start
+        // of the region and the mapping carries them back to real addresses. Going through
+        // try_to_offset gets both right without naming either version here.
+        let bitmap_mapping = BTreeMap::from([(0u32, range.start)]);
+        let reverse_bitmap_mapping = BTreeMap::from([(range.start, 0u32)]);
+
+        // A region holding more addresses than the u32 bitmap can index is truncated. We would run
+        // out of memory long before allocating four billion addresses.
+        let span = range.len().saturating_sub(1).min(u128::from(u32::MAX));
+        let to_offset = |bits: u128| {
+            let address = I::try_from_bits(bits).unwrap_or_else(|()| unreachable!());
+            I::try_to_offset(address, &reverse_bitmap_mapping).unwrap_or_else(|_| unreachable!())
+        };
+
         Self {
-            bitmap,
+            bitmap: PoolBitmap::with_offset_range(
+                to_offset(range.start),
+                to_offset(range.start + span),
+            ),
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
             reserved_prefixes_ports,
-            idle_timeout,
             exclude_wellknown_ports,
         }
     }
@@ -265,10 +367,6 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
     fn cleanup(&mut self) {
         self.in_use.retain(|ip| ip.upgrade().is_some());
-    }
-
-    pub(crate) fn idle_timeout(&self) -> Duration {
-        self.idle_timeout
     }
 
     pub(crate) fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
@@ -418,8 +516,11 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 pub(crate) struct PoolBitmap(RoaringBitmap);
 
 impl PoolBitmap {
-    pub(crate) fn new() -> Self {
-        Self(RoaringBitmap::new())
+    /// Mark every index in the inclusive range as free.
+    pub(crate) fn with_offset_range(start: u32, end: u32) -> Self {
+        let mut bitmap = RoaringBitmap::new();
+        bitmap.insert_range(start..=end);
+        Self(bitmap)
     }
 
     fn pop_ip(&mut self) -> Result<u32, AllocatorError> {
@@ -434,21 +535,6 @@ impl PoolBitmap {
 
     fn set_ip_free(&mut self, index: u32) -> bool {
         self.0.insert(index)
-    }
-
-    pub(crate) fn add_prefix(&mut self, prefix: &Prefix, bitmap_mapping: &BTreeMap<u128, u32>) {
-        match prefix {
-            Prefix::IPV4(p) => {
-                let start = p.network().to_bits();
-                let end = p.last_address().to_bits();
-                self.0.insert_range(start..=end);
-            }
-            Prefix::IPV6(p) => {
-                let start = map_address(p.network(), bitmap_mapping);
-                let end = map_address(p.last_address(), bitmap_mapping);
-                self.0.insert_range(start..=end);
-            }
-        }
     }
 }
 

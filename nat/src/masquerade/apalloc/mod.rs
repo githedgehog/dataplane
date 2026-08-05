@@ -8,31 +8,39 @@
 //! Here is an attempt to visualize the allocator structure:
 //!
 //! ```text
-//! ┌────────────┐
-//! │NatAllocator├────────────────────────────┬──────┬──────┐
-//! └────────┬───┘                            │      │      │
-//!          │                                │      │      │
-//! ┌────────▼────────┐         ┌─────────────▼──────▼──────▼───┐
-//! │PoolTable (src44)│         │PoolTable (src66, dst44, dst66)│
-//! └───────┬─────────┘         └───────────────────────────────┘
-//!         │
-//! ┌───────▼────┐  associates  ┌───────────┐
-//! │PoolTableKey┼──────────────►IpAllocator◄────────────────┐
-//! └────────────┘              └────┬──────┘                │
-//!                                  │                       │
-//!                             ┌────▼──┐                    │
-//!       ┌─────────────────────┤NatPool├───┐                │
-//!       │                     └───────┘   │                │
-//!       │                                 │                │
-//! ┌─────────────────┐           ┌─────────▼──────────┐     │
-//! │<collection>     │           │PoolBitmap          │     │
-//! │(weak references)│           │(map free addresses)│     │
-//! └─────────────────┘           └────────────────────┘     │
-//!       │                                                  │
-//! ┌─────▼─────┐                                            │
-//! │AllocatedIp│────────────────────────────────────────────┘
-//! └─▲─────────┘           back-reference, for deallocation
-//!   │       │
+//!                        ┌────────────┐
+//!                        │NatAllocator│
+//!                        └──────┬─────┘
+//!                 ┌─────────────┴─────────────┐
+//!       ┌─────────▼───────┐         ┌─────────▼───────┐
+//!       │PoolTable (src44)│         │PoolTable (src66)│   one per address family
+//!       └─────────┬───────┘         └─────────────────┘
+//!                 │  keyed by
+//!       ┌─────────▼──┐
+//!       │PoolTableKey│  protocol, source VPC, dest VPC, public range
+//!       └─────────┬──┘
+//!                 │  which an expose may draw from
+//!         ┌───────▼─┐
+//!         │PoolSet  │  the regions this expose's ranges cover, exclusive ones first
+//!         └───────┬─┘
+//!                 │
+//!        ┌────────▼──┐        ┌───────────┐
+//!        │PoolRegion ├────────►AddrInterval│  the slice of public space it owns
+//!        └────────┬──┘        └───────────┘
+//!                 │  one allocator per region, shared by every expose over it
+//!       ┌─────────▼─┐
+//!       │IpAllocator│◄───────────────────────────────┐
+//!       └─────────┬─┘                                │
+//!            ┌────▼──┐                               │
+//!    ┌───────┤NatPool├──────────┐                    │
+//!    │       └───────┘          │                    │
+//! ┌──▼──────────────┐  ┌────────▼───────────┐        │
+//! │<collection>     │  │PoolBitmap          │        │
+//! │(weak references)│  │(map free addresses)│        │
+//! └──┬──────────────┘  └────────────────────┘        │
+//! ┌──▼────────┐                                      │
+//! │AllocatedIp│──────────────────────────────────────┘
+//! └─▲───────┬─┘         back-reference, for deallocation
 //!   │ ┌─────▼───────┐
 //!   │ │PortAllocator│
 //!   │ └─────┬───────┘
@@ -53,6 +61,15 @@
 //! └───────────────┘
 //! Returned object
 //! ```
+//!
+//! The layer worth reading twice is [`PoolSet`](alloc::PoolSet) and
+//! [`PoolRegion`](alloc::PoolRegion). Exposes may claim overlapping public ranges, and two
+//! allocators over the same address would each believe it was theirs to hand out -- which is the
+//! collision the reverse flow key cannot survive, since it carries nothing that says which VPC the
+//! traffic came from. So the space is cut at every point where the set of exposes covering it
+//! changes ([`region`]), one allocator is built per resulting region, and an expose is handed the
+//! regions its own ranges cover. Sharing a region means sharing its allocator, which is what makes
+//! the uniqueness structural rather than a promise from the configuration layer.
 //!
 //! The [`AllocatedPort`](port_alloc::AllocatedPort) has a back-reference to
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock), to deallocate the ports when the
@@ -83,7 +100,9 @@ trace_target!("nat-allocation", LevelFilter::ERROR, &["masquerade"]);
 mod alloc;
 mod display;
 mod natip_with_bitmap;
+mod pool_fuzz;
 mod port_alloc;
+mod region;
 mod setup;
 mod test_alloc;
 
@@ -132,7 +151,7 @@ impl<I: NatIp> PoolTableKey<I> {
 
 #[derive(Debug)]
 struct PoolTable<I: NatIpWithBitmap, J: NatIpWithBitmap>(
-    BTreeMap<PoolTableKey<I>, alloc::IpAllocator<J>>,
+    BTreeMap<PoolTableKey<I>, alloc::PoolSet<J>>,
 );
 
 impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
@@ -140,7 +159,7 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         Self(BTreeMap::new())
     }
 
-    fn get(&self, key: &PoolTableKey<I>) -> Option<&alloc::IpAllocator<J>> {
+    fn get(&self, key: &PoolTableKey<I>) -> Option<&alloc::PoolSet<J>> {
         // We need to find the entry with the ID, and the prefix for the corresponding address.
         // Get the range of "lower" entries, the one with the address before ours is the prefix we
         // need, if the ID also matches.
@@ -163,19 +182,19 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         addr: I,
-    ) -> Option<&alloc::IpAllocator<J>> {
+    ) -> Option<&alloc::PoolSet<J>> {
         let key = PoolTableKey::new(protocol, src_vpcd, dst_vpcd, addr, max_range::<I>());
         self.get(&key)
     }
 
-    fn add_entry(&mut self, key: PoolTableKey<I>, allocator: alloc::IpAllocator<J>) {
+    fn add_entry(&mut self, key: PoolTableKey<I>, pool_set: alloc::PoolSet<J>) {
         if self.0.contains_key(&key) {
             warn!(
                 "Overwriting NAT pool entry {key:?}: within one VPC, the same private prefix is \
                  masqueraded by more than one expose towards the same peer VPC"
             );
         }
-        self.0.insert(key, allocator);
+        self.0.insert(key, pool_set);
     }
 }
 
@@ -242,18 +261,7 @@ impl NatAllocator {
             pools_src66: PoolTable::new(),
             randomize: config.randomize(),
         };
-        // Pools are identified by the public range they allocate from, so that exposes
-        // masquerading onto the same range share one allocator rather than each handing out the
-        // whole range on its own. The registries are only needed while building.
-        let mut registries = setup::PoolRegistries::default();
-        for nat_peering in config.iter() {
-            allocator.add_peering_addresses(
-                &nat_peering.peering,
-                nat_peering.src_vpcd,
-                nat_peering.dst_vpcd,
-                &mut registries,
-            );
-        }
+        allocator.build_pools(&config);
         allocator.config = config;
         allocator
     }
