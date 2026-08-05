@@ -200,6 +200,7 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
 
 /// What building a pool needs to know about one expose, independent of where it came from. Keeping
 /// this free of config types is what lets the property tests drive the real construction.
+#[derive(Clone)]
 pub(crate) struct PoolSpec {
     pub(crate) public_ranges: Vec<AddrInterval>,
     pub(crate) reserved: PrefixPortsSet,
