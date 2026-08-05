@@ -15,8 +15,9 @@ use lpm::prefix::{
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
-use tracing::error;
+use tracing::{error, warn};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
@@ -25,6 +26,7 @@ impl NatAllocator {
         &mut self,
         peering: &ValidatedPeering,
         dst_vpc_id: VpcDiscriminant,
+        registries: &mut PoolRegistries,
     ) {
         build_nat_pool_generic(
             peering.local(),
@@ -32,6 +34,7 @@ impl NatAllocator {
             ValidatedManifest::masquerade_exposes_44,
             ValidatedManifest::port_forwarding_exposes_44,
             &mut self.pools_src44,
+            &mut registries.v4,
             NextHeader::ICMP,
             self.randomize,
         );
@@ -42,10 +45,151 @@ impl NatAllocator {
             ValidatedManifest::masquerade_exposes_66,
             ValidatedManifest::port_forwarding_exposes_66,
             &mut self.pools_src66,
+            &mut registries.v6,
             NextHeader::ICMP6,
             self.randomize,
         );
     }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Pool identity and registry
+///////////////////////////////////////////////////////////////////////////////
+
+/// Identity of an address and port pool, as seen from the *public* side of the NAT.
+///
+/// What an allocator hands out is a public `(address, port)` pair, so the public range is what
+/// decides whether two exposes describe the same pool. Two allocators built over the same public
+/// range, for the same protocol and towards the same peer VPC, would each believe they owned the
+/// whole range, hand out the same `(address, port)` twice, and produce colliding reverse flow
+/// keys.
+///
+/// Pools are *identified* here by their public range. They are separately *looked up* by the
+/// private prefixes they serve, in [`PoolTable`], because the private source address is all we
+/// have on the first packet of a flow.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PoolIdentity {
+    protocol: NextHeader,
+    dst_vpc_id: VpcDiscriminant,
+    public_range: PrefixPortsSet,
+}
+
+/// How a pool allocates, as opposed to [`PoolIdentity`], which is what a pool *is*. The policy
+/// plays no part in deciding whether two exposes share a pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PoolPolicy {
+    idle_timeout: Duration,
+    reserved: PrefixPortsSet,
+    exclude_wellknown_ports: bool,
+}
+
+#[derive(Debug)]
+struct RegisteredPool<J: NatIpWithBitmap> {
+    allocator: IpAllocator<J>,
+    policy: PoolPolicy,
+}
+
+/// The allocators built for one IP version, keyed by [`PoolIdentity`].
+///
+/// A configuration can describe the same public pool more than once. Exposes are only checked for
+/// collisions against the other exposes of the same manifest, and a manifest belongs to a single
+/// peering, so two VPCs that both peer with the same destination VPC can masquerade onto the same
+/// public range without anything rejecting it. Both reach the allocator under the same protocol
+/// and destination discriminant, and have to share one allocator.
+#[derive(Debug)]
+struct PoolRegistry<J: NatIpWithBitmap> {
+    pools: BTreeMap<PoolIdentity, RegisteredPool<J>>,
+}
+
+impl<J: NatIpWithBitmap> Default for PoolRegistry<J> {
+    fn default() -> Self {
+        Self {
+            pools: BTreeMap::new(),
+        }
+    }
+}
+
+impl<J: NatIpWithBitmap> PoolRegistry<J> {
+    /// Return the allocator that owns `public_range`, building it if this is the first expose to
+    /// claim that range for this protocol and peer VPC. The returned allocator shares its
+    /// underlying pool with every other holder of the same identity.
+    fn get_or_create(
+        &mut self,
+        protocol: NextHeader,
+        dst_vpc_id: VpcDiscriminant,
+        public_range: &PrefixPortsSet,
+        policy: PoolPolicy,
+        randomize: bool,
+    ) -> IpAllocator<J> {
+        let identity = PoolIdentity {
+            protocol,
+            dst_vpc_id,
+            public_range: public_range.clone(),
+        };
+
+        if let Some(registered) = self.pools.get(&identity) {
+            if registered.policy != policy {
+                warn!(
+                    "Public range {public_range:?} is masqueraded onto more than once for \
+                     {protocol} towards {dst_vpc_id}, with differing allocation policies. \
+                     Sharing the pool, and keeping the policy that was declared first."
+                );
+            }
+            return registered.allocator.clone();
+        }
+
+        self.report_partial_overlaps(&identity);
+
+        let allocator = ip_allocator_for_prefixes(
+            public_range,
+            policy.idle_timeout,
+            &policy.reserved,
+            randomize,
+            policy.exclude_wellknown_ports,
+        );
+        self.pools.insert(
+            identity,
+            RegisteredPool {
+                allocator: allocator.clone(),
+                policy,
+            },
+        );
+        allocator
+    }
+
+    // Pools are shared only when their public ranges match exactly. Ranges that merely overlap
+    // still end up with one allocator each, neither aware of what the other hands out, so report
+    // them: that is a configuration we cannot serve correctly.
+    fn report_partial_overlaps(&self, identity: &PoolIdentity) {
+        for existing in self.pools.keys() {
+            if existing.protocol != identity.protocol || existing.dst_vpc_id != identity.dst_vpc_id
+            {
+                continue;
+            }
+            if !existing
+                .public_range
+                .intersection_prefixes_and_ports(&identity.public_range)
+                .is_empty()
+            {
+                error!(
+                    "Public ranges {:?} and {:?} overlap without being identical, for {} towards \
+                     {}. The same address and port may be allocated twice.",
+                    existing.public_range,
+                    identity.public_range,
+                    identity.protocol,
+                    identity.dst_vpc_id,
+                );
+            }
+        }
+    }
+}
+
+/// The [`PoolRegistry`] for each IP version, held only while a [`NatAllocator`] is being built.
+/// The allocators themselves are kept alive afterwards by the pool tables referencing them.
+#[derive(Debug, Default)]
+pub(crate) struct PoolRegistries {
+    v4: PoolRegistry<Ipv4Addr>,
+    v6: PoolRegistry<Ipv6Addr>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -57,6 +201,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
     // A filter to select other exposes with port forwarding, for the relevant IP version
     port_forwarding_exposes_filter: P,
     table: &mut PoolTable<I, J>,
+    registry: &mut PoolRegistry<J>,
     icmp_proto: NextHeader,
     randomize: bool,
 ) where
@@ -69,36 +214,51 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
         port_forwarding_exposes_filter(manifest).collect();
 
     exposes_filter(manifest).for_each(|expose| {
-        let prefixes_and_ports_to_exclude_from_pools =
-            find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
+        let ReserveSets {
+            tcp: tcp_reserved,
+            udp: udp_reserved,
+        } = find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
 
         let idle_timeout = expose
             .idle_timeout()
             .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT);
+        let public_range = expose.as_range_or_empty();
 
         // TCP/UDP masquerade allocators should avoid the IANA system/well-known range
         // (0-1023). ICMP identifiers are allocated independently and are not subject to that
         // TCP/UDP source-port policy.
-        let tcp_ip_allocator = ip_allocator_for_prefixes(
-            expose.as_range_or_empty(),
-            idle_timeout,
-            &prefixes_and_ports_to_exclude_from_pools.tcp,
+        let tcp_ip_allocator = registry.get_or_create(
+            NextHeader::TCP,
+            dst_vpc_id,
+            public_range,
+            PoolPolicy {
+                idle_timeout,
+                reserved: tcp_reserved,
+                exclude_wellknown_ports: true,
+            },
             randomize,
-            true,
         );
-        let udp_ip_allocator = ip_allocator_for_prefixes(
-            expose.as_range_or_empty(),
-            idle_timeout,
-            &prefixes_and_ports_to_exclude_from_pools.udp,
+        let udp_ip_allocator = registry.get_or_create(
+            NextHeader::UDP,
+            dst_vpc_id,
+            public_range,
+            PoolPolicy {
+                idle_timeout,
+                reserved: udp_reserved,
+                exclude_wellknown_ports: true,
+            },
             randomize,
-            true,
         );
-        let icmp_ip_allocator = ip_allocator_for_prefixes(
-            expose.as_range_or_empty(),
-            idle_timeout,
-            &PrefixPortsSet::default(),
+        let icmp_ip_allocator = registry.get_or_create(
+            icmp_proto,
+            dst_vpc_id,
+            public_range,
+            PoolPolicy {
+                idle_timeout,
+                reserved: PrefixPortsSet::default(),
+                exclude_wellknown_ports: false,
+            },
             randomize,
-            false,
         );
 
         add_pool_entries(
