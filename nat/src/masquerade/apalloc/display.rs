@@ -3,7 +3,7 @@
 
 //! Display implementations for allocator types
 
-use super::alloc::{AllocatedIp, IpAllocator, NatPool};
+use super::alloc::{AllocatedIp, IpAllocator, NatPool, PoolSet};
 use super::port_alloc::PortAllocator;
 use super::{NatAllocator, NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
@@ -57,9 +57,31 @@ where
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(
             f,
-            "{} | dest VPC: {}, for IPs: [ {} .. {} ]",
-            self.protocol, self.dst_vpcd, self.addr, self.addr_range_end
+            "{} | source VPC: {}, dest VPC: {}, for IPs: [ {} .. {} ]",
+            self.protocol, self.src_vpcd, self.dst_vpcd, self.addr, self.addr_range_end
         )
+    }
+}
+
+impl<I> Display for PoolSet<I>
+where
+    I: NatIpWithBitmap + Display,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        writeln!(f, "idle timeout: {:?}", self.idle_timeout())?;
+        let mut empty = true;
+        for region in self.regions() {
+            empty = false;
+            let range = region.range();
+            let start = I::try_from_bits(range.start).map_err(|()| Error)?;
+            let end = I::try_from_bits(range.end).map_err(|()| Error)?;
+            writeln!(f, "region [ {start} .. {end} ]:")?;
+            write!(with_indent!(f), "{}", region.allocator())?;
+        }
+        if empty {
+            writeln!(f, "(no region)")?;
+        }
+        Ok(())
     }
 }
 
@@ -78,8 +100,6 @@ where
     I: NatIpWithBitmap + Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        writeln!(f, "idle timeout: {:?}", self.idle_timeout())?;
-
         if let Some(reserved) = self.reserved_prefixes_ports() {
             writeln!(f, "reserved ranges:")?;
             for (ips, ports) in reserved {
