@@ -25,11 +25,13 @@ impl NatAllocator {
     pub(crate) fn add_peering_addresses(
         &mut self,
         peering: &ValidatedPeering,
+        src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
         registries: &mut PoolRegistries,
     ) {
         build_nat_pool_generic(
             peering.local(),
+            src_vpc_id,
             dst_vpc_id,
             ValidatedManifest::masquerade_exposes_44,
             ValidatedManifest::port_forwarding_exposes_44,
@@ -41,6 +43,7 @@ impl NatAllocator {
 
         build_nat_pool_generic(
             peering.local(),
+            src_vpc_id,
             dst_vpc_id,
             ValidatedManifest::masquerade_exposes_66,
             ValidatedManifest::port_forwarding_exposes_66,
@@ -195,6 +198,7 @@ pub(crate) struct PoolRegistries {
 #[allow(clippy::too_many_arguments)]
 fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, P, PIter>(
     manifest: &'a ValidatedManifest,
+    src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
     // A filter to select relevant exposes: those with masquerade, for the relevant IP version
     exposes_filter: F,
@@ -264,6 +268,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
         add_pool_entries(
             table,
             expose.ips(),
+            src_vpc_id,
             dst_vpc_id,
             &tcp_ip_allocator,
             &udp_ip_allocator,
@@ -310,16 +315,18 @@ fn find_masquerade_portfw_overlap<'a>(
 fn pool_table_key_for_expose<I: NatIp>(
     prefix: &PrefixWithOptionalPorts,
     protocol: NextHeader,
+    src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
 ) -> PoolTableKey<I> {
     let (addr, addr_range_end) = prefix_bounds(prefix);
-    PoolTableKey::new(protocol, dst_vpc_id, addr, addr_range_end)
+    PoolTableKey::new(protocol, src_vpc_id, dst_vpc_id, addr, addr_range_end)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     prefixes: &PrefixPortsSet,
+    src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
@@ -332,9 +339,9 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
         // or for ICMP, the space defined by the combination of IP addresses and L4 ports/id is distinct
         // for each protocol.
 
-        let tcp_key = pool_table_key_for_expose(prefix, NextHeader::TCP, dst_vpc_id);
-        let udp_key = pool_table_key_for_expose(prefix, NextHeader::UDP, dst_vpc_id);
-        let icmp_key = pool_table_key_for_expose(prefix, icmp_proto, dst_vpc_id);
+        let tcp_key = pool_table_key_for_expose(prefix, NextHeader::TCP, src_vpc_id, dst_vpc_id);
+        let udp_key = pool_table_key_for_expose(prefix, NextHeader::UDP, src_vpc_id, dst_vpc_id);
+        let icmp_key = pool_table_key_for_expose(prefix, icmp_proto, src_vpc_id, dst_vpc_id);
 
         table.add_entry(tcp_key, tcp_allocator.clone());
         table.add_entry(udp_key, udp_allocator.clone());

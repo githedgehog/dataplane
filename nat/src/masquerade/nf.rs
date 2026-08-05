@@ -373,6 +373,7 @@ impl Masquerade {
             return Err(MasqueradeError::IntendedDrop("TCP without SYN"));
         }
 
+        let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
         let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // Extract flow key for the current packet
@@ -392,7 +393,7 @@ impl Masquerade {
         // Create a new session and translate the address
         let src_ip = *initial_flow_key.src_ip();
         let alloc = allocator
-            .allocate(dst_vpcd, src_ip, initial_flow_key.proto())
+            .allocate(src_vpcd, dst_vpcd, src_ip, initial_flow_key.proto())
             .map_err(MasqueradeError::AllocationFailure)?;
 
         // Forbid addresses we won't know how to translate. This is a work around of a larger change

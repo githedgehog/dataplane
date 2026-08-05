@@ -60,12 +60,15 @@ fn re_reserve_ip_and_port(
 ) -> Result<(), ()> {
     let flow_key = flow_info.flowkey();
     let proto = flow_key.proto();
+    // Only the forward flow of a pair holds an allocation, and this is only reached for flows that
+    // have one, so the flow key's source really is the VPC the masqueraded traffic originates in.
+    let src_vpcd = flow_key.src_vpcd().unwrap_or_else(|| unreachable!());
     let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
     let src_ip = *flow_key.src_ip();
     let port_u16 = port.as_u16();
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
-    match new_allocator.reserve_port(proto, dst_vpcd, src_ip, ip, port) {
+    match new_allocator.reserve_port(proto, src_vpcd, dst_vpcd, src_ip, ip, port) {
         Ok(alloc) => {
             debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
             let mut guard = flow_info.locked.write();
