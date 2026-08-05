@@ -22,7 +22,7 @@ use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, error};
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -467,8 +467,15 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
     fn deallocate_from_pool(&mut self, ip: I) {
         debug!("Address {ip} was deallocated");
-        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap();
-        self.bitmap.set_ip_free(offset);
+        // The address was handed out by this pool, so it maps back into it. This runs while an
+        // allocation is being dropped and has nowhere to report a failure, so say so and leave the
+        // address marked in use rather than panicking on the drop path.
+        match I::try_to_offset(ip, &self.reverse_bitmap_mapping) {
+            Ok(offset) => {
+                self.bitmap.set_ip_free(offset);
+            }
+            Err(e) => error!("Address {ip} does not map back into the pool it came from: {e}"),
+        }
     }
 
     /// `keep_alive` collects every address upgraded here, for the caller to release once the pool
@@ -626,11 +633,25 @@ pub(crate) fn map_offset(
 }
 
 // Reverse operation from map_offset()
-pub(crate) fn map_address(address: Ipv6Addr, bitmap_mapping: &BTreeMap<u128, u32>) -> u32 {
+//
+// Not every address of a region has an offset. A region may hold more addresses than a u32 can
+// index, in which case the bitmap covers only the first 2^32 of them (see `NatPool::for_range`),
+// and an address beyond that is simply not one this pool can serve. That is reachable from
+// configuration rather than a bug: a flow carried across a config change presents the address it
+// already holds, and the region it falls in may have grown downwards underneath it. Report it as
+// the pool not serving the address, so the flow is dropped like any other that cannot be carried
+// over, rather than panicking in the middle of applying a config.
+pub(crate) fn map_address(
+    address: Ipv6Addr,
+    bitmap_mapping: &BTreeMap<u128, u32>,
+) -> Result<u32, AllocatorError> {
     let (prefix_start_bits, prefix_offset) = bitmap_mapping
         .range(..=address.to_bits())
         .next_back()
-        .expect("This should never fail");
+        .ok_or(AllocatorError::NoPoolFound)?;
 
-    prefix_offset + u32::try_from(address.to_bits() - prefix_start_bits).unwrap()
+    u32::try_from(address.to_bits() - prefix_start_bits)
+        .ok()
+        .and_then(|offset| prefix_offset.checked_add(offset))
+        .ok_or(AllocatorError::NoPoolFound)
 }

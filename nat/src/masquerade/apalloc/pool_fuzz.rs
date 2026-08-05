@@ -23,11 +23,12 @@ use super::alloc::PoolSet;
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
+use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
 use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 // 10.1.0.0, with a window small enough that regions stay cheap to build.
@@ -290,6 +291,78 @@ fn an_exhausted_region_falls_through_to_the_next() {
         Ipv4Addr::from(u32::try_from(free).unwrap_or_else(|_| unreachable!())),
         "allocation did not fall through to the region with room"
     );
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// IPv6
+///////////////////////////////////////////////////////////////////////////////
+
+/// A region may hold more addresses than a `u32` can index, in which case the bitmap covers only
+/// the first 2^32 of them. An address past that is inside the region but not servable by the pool.
+///
+/// A flow carried across a config change is the way to present one: it holds the address it was
+/// already given, and the region it falls in may have grown downwards underneath it. That has to
+/// come back as an error, so the flow is dropped like any other that cannot be carried over,
+/// rather than panicking part way through applying a config.
+#[test]
+fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
+    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    // Far wider than the bitmap can index.
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(start, start + (1u128 << 40))],
+        reserved: PrefixPortsSet::new(),
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
+    let port = NatPort::new_port_checked(4096).unwrap_or_else(|_| unreachable!());
+
+    // Just inside the indexable span: an ordinary carry-over, which must still work.
+    let near = Ipv6Addr::from(start + 1);
+    assert!(
+        pool_sets[0].reserve(near, port).is_ok(),
+        "an address the pool can index was refused"
+    );
+
+    // Past it: refused, and specifically not a panic.
+    let far = Ipv6Addr::from(start + (1u128 << 33));
+    assert_eq!(
+        pool_sets[0].reserve(far, port).unwrap_err(),
+        AllocatorError::NoPoolFound,
+        "an address the pool cannot index should be refused as unserved"
+    );
+}
+
+/// The pools are generic over the address family but every other test here is IPv4. Allocating
+/// from an IPv6 pool goes through the offset mapping that IPv4 skips entirely, so cover it.
+#[test]
+fn ipv6_pools_allocate_within_their_range() {
+    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let end = start + 3;
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(start, end)],
+        reserved: PrefixPortsSet::new(),
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
+
+    let mut held = Vec::new();
+    let mut seen = BTreeSet::new();
+    for _ in 0..8 {
+        let allocation = pool_sets[0].allocate(false).expect("pool has room");
+        let bits = u128::from(allocation.ip());
+        assert!(
+            (start..=end).contains(&bits),
+            "{} is outside the range the pool was built for",
+            allocation.ip()
+        );
+        assert!(
+            seen.insert((allocation.ip(), allocation.port().as_u16())),
+            "{}:{} was handed out twice",
+            allocation.ip(),
+            allocation.port()
+        );
+        held.push(allocation);
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
