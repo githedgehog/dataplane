@@ -40,12 +40,18 @@ mod context {
     pub fn vni2() -> Vni {
         Vni::new_checked(200).unwrap()
     }
+    pub fn vni3() -> Vni {
+        Vni::new_checked(300).unwrap()
+    }
     #[allow(dead_code)]
     pub fn vpcd1() -> VpcDiscriminant {
         VpcDiscriminant::from_vni(vni1())
     }
     pub fn vpcd2() -> VpcDiscriminant {
         VpcDiscriminant::from_vni(vni2())
+    }
+    pub fn vpcd3() -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(vni3())
     }
 
     #[allow(unused)]
@@ -131,6 +137,67 @@ mod context {
     pub fn build_allocator() -> NatAllocator {
         let vpc_table = build_context();
         let config = MasqueradeConfig::new(&vpc_table);
+        NatAllocator::new(config, 1)
+    }
+
+    // Two *different* VPCs, each peering with the same destination VPC, and each masquerading
+    // onto the same public range. A VPC may not peer twice with the same peer, but nothing checks
+    // exposes across VPCs: collisions are only checked between the exposes of a single manifest.
+    // Both peerings therefore reach the allocator with the same destination discriminant and the
+    // same public range, which is one pool described twice.
+    fn build_context_shared_public_range() -> ValidatedVpcTable {
+        let masquerade_manifest = |name: &str, private: &str| {
+            VpcManifest::with_exposes(
+                name,
+                vec![
+                    VpcExpose::empty()
+                        .make_masquerade(None)
+                        .unwrap()
+                        .ip(private.into())
+                        .as_range("10.1.0.0/30".into())
+                        .unwrap(),
+                ],
+            )
+        };
+        let remote =
+            VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        let vpc3 = Vpc::new("VPC-3", "11111", vni3().as_u32()).unwrap();
+
+        vpc1.peerings.push(Peering {
+            name: "shared_peering1".into(),
+            local: masquerade_manifest("VPC-1", "1.1.0.0/16"),
+            remote: remote.clone(),
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+        vpc2.peerings.push(Peering {
+            name: "shared_peering2".into(),
+            local: masquerade_manifest("VPC-2", "2.1.0.0/16"),
+            remote,
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.add(vpc3).unwrap();
+
+        vpctable.validate().unwrap()
+    }
+
+    pub fn build_allocator_shared_public_range() -> NatAllocator {
+        let vpc_table = build_context_shared_public_range();
+        // Without randomization the first port block picked is deterministic, so two pools that
+        // wrongly believe they each own the whole public range collide on their first allocation.
+        let config = MasqueradeConfig::new(&vpc_table).set_randomize(false);
         NatAllocator::new(config, 1)
     }
 }
@@ -380,6 +447,61 @@ mod std_tests {
         .get_pool_clone_for_tests();
         assert_eq!(bitmap.len(), 2); // 2 free IP addresses left to NAT 1.1.0.0 (UDP)
         assert_eq!(in_use.len(), 1); // 1 allocated, in use
+    }
+
+    // Two VPCs masquerading onto the same public range towards the same destination VPC describe
+    // one pool, not two, and must therefore share a single allocator. Allocating for a source in
+    // each VPC in turn may not yield the same public address and port twice.
+    #[test]
+    fn test_shared_public_range_is_allocated_once() {
+        let allocator = build_allocator_shared_public_range();
+
+        let alloc_a = allocator
+            .allocate_v4(vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
+            .unwrap();
+        let alloc_b = allocator
+            .allocate_v4(vpcd3(), addr_v4("2.1.0.1"), NextHeader::TCP)
+            .unwrap();
+
+        assert_ne!(
+            (alloc_a.allocation.ip(), alloc_a.allocation.port().as_u16()),
+            (alloc_b.allocation.ip(), alloc_b.allocation.port().as_u16()),
+            "the same public address and port was handed out to two different flows"
+        );
+
+        // Sharing the pool means the second allocation reuses the address the first one took,
+        // and simply draws the next port from it.
+        assert_eq!(alloc_a.allocation.ip(), alloc_b.allocation.ip());
+    }
+
+    // Sharing a pool must not collapse the private-side lookups: each private prefix keeps its own
+    // entry, since that is how the first packet of a flow finds its pool.
+    #[test]
+    fn test_shared_public_range_keeps_both_private_entries() {
+        let allocator = build_allocator_shared_public_range();
+
+        let tcp_entries = allocator
+            .pools_src44
+            .0
+            .keys()
+            .filter(|k| k.protocol == NextHeader::TCP && k.dst_vpcd == vpcd3())
+            .count();
+        assert_eq!(tcp_entries, 2);
+
+        for src in ["1.1.0.1", "2.1.0.1"] {
+            assert!(
+                allocator
+                    .pools_src44
+                    .get(&PoolTableKey::new(
+                        NextHeader::TCP,
+                        vpcd3(),
+                        addr_v4(src),
+                        addr_v4("255.255.255.255"),
+                    ))
+                    .is_some(),
+                "no pool found for private source {src}"
+            );
+        }
     }
 }
 
