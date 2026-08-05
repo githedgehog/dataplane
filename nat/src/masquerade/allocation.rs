@@ -35,6 +35,27 @@ pub enum AllocatorError {
     NoPoolFound,
 }
 
+impl AllocatorError {
+    /// Whether a caller may try another allocator because this one ran out of space.
+    ///
+    /// The exhaustive match must agree with the errors mapped to `NatOutOfResources`.
+    #[must_use]
+    pub fn is_exhaustion(&self) -> bool {
+        match self {
+            AllocatorError::NoFreeIp
+            | AllocatorError::NoPortBlock
+            | AllocatorError::NoFreePort(_) => true,
+            AllocatorError::PortAllocationFailed(_)
+            | AllocatorError::PortReservationFailed(_)
+            | AllocatorError::UnsupportedProtocol(_)
+            | AllocatorError::MissingDiscriminant
+            | AllocatorError::InternalIssue(_)
+            | AllocatorError::Denied
+            | AllocatorError::NoPoolFound => false,
+        }
+    }
+}
+
 impl From<&AllocatorError> for DoneReason {
     fn from(error: &AllocatorError) -> Self {
         match error {
