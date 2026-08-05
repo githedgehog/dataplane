@@ -28,7 +28,9 @@
 //! * A published allocator never hands out an address and port that was carried over into it. This
 //!   is the safety property of the update: the writer re-reserves before publishing, so a flow that
 //!   survived a config change and a flow created just after it must not collide on the reverse key.
-//! * An address and port is never handed to two live flows drawn from the same allocator.
+//! * An address and port is never handed to two live flows drawn from the same allocator. Shapes
+//!   that hold every allocation for the length of the run check this exactly; those that free as
+//!   they go trade that for exercising deallocation. See [`Live`] for why the two differ.
 //! * Neither allocation nor reservation ever reports [`AllocatorError::InternalIssue`]. That is the
 //!   allocator saying its own bookkeeping is inconsistent, and `find_block_for_port` carries a
 //!   standing `FIXME` wondering whether the block it just found non-free can be released before it
@@ -110,6 +112,12 @@ struct Scenario {
     ranges: Vec<Vec<(u8, u8)>>,
     packet_ops: [Vec<PacketOp>; PACKET_WORKERS],
     config_ops: Vec<ConfigOp>,
+    /// Whether flows may end while the run is in progress.
+    ///
+    /// Freeing is worth exercising, because it is what returns an address to a pool, but it costs
+    /// the uniqueness oracle its certainty: see [`Live`]. Half the shapes therefore hold every
+    /// allocation for the whole run, which makes the record monotone and the oracle exact.
+    frees_allowed: bool,
 }
 
 impl bolero::TypeGenerator for Scenario {
@@ -152,6 +160,7 @@ impl bolero::TypeGenerator for Scenario {
             ranges,
             packet_ops,
             config_ops,
+            frees_allowed: driver.produce()?,
         })
     }
 }
@@ -211,6 +220,25 @@ impl Published {
 /// per-thread record would not see it. Two allocations from *different* generations may legitimately
 /// repeat: only the survivors carried into a new generation are protected there, which is what
 /// [`Published::carried`] covers.
+///
+/// # What this catches, and what it cannot
+///
+/// The record is written after the allocator has already handed a pair out, so it observes
+/// allocation rather than being part of it. That is what keeps the threads racing on the
+/// allocator's own locks instead of on this mutex, and it costs the oracle something once a pair
+/// can be freed: if two threads are wrongly given the same pair and the first releases it before
+/// the second records it, the second insertion succeeds and the duplicate goes unseen. That
+/// interleaving is *indistinguishable* from one thread legitimately reusing what another gave
+/// back, so no record kept at these two points can tell them apart.
+///
+/// The way out is to leave nothing to give back: when [`Scenario::frees_allowed`] is false no
+/// allocation is released for the length of the run, the record only grows, and a duplicate is
+/// caught with certainty. Roughly half the generated shapes are of that kind. The rest trade that
+/// certainty for exercising deallocation, and still catch every duplicate whose holders overlap in
+/// the record, which is the common case.
+///
+/// Closing the gap outright would take instrumenting the allocator itself, so that a pair is
+/// recorded as part of being handed out rather than just after.
 struct Live(Mutex<BTreeSet<(u64, Ipv4Addr, u16)>>);
 
 impl Live {
@@ -218,9 +246,7 @@ impl Live {
         Self(Mutex::new(BTreeSet::new()))
     }
 
-    /// Record a freshly allocated pair. The allocation already exists by the time this runs, so a
-    /// thread that raced us to the same pair has either recorded it already or is about to fail
-    /// here itself; either way the collision is caught.
+    /// Record a freshly allocated pair, failing if it is already held.
     fn claim(&self, generation: u64, ip: Ipv4Addr, port: u16) {
         let mut live = self.0.lock();
         assert!(
@@ -279,64 +305,75 @@ impl Scenario {
         let live = Arc::new(Live::new());
 
         thread::scope(|scope| {
-            let mut handles = Vec::new();
+            let mut packet_handles = Vec::new();
 
             for (index, ops) in self.packet_ops.iter().enumerate() {
                 let slot = slot.clone();
                 let live = live.clone();
                 let ops = ops.clone();
                 let survivors = survivors.clone();
-                handles.push(
+                let frees_allowed = self.frees_allowed;
+                packet_handles.push(
                     thread::Builder::new()
                         .name(format!("packet-{index}"))
                         .spawn_scoped(scope, move || {
-                            packet_worker(&slot, &live, &ops, &survivors);
+                            packet_worker(&slot, &live, &ops, &survivors, frees_allowed)
                         })
                         .expect("spawn packet worker"),
                 );
             }
 
-            {
+            let config_handle = {
                 let slot = slot.clone();
                 let ops = self.config_ops.clone();
                 let specs = specs.clone();
                 let survivors = survivors.clone();
-                handles.push(
-                    thread::Builder::new()
-                        .name("config".to_string())
-                        .spawn_scoped(scope, move || {
-                            let mut generation = 0u64;
-                            for op in ops {
-                                match op {
-                                    ConfigOp::Republish => {
-                                        generation += 1;
-                                        let next = Published::build(&specs, generation, &survivors);
-                                        slot.store(Some(Arc::new(next)));
-                                    }
-                                    ConfigOp::Idle => {}
+                thread::Builder::new()
+                    .name("config".to_string())
+                    .spawn_scoped(scope, move || {
+                        let mut generation = 0u64;
+                        for op in ops {
+                            match op {
+                                ConfigOp::Republish => {
+                                    generation += 1;
+                                    let next = Published::build(&specs, generation, &survivors);
+                                    slot.store(Some(Arc::new(next)));
                                 }
-                                thread::yield_now();
+                                ConfigOp::Idle => {}
                             }
-                        })
-                        .expect("spawn config worker"),
-                );
-            }
+                            thread::yield_now();
+                        }
+                    })
+                    .expect("spawn config worker")
+            };
 
-            for handle in handles {
-                handle.join().expect("worker panicked");
-            }
+            // Collect rather than drop: an allocation released while another thread is still
+            // allocating is one the record cannot reason about, so everything stays held until
+            // every thread has finished.
+            let leftovers: Vec<_> = packet_handles
+                .into_iter()
+                .map(|handle| handle.join().expect("packet worker panicked"))
+                .collect();
+            config_handle.join().expect("config worker panicked");
+            drop(leftovers);
         });
 
         drop(existing);
     }
 }
 
+/// Returns whatever the thread is still holding when its ops run out, rather than releasing it.
+///
+/// Releasing here would free addresses while other threads are still allocating, which is exactly
+/// the ambiguity [`Live`] cannot see through, and it is not needed to keep the record honest: the
+/// pairs stay held, so nothing else can legitimately be given them.
 fn packet_worker(
     slot: &SlotOption<Published>,
     live: &Live,
     ops: &[PacketOp],
     survivors: &[(usize, Ipv4Addr, NatPort)],
-) {
+    frees_allowed: bool,
+) -> Vec<(u64, AllocatedPort<Ipv4Addr>)> {
     // What this thread is holding, tagged with the generation it was drawn from.
     let mut held: Vec<(u64, AllocatedPort<Ipv4Addr>)> = Vec::new();
 
@@ -374,7 +411,7 @@ fn packet_worker(
                 }
             }
             PacketOp::FreeOldest => {
-                if !held.is_empty() {
+                if frees_allowed && !held.is_empty() {
                     let (generation, allocation) = held.remove(0);
                     live.release(generation, allocation);
                 }
@@ -399,11 +436,7 @@ fn packet_worker(
         thread::yield_now();
     }
 
-    // Give everything back through the record, so a thread that finishes early cannot leave
-    // entries behind and make a later, legitimate allocation look like a collision.
-    for (generation, allocation) in held {
-        live.release(generation, allocation);
-    }
+    held
 }
 
 #[concurrency::model_test]
