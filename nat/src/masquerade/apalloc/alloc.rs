@@ -137,10 +137,17 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
 
-        if let Ok(port) = self.reuse_allocated_ip(allow_null) {
-            return Ok(port);
+        // Drawing a fresh address is what to do when the addresses already in hand have no room,
+        // and only then. `reuse_allocated_ip` distinguishes the two: it walks past an address that
+        // has run out and reports anything else as it found it. Taking only `Ok` here would put
+        // that back, burying an error about the allocator under whatever the fresh address
+        // returns -- the same mistake `PoolSet::allocate` avoids one level up, where trying the
+        // next region on any error would bury it under a success.
+        match self.reuse_allocated_ip(allow_null) {
+            Ok(port) => Ok(port),
+            Err(e) if e.is_exhaustion() => self.allocate_from_new_ip(allow_null),
+            Err(e) => Err(e),
         }
-        self.allocate_from_new_ip(allow_null)
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
@@ -227,21 +234,26 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
 
     /// Allocate from the first region with room. Regions are ordered so that those the expose has
     /// to itself are tried first, leaving shared space for exposes that have nowhere else to go.
+    ///
+    /// Only a region being full moves on to the next one. Any other error is about the allocator
+    /// rather than about how full that region is, and trying the next region would either bury it
+    /// under a success or replace it with a later region's `NoFreeIp`.
     pub(crate) fn allocate(
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        let mut last_error = None;
+        let mut exhausted = None;
         for region in &self.regions {
             match region.allocator.allocate(allow_null) {
                 Ok(port) => return Ok(port),
-                Err(e) => {
-                    debug!("Region {:?} could not allocate: {e}", region.range);
-                    last_error = Some(e);
+                Err(e) if e.is_exhaustion() => {
+                    debug!("Region {:?} is out of space: {e}", region.range);
+                    exhausted = Some(e);
                 }
+                Err(e) => return Err(e),
             }
         }
-        Err(last_error.unwrap_or(AllocatorError::NoFreeIp))
+        Err(exhausted.unwrap_or(AllocatorError::NoFreeIp))
     }
 
     /// Reserve a specific address and port, which has to come from the region owning that address.

@@ -258,6 +258,40 @@ fn re_reservation_after_a_config_change_is_honoured() {
         });
 }
 
+/// Falling through to the next region is what makes an expose's several regions behave as one
+/// pool. Only exhaustion may do it: any other error is about the allocator rather than about how
+/// full a region is, and a later region's success would bury it.
+///
+/// Exhausting a region by allocating from it would take every port of every address it holds, so
+/// this reserves them instead, which reaches the same state in one step.
+#[test]
+fn an_exhausted_region_falls_through_to_the_next() {
+    // Not adjacent, or the two would merge into a single region.
+    let full = BASE;
+    let free = BASE + 4;
+
+    let every_port = PrefixWithOptionalPorts::new(
+        "10.1.0.0/32".into(),
+        Some(PortRange::new(1024, u16::MAX).unwrap_or_else(|_| unreachable!())),
+    );
+
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(full, full), AddrInterval::new(free, free)],
+        reserved: [every_port].into_iter().collect(),
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let allocation = pool_sets[0]
+        .allocate(false)
+        .expect("the second region has room, so allocation must succeed");
+    assert_eq!(
+        allocation.ip(),
+        Ipv4Addr::from(u32::try_from(free).unwrap_or_else(|_| unreachable!())),
+        "allocation did not fall through to the region with room"
+    );
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Reserved ports
 ///////////////////////////////////////////////////////////////////////////////
