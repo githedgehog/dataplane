@@ -40,6 +40,7 @@ mod context {
     pub fn vni2() -> Vni {
         Vni::new_checked(200).unwrap()
     }
+    #[allow(dead_code)]
     pub fn vni3() -> Vni {
         Vni::new_checked(300).unwrap()
     }
@@ -49,6 +50,7 @@ mod context {
     pub fn vpcd2() -> VpcDiscriminant {
         VpcDiscriminant::from_vni(vni2())
     }
+    #[allow(dead_code)]
     pub fn vpcd3() -> VpcDiscriminant {
         VpcDiscriminant::from_vni(vni3())
     }
@@ -160,6 +162,7 @@ mod context {
     // exposes across VPCs: collisions are only checked between the exposes of a single manifest.
     // Both peerings therefore reach the allocator with the same destination discriminant and the
     // same public range, which is one pool described twice.
+    #[allow(dead_code)]
     fn build_context_shared_public_range() -> ValidatedVpcTable {
         let masquerade_manifest = |name: &str, private: &str| {
             VpcManifest::with_exposes(
@@ -208,6 +211,7 @@ mod context {
         vpctable.validate().unwrap()
     }
 
+    #[allow(dead_code)]
     pub fn build_allocator_shared_public_range() -> NatAllocator {
         let vpc_table = build_context_shared_public_range();
         // Without randomization the first port block picked is deterministic, so two pools that
@@ -219,6 +223,7 @@ mod context {
     // Two VPCs using the *same* private prefix, each peering with the same destination VPC and
     // masquerading onto a public range of its own. Tenants reusing private address space is
     // ordinary, and is much of what NAT is for, so both are entitled to their own pool.
+    #[allow(dead_code)]
     fn build_context_overlapping_private_prefixes() -> ValidatedVpcTable {
         let masquerade_manifest = |name: &str, public: &str| {
             VpcManifest::with_exposes(
@@ -267,6 +272,7 @@ mod context {
         vpctable.validate().unwrap()
     }
 
+    #[allow(dead_code)]
     pub fn build_allocator_overlapping_private_prefixes() -> NatAllocator {
         let vpc_table = build_context_overlapping_private_prefixes();
         let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
@@ -276,6 +282,7 @@ mod context {
     // Two VPCs peering with the same destination VPC, masquerading onto public ranges that overlap
     // *partially*: VPC-1 takes 10.1.0.0/30 (.0 through .3) and VPC-2 takes 10.1.0.2/31 (.2 and
     // .3). Neither range contains the other, so no single range identifies the shared space.
+    #[allow(dead_code)]
     fn build_context_partial_overlap() -> ValidatedVpcTable {
         let masquerade_manifest = |name: &str, private: &str, public: &str| {
             VpcManifest::with_exposes(
@@ -324,12 +331,14 @@ mod context {
         vpctable.validate().unwrap()
     }
 
+    #[allow(dead_code)]
     pub fn build_allocator_partial_overlap() -> NatAllocator {
         let vpc_table = build_context_partial_overlap();
         let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
         NatAllocator::new(config)
     }
 
+    #[allow(dead_code)]
     pub fn get_pool_set_v4(
         pool: &PoolTable<Ipv4Addr, Ipv4Addr>,
         src_vpcd: VpcDiscriminant,

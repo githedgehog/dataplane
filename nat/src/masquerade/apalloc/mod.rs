@@ -97,6 +97,7 @@ use tracectl::trace_target;
 trace_target!("nat-allocation", LevelFilter::ERROR, &["masquerade"]);
 
 mod alloc;
+mod concurrent_fuzz;
 mod display;
 mod natip_with_bitmap;
 mod pool_fuzz;
