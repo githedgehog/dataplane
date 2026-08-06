@@ -1773,6 +1773,105 @@ async fn test_masquerade_tcp_reset() {
     assert_eq!(flow_table.active_len(), Some(0));
 }
 
+// Walk the client-initiated graceful-close states.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_tcp_close_initiated_by_the_client() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+
+    // The client closes its side.
+    let mut fin = tcp_packet_to_masquerade();
+    fin.try_tcp_mut().unwrap().set_fin(true);
+    let closing = process_packet(&mut pipeline, fin);
+    assert_eq!(
+        nat_flow_status(&closing),
+        Some(NatFlowStatus::CClosing),
+        "a FIN from the client should start the close"
+    );
+
+    // The server acknowledges it and keeps sending: half closed, not closed.
+    let mut ack = build_reply(&closing);
+    ack.try_tcp_mut().unwrap().set_fin(false);
+    let half = process_packet(&mut pipeline, ack);
+    assert_eq!(
+        nat_flow_status(&half),
+        Some(NatFlowStatus::CHalfClose),
+        "an ack of the client's FIN should leave the connection half closed"
+    );
+
+    // Then the server closes its own side.
+    let mut server_fin = build_reply(&closing);
+    server_fin.try_tcp_mut().unwrap().set_fin(true);
+    let last = process_packet(&mut pipeline, server_fin);
+    assert_eq!(
+        nat_flow_status(&last),
+        Some(NatFlowStatus::LastAck),
+        "the server's FIN should leave only the last ack outstanding"
+    );
+
+    // And the client acknowledges that.
+    let mut final_ack = tcp_packet_to_masquerade();
+    final_ack.try_tcp_mut().unwrap().set_ack(true);
+    let closed = process_packet(&mut pipeline, final_ack);
+    assert_eq!(
+        nat_flow_status(&closed),
+        Some(NatFlowStatus::Closed),
+        "the last ack should close the connection"
+    );
+}
+
+// Walk the server-initiated graceful-close states.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_tcp_close_initiated_by_the_server() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+
+    // A packet out, so there is something to build the server's replies from.
+    let out = process_packet(&mut pipeline, tcp_packet_to_masquerade());
+
+    // The server closes first.
+    let mut server_fin = build_reply(&out);
+    server_fin.try_tcp_mut().unwrap().set_fin(true);
+    let closing = process_packet(&mut pipeline, server_fin);
+    assert_eq!(
+        nat_flow_status(&closing),
+        Some(NatFlowStatus::SClosing),
+        "a FIN from the server should start the close"
+    );
+
+    // The client acknowledges it and keeps sending.
+    let mut ack = tcp_packet_to_masquerade();
+    ack.try_tcp_mut().unwrap().set_ack(true);
+    let half = process_packet(&mut pipeline, ack);
+    assert_eq!(
+        nat_flow_status(&half),
+        Some(NatFlowStatus::SHalfClose),
+        "an ack of the server's FIN should leave the connection half closed"
+    );
+
+    // Then closes its own side.
+    let mut client_fin = tcp_packet_to_masquerade();
+    client_fin.try_tcp_mut().unwrap().set_fin(true);
+    let last = process_packet(&mut pipeline, client_fin);
+    assert_eq!(
+        nat_flow_status(&last),
+        Some(NatFlowStatus::LastAck),
+        "the client's FIN should leave only the last ack outstanding"
+    );
+
+    // And the server acknowledges that.
+    let mut final_ack = build_reply(&out);
+    final_ack.try_tcp_mut().unwrap().set_fin(false);
+    let closed = process_packet(&mut pipeline, final_ack);
+    assert_eq!(
+        nat_flow_status(&closed),
+        Some(NatFlowStatus::Closed),
+        "the last ack should close the connection"
+    );
+}
+
 #[tokio::test]
 #[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_reconfig_keep_flow() {
