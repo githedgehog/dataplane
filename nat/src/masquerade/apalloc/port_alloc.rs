@@ -352,6 +352,17 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         Ok(block)
     }
 
+    // Whether the block holding this port is one masquerade may never draw from, and so was marked
+    // non-free when the allocator was built without ever having been allocated.
+    //
+    // Mirrors the condition in `new`, and has to keep mirroring it: a block ruled out there but not
+    // recognized here is taken for a live allocation that has gone missing.
+    fn block_is_excluded(&self, port: NatPort) -> bool {
+        let base = (port.as_u16() / 256) * 256;
+        (self.exclude_wellknown_ports && base < IANA_WELLKNOWN_PORT_LIMIT)
+            || self.reserved_ports.covers_block(base)
+    }
+
     fn find_block_for_port(
         &self,
         ip: Arc<AllocatedIp<I>>,
@@ -362,16 +373,30 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         if block_was_free {
             return self.allocate_block_for_reservation(ip, index, port, allow_null);
         }
-        self.allocated_blocks
-            .search_for_block(port)
-            // Block was not free but is not in the list of allocated blocks either??
-            //
-            // FIXME: This can legitimately happen if the block was released just after we checked
-            // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
-            // lock around the PortAllocator?
-            .ok_or(AllocatorError::InternalIssue(
-                "Block not free, although absent from list of allocated blocks".to_string(),
-            ))
+        if let Some(block) = self.allocated_blocks.search_for_block(port) {
+            return Ok(block);
+        }
+        // A block masquerade may never draw from never joins the list of allocated blocks, so its
+        // absence from that list says nothing about the bookkeeping. Port forwarding claiming a
+        // block in full is the way to reach this from a configuration: a flow carried across a
+        // config change may hold a port in a block the new configuration has claimed.
+        //
+        // Answer as a claim on part of the same block does, where the block is allocatable and its
+        // own bitmap refuses the port. How much of a block an operator happened to claim is not
+        // something the caller should be able to tell apart, and it is certainly not the difference
+        // between a policy conflict and a broken allocator.
+        if self.block_is_excluded(port) {
+            debug!("Port {port} lies in a block that port forwarding has claimed in full");
+            return Err(AllocatorError::PortReservationFailed(port.as_u16()));
+        }
+        // Block was not free but is not in the list of allocated blocks either??
+        //
+        // FIXME: This can legitimately happen if the block was released just after we checked
+        // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
+        // lock around the PortAllocator?
+        Err(AllocatorError::InternalIssue(
+            "Block not free, although absent from list of allocated blocks".to_string(),
+        ))
     }
 
     pub(crate) fn reserve_port(
