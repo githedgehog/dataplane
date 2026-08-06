@@ -923,7 +923,7 @@ fn display_is_identical_across_backends() {
             "[0]",
             "TCP",
             "100",
-            "0",
+            "-",
             "80.0.0.5/32",
             "2222",
             "|",
