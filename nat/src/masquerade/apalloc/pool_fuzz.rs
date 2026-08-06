@@ -327,3 +327,19 @@ fn ipv6_pools_allocate_within_their_range() {
         held.push(allocation);
     }
 }
+
+#[test]
+fn a_live_tuple_cannot_be_reserved_again() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let held = pool_sets[0].allocate(false).expect("pool has room");
+    let tuple = (held.ip(), held.port());
+    assert!(pool_sets[0].reserve(tuple.0, tuple.1).is_err());
+
+    drop(held);
+    assert!(pool_sets[0].reserve(tuple.0, tuple.1).is_ok());
+}

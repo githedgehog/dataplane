@@ -143,11 +143,10 @@ impl Published {
                     carried.insert((ip, port.as_u16()));
                     reservations.push(reservation);
                 }
-                Err(AllocatorError::InternalIssue(message)) => {
-                    panic!("re-reserving {ip}:{port} for generation {generation}: {message}")
+                // Same-spec replacement allocators must accept every survivor.
+                Err(e) => {
+                    panic!("re-reserving {ip}:{port} for generation {generation} failed: {e}")
                 }
-                // The address may no longer be served, or another survivor may already hold it.
-                Err(_) => {}
             }
         }
 
@@ -339,17 +338,30 @@ fn packet_worker(
                 }
             }
             PacketOp::ReserveExisting => {
-                // Race a reservation against the other threads' allocations on pools that are
-                // already published and in use. Failing is fine, claiming inconsistent bookkeeping
-                // is not.
+                // A carried tuple must stay unavailable. Hold unexpected successes so the model's
+                // live set remains accurate.
                 if let Some(&(owner, ip, port)) = survivors.get(step % survivors.len().max(1))
                     && let Some(pool) = published.pools.get(owner)
-                    && let Err(AllocatorError::InternalIssue(message)) = pool.reserve(ip, port)
                 {
-                    panic!(
-                        "reserving {ip}:{port} in generation {}: {message}",
-                        published.generation
-                    );
+                    let carried = published.carried.contains(&(ip, port.as_u16()));
+                    match pool.reserve(ip, port) {
+                        Ok(reservation) => {
+                            assert!(
+                                !carried,
+                                "generation {} reserved {ip}:{port} a second time, although a \
+                                 carried-over flow already holds it",
+                                published.generation
+                            );
+                            live.claim(published.generation, ip, port.as_u16());
+                            held.push((published.generation, reservation));
+                        }
+                        Err(AllocatorError::InternalIssue(message)) => panic!(
+                            "reserving {ip}:{port} in generation {}: {message}",
+                            published.generation
+                        ),
+                        // Refused because it is held, which is the ordinary outcome here.
+                        Err(_) => {}
+                    }
                 }
             }
         }
