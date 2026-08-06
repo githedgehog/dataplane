@@ -645,9 +645,17 @@ fn ipv6_pools_allocate_within_their_range() {
 
     let mut held = Vec::new();
     let mut seen = BTreeSet::new();
-    for _ in 0..8 {
+    for step in 0..8 {
         let allocation = pool_sets[0].allocate(false).expect("pool has room");
         let bits = u128::from(allocation.ip());
+        // Exactly the first address, not merely one inside the range: an offset mapping off by a
+        // constant shifts every address together and stays inside.
+        if step == 0 {
+            assert_eq!(
+                bits, start,
+                "the first allocation is not the start of the range"
+            );
+        }
         assert!(
             (start..=end).contains(&bits),
             "{} is outside the range the pool was built for",
@@ -659,6 +667,62 @@ fn ipv6_pools_allocate_within_their_range() {
             allocation.ip(),
             allocation.port()
         );
+        held.push(allocation);
+    }
+}
+
+/// Port-forwarding claims bind IPv6 public space exactly as they bind IPv4.
+///
+/// Everything else about claims is checked over IPv4, and the two are not the same code: an IPv6
+/// pool indexes its bitmap by an offset from the start of its region rather than by the address
+/// itself, and deciding which addresses a claim covers means comparing v6 addresses. Neither the
+/// address-level exclusion nor the block-level one had ever been asked an IPv6 question.
+#[test]
+fn ipv6_claims_are_honoured_like_any_other() {
+    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(start, start + 3)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+
+    let claim = |address: u128, low: u16, high: u16| {
+        PrefixWithOptionalPorts::new(
+            format!("{}/128", Ipv6Addr::from(address)).as_str().into(),
+            Some(PortRange::new(low, high).unwrap_or_else(|_| unreachable!())),
+        )
+    };
+    // The first address is claimed end to end and can serve nothing; the second keeps everything
+    // above the first block it could use.
+    let claimed = PrefixPortsSet::from([
+        claim(start, 1024, u16::MAX),
+        claim(start + 1, 1280, u16::MAX),
+    ]);
+    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    // The address with nothing to give is not drawn at all, and the next one serves at once.
+    let first = pool_sets[0]
+        .allocate(false)
+        .expect("the region has addresses that can serve");
+    assert_eq!(
+        u128::from(first.ip()),
+        start + 1,
+        "the fully claimed IPv6 address was handed out, or cost an allocation to pass over"
+    );
+
+    // And on the address that is only partly claimed, the claimed ports stay off limits.
+    let mut held = vec![first];
+    for step in 0..256 {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .unwrap_or_else(|e| panic!("allocation {step} failed: {e}"));
+        let port = allocation.port().as_u16();
+        if u128::from(allocation.ip()) == start + 1 {
+            assert!(
+                port < 1280,
+                "a port claimed for forwarding on {} was handed out: {port}",
+                allocation.ip()
+            );
+        }
         held.push(allocation);
     }
 }
