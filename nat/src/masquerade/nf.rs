@@ -70,10 +70,16 @@ pub struct Masquerade {
 }
 
 impl Masquerade {
+    // Slow emulated tests need more wall-clock time between packet-driven refreshes.
+    const TIMEOUT_SCALE: u64 = cfg_select! {
+        emulated => 100,
+        _ => 1,
+    };
+
     // Internal flow timeouts for masquerading
-    pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5);
-    pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3);
-    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2);
+    pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
+    pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
+    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
 
     /// Creates a new [`Masquerade`] processor from provided parameters.
     #[must_use]
