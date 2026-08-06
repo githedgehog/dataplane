@@ -58,25 +58,46 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        let allocated_ips = self.pool.read();
-        for ip_weak in allocated_ips.ips_in_use() {
-            let Some(ip) = ip_weak.upgrade() else {
-                continue;
-            };
-            if !ip.has_free_ports() {
-                continue;
-            }
-            match ip.allocate_port_for_ip(allow_null) {
-                Ok(port) => {
-                    debug!("Allocated port {port}");
-                    return Ok(port);
+        // An address upgraded out of the in-use list has to outlive the guard below.
+        //
+        // The list holds weak references; the strong ones belong to the blocks handed out from
+        // each address. Another thread ending the last flow on an address drops the last of those
+        // at any moment, which leaves the reference upgraded here as the only one. Letting it go
+        // while the guard is held runs `AllocatedIp::drop` on this thread, and that takes the same
+        // lock for writing: a self-deadlock that wedges the core for good, on the path every new
+        // flow takes.
+        //
+        // Every upgrade is therefore kept until the guard is gone, and released after it.
+        let mut examined: Vec<Arc<AllocatedIp<I>>> = Vec::new();
+        let outcome = {
+            let allocated_ips = self.pool.read();
+            let mut outcome = Err(AllocatorError::NoFreeIp);
+            for ip_weak in allocated_ips.ips_in_use() {
+                let Some(ip) = ip_weak.upgrade() else {
+                    continue;
+                };
+                examined.push(ip.clone());
+                if !ip.has_free_ports() {
+                    continue;
                 }
-                // If there is no free port left, loop again to try another IP address
-                Err(AllocatorError::NoFreePort(_)) => {}
-                Err(e) => return Err(e),
+                match ip.allocate_port_for_ip(allow_null) {
+                    Ok(port) => {
+                        debug!("Allocated port {port}");
+                        outcome = Ok(port);
+                        break;
+                    }
+                    // If there is no free port left, loop again to try another IP address
+                    Err(AllocatorError::NoFreePort(_)) => {}
+                    Err(e) => {
+                        outcome = Err(e);
+                        break;
+                    }
+                }
             }
-        }
-        Err(AllocatorError::NoFreeIp)
+            outcome
+        };
+        drop(examined);
+        outcome
     }
 
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
@@ -97,8 +118,16 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     }
 
     fn cleanup_used_ips(&self) {
-        let mut allocated_ips = self.pool.write();
-        allocated_ips.cleanup();
+        // Same trap as in `reuse_allocated_ip`, and worse: `cleanup` upgrades each weak reference
+        // to see whether it still resolves, and does it holding the pool's *write* lock. An
+        // upgrade that turns out to be the last strong reference runs `AllocatedIp::drop` on this
+        // thread, which asks for that same lock again.
+        let mut released = Vec::new();
+        {
+            let mut allocated_ips = self.pool.write();
+            allocated_ips.cleanup(&mut released);
+        }
+        drop(released);
     }
 
     pub(crate) fn allocate(
@@ -115,9 +144,15 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        self.pool
-            .write()
-            .reserve_from_pool(ip, self.clone(), self.randomize)
+        // The third place that upgrades an in-use entry under the pool lock, and so the third that
+        // must not let the upgrade go while holding it. See `cleanup_used_ips`.
+        let mut examined = Vec::new();
+        let outcome =
+            self.pool
+                .write()
+                .reserve_from_pool(ip, self.clone(), self.randomize, &mut examined);
+        drop(examined);
+        outcome
     }
 
     pub(crate) fn reserve(
@@ -365,8 +400,16 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.in_use.push_back(Arc::downgrade(ip));
     }
 
-    fn cleanup(&mut self) {
-        self.in_use.retain(|ip| ip.upgrade().is_some());
+    /// Drop the entries whose addresses are gone, handing the caller every address that is still
+    /// alive so it can release them once the pool lock is no longer held. See `cleanup_used_ips`.
+    fn cleanup(&mut self, keep_alive: &mut Vec<Arc<AllocatedIp<I>>>) {
+        self.in_use.retain(|ip| match ip.upgrade() {
+            Some(alive) => {
+                keep_alive.push(alive);
+                true
+            }
+            None => false,
+        });
     }
 
     pub(crate) fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
@@ -416,18 +459,23 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.bitmap.set_ip_free(offset);
     }
 
+    /// `keep_alive` collects every address upgraded here, for the caller to release once the pool
+    /// lock is gone. See `cleanup_used_ips`.
     fn reserve_from_pool(
         &mut self,
         ip: I,
         ip_allocator: IpAllocator<I>,
         randomize: bool,
+        keep_alive: &mut Vec<Arc<AllocatedIp<I>>>,
     ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
 
         for ip_weak in self.ips_in_use() {
-            if let Some(ip_arc) = ip_weak.upgrade()
-                && ip_arc.ip() == ip
-            {
+            let Some(ip_arc) = ip_weak.upgrade() else {
+                continue;
+            };
+            keep_alive.push(ip_arc.clone());
+            if ip_arc.ip() == ip {
                 // We found the allocated IP in the list of IPs in use, return it
                 debug!("Reserved ip {ip_arc}");
                 return Ok(ip_arc);
