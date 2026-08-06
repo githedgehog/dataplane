@@ -298,6 +298,130 @@ fn an_exhausted_region_falls_through_to_the_next() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// Exhaustion
+///////////////////////////////////////////////////////////////////////////////
+
+// Claiming every port masquerade could hand out on an address, which is how a test reaches
+// address exhaustion without making 64k allocations.
+fn claim_whole_address(offset: u128) -> PrefixWithOptionalPorts {
+    let address = Ipv4Addr::from(u32::try_from(BASE + offset).unwrap_or_else(|_| unreachable!()));
+    PrefixWithOptionalPorts::new(
+        format!("{address}/32").as_str().into(),
+        Some(PortRange::new(1024, u16::MAX).unwrap_or_else(|_| unreachable!())),
+    )
+}
+
+/// An address with nothing left to give is passed over, and the next one serves.
+///
+/// Allocation draws the lowest free address and, finding no port on it, used to hand it straight
+/// back. The same address was lowest next time, so the pool served nothing at all for as long as
+/// it stayed there: one address fully claimed by port forwarding took a whole region out of
+/// service. Claims on a later address never showed it, since allocation stopped before reaching
+/// them.
+#[test]
+fn an_address_with_no_free_port_is_passed_over() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + 2)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let claimed = PrefixPortsSet::from([claim_whole_address(0)]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    // Repeatedly, so that an address taken out of the pool stays out.
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .expect("two addresses of the region are free");
+        assert_ne!(
+            allocation.ip(),
+            Ipv4Addr::from(u32::try_from(BASE).unwrap()),
+            "an address whose ports are all claimed was handed out"
+        );
+        held.push(allocation);
+    }
+}
+
+/// With every address claimed the pool has nothing to give, and says so rather than looping.
+#[test]
+fn a_fully_claimed_region_reports_exhaustion() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + 2)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let claimed: PrefixPortsSet = (0..3).map(claim_whole_address).collect();
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    let error = pool_sets[0]
+        .allocate(false)
+        .expect_err("no address in the region can serve");
+    assert!(
+        error.is_exhaustion(),
+        "a region with nothing to give reported {error} rather than being out of space"
+    );
+}
+
+/// An expose falls through to a region it shares once the region it has to itself is used up.
+///
+/// The ordinary tests never reach this: a region is only given up when every port of every address
+/// in it is taken, and allocation stays on one address for 64k ports, so a handful of allocations
+/// never leaves the first address of the first region. Claiming the exclusive region away is how
+/// the fallback gets exercised at all.
+#[test]
+fn an_expose_falls_back_to_shared_space_when_its_own_is_used_up() {
+    // Owner 0 has BASE..=BASE+1 to itself and shares BASE+2 with owner 1.
+    let specs = vec![
+        PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE + 2)],
+            idle_timeout: IDLE_TIMEOUT,
+        },
+        PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE + 2, BASE + 2)],
+            idle_timeout: IDLE_TIMEOUT,
+        },
+    ];
+    // Claim the exclusive region away, leaving owner 0 only the shared one.
+    let claimed: PrefixPortsSet = (0..2).map(claim_whole_address).collect();
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    let allocation = pool_sets[0]
+        .allocate(false)
+        .expect("the shared region still has room");
+    assert_eq!(
+        allocation.ip(),
+        Ipv4Addr::from(u32::try_from(BASE + 2).unwrap()),
+        "the expose did not fall back to the region it shares"
+    );
+}
+
+/// Addresses are used up in turn, and every address of a region is reachable.
+///
+/// Claims stand in for the 64k allocations it would otherwise take to move off an address, so the
+/// walk over addresses is exercised at every depth rather than only at the first one.
+#[test]
+fn every_address_of_a_region_can_be_reached() {
+    const ADDRESSES: u128 = 6;
+    for claimed_count in 0..ADDRESSES {
+        let specs = vec![PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        // Claim a prefix of the region away, so the first address left is the one after it.
+        let claimed: PrefixPortsSet = (0..claimed_count).map(claim_whole_address).collect();
+        let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+        let allocation = pool_sets[0].allocate(false).unwrap_or_else(|e| {
+            panic!("{claimed_count} addresses claimed, allocation failed: {e}")
+        });
+        assert_eq!(
+            allocation.ip(),
+            Ipv4Addr::from(u32::try_from(BASE + claimed_count).unwrap()),
+            "with {claimed_count} addresses claimed the next one should serve"
+        );
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
 
