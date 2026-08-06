@@ -15,7 +15,7 @@ use crate::port::NatPort;
 use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};
-use concurrency::thread::ThreadId;
+use concurrency::thread::{self, ThreadId};
 use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
@@ -26,6 +26,9 @@ use tracing::{debug, error};
 use rand::seq::SliceRandom;
 #[concurrency_mode(shuttle)]
 use shuttle::rand::{Rng, thread_rng};
+
+/// Bounds retries while a port block changes hands.
+const BLOCK_LOOKUP_ATTEMPTS: usize = 4;
 
 ///////////////////////////////////////////////////////////////////////////////
 // AllocatorPortBlock
@@ -310,21 +313,21 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         ip: Arc<AllocatedIp<I>>,
         port: NatPort,
     ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
-        let (block_was_free, index) = self.try_to_reserve_block(port)?;
         let allow_null = matches!(port, NatPort::Identifier(_));
-        if block_was_free {
-            return self.allocate_block_for_reservation(ip, index, port, allow_null);
+        for _ in 0..BLOCK_LOOKUP_ATTEMPTS {
+            let (block_was_free, index) = self.try_to_reserve_block(port)?;
+            if block_was_free {
+                return self.allocate_block_for_reservation(ip, index, port, allow_null);
+            }
+            if let Some(block) = self.allocated_blocks.search_for_block(port) {
+                return Ok(block);
+            }
+            // The free flag and map entry change separately. Retry between those updates.
+            debug!("Block holding port {port} changed mid-lookup; retrying");
+            thread::yield_now();
         }
-        self.allocated_blocks
-            .search_for_block(port)
-            // Block was not free but is not in the list of allocated blocks either??
-            //
-            // FIXME: This can legitimately happen if the block was released just after we checked
-            // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
-            // lock around the PortAllocator?
-            .ok_or(AllocatorError::InternalIssue(
-                "Block not free, although absent from list of allocated blocks".to_string(),
-            ))
+        debug!("Block holding port {port} changed {BLOCK_LOOKUP_ATTEMPTS} times");
+        Err(AllocatorError::PortReservationFailed(port.as_u16()))
     }
 
     pub(crate) fn reserve_port(
@@ -607,13 +610,19 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
         self.0.read().get(&index).cloned()
     }
 
-    fn remove(&self, index: usize) {
-        self.0.write().remove(&index);
+    // A live block may replace the expired entry before this lock is acquired.
+    fn remove_if_still_dead(&self, index: usize) {
+        let mut blocks = self.0.write();
+        if let Some(stored) = blocks.get(&index)
+            && stored.upgrade().is_none()
+        {
+            blocks.remove(&index);
+        }
     }
 
     fn get(&self, index: usize) -> Option<Arc<AllocatedPortBlock<I>>> {
         self.get_weak(index)?.upgrade().or_else(|| {
-            self.remove(index);
+            self.remove_if_still_dead(index);
             None
         })
     }
@@ -630,11 +639,10 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     }
 
     fn search_for_block(&self, port: NatPort) -> Option<Arc<AllocatedPortBlock<I>>> {
-        let blocks = self.0.read();
-        blocks
+        self.0
+            .read()
             .values()
-            .find(|block| block.upgrade().is_some_and(|block| block.covers(port)))?
-            .upgrade()
+            .find_map(|block| block.upgrade().filter(|block| block.covers(port)))
     }
 
     // Used for Display
