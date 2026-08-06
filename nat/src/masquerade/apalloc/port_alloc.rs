@@ -10,7 +10,7 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
-use super::reserved::PortClaims;
+use super::reserved::{IANA_WELLKNOWN_PORT_LIMIT, PortClaims};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use concurrency::concurrency_mode;
@@ -90,10 +90,6 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     exclude_wellknown_ports: bool,
 }
 
-/// Ports 0..=1023 cover the IANA system/well-known range and should not be
-/// allocated by masquerade NAT for TCP or UDP.
-const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
-
 impl<I: NatIpWithBitmap> PortAllocator<I> {
     pub(crate) fn new(
         reserved_ports: PortClaims,
@@ -116,9 +112,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             // well-known range (0-1023) for TCP and UDP, and any block port forwarding has claimed
             // in full. Deciding this once, here, is what keeps the count of usable blocks honest:
             // a block ruled out later would be marked non-free without ever being counted out.
-            if (exclude_wellknown_ports && base < IANA_WELLKNOWN_PORT_LIMIT)
-                || (!reserved_ports.is_empty() && reserved_ports.covers_block(base))
-            {
+            if reserved_ports.block_is_unusable(base, exclude_wellknown_ports) {
                 block
                     .free
                     .store(false, concurrency::sync::atomic::Ordering::Relaxed);
@@ -359,8 +353,8 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     // recognized here is taken for a live allocation that has gone missing.
     fn block_is_excluded(&self, port: NatPort) -> bool {
         let base = (port.as_u16() / 256) * 256;
-        (self.exclude_wellknown_ports && base < IANA_WELLKNOWN_PORT_LIMIT)
-            || self.reserved_ports.covers_block(base)
+        self.reserved_ports
+            .block_is_unusable(base, self.exclude_wellknown_ports)
     }
 
     fn find_block_for_port(
