@@ -69,10 +69,26 @@ pub struct Masquerade {
 }
 
 impl Masquerade {
+    // How far the flow timeouts below are stretched when the tests are run under an emulator.
+    //
+    // A flow expires against the wall clock, while a test refreshes it by doing work: sending a
+    // packet. Under miri or qemu-user that work takes something like two orders of magnitude
+    // longer, so the gap between one packet and the next stops being a fraction of a flow's life
+    // and becomes several times it. A flow a native run keeps comfortably alive is one an emulated
+    // run finds long dead, and the test fails on a clock rather than on anything it meant to
+    // check. Stretching the timeouts keeps them measuring the same amount of work either way.
+    //
+    // `emulated` is set only by the miri and qemu-user paths, so a real data plane always gets the
+    // native values.
+    const TIMEOUT_SCALE: u64 = cfg_select! {
+        emulated => 100,
+        _ => 1,
+    };
+
     // Internal flow timeouts for masquerading
-    pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5);
-    pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3);
-    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2);
+    pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
+    pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
+    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
 
     /// Creates a new [`Masquerade`] processor from provided parameters.
     #[must_use]
