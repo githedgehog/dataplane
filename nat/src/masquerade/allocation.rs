@@ -91,3 +91,106 @@ impl<T: Debug + Display> Display for AllocationResult<T> {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::port::NatPortError;
+
+    // Keep the exhaustive name match and test values in one table.
+    macro_rules! error_table {
+        ($($pattern:pat, $name:literal, $value:expr);+ $(;)?) => {
+            fn every_error() -> Vec<AllocatorError> {
+                vec![$($value),+]
+            }
+
+            fn name(error: &AllocatorError) -> &'static str {
+                match error {
+                    $($pattern => $name),+
+                }
+            }
+        };
+    }
+
+    error_table! {
+        AllocatorError::NoFreeIp, "NoFreeIp", AllocatorError::NoFreeIp;
+        AllocatorError::NoPortBlock, "NoPortBlock", AllocatorError::NoPortBlock;
+        AllocatorError::NoFreePort(_), "NoFreePort", AllocatorError::NoFreePort(1024);
+        AllocatorError::PortAllocationFailed(_), "PortAllocationFailed",
+            AllocatorError::PortAllocationFailed(NatPortError::InvalidPort(0));
+        AllocatorError::PortReservationFailed(_), "PortReservationFailed",
+            AllocatorError::PortReservationFailed(8080);
+        AllocatorError::UnsupportedProtocol(_), "UnsupportedProtocol",
+            AllocatorError::UnsupportedProtocol(NextHeader::TCP);
+        AllocatorError::MissingDiscriminant, "MissingDiscriminant",
+            AllocatorError::MissingDiscriminant;
+        AllocatorError::InternalIssue(_), "InternalIssue",
+            AllocatorError::InternalIssue("bookkeeping".to_string());
+        AllocatorError::Denied, "Denied", AllocatorError::Denied;
+        AllocatorError::NoPoolFound, "NoPoolFound", AllocatorError::NoPoolFound;
+    }
+
+    // Catch rows whose value does not match the named variant.
+    #[test]
+    fn every_error_appears_in_the_table_exactly_once() {
+        let mut names: Vec<&str> = every_error().iter().map(name).collect();
+        let before = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            before,
+            "a row's value does not match the variant it names, so an error is listed twice \
+             and another not at all: {names:?}"
+        );
+    }
+
+    /// Only space exhaustion permits trying another allocator.
+    #[test]
+    fn exhaustion_is_exactly_running_out_of_space() {
+        let exhausting = ["NoFreeIp", "NoPortBlock", "NoFreePort"];
+        for error in every_error() {
+            assert_eq!(
+                error.is_exhaustion(),
+                exhausting.contains(&name(&error)),
+                "{} is classified wrongly by is_exhaustion",
+                name(&error)
+            );
+        }
+    }
+
+    #[test]
+    fn each_error_reaches_the_packet_as_the_right_outcome() {
+        for error in every_error() {
+            let expected = match name(&error) {
+                "NoFreeIp" | "NoPortBlock" | "NoFreePort" => DoneReason::NatOutOfResources,
+                "UnsupportedProtocol" => DoneReason::NatUnsupportedProto,
+                "PortAllocationFailed" | "PortReservationFailed" | "MissingDiscriminant" => {
+                    DoneReason::NatFailure
+                }
+                "InternalIssue" => DoneReason::InternalFailure,
+                "Denied" | "NoPoolFound" => DoneReason::Filtered,
+                other => unreachable!("{other} has no expected outcome"),
+            };
+            assert_eq!(
+                DoneReason::from(&error),
+                expected,
+                "{} reaches the packet as the wrong outcome",
+                name(&error)
+            );
+        }
+    }
+
+    /// Exhaustion errors must map to `NatOutOfResources`, and only those errors may do so.
+    #[test]
+    fn the_two_classifications_agree() {
+        for error in every_error() {
+            assert_eq!(
+                error.is_exhaustion(),
+                DoneReason::from(&error) == DoneReason::NatOutOfResources,
+                "{} is exhaustion to one classification and not the other",
+                name(&error)
+            );
+        }
+    }
+}
