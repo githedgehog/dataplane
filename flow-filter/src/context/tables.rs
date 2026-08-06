@@ -78,6 +78,7 @@ pub(crate) enum LookupResult {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LookupInput {
     pub(crate) src_vpcd: VpcDiscriminant,
+    pub(crate) dst_vpcd: Option<VpcDiscriminant>,
     pub(crate) src_ip: IpAddr,
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
@@ -95,6 +96,7 @@ pub(super) struct Verdict {
 /// concrete; every other field is carried verbatim from the [`LookupInput`]).
 struct Query<I> {
     src_vni: Vni,
+    dst_vni: u32,
     proto: NextHeader,
     src_ip: I,
     dst_ip: I,
@@ -135,6 +137,9 @@ pub(super) struct RemoteKey<I> {
     #[exact]
     #[cli(column_name = "src-vni")]
     src_vni: Vni,
+    #[exact]
+    #[cli(column_name = "dst-vni")]
+    dst_vni: u32,
     #[prefix]
     #[cli(column_name = "destination")]
     dst_ip: I,
@@ -393,6 +398,7 @@ fn emit_remote(
     v4: &mut Vec<NeutralRule<RemoteKey<Ipv4Addr>, Verdict>>,
     v6: &mut Vec<NeutralRule<RemoteKey<Ipv6Addr>, Verdict>>,
     src_vni: Vni,
+    dst_vni: u32,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
     proto: MaskSpec<NextHeader>,
@@ -407,6 +413,7 @@ fn emit_remote(
             let rule = RemoteKeyRule::<Ipv4Addr> {
                 proto,
                 src_vni: ExactSpec::new(src_vni),
+                dst_vni: ExactSpec::new(dst_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
             };
@@ -421,6 +428,7 @@ fn emit_remote(
             let rule = RemoteKeyRule::<Ipv6Addr> {
                 proto,
                 src_vni: ExactSpec::new(src_vni),
+                dst_vni: ExactSpec::new(dst_vni),
                 dst_ip: PrefixSpec::from(prefix),
                 dst_port: port_range,
             };
@@ -518,11 +526,17 @@ impl RuleSet {
                         nat_mode: NatRequirement::from_expose(expose),
                         dst_vpcd: remote_vpcd,
                     };
+                    let dst_vni = if expose.has_masquerade() {
+                        remote_vni.as_u32()
+                    } else {
+                        0
+                    };
                     for prefix in expose.public_ips() {
                         emit_remote(
                             &mut rules.remote_v4,
                             &mut rules.remote_v6,
                             src_vni,
+                            dst_vni,
                             prefix.prefix(),
                             prefix.into(),
                             proto,
@@ -535,6 +549,7 @@ impl RuleSet {
                         &mut rules.remote_v4,
                         &mut rules.remote_v6,
                         src_vni,
+                        0,
                         default_ip(),
                         PORT_RANGE_WILDCARD,
                         proto_mask(L4Protocol::Any),
@@ -640,25 +655,42 @@ impl FlowFilterContext {
     pub(super) fn lookup(
         &self,
         src_vpcd: VpcDiscriminant,
+        dst_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
         dst_ip: IpAddr,
         proto: NextHeader,
         ports: Option<(u16, u16)>,
     ) -> LookupResult {
         let src_vni = key_vni(src_vpcd);
+        let dst_vni = dst_vpcd.map(|d| key_vni(d).as_u32()).unwrap_or(0);
         let (src_port, dst_port) = ports.unzip();
         let src_port = src_port.unwrap_or(0);
         let dst_port = dst_port.unwrap_or(0);
 
         match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let Some(verdict) = self.remote_v4.lookup(&RemoteKey {
+                let verdict = if let Some(v) = self.remote_v4.lookup(&RemoteKey {
                     proto,
                     src_vni,
+                    dst_vni,
                     dst_ip,
                     dst_port,
-                }) else {
-                    return LookupResult::DestinationMiss;
+                }) {
+                    v
+                } else {
+                    if dst_vni != 0
+                        && let Some(v) = self.remote_v4.lookup(&RemoteKey {
+                            proto,
+                            src_vni,
+                            dst_vni: 0,
+                            dst_ip,
+                            dst_port,
+                        })
+                    {
+                        v
+                    } else {
+                        return LookupResult::DestinationMiss;
+                    }
                 };
                 match self.local_v4.lookup(&LocalKey {
                     proto,
@@ -674,13 +706,28 @@ impl FlowFilterContext {
                 }
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let Some(verdict) = self.remote_v6.lookup(&RemoteKey {
+                let verdict = if let Some(v) = self.remote_v6.lookup(&RemoteKey {
                     proto,
                     src_vni,
+                    dst_vni,
                     dst_ip,
                     dst_port,
-                }) else {
-                    return LookupResult::DestinationMiss;
+                }) {
+                    v
+                } else {
+                    if dst_vni != 0
+                        && let Some(v) = self.remote_v6.lookup(&RemoteKey {
+                            proto,
+                            src_vni,
+                            dst_vni: 0,
+                            dst_ip,
+                            dst_port,
+                        })
+                    {
+                        v
+                    } else {
+                        return LookupResult::DestinationMiss;
+                    }
                 };
                 match self.local_v6.lookup(&LocalKey {
                     proto,
@@ -721,12 +768,14 @@ impl FlowFilterContext {
             out[i] = LookupResult::DestinationMiss;
             let proto = input.proto;
             let src_vni = key_vni(input.src_vpcd);
+            let dst_vni = input.dst_vpcd.map(|d| key_vni(d).as_u32()).unwrap_or(0);
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
             match (input.src_ip, input.dst_ip) {
                 (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                     v4_idx.push(i);
                     v4_q.push(Query {
                         src_vni,
+                        dst_vni,
                         proto,
                         src_ip,
                         dst_ip,
@@ -738,6 +787,7 @@ impl FlowFilterContext {
                     v6_idx.push(i);
                     v6_q.push(Query {
                         src_vni,
+                        dst_vni,
                         proto,
                         src_ip,
                         dst_ip,
@@ -764,7 +814,7 @@ fn lookup_versioned<I: FixedSize + Copy>(
     idx: &[usize],
     out: &mut [LookupResult],
 ) where
-    RemoteKey<I>: MatchKey,
+    RemoteKey<I>: MatchKey + std::fmt::Debug,
     LocalKey<I>: MatchKey,
 {
     for (q_chunk, i_chunk) in queries.chunks(MAX_BATCH).zip(idx.chunks(MAX_BATCH)) {
@@ -774,12 +824,39 @@ fn lookup_versioned<I: FixedSize + Copy>(
             .map(|q| RemoteKey {
                 proto: q.proto,
                 src_vni: q.src_vni,
+                dst_vni: q.dst_vni,
                 dst_ip: q.dst_ip,
                 dst_port: q.dst_port,
             })
             .collect();
         let mut verdicts: Vec<Option<&Verdict>> = vec![None; q_chunk.len()];
         remote.lookup_batch(&remote_keys, &mut verdicts);
+
+        // Reply traffic for masqueraded flows use the destination VNI as part of the key; this is
+        // to avoid conflicting entries if there are several VPCs exposing overlapping, masqueraded
+        // prefixes to a given VPC. If we have a destination VNI set here, we may be trying to
+        // re-validated a reply packet for a masqueraded flow (we're not sure of the direction,
+        // hence the first attempt with the destination VNI set to 0 above). Try again after setting
+        // the destination VNI.
+        let mut reval_positions = Vec::new();
+        let mut reval_keys = Vec::new();
+        for (pos, (query, verdict)) in q_chunk.iter().zip(verdicts.iter_mut()).enumerate() {
+            if verdict.is_none() && query.dst_vni != 0 {
+                reval_positions.push(pos);
+                reval_keys.push(RemoteKey {
+                    proto: query.proto,
+                    src_vni: query.src_vni,
+                    dst_vni: 0,
+                    dst_ip: query.dst_ip,
+                    dst_port: query.dst_port,
+                });
+            }
+        }
+        let mut reval_verdicts = vec![None; reval_keys.len()];
+        remote.lookup_batch(&reval_keys, &mut reval_verdicts);
+        for (pos, verdict) in reval_positions.into_iter().zip(reval_verdicts) {
+            verdicts[pos] = verdict;
+        }
 
         // Stage 2: for the hits only, source -> source NAT.
         let mut local_keys: Vec<LocalKey<I>> = Vec::new();
@@ -832,8 +909,8 @@ mod unit_tests {
     }
 
     #[test]
-    fn remote_key_has_four_fields_local_has_five() {
-        assert_eq!(RemoteKey::<Ipv4Addr>::N, 4);
+    fn remote_key_has_five_fields_local_has_five_too() {
+        assert_eq!(RemoteKey::<Ipv4Addr>::N, 5);
         assert_eq!(LocalKey::<Ipv4Addr>::N, 5);
     }
 

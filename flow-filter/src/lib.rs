@@ -118,6 +118,7 @@ impl FlowFilter {
         genid: i64,
     ) -> Classification {
         let nfi = &self.name;
+        let mut revalidation_dst_vpcd = None;
         let attached_flow = FlowSummary::from_meta(packet.meta());
         if let Some(flow_summary) = attached_flow.as_ref() {
             // Bypass flow-filter if packet has up-to-date active flow-info
@@ -125,6 +126,7 @@ impl FlowFilter {
                 Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow_summary);
                 return Classification::Bypassed;
             }
+            revalidation_dst_vpcd = self.flow_revalidation_data(flow_summary, genid);
         }
 
         let Some(net) = packet.try_ip() else {
@@ -140,6 +142,7 @@ impl FlowFilter {
 
         let input = LookupInput {
             src_vpcd,
+            dst_vpcd: revalidation_dst_vpcd,
             src_ip: net.src_addr(),
             dst_ip: net.dst_addr(),
             proto: net.next_header(),
@@ -156,14 +159,6 @@ impl FlowFilter {
     }
 
     /// Phase C: apply a resolved route (or drop on a miss) to a single packet.
-    ///
-    /// The tables cannot answer for reply traffic of established stateful-NAT sessions: masquerade
-    /// destinations only appear as marker rules (they cannot accept new connections) and
-    /// port-forwarding sources are absent altogether (they cannot initiate). For those two cases
-    /// -- and only those -- an active flow carrying the matching NAT state lets the packet
-    /// through, exactly as the flow-bypass path would. The flow's validity under the new
-    /// configuration remains the stateful NFs' responsibility; a genuine miss (no peering covers
-    /// the packet) still drops and invalidates.
     fn apply_route<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
@@ -196,25 +191,6 @@ impl FlowFilter {
                 return;
             }
         };
-
-        // A masquerade destination cannot accept new connections; its rule is in the table only
-        // so that reply traffic on an established masquerade flow is distinguishable from a
-        // destination no peering covers.
-        if dst_nat_mode == Some(NatRequirement::Masquerade) {
-            if let Some(flow) = active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_masquerade)
-            {
-                debug!("{nfi}: Masquerade destination allowed by established flow");
-                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
-                return;
-            }
-            debug!(
-                "{nfi}: Masquerade destination with no established flow, dropping packet (cannot initiate a connection towards a masquerade expose)"
-            );
-            packet.invalidate_flows();
-            packet.done(DoneReason::Filtered);
-            return;
-        }
-
         debug!(
             "{nfi}: Packet matches peering configuration, found VPC {dst_vpcd} and NAT modes {src_nat_mode:?} (src), {dst_nat_mode:?} (dst)"
         );
@@ -322,6 +298,21 @@ impl FlowFilter {
         // address B, the above won't invalidate the flow, but the NF should (or it should update
         // the flow accordingly).
         false
+    }
+
+    fn flow_revalidation_data(
+        &self,
+        flow_summary: &FlowSummary,
+        genid: i64,
+    ) -> Option<VpcDiscriminant> {
+        // The only case when we need re-validation is when we have an active flow with an outdated
+        // genid. If this is not the case, return None.
+        if flow_summary.flow_info.status() != FlowStatus::Active
+            || flow_summary.flow_info.genid() >= genid
+        {
+            return None;
+        }
+        flow_summary.dst_vpcd
     }
 
     fn dst_vpcd_from_valid_flow(

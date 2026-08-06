@@ -29,6 +29,17 @@ fn route(
     src_vpcd: VpcDiscriminant,
     headers: &Headers,
 ) -> Option<Route> {
+    route_revalidate(context, src_vpcd, None, headers)
+}
+
+// Extract the 5-tuple from headers (as the pipeline does) and run the route lookup for a packet
+// originating from a given source VPC.
+fn route_revalidate(
+    context: &FlowFilterContext,
+    src_vpcd: VpcDiscriminant,
+    dst_vpcd: Option<VpcDiscriminant>,
+    headers: &Headers,
+) -> Option<Route> {
     let net = headers.net().unwrap();
     let src_ip = net.src_addr();
     let dst_ip = net.dst_addr();
@@ -38,7 +49,7 @@ fn route(
             .map(NonZero::get)
             .zip(t.dst_port().map(NonZero::get))
     });
-    match context.lookup(src_vpcd, src_ip, dst_ip, proto, ports) {
+    match context.lookup(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports) {
         LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
             dst_vpcd,
             dst_nat,
@@ -287,9 +298,10 @@ fn dst_side_nat_modes() {
 
     // Masquerade destination: resolves at table level as a marker (the NF only lets it through
     // for reply traffic on an established masquerade flow; see crate::tests)
-    let masq = route(
+    let masq = route_revalidate(
         &ctx,
         vpcd(100),
+        Some(vpcd(200)),
         &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
     )
     .expect("masquerade destination resolves as a marker");
@@ -716,8 +728,8 @@ fn reference_and_dpdk_backends_agree() {
     for &(vni, src_ip, dst_ip, proto, ports) in probes {
         let src_vpcd = vpcd(vni);
         assert_eq!(
-            reference.lookup(src_vpcd, src_ip, dst_ip, proto, ports),
-            dpdk.lookup(src_vpcd, src_ip, dst_ip, proto, ports),
+            reference.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports),
+            dpdk.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports),
             "backends disagree on {src_ip} -> {dst_ip} ({proto:?}) from vni {vni}",
         );
     }
@@ -729,6 +741,7 @@ fn reference_and_dpdk_backends_agree() {
         .flatten()
         .map(|&(vni, src_ip, dst_ip, proto, ports)| LookupInput {
             src_vpcd: vpcd(vni),
+            dst_vpcd: None,
             src_ip,
             dst_ip,
             proto,
@@ -746,6 +759,7 @@ fn reference_and_dpdk_backends_agree() {
     for (i, input) in inputs.iter().enumerate() {
         let single = reference.lookup(
             input.src_vpcd,
+            input.dst_vpcd,
             input.src_ip,
             input.dst_ip,
             input.proto,
@@ -825,6 +839,7 @@ fn display_is_identical_across_backends() {
             "rank",
             "proto",
             "src-vni",
+            "dst-vni",
             "destination",
             "dst-port",
             "|",
@@ -839,6 +854,7 @@ fn display_is_identical_across_backends() {
             "[0]",
             "TCP",
             "100",
+            "0",
             "80.0.0.5/32",
             "2222",
             "|",
@@ -861,10 +877,10 @@ fn display_is_identical_across_backends() {
     // The heading assertions above would still pass if a section ran past its own table, since they
     // read its first heading row and stop. The ordering assertion below would not: it compares
     // positions, so a section that swallowed the table after it could order two rules that are not
-    // even in the same table and call the result precedence. Pin the boundary directly -- `dst-vni`
+    // even in the same table and call the result precedence. Pin the boundary directly -- `source`
     // is a local-table column, and the local table is the one that follows.
     assert!(
-        !remote_v4.contains("dst-vni"),
+        !remote_v4.contains("source"),
         "the remote v4 section ran past its own table:\n{remote_v4}"
     );
 
