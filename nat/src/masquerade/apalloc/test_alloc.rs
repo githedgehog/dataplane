@@ -13,6 +13,7 @@ mod context {
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+    use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
     use net::udp::UdpPort;
@@ -334,6 +335,72 @@ mod context {
     #[allow(dead_code)]
     pub fn build_allocator_partial_overlap() -> NatAllocator {
         let vpc_table = build_context_partial_overlap();
+        let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
+        NatAllocator::new(config)
+    }
+
+    // VPC-1 masquerades onto a single public address towards VPC-3, while VPC-2 port-forwards a
+    // range of ports on that same public address towards the same VPC-3. The public space towards
+    // a peer is shared, so those ports are spoken for and masquerade may not hand them out:
+    // return traffic to one of them carries nothing that says which of the two it belongs to.
+    #[allow(dead_code)]
+    fn build_context_masquerade_over_forwarded_ports() -> ValidatedVpcTable {
+        let masquerade = VpcExpose::empty()
+            .make_masquerade(None)
+            .unwrap()
+            .ip("1.1.0.0/16".into())
+            .as_range("10.1.0.0/32".into())
+            .unwrap();
+        // The forwarded ports sit on the very address VPC-1 masquerades onto.
+        let forwarded = VpcExpose::empty()
+            .make_port_forwarding(None, None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "2.1.0.0/32".into(),
+                Some(PortRange::new(1024, 1030).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.0.0/32".into(),
+                Some(PortRange::new(1024, 1030).unwrap()),
+            ))
+            .unwrap();
+        let remote =
+            VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        let vpc3 = Vpc::new("VPC-3", "11111", vni3().as_u32()).unwrap();
+
+        vpc1.peerings.push(Peering {
+            name: "masquerading_peering".into(),
+            local: VpcManifest::with_exposes("VPC-1", vec![masquerade]),
+            remote: remote.clone(),
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+        vpc2.peerings.push(Peering {
+            name: "forwarding_peering".into(),
+            local: VpcManifest::with_exposes("VPC-2", vec![forwarded]),
+            remote,
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc3.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.add(vpc3).unwrap();
+
+        vpctable.validate().unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn build_allocator_masquerade_over_forwarded_ports() -> NatAllocator {
+        let vpc_table = build_context_masquerade_over_forwarded_ports();
         let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
         NatAllocator::new(config)
     }
@@ -814,6 +881,38 @@ mod std_tests {
             );
             held.push(allocation);
         }
+    }
+
+    // Ports that port forwarding has claimed on a public address are not handed out by
+    // masquerade, even though the two were configured by different VPCs. The claim binds the
+    // public space towards the peer, not the expose that declared it.
+    //
+    // The claim is on the public side. It used to be computed from the private prefixes instead,
+    // which described a space the pools are never asked about, so nothing was reserved at all.
+    #[test]
+    fn test_forwarded_ports_are_not_masqueraded_onto() {
+        let allocator = build_allocator_masquerade_over_forwarded_ports();
+
+        let mut held = Vec::new();
+        let mut ports = Vec::new();
+        for _ in 0..32 {
+            let allocation = allocator
+                .allocate_v4(vpcd1(), vpcd3(), addr_v4("1.1.0.1"), NextHeader::TCP)
+                .unwrap();
+            let ip = allocation.allocation.ip();
+            let port = allocation.allocation.port().as_u16();
+            assert_eq!(ip, addr_v4("10.1.0.0"));
+            assert!(
+                !(1024..=1030).contains(&port),
+                "masquerade handed out {ip}:{port}, which port forwarding has claimed"
+            );
+            ports.push(port);
+            held.push(allocation);
+        }
+
+        // Allocation starts at the lowest port it may use, so the first one lands just past the
+        // claim. Without the reservation it would be 1024, which is what makes this test bite.
+        assert_eq!(ports[0], 1031);
     }
 
     // Both VPCs keep their own entry, rather than the second overwriting the first.
