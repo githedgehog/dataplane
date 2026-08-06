@@ -30,7 +30,7 @@ use tracing::{debug, error};
 /// ordinary case, where the first address serves, and an address that cannot serve is taken out of
 /// the pool as it is found, so a run of them is worked through over successive packets rather than
 /// being walked again each time.
-const MAX_ADDRESSES_PER_ALLOCATION: usize = 8;
+pub(super) const MAX_ADDRESSES_PER_ALLOCATION: usize = 8;
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -410,6 +410,16 @@ impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
 #[derive(Debug)]
 pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
+    /// Offsets that may never be handed out, however often they are given back.
+    ///
+    /// Distinct from being absent from `bitmap`, which only says an address is in use at the
+    /// moment. An address lands here either because port forwarding has claimed every port
+    /// masquerade could draw on it, which is known when the pool is built, or because it was found
+    /// to have nothing to give while serving. Either way it must not come back:
+    /// `deallocate_from_pool` runs on the drop path and would otherwise return it to the pool the
+    /// first time a flow holding it ends, which for a carried-over flow is moments after the pool
+    /// was built.
+    unusable: RoaringBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
@@ -437,16 +447,41 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // A region holding more addresses than the u32 bitmap can index is truncated. We would run
         // out of memory long before allocating four billion addresses.
         let span = range.len().saturating_sub(1).min(u128::from(u32::MAX));
+        let indexable = AddrInterval::new(range.start, range.start + span);
         let to_offset = |bits: u128| {
             let address = I::try_from_bits(bits).unwrap_or_else(|()| unreachable!());
             I::try_to_offset(address, &reverse_bitmap_mapping).unwrap_or_else(|_| unreachable!())
         };
 
+        let mut bitmap =
+            PoolBitmap::with_offset_range(to_offset(indexable.start), to_offset(indexable.end));
+
+        // An address port forwarding has taken every usable port on can serve masquerade nothing,
+        // and which addresses those are is known now rather than discovered a packet at a time.
+        // Left in the pool, such an address is drawn because it is the lowest one free, found
+        // useless, and taken out -- but only eight of them may be worked through before the
+        // allocation gives up, so a run of them costs a dropped packet for every eight, on flows
+        // the region had ample room for. And it costs them again after every config change, since
+        // a new allocator starts with a fresh pool. Keeping them out from the start costs one
+        // sweep over the claims when the pool is built.
+        let mut unusable = RoaringBitmap::new();
+        for interval in reserved_ports.unusable_within::<I>(indexable, exclude_wellknown_ports) {
+            let (first, last) = (to_offset(interval.start), to_offset(interval.end));
+            unusable.insert_range(first..=last);
+            bitmap.remove_offset_range(first, last);
+        }
+        if !unusable.is_empty() {
+            debug!(
+                "Pool over {} address(es) keeps {} of them out: port forwarding has claimed every \
+                 port masquerade could use there",
+                indexable.len(),
+                unusable.len()
+            );
+        }
+
         Self {
-            bitmap: PoolBitmap::with_offset_range(
-                to_offset(range.start),
-                to_offset(range.start + span),
-            ),
+            bitmap,
+            unusable,
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
@@ -509,6 +544,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     fn retire_from_pool(&mut self, ip: I) {
         match I::try_to_offset(ip, &self.reverse_bitmap_mapping) {
             Ok(offset) => {
+                self.unusable.insert(offset);
                 self.bitmap.set_ip_allocated(offset);
             }
             Err(e) => error!("Address {ip} cannot be retired from its pool: {e}"),
@@ -522,7 +558,15 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // address marked in use rather than panicking on the drop path.
         match I::try_to_offset(ip, &self.reverse_bitmap_mapping) {
             Ok(offset) => {
-                self.bitmap.set_ip_free(offset);
+                // An address that can never serve does not come back, whoever is giving it up.
+                // Reserving reaches addresses the pool never draws, so a flow carried across a
+                // config change onto an address the new configuration has claimed would otherwise
+                // put it into the pool on its way out.
+                if self.unusable.contains(offset) {
+                    debug!("Address {ip} stays out of its pool: it can serve nothing");
+                } else {
+                    self.bitmap.set_ip_free(offset);
+                }
             }
             Err(e) => error!("Address {ip} does not map back into the pool it came from: {e}"),
         }
@@ -656,6 +700,11 @@ impl PoolBitmap {
 
     fn set_ip_free(&mut self, index: u32) -> bool {
         self.0.insert(index)
+    }
+
+    /// Take an inclusive range of indices out of the pool.
+    fn remove_offset_range(&mut self, start: u32, end: u32) {
+        self.0.remove_range(start..=end);
     }
 }
 
