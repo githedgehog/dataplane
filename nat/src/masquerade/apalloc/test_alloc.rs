@@ -339,10 +339,11 @@ mod context {
         NatAllocator::new(config)
     }
 
-    // VPC-1 masquerades onto a single public address towards VPC-3, while VPC-2 port-forwards a
-    // range of ports on that same public address towards the same VPC-3. The public space towards
-    // a peer is shared, so those ports are spoken for and masquerade may not hand them out:
-    // return traffic to one of them carries nothing that says which of the two it belongs to.
+    // VPC-1 masquerades onto a single public address towards VPC-3, and forwards a range of
+    // ports on that same address towards the same peer, both declared by the one manifest. The
+    // public space towards a peer is shared between every expose that reaches it, so those ports
+    // are spoken for and masquerade may not hand them out: return traffic to one of them carries
+    // nothing that says which expose it belongs to.
     #[allow(dead_code)]
     fn build_context_masquerade_over_forwarded_ports() -> ValidatedVpcTable {
         let masquerade = VpcExpose::empty()
@@ -351,7 +352,13 @@ mod context {
             .ip("1.1.0.0/16".into())
             .as_range("10.1.0.0/32".into())
             .unwrap();
-        // The forwarded ports sit on the very address VPC-1 masquerades onto.
+        // The forwarded ports sit on the very address VPC-1 masquerades onto, declared by the
+        // same manifest. That is the shape validation accepts: masquerade and port forwarding may
+        // overlap within one manifest, each implying a direction, while the same overlap across
+        // two VPCs' peerings is rejected by the peer's route table, which could not route the
+        // shared address to one peering. An earlier version of this fixture used the cross-VPC
+        // shape and passed only because building a VpcTable by hand skips collecting peerings
+        // into the peer, so the route check never saw it.
         let forwarded = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
@@ -368,21 +375,11 @@ mod context {
             VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
 
         let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
-        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
         let vpc3 = Vpc::new("VPC-3", "11111", vni3().as_u32()).unwrap();
 
         vpc1.peerings.push(Peering {
             name: "masquerading_peering".into(),
-            local: VpcManifest::with_exposes("VPC-1", vec![masquerade]),
-            remote: remote.clone(),
-            remote_id: "11111".try_into().unwrap(),
-            remote_vni: vpc3.vni,
-            gwgroup: "default".into(),
-            acl: None,
-        });
-        vpc2.peerings.push(Peering {
-            name: "forwarding_peering".into(),
-            local: VpcManifest::with_exposes("VPC-2", vec![forwarded]),
+            local: VpcManifest::with_exposes("VPC-1", vec![masquerade, forwarded]),
             remote,
             remote_id: "11111".try_into().unwrap(),
             remote_vni: vpc3.vni,
@@ -392,7 +389,6 @@ mod context {
 
         let mut vpctable = VpcTable::new();
         vpctable.add(vpc1).unwrap();
-        vpctable.add(vpc2).unwrap();
         vpctable.add(vpc3).unwrap();
 
         vpctable.validate().unwrap()
@@ -884,7 +880,7 @@ mod std_tests {
     }
 
     // Ports that port forwarding has claimed on a public address are not handed out by
-    // masquerade, even though the two were configured by different VPCs. The claim binds the
+    // masquerade, even though the two were declared by separate exposes. The claim binds the
     // public space towards the peer, not the expose that declared it.
     //
     // The claim is on the public side. It used to be computed from the private prefixes instead,
