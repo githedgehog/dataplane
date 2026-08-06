@@ -594,6 +594,70 @@ fn an_address_with_room_is_reused_before_a_fresh_one_is_drawn() {
     );
 }
 
+/// Allocate a region dry, for real, and check what comes out.
+///
+/// Everything else here claims ports away to reach exhaustion cheaply, which is a model of it
+/// rather than the thing itself. This does it the long way: it takes about 64k allocations to move
+/// off one address, which is exactly why a handful of allocations never leaves the first, and why
+/// the paths that move between addresses and finally give up were untested.
+///
+/// A second per run buys the whole ladder: every port of an address, the move to the next address,
+/// the last port of the last address, and the refusal after that.
+#[test]
+fn a_region_can_be_allocated_dry() {
+    // 65536 ports, less the IANA well-known range that masquerade keeps off for TCP.
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: usize = 2;
+
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES as u128 - 1)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets =
+        pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
+
+    let first = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+    let mut held = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut moved_at = None;
+
+    loop {
+        let Ok(allocation) = pool_sets[0].allocate(false) else {
+            break;
+        };
+        let (ip, port) = (allocation.ip(), allocation.port().as_u16());
+        assert!(port >= 1024, "{ip}:{port} is in the well-known port range");
+        assert!(seen.insert((ip, port)), "{ip}:{port} was handed out twice");
+        if ip != first && moved_at.is_none() {
+            moved_at = Some(held.len());
+        }
+        held.push(allocation);
+        assert!(
+            held.len() <= ADDRESSES * PORTS_PER_ADDRESS,
+            "the region served more than the addresses and ports it holds"
+        );
+    }
+
+    // An address is used up before the next is drawn on, and each gives every port it has.
+    assert_eq!(
+        moved_at,
+        Some(PORTS_PER_ADDRESS),
+        "allocation did not move to the second address exactly when the first ran out"
+    );
+    assert_eq!(
+        held.len(),
+        ADDRESSES * PORTS_PER_ADDRESS,
+        "the region did not serve every address and port it holds"
+    );
+
+    // Everything given back makes the whole region servable again.
+    drop(held);
+    assert!(
+        pool_sets[0].allocate(false).is_ok(),
+        "the region served nothing after everything was freed"
+    );
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
