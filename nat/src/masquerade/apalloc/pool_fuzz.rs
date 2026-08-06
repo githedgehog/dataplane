@@ -171,6 +171,17 @@ fn allocations_are_unique_and_within_the_declared_ranges() {
         });
 }
 
+/// Everything given back returns the pools to the state they started in.
+///
+/// Counting the second round rather than comparing it is no test at all: an address holds tens of
+/// thousands of ports, so a couple of dozen allocations succeed whether or not anything was ever
+/// released, and the counts match on every input. What does bite is asking for the same answers,
+/// which pins the address bitmap and the count of usable blocks: leak either and the second round
+/// starts somewhere else.
+///
+/// It does not pin the freeing of an individual port, because dropping everything at once drops
+/// whole blocks, which are rebuilt fresh whatever their bitmaps said. See
+/// [`a_port_freed_on_its_own_is_handed_out_again`] for that.
 #[test]
 fn freed_allocations_become_available_again() {
     bolero::check!()
@@ -179,21 +190,28 @@ fn freed_allocations_become_available_again() {
         .for_each(|config: Config| {
             let pool_sets = config.pool_sets();
 
+            let pairs = |round: &[(usize, super::AllocatedPort<Ipv4Addr>)]| {
+                round
+                    .iter()
+                    .map(|(owner, allocation)| {
+                        (*owner, allocation.ip(), allocation.port().as_u16())
+                    })
+                    .collect::<Vec<_>>()
+            };
+
             let first = allocate_round_robin(&pool_sets, ALLOCATIONS);
-            let taken: BTreeSet<_> = first
-                .iter()
-                .map(|(_, allocation)| (allocation.ip(), allocation.port().as_u16()))
-                .collect();
+            let taken = pairs(&first);
             assert!(!taken.is_empty(), "a config with ranges allocated nothing");
             drop(first);
 
-            // Everything was released, so the same space must be servable again. Values need not
-            // repeat, but the pools must not have leaked capacity.
+            // Nothing is randomized, so the pools are a function of their state: handing out
+            // anything other than what they handed out the first time means the state they were
+            // returned to is not the state they started in.
             let second = allocate_round_robin(&pool_sets, ALLOCATIONS);
             assert_eq!(
-                second.len(),
-                taken.len(),
-                "the pools served fewer allocations after everything was freed"
+                pairs(&second),
+                taken,
+                "the pools did not serve the same space again after everything was freed"
             );
         });
 }
@@ -247,7 +265,16 @@ fn re_reservation_after_a_config_change_is_honoured() {
                             "expose {owner} was refused {ip}, which its new config declares"
                         );
                     }
-                    Err(_) => {}
+                    // Nothing else may refuse it. The pairs handed out under the previous config
+                    // are distinct, the new pools are freshly built, and no port is claimed here,
+                    // so an address the new config still declares has to be carryable. Accepting
+                    // any error at all here would let the property pass on pools that refused
+                    // every flow, and would hide an allocator reporting its own bookkeeping
+                    // broken, which the concurrent suite treats as a failure.
+                    Err(e) => panic!(
+                        "expose {owner} could not carry {ip}:{port} over, and not because the \
+                         address is gone: {e}"
+                    ),
                 }
             }
 
@@ -960,4 +987,118 @@ fn several_claims_on_one_address_are_all_honoured() {
         !allocated.contains(&2000),
         "port 2000 was claimed for port forwarding but handed out: {allocated:?}"
     );
+}
+
+// A claim on one public address, for the tests that carry a flow over onto it.
+fn claim_on_base(start: u16, end: u16) -> PrefixWithOptionalPorts {
+    PrefixWithOptionalPorts::new(
+        format!("{}/32", base_address()).as_str().into(),
+        Some(PortRange::new(start, end).unwrap_or_else(|_| unreachable!())),
+    )
+}
+
+fn base_address() -> Ipv4Addr {
+    Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()))
+}
+
+/// A flow carried across a config change may hold a port that the new configuration has just
+/// claimed for port forwarding. It cannot be carried over, and the refusal must not depend on how
+/// much of the block around it the claim happens to cover.
+///
+/// A claim on part of a block leaves the block allocatable, and the refusal comes from the block's
+/// own bitmap. A claim on the whole of one takes the block out of service when the allocator is
+/// built, so it never joins the list of allocated blocks — and the lookup used to read that absence
+/// as its own bookkeeping being broken, reporting an internal error for what is an ordinary policy
+/// conflict between two parts of a valid configuration.
+///
+/// The partial case also pins the claims being clipped into a block that a reservation brings in:
+/// without that, the port claimed for forwarding would be handed straight to the carried-over flow.
+#[test]
+fn a_carried_over_port_that_port_forwarding_claimed_is_refused_the_same_way() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    // Part of block 4 (1024..=1279), and the whole of block 5 (1280..=1535).
+    let claimed = PrefixPortsSet::from([claim_on_base(1024, 1100), claim_on_base(1280, 1535)]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    let partly = pool_sets[0]
+        .reserve(base_address(), port(1050))
+        .expect_err("a port port forwarding has claimed may not be carried over");
+    let wholly = pool_sets[0]
+        .reserve(base_address(), port(1300))
+        .expect_err("a port port forwarding has claimed may not be carried over");
+
+    assert_eq!(
+        partly,
+        AllocatorError::PortReservationFailed(1050),
+        "a claimed port in an allocatable block was refused as {partly}"
+    );
+    assert_eq!(
+        wholly,
+        AllocatorError::PortReservationFailed(1300),
+        "a claimed port in a block claimed in full was refused as {wholly}, which reports a \
+         configuration conflict as a bug in the allocator"
+    );
+
+    // A port in the same blocks that nothing has claimed still carries over, so the refusals above
+    // are about the claims rather than about the address being unserved.
+    assert!(
+        pool_sets[0].reserve(base_address(), port(1200)).is_ok(),
+        "an unclaimed port on a served address was refused"
+    );
+}
+
+/// An address brought into a pool by a carried-over flow still keeps masquerade off the ports port
+/// forwarding has claimed on it.
+///
+/// A flow that survives a config change presents the address it already holds, and the new pools
+/// take it into use through the reservation path rather than by drawing it from the bitmap. That
+/// address then serves later allocations exactly as a drawn one does, so it has to arrive carrying
+/// the same claims. Bringing it in unencumbered let masquerade hand out the very ports port
+/// forwarding is statically mapping, to a flow created moments after the config was applied.
+#[test]
+fn an_address_brought_in_by_a_reservation_keeps_its_claims() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    // Part of block 4 (1024..=1279), and the whole of block 6 (1536..=1791). The first tests the
+    // claims reaching a block built later, the second tests the block being ruled out up front.
+    let claims = [(1024u16, 1200u16), (1536, 1791)];
+    let claimed = PrefixPortsSet::from(claims.map(|(lo, hi)| claim_on_base(lo, hi)));
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    // Carry a flow over onto a port nothing has claimed, which is what takes the address into use.
+    // Its block is far from the ones under test, so it does not stand in the way of allocation.
+    let carried = pool_sets[0]
+        .reserve(base_address(), port(5000))
+        .expect("an unclaimed port on a served address must carry over");
+
+    // Now allocate through the address that reservation brought in. Enough to work past the block
+    // the claim only touches and reach the one it covers entirely.
+    let mut held = Vec::new();
+    for step in 0..600 {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .unwrap_or_else(|e| panic!("allocation {step} failed: {e}"));
+        let allocated = allocation.port().as_u16();
+        assert_eq!(
+            allocation.ip(),
+            base_address(),
+            "the region holds one address, so every allocation must come from it"
+        );
+        for (lo, hi) in claims {
+            assert!(
+                !(lo..=hi).contains(&allocated),
+                "masquerade was handed {}:{allocated} on allocation {step}, which port forwarding \
+                 has claimed ({lo}..={hi})",
+                base_address()
+            );
+        }
+        held.push(allocation);
+    }
+
+    drop(carried);
 }
