@@ -39,8 +39,11 @@ test *args="":
       {{ _just_debuggable_ }}
       declare -ri START_SEED="$((10#$schedule_seed))"
       declare -ri END_SEED="$((START_SEED + ${seeds}))"
+      # Parallel Miri workers cannot share an incremental compilation session.
+      declare -rx CARGO_INCREMENTAL=0
       declare MIRIFLAGS=""
-      declare RUSTFLAGS=""
+      # Environment RUSTFLAGS replace the cargo-configured flags.
+      declare RUSTFLAGS="--cfg=tokio_unstable --check-cfg=cfg(emulated) "
       MIRIFLAGS+="-Zmiri-compare-exchange-weak-failure-rate=${weak_failure_rate} "
       MIRIFLAGS+="-Zmiri-disable-isolation "
       MIRIFLAGS+="-Zmiri-many-seeds=${START_SEED}..${END_SEED} "
