@@ -8,14 +8,14 @@
 
 #![cfg(test)]
 
-use super::alloc::PoolSet;
+use super::alloc::{PoolSet, map_address};
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
 use net::ip::NextHeader;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -262,6 +262,7 @@ fn re_reservation_after_a_config_change_is_honoured() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
 fn a_region_can_be_allocated_dry() {
     const PORTS_PER_ADDRESS: usize = 65536 - 1024;
     const ADDRESSES: usize = 2;
@@ -301,6 +302,7 @@ fn a_region_can_be_allocated_dry() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
 fn a_freed_port_block_is_reused_while_its_address_is_held() {
     const PORTS_PER_BLOCK: usize = 256;
     const PORTS_PER_ADDRESS: usize = 65536 - 1024;
@@ -336,11 +338,30 @@ fn a_freed_port_block_is_reused_while_its_address_is_held() {
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
 
+#[test]
+fn the_offset_mapping_refuses_an_address_it_cannot_index() {
+    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let mapping = BTreeMap::from([(start, 0u32)]);
+
+    assert_eq!(map_address(Ipv6Addr::from(start + 1), &mapping), Ok(1));
+    assert_eq!(
+        map_address(Ipv6Addr::from(start + u128::from(u32::MAX)), &mapping),
+        Ok(u32::MAX)
+    );
+    for beyond in [u128::from(u32::MAX) + 1, 1u128 << 33] {
+        assert_eq!(
+            map_address(Ipv6Addr::from(start + beyond), &mapping),
+            Err(AllocatorError::NoPoolFound)
+        );
+    }
+}
+
 /// A region may hold more addresses than a `u32` can index, in which case the bitmap covers only
 /// the first 2^32 of them. An address past that is inside the region but not servable, which a
 /// flow carried across a config change can present, and which must be an error rather than a panic
 /// part way through applying a config.
 #[test]
+#[cfg_attr(miri, ignore = "the 2^32-entry bitmap is too slow under miri")]
 fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
     let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
     // Far wider than the bitmap can index.
