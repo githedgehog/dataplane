@@ -17,15 +17,19 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
 ) -> Result<NatFlowStatus, DoneReason> {
-    let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
-    debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
+    if let Some(src_vpcd) = packet.meta().src_vpcd {
+        debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
+    } else {
+        // The missing source only affects this log line.
+        debug!("(masquerade): Processing ICMP error message with flow {f}");
+    }
 
     let flow_info_locked = flow_info.locked.read();
-    let state = flow_info_locked
-        .nat_state
-        .extract_ref::<MasqueradeState>()
-        .unwrap_or_else(|| unreachable!());
+    let Some(state) = flow_info_locked.nat_state.extract_ref::<MasqueradeState>() else {
+        debug!("(masquerade): ICMP error hit a flow carrying no masquerade state");
+        return Err(DoneReason::InternalFailure);
+    };
 
     // translate inner packet fragment with the common API object `NatTranslationData`
     let nat_translation = state.reverse_translation_data();

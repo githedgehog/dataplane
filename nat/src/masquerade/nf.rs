@@ -41,6 +41,8 @@ pub(crate) enum MasqueradeError {
     FlowKeyError,
     #[error("no allocator available")]
     NoAllocator,
+    #[error("packet reached masquerade without a VPC discriminant")]
+    MissingDiscriminant,
     #[error("allocation failed: {0}")]
     AllocationFailure(AllocatorError),
     #[error("invalid port {0}")]
@@ -80,6 +82,17 @@ impl Masquerade {
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
+
+    /// Return the VPC identities required for masquerading, or drop malformed input.
+    fn discriminants<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+    ) -> Result<(VpcDiscriminant, VpcDiscriminant), MasqueradeError> {
+        let (Some(src), Some(dst)) = (packet.meta().src_vpcd, packet.meta().dst_vpcd) else {
+            error!("Masqueraded packet without a VPC discriminant. This is a bug");
+            return Err(MasqueradeError::MissingDiscriminant);
+        };
+        Ok((src, dst))
+    }
 
     /// Creates a new [`Masquerade`] processor from provided parameters.
     #[must_use]
@@ -256,8 +269,7 @@ impl Masquerade {
         let idle_timeout = alloc.idle_timeout;
 
         // src and dst vpc of this packet
-        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+        let (src_vpc_id, dst_vpc_id) = Self::discriminants(packet)?;
 
         // build key for reverse flow, based on the current packet headers: if we use masquerading
         // with static NAT, we assume we've already been through static destination NAT and we'll
@@ -380,8 +392,7 @@ impl Masquerade {
             return Err(MasqueradeError::IntendedDrop("TCP without SYN"));
         }
 
-        let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-        let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+        let (src_vpcd, dst_vpcd) = Self::discriminants(packet)?;
 
         // Extract flow key for the current packet
         let current_flow_key =
@@ -518,6 +529,7 @@ impl From<&MasqueradeError> for DoneReason {
                 DoneReason::Malformed
             }
             MasqueradeError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
+            MasqueradeError::MissingDiscriminant => DoneReason::Unroutable,
             MasqueradeError::NoAllocator
             | MasqueradeError::UnexpectedKeyVariant
             | MasqueradeError::IcmpUnsupportedCategory
