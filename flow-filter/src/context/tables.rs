@@ -18,13 +18,18 @@
 //! longest-prefix-match (encoded in the rule priority, see [`rule_priority`])
 //! handles it uniformly.
 //!
-//! Masquerade destinations are kept in the remote tables even though they cannot
-//! accept new connections: their [`Verdict`] marks reply traffic on established
-//! masquerade flows as distinguishable from a destination no peering covers, and
-//! the NF gates them on flow state. Port-forwarding sources stay out of the local
-//! tables (a covering expose must answer for connection initiation), so a stage-2
-//! miss is reported distinctly (see [`LookupResult`]) for the NF to resolve
-//! against flow state.
+//! Masquerade destinations cannot accept new connections and port-forwarding
+//! sources cannot initiate them, so neither may answer a lookup on its own. Their
+//! rules are still in the tables, keyed on the revalidation information an
+//! outdated flow supplies: the destination VPC for the former, the source NAT mode
+//! for the latter. Each stage therefore asks what the flow vouches for first, and
+//! runs a second, ungated pass over the misses. A packet on an established flow
+//! keeps the peering and the NAT mode that flow was built on, even where an expose
+//! covers the same address ungated; the ungated pass is what answers for forward
+//! traffic, which carries no flow information of its own.
+//! A stage-2 miss is still reported distinctly (see [`LookupResult`]): a packet
+//! whose flow the NF, not the tables, has to resolve reaches it without any
+//! revalidation information.
 
 use crate::{NatMode, NatRequirement};
 use acl::dpdk::dyn_table::predicate_to_chunks;
@@ -460,8 +465,9 @@ fn emit_local(
     nat_mode: NatMode,
     action: NatMode,
 ) {
-    // Port-forwarding sources are never emitted into the local tables, so the tie-break bit is
-    // always clear here; local rules keep pure prefix-length ordering.
+    // Port-forwarding sources are the only local rules a masquerade rule can overlap, and the
+    // "nat_mode" key already keeps the two apart, so the tie-break bit is always clear here;
+    // local rules keep pure prefix-length ordering.
     let priority = rule_priority(ip_range, false);
     match ip_range {
         Prefix::IPV4(prefix) => {
@@ -524,10 +530,10 @@ impl RuleSet {
                 };
 
                 // Stage 1: peer's public prefixes -> Verdict{dst VPC, dst NAT}. Masquerade
-                // destinations cannot receive connections, but their rules stay in the table:
-                // a masquerade Verdict lets the NF tell reply traffic on an established
-                // masquerade flow apart from a destination no peering covers (which must drop).
-                // The NF only accepts a masquerade Verdict when the packet rides such a flow.
+                // destinations cannot receive connections, so their rules are keyed on the peer
+                // VNI: only a lookup revalidating against that very VPC -- reply traffic on an
+                // established masquerade flow -- reaches them. Everything else is keyed on 0,
+                // the "no revalidation" value, which is what an ordinary lookup asks with.
                 for expose in peering.remote().valexp() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = Verdict {
@@ -569,7 +575,9 @@ impl RuleSet {
                 }
 
                 // Stage 2: source's private prefixes -> source NAT mode. Port-forwarding sources
-                // cannot initiate connections, so they are excluded here.
+                // cannot initiate connections, so, symmetrically, their rules are keyed on the
+                // NAT mode they require: only a lookup revalidating against port forwarding
+                // reaches them.
                 for expose in peering.local().valexp() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = NatRequirement::from_expose(expose);
