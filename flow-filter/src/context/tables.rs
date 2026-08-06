@@ -83,6 +83,7 @@ pub(crate) struct LookupInput {
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(u16, u16)>,
+    pub(crate) nat_mode: NatMode,
 }
 
 /// Result of a stage-1 (remote/destination) match.
@@ -102,6 +103,7 @@ struct Query<I> {
     dst_ip: I,
     src_port: u16,
     dst_port: u16,
+    nat_mode: u8,
 }
 
 /// Lower a config L4 protocol to a bitmask predicate: a specific protocol matches exactly (every
@@ -165,6 +167,9 @@ pub(super) struct LocalKey<I> {
     #[range]
     #[cli(column_name = "src-port")]
     src_port: u16,
+    #[exact]
+    #[cli(column_name = "nat-mode")]
+    nat_mode: u8,
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -452,6 +457,7 @@ fn emit_local(
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
     proto: MaskSpec<NextHeader>,
+    nat_mode: NatMode,
     action: NatMode,
 ) {
     // Port-forwarding sources are never emitted into the local tables, so the tie-break bit is
@@ -465,6 +471,7 @@ fn emit_local(
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
+                nat_mode: ExactSpec::new(NatRequirement::convert_option(nat_mode)),
             };
             v4.push(NeutralRule {
                 priority,
@@ -480,6 +487,7 @@ fn emit_local(
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
+                nat_mode: ExactSpec::new(NatRequirement::convert_option(nat_mode)),
             };
             v6.push(NeutralRule {
                 priority,
@@ -562,14 +570,14 @@ impl RuleSet {
 
                 // Stage 2: source's private prefixes -> source NAT mode. Port-forwarding sources
                 // cannot initiate connections, so they are excluded here.
-                for expose in peering
-                    .local()
-                    .valexp()
-                    .iter()
-                    .filter(|expose| expose.can_init_connection())
-                {
+                for expose in peering.local().valexp() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = NatRequirement::from_expose(expose);
+                    let nat_mode = if expose.has_port_forwarding() {
+                        action
+                    } else {
+                        None
+                    };
                     for prefix in expose.ips() {
                         emit_local(
                             &mut rules.local_v4,
@@ -579,6 +587,7 @@ impl RuleSet {
                             prefix.prefix(),
                             prefix.into(),
                             proto,
+                            nat_mode,
                             action,
                         );
                     }
@@ -592,6 +601,7 @@ impl RuleSet {
                         default_ip(),
                         PORT_RANGE_WILDCARD,
                         proto_mask(L4Protocol::Any),
+                        None,
                         None,
                     );
                 }
@@ -652,6 +662,7 @@ impl FlowFilterContext {
     // Single-key lookup: the readable per-packet oracle used by tests; production runs
     // lookup_batch. The differential test cross-checks the two against each other.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn lookup(
         &self,
         src_vpcd: VpcDiscriminant,
@@ -660,12 +671,14 @@ impl FlowFilterContext {
         dst_ip: IpAddr,
         proto: NextHeader,
         ports: Option<(u16, u16)>,
+        nat_mode: NatMode,
     ) -> LookupResult {
         let src_vni = key_vni(src_vpcd);
         let dst_vni = dst_vpcd.map(|d| key_vni(d).as_u32()).unwrap_or(0);
         let (src_port, dst_port) = ports.unzip();
         let src_port = src_port.unwrap_or(0);
         let dst_port = dst_port.unwrap_or(0);
+        let nat_mode = NatRequirement::convert_option(nat_mode);
 
         match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
@@ -692,17 +705,34 @@ impl FlowFilterContext {
                         return LookupResult::DestinationMiss;
                     }
                 };
+                let dst_vni = key_vni(verdict.dst_vpcd);
                 match self.local_v4.lookup(&LocalKey {
                     proto,
                     src_vni,
-                    dst_vni: key_vni(verdict.dst_vpcd),
+                    dst_vni,
                     src_ip,
                     src_port,
+                    nat_mode,
                 }) {
-                    Some(nat_mode) => {
-                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                    Some(src_nat_mode) => {
+                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
                     }
-                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
+                    None => {
+                        if nat_mode != 0
+                            && let Some(src_nat_mode) = self.local_v4.lookup(&LocalKey {
+                                proto,
+                                src_vni,
+                                dst_vni,
+                                src_ip,
+                                src_port,
+                                nat_mode: 0,
+                            })
+                        {
+                            LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
+                        } else {
+                            LookupResult::SourceMiss(verdict.dst_vpcd)
+                        }
+                    }
                 }
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
@@ -729,17 +759,34 @@ impl FlowFilterContext {
                         return LookupResult::DestinationMiss;
                     }
                 };
+                let dst_vni = key_vni(verdict.dst_vpcd);
                 match self.local_v6.lookup(&LocalKey {
                     proto,
                     src_vni,
-                    dst_vni: key_vni(verdict.dst_vpcd),
+                    dst_vni,
                     src_ip,
                     src_port,
+                    nat_mode,
                 }) {
-                    Some(nat_mode) => {
-                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *nat_mode))
+                    Some(src_nat_mode) => {
+                        LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
                     }
-                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
+                    None => {
+                        if nat_mode != 0
+                            && let Some(src_nat_mode) = self.local_v6.lookup(&LocalKey {
+                                proto,
+                                src_vni,
+                                dst_vni,
+                                src_ip,
+                                src_port,
+                                nat_mode: 0,
+                            })
+                        {
+                            LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
+                        } else {
+                            LookupResult::SourceMiss(verdict.dst_vpcd)
+                        }
+                    }
                 }
             }
             _ => {
@@ -770,6 +817,7 @@ impl FlowFilterContext {
             let src_vni = key_vni(input.src_vpcd);
             let dst_vni = input.dst_vpcd.map(|d| key_vni(d).as_u32()).unwrap_or(0);
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
+            let nat_mode = NatRequirement::convert_option(input.nat_mode);
             match (input.src_ip, input.dst_ip) {
                 (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                     v4_idx.push(i);
@@ -781,6 +829,7 @@ impl FlowFilterContext {
                         dst_ip,
                         src_port,
                         dst_port,
+                        nat_mode,
                     });
                 }
                 (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
@@ -793,6 +842,7 @@ impl FlowFilterContext {
                         dst_ip,
                         src_port,
                         dst_port,
+                        nat_mode,
                     });
                 }
                 _ => { /* version mismatch: leave "out[i] = DestinationMiss" */ }
@@ -859,6 +909,8 @@ fn lookup_versioned<I: FixedSize + Copy>(
         }
 
         // Stage 2: for the hits only, source -> source NAT.
+        // Port-forwarding rules use the NAT mode as part of the key, to dissociate keys from any
+        // keys associated to overlapping forward masquerade prefixes.
         let mut local_keys: Vec<LocalKey<I>> = Vec::new();
         let mut hit_pos: Vec<usize> = Vec::new();
         for (pos, verdict) in verdicts.iter().enumerate() {
@@ -870,12 +922,34 @@ fn lookup_versioned<I: FixedSize + Copy>(
                     dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip: q.src_ip,
                     src_port: q.src_port,
+                    nat_mode: q.nat_mode,
                 });
                 hit_pos.push(pos);
             }
         }
         let mut nat_modes: Vec<Option<&NatMode>> = vec![None; local_keys.len()];
         local.lookup_batch(&local_keys, &mut nat_modes);
+
+        // Second pass: if nat_mode was set and we didn't find an entry for reply traffic associated
+        // with a port-forwarding flow, set nat_mode to 0 to see if we have an entry for forward
+        // traffic for port-forwarding (forward traffic entries do not have flow-info nat mode
+        // attached, or we couldn't use it to initiate new flows).
+        let mut reval_positions = Vec::new();
+        let mut reval_keys = Vec::new();
+        for (pos, (nat_mode, &q_pos)) in nat_modes.iter().zip(hit_pos.iter()).enumerate() {
+            if nat_mode.is_none() && q_chunk[q_pos].nat_mode != 0 {
+                reval_positions.push(pos);
+                reval_keys.push(LocalKey {
+                    nat_mode: 0,
+                    ..local_keys[pos].clone()
+                });
+            }
+        }
+        let mut reval_nat_modes = vec![None; reval_keys.len()];
+        local.lookup_batch(&reval_keys, &mut reval_nat_modes);
+        for (pos, nat_mode) in reval_positions.into_iter().zip(reval_nat_modes) {
+            nat_modes[pos] = nat_mode;
+        }
 
         // Scatter results back to the caller's output positions. A stage-1 miss stays
         // DestinationMiss; a stage-1 hit whose source matched nothing becomes SourceMiss.
@@ -909,9 +983,9 @@ mod unit_tests {
     }
 
     #[test]
-    fn remote_key_has_five_fields_local_has_five_too() {
+    fn remote_key_has_five_fields_local_has_six() {
         assert_eq!(RemoteKey::<Ipv4Addr>::N, 5);
-        assert_eq!(LocalKey::<Ipv4Addr>::N, 5);
+        assert_eq!(LocalKey::<Ipv4Addr>::N, 6);
     }
 
     #[test]

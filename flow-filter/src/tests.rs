@@ -566,11 +566,7 @@ fn outdated_flow_with_consistent_state_is_kept() {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Stateful reply traffic across config changes. The tables cannot answer for the reverse direction
-// of stateful-NAT sessions (masquerade destinations are only markers, port-forwarding sources are
-// absent altogether), so after a genid bump those packets must ride their established flow instead
-// of being dropped -- while packets with no such flow, and flows whose peering is gone, still fail
-// closed.
+// Stateful reply traffic across config changes.
 
 #[test]
 fn masquerade_reply_on_established_flow_survives_config_change() {
@@ -626,7 +622,6 @@ fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
         Some(vpcd(200)),
         build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    // The flow's recorded destination does not match what the tables resolve: stale, drop.
     let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
@@ -637,8 +632,7 @@ fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
 fn port_forwarding_reply_on_established_flow_survives_config_change() {
     let (mut flow_filter, _) = make_flow_filter(dst_port_forwarding_context());
     set_genid(&mut flow_filter, 5);
-    // Reply direction of a forwarded session: the forwarded host answers from its private
-    // address, which is (deliberately) not in the local tables.
+    // Reply direction of a forwarded session: the forwarded host answers from its private address.
     let mut p = packet(
         Some(vpcd(200)),
         build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
