@@ -300,6 +300,38 @@ fn a_region_can_be_allocated_dry() {
     assert!(pool_sets[0].allocate(false).is_ok());
 }
 
+#[test]
+fn a_freed_port_block_is_reused_while_its_address_is_held() {
+    const PORTS_PER_BLOCK: usize = 256;
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let mut held = Vec::with_capacity(PORTS_PER_ADDRESS);
+    while let Ok(allocation) = pool_sets[0].allocate(false) {
+        held.push(allocation);
+        assert!(held.len() <= PORTS_PER_ADDRESS);
+    }
+    assert_eq!(held.len(), PORTS_PER_ADDRESS);
+
+    let freed_block = 1024..=1279u16;
+    held.retain(|allocation| !freed_block.contains(&allocation.port().as_u16()));
+    assert_eq!(held.len(), PORTS_PER_ADDRESS - PORTS_PER_BLOCK);
+
+    for _ in 0..PORTS_PER_BLOCK {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .expect("the freed block has room");
+        assert!(freed_block.contains(&allocation.port().as_u16()));
+        held.push(allocation);
+    }
+    assert!(pool_sets[0].allocate(false).is_err());
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
