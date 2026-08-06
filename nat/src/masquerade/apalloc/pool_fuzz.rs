@@ -261,6 +261,45 @@ fn re_reservation_after_a_config_change_is_honoured() {
         });
 }
 
+#[test]
+fn a_region_can_be_allocated_dry() {
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: usize = 2;
+
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES as u128 - 1)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let first = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+    let mut held = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut moved_at = None;
+
+    while let Ok(allocation) = pool_sets[0].allocate(false) {
+        let tuple = (allocation.ip(), allocation.port().as_u16());
+        assert!(tuple.1 >= 1024);
+        assert!(
+            seen.insert(tuple),
+            "{}:{} was handed out twice",
+            tuple.0,
+            tuple.1
+        );
+        if tuple.0 != first && moved_at.is_none() {
+            moved_at = Some(held.len());
+        }
+        held.push(allocation);
+        assert!(held.len() <= ADDRESSES * PORTS_PER_ADDRESS);
+    }
+
+    assert_eq!(moved_at, Some(PORTS_PER_ADDRESS));
+    assert_eq!(held.len(), ADDRESSES * PORTS_PER_ADDRESS);
+
+    drop(held);
+    assert!(pool_sets[0].allocate(false).is_ok());
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
