@@ -31,10 +31,16 @@
 //! * An address and port is never handed to two live flows drawn from the same allocator. Shapes
 //!   that hold every allocation for the length of the run check this exactly; those that free as
 //!   they go trade that for exercising deallocation. See [`Live`] for why the two differ.
-//! * Neither allocation nor reservation ever reports [`AllocatorError::InternalIssue`]. That is the
-//!   allocator saying its own bookkeeping is inconsistent, and `find_block_for_port` carries a
-//!   standing `FIXME` wondering whether the block it just found non-free can be released before it
-//!   is looked up. Reserving concurrently with allocating is what would show it.
+//! * Neither allocation nor reservation ever reports [`AllocatorError::InternalIssue`]. That is
+//!   the allocator saying its own bookkeeping is inconsistent.
+//!
+//!   A limit worth being honest about: `find_block_for_port` carries a standing `FIXME` wondering
+//!   whether the block it just found non-free can be released before it is looked up, and this
+//!   suite does not reach that interleaving. Reservations here target survivors, and a survivor's
+//!   block is pinned for the whole generation by the reservation [`Published`] holds, so it cannot
+//!   disappear mid-lookup. Reaching it would take generations whose specs differ, so that a pair
+//!   stops being carried and its block can empty while another thread reserves it; that is the
+//!   suite's next extension, not something it does today.
 //!
 //! # No loom
 //!
@@ -198,11 +204,14 @@ impl Published {
                     carried.insert((ip, port.as_u16()));
                     reservations.push(reservation);
                 }
-                Err(AllocatorError::InternalIssue(message)) => {
-                    panic!("re-reserving {ip}:{port} for generation {generation}: {message}")
+                // Nothing may refuse a survivor. Every generation is built from the same specs, so
+                // the address is still served; the survivors are distinct pairs; and the allocator
+                // is fresh, so nothing else holds them. Accepting failure here would let the model
+                // publish generations that quietly carried nothing, and every property about
+                // carried pairs would pass vacuously.
+                Err(e) => {
+                    panic!("re-reserving {ip}:{port} for generation {generation} failed: {e}")
                 }
-                // The address may no longer be served, or another survivor may already hold it.
-                Err(_) => {}
             }
         }
 
@@ -408,16 +417,37 @@ fn packet_worker(
             }
             PacketOp::ReserveExisting => {
                 // Race a reservation against the other threads' allocations on pools that are
-                // already published and in use. Failing is fine, claiming inconsistent bookkeeping
-                // is not.
+                // already published and in use.
+                //
+                // Every survivor is carried into every generation -- the builder panics otherwise
+                // -- so in a correct allocator this reservation is always refused: the writer's
+                // own reservation holds the pair. The refusal is the same rule as for allocation,
+                // checked on the path a config change actually takes, and the success arm below is
+                // an oracle rather than a covered path: it can only run if a bug lets a held pair
+                // be reserved twice, and then it must not be dropped here, or the port would go
+                // back to the pools mid-run and the other oracles would be reasoning over a lie.
                 if let Some(&(owner, ip, port)) = survivors.get(step % survivors.len().max(1))
                     && let Some(pool) = published.pools.get(owner)
-                    && let Err(AllocatorError::InternalIssue(message)) = pool.reserve(ip, port)
                 {
-                    panic!(
-                        "reserving {ip}:{port} in generation {}: {message}",
-                        published.generation
-                    );
+                    let carried = published.carried.contains(&(ip, port.as_u16()));
+                    match pool.reserve(ip, port) {
+                        Ok(reservation) => {
+                            assert!(
+                                !carried,
+                                "generation {} reserved {ip}:{port} a second time, although a \
+                                 carried-over flow already holds it",
+                                published.generation
+                            );
+                            live.claim(published.generation, ip, port.as_u16());
+                            held.push((published.generation, reservation));
+                        }
+                        Err(AllocatorError::InternalIssue(message)) => panic!(
+                            "reserving {ip}:{port} in generation {}: {message}",
+                            published.generation
+                        ),
+                        // Refused because it is held, which is the ordinary outcome here.
+                        Err(_) => {}
+                    }
                 }
             }
         }
