@@ -184,7 +184,8 @@ impl Published {
         generation: u64,
         survivors: &[(usize, Ipv4Addr, NatPort)],
     ) -> Self {
-        let pools = pool_sets_for_specs::<Ipv4Addr>(specs, NextHeader::TCP, false);
+        let pools =
+            pool_sets_for_specs::<Ipv4Addr>(specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
         let mut carried = BTreeSet::new();
         let mut reservations = Vec::new();
 
@@ -266,7 +267,6 @@ impl Scenario {
                         AddrInterval::new(BASE + start, BASE + end)
                     })
                     .collect(),
-                reserved: PrefixPortsSet::new(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect()
@@ -278,7 +278,8 @@ impl Scenario {
         let specs = self.specs();
 
         // The flows that already exist when the config change arrives.
-        let initial = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+        let initial =
+            pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
         let mut existing = Vec::new();
         let mut survivors = Vec::new();
         for (owner, pool) in initial.iter().enumerate() {
@@ -459,11 +460,11 @@ fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
         let specs = vec![PoolSpec {
             // One address, so the flow that ends is the last holder of the one being printed.
             public_ranges: vec![AddrInterval::new(BASE, BASE)],
-            reserved: PrefixPortsSet::new(),
             idle_timeout: IDLE_TIMEOUT,
         }];
         let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
             &specs,
+            &PrefixPortsSet::new(),
             NextHeader::TCP,
             false,
         ));

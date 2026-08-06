@@ -88,7 +88,6 @@ impl Config {
             .into_iter()
             .map(|public_ranges| PoolSpec {
                 public_ranges,
-                reserved: PrefixPortsSet::new(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect()
@@ -96,7 +95,12 @@ impl Config {
 
     fn pool_sets(&self) -> Vec<PoolSet<Ipv4Addr>> {
         // No randomization: a failure has to reproduce from its seed alone.
-        pool_sets_for_specs::<Ipv4Addr>(&self.specs(), NextHeader::TCP, false)
+        pool_sets_for_specs::<Ipv4Addr>(
+            &self.specs(),
+            &PrefixPortsSet::new(),
+            NextHeader::TCP,
+            false,
+        )
     }
 
     fn owner_count(&self) -> usize {
@@ -278,11 +282,11 @@ fn an_exhausted_region_falls_through_to_the_next() {
 
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(full, full), AddrInterval::new(free, free)],
-        reserved: [every_port].into_iter().collect(),
         idle_timeout: IDLE_TIMEOUT,
     }];
 
-    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let claimed = PrefixPortsSet::from([every_port]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
     let allocation = pool_sets[0]
         .allocate(false)
         .expect("the second region has room, so allocation must succeed");
@@ -307,10 +311,10 @@ fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
     // Far wider than the bitmap can index.
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(start, start + (1u128 << 40))],
-        reserved: PrefixPortsSet::new(),
         idle_timeout: IDLE_TIMEOUT,
     }];
-    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
+    let pool_sets =
+        pool_sets_for_specs::<Ipv6Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
     let port = NatPort::new_port_checked(4096).unwrap_or_else(|_| unreachable!());
 
     // Just inside the indexable span: an ordinary carry-over, which must still work.
@@ -337,10 +341,10 @@ fn ipv6_pools_allocate_within_their_range() {
     let end = start + 3;
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(start, end)],
-        reserved: PrefixPortsSet::new(),
         idle_timeout: IDLE_TIMEOUT,
     }];
-    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
+    let pool_sets =
+        pool_sets_for_specs::<Ipv6Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
 
     let mut held = Vec::new();
     let mut seen = BTreeSet::new();
@@ -437,14 +441,20 @@ impl ReservedConfig {
             .config
             .owner_ranges()
             .into_iter()
-            .zip(&self.reservations)
-            .map(|(public_ranges, claims)| PoolSpec {
+            .map(|public_ranges| PoolSpec {
                 public_ranges,
-                reserved: claims.iter().map(|claim| claim.as_prefix()).collect(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect();
-        pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
+        // A claim binds the public space towards a peer, whichever expose declared it, so the
+        // claims of every expose apply to every pool built over that space.
+        let claimed: PrefixPortsSet = self
+            .reservations
+            .iter()
+            .flatten()
+            .map(|claim| claim.as_prefix())
+            .collect();
+        pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false)
     }
 }
 
@@ -456,8 +466,8 @@ impl ReservedConfig {
 /// would hand out a port that port forwarding is statically mapping elsewhere.
 ///
 /// This is a property of the pools, which are given claims already expressed in public space.
-/// Computing those claims from the configuration is a separate step, and gets the address space
-/// wrong; see the note on `find_masquerade_portfw_overlap`.
+/// Translating a configuration into those claims is a separate step, covered by the tests on
+/// `ReserveSets` in `setup.rs` and end to end by `test_forwarded_ports_are_not_masqueraded_onto`.
 #[test]
 fn reserved_ports_are_never_allocated() {
     bolero::check!()
@@ -507,11 +517,11 @@ fn several_claims_on_one_address_are_all_honoured() {
 
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(address, address)],
-        reserved: [claim(1024, 1024), claim(2000, 2000)].into_iter().collect(),
         idle_timeout: IDLE_TIMEOUT,
     }];
 
-    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let claimed = PrefixPortsSet::from([claim(1024, 1024), claim(2000, 2000)]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
     let allocated: BTreeSet<u16> = allocate_round_robin(&pool_sets, 4)
         .iter()
         .map(|(_, allocation)| allocation.port().as_u16())
