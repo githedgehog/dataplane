@@ -19,7 +19,7 @@
 
 #![cfg(test)]
 
-use super::alloc::{MAX_ADDRESSES_PER_ALLOCATION, PoolSet};
+use super::alloc::{MAX_ADDRESSES_PER_ALLOCATION, PoolSet, map_address};
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
@@ -27,7 +27,7 @@ use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
 use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -620,6 +620,40 @@ fn an_address_with_room_is_reused_before_a_fresh_one_is_drawn() {
     );
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Exhausting an address
+///////////////////////////////////////////////////////////////////////////////
+
+/// How many of an address's 256-port blocks the tests that take an address dry work with.
+///
+/// Taking one dry is the point of those tests, and natively that means all 252 blocks masquerade
+/// may draw on: about 64k allocations per address, a second or so of work. Under an emulator the
+/// same walk runs for tens of minutes -- a miri run was killed after twenty-five of them -- so the
+/// port space is narrowed with a claim rather than the walk being cut short. The ladder is then the
+/// same one, every port of an address, the move to the next, the last port of the last, and the
+/// refusal after that, over a space small enough to finish.
+const EXHAUSTIBLE_BLOCKS: usize = cfg_select! {
+    emulated => 2,
+    _ => 252,
+};
+
+/// Ports an address can hand out once [`narrow_to_exhaustible_blocks`] has been applied to it.
+const EXHAUSTIBLE_PORTS: usize = EXHAUSTIBLE_BLOCKS * 256;
+
+/// A claim leaving only [`EXHAUSTIBLE_BLOCKS`] blocks of each address in `prefix` allocatable.
+///
+/// Empty when that is all of them, which is the native case: the first port past every block
+/// masquerade may use is 65536, which is not a port at all, and there is nothing left to claim.
+fn narrow_to_exhaustible_blocks(prefix: &str) -> PrefixPortsSet {
+    let Ok(first_unusable) = u16::try_from(1024 + EXHAUSTIBLE_PORTS) else {
+        return PrefixPortsSet::new();
+    };
+    PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+        prefix.into(),
+        Some(PortRange::new(first_unusable, u16::MAX).unwrap_or_else(|_| unreachable!())),
+    )])
+}
+
 /// Allocate a region dry, for real, and check what comes out.
 ///
 /// Everything else here claims ports away to reach exhaustion cheaply, which is a model of it
@@ -631,16 +665,16 @@ fn an_address_with_room_is_reused_before_a_fresh_one_is_drawn() {
 /// the last port of the last address, and the refusal after that.
 #[test]
 fn a_region_can_be_allocated_dry() {
-    // 65536 ports, less the IANA well-known range that masquerade keeps off for TCP.
-    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const PORTS_PER_ADDRESS: usize = EXHAUSTIBLE_PORTS;
     const ADDRESSES: usize = 2;
 
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES as u128 - 1)],
         idle_timeout: IDLE_TIMEOUT,
     }];
-    let pool_sets =
-        pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
+    // 10.1.0.0/31: both addresses of the region.
+    let claimed = narrow_to_exhaustible_blocks("10.1.0.0/31");
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
 
     let first = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
     let mut held = Vec::new();
@@ -698,15 +732,14 @@ fn a_region_can_be_allocated_dry() {
 #[test]
 fn a_block_given_back_is_used_again_while_its_address_stays_in_use() {
     const PORTS_PER_BLOCK: usize = 256;
-    // 65536 ports, less the IANA well-known range that masquerade keeps off for TCP.
-    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const PORTS_PER_ADDRESS: usize = EXHAUSTIBLE_PORTS;
 
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(BASE, BASE)],
         idle_timeout: IDLE_TIMEOUT,
     }];
-    let pool_sets =
-        pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
+    let claimed = narrow_to_exhaustible_blocks("10.1.0.0/32");
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
 
     // Take every port the one address has, so nothing under it is free.
     let mut held = Vec::with_capacity(PORTS_PER_ADDRESS);
@@ -760,10 +793,42 @@ fn a_block_given_back_is_used_again_while_its_address_stays_in_use() {
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
 
+/// The offset mapping refuses an address it cannot index, rather than wrapping or panicking.
+///
+/// The cheap counterpart to [`an_address_past_the_indexable_span_is_refused_rather_than_panicking`],
+/// which needs a pool over more addresses than a `u32` can hold and is therefore skipped under
+/// miri. This asks the mapping the same question directly, so the refusal stays covered there.
+#[test]
+fn the_offset_mapping_refuses_an_address_it_cannot_index() {
+    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let mapping = BTreeMap::from([(start, 0u32)]);
+
+    // Inside what a u32 can index, counting from the start of the region.
+    assert_eq!(map_address(Ipv6Addr::from(start + 1), &mapping), Ok(1));
+    assert_eq!(
+        map_address(Ipv6Addr::from(start + u128::from(u32::MAX)), &mapping),
+        Ok(u32::MAX)
+    );
+
+    // One past it, and far past it.
+    for beyond in [u128::from(u32::MAX) + 1, 1u128 << 33] {
+        assert_eq!(
+            map_address(Ipv6Addr::from(start + beyond), &mapping),
+            Err(AllocatorError::NoPoolFound),
+            "an address {beyond} past the start of the region should be refused as unserved"
+        );
+    }
+}
+
 /// A region may hold more addresses than a `u32` can index, in which case the bitmap covers only
 /// the first 2^32 of them. An address past that is inside the region but not servable, which a
 /// flow carried across a config change can present, and which must be an error rather than a panic
 /// part way through applying a config.
+///
+/// Skipped under miri, where the 2^32-entry bitmap costs minutes;
+/// [`the_offset_mapping_refuses_an_address_it_cannot_index`] checks the same refusal there. qemu
+/// still runs this one, which is where the address arithmetic wants checking anyway.
+#[cfg_attr(miri, ignore = "a 2^32-entry bitmap costs minutes under miri")]
 #[test]
 fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
     let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
