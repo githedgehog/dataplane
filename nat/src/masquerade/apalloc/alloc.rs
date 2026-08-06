@@ -24,6 +24,14 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 use tracing::{debug, error};
 
+/// How many addresses one allocation may draw before giving up.
+///
+/// A data plane cannot search without a bound on the packet path. The bound costs nothing in the
+/// ordinary case, where the first address serves, and an address that cannot serve is taken out of
+/// the pool as it is found, so a run of them is worked through over successive packets rather than
+/// being walked again each time.
+const MAX_ADDRESSES_PER_ALLOCATION: usize = 8;
+
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
 ///////////////////////////////////////////////////////////////////////////////
@@ -109,12 +117,48 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         Ok(arc_ip)
     }
 
+    /// Take an address out of the pool for good.
+    ///
+    /// Only for an address that can never serve, not one that is merely busy.
+    fn retire_ip(&self, ip: I) {
+        self.pool.write().retire_from_pool(ip);
+    }
+
     fn allocate_from_new_ip(
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        self.allocate_new_ip_from_pool()
-            .and_then(|ip| ip.allocate_port_for_ip(allow_null))
+        let mut exhausted = None;
+        for _ in 0..MAX_ADDRESSES_PER_ALLOCATION {
+            let ip = self.allocate_new_ip_from_pool()?;
+            let address = ip.ip();
+            match ip.allocate_port_for_ip(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(e) if e.is_exhaustion() => {
+                    // The address came fresh out of the pool, so what leaves it with no port is
+                    // almost always fixed for the life of the pool: every port it has is spoken
+                    // for by port forwarding, or by the well-known range. Take it out instead of
+                    // handing it back, or the next allocation stops on it again and the pool
+                    // serves nothing for as long as the address is the lowest one free.
+                    //
+                    // Almost always, because the address joins the in-use list before this runs,
+                    // so another thread could in principle take its every port in between. Losing
+                    // an address that way costs capacity rather than correctness, and needs 64k
+                    // allocations to land in the window.
+                    //
+                    // The allocation attempt consumed the only strong reference we held, so the
+                    // address is already back in the pool by now and taking it out is what sticks.
+                    debug!("Address {address} has no port to give and is taken out of the pool");
+                    self.retire_ip(address);
+                    exhausted = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        // Addresses are only ever tried once, since a useless one is taken out as it is found, so
+        // stopping here spreads the discovery of a large claimed range over several packets rather
+        // than doing all of it on one.
+        Err(exhausted.unwrap_or(AllocatorError::NoFreeIp))
     }
 
     fn cleanup_used_ips(&self) {
@@ -456,6 +500,16 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             randomize,
             self.exclude_wellknown_ports,
         ))
+    }
+
+    // Mark an address used and never give it back, for an address that can never serve.
+    fn retire_from_pool(&mut self, ip: I) {
+        match I::try_to_offset(ip, &self.reverse_bitmap_mapping) {
+            Ok(offset) => {
+                self.bitmap.set_ip_allocated(offset);
+            }
+            Err(e) => error!("Address {ip} cannot be retired from its pool: {e}"),
+        }
     }
 
     fn deallocate_from_pool(&mut self, ip: I) {
