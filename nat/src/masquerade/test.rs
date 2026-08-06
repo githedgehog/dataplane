@@ -414,6 +414,62 @@ fn build_overlay_shared_private_prefix_extended() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
+// Stop exposing VPC-1's original private source while retaining its public range.
+fn build_overlay_shared_private_prefix_narrowed() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).expect("Failed to add VPC"));
+
+    let expose13 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.7.0.0/16".into()) // no longer covers 1.1.0.1
+        .as_range("2.2.0.0/16".into())
+        .unwrap();
+    let expose23 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("4.4.0.0/16".into())
+        .unwrap();
+
+    let peering13 = VpcPeering::with_default_group(
+        "VPC-1--VPC-3",
+        VpcManifest::new("VPC-1").exposing(expose13),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+    let peering23 = VpcPeering::with_default_group(
+        "VPC-2--VPC-3",
+        VpcManifest::new("VPC-2").exposing(expose23),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering13).expect("Failed to add peering");
+    peering_table.add(peering23).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
+// Remove masquerading while retaining the peering.
+fn build_overlay_without_masquerade() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).expect("Failed to add VPC"));
+
+    let peering13 = VpcPeering::with_default_group(
+        "VPC-1--VPC-3",
+        VpcManifest::new("VPC-1").exposing(VpcExpose::empty().ip("1.1.0.0/16".into())),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering13).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
 // Build a TCP packet towards VPC-3 from the given private endpoint.
 fn tcp_from(src_vni_id: u32, src_ip: &str, sport: u16, syn: bool) -> Packet<TestBuffer> {
     let mut packet = build_test_tcp_ipv4_packet(src_ip, "3.3.3.1", sport, 80);
@@ -1865,6 +1921,133 @@ async fn test_masquerade_reconfig_carries_flows_into_a_new_allocator() {
         "a flow created after the change was given what a carried-over flow still holds"
     );
     assert_ne!(fresh, before_vpc2);
+}
+
+// Remove one peering without disturbing flows on another.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_reconfig_drops_a_flow_whose_peering_is_gone() {
+    let genid = 1;
+    let (flow_table, mut pipeline, mut allocw) =
+        test_setup(genid, &build_overlay_shared_private_prefix());
+
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, true));
+    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, true));
+    let vpc2_before = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(200, "1.1.0.1", 4321, false),
+    ));
+
+    // VPC-1 loses its peering with VPC-3; VPC-2 keeps both.
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).expect("Failed to add VPC"));
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table
+        .add(VpcPeering::with_default_group(
+            "VPC-2--VPC-3",
+            VpcManifest::new("VPC-2").exposing(
+                VpcExpose::empty()
+                    .make_masquerade(None)
+                    .unwrap()
+                    .ip("1.1.0.0/16".into())
+                    .as_range("4.4.0.0/16".into())
+                    .unwrap(),
+            ),
+            VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+        ))
+        .expect("Failed to add peering");
+    let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
+    allocw.update_nat_allocator(
+        MasqueradeConfig::new(overlay.vpc_table()),
+        genid + 1,
+        &flow_table,
+    );
+
+    let out = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, false));
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "traffic kept flowing over a peering that no longer exists"
+    );
+
+    // VPC-2's flow survives.
+    assert_eq!(
+        translation(&process_packet(
+            &mut pipeline,
+            tcp_from(200, "1.1.0.1", 4321, false)
+        )),
+        vpc2_before,
+        "a flow whose peering still exists was invalidated too"
+    );
+}
+
+// Stop exposing one flow's private source while retaining its public range.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_reconfig_drops_a_flow_whose_source_is_no_longer_exposed() {
+    let genid = 1;
+    let (flow_table, mut pipeline, mut allocw) =
+        test_setup(genid, &build_overlay_shared_private_prefix());
+
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, true));
+    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, true));
+    let vpc2_before = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(200, "1.1.0.1", 4321, false),
+    ));
+
+    let overlay = build_overlay_shared_private_prefix_narrowed()
+        .validate()
+        .unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid + 1, &flow_table);
+
+    let out = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, false));
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Filtered),
+        "traffic from a source that is no longer masqueraded was let through"
+    );
+
+    // VPC-2's flow survives.
+    let vpc2_after = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(200, "1.1.0.1", 4321, false),
+    ));
+    assert_eq!(
+        vpc2_after, vpc2_before,
+        "a flow of the VPC whose configuration did not change was disturbed"
+    );
+}
+
+// Taking masquerade out of the configuration entirely drops every masqueraded flow.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_reconfig_without_masquerade_drops_every_flow() {
+    let genid = 1;
+    let (flow_table, mut pipeline, mut allocw) =
+        test_setup(genid, &build_overlay_shared_private_prefix());
+
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, true));
+    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, true));
+
+    let overlay = build_overlay_without_masquerade().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid + 1, &flow_table);
+
+    for vni in [100, 200] {
+        let out = process_packet(&mut pipeline, tcp_from(vni, "1.1.0.1", 4321, false));
+        assert_eq!(
+            out.get_done(),
+            Some(DoneReason::NatFailure),
+            "traffic from VNI {vni} was let through after masquerade was removed"
+        );
+    }
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(0));
 }
 
 #[tokio::test]
