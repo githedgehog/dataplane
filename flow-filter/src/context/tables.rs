@@ -102,7 +102,7 @@ pub(super) struct Verdict {
 /// concrete; every other field is carried verbatim from the [`LookupInput`]).
 struct Query<I> {
     src_vni: Vni,
-    dst_vni: u32,
+    dst_vni: GateVni,
     proto: NextHeader,
     src_ip: I,
     dst_ip: I,
@@ -128,6 +128,32 @@ fn key_vni(vpcd: VpcDiscriminant) -> Vni {
     }
 }
 
+/// The destination VPC a stage-1 rule is gated on, or `None` for a rule an ungated lookup reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub(super) struct GateVni(pub(crate) Option<Vni>);
+
+impl GateVni {
+    const UNGATED: Self = Self(None);
+
+    fn is_gated(self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl From<Option<Vni>> for GateVni {
+    fn from(vni: Option<Vni>) -> Self {
+        Self(vni)
+    }
+}
+
+impl FixedSize for GateVni {
+    const SIZE: usize = Vni::SIZE;
+    fn write_be(&self, out: &mut [u8]) {
+        self.0.map_or(0, Vni::as_u32).write_be(out);
+    }
+}
+
 // -------------------------------------------------------------------------------------------------
 // Keys.
 //
@@ -146,7 +172,7 @@ pub(super) struct RemoteKey<I> {
     src_vni: Vni,
     #[exact]
     #[cli(column_name = "dst-vni")]
-    dst_vni: u32,
+    dst_vni: GateVni,
     #[prefix]
     #[cli(column_name = "destination")]
     dst_ip: I,
@@ -408,7 +434,7 @@ fn emit_remote(
     v4: &mut Vec<NeutralRule<RemoteKey<Ipv4Addr>, Verdict>>,
     v6: &mut Vec<NeutralRule<RemoteKey<Ipv6Addr>, Verdict>>,
     src_vni: Vni,
-    dst_vni: u32,
+    dst_vni: GateVni,
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
     proto: MaskSpec<NextHeader>,
@@ -530,21 +556,17 @@ impl RuleSet {
                 };
 
                 // Stage 1: peer's public prefixes -> Verdict{dst VPC, dst NAT}. Masquerade
-                // destinations cannot receive connections, so their rules are keyed on the peer
+                // destinations cannot receive connections, so their rules are gated on the peer
                 // VNI: only a lookup revalidating against that very VPC -- reply traffic on an
-                // established masquerade flow -- reaches them. Everything else is keyed on 0,
-                // the "no revalidation" value, which is what an ordinary lookup asks with.
+                // established masquerade flow -- reaches them. Everything else is ungated, which
+                // is what an ordinary lookup asks with.
                 for expose in peering.remote().valexp() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = Verdict {
                         nat_mode: NatRequirement::from_expose(expose),
                         dst_vpcd: remote_vpcd,
                     };
-                    let dst_vni = if expose.has_masquerade() {
-                        remote_vni.as_u32()
-                    } else {
-                        0
-                    };
+                    let dst_vni = GateVni::from(expose.has_masquerade().then_some(remote_vni));
                     for prefix in expose.public_ips() {
                         emit_remote(
                             &mut rules.remote_v4,
@@ -563,7 +585,7 @@ impl RuleSet {
                         &mut rules.remote_v4,
                         &mut rules.remote_v6,
                         src_vni,
-                        0,
+                        GateVni::UNGATED,
                         default_ip(),
                         PORT_RANGE_WILDCARD,
                         proto_mask(L4Protocol::Any),
@@ -682,7 +704,7 @@ impl FlowFilterContext {
         nat_mode: NatMode,
     ) -> LookupResult {
         let src_vni = key_vni(src_vpcd);
-        let dst_vni = dst_vpcd.map(|d| key_vni(d).as_u32()).unwrap_or(0);
+        let dst_vni = GateVni::from(dst_vpcd.map(key_vni));
         let (src_port, dst_port) = ports.unzip();
         let src_port = src_port.unwrap_or(0);
         let dst_port = dst_port.unwrap_or(0);
@@ -699,11 +721,11 @@ impl FlowFilterContext {
                 }) {
                     v
                 } else {
-                    if dst_vni != 0
+                    if dst_vni.is_gated()
                         && let Some(v) = self.remote_v4.lookup(&RemoteKey {
                             proto,
                             src_vni,
-                            dst_vni: 0,
+                            dst_vni: GateVni::UNGATED,
                             dst_ip,
                             dst_port,
                         })
@@ -753,11 +775,11 @@ impl FlowFilterContext {
                 }) {
                     v
                 } else {
-                    if dst_vni != 0
+                    if dst_vni.is_gated()
                         && let Some(v) = self.remote_v6.lookup(&RemoteKey {
                             proto,
                             src_vni,
-                            dst_vni: 0,
+                            dst_vni: GateVni::UNGATED,
                             dst_ip,
                             dst_port,
                         })
@@ -823,7 +845,7 @@ impl FlowFilterContext {
             out[i] = LookupResult::DestinationMiss;
             let proto = input.proto;
             let src_vni = key_vni(input.src_vpcd);
-            let dst_vni = input.dst_vpcd.map(|d| key_vni(d).as_u32()).unwrap_or(0);
+            let dst_vni = GateVni::from(input.dst_vpcd.map(key_vni));
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
             let nat_mode = NatRequirement::convert_option(input.nat_mode);
             match (input.src_ip, input.dst_ip) {
@@ -893,18 +915,17 @@ fn lookup_versioned<I: FixedSize + Copy>(
         // Reply traffic for masqueraded flows use the destination VNI as part of the key; this is
         // to avoid conflicting entries if there are several VPCs exposing overlapping, masqueraded
         // prefixes to a given VPC. If we have a destination VNI set here, we may be trying to
-        // re-validated a reply packet for a masqueraded flow (we're not sure of the direction,
-        // hence the first attempt with the destination VNI set to 0 above). Try again after setting
-        // the destination VNI.
+        // re-validate a reply packet for a masqueraded flow (we're not sure of the direction, hence
+        // the first attempt with the destination VNI). Try again, without the destination VNI.
         let mut reval_positions = Vec::new();
         let mut reval_keys = Vec::new();
         for (pos, (query, verdict)) in q_chunk.iter().zip(verdicts.iter_mut()).enumerate() {
-            if verdict.is_none() && query.dst_vni != 0 {
+            if verdict.is_none() && query.dst_vni.is_gated() {
                 reval_positions.push(pos);
                 reval_keys.push(RemoteKey {
                     proto: query.proto,
                     src_vni: query.src_vni,
-                    dst_vni: 0,
+                    dst_vni: GateVni::UNGATED,
                     dst_ip: query.dst_ip,
                     dst_port: query.dst_port,
                 });
