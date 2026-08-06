@@ -7,6 +7,7 @@
 
 use super::LookupResult;
 use super::tables::RuleRow;
+use super::tables::SourceGate;
 use crate::test_utils::*;
 use crate::{FlowFilterContext, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
@@ -29,7 +30,7 @@ fn route(
     src_vpcd: VpcDiscriminant,
     headers: &Headers,
 ) -> Option<Route> {
-    match route_lookup(context, src_vpcd, None, None, headers) {
+    match route_lookup(context, src_vpcd, None, SourceGate::Ungated, headers) {
         LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
             dst_vpcd,
             dst_nat,
@@ -45,7 +46,7 @@ fn route_lookup(
     context: &FlowFilterContext,
     src_vpcd: VpcDiscriminant,
     dst_vpcd: Option<VpcDiscriminant>,
-    nat_mode: NatMode,
+    gate: SourceGate,
     headers: &Headers,
 ) -> LookupResult {
     let net = headers.net().unwrap();
@@ -57,7 +58,7 @@ fn route_lookup(
             .map(NonZero::get)
             .zip(t.dst_port().map(NonZero::get))
     });
-    context.lookup(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports, nat_mode)
+    context.lookup(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports, gate)
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -315,7 +316,7 @@ fn dst_side_nat_modes() {
         &ctx,
         vpcd(100),
         None,
-        None,
+        SourceGate::Ungated,
         &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
     );
     assert_eq!(lookup_result, LookupResult::DestinationMiss);
@@ -326,7 +327,7 @@ fn dst_side_nat_modes() {
         &ctx,
         vpcd(100),
         Some(vpcd(200)),
-        None,
+        SourceGate::Ungated,
         &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
     ) else {
         panic!("masquerade destination resolves as a marker");
@@ -351,7 +352,7 @@ fn dst_side_nat_modes() {
         &ctx,
         vpcd(200),
         None,
-        None,
+        SourceGate::Ungated,
         &build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
     );
     assert_eq!(lookup_result, LookupResult::SourceMiss(vpcd(100)));
@@ -361,7 +362,7 @@ fn dst_side_nat_modes() {
         &ctx,
         vpcd(200),
         None,
-        Some(NatRequirement::PortForwarding),
+        SourceGate::PortFwdReply,
         &build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
     ) else {
         panic!("masquerade destination resolves as a marker");
@@ -522,7 +523,7 @@ fn port_forwarding_and_masquerade_overlap_resoves_as_expected() {
         &ctx,
         vpcd(100),
         None,
-        Some(NatRequirement::PortForwarding),
+        SourceGate::PortFwdReply,
         &build_tcp_packet(v4("1.0.0.27"), v4("5.0.0.10"), 2000, 5678),
     ) else {
         panic!("source resolves via the port-forwarding expose");
@@ -535,7 +536,7 @@ fn port_forwarding_and_masquerade_overlap_resoves_as_expected() {
         &ctx,
         vpcd(100),
         None,
-        None,
+        SourceGate::Ungated,
         &build_tcp_packet(v4("1.0.0.27"), v4("5.0.0.10"), 2000, 5678),
     ) else {
         panic!("source resolves via the masquerade expose");
@@ -795,8 +796,24 @@ fn reference_and_dpdk_backends_agree() {
     for &(vni, src_ip, dst_ip, proto, ports) in probes {
         let src_vpcd = vpcd(vni);
         assert_eq!(
-            reference.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports, None),
-            dpdk.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports, None),
+            reference.lookup(
+                src_vpcd,
+                None,
+                src_ip,
+                dst_ip,
+                proto,
+                ports,
+                SourceGate::Ungated
+            ),
+            dpdk.lookup(
+                src_vpcd,
+                None,
+                src_ip,
+                dst_ip,
+                proto,
+                ports,
+                SourceGate::Ungated
+            ),
             "backends disagree on {src_ip} -> {dst_ip} ({proto:?}) from vni {vni}",
         );
     }
@@ -813,7 +830,7 @@ fn reference_and_dpdk_backends_agree() {
             dst_ip,
             proto,
             ports,
-            nat_mode: None,
+            gate: SourceGate::Ungated,
         })
         .collect();
     assert!(inputs.len() > 32, "want a multi-chunk batch");
@@ -832,7 +849,7 @@ fn reference_and_dpdk_backends_agree() {
             input.dst_ip,
             input.proto,
             input.ports,
-            input.nat_mode,
+            input.gate,
         );
         assert_eq!(ref_out[i], single, "batched != single at index {i}");
     }
@@ -938,7 +955,7 @@ fn display_is_identical_across_backends() {
     assert_eq!(
         cells(&local_v4, "rank"),
         [
-            "rank", "proto", "src-vni", "dst-vni", "source", "src-port", "nat-mode", "|", "NAT"
+            "rank", "proto", "src-vni", "dst-vni", "source", "src-port", "gate", "|", "NAT"
         ],
         "unexpected local heading row:\n{local_v4}"
     );

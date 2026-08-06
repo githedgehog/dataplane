@@ -88,7 +88,7 @@ pub(crate) struct LookupInput {
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(u16, u16)>,
-    pub(crate) nat_mode: NatMode,
+    pub(crate) gate: SourceGate,
 }
 
 /// Result of a stage-1 (remote/destination) match.
@@ -108,7 +108,7 @@ struct Query<I> {
     dst_ip: I,
     src_port: u16,
     dst_port: u16,
-    nat_mode: u8,
+    gate: SourceGate,
 }
 
 /// Lower a config L4 protocol to a bitmask predicate: a specific protocol matches exactly (every
@@ -151,6 +151,34 @@ impl FixedSize for GateVni {
     const SIZE: usize = Vni::SIZE;
     fn write_be(&self, out: &mut [u8]) {
         self.0.map_or(0, Vni::as_u32).write_be(out);
+    }
+}
+
+/// A flag to gate what a stage-2 entry answers for:
+///
+/// - "revalidation of reply traffic associated with port-forwarding, with outdated flow info"
+/// - everything else ([`Ungated`])
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SourceGate {
+    #[default]
+    Ungated,
+    PortFwdReply,
+}
+
+impl SourceGate {
+    pub(crate) fn is_gated(self) -> bool {
+        self != Self::Ungated
+    }
+}
+
+impl FixedSize for SourceGate {
+    const SIZE: usize = u8::SIZE;
+    fn write_be(&self, out: &mut [u8]) {
+        match self {
+            Self::Ungated => 0u8,
+            Self::PortFwdReply => 1u8,
+        }
+        .write_be(out);
     }
 }
 
@@ -199,8 +227,8 @@ pub(super) struct LocalKey<I> {
     #[cli(column_name = "src-port")]
     src_port: u16,
     #[exact]
-    #[cli(column_name = "nat-mode")]
-    nat_mode: u8,
+    #[cli(column_name = "gate")]
+    gate: SourceGate,
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -488,7 +516,7 @@ fn emit_local(
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
     proto: MaskSpec<NextHeader>,
-    nat_mode: NatMode,
+    gate: SourceGate,
     action: NatMode,
 ) {
     // Port-forwarding sources are the only local rules a masquerade rule can overlap, and the
@@ -503,7 +531,7 @@ fn emit_local(
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
-                nat_mode: ExactSpec::new(NatRequirement::convert_option(nat_mode)),
+                gate: ExactSpec::new(gate),
             };
             v4.push(NeutralRule {
                 priority,
@@ -519,7 +547,7 @@ fn emit_local(
                 dst_vni: ExactSpec::new(dst_vni),
                 src_ip: PrefixSpec::from(prefix),
                 src_port: port_range,
-                nat_mode: ExactSpec::new(NatRequirement::convert_option(nat_mode)),
+                gate: ExactSpec::new(gate),
             };
             v6.push(NeutralRule {
                 priority,
@@ -597,16 +625,16 @@ impl RuleSet {
                 }
 
                 // Stage 2: source's private prefixes -> source NAT mode. Port-forwarding sources
-                // cannot initiate connections, so, symmetrically, their rules are keyed on the
+                // cannot initiate connections, so, symmetrically, their rules are gated on the
                 // NAT mode they require: only a lookup revalidating against port forwarding
                 // reaches them.
                 for expose in peering.local().valexp() {
                     let proto = proto_mask(expose.nat_proto().unwrap_or(L4Protocol::Any));
                     let action = NatRequirement::from_expose(expose);
-                    let nat_mode = if expose.has_port_forwarding() {
-                        action
+                    let gate = if expose.has_port_forwarding() {
+                        SourceGate::PortFwdReply
                     } else {
-                        None
+                        SourceGate::Ungated
                     };
                     for prefix in expose.ips() {
                         emit_local(
@@ -617,7 +645,7 @@ impl RuleSet {
                             prefix.prefix(),
                             prefix.into(),
                             proto,
-                            nat_mode,
+                            gate,
                             action,
                         );
                     }
@@ -631,7 +659,7 @@ impl RuleSet {
                         default_ip(),
                         PORT_RANGE_WILDCARD,
                         proto_mask(L4Protocol::Any),
-                        None,
+                        SourceGate::Ungated,
                         None,
                     );
                 }
@@ -701,14 +729,13 @@ impl FlowFilterContext {
         dst_ip: IpAddr,
         proto: NextHeader,
         ports: Option<(u16, u16)>,
-        nat_mode: NatMode,
+        gate: SourceGate,
     ) -> LookupResult {
         let src_vni = key_vni(src_vpcd);
         let dst_vni = GateVni::from(dst_vpcd.map(key_vni));
         let (src_port, dst_port) = ports.unzip();
         let src_port = src_port.unwrap_or(0);
         let dst_port = dst_port.unwrap_or(0);
-        let nat_mode = NatRequirement::convert_option(nat_mode);
 
         match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
@@ -742,20 +769,20 @@ impl FlowFilterContext {
                     dst_vni,
                     src_ip,
                     src_port,
-                    nat_mode,
+                    gate,
                 }) {
                     Some(src_nat_mode) => {
                         LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
                     }
                     None => {
-                        if nat_mode != 0
+                        if gate.is_gated()
                             && let Some(src_nat_mode) = self.local_v4.lookup(&LocalKey {
                                 proto,
                                 src_vni,
                                 dst_vni,
                                 src_ip,
                                 src_port,
-                                nat_mode: 0,
+                                gate: SourceGate::Ungated,
                             })
                         {
                             LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
@@ -796,20 +823,20 @@ impl FlowFilterContext {
                     dst_vni,
                     src_ip,
                     src_port,
-                    nat_mode,
+                    gate,
                 }) {
                     Some(src_nat_mode) => {
                         LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
                     }
                     None => {
-                        if nat_mode != 0
+                        if gate.is_gated()
                             && let Some(src_nat_mode) = self.local_v6.lookup(&LocalKey {
                                 proto,
                                 src_vni,
                                 dst_vni,
                                 src_ip,
                                 src_port,
-                                nat_mode: 0,
+                                gate: SourceGate::Ungated,
                             })
                         {
                             LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
@@ -847,7 +874,7 @@ impl FlowFilterContext {
             let src_vni = key_vni(input.src_vpcd);
             let dst_vni = GateVni::from(input.dst_vpcd.map(key_vni));
             let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
-            let nat_mode = NatRequirement::convert_option(input.nat_mode);
+            let gate = input.gate;
             match (input.src_ip, input.dst_ip) {
                 (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
                     v4_idx.push(i);
@@ -859,7 +886,7 @@ impl FlowFilterContext {
                         dst_ip,
                         src_port,
                         dst_port,
-                        nat_mode,
+                        gate,
                     });
                 }
                 (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
@@ -872,7 +899,7 @@ impl FlowFilterContext {
                         dst_ip,
                         src_port,
                         dst_port,
-                        nat_mode,
+                        gate,
                     });
                 }
                 _ => { /* version mismatch: leave "out[i] = DestinationMiss" */ }
@@ -951,7 +978,7 @@ fn lookup_versioned<I: FixedSize + Copy>(
                     dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip: q.src_ip,
                     src_port: q.src_port,
-                    nat_mode: q.nat_mode,
+                    gate: q.gate,
                 });
                 hit_pos.push(pos);
             }
@@ -960,16 +987,16 @@ fn lookup_versioned<I: FixedSize + Copy>(
         local.lookup_batch(&local_keys, &mut nat_modes);
 
         // Second pass: if nat_mode was set and we didn't find an entry for reply traffic associated
-        // with a port-forwarding flow, set nat_mode to 0 to see if we have an entry for forward
-        // traffic for port-forwarding (forward traffic entries do not have flow-info nat mode
-        // attached, or we couldn't use it to initiate new flows).
+        // with a port-forwarding flow, drop the gate to see if we have an entry for forward traffic
+        // for port-forwarding (forward traffic entries do not have flow-info nat mode attached, or
+        // we couldn't use it to initiate new flows).
         let mut reval_positions = Vec::new();
         let mut reval_keys = Vec::new();
         for (pos, (nat_mode, &q_pos)) in nat_modes.iter().zip(hit_pos.iter()).enumerate() {
-            if nat_mode.is_none() && q_chunk[q_pos].nat_mode != 0 {
+            if nat_mode.is_none() && q_chunk[q_pos].gate.is_gated() {
                 reval_positions.push(pos);
                 reval_keys.push(LocalKey {
-                    nat_mode: 0,
+                    gate: SourceGate::Ungated,
                     ..local_keys[pos].clone()
                 });
             }

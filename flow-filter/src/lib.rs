@@ -29,7 +29,7 @@ pub use context::{
     FlowFilterContext, FlowFilterContextReader, FlowFilterContextReaderFactory,
     FlowFilterContextWriter,
 };
-use context::{LookupInput, LookupResult};
+use context::{LookupInput, LookupResult, SourceGate};
 
 pub struct FlowFilter {
     name: String,
@@ -118,7 +118,7 @@ impl FlowFilter {
         genid: i64,
     ) -> Classification {
         let nfi = &self.name;
-        let (mut revalidation_dst_vpcd, mut revalidation_nat_mode) = (None, None);
+        let (mut revalidation_dst_vpcd, mut revalidation_gate) = (None, SourceGate::Ungated);
         let attached_flow = FlowSummary::from_meta(packet.meta());
         if let Some(flow_summary) = attached_flow.as_ref() {
             // Bypass flow-filter if packet has up-to-date active flow-info
@@ -126,7 +126,7 @@ impl FlowFilter {
                 Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow_summary);
                 return Classification::Bypassed;
             }
-            (revalidation_dst_vpcd, revalidation_nat_mode) =
+            (revalidation_dst_vpcd, revalidation_gate) =
                 self.flow_revalidation_data(flow_summary, genid);
         }
 
@@ -152,7 +152,7 @@ impl FlowFilter {
                     .map(NonZero::get)
                     .zip(t.dst_port().map(NonZero::get))
             }),
-            nat_mode: revalidation_nat_mode,
+            gate: revalidation_gate,
         };
         Classification::Lookup {
             input,
@@ -297,24 +297,26 @@ impl FlowFilter {
         &self,
         flow_summary: &FlowSummary,
         genid: i64,
-    ) -> (Option<VpcDiscriminant>, Option<NatRequirement>) {
+    ) -> (Option<VpcDiscriminant>, SourceGate) {
         // The only case when we need re-validation is when we have an active flow with an outdated
         // genid. If this is not the case, return None.
         if flow_summary.flow_info.status() != FlowStatus::Active
             || flow_summary.flow_info.genid() >= genid
         {
-            return (None, None);
+            return (None, SourceGate::Ungated);
         }
         if flow_summary.needs_masquerade {
             // If we need revalidation and the flow is masqueraded, we may need the destination VPC
             // id from the flow to look up for reverse traffic's entry in the "remote" table.
-            (flow_summary.dst_vpcd, None)
+            (flow_summary.dst_vpcd, SourceGate::Ungated)
         } else if flow_summary.needs_port_forwarding {
-            // In we need revalidation and the flow is with port-forwarding, we may need the NAT
-            // mode from the flow to look up for reverse traffic's entry in the "local" table.
-            (None, Some(NatRequirement::PortForwarding))
+            // We need revalidation and the flow is with port-forwarding, although we don't know if
+            // it's on the source (reply traffic) or destination side (forward traffic). In doubt,
+            // turn on the gate to enable looking up for entries for reply port-forwarding traffic
+            // in the "local"-side context table.
+            (None, SourceGate::PortFwdReply)
         } else {
-            (None, None)
+            (None, SourceGate::Ungated)
         }
     }
 
@@ -407,21 +409,6 @@ impl NatRequirement {
             VpcExposeNatConfig::Masquerade(_) => Some(Self::Masquerade),
             VpcExposeNatConfig::Static(_) => Some(Self::Static),
             VpcExposeNatConfig::PortForwarding(_) => Some(Self::PortForwarding),
-        }
-    }
-
-    fn as_u8(&self) -> u8 {
-        match self {
-            NatRequirement::Static => 1,
-            NatRequirement::Masquerade => 2,
-            NatRequirement::PortForwarding => 3,
-        }
-    }
-
-    fn convert_option(opt: Option<Self>) -> u8 {
-        match opt {
-            Some(r) => r.as_u8(),
-            None => 0,
         }
     }
 }

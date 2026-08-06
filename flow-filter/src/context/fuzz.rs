@@ -11,9 +11,9 @@
 
 #![cfg(test)]
 
-use super::tables::{Backend, FlowFilterContext, LookupInput, LookupResult};
+use super::tables::{Backend, FlowFilterContext, LookupInput, LookupResult, SourceGate};
+use crate::NatRequirement;
 use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
-use crate::{NatMode, NatRequirement};
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
@@ -116,23 +116,21 @@ fn oracle_stage1(
 
 /// Stage 2: the source against the resolved peering's private prefixes.
 ///
-/// `revalidated` is the source NAT mode an outdated flow vouches for. With it, only the
-/// port-forwarding exposes of that very mode answer -- they cannot initiate connections, so
-/// nothing but a flow that already used them can reach them. Without it, only exposes that can
-/// initiate do (a default expose acts as a /0 of the peering's IP version).
+/// `gate` is what the lookup asks about. Gated on port forwarding, only the port-forwarding
+/// exposes answer -- they cannot initiate connections, so nothing but a flow that already used
+/// them can reach them. Ungated, only exposes that can initiate do (a default expose acts as a /0
+/// of the peering's IP version).
 fn oracle_stage2(
     peering: &ValidatedPeering,
     probe: &Probe,
     sport: u16,
-    revalidated: NatMode,
+    gate: SourceGate,
 ) -> Option<Option<NatRequirement>> {
     let mut src_nat: Option<(Precedence, Option<NatRequirement>)> = None;
     for expose in peering.local().valexp() {
-        let matchable = match revalidated {
-            Some(mode) => {
-                expose.has_port_forwarding() && NatRequirement::from_expose(expose) == Some(mode)
-            }
-            None => expose.can_init_connection(),
+        let matchable = match gate {
+            SourceGate::PortFwdReply => expose.has_port_forwarding(),
+            SourceGate::Ungated => expose.can_init_connection(),
         };
         if !matchable || !proto_allows(expose.nat_proto(), probe.proto) {
             continue;
@@ -147,7 +145,7 @@ fn oracle_stage2(
             }
         }
     }
-    if revalidated.is_none()
+    if !gate.is_gated()
         && peering.local().has_default_expose()
         && probe.src_ip.is_ipv4() == peering.is_v4()
     {
@@ -189,10 +187,8 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
         .iter()
         .find(|p| VpcDiscriminant::from_vni(p.remote_vni()) == dst_vpcd)
         .unwrap_or_else(|| unreachable!("stage 1 hit implies a peering to the verdict VPC"));
-    let src_nat = probe
-        .nat_mode
-        .and_then(|mode| oracle_stage2(peering, probe, sport, Some(mode)))
-        .or_else(|| oracle_stage2(peering, probe, sport, None));
+    let src_nat = oracle_stage2(peering, probe, sport, probe.gate)
+        .or_else(|| oracle_stage2(peering, probe, sport, SourceGate::Ungated));
     match src_nat {
         Some(src_nat) => LookupResult::Route((dst_vpcd, dst_nat, src_nat)),
         None => LookupResult::SourceMiss(dst_vpcd),
@@ -211,7 +207,7 @@ fn lookup(tables: &FlowFilterContext, probe: &Probe) -> LookupResult {
         probe.dst_ip,
         probe.proto,
         probe.ports,
-        probe.nat_mode,
+        probe.gate,
     )
 }
 
@@ -224,7 +220,7 @@ fn lookup_input(probe: &Probe) -> LookupInput {
         dst_ip: probe.dst_ip,
         proto: probe.proto,
         ports: probe.ports,
-        nat_mode: probe.nat_mode,
+        gate: probe.gate,
     }
 }
 
@@ -262,7 +258,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     matches!(lookup(&reference, probe), LookupResult::Route(_)),
                     "derived routing probe did not route: {probe:?}\nspec: {overlay_spec:?}",
                 );
-                if probe.dst_vpcd.is_some() || probe.nat_mode.is_some() {
+                if probe.dst_vpcd.is_some() || probe.gate.is_gated() {
                     REVALIDATED_ROUTES.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -314,7 +310,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     dst_ip: "10.0.0.99".parse().unwrap(),
                     proto: NextHeader::TCP,
                     ports: Some((1, 2)),
-                    nat_mode: None,
+                    gate: SourceGate::Ungated,
                 })
                 .collect();
             let mut out = vec![LookupResult::DestinationMiss; all_miss.len()];
