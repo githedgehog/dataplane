@@ -1238,3 +1238,37 @@ fn an_address_brought_in_by_a_reservation_keeps_its_claims() {
 
     drop(carried);
 }
+
+/// An allocation is a lease on a public address and port, and only one thing may hold it.
+///
+/// `AllocatedPort` frees its port when it is dropped. While it was also `Clone`, every copy freed
+/// the same port, so dropping a copy released a pair its original still held and the allocator
+/// would hand that pair to a second flow. The reverse key cannot tell the two apart. This went
+/// unnoticed for as long as freeing was broken -- a drop that does nothing is harmless to repeat.
+///
+/// The type is no longer `Clone`, which is what this test really rests on: the sequence that
+/// caused it cannot be written any more. What is checked here is the guarantee itself.
+#[test]
+fn a_pair_in_use_is_never_handed_out_a_second_time() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets =
+        pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
+
+    let held = pool_sets[0].allocate(false).expect("pool has room");
+    let (ip, port) = (held.ip(), held.port());
+
+    assert!(
+        pool_sets[0].reserve(ip, port).is_err(),
+        "{ip}:{port} was reserved while a live allocation still holds it"
+    );
+
+    // And once it really is given up, it may be taken again.
+    drop(held);
+    assert!(
+        pool_sets[0].reserve(ip, port).is_ok(),
+        "{ip}:{port} could not be reserved after being released"
+    );
+}
