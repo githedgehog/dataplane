@@ -310,9 +310,12 @@ fn ipv6_pools_allocate_within_their_range() {
 
     let mut held = Vec::new();
     let mut seen = BTreeSet::new();
-    for _ in 0..8 {
+    for step in 0..8 {
         let allocation = pool_sets[0].allocate(false).expect("pool has room");
         let bits = u128::from(allocation.ip());
+        if step == 0 {
+            assert_eq!(bits, start, "the offset mapping skipped the range start");
+        }
         assert!(
             (start..=end).contains(&bits),
             "{} is outside the range the pool was built for",
