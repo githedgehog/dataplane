@@ -173,15 +173,14 @@ fn allocations_are_unique_and_within_the_declared_ranges() {
 
 /// Everything given back returns the pools to the state they started in.
 ///
-/// Counting the second round rather than comparing it is no test at all: an address holds tens of
-/// thousands of ports, so a couple of dozen allocations succeed whether or not anything was ever
-/// released, and the counts match on every input. What does bite is asking for the same answers,
-/// which pins the address bitmap and the count of usable blocks: leak either and the second round
-/// starts somewhere else.
+/// Comparing the answers, not counting them: an address holds tens of thousands of ports, so a
+/// couple of dozen allocations succeed whether or not anything was ever released, and the counts
+/// match on every input.
 ///
-/// It does not pin the freeing of an individual port, because dropping everything at once drops
-/// whole blocks, which are rebuilt fresh whatever their bitmaps said. See
-/// [`a_port_freed_on_its_own_is_handed_out_again`] for that.
+/// Reaches the pool's bitmap of addresses and nothing below it, since releasing an address takes
+/// its port allocator with it. Freeing below that is pinned by
+/// [`a_port_freed_on_its_own_is_handed_out_again`] and
+/// [`a_block_given_back_is_used_again_while_its_address_stays_in_use`].
 #[test]
 fn freed_allocations_become_available_again() {
     bolero::check!()
@@ -682,6 +681,78 @@ fn a_region_can_be_allocated_dry() {
     assert!(
         pool_sets[0].allocate(false).is_ok(),
         "the region served nothing after everything was freed"
+    );
+}
+
+/// A port block given back while its address stays in use is drawn on again.
+///
+/// [`freed_allocations_become_available_again`] cannot see this. Releasing the last port of an
+/// address releases the address, and the port allocator belongs to the address, so everything the
+/// blocks recorded is thrown away rather than reused. Holding the address is what makes the block
+/// bookkeeping observable: the free flag a dropped block puts back, and the count of usable blocks
+/// that decides whether the address is worth trying at all.
+///
+/// That count is the one that drifted. A block ruled out was marked unusable without being taken
+/// off it, so an address with nothing left went on reporting room; the fix counts the blocks
+/// themselves, and this pins the other direction, that a block coming back is counted back in.
+#[test]
+fn a_block_given_back_is_used_again_while_its_address_stays_in_use() {
+    const PORTS_PER_BLOCK: usize = 256;
+    // 65536 ports, less the IANA well-known range that masquerade keeps off for TCP.
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets =
+        pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
+
+    // Take every port the one address has, so nothing under it is free.
+    let mut held = Vec::with_capacity(PORTS_PER_ADDRESS);
+    while let Ok(allocation) = pool_sets[0].allocate(false) {
+        held.push(allocation);
+        assert!(
+            held.len() <= PORTS_PER_ADDRESS,
+            "the address served more ports than it holds"
+        );
+    }
+    assert_eq!(
+        held.len(),
+        PORTS_PER_ADDRESS,
+        "the address did not serve every port it holds"
+    );
+
+    // Give back exactly one block's worth and keep the rest, so the address stays in use and only
+    // the block goes away.
+    let freed_block = 1024..=1279u16;
+    held.retain(|allocation| !freed_block.contains(&allocation.port().as_u16()));
+    assert_eq!(
+        held.len(),
+        PORTS_PER_ADDRESS - PORTS_PER_BLOCK,
+        "freeing one block should have given back exactly its ports"
+    );
+
+    // The block that came back is the one that serves, and it serves the whole of itself.
+    for step in 0..PORTS_PER_BLOCK {
+        let allocation = pool_sets[0].allocate(false).unwrap_or_else(|e| {
+            panic!("allocation {step} after a block was given back failed: {e}")
+        });
+        assert!(
+            freed_block.contains(&allocation.port().as_u16()),
+            "allocation {step} came from {} rather than from the block that was given back",
+            allocation.port()
+        );
+        held.push(allocation);
+    }
+
+    // And nothing past it: the address is full again, and says so.
+    let error = pool_sets[0]
+        .allocate(false)
+        .expect_err("the address has nothing left to give");
+    assert!(
+        error.is_exhaustion(),
+        "a full address reported {error} rather than being out of space"
     );
 }
 

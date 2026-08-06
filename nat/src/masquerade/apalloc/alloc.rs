@@ -758,3 +758,62 @@ pub(crate) fn map_address(
         .and_then(|offset| prefix_offset.checked_add(offset))
         .ok_or(AllocatorError::NoPoolFound)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    fn pool_over(addresses: u32) -> NatPool<Ipv4Addr> {
+        let start = u128::from(Ipv4Addr::new(10, 1, 0, 0).to_bits());
+        NatPool::for_range(
+            AddrInterval::new(start, start + u128::from(addresses) - 1),
+            ReservedPorts::default(),
+            true,
+        )
+    }
+
+    fn is_free(pool: &NatPool<Ipv4Addr>, address: Ipv4Addr) -> bool {
+        pool.bitmap.0.contains(address.to_bits())
+    }
+
+    /// An address taken out of the pool for good stays out, even when a holder later gives it back.
+    ///
+    /// Retiring and deallocating pull in opposite directions on the same bitmap, and deallocation
+    /// runs on the drop path, where it cannot know why the address left. Without somewhere to
+    /// record that an address may never serve, the first flow to release one would put it back and
+    /// the walk that retired it would begin again.
+    ///
+    /// Since fully claimed addresses are kept out of the pool when it is built, configuration no
+    /// longer reaches `retire_from_pool` at all: what is left is an address emptied by another
+    /// thread, which no test can arrange. Hence asking it directly.
+    #[test]
+    fn a_retired_address_is_not_put_back_by_being_deallocated() {
+        let mut pool = pool_over(4);
+        let retired = Ipv4Addr::new(10, 1, 0, 1);
+        let ordinary = Ipv4Addr::new(10, 1, 0, 2);
+        assert!(is_free(&pool, retired), "the pool should start out whole");
+
+        pool.retire_from_pool(retired);
+        assert!(
+            !is_free(&pool, retired),
+            "retiring an address did not take it out of the pool"
+        );
+
+        pool.deallocate_from_pool(retired);
+        assert!(
+            !is_free(&pool, retired),
+            "giving a retired address back put it into the pool again"
+        );
+
+        // The ordinary path still works, so the guard above is about being retired rather than
+        // about deallocation having stopped returning anything.
+        pool.bitmap.set_ip_allocated(ordinary.to_bits());
+        assert!(!is_free(&pool, ordinary));
+        pool.deallocate_from_pool(ordinary);
+        assert!(
+            is_free(&pool, ordinary),
+            "an address that was merely in use was not returned to the pool"
+        );
+    }
+}
