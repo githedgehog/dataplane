@@ -419,16 +419,36 @@ fn packet_worker(
             }
             PacketOp::ReserveExisting => {
                 // Race a reservation against the other threads' allocations on pools that are
-                // already published and in use. Failing is fine, claiming inconsistent bookkeeping
-                // is not.
+                // already published and in use.
+                //
+                // Where the writer carried this pair over, the reservation it holds is still live,
+                // so this one has to be refused: that is the same rule as for allocation, checked
+                // on the path a config change actually takes. Otherwise the pair is genuinely
+                // free, and a reservation that succeeds is kept for the length of the run like any
+                // other allocation, rather than being dropped here and handed back to the pools
+                // while the other threads are still working.
                 if let Some(&(owner, ip, port)) = survivors.get(step % survivors.len().max(1))
                     && let Some(pool) = published.pools.get(owner)
-                    && let Err(AllocatorError::InternalIssue(message)) = pool.reserve(ip, port)
                 {
-                    panic!(
-                        "reserving {ip}:{port} in generation {}: {message}",
-                        published.generation
-                    );
+                    let carried = published.carried.contains(&(ip, port.as_u16()));
+                    match pool.reserve(ip, port) {
+                        Ok(reservation) => {
+                            assert!(
+                                !carried,
+                                "generation {} reserved {ip}:{port} a second time, although a \
+                                 carried-over flow already holds it",
+                                published.generation
+                            );
+                            live.claim(published.generation, ip, port.as_u16());
+                            held.push((published.generation, reservation));
+                        }
+                        Err(AllocatorError::InternalIssue(message)) => panic!(
+                            "reserving {ip}:{port} in generation {}: {message}",
+                            published.generation
+                        ),
+                        // Refused because it is held, which is the ordinary outcome here.
+                        Err(_) => {}
+                    }
                 }
             }
         }
