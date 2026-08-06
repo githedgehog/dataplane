@@ -235,7 +235,7 @@ mod bolero_tests {
     /// that is either the whole of what masquerade could draw on or some slice of it.
     #[derive(Debug, Clone)]
     struct Scenario {
-        claims: Vec<(u8, u8, bool, u16, u16)>,
+        claims: Vec<(u8, u8, u8, u16, u16)>,
     }
 
     impl TypeGenerator for Scenario {
@@ -246,10 +246,10 @@ mod bolero_tests {
                 claims.push((
                     driver.produce::<u8>()?,
                     driver.produce::<u8>()?,
-                    // Claims over the whole usable port space are the only ones that can use an
-                    // address up on their own. Drawn deliberately, because a range that happens to
-                    // reach from 1024 to 65535 is otherwise vanishingly rare.
-                    driver.produce::<bool>()?,
+                    // Which shape of port range to draw. Left to chance, a range that happens to
+                    // reach from 1024 to 65535, or to stop exactly on a block boundary, is
+                    // vanishingly rare, and those are the shapes the answer turns on.
+                    driver.produce::<u8>()?,
                     driver.produce::<u16>()?,
                     driver.produce::<u16>()?,
                 ));
@@ -261,15 +261,31 @@ mod bolero_tests {
     impl Scenario {
         fn reserved(&self) -> ReservedPorts {
             let mut reserved = ReservedPorts::default();
-            for &(offset, length, whole, port_lo, port_span) in &self.claims {
+            for &(offset, length, shape, port_lo, port_span) in &self.claims {
                 let start = BASE + u32::from(offset) % WINDOW;
                 // Claims may reach past the end of the window, which the clipping has to survive.
                 let end = start + u32::from(length) % WINDOW;
-                let ports = if whole {
-                    PortRange::new(IANA_WELLKNOWN_PORT_LIMIT, u16::MAX)
-                } else {
-                    let low = port_lo.max(1);
-                    PortRange::new(low, low.saturating_add(port_span))
+                let ports = match shape % 3 {
+                    // The whole of what masquerade could draw on, which uses the address up by
+                    // itself.
+                    0 => PortRange::new(IANA_WELLKNOWN_PORT_LIMIT, u16::MAX),
+                    // Up to the end of some block: the shape that decides whether the block a
+                    // claim stops on is judged the same way by the address-level answer and the
+                    // block-level one.
+                    1 => {
+                        let blocks = 1 + u32::from(port_lo) % 255;
+                        let end = (u32::from(IANA_WELLKNOWN_PORT_LIMIT) + blocks * 256 - 1)
+                            .min(u32::from(u16::MAX));
+                        PortRange::new(
+                            IANA_WELLKNOWN_PORT_LIMIT,
+                            u16::try_from(end).unwrap_or_else(|_| unreachable!()),
+                        )
+                    }
+                    // Anywhere at all.
+                    _ => {
+                        let low = port_lo.max(1);
+                        PortRange::new(low, low.saturating_add(port_span))
+                    }
                 }
                 .unwrap_or_else(|_| unreachable!());
                 reserved.claim(
@@ -322,9 +338,8 @@ mod bolero_tests {
                 for bits in range.start..=range.end {
                     let address =
                         Ipv4Addr::from(u32::try_from(bits).unwrap_or_else(|_| unreachable!()));
-                    let has_nothing_to_give = reserved
-                        .for_address(IpAddr::V4(address))
-                        .every_block_is_unusable(true);
+                    let has_nothing_to_give =
+                        covers_every_usable_port(&reserved.for_address(IpAddr::V4(address)));
                     let kept_out = unusable.iter().any(|interval| interval.contains(bits));
                     assert_eq!(
                         kept_out, has_nothing_to_give,
@@ -333,6 +348,28 @@ mod bolero_tests {
                     );
                 }
             });
+    }
+
+    /// The oracle: an address can serve nothing when the claims on it cover every port masquerade
+    /// could hand out, end to end.
+    ///
+    /// Worked out over the port space directly, rather than by asking whether each of the 256
+    /// blocks is covered. That is the whole value of it: the implementation deliberately routes the
+    /// address-level answer and the block-level one through a single predicate so they cannot
+    /// drift, and a test that reused that predicate would be comparing it with itself.
+    fn covers_every_usable_port(claims: &PortClaims) -> bool {
+        let mut ranges: Vec<PortRange> = claims.iter().collect();
+        ranges.sort_by_key(PortRange::start);
+
+        // Everything below the well-known limit is off the table anyway, so coverage starts there.
+        let mut covered_through = IANA_WELLKNOWN_PORT_LIMIT - 1;
+        for range in ranges {
+            if range.start() > covered_through.saturating_add(1) {
+                return false;
+            }
+            covered_through = covered_through.max(range.end());
+        }
+        covered_through == u16::MAX
     }
 }
 
