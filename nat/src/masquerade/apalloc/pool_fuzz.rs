@@ -301,6 +301,38 @@ fn an_exhausted_region_falls_through_to_the_next() {
     );
 }
 
+/// A port given back while other ports of the same address are still held is available again.
+///
+/// [`freed_allocations_become_available_again`] drops everything at once, which frees whole port
+/// blocks and rebuilds them, so it passes whether or not an individual port is ever returned. A
+/// flow ending while its neighbours carry on is the ordinary case, and the one that leaks: a port
+/// that stays marked used is one the block cannot hand out again for as long as it lives.
+#[test]
+fn a_port_freed_on_its_own_is_handed_out_again() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets =
+        pool_sets_for_specs::<Ipv4Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
+
+    let mut held: Vec<_> = (0..5)
+        .map(|_| pool_sets[0].allocate(false).expect("pool has room"))
+        .collect();
+
+    // Give back one from the middle, keeping the rest, so the block stays alive.
+    let returned = held.remove(2);
+    let (ip, port) = (returned.ip(), returned.port().as_u16());
+    drop(returned);
+
+    let next = pool_sets[0].allocate(false).expect("pool has room");
+    assert_eq!(
+        (next.ip(), next.port().as_u16()),
+        (ip, port),
+        "the port given back was not handed out again"
+    );
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Exhaustion
 ///////////////////////////////////////////////////////////////////////////////
