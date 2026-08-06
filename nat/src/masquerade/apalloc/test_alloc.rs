@@ -18,7 +18,7 @@ mod context {
     use net::udp::UdpPort;
     use net::vxlan::Vni;
     use net::{IpProtoKey, UdpProtoKey};
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
 
     #[allow(dead_code)]
@@ -335,6 +335,48 @@ mod context {
     }
 
     #[allow(dead_code)]
+    fn build_context_v6() -> ValidatedVpcTable {
+        let masquerade = VpcExpose::empty()
+            .make_masquerade(None)
+            .unwrap()
+            .ip("2001:db8:1::/64".into())
+            .as_range("2001:db8:ffff::/112".into())
+            .unwrap();
+        let remote = VpcManifest::with_exposes(
+            "VPC-2",
+            vec![VpcExpose::empty().ip("2001:db8:2::/64".into())],
+        );
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        vpc1.peerings.push(Peering {
+            name: "v6_peering".into(),
+            local: VpcManifest::with_exposes("VPC-1", vec![masquerade]),
+            remote,
+            remote_id: "12345".try_into().unwrap(),
+            remote_vni: vpc2.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.validate().unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn build_allocator_v6() -> NatAllocator {
+        let config = MasqueradeConfig::new(&build_context_v6()).set_randomize(false);
+        NatAllocator::new(config, 1)
+    }
+
+    #[allow(dead_code)]
+    pub fn addr_v6(ip: &str) -> Ipv6Addr {
+        Ipv6Addr::from_str(ip).unwrap()
+    }
+
+    #[allow(dead_code)]
     pub fn get_pool_set_v4(
         pool: &PoolTable<Ipv4Addr, Ipv4Addr>,
         src_vpcd: VpcDiscriminant,
@@ -476,6 +518,7 @@ mod std_tests {
     use crate::masquerade::apalloc::PoolTableKey;
     use crate::masquerade::apalloc::alloc::PoolRegion;
     use net::ip::NextHeader;
+    use std::net::IpAddr;
 
     #[test]
     fn test_build_allocator() {
@@ -874,6 +917,82 @@ mod std_tests {
             );
             held.push(allocation);
         }
+    }
+
+    #[test]
+    fn test_masquerade_v6_allocates_within_the_public_range() {
+        let allocator = build_allocator_v6();
+        assert!(allocator.pools_src44.0.is_empty());
+        assert!(!allocator.pools_src66.0.is_empty());
+
+        let mut held = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for step in 0..8 {
+            let allocation = allocator
+                .allocate(
+                    vpcd1(),
+                    vpcd2(),
+                    IpAddr::V6(addr_v6("2001:db8:1::1")),
+                    NextHeader::TCP,
+                )
+                .expect("the v6 pool has room");
+            let IpAddr::V6(ip) = allocation.allocation.ip() else {
+                panic!("an IPv6 source received an IPv4 translation");
+            };
+            let port = allocation.allocation.port().as_u16();
+
+            assert_eq!(
+                ip.segments()[0..7],
+                addr_v6("2001:db8:ffff::").segments()[0..7]
+            );
+            if step == 0 {
+                assert_eq!(ip, addr_v6("2001:db8:ffff::"));
+            }
+            assert!(port >= 1024);
+            assert!(seen.insert((ip, port)), "{ip}:{port} was handed out twice");
+            held.push(allocation);
+        }
+    }
+
+    #[test]
+    fn test_masquerade_v6_reserves_a_carried_address() {
+        let allocator = build_allocator_v6();
+        let allocation = allocator
+            .allocate(
+                vpcd1(),
+                vpcd2(),
+                IpAddr::V6(addr_v6("2001:db8:1::1")),
+                NextHeader::TCP,
+            )
+            .expect("the v6 pool has room");
+        let held = allocation.allocation.ip();
+        let port = allocation.allocation.port();
+
+        let next = build_allocator_v6();
+        let carried = next
+            .reserve_port(
+                NextHeader::TCP,
+                vpcd1(),
+                vpcd2(),
+                IpAddr::V6(addr_v6("2001:db8:1::1")),
+                held,
+                port,
+            )
+            .expect("the next config still serves the tuple");
+        assert_eq!((carried.ip(), carried.port()), (held, port));
+
+        let fresh = next
+            .allocate(
+                vpcd1(),
+                vpcd2(),
+                IpAddr::V6(addr_v6("2001:db8:1::2")),
+                NextHeader::TCP,
+            )
+            .expect("the v6 pool has room");
+        assert_ne!(
+            (fresh.allocation.ip(), fresh.allocation.port()),
+            (held, port)
+        );
     }
 
     // Both VPCs keep their own entry, rather than the second overwriting the first.
