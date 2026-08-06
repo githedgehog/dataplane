@@ -748,19 +748,18 @@ fn reserved_ports_are_never_allocated() {
         .with_type()
         .cloned()
         .for_each(|reserved_config: ReservedConfig| {
-            let ranges = reserved_config.config.owner_ranges();
             let pool_sets = reserved_config.pool_sets();
 
             for (owner, allocation) in allocate_round_robin(&pool_sets, ALLOCATIONS) {
                 let ip = allocation.ip();
                 let port = allocation.port().as_u16();
 
-                // Every expose that declares this address shares the region it came from, so its
-                // claims apply to this allocation too.
+                // A claim binds the public space it names, whoever made it. The pool is built
+                // from the union of every claim, so the oracle unions them too: gating on the
+                // claimant's own ranges here would let a claim made through one expose go
+                // unchecked against an allocation made through another, which is the case the
+                // property exists to state.
                 for (claimant, claims) in reserved_config.reservations.iter().enumerate() {
-                    if !declares(&ranges[claimant], ip) {
-                        continue;
-                    }
                     for claim in claims {
                         assert!(
                             !claim.covers(ip, port),
