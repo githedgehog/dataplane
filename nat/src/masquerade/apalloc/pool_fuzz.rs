@@ -177,6 +177,26 @@ fn freed_allocations_become_available_again() {
         });
 }
 
+#[test]
+fn a_port_freed_while_neighbours_are_held_is_reused() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let mut held: Vec<_> = (0..5)
+        .map(|_| pool_sets[0].allocate(false).expect("pool has room"))
+        .collect();
+
+    let returned = held.remove(2);
+    let tuple = (returned.ip(), returned.port().as_u16());
+    drop(returned);
+
+    let next = pool_sets[0].allocate(false).expect("pool has room");
+    assert_eq!((next.ip(), next.port().as_u16()), tuple);
+}
+
 /// A tuple accepted during carry-over must not be allocated to a new flow.
 #[test]
 fn re_reservation_after_a_config_change_is_honoured() {
