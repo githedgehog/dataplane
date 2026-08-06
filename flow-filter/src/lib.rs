@@ -118,7 +118,7 @@ impl FlowFilter {
         genid: i64,
     ) -> Classification {
         let nfi = &self.name;
-        let mut revalidation_dst_vpcd = None;
+        let (mut revalidation_dst_vpcd, mut revalidation_nat_mode) = (None, None);
         let attached_flow = FlowSummary::from_meta(packet.meta());
         if let Some(flow_summary) = attached_flow.as_ref() {
             // Bypass flow-filter if packet has up-to-date active flow-info
@@ -126,7 +126,8 @@ impl FlowFilter {
                 Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow_summary);
                 return Classification::Bypassed;
             }
-            revalidation_dst_vpcd = self.flow_revalidation_data(flow_summary, genid);
+            (revalidation_dst_vpcd, revalidation_nat_mode) =
+                self.flow_revalidation_data(flow_summary, genid);
         }
 
         let Some(net) = packet.try_ip() else {
@@ -151,6 +152,7 @@ impl FlowFilter {
                     .map(NonZero::get)
                     .zip(t.dst_port().map(NonZero::get))
             }),
+            nat_mode: revalidation_nat_mode,
         };
         Classification::Lookup {
             input,
@@ -170,15 +172,6 @@ impl FlowFilter {
         let (dst_vpcd, dst_nat_mode, src_nat_mode) = match result {
             LookupResult::Route(route) => route,
             LookupResult::SourceMiss(dst_vpcd) => {
-                // Port-forwarding sources are deliberately absent from the local tables; reply
-                // traffic from one rides its established flow.
-                if let Some(flow) =
-                    active_stateful_flow(flow_summary, dst_vpcd, |f| f.needs_port_forwarding)
-                {
-                    debug!("{nfi}: Source allowed by established port-forwarding flow");
-                    Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow);
-                    return;
-                }
                 debug!("{nfi}: Source not allowed towards {dst_vpcd}, dropping packet");
                 packet.invalidate_flows();
                 packet.done(DoneReason::Filtered);
@@ -304,15 +297,25 @@ impl FlowFilter {
         &self,
         flow_summary: &FlowSummary,
         genid: i64,
-    ) -> Option<VpcDiscriminant> {
+    ) -> (Option<VpcDiscriminant>, Option<NatRequirement>) {
         // The only case when we need re-validation is when we have an active flow with an outdated
         // genid. If this is not the case, return None.
         if flow_summary.flow_info.status() != FlowStatus::Active
             || flow_summary.flow_info.genid() >= genid
         {
-            return None;
+            return (None, None);
         }
-        flow_summary.dst_vpcd
+        if flow_summary.needs_masquerade {
+            // If we need revalidation and the flow is masqueraded, we may need the destination VPC
+            // id from the flow to look up for reverse traffic's entry in the "remote" table.
+            (flow_summary.dst_vpcd, None)
+        } else if flow_summary.needs_port_forwarding {
+            // In we need revalidation and the flow is with port-forwarding, we may need the NAT
+            // mode from the flow to look up for reverse traffic's entry in the "local" table.
+            (None, Some(NatRequirement::PortForwarding))
+        } else {
+            (None, None)
+        }
     }
 
     fn dst_vpcd_from_valid_flow(
@@ -391,23 +394,6 @@ impl FlowSummary {
     }
 }
 
-/// The flow, if it is active, agrees with the lookup on the destination VPC, and carries the
-/// stateful-NAT state selected by `has_state`. Such a flow vouches for reply traffic that the
-/// tables cannot answer for (see [`FlowFilter::apply_route`]). No genid check: an up-to-date flow
-/// would have bypassed the lookup already, and an outdated one is exactly the case where the flow
-/// must speak for the packet; the stateful NFs remain the authority on the state itself.
-fn active_stateful_flow(
-    flow_summary: Option<&FlowSummary>,
-    dst_vpcd: VpcDiscriminant,
-    has_state: impl Fn(&FlowSummary) -> bool,
-) -> Option<&FlowSummary> {
-    flow_summary.filter(|flow| {
-        flow.flow_info.status() == FlowStatus::Active
-            && flow.dst_vpcd == Some(dst_vpcd)
-            && has_state(flow)
-    })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NatRequirement {
     Static,
@@ -421,6 +407,21 @@ impl NatRequirement {
             VpcExposeNatConfig::Masquerade(_) => Some(Self::Masquerade),
             VpcExposeNatConfig::Static(_) => Some(Self::Static),
             VpcExposeNatConfig::PortForwarding(_) => Some(Self::PortForwarding),
+        }
+    }
+
+    fn as_u8(&self) -> u8 {
+        match self {
+            NatRequirement::Static => 1,
+            NatRequirement::Masquerade => 2,
+            NatRequirement::PortForwarding => 3,
+        }
+    }
+
+    fn convert_option(opt: Option<Self>) -> u8 {
+        match opt {
+            Some(r) => r.as_u8(),
+            None => 0,
         }
     }
 }
