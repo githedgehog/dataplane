@@ -34,13 +34,15 @@
 //! * Neither allocation nor reservation ever reports [`AllocatorError::InternalIssue`]. That is
 //!   the allocator saying its own bookkeeping is inconsistent.
 //!
-//!   A limit worth being honest about: `find_block_for_port` carries a standing `FIXME` wondering
-//!   whether the block it just found non-free can be released before it is looked up, and this
-//!   suite does not reach that interleaving. Reservations here target survivors, and a survivor's
-//!   block is pinned for the whole generation by the reservation [`Published`] holds, so it cannot
-//!   disappear mid-lookup. Reaching it would take generations whose specs differ, so that a pair
-//!   stops being carried and its block can empty while another thread reserves it; that is the
-//!   suite's next extension, not something it does today.
+//!   A limit worth being honest about: this suite does not reach the interleaving where the block
+//!   a reservation just found non-free is released before it is looked up. Reservations here
+//!   target survivors, and a survivor's block is pinned for the whole generation by the
+//!   reservation [`Published`] holds, so it cannot empty mid-lookup. That is a property of how
+//!   this suite reserves, not of what it takes to get there: neither a config change nor
+//!   generations whose specs differ is required, and
+//!   [`a_reservation_racing_the_release_of_its_block_is_not_called_a_bug`] reaches it with one
+//!   pool and one generation. Widening `ReserveExisting` to unpinned pairs would let this suite
+//!   reach it too, and is the extension worth making.
 //!
 //! # No loom
 //!
@@ -74,7 +76,7 @@ use concurrency::thread;
 // `spawn_scoped` is inherent on std's `Builder`, but supplied by `BuilderExt` under shuttle
 #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
 use concurrency::thread::BuilderExt;
-use lpm::prefix::PrefixPortsSet;
+use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
@@ -511,5 +513,132 @@ fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
 
         printer.join().expect("the printing thread panicked");
         releaser.join().expect("the releasing thread panicked");
+    });
+}
+
+/// Reserving a port races the release of the block that holds it.
+///
+/// A block is given back in two steps: its free flag is stored `true`, and the weak entry in the
+/// list of allocated blocks expires when the last `Arc` to it goes. A reservation reads the flag
+/// and then searches that list, so it can fall between the two and find the block neither free nor
+/// allocated. The allocator used to call that broken bookkeeping and return `InternalIssue`, which
+/// the caller reads as the allocator being unfit rather than as one flow failing.
+///
+/// [`stress_test_config_change`] cannot reach this. Its reservations target survivors, and a
+/// survivor's block is pinned for the whole generation by the reservation [`Published`] holds, so
+/// it never empties mid-lookup. Neither a config change nor differing specs is needed to get
+/// there, though -- one pool and one generation will do, which is what this pins.
+///
+/// Production reaches it through the late flow `nf.rs` handles: a packet that allocated from the
+/// previous allocator and installs its flow after a new one was published re-reserves its pair
+/// against the current allocator, and that pair is not among the writer's pinned survivors. The
+/// block behind it can be emptying at that moment.
+///
+/// Either answer is legitimate -- refused while the pair is held, granted once it is released --
+/// and the test takes both. What it refuses is the allocator disclaiming its own state.
+#[concurrency::model_test]
+fn a_reservation_racing_the_release_of_its_block_is_not_called_a_bug() {
+    concurrency::stress(|| {
+        let specs = vec![PoolSpec {
+            // One address, so both threads are working on the same port allocator.
+            public_ranges: vec![AddrInterval::new(BASE, BASE)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            &PrefixPortsSet::new(),
+            NextHeader::TCP,
+            false,
+        ));
+
+        let allocation = pools[0].allocate(false).expect("the pool can serve");
+        let (ip, port) = (allocation.ip(), allocation.port());
+
+        // The only holder of the pair, and so of its block: dropping it empties the block.
+        let releaser = thread::spawn(move || drop(allocation));
+        let reserver = {
+            let pools = pools.clone();
+            thread::spawn(move || pools[0].reserve(ip, port))
+        };
+
+        let outcome = reserver.join().expect("the reserving thread panicked");
+        releaser.join().expect("the releasing thread panicked");
+
+        if let Err(AllocatorError::InternalIssue(message)) = &outcome {
+            panic!("a reservation racing the release of its block was called a bug: {message}");
+        }
+    });
+}
+
+/// Tidying a dead entry out of the list of allocated blocks races another task listing a live one.
+///
+/// A task allocating from the block it used last finds its entry through a weak reference. When
+/// that reference has expired the entry is dropped as it is found -- but the lookup and the drop
+/// take the lock separately, so between them another task can claim the freed block and list it at
+/// the same index. The drop then deletes an entry for a block that is in use.
+///
+/// Nothing is handed out twice, so this is availability rather than isolation: the orphaned block
+/// stays claimed by its holder while the allocator no longer knows of it, so reservations into it
+/// find it neither free nor listed and are refused, and its free ports stop counting towards the
+/// address having room.
+///
+/// The third place the allocator sets a block's flag and its entry in the list apart from one
+/// another, after the two in `find_block_for_port`. Here the answer is to re-check under the write
+/// lock rather than to retry, since the caller has a lock to take anyway.
+///
+/// Worth knowing before trusting this one: the interleaving is narrow, and `stress` gives each
+/// body sixteen iterations over three schedulers. Reverting the fix is caught in roughly two runs
+/// in three, not every run. It never fails with the fix, so it costs nothing in CI, but a
+/// regression may take a couple of runs to show. Making the contending task poised before the
+/// block is freed was tried and made it worse -- four runs in twelve rather than eight.
+#[concurrency::model_test]
+fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
+    concurrency::stress(|| {
+        let address = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let claim = |lo: u16, hi: u16| {
+            PrefixWithOptionalPorts::new(
+                format!("{address}/32").as_str().into(),
+                Some(PortRange::new(lo, hi).unwrap_or_else(|_| unreachable!())),
+            )
+        };
+        // Two usable blocks, the first with exactly one usable port. One allocation then fills the
+        // first block and pins the address, which is what lets the second block die on its own --
+        // dropping the last port of the only block would take the whole address with it, and the
+        // next allocation would build a fresh allocator with no stale entry to find.
+        let specs = vec![PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            &PrefixPortsSet::from([claim(1025, 1279), claim(1536, u16::MAX)]),
+            NextHeader::TCP,
+            false,
+        ));
+
+        let _keeper = pools[0].allocate(false).expect("the keeper allocation");
+        // Opens the second block, leaving this task's hint on it, and then dies: the hint now
+        // names an index whose entry in the list cannot be upgraded.
+        drop(pools[0].allocate(false).expect("the second block"));
+
+        // One task claims the freed block and lists it...
+        let holder = {
+            let pools = pools.clone();
+            thread::spawn(move || pools[0].allocate(false).ok())
+        };
+        // ...while this one follows its stale hint and tidies the list.
+        let mine = pools[0].allocate(false).ok();
+        let theirs = holder.join().expect("the other task panicked");
+
+        // Whichever of them got it, the block is held and has free ports left, so the allocator
+        // has to be able to find it.
+        if mine.is_some() || theirs.is_some() {
+            let port = NatPort::new_port_checked(1400).unwrap_or_else(|_| unreachable!());
+            let outcome = pools[0].reserve(address, port);
+            assert!(
+                outcome.is_ok(),
+                "a block in use was dropped from the list: reserving into it gave {outcome:?}"
+            );
+        }
     });
 }
