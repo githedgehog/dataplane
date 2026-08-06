@@ -11,13 +11,12 @@
 
 use super::alloc::{IpAllocator, NatPool, PoolSet};
 use super::region::{AddrInterval, Region, decompose, regions_by_owner};
+use super::reserved::ReservedPorts;
 use super::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use crate::masquerade::allocator_writer::MasqueradeConfig;
 use crate::masquerade::natip::NatIp;
-use crate::ranges::IpRange;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
-use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+use lpm::prefix::{L4Protocol, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -274,7 +273,7 @@ fn build_region_allocators<J: NatIpWithBitmap>(
 
             let pool = NatPool::for_range(
                 region.range,
-                build_reserved_prefixes_ports(&reserved),
+                build_reserved_ports(&reserved),
                 exclude_wellknown_ports,
             );
             IpAllocator::new(pool, randomize)
@@ -310,22 +309,21 @@ fn find_masquerade_portfw_overlap<'a>(
     reserve_sets
 }
 
-fn build_reserved_prefixes_ports(
+// Every claim is kept, including several on one address: a set of claims is not a map from
+// address to port range, and recording it as one silently honoured whichever came last.
+fn build_reserved_ports(
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
-) -> Option<DisjointRangesBTreeMap<IpRange, PortRange>> {
-    if prefixes_and_ports_to_exclude_from_pools.is_empty() {
-        return None;
-    }
-    let mut reserved_prefixes_ports = DisjointRangesBTreeMap::new();
+) -> ReservedPorts {
+    let mut reserved = ReservedPorts::default();
     for prefix in prefixes_and_ports_to_exclude_from_pools {
         debug_assert!(prefix.ports().is_some());
         let Some(ports) = prefix.ports() else {
             error!("Stepped on a port-forwarding prefix without ports. This is a bug");
             continue;
         };
-        reserved_prefixes_ports.insert(prefix.prefix().into(), ports);
+        reserved.claim(prefix.prefix().into(), ports);
     }
-    Some(reserved_prefixes_ports)
+    reserved
 }
 
 fn pool_table_key_for_expose<I: NatIp>(

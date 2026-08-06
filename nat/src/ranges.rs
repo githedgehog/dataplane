@@ -138,7 +138,6 @@ impl IpRange {
         self.end
     }
 
-    #[cfg(test)]
     #[must_use]
     pub fn contains(&self, addr: &IpAddr) -> bool {
         self.start <= *addr && *addr <= self.end

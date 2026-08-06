@@ -455,32 +455,27 @@ impl ReservedConfig {
 /// through one expose still has to hold against an allocation made through another, or masquerade
 /// would hand out a port that port forwarding is statically mapping elsewhere.
 ///
-/// # Ignored: this does not hold today
-///
-/// A pool keeps at most one reserved port range per public address, so several claims on one
-/// address collapse to whichever was recorded last and the rest are silently handed out. See
-/// [`several_claims_on_one_address_are_all_honoured`] for the minimal case, and the note there for
-/// the two places that need to change. Unignore both once they do.
-#[ignore = "a pool holds one reserved port range per address; see several_claims_on_one_address_are_all_honoured"]
+/// This is a property of the pools, which are given claims already expressed in public space.
+/// Computing those claims from the configuration is a separate step, and gets the address space
+/// wrong; see the note on `find_masquerade_portfw_overlap`.
 #[test]
 fn reserved_ports_are_never_allocated() {
     bolero::check!()
         .with_type()
         .cloned()
         .for_each(|reserved_config: ReservedConfig| {
-            let ranges = reserved_config.config.owner_ranges();
             let pool_sets = reserved_config.pool_sets();
 
             for (owner, allocation) in allocate_round_robin(&pool_sets, ALLOCATIONS) {
                 let ip = allocation.ip();
                 let port = allocation.port().as_u16();
 
-                // Every expose that declares this address shares the region it came from, so its
-                // claims apply to this allocation too.
+                // A claim binds the public space it names, whoever made it. The pool is built
+                // from the union of every claim, so the oracle unions them too: gating on the
+                // claimant's own ranges here would let a claim made through one expose go
+                // unchecked against an allocation made through another, which is the case the
+                // property exists to state.
                 for (claimant, claims) in reserved_config.reservations.iter().enumerate() {
-                    if !declares(&ranges[claimant], ip) {
-                        continue;
-                    }
                     for claim in claims {
                         assert!(
                             !claim.covers(ip, port),
@@ -495,23 +490,11 @@ fn reserved_ports_are_never_allocated() {
 }
 
 /// The minimal shape behind [`reserved_ports_are_never_allocated`]: one public address carrying
-/// two port-forwarding claims.
+/// two port-forwarding claims, both of which have to be honoured.
 ///
-/// # Ignored: this does not hold today
-///
-/// `build_reserved_prefixes_ports` records the claims in a `DisjointRangesBTreeMap` keyed by
-/// address range, so two claims on one address are inserted under the same key and the second
-/// replaces the first. Even with that fixed, `NatPool::use_new_ip` resolves a single
-/// `Option<PortRange>` per address and `PortAllocator` stores one `reserved_port_range`, so the
-/// data model cannot hold more than one claim per address either. Both need to take a set of
-/// ranges.
-///
-/// This is not a consequence of allocating from regions; the same collapse existed when each
-/// expose had its own pool. It stays latent in production only because the claims are currently
-/// computed from private prefixes and never match the public address they are looked up by, which
-/// is the separate defect noted on `find_masquerade_portfw_overlap`. Fixing that without fixing
-/// this would turn an inert path into a wrong one.
-#[ignore = "a pool holds one reserved port range per address, so the earlier claim is dropped"]
+/// This used to hold only the last claim recorded on an address, at three points in a row: the
+/// claims were collected into a map keyed by address range, the pool resolved one range per
+/// address out of it, and the port allocator stored one range. Each now carries the whole set.
 #[test]
 fn several_claims_on_one_address_are_all_honoured() {
     let address: u128 = BASE;
