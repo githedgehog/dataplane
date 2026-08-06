@@ -228,7 +228,7 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
 ///////////////////////////////////////////////////////////////////////////////
 
 /// [`Allocation`] is the non-generic object representing an allocation, be it IPv4 or IPv6
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Allocation {
     V4(AllocatedPort<Ipv4Addr>),
     V6(AllocatedPort<Ipv6Addr>),
