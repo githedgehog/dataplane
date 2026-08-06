@@ -10,6 +10,7 @@
 //! See also the architecture diagram at the top of mod.rs.
 
 use super::region::AddrInterval;
+use super::reserved::{PortClaims, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
 use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::natip::NatIp;
@@ -17,7 +18,6 @@ use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use lpm::prefix::PortRange;
-use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
@@ -291,14 +291,14 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
     fn new(
         ip: I,
         ip_allocator: IpAllocator<I>,
-        reserved_port_range: Option<PortRange>,
+        reserved_ports: PortClaims,
         randomize: bool,
         exclude_wellknown_ports: bool,
     ) -> Self {
         Self {
             ip,
             port_allocator: port_alloc::PortAllocator::new(
-                reserved_port_range,
+                reserved_ports,
                 randomize,
                 exclude_wellknown_ports,
             ),
@@ -366,7 +366,7 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
-    reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
+    reserved_ports: ReservedPorts,
     exclude_wellknown_ports: bool,
 }
 
@@ -377,7 +377,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     /// overlap and a public address may only be handed out by one pool.
     pub(crate) fn for_range(
         range: AddrInterval,
-        reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
+        reserved_ports: ReservedPorts,
         exclude_wellknown_ports: bool,
     ) -> Self {
         // Index the region from its own start. IPv4 indexes its bitmap by the address bits and
@@ -403,7 +403,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
-            reserved_prefixes_ports,
+            reserved_ports,
             exclude_wellknown_ports,
         }
     }
@@ -429,15 +429,11 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     }
 
     // Used for Display
-    pub(crate) fn reserved_prefixes_ports(
-        &self,
-    ) -> Option<impl Iterator<Item = (IpRange, PortRange)>> {
-        Some(
-            self.reserved_prefixes_ports
-                .as_ref()?
-                .iter()
-                .map(|(&r, &p)| (r, p)),
-        )
+    pub(crate) fn reserved_ports(&self) -> Option<impl Iterator<Item = (IpRange, PortRange)>> {
+        if self.reserved_ports.is_empty() {
+            return None;
+        }
+        Some(self.reserved_ports.iter())
     }
 
     fn use_new_ip(
@@ -450,16 +446,13 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
 
-        // Check if the IP is in a reserved prefix, retrieve the reserved port range if any
-        let reserved_port_range = self
-            .reserved_prefixes_ports
-            .as_ref()
-            .and_then(|ranges| ranges.lookup(&ip.to_ip_addr()).map(|(_, range)| *range));
+        // Every port range port forwarding has claimed on this address, not just one of them.
+        let claims = self.reserved_ports.for_address(ip.to_ip_addr());
 
         Ok(AllocatedIp::new(
             ip,
             ip_allocator,
-            reserved_port_range,
+            claims,
             randomize,
             self.exclude_wellknown_ports,
         ))
@@ -512,7 +505,11 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         let arc_ip = Arc::new(AllocatedIp::new(
             ip,
             ip_allocator,
-            None,
+            // An address entering the pool this way serves later allocations exactly as one that
+            // arrived through allocate(), so it has to carry the same claims. Passing none here
+            // let a flow carried across a config change bring an address in unencumbered, after
+            // which masquerade could hand out the ports port forwarding had taken on it.
+            self.reserved_ports.for_address(ip.to_ip_addr()),
             randomize,
             // Keep the low-port exclusion policy for explicitly reserved IPs as well, so
             // reserve() follows the same TCP/UDP allocation rules as allocate().
