@@ -421,6 +421,56 @@ fn every_address_of_a_region_can_be_reached() {
     }
 }
 
+/// An address that still has room is reused, rather than a fresh one being drawn.
+///
+/// Reuse walks the addresses already in hand and skips those with nothing left. The skip is
+/// decided by a count of blocks still free, and a block that port forwarding has claimed used to
+/// be marked unusable without being taken off that count. The count then said an address had room
+/// when it had none; the attempt failed with "no port block", and the walk gave up on that error
+/// rather than trying the next address in hand. Every allocation after that drew a fresh address
+/// while addresses already in hand sat with tens of thousands of free ports, until the region ran
+/// out of addresses altogether.
+#[test]
+fn an_address_with_room_is_reused_before_a_fresh_one_is_drawn() {
+    const ADDRESSES: u128 = 4;
+    // Everything above the first block, so the first address has exactly one block: 1024..=1279.
+    let claim = PrefixWithOptionalPorts::new(
+        format!("{}/32", Ipv4Addr::from(u32::try_from(BASE).unwrap()))
+            .as_str()
+            .into(),
+        Some(PortRange::new(1280, u16::MAX).unwrap_or_else(|_| unreachable!())),
+    );
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(
+        &specs,
+        &PrefixPortsSet::from([claim]),
+        NextHeader::TCP,
+        false,
+    );
+
+    // One block on the first address, then a handful more that the second address can serve
+    // many times over.
+    let mut held = Vec::new();
+    let mut used = BTreeSet::new();
+    for step in 0..(256 + 4) {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .unwrap_or_else(|e| panic!("allocation {step} failed: {e}"));
+        used.insert(allocation.ip());
+        held.push(allocation);
+    }
+
+    assert_eq!(
+        used.len(),
+        2,
+        "the region spent {} addresses on what two can serve: {used:?}",
+        used.len()
+    );
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
