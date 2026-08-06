@@ -360,7 +360,7 @@ impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
 /// A [`NatPool`] is a pool of IP addresses that can be allocated from. It contains a bitmap of
 /// available IP addresses, and a list of weak references to [`AllocatedIp`] objects representing
 /// the allocated IPs potentially available for use (if they still have free ports)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
