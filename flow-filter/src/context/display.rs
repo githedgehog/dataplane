@@ -6,7 +6,7 @@
 //! Tables retain typed rules for backend-independent display. Each field's type controls its
 //! formatting, keeping values coupled to their key fields.
 
-use super::tables::{FlowFilterContext, GateVni};
+use super::tables::{FlowFilterContext, GateVni, SourceGate};
 
 impl crate::NatRequirement {
     fn label(self) -> &'static str {
@@ -29,6 +29,15 @@ impl std::fmt::Display for GateVni {
         match self.0 {
             Some(vni) => write!(f, "{vni}"),
             None => f.write_str("-"),
+        }
+    }
+}
+
+impl std::fmt::Display for SourceGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceGate::Ungated => f.write_str("-"),
+            SourceGate::PortFwdReply => f.write_str("pfwd"),
         }
     }
 }

@@ -23,7 +23,7 @@
 
 #![cfg(test)]
 
-use crate::{NatMode, NatRequirement};
+use crate::context::SourceGate;
 use bolero::TypeGenerator;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -412,18 +412,23 @@ fn derive_routing_probes(
 
     // (address, port, protocol, revalidated source NAT mode) of every source the peering routes.
     // A protocol of None leaves the choice to the destination.
-    let mut sources: Vec<(IpAddr, u16, Option<FwProto>, NatMode)> = Vec::new();
+    let mut sources: Vec<(IpAddr, u16, Option<FwProto>, SourceGate)> = Vec::new();
     for (li, lspec) in local.expose_specs().enumerate() {
         let block = local_base + li as u8;
         if lspec.source_capable() {
-            sources.push((block_addr(block, 1, false, v6), 1, None, None));
+            sources.push((
+                block_addr(block, 1, false, v6),
+                1,
+                None,
+                SourceGate::Ungated,
+            ));
         }
         for (proto, host) in lspec.port_fw_sources().into_iter().flatten() {
             sources.push((
                 block_addr(block, host, false, v6),
                 FW_PRIVATE_PORTS.0,
                 Some(proto),
-                Some(NatRequirement::PortForwarding),
+                SourceGate::PortFwdReply,
             ));
         }
     }
@@ -447,7 +452,7 @@ fn derive_routing_probes(
         }
     }
 
-    for &(src_ip, src_port, src_proto, nat_mode) in &sources {
+    for &(src_ip, src_port, src_proto, gate) in &sources {
         for &(dst_ip, dst_port, dst_proto, revalidated_dst) in &destinations {
             let Some(proto) = pair_proto(src_proto, dst_proto) else {
                 continue;
@@ -459,7 +464,7 @@ fn derive_routing_probes(
                 dst_ip,
                 proto,
                 ports: Some((src_port, dst_port)),
-                nat_mode,
+                gate,
             });
         }
     }
@@ -670,24 +675,6 @@ impl ProbeProto {
     }
 }
 
-/// The NAT mode an outdated flow revalidates a packet's source against.
-#[derive(Debug, Clone, Copy, TypeGenerator)]
-pub(crate) enum NatSel {
-    Static,
-    Masquerade,
-    PortForwarding,
-}
-
-impl NatSel {
-    fn requirement(self) -> NatRequirement {
-        match self {
-            NatSel::Static => NatRequirement::Static,
-            NatSel::Masquerade => NatRequirement::Masquerade,
-            NatSel::PortForwarding => NatRequirement::PortForwarding,
-        }
-    }
-}
-
 /// One packet's lookup question, in spec form. Block selectors are reduced modulo the built
 /// overlay's block count so probes usually land inside some generated prefix; hits require the
 /// blocks to pair up with the right peering, misses come for free.
@@ -706,11 +693,11 @@ pub(crate) struct ProbeSpec {
     proto: ProbeProto,
     sport: PortSel,
     dport: PortSel,
-    /// Revalidation information, as an outdated flow would supply it: the destination VPC the flow
-    /// was routed to, and the NAT mode it carries. Both are drawn freely (any VPC, any mode,
-    /// neither), so the lookups see combinations no flow would produce as well.
+    /// Revalidation information, as an outdated flow would supply it: the destination VPC the
+    /// flow was routed to, and whether it is a port-forwarding flow. Both are drawn freely (any
+    /// VPC, either gate, neither), so the lookups see combinations no flow would produce as well.
     revalidate_dst: Option<u8>,
-    revalidate_nat: Option<NatSel>,
+    revalidate_port_fw: bool,
 }
 
 /// A resolved probe: the arguments of one route lookup.
@@ -722,7 +709,7 @@ pub(crate) struct Probe {
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(u16, u16)>,
-    pub(crate) nat_mode: NatMode,
+    pub(crate) gate: SourceGate,
 }
 
 /// The VPC discriminant a `u8` selector draws: one of the generated VPCs, or the bogus one.
@@ -741,7 +728,11 @@ impl ProbeSpec {
         Probe {
             src_vpcd: vpcd_from_sel(self.vni_sel),
             dst_vpcd: self.revalidate_dst.map(vpcd_from_sel),
-            nat_mode: self.revalidate_nat.map(NatSel::requirement),
+            gate: if self.revalidate_port_fw {
+                SourceGate::PortFwdReply
+            } else {
+                SourceGate::Ungated
+            },
             src_ip: block_addr(
                 self.src_block % nblocks,
                 self.src_host,
