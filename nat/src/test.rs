@@ -119,8 +119,8 @@ fn setup_masq_pipeline(
     // Masquerade
     let mut allocator = NatAllocatorWriter::new();
     let masquerade = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
-    let masquerade_config = MasqueradeConfig::new(overlay.vpc_table(), 1);
-    allocator.update_nat_allocator(masquerade_config, &flow_table);
+    let masquerade_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocator.update_nat_allocator(masquerade_config, 1, &flow_table);
     if let Some(state) = allocator.get_reader().get() {
         println!("{state}");
     }

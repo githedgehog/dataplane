@@ -68,6 +68,7 @@ use crate::NatPort;
 use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use crate::masquerade::natip::NatIp;
+use concurrency::sync::atomic::{AtomicI64, Ordering};
 use config::GenId;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -183,21 +184,6 @@ impl Allocation {
             Self::V6(a) => a.port(),
         }
     }
-
-    #[must_use]
-    pub fn genid(&self) -> GenId {
-        match self {
-            Self::V4(a) => a.genid(),
-            Self::V6(a) => a.genid(),
-        }
-    }
-
-    pub fn set_genid(&mut self, genid: GenId) {
-        match self {
-            Self::V4(a) => a.set_genid(genid),
-            Self::V6(a) => a.set_genid(genid),
-        }
-    }
 }
 
 impl Display for Allocation {
@@ -217,6 +203,7 @@ impl Display for Allocation {
 #[derive(Debug)]
 pub struct NatAllocator {
     config: MasqueradeConfig,
+    genid: AtomicI64,
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     randomize: bool,
@@ -224,10 +211,11 @@ pub struct NatAllocator {
 
 impl NatAllocator {
     #[must_use]
-    pub(crate) fn new(config: MasqueradeConfig) -> Self {
-        debug!("Building NAT allocator for genid {}", config.genid());
+    pub(crate) fn new(config: MasqueradeConfig, genid: GenId) -> Self {
+        debug!("Building NAT allocator for genid {genid}");
         let mut allocator = Self {
             config: MasqueradeConfig::default(),
+            genid: AtomicI64::new(genid),
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
             randomize: config.randomize(),
@@ -243,13 +231,24 @@ impl NatAllocator {
         &self.config
     }
 
+    /// The configuration generation this allocator currently serves.
+    pub(crate) fn genid(&self) -> GenId {
+        self.genid.load(Ordering::Relaxed)
+    }
+
+    /// Advance the genid served, for a config update that left the NAT peerings untouched and
+    /// therefore kept this allocator
+    pub(crate) fn set_genid(&self, genid: GenId) {
+        self.genid.store(genid, Ordering::Relaxed);
+    }
+
     fn allocate_v4(
         &self,
         dst_vpcd: VpcDiscriminant,
         src_ip: Ipv4Addr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedPort<Ipv4Addr>>, AllocatorError> {
-        self.allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src44)
+        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src44)
     }
 
     fn allocate_v6(
@@ -258,7 +257,7 @@ impl NatAllocator {
         src_ip: Ipv6Addr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedPort<Ipv6Addr>>, AllocatorError> {
-        self.allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src66)
+        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src66)
     }
 
     /// Allocate an IP address and port for the given source IP, dispatching on IP version.
@@ -292,7 +291,6 @@ impl NatAllocator {
         }
     }
     fn allocate_from_tables<I: NatIpWithBitmap>(
-        &self,
         src_ip: IpAddr,
         dst_vpcd: VpcDiscriminant,
         next_header: NextHeader,
@@ -317,8 +315,7 @@ impl NatAllocator {
             })?;
 
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
-        let mut allocation = pool.allocate(allow_null)?;
-        allocation.set_genid(self.config.genid());
+        let allocation = pool.allocate(allow_null)?;
         let idle_timeout = pool.idle_timeout();
 
         Ok(AllocationResult {
@@ -372,7 +369,7 @@ impl NatAllocator {
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
         debug!("Re-reserving {ip} {protocol}:{port}, dst_vpcd:{dst_vpcd}");
-        let mut allocation = match (src_ip, ip) {
+        let allocation = match (src_ip, ip) {
             (IpAddr::V4(src), IpAddr::V4(allocated)) => self
                 .reserve_ipv4_port(protocol, dst_vpcd, src, allocated, port)
                 .map(Allocation::V4)?,
@@ -385,7 +382,6 @@ impl NatAllocator {
                 )));
             }
         };
-        allocation.set_genid(self.config.genid());
         Ok(allocation)
     }
 }

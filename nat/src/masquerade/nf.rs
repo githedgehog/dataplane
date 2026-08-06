@@ -14,6 +14,7 @@ use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::protocol::next_flow_status;
 use crate::masquerade::state::MasqueradeState;
 use concurrency::sync::{Arc, Weak};
+use config::GenId;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
 use net::flow_key::IcmpProtoKey;
@@ -244,9 +245,9 @@ impl Masquerade {
         initial_flow_key: &FlowKey,
         current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
+        genid: GenId,
     ) -> Result<(), MasqueradeError> {
         let idle_timeout = alloc.idle_timeout;
-        let genid = alloc.allocation.genid();
 
         // src and dst vpc of this packet
         let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
@@ -395,6 +396,9 @@ impl Masquerade {
             .allocate(dst_vpcd, src_ip, initial_flow_key.proto())
             .map_err(MasqueradeError::AllocationFailure)?;
 
+        // The generation the installed allocator serves
+        let genid = allocator.genid();
+
         // Forbid addresses we won't know how to translate. This is a work around of a larger change
         if let Err(addr) = UnicastIpAddr::try_from(alloc.allocation.ip()) {
             error!("Allocated address {addr} won't be usable: not unicast");
@@ -404,7 +408,7 @@ impl Masquerade {
         debug!("{nfi}: Allocated: {alloc}");
 
         // create flow pair
-        self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc)?;
+        self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc, genid)?;
 
         // lookup the flow (forward) just created. We should always find it.
         let installed = self

@@ -130,8 +130,8 @@ mod context {
 
     pub fn build_allocator() -> NatAllocator {
         let vpc_table = build_context();
-        let config = MasqueradeConfig::new(&vpc_table, 1);
-        NatAllocator::new(config)
+        let config = MasqueradeConfig::new(&vpc_table);
+        NatAllocator::new(config, 1)
     }
 }
 
