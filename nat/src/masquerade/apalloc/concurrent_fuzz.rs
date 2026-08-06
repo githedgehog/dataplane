@@ -414,3 +414,75 @@ fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
         releaser.join().expect("the releasing thread panicked");
     });
 }
+
+/// A reservation racing a block release is contention, not corrupt state.
+#[concurrency::model_test]
+fn reservation_racing_block_release_is_not_an_internal_error() {
+    concurrency::stress(|| {
+        let specs = vec![PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let allocation = pools[0].allocate(false).expect("the pool can serve");
+        let (ip, port) = (allocation.ip(), allocation.port());
+
+        let releaser = thread::spawn(move || drop(allocation));
+        let reserver = {
+            let pools = pools.clone();
+            thread::spawn(move || pools[0].reserve(ip, port))
+        };
+
+        let outcome = reserver.join().expect("the reserving thread panicked");
+        releaser.join().expect("the releasing thread panicked");
+
+        if let Err(AllocatorError::InternalIssue(message)) = &outcome {
+            panic!("a reservation racing the release of its block was called a bug: {message}");
+        }
+    });
+}
+
+/// An expired weak entry must not erase a block inserted at the same index.
+#[concurrency::model_test]
+fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
+    concurrency::stress(|| {
+        let address = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+        let specs = vec![PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let keeper_port = NatPort::new_port_checked(1024).unwrap_or_else(|_| unreachable!());
+        let _keeper = pools[0]
+            .reserve(address, keeper_port)
+            .expect("the keeper reservation");
+        // This opens the next block and leaves a stale per-thread hint when dropped.
+        drop(pools[0].allocate(false).expect("the second block"));
+
+        let holder = {
+            let pools = pools.clone();
+            thread::spawn(move || pools[0].allocate(false).ok())
+        };
+        let mine = pools[0].allocate(false).ok();
+        let theirs = holder.join().expect("the other task panicked");
+
+        if mine.is_some() || theirs.is_some() {
+            let port = NatPort::new_port_checked(1400).unwrap_or_else(|_| unreachable!());
+            let outcome = pools[0].reserve(address, port);
+            assert!(
+                outcome.is_ok(),
+                "a block in use was dropped from the list: reserving into it gave {outcome:?}"
+            );
+        }
+    });
+}
