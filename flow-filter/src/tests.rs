@@ -5,6 +5,7 @@
 
 #![cfg(test)]
 
+use crate::context::SourceGate;
 use crate::context::{FlowFilterContext, FlowFilterContextWriter};
 use crate::fuzz_gen::Probe;
 use crate::test_utils::{
@@ -1390,7 +1391,7 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
         src_vpcd,
         // These packets belong to no flow, so they don't need flow revalidation info.
         dst_vpcd: None,
-        nat_mode: None,
+        gate: SourceGate::Ungated,
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
         proto: net.next_header(),
@@ -1428,7 +1429,7 @@ fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
     // carries never reaches the lookup: the oracle must not try to lookup for revalidation info
     // that the NF cannot see, so we clear revalidation info.
     probe.dst_vpcd = None;
-    probe.nat_mode = None;
+    probe.gate = SourceGate::Ungated;
     if let Some((sport, dport)) = probe.ports.as_mut() {
         *sport = (*sport).max(1);
         *dport = (*dport).max(1);

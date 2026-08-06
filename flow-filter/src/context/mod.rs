@@ -17,7 +17,7 @@ mod tests;
 
 pub use tables::FlowFilterContext;
 use tables::PRODUCTION_BACKEND;
-pub(crate) use tables::{LookupInput, LookupResult};
+pub(crate) use tables::{LookupInput, LookupResult, SourceGate};
 
 impl TryFrom<&ValidatedOverlay> for FlowFilterContext {
     type Error = ConfigError;
