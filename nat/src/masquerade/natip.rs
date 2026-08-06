@@ -4,7 +4,6 @@
 //! NAT IP address trait: a sealed trait to represent either IPv4 or IPv6 in IP-version-generic
 //! code.
 
-use net::headers::Net;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -21,12 +20,6 @@ pub trait NatIp:
 {
     // Convert to `IpAddr` object
     fn to_ip_addr(&self) -> IpAddr;
-
-    // Extract the source IP address from a Net object as a `NatIp`
-    fn from_src_addr(net: &Net) -> Option<Self>;
-
-    // Extract the destination IP address from a Net object as a `NatIp`
-    fn from_dst_addr(net: &Net) -> Option<Self>;
 
     // Convert from a 128-bit integer to a `NatIp`, if possible
     fn try_from_bits(bits: u128) -> Result<Self, ()>;
@@ -46,20 +39,6 @@ impl NatIp for Ipv4Addr {
     fn to_ip_addr(&self) -> IpAddr {
         IpAddr::V4(*self)
     }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V4(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
     fn try_from_bits(bits: u128) -> Result<Self, ()> {
         Ok(Self::from(u32::try_from(bits).map_err(|_| ())?))
     }
@@ -78,20 +57,6 @@ impl NatIp for Ipv4Addr {
 impl NatIp for Ipv6Addr {
     fn to_ip_addr(&self) -> IpAddr {
         IpAddr::V6(*self)
-    }
-    fn from_src_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.src_addr() {
-            Some(addr)
-        } else {
-            None
-        }
-    }
-    fn from_dst_addr(net: &Net) -> Option<Self> {
-        if let IpAddr::V6(addr) = net.dst_addr() {
-            Some(addr)
-        } else {
-            None
-        }
     }
     fn try_from_bits(bits: u128) -> Result<Self, ()> {
         Ok(Self::from(bits))
