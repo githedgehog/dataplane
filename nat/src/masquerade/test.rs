@@ -368,10 +368,55 @@ fn build_overlay_shared_private_prefix() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
-// A TCP packet towards VPC-3, from a given source VPC and private address. A SYN opens a flow;
-// anything else is only translated if one already exists.
-fn tcp_from(src_vni_id: u32, src_ip: &str, syn: bool) -> Packet<TestBuffer> {
-    let mut packet = build_test_tcp_ipv4_packet(src_ip, "3.3.3.1", 4321, 80);
+// Add a disjoint expose to force allocator replacement without invalidating existing flows.
+fn build_overlay_shared_private_prefix_extended() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).expect("Failed to add VPC"));
+
+    let expose13 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("2.2.0.0/16".into())
+        .unwrap();
+    let expose13_extra = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.9.0.0/16".into())
+        .as_range("9.9.0.0/16".into())
+        .unwrap();
+    let expose23 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("4.4.0.0/16".into())
+        .unwrap();
+
+    let peering13 = VpcPeering::with_default_group(
+        "VPC-1--VPC-3",
+        VpcManifest::new("VPC-1")
+            .exposing(expose13)
+            .exposing(expose13_extra),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+    let peering23 = VpcPeering::with_default_group(
+        "VPC-2--VPC-3",
+        VpcManifest::new("VPC-2").exposing(expose23),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering13).expect("Failed to add peering");
+    peering_table.add(peering23).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
+// Build a TCP packet towards VPC-3 from the given private endpoint.
+fn tcp_from(src_vni_id: u32, src_ip: &str, sport: u16, syn: bool) -> Packet<TestBuffer> {
+    let mut packet = build_test_tcp_ipv4_packet(src_ip, "3.3.3.1", sport, 80);
     {
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_syn(syn);
@@ -387,6 +432,14 @@ fn tcp_from(src_vni_id: u32, src_ip: &str, syn: bool) -> Packet<TestBuffer> {
 
 fn translated_source(packet: &Packet<TestBuffer>) -> Ipv4Addr {
     packet.try_ipv4().unwrap().source().inner()
+}
+
+// The public address and port a flow has been masqueraded onto.
+fn translation(packet: &Packet<TestBuffer>) -> (Ipv4Addr, u16) {
+    (
+        translated_source(packet),
+        packet.transport_src_port().unwrap().into(),
+    )
 }
 
 fn check_packet(
@@ -1709,11 +1762,11 @@ async fn test_masquerade_reconfig_two_vpcs_sharing_a_private_prefix() {
         test_setup(genid, &build_overlay_shared_private_prefix());
 
     // The SYN opens each flow; a follow-up packet exposes its state.
-    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", true));
-    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", true));
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, true));
+    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, true));
 
-    let from_vpc1 = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", false));
-    let from_vpc2 = process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", false));
+    let from_vpc1 = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, false));
+    let from_vpc2 = process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, false));
 
     let public1 = translated_source(&from_vpc1);
     let public2 = translated_source(&from_vpc2);
@@ -1736,8 +1789,8 @@ async fn test_masquerade_reconfig_two_vpcs_sharing_a_private_prefix() {
     allocw.update_nat_allocator(nat_config, genid + 1, &flow_table);
 
     // Both survive, each still translated exactly as before.
-    let from_vpc1 = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", false));
-    let from_vpc2 = process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", false));
+    let from_vpc1 = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, false));
+    let from_vpc2 = process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, false));
 
     assert_eq!(
         translated_source(&from_vpc1),
@@ -1754,6 +1807,64 @@ async fn test_masquerade_reconfig_two_vpcs_sharing_a_private_prefix() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(flow_table.active_len(), Some(4));
+}
+
+// Replacement must reserve each surviving tuple in its source VPC's pool before publication.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_reconfig_carries_flows_into_a_new_allocator() {
+    let genid = 1;
+    let (flow_table, mut pipeline, mut allocw) =
+        test_setup(genid, &build_overlay_shared_private_prefix());
+
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 4321, true));
+    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", 4321, true));
+    let before_vpc1 = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(100, "1.1.0.1", 4321, false),
+    ));
+    let before_vpc2 = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(200, "1.1.0.1", 4321, false),
+    ));
+    assert_eq!(before_vpc1.0.octets()[0..2], [2, 2]);
+    assert_eq!(before_vpc2.0.octets()[0..2], [4, 4]);
+
+    // Rebuild the allocator without invalidating either flow.
+    let overlay = build_overlay_shared_private_prefix_extended()
+        .validate()
+        .unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid + 1, &flow_table);
+
+    let after_vpc1 = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(100, "1.1.0.1", 4321, false),
+    ));
+    let after_vpc2 = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(200, "1.1.0.1", 4321, false),
+    ));
+    assert_eq!(
+        after_vpc1, before_vpc1,
+        "VPC-1's flow was not carried into the new allocator unchanged"
+    );
+    assert_eq!(
+        after_vpc2, before_vpc2,
+        "VPC-2's flow was not carried into the new allocator unchanged"
+    );
+
+    // New flows must not reuse carried tuples.
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", 5555, true));
+    let fresh = translation(&process_packet(
+        &mut pipeline,
+        tcp_from(100, "1.1.0.1", 5555, false),
+    ));
+    assert_ne!(
+        fresh, before_vpc1,
+        "a flow created after the change was given what a carried-over flow still holds"
+    );
+    assert_ne!(fresh, before_vpc2);
 }
 
 #[tokio::test]
