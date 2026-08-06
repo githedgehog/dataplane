@@ -417,3 +417,46 @@ fn stress_test_config_change() {
             });
         });
 }
+
+/// Printing the allocator races the last flow on an address ending.
+///
+/// The pool holds weak references to the addresses in use, and printing upgrades each one while
+/// the pool's read guard is held. An address whose last block is released at that moment leaves
+/// the upgrade taken for printing as the only strong reference, and dropping it runs
+/// `AllocatedIp::drop` on the printing thread, which takes the same lock for writing.
+///
+/// This is the same self-deadlock the allocation paths guard against, reached from the management
+/// side: `NatAllocator` is a `CliSource`, so the table is formatted on a thread of its own while
+/// packet threads keep ending flows. A wedged read guard takes the pool with it.
+///
+/// Shuttle names it directly -- "tried to acquire a `RwLock` it already holds" -- so the
+/// assertion is the run completing at all.
+#[concurrency::model_test]
+fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
+    concurrency::stress(|| {
+        let specs = vec![PoolSpec {
+            // One address, so the flow that ends is the last holder of the one being printed.
+            public_ranges: vec![AddrInterval::new(BASE, BASE)],
+            reserved: PrefixPortsSet::new(),
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let allocation = pools[0].allocate(false).expect("the pool can serve");
+
+        let releaser = thread::spawn(move || drop(allocation));
+        let printer = {
+            let pools = pools.clone();
+            thread::spawn(move || {
+                let _ = format!("{}", pools[0]);
+            })
+        };
+
+        printer.join().expect("the printing thread panicked");
+        releaser.join().expect("the releasing thread panicked");
+    });
+}
