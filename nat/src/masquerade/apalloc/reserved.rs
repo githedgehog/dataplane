@@ -262,8 +262,12 @@ mod bolero_tests {
         fn reserved(&self) -> ReservedPorts {
             let mut reserved = ReservedPorts::default();
             for &(offset, length, shape, port_lo, port_span) in &self.claims {
-                let start = BASE + u32::from(offset) % WINDOW;
-                // Claims may reach past the end of the window, which the clipping has to survive.
+                // Claims may begin below the window and end past it, since a port-forwarded
+                // prefix is under no obligation to sit inside the region being asked about. The
+                // sweep cuts only within the range it is given, so both overhangs have to clip
+                // correctly: an oracle mismatch at the window's first or last address is what a
+                // mistake here would look like.
+                let start = (BASE - WINDOW / 2) + u32::from(offset) % (WINDOW + WINDOW / 2);
                 let end = start + u32::from(length) % WINDOW;
                 let ports = match shape % 3 {
                     // The whole of what masquerade could draw on, which uses the address up by
