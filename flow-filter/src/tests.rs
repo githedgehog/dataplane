@@ -676,6 +676,282 @@ fn stateful_flow_does_not_survive_peering_removal() {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Config update and flow re-validation in the case of overlaps
+
+#[test]
+fn revalidation_works_in_case_of_remote_masquerade_overlap() {
+    let ctx = context(
+        &[("vpc1", 100), ("vpc2", 200), ("vpc3", 300)],
+        // vpc2 and vpc3 both expose the same masqueraded prefixes towards the same vpc1 prefix
+        vec![
+            peering(
+                "vpc1-to-vpc2",
+                ("vpc1", vec![expose("1.0.0.0/24")]),
+                ("vpc2", vec![expose_masquerade("2.0.0.0/24", "10.0.0.0/24")]),
+            ),
+            peering(
+                "vpc1-to-vpc3",
+                ("vpc1", vec![expose("1.0.0.0/24")]),
+                ("vpc3", vec![expose_masquerade("2.0.0.0/24", "10.0.0.0/24")]),
+            ),
+        ],
+    );
+    let (mut flow_filter, writer) = make_flow_filter(ctx);
+
+    // Initial packet from vpc2 to vpc1 (no flow info) passes
+    let p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("1.0.0.1"), 2222, 1111),
+    );
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+
+    // Reply from vpc1 to vpc2 (with flow info) passes
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("10.0.0.1"), 1111, 2222),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Request from vpc2 to vpc1 (with flow info) passes
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("1.0.0.1"), 2222, 1111),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Bump flow-filter genid
+    set_genid(&mut flow_filter, 5);
+
+    // Reply from vpc1 to vpc2 (with outdated flow info) passes
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("10.0.0.1"), 1111, 2222),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Reply from vpc2 to vpc1 (with outdated flow info) passes
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("1.0.0.1"), 2222, 1111),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Rmove peering, bump genid again
+    writer.store(context(&[], vec![]));
+    set_genid(&mut flow_filter, 6);
+
+    // Reply from vpc1 to vpc2 (with outdated flow info) is dropped, flow cancelled
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("10.0.0.1"), 1111, 2222),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+#[test]
+fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
+    let ctx = context(
+        &[("vpc1", 100), ("vpc2", 200)],
+        // vpc1 uses overlapping prefixes for masquerade and port-forwarding
+        vec![peering(
+            "vpc1-to-vpc2",
+            (
+                "vpc1",
+                vec![
+                    expose_port_forwarding(
+                        "1.0.0.0/24",
+                        (2000, 3000),
+                        "10.0.0.0/24",
+                        (5000, 6000),
+                        Some(L4Protocol::Tcp),
+                    ),
+                    expose_masquerade("1.0.0.0/25", "10.0.0.0/25"),
+                ],
+            ),
+            ("vpc2", vec![expose("2.0.0.0/24")]),
+        )],
+    );
+    let (mut flow_filter, writer) = make_flow_filter(ctx);
+
+    // Port-forwarding: Initial packet from vpc2 to vpc1 (no flow info) passes
+    let p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
+    );
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_port_forwarding());
+
+    // Port-forwarding: Reply from vpc1 to vpc2 (with flow info) passes
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Port-forwarding: Request from vpc2 to vpc1 (with flow info) passes
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // ------
+
+    // Masquerade: Initial packet from vpc1 to vpc2 (no flow info) passes
+    let p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
+    );
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+
+    // Masquerade: Reply from vpc2 to vpc1 (with flow info) passes
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Masquerade: Request from vpc1 to vpc2 (with flow info) passes
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // ------
+
+    // Bump flow-filter genid
+    set_genid(&mut flow_filter, 5);
+
+    // ------
+
+    // Port-forwarding: Reply from vpc1 to vpc2 (with outdated flow info) passes
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Port-forwarding: Request from vpc2 to vpc1 (with outdated flow info) passes
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_port_forwarding());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // ------
+
+    // Masquerade: Reply from vpc2 to vpc1 (with outdated flow info) passes
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Masquerade: Request from vpc1 to vpc2 (with outdated flow info) passes
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert!(!out.is_done(), "{:?}", out.get_done());
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
+    assert!(out.meta().requires_masquerade());
+    assert_ne!(flow.status(), FlowStatus::Cancelled);
+
+    // Rmove peering, bump genid again
+    writer.store(context(&[], vec![]));
+    set_genid(&mut flow_filter, 6);
+
+    // Port-forwarding: Reply from vpc1 to vpc2 (with outdated flow info) is dropped, flow cancelled
+    let mut p = packet(
+        Some(vpcd(100)),
+        build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+
+    // Masquerade: Reply from vpc2 to vpc1 (with outdated flow info) is dropped, flow cancelled
+    let mut p = packet(
+        Some(vpcd(200)),
+        build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
+    );
+    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let out = run(&mut flow_filter, p);
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered));
+    assert_eq!(flow.status(), FlowStatus::Cancelled);
+}
+
+// -------------------------------------------------------------------------------------------------
 // Stateful flows: flow-key attachment for the {masquerade|port-forwarding} + static-NAT combination
 
 #[test]
