@@ -178,6 +178,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
             for probe in &built.routing_probes {
                 let want = reference.lookup(
                     probe.src_vpcd,
+                    None,
                     probe.src_ip,
                     probe.dst_ip,
                     probe.proto,
@@ -186,6 +187,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                 assert_eq!(
                     dpdk.lookup(
                         probe.src_vpcd,
+                        None,
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
@@ -209,6 +211,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                 .iter()
                 .map(|p| LookupInput {
                     src_vpcd: p.src_vpcd,
+                    dst_vpcd: None,
                     src_ip: p.src_ip,
                     dst_ip: p.dst_ip,
                     proto: p.proto,
@@ -220,6 +223,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
             for probe in &probes {
                 let want = reference.lookup(
                     probe.src_vpcd,
+                    None,
                     probe.src_ip,
                     probe.dst_ip,
                     probe.proto,
@@ -228,6 +232,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                 assert_eq!(
                     dpdk.lookup(
                         probe.src_vpcd,
+                        None,
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
@@ -261,6 +266,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
             let all_miss: Vec<LookupInput> = (0..33u8)
                 .map(|i| LookupInput {
                     src_vpcd: bogus_vpcd(),
+                    dst_vpcd: None,
                     src_ip: format!("10.0.0.{i}").parse().unwrap(),
                     dst_ip: "10.0.0.99".parse().unwrap(),
                     proto: NextHeader::TCP,
@@ -314,6 +320,7 @@ fn batched_lookup_matches_single_lookup() {
                 .iter()
                 .map(|p| LookupInput {
                     src_vpcd: p.src_vpcd,
+                    dst_vpcd: None,
                     src_ip: p.src_ip,
                     dst_ip: p.dst_ip,
                     proto: p.proto,
@@ -328,6 +335,7 @@ fn batched_lookup_matches_single_lookup() {
                     out[i],
                     tables.lookup(
                         probe.src_vpcd,
+                        None,
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
@@ -354,6 +362,7 @@ fn reference_lookup_matches_config_oracle() {
                 assert_eq!(
                     tables.lookup(
                         probe.src_vpcd,
+                        None,
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,

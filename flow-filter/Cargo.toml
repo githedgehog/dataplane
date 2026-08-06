@@ -34,3 +34,4 @@ dpdk = { workspace = true, features = ["test"] }
 lpm = { workspace = true, features = ["testing"] }
 # Enable generated header stacks for classifier tests.
 net = { workspace = true, features = ["builder", "bolero"] }
+tracing-test = { workspace = true }
