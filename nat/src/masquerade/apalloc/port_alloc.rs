@@ -21,7 +21,7 @@ use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
 
-use tracing::debug;
+use tracing::{debug, error};
 
 #[concurrency_mode(std)]
 use rand::seq::SliceRandom;
@@ -576,7 +576,7 @@ impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
 ///
 /// It contains a back reference to its parent [`AllocatedPortBlock`], to deallocate the port when
 /// the [`AllocatedPort`] is dropped.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AllocatedPort<I: NatIpWithBitmap> {
     port: NatPort,                               // the actual allocated value
     block_allocator: Arc<AllocatedPortBlock<I>>, // block/IP the allocated value belongs to
@@ -612,7 +612,14 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
 impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
     fn drop(&mut self) {
         debug!("Dropping allocated port {self}...");
-        let _ = self.block_allocator.deallocate_port_from_block(self.port);
+        // Not panicking on a drop path is right; discarding the answer is not. A port that cannot
+        // be given back has either been given back already or was never recorded as taken, and
+        // both mean the bitmap no longer says what is in use -- the same accounting whose silence
+        // let a pair be handed out twice until the error above was made load-bearing. There is
+        // nothing to do about it here, but it should not pass unsaid.
+        if let Err(e) = self.block_allocator.deallocate_port_from_block(self.port) {
+            error!("Failed to give back {self}: {e}");
+        }
     }
 }
 
