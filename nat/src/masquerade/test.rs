@@ -1420,17 +1420,20 @@ fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<NatFlowStatus> {
         .map(|state| state.status.load())
 }
 
-fn masquerade_state(packet: &Packet<TestBuffer>) -> Option<MasqueradeState> {
-    packet
-        .meta()
-        .flow_info
-        .as_ref()?
-        .locked
-        .read()
+// Read something out of a flow's masquerade state, under the lock.
+//
+// Deliberately not a clone of the state: it owns the allocation, and a copy of it is a second
+// owner of the same public address and port. Nothing in a test needs that.
+fn with_masquerade_state<T>(
+    packet: &Packet<TestBuffer>,
+    read: impl FnOnce(&MasqueradeState) -> T,
+) -> Option<T> {
+    let locked = packet.meta().flow_info.as_ref()?.locked.read();
+    let state = locked
         .nat_state
-        .as_ref()
-        .and_then(|s| s.extract_ref::<MasqueradeState>())
-        .cloned()
+        .as_ref()?
+        .extract_ref::<MasqueradeState>()?;
+    Some(read(state))
 }
 
 fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
@@ -1502,7 +1505,7 @@ fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
     assert_eq!(nat_flow_status(&output), Some(NatFlowStatus::Established));
 
     // configured timeout for the flow
-    let timeout = masquerade_state(&output).unwrap().idle_timeout();
+    let timeout = with_masquerade_state(&output, MasqueradeState::idle_timeout).unwrap();
 
     // check that flow timeouts "match" the ones configured, allowing for 5 second error (for the test)
     let flow_info_ack = output.meta().flow_info.as_ref().unwrap();
@@ -1539,8 +1542,9 @@ async fn test_masquerade_check() {
     let out = process_packet(&mut pipeline, packet);
 
     // packet hit flow with SRC nat rule
-    let state = masquerade_state(&out).expect("Must have flow info w/ masquerade state");
-    assert_eq!(state.action(), NatAction::SrcNat);
+    let action = with_masquerade_state(&out, MasqueradeState::action)
+        .expect("Must have flow info w/ masquerade state");
+    assert_eq!(action, NatAction::SrcNat);
 
     test_case("Process packet masquerade dest nat");
     // process packet in dst nat direction
@@ -1548,8 +1552,9 @@ async fn test_masquerade_check() {
     let out = process_packet(&mut pipeline, reply);
 
     // packet hit flow with dst nat rule
-    let state = masquerade_state(&out).expect("Must have flow info w/ masquerade state");
-    assert_eq!(state.action(), NatAction::DstNat);
+    let action = with_masquerade_state(&out, MasqueradeState::action)
+        .expect("Must have flow info w/ masquerade state");
+    assert_eq!(action, NatAction::DstNat);
     assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
     assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
 
@@ -1582,8 +1587,9 @@ async fn test_masquerade_tcp_reset() {
     let reply_out = process_packet(&mut pipeline, reply);
 
     // packet hits flow with dst nat rule. Nat flow status becomes reset and flow is cancelled
-    let state = masquerade_state(&reply_out).expect("Must have flow info w/ masquerade state");
-    assert_eq!(state.action(), NatAction::DstNat);
+    let action = with_masquerade_state(&reply_out, MasqueradeState::action)
+        .expect("Must have flow info w/ masquerade state");
+    assert_eq!(action, NatAction::DstNat);
     assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Reset);
     assert_eq!(flow_status(&reply_out).unwrap(), FlowStatus::Cancelled);
 
