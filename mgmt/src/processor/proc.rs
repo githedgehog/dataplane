@@ -538,8 +538,8 @@ fn apply_masquerade_config(
     natallocatorw: &mut NatAllocatorWriter,
     genid: GenId,
 ) {
-    let nat_config = MasqueradeConfig::new(vpc_table, genid).set_randomize(true);
-    natallocatorw.update_nat_allocator(nat_config, flow_table);
+    let nat_config = MasqueradeConfig::new(vpc_table).set_randomize(true);
+    natallocatorw.update_nat_allocator(nat_config, genid, flow_table);
     debug!("Updated masquerade NAT allocator");
 }
 

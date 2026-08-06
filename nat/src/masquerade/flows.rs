@@ -91,7 +91,7 @@ pub(crate) fn check_masquerading_flow(
     allocator: &NatAllocator,
 ) {
     let config = allocator.config();
-    let genid = config.genid();
+    let genid = allocator.genid();
     if flow_info.genid() == genid {
         return;
     }
@@ -172,7 +172,7 @@ pub(crate) fn check_masquerading_flows<'a>(
     flow_table: &'a FlowTable,
     new_allocator: &mut NatAllocator,
 ) -> FlowTableReadGuard<'a> {
-    let genid = new_allocator.config().genid();
+    let genid = new_allocator.genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     let guard = flow_table.for_each_flow_filtered(
         |_, f| f.is_active(),

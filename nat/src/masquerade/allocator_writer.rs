@@ -21,22 +21,15 @@ pub(crate) struct MasqueradePeering {
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: ValidatedPeering,
 }
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct MasqueradeConfig {
-    genid: GenId,
     peerings: Vec<MasqueradePeering>,
     randomize: bool,
-}
-impl PartialEq for MasqueradeConfig {
-    fn eq(&self, other: &Self) -> bool {
-        // we exclude genid from comparison
-        self.peerings == other.peerings && self.randomize == other.randomize
-    }
 }
 
 impl MasqueradeConfig {
     #[must_use]
-    pub fn new(vpc_table: &ValidatedVpcTable, genid: GenId) -> Self {
+    pub fn new(vpc_table: &ValidatedVpcTable) -> Self {
         let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
             for peering in vpc.local_stateful_nat_peerings() {
@@ -48,15 +41,9 @@ impl MasqueradeConfig {
             }
         }
         Self {
-            genid,
             peerings,
             randomize: true, // randomize by default
         }
-    }
-
-    #[must_use]
-    pub fn genid(&self) -> GenId {
-        self.genid
     }
 
     #[must_use]
@@ -119,8 +106,12 @@ impl NatAllocatorWriter {
     /// masquerading config is provided, a new allocator will be installed and the flows using the
     /// previous one be either invalidated or adapted to use the new allocator: their ports/ips
     /// will be transferred (reserved) in the new allocator.
-    pub fn update_nat_allocator(&mut self, nat_config: MasqueradeConfig, flow_table: &FlowTable) {
-        let genid = nat_config.genid();
+    pub fn update_nat_allocator(
+        &mut self,
+        nat_config: MasqueradeConfig,
+        genid: GenId,
+        flow_table: &FlowTable,
+    ) {
         let curr_allocator = self.0.load_full();
 
         // keep state as-is if config did not change, and just upgrade flows
@@ -128,6 +119,7 @@ impl NatAllocatorWriter {
             && current.config() == &nat_config
         {
             debug!("No need to update NAT allocator: NAT peerings did not change");
+            current.set_genid(genid);
             upgrade_all_masquerading_flows(flow_table, genid);
             return;
         }
@@ -142,7 +134,7 @@ impl NatAllocatorWriter {
             return;
         }
 
-        let mut allocator = NatAllocator::new(nat_config);
+        let mut allocator = NatAllocator::new(nat_config, genid);
         if curr_allocator.is_some() {
             let guard = check_masquerading_flows(flow_table, &mut allocator);
             debug!("Replacing masquerade NAT allocator...");

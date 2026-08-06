@@ -948,7 +948,7 @@ mod end_to_end {
 
         // Masquerade (creates the related flow pair used by 'flow'-scoped replies)
         let mut allocator = NatAllocatorWriter::new();
-        allocator.update_nat_allocator(MasqueradeConfig::new(overlay.vpc_table(), 1), &flow_table);
+        allocator.update_nat_allocator(MasqueradeConfig::new(overlay.vpc_table()), 1, &flow_table);
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),
