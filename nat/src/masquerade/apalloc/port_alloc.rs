@@ -94,9 +94,6 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
 /// allocated by masquerade NAT for TCP or UDP.
 const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
 
-/// Number of 256-port blocks covering the IANA well-known port range (0-1023).
-const IANA_WELLKNOWN_BLOCKS: u16 = IANA_WELLKNOWN_PORT_LIMIT / 256;
-
 impl<I: NatIpWithBitmap> PortAllocator<I> {
     pub(crate) fn new(
         reserved_ports: PortClaims,
@@ -112,22 +109,34 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         if randomize {
             Self::shuffle_slice(&mut base_ports);
         }
-        let blocks = std::array::from_fn(|i| {
+        let blocks: [AllocatorPortBlock; 256] = std::array::from_fn(|i| {
             let block = AllocatorPortBlock::new(base_ports[i]);
-            // Pre-mark IANA well-known port blocks (0-1023) as permanently non-free so they are
-            // never handed out by masquerade NAT for TCP or UDP.
-            if exclude_wellknown_ports && block.to_port_number() < IANA_WELLKNOWN_PORT_LIMIT {
+            let base = block.to_port_number();
+            // Mark the blocks masquerade can never draw from as permanently non-free: the IANA
+            // well-known range (0-1023) for TCP and UDP, and any block port forwarding has claimed
+            // in full. Deciding this once, here, is what keeps the count of usable blocks honest:
+            // a block ruled out later would be marked non-free without ever being counted out.
+            if (exclude_wellknown_ports && base < IANA_WELLKNOWN_PORT_LIMIT)
+                || (!reserved_ports.is_empty() && reserved_ports.covers_block(base))
+            {
                 block
                     .free
                     .store(false, concurrency::sync::atomic::Ordering::Relaxed);
             }
             block
         });
-        let usable_blocks = if exclude_wellknown_ports {
-            256 - IANA_WELLKNOWN_BLOCKS
-        } else {
-            256
-        };
+        // Counted from the blocks themselves rather than assumed, so the two cannot disagree.
+        let usable_blocks = u16::try_from(
+            blocks
+                .iter()
+                .filter(|block| {
+                    block
+                        .free
+                        .load(concurrency::sync::atomic::Ordering::Relaxed)
+                })
+                .count(),
+        )
+        .unwrap_or(u16::MAX);
         Self {
             blocks,
             usable_blocks: AtomicU16::new(usable_blocks),
@@ -195,13 +204,19 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // finding a weak reference that won't upgrade. Removing here would require an additional
         // lookup in the list.
         //
-        // TODO: Should we move usable_blocks and blocks into a lock-protected struct? Or adjust the
-        // ordering for the atomic operations?
+        // TODO: Should we move usable_blocks and blocks into a lock-protected struct?
+        //
+        // The count is given back before the flag, and the order matters. A claimant subtracts
+        // from the count only after winning the flag, so raising the flag first leaves a window in
+        // which the count is still short by this block and someone else's subtraction takes it
+        // below zero -- on a `u16`, to 65535, which says the address has room it does not have.
+        // This way round the count is briefly one too high instead, which only says an address has
+        // room a moment before it truly does.
+        self.usable_blocks
+            .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
         self.blocks[index]
             .free
             .store(true, concurrency::sync::atomic::Ordering::Relaxed);
-        self.usable_blocks
-            .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
     }
 
     fn has_allocated_blocks_with_free_ports(&self) -> bool {
@@ -209,13 +224,17 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     }
 
     // Find an available block to allocate ports from, and mark it as non-free.
+    //
+    // The blocks masquerade may never draw from, the well-known range and those port forwarding
+    // has claimed in full, were marked non-free when the allocator was built, so taking the first
+    // block whose flag can be claimed is the whole of the decision.
     fn pick_available_block(&self) -> Result<(usize, u16), AllocatorError> {
-        // Find the first free block in the list, starting from the current self.current_alloc_index
+        // Starting from the current self.current_alloc_index, take the first block for which the
+        // atomic compare_exchange succeeds.
         let (index, block) = self
             .cycle_blocks()
             .find(|(_, block)| {
-                // Find the first block for which the atomic compare_exchange succeeds
-                if block
+                block
                     .free
                     .compare_exchange(
                         true,
@@ -223,16 +242,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
                         concurrency::sync::atomic::Ordering::Relaxed,
                         concurrency::sync::atomic::Ordering::Relaxed,
                     )
-                    .is_err()
-                {
-                    return false;
-                }
-
-                // Skip a block port forwarding has claimed in full: there is nothing left in it to
-                // hand out. Several claims may cover a block between them while no single one of
-                // them does, so this asks the claims as a whole rather than testing them one by
-                // one.
-                !self.reserved_ports.covers_block(block.to_port_number())
+                    .is_ok()
             })
             .ok_or(AllocatorError::NoPortBlock)?;
         Ok((index, block.to_port_number()))
@@ -261,7 +271,13 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         let reserved_for_block: Vec<PortRange> =
             self.reserved_ports.within_block(base_port_index).collect();
 
+        // Building the block is the last thing that can fail, and by here its flag is taken and
+        // the count is down. Nothing would give either back: no `Arc` exists yet, so no `Drop` is
+        // coming, and the block would sit claimed by nobody for the life of the allocator. Only
+        // reachable through an `InternalIssue` that should not happen, which is exactly the sort
+        // of thing that turns one bad block into a slow leak.
         AllocatedPortBlock::new(ip, index, base_port_index, &reserved_for_block, allow_null)
+            .inspect_err(|_| self.deallocate_block(index))
     }
 
     pub(crate) fn allocate_port(
@@ -325,13 +341,12 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // other, so it carries the same claims, clipped to it.
         let reserved_for_block: Vec<PortRange> =
             self.reserved_ports.within_block(base_port_index).collect();
-        let block = Arc::new(AllocatedPortBlock::new(
-            ip,
-            index,
-            base_port_index,
-            &reserved_for_block,
-            allow_null,
-        )?);
+        // As in `allocate_block`: the flag is already taken and the count already down, and only
+        // a `Drop` gives them back. There is no `Arc` to drop if this fails.
+        let block = Arc::new(
+            AllocatedPortBlock::new(ip, index, base_port_index, &reserved_for_block, allow_null)
+                .inspect_err(|_| self.deallocate_block(index))?,
+        );
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
         Ok(block)
@@ -367,7 +382,15 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // Reject explicit reservations into the IANA system/well-known range up front so callers
         // get a policy-oriented error rather than a misleading resource-exhaustion error from the
         // pre-excluded low-port blocks.
-        if self.exclude_wellknown_ports && port.as_u16() < IANA_WELLKNOWN_PORT_LIMIT {
+        //
+        // The range is a port-number convention, so it says nothing about an ICMP identifier,
+        // which is drawn from the whole 16 bits. Identifiers cannot meet this today -- ICMP pools
+        // are built with the exclusion off -- but that is decided in `setup.rs`, and a reader here
+        // would have to go and find it to know a low identifier is not silently denied.
+        if self.exclude_wellknown_ports
+            && !matches!(port, NatPort::Identifier(_))
+            && port.as_u16() < IANA_WELLKNOWN_PORT_LIMIT
+        {
             debug!("Explicit reservation for well-known port {port} denied by allocator policy");
             return Err(AllocatorError::Denied);
         }
