@@ -40,6 +40,8 @@ enum MasqueradeError {
     FlowKeyError,
     #[error("no allocator available")]
     NoAllocator,
+    #[error("packet reached masquerade without a VPC discriminant")]
+    MissingDiscriminant,
     #[error("allocation failed: {0}")]
     AllocationFailure(AllocatorError),
     #[error("invalid port {0}")]
@@ -89,6 +91,22 @@ impl Masquerade {
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
+
+    /// The VPC discriminants a masqueraded packet must carry.
+    ///
+    /// Both are set upstream for anything marked as needing masquerade, so absence means the
+    /// pipeline is not doing what this stage assumes. That is worth reporting, but not worth
+    /// taking the data plane down for: every caller here can drop a packet, and dropping one is a
+    /// far better failure than aborting the process for every other flow on the box.
+    fn discriminants<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+    ) -> Result<(VpcDiscriminant, VpcDiscriminant), MasqueradeError> {
+        let (Some(src), Some(dst)) = (packet.meta().src_vpcd, packet.meta().dst_vpcd) else {
+            error!("Masqueraded packet without a VPC discriminant. This is a bug");
+            return Err(MasqueradeError::MissingDiscriminant);
+        };
+        Ok((src, dst))
+    }
 
     /// Creates a new [`Masquerade`] processor from provided parameters.
     #[must_use]
@@ -265,8 +283,7 @@ impl Masquerade {
         let genid = alloc.allocation.genid();
 
         // src and dst vpc of this packet
-        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+        let (src_vpc_id, dst_vpc_id) = Self::discriminants(packet)?;
 
         // build key for reverse flow, based on the current packet headers: if we use masquerading
         // with static NAT, we assume we've already been through static destination NAT and we'll
@@ -389,8 +406,7 @@ impl Masquerade {
             return Err(MasqueradeError::IntendedDrop("TCP without SYN"));
         }
 
-        let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-        let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+        let (src_vpcd, dst_vpcd) = Self::discriminants(packet)?;
 
         // Extract flow key for the current packet
         let current_flow_key =
@@ -520,6 +536,7 @@ impl From<&MasqueradeError> for DoneReason {
             }
             MasqueradeError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
             MasqueradeError::NoAllocator
+            | MasqueradeError::MissingDiscriminant
             | MasqueradeError::UnexpectedKeyVariant
             | MasqueradeError::IcmpUnsupportedCategory
             | MasqueradeError::IcmpError

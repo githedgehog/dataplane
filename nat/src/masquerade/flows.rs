@@ -61,9 +61,16 @@ fn re_reserve_ip_and_port(
     let flow_key = flow_info.flowkey();
     let proto = flow_key.proto();
     // Only the forward flow of a pair holds an allocation, and this is only reached for flows that
-    // have one, so the flow key's source really is the VPC the masqueraded traffic originates in.
-    let src_vpcd = flow_key.src_vpcd().unwrap_or_else(|| unreachable!());
-    let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
+    // have one, so both discriminants should be there. Should: this runs over every flow in the
+    // table while a configuration is applied, and a flow that cannot say which VPCs it belongs to
+    // is one this cannot carry over. Refusing it drops that flow; asserting would take the whole
+    // data plane down in the middle of a config change.
+    let (Some(src_vpcd), Some(dst_vpcd)) = (flow_key.src_vpcd(), flow_info.get_dst_vpcd()) else {
+        error!(
+            "Flow {flow_key} has no VPC discriminant, so it cannot be carried over. This is a bug"
+        );
+        return Err(());
+    };
     let src_ip = *flow_key.src_ip();
     let port_u16 = port.as_u16();
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
@@ -73,9 +80,7 @@ fn re_reserve_ip_and_port(
             debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
             let mut guard = flow_info.locked.write();
             let nat_state = guard.nat_state.as_mut().ok_or(())?;
-            let nat_state = nat_state
-                .extract_mut::<MasqueradeState>()
-                .unwrap_or_else(|| unreachable!());
+            let nat_state = nat_state.extract_mut::<MasqueradeState>().ok_or(())?;
             debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
             nat_state.set_allocation(alloc);
             debug!("Successfully associated ip {ip}, {proto}:{port_u16} to flow {flow_key}");
@@ -104,8 +109,14 @@ pub(crate) fn check_masquerading_flow(
     let Some((ip, port)) = get_flow_masquerading_allocation(flow_info) else {
         return;
     };
-    let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
-    let src_vpcd = flow_key.src_vpcd().unwrap_or_else(|| unreachable!());
+    // A flow that cannot say which VPCs it belongs to cannot be checked against the new
+    // configuration, so it does not survive it. See re_reserve_ip_and_port on why this is a drop
+    // rather than an assertion.
+    let (Some(dst_vpcd), Some(src_vpcd)) = (flow_info.get_dst_vpcd(), flow_key.src_vpcd()) else {
+        error!("Flow {flow_key} has no VPC discriminant, so it cannot be checked. This is a bug");
+        flow_info.invalidate_pair();
+        return;
+    };
 
     debug!("Checking flow {}", flow_info.logfmt());
     let Some(nat_peering) = config.get_peering(src_vpcd, dst_vpcd) else {
