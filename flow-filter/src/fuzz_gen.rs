@@ -23,6 +23,7 @@
 
 #![cfg(test)]
 
+use crate::{NatMode, NatRequirement};
 use bolero::TypeGenerator;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -133,6 +134,37 @@ impl ExposeSpec {
             | ExposeSpec::MasqueradeNestingPortFw(_)
             | ExposeSpec::MasqueradeSameLenPortFw(_) => Some(true),
             ExposeSpec::PortForwarding(_) | ExposeSpec::PortFwProtoPair => None,
+        }
+    }
+
+    /// Whether destinations of this expose are masquerade destinations: they cannot receive
+    /// connections, so the tables answer for them only when the lookup carries the destination VPC
+    /// an outdated flow revalidates against.
+    fn dest_needs_revalidation(self) -> bool {
+        matches!(
+            self,
+            ExposeSpec::Masquerade
+                | ExposeSpec::MasqueradeNestingPortFw(_)
+                | ExposeSpec::MasqueradeSameLenPortFw(_)
+        )
+    }
+
+    /// The port-forwarding exposes this spec contributes, as (protocol, host byte of an address
+    /// the private side covers). A port-forwarding source cannot initiate a connection, so the
+    /// tables answer for it only when the lookup carries the port-forwarding NAT mode an outdated
+    /// flow revalidates against -- and then in preference to any masquerade expose covering the
+    /// same address, which is why the specs that overlap the two are here too.
+    fn port_fw_sources(self) -> [Option<(FwProto, u8)>; 2] {
+        match self {
+            ExposeSpec::PortForwarding(proto) | ExposeSpec::MasqueradeNestingPortFw(proto) => {
+                [Some((proto, FW_HOST)), None]
+            }
+            // The port-forwarded prefix is the whole block, so any host of it will do.
+            ExposeSpec::MasqueradeSameLenPortFw(proto) => [Some((proto, 1)), None],
+            ExposeSpec::PortFwProtoPair => {
+                [Some((FwProto::Tcp, FW_HOST)), Some((FwProto::Udp, FW_HOST))]
+            }
+            ExposeSpec::Plain | ExposeSpec::StaticNat | ExposeSpec::Masquerade => [None, None],
         }
     }
 }
@@ -331,7 +363,7 @@ impl OverlaySpec {
             let remote = build_manifest(&vpc_name(b), &peering.remote, peering.v6, &mut blocks);
             derive_routing_probes(
                 &mut routing_probes,
-                VNIS[a],
+                (VNIS[a], VNIS[b]),
                 peering.v6,
                 (local_base, &peering.local),
                 (remote_base, &peering.remote),
@@ -361,42 +393,90 @@ impl OverlaySpec {
 
 /// Append a routing probe for each compatible pair of local and remote exposes.
 ///
-/// Port-forwarding probes target [`FW_HOST`] and [`FW_PUBLIC_PORTS`]. Other probes use host `.1`.
+/// Port-forwarding destinations target [`FW_HOST`] and [`FW_PUBLIC_PORTS`], port-forwarding
+/// sources the host their expose covers and [`FW_PRIVATE_PORTS`]. Other endpoints use host `.1`.
+///
+/// Masquerade destinations and port-forwarding sources have no rule a plain lookup can reach: the
+/// tables gate them on the revalidation information an outdated flow supplies, so their probes
+/// carry it. Both stages ask the revalidated question first, so such a probe routes through the
+/// gated rule even where a catch-all or a masquerade expose covers the same address.
 fn derive_routing_probes(
     out: &mut Vec<Probe>,
-    src_vni: u32,
+    (src_vni, dst_vni): (u32, u32),
     v6: bool,
     (local_base, local): (u8, &ManifestSpec),
     (remote_base, remote): (u8, &ManifestSpec),
 ) {
     let src_vpcd = VpcDiscriminant::from_vni(Vni::new_checked(src_vni).unwrap());
+    let dst_vpcd = VpcDiscriminant::from_vni(Vni::new_checked(dst_vni).unwrap());
+
+    // (address, port, protocol, revalidated source NAT mode) of every source the peering routes.
+    // A protocol of None leaves the choice to the destination.
+    let mut sources: Vec<(IpAddr, u16, Option<FwProto>, NatMode)> = Vec::new();
     for (li, lspec) in local.expose_specs().enumerate() {
-        if !lspec.source_capable() {
-            continue;
+        let block = local_base + li as u8;
+        if lspec.source_capable() {
+            sources.push((block_addr(block, 1, false, v6), 1, None, None));
         }
-        let src_ip = block_addr(local_base + li as u8, 1, false, v6);
-        for (ri, rspec) in remote.expose_specs().enumerate() {
-            let dst_block = remote_base + ri as u8;
-            if let Some(dst_public) = rspec.dest_public_space() {
-                out.push(Probe {
-                    src_vpcd,
-                    src_ip,
-                    dst_ip: block_addr(dst_block, 1, dst_public, v6),
-                    proto: NextHeader::TCP,
-                    ports: Some((1, 1)),
-                });
-            }
-            for proto in rspec.portfw_protos() {
-                out.push(Probe {
-                    src_vpcd,
-                    src_ip,
-                    dst_ip: block_addr(dst_block, FW_HOST, true, v6),
-                    proto: proto.probe_next_header(),
-                    // Source exposes do not constrain ports.
-                    ports: Some((1, FW_PUBLIC_PORTS.0)),
-                });
-            }
+        for (proto, host) in lspec.port_fw_sources().into_iter().flatten() {
+            sources.push((
+                block_addr(block, host, false, v6),
+                FW_PRIVATE_PORTS.0,
+                Some(proto),
+                Some(NatRequirement::PortForwarding),
+            ));
         }
+    }
+
+    // (address, port, protocol, revalidated destination VPC) of every destination the peering
+    // routes.
+    let mut destinations: Vec<(IpAddr, u16, Option<FwProto>, Option<VpcDiscriminant>)> = Vec::new();
+    for (ri, rspec) in remote.expose_specs().enumerate() {
+        let block = remote_base + ri as u8;
+        if let Some(dst_public) = rspec.dest_public_space() {
+            let revalidated = rspec.dest_needs_revalidation().then_some(dst_vpcd);
+            destinations.push((block_addr(block, 1, dst_public, v6), 1, None, revalidated));
+        }
+        for proto in rspec.portfw_protos() {
+            destinations.push((
+                block_addr(block, FW_HOST, true, v6),
+                FW_PUBLIC_PORTS.0,
+                Some(proto),
+                None,
+            ));
+        }
+    }
+
+    for &(src_ip, src_port, src_proto, nat_mode) in &sources {
+        for &(dst_ip, dst_port, dst_proto, revalidated_dst) in &destinations {
+            let Some(proto) = pair_proto(src_proto, dst_proto) else {
+                continue;
+            };
+            out.push(Probe {
+                src_vpcd,
+                dst_vpcd: revalidated_dst,
+                src_ip,
+                dst_ip,
+                proto,
+                ports: Some((src_port, dst_port)),
+                nat_mode,
+            });
+        }
+    }
+}
+
+/// The protocol a probe pairing these two endpoints carries, or `None` if each end constrains it
+/// to a protocol the other rejects. An end that constrains nothing follows the other one, and a
+/// pair that constrains nothing uses TCP.
+fn pair_proto(src: Option<FwProto>, dst: Option<FwProto>) -> Option<NextHeader> {
+    match (src, dst) {
+        (None, None) => Some(NextHeader::TCP),
+        (Some(proto), None) | (None, Some(proto)) => Some(proto.probe_next_header()),
+        (Some(FwProto::Any), Some(proto)) | (Some(proto), Some(FwProto::Any)) => {
+            Some(proto.probe_next_header())
+        }
+        (Some(src), Some(dst)) if src == dst => Some(src.probe_next_header()),
+        (Some(_), Some(_)) => None,
     }
 }
 
@@ -590,6 +670,24 @@ impl ProbeProto {
     }
 }
 
+/// The NAT mode an outdated flow revalidates a packet's source against.
+#[derive(Debug, Clone, Copy, TypeGenerator)]
+pub(crate) enum NatSel {
+    Static,
+    Masquerade,
+    PortForwarding,
+}
+
+impl NatSel {
+    fn requirement(self) -> NatRequirement {
+        match self {
+            NatSel::Static => NatRequirement::Static,
+            NatSel::Masquerade => NatRequirement::Masquerade,
+            NatSel::PortForwarding => NatRequirement::PortForwarding,
+        }
+    }
+}
+
 /// One packet's lookup question, in spec form. Block selectors are reduced modulo the built
 /// overlay's block count so probes usually land inside some generated prefix; hits require the
 /// blocks to pair up with the right peering, misses come for free.
@@ -608,28 +706,42 @@ pub(crate) struct ProbeSpec {
     proto: ProbeProto,
     sport: PortSel,
     dport: PortSel,
+    /// Revalidation information, as an outdated flow would supply it: the destination VPC the flow
+    /// was routed to, and the NAT mode it carries. Both are drawn freely (any VPC, any mode,
+    /// neither), so the lookups see combinations no flow would produce as well.
+    revalidate_dst: Option<u8>,
+    revalidate_nat: Option<NatSel>,
 }
 
 /// A resolved probe: the arguments of one route lookup.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Probe {
     pub(crate) src_vpcd: VpcDiscriminant,
+    pub(crate) dst_vpcd: Option<VpcDiscriminant>,
     pub(crate) src_ip: IpAddr,
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
     pub(crate) ports: Option<(u16, u16)>,
+    pub(crate) nat_mode: NatMode,
+}
+
+/// The VPC discriminant a `u8` selector draws: one of the generated VPCs, or the bogus one.
+fn vpcd_from_sel(sel: u8) -> VpcDiscriminant {
+    let vni = match sel as usize % (VNIS.len() + 1) {
+        i if i < VNIS.len() => VNIS[i],
+        _ => BOGUS_VNI,
+    };
+    VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap())
 }
 
 impl ProbeSpec {
     pub(crate) fn resolve(&self, blocks: u8) -> Probe {
         let nblocks = blocks.max(1);
-        let vni = match self.vni_sel as usize % (VNIS.len() + 1) {
-            i if i < VNIS.len() => VNIS[i],
-            _ => BOGUS_VNI,
-        };
         let dst_v6 = self.v6 ^ self.cross_version;
         Probe {
-            src_vpcd: VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap()),
+            src_vpcd: vpcd_from_sel(self.vni_sel),
+            dst_vpcd: self.revalidate_dst.map(vpcd_from_sel),
+            nat_mode: self.revalidate_nat.map(NatSel::requirement),
             src_ip: block_addr(
                 self.src_block % nblocks,
                 self.src_host,

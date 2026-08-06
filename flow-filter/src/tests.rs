@@ -1112,6 +1112,9 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
     let net = pkt.try_ip()?;
     Some(Probe {
         src_vpcd,
+        // These packets belong to no flow, so they don't need flow revalidation info.
+        dst_vpcd: None,
+        nat_mode: None,
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
         proto: net.next_header(),
@@ -1145,6 +1148,11 @@ fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
     use net::ip::NextHeader;
 
     let mut probe = *probe;
+    // The NF sees these packets without a flow, so the revalidation information a derived probe
+    // carries never reaches the lookup: the oracle must not try to lookup for revalidation info
+    // that the NF cannot see, so we clear revalidation info.
+    probe.dst_vpcd = None;
+    probe.nat_mode = None;
     if let Some((sport, dport)) = probe.ports.as_mut() {
         *sport = (*sport).max(1);
         *dport = (*dport).max(1);

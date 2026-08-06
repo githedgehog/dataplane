@@ -12,11 +12,12 @@
 #![cfg(test)]
 
 use super::tables::{Backend, FlowFilterContext, LookupInput, LookupResult};
-use crate::NatRequirement;
 use crate::fuzz_gen::{OverlaySpec, Probe, ProbeSpec, bogus_vpcd};
+use crate::{NatMode, NatRequirement};
 use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use lpm::prefix::{IpPrefix, L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -66,8 +67,102 @@ fn consider<T>(best: &mut Option<(Precedence, T)>, precedence: Precedence, value
     }
 }
 
+/// Stage 1: the destination against every peer's public prefixes, scoped to the source VPC.
+///
+/// `revalidated` is the destination VPC an outdated flow vouches for. With it, only the masquerade
+/// exposes of the peering to that VPC answer -- they cannot receive connections, so nothing but a
+/// flow that already used them can reach them. Without it, only exposes that can receive do (a
+/// default expose acts as a /0 of the peering's IP version).
+fn oracle_stage1(
+    src_vpc: &ValidatedVpc,
+    probe: &Probe,
+    dport: u16,
+    revalidated: Option<VpcDiscriminant>,
+) -> Option<(VpcDiscriminant, Option<NatRequirement>)> {
+    let mut verdict: Option<(Precedence, (VpcDiscriminant, Option<NatRequirement>))> = None;
+    for peering in src_vpc.peerings() {
+        let dst_vpcd = VpcDiscriminant::from_vni(peering.remote_vni());
+        if revalidated.is_some_and(|vpcd| vpcd != dst_vpcd) {
+            continue;
+        }
+        for expose in peering.remote().valexp() {
+            let matchable = if revalidated.is_some() {
+                expose.has_masquerade()
+            } else {
+                expose.can_receive_connection()
+            };
+            if !matchable || !proto_allows(expose.nat_proto(), probe.proto) {
+                continue;
+            }
+            for prefix in expose.public_ips() {
+                if prefix_allows(prefix, probe.dst_ip, dport) {
+                    consider(
+                        &mut verdict,
+                        (prefix.prefix().length(), expose.has_port_forwarding()),
+                        (dst_vpcd, NatRequirement::from_expose(expose)),
+                    );
+                }
+            }
+        }
+        if revalidated.is_none()
+            && peering.remote().has_default_expose()
+            && probe.dst_ip.is_ipv4() == peering.is_v4()
+        {
+            consider(&mut verdict, (0, false), (dst_vpcd, None));
+        }
+    }
+    verdict.map(|(_, hit)| hit)
+}
+
+/// Stage 2: the source against the resolved peering's private prefixes.
+///
+/// `revalidated` is the source NAT mode an outdated flow vouches for. With it, only the
+/// port-forwarding exposes of that very mode answer -- they cannot initiate connections, so
+/// nothing but a flow that already used them can reach them. Without it, only exposes that can
+/// initiate do (a default expose acts as a /0 of the peering's IP version).
+fn oracle_stage2(
+    peering: &ValidatedPeering,
+    probe: &Probe,
+    sport: u16,
+    revalidated: NatMode,
+) -> Option<Option<NatRequirement>> {
+    let mut src_nat: Option<(Precedence, Option<NatRequirement>)> = None;
+    for expose in peering.local().valexp() {
+        let matchable = match revalidated {
+            Some(mode) => {
+                expose.has_port_forwarding() && NatRequirement::from_expose(expose) == Some(mode)
+            }
+            None => expose.can_init_connection(),
+        };
+        if !matchable || !proto_allows(expose.nat_proto(), probe.proto) {
+            continue;
+        }
+        for prefix in expose.ips() {
+            if prefix_allows(prefix, probe.src_ip, sport) {
+                consider(
+                    &mut src_nat,
+                    (prefix.prefix().length(), false),
+                    NatRequirement::from_expose(expose),
+                );
+            }
+        }
+    }
+    if revalidated.is_none()
+        && peering.local().has_default_expose()
+        && probe.src_ip.is_ipv4() == peering.is_v4()
+    {
+        consider(&mut src_nat, (0, false), None);
+    }
+    src_nat.map(|(_, nat)| nat)
+}
+
 /// Answer a route lookup directly from the validated overlay.
 /// Shared by the context and NF metadata property tests.
+///
+/// Both stages ask what the flow vouches for first, and only then the plain question. A packet on
+/// an established flow keeps the peering and the NAT mode that flow was built on, even where an
+/// expose covers the same address ungated; the plain question is the fallback, for the forward
+/// traffic that carries no flow information of its own.
 pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
     let Some(src_vpc) = overlay
         .vpc_table()
@@ -81,71 +176,57 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
     }
     let (sport, dport) = probe.ports.unwrap_or((0, 0));
 
-    // Stage 1: the destination against every peer's public prefixes. Masquerade exposes are
-    // included (marker rules); a default expose acts as a /0 of the peering's IP version.
-    let mut verdict: Option<(Precedence, (VpcDiscriminant, Option<NatRequirement>))> = None;
-    for peering in src_vpc.peerings() {
-        let dst_vpcd = VpcDiscriminant::from_vni(peering.remote_vni());
-        for expose in peering.remote().valexp() {
-            if !proto_allows(expose.nat_proto(), probe.proto) {
-                continue;
-            }
-            for prefix in expose.public_ips() {
-                if prefix_allows(prefix, probe.dst_ip, dport) {
-                    consider(
-                        &mut verdict,
-                        (prefix.prefix().length(), expose.has_port_forwarding()),
-                        (dst_vpcd, NatRequirement::from_expose(expose)),
-                    );
-                }
-            }
-        }
-        if peering.remote().has_default_expose() && probe.dst_ip.is_ipv4() == peering.is_v4() {
-            consider(&mut verdict, (0, false), (dst_vpcd, None));
-        }
-    }
-    let Some((_, (dst_vpcd, dst_nat))) = verdict else {
+    let verdict = probe
+        .dst_vpcd
+        .and_then(|vpcd| oracle_stage1(src_vpc, probe, dport, Some(vpcd)))
+        .or_else(|| oracle_stage1(src_vpc, probe, dport, None));
+    let Some((dst_vpcd, dst_nat)) = verdict else {
         return LookupResult::DestinationMiss;
     };
 
-    // Stage 2: the source against that peering's private prefixes. Port-forwarding sources are
-    // excluded (they cannot initiate); a default expose acts as a /0 of the peering's version.
     let peering = src_vpc
         .peerings()
         .iter()
         .find(|p| VpcDiscriminant::from_vni(p.remote_vni()) == dst_vpcd)
         .unwrap_or_else(|| unreachable!("stage 1 hit implies a peering to the verdict VPC"));
-    let mut src_nat: Option<(Precedence, Option<NatRequirement>)> = None;
-    for expose in peering
-        .local()
-        .valexp()
-        .iter()
-        .filter(|expose| expose.can_init_connection())
-    {
-        if !proto_allows(expose.nat_proto(), probe.proto) {
-            continue;
-        }
-        for prefix in expose.ips() {
-            if prefix_allows(prefix, probe.src_ip, sport) {
-                consider(
-                    &mut src_nat,
-                    (prefix.prefix().length(), false),
-                    NatRequirement::from_expose(expose),
-                );
-            }
-        }
-    }
-    if peering.local().has_default_expose() && probe.src_ip.is_ipv4() == peering.is_v4() {
-        consider(&mut src_nat, (0, false), None);
-    }
+    let src_nat = probe
+        .nat_mode
+        .and_then(|mode| oracle_stage2(peering, probe, sport, Some(mode)))
+        .or_else(|| oracle_stage2(peering, probe, sport, None));
     match src_nat {
-        Some((_, src_nat)) => LookupResult::Route((dst_vpcd, dst_nat, src_nat)),
+        Some(src_nat) => LookupResult::Route((dst_vpcd, dst_nat, src_nat)),
         None => LookupResult::SourceMiss(dst_vpcd),
     }
 }
 
 // -------------------------------------------------------------------------------------------------
 // Properties.
+
+/// A probe's fields are exactly one lookup's arguments, revalidation information included.
+fn lookup(tables: &FlowFilterContext, probe: &Probe) -> LookupResult {
+    tables.lookup(
+        probe.src_vpcd,
+        probe.dst_vpcd,
+        probe.src_ip,
+        probe.dst_ip,
+        probe.proto,
+        probe.ports,
+        probe.nat_mode,
+    )
+}
+
+/// The same question, in the batch path's form.
+fn lookup_input(probe: &Probe) -> LookupInput {
+    LookupInput {
+        src_vpcd: probe.src_vpcd,
+        dst_vpcd: probe.dst_vpcd,
+        src_ip: probe.src_ip,
+        dst_ip: probe.dst_ip,
+        proto: probe.proto,
+        ports: probe.ports,
+        nat_mode: probe.nat_mode,
+    }
+}
 
 /// The rte_acl backend agrees with the reference backend on every probe of every generated
 /// overlay -- single lookups and the chunked batch path alike. This is the fuzz form of
@@ -160,6 +241,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
     // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not
     // const (each instance registers with the loom executor).
     static ROUTES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static REVALIDATED_ROUTES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static SOURCE_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static DESTINATION_MISSES: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
@@ -171,78 +253,34 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                 .expect("reference build");
             let dpdk = FlowFilterContext::build(&built.overlay, Backend::Dpdk).expect("dpdk build");
 
-            // Guaranteed-routing probes derived from the overlay's own structure. A full route from
-            // random generation would be a rare random outcome (~1% of generated routes), and we
-            // may not get enough of them during a time-boxed bolero run on a loaded CI runner to
-            // get meaningful coverage.
+            // Probes derived from the overlay's own structure route by construction. A full route
+            // from random generation would be a rare random outcome (~1% of generated routes), and
+            // we may not get enough of them during a time-boxed bolero run on a loaded CI runner to
+            // get meaningful coverage -- the revalidated ones would get none at all.
             for probe in &built.routing_probes {
-                let want = reference.lookup(
-                    probe.src_vpcd,
-                    None,
-                    probe.src_ip,
-                    probe.dst_ip,
-                    probe.proto,
-                    probe.ports,
-                    None,
-                );
-                assert_eq!(
-                    dpdk.lookup(
-                        probe.src_vpcd,
-                        None,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports,
-                        None,
-                    ),
-                    want,
-                    "backends disagree on derived routing probe {probe:?}\nspec: {overlay_spec:?}",
-                );
                 assert!(
-                    matches!(want, LookupResult::Route(_)),
+                    matches!(lookup(&reference, probe), LookupResult::Route(_)),
                     "derived routing probe did not route: {probe:?}\nspec: {overlay_spec:?}",
                 );
-                ROUTES.fetch_add(1, Ordering::Relaxed);
+                if probe.dst_vpcd.is_some() || probe.nat_mode.is_some() {
+                    REVALIDATED_ROUTES.fetch_add(1, Ordering::Relaxed);
+                }
             }
 
-            let probes: Vec<Probe> = probe_specs
+            // Derived and random probes alike go through both backends and both lookup paths.
+            let probes: Vec<Probe> = built
+                .routing_probes
                 .iter()
-                .map(|p| p.resolve(built.blocks))
+                .copied()
+                .chain(probe_specs.iter().map(|p| p.resolve(built.blocks)))
                 .collect();
-            let inputs: Vec<LookupInput> = probes
-                .iter()
-                .map(|p| LookupInput {
-                    src_vpcd: p.src_vpcd,
-                    dst_vpcd: None,
-                    src_ip: p.src_ip,
-                    dst_ip: p.dst_ip,
-                    proto: p.proto,
-                    ports: p.ports,
-                    nat_mode: None,
-                })
-                .collect();
+            let inputs: Vec<LookupInput> = probes.iter().map(lookup_input).collect();
 
             let mut expected = Vec::with_capacity(probes.len());
             for probe in &probes {
-                let want = reference.lookup(
-                    probe.src_vpcd,
-                    None,
-                    probe.src_ip,
-                    probe.dst_ip,
-                    probe.proto,
-                    probe.ports,
-                    None,
-                );
+                let want = lookup(&reference, probe);
                 assert_eq!(
-                    dpdk.lookup(
-                        probe.src_vpcd,
-                        None,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports,
-                        None,
-                    ),
+                    lookup(&dpdk, probe),
                     want,
                     "backends disagree on single lookup of {probe:?}\nspec: {overlay_spec:?}",
                 );
@@ -256,7 +294,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                 expected.push(want);
             }
 
-            // Batch path: 40 inputs > MAX_BATCH exercises the chunked scatter; every slot must
+            // Batch path: more than MAX_BATCH inputs exercise the chunked scatter; every slot must
             // equal the corresponding single lookup.
             let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
             dpdk.lookup_batch(&inputs, &mut out);
@@ -288,12 +326,17 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
         });
 
     eprintln!(
-        "coverage: {} routes, {} source misses, {} destination misses",
+        "coverage: {} routes ({} revalidated), {} source misses, {} destination misses",
         ROUTES.load(Ordering::Relaxed),
+        REVALIDATED_ROUTES.load(Ordering::Relaxed),
         SOURCE_MISSES.load(Ordering::Relaxed),
         DESTINATION_MISSES.load(Ordering::Relaxed),
     );
     assert!(ROUTES.load(Ordering::Relaxed) >= 1, "no full routes at all");
+    assert!(
+        REVALIDATED_ROUTES.load(Ordering::Relaxed) >= 1,
+        "no route resolved through revalidation information",
+    );
     assert!(
         SOURCE_MISSES.load(Ordering::Relaxed) >= 4,
         "too few source misses"
@@ -305,10 +348,11 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
 }
 
 /// The batched lookup equals the single lookup, slot for slot, on the reference backend. The
-/// batch path's own logic -- the v4/v6 partition, `MAX_BATCH` chunking, the stage-1-hit gather
-/// and the scatter back through saved indices -- is backend-generic, so this EAL-free variant
-/// exercises it with far more iterations than the rte_acl differential can afford. 40 probes
-/// force multi-chunk batches; probe specs freely mix IP versions and version-mismatched pairs.
+/// batch path's own logic -- the v4/v6 partition, `MAX_BATCH` chunking, the stage-1-hit gather,
+/// the revalidation re-lookups and the scatter back through saved indices -- is backend-generic,
+/// so this EAL-free variant exercises it with far more iterations than the rte_acl differential
+/// can afford. 40 probes force multi-chunk batches; probe specs freely mix IP versions and
+/// version-mismatched pairs, and the overlay's derived probes bring the revalidated routes.
 #[test]
 fn batched_lookup_matches_single_lookup() {
     bolero::check!()
@@ -318,37 +362,20 @@ fn batched_lookup_matches_single_lookup() {
             let tables = FlowFilterContext::build(&built.overlay, Backend::Reference)
                 .expect("reference build");
 
-            let probes: Vec<Probe> = probe_specs
+            let probes: Vec<Probe> = built
+                .routing_probes
                 .iter()
-                .map(|p| p.resolve(built.blocks))
+                .copied()
+                .chain(probe_specs.iter().map(|p| p.resolve(built.blocks)))
                 .collect();
-            let inputs: Vec<LookupInput> = probes
-                .iter()
-                .map(|p| LookupInput {
-                    src_vpcd: p.src_vpcd,
-                    dst_vpcd: None,
-                    src_ip: p.src_ip,
-                    dst_ip: p.dst_ip,
-                    proto: p.proto,
-                    ports: p.ports,
-                    nat_mode: None,
-                })
-                .collect();
+            let inputs: Vec<LookupInput> = probes.iter().map(lookup_input).collect();
 
             let mut out = vec![LookupResult::DestinationMiss; inputs.len()];
             tables.lookup_batch(&inputs, &mut out);
             for (i, probe) in probes.iter().enumerate() {
                 assert_eq!(
                     out[i],
-                    tables.lookup(
-                        probe.src_vpcd,
-                        None,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports,
-                        None,
-                    ),
+                    lookup(&tables, probe),
                     "batch slot {i} != single lookup for {probe:?}\nspec: {overlay_spec:?}",
                 );
             }
@@ -365,18 +392,14 @@ fn reference_lookup_matches_config_oracle() {
             let built = overlay_spec.build();
             let tables =
                 FlowFilterContext::build(&built.overlay, Backend::Reference).expect("reference build");
-            for probe_spec in probe_specs {
-                let probe = probe_spec.resolve(built.blocks);
+            let probes = built
+                .routing_probes
+                .iter()
+                .copied()
+                .chain(probe_specs.iter().map(|p| p.resolve(built.blocks)));
+            for probe in probes {
                 assert_eq!(
-                    tables.lookup(
-                        probe.src_vpcd,
-                        None,
-                        probe.src_ip,
-                        probe.dst_ip,
-                        probe.proto,
-                        probe.ports,
-                        None,
-                    ),
+                    lookup(&tables, &probe),
                     oracle_lookup(&built.overlay, &probe),
                     "reference tables disagree with the config oracle on {probe:?}\nspec: {overlay_spec:?}",
                 );
