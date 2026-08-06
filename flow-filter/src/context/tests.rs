@@ -29,17 +29,25 @@ fn route(
     src_vpcd: VpcDiscriminant,
     headers: &Headers,
 ) -> Option<Route> {
-    route_revalidate(context, src_vpcd, None, headers)
+    match route_lookup(context, src_vpcd, None, None, headers) {
+        LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
+            dst_vpcd,
+            dst_nat,
+            src_nat,
+        }),
+        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => None,
+    }
 }
 
 // Extract the 5-tuple from headers (as the pipeline does) and run the route lookup for a packet
 // originating from a given source VPC.
-fn route_revalidate(
+fn route_lookup(
     context: &FlowFilterContext,
     src_vpcd: VpcDiscriminant,
     dst_vpcd: Option<VpcDiscriminant>,
+    nat_mode: NatMode,
     headers: &Headers,
-) -> Option<Route> {
+) -> LookupResult {
     let net = headers.net().unwrap();
     let src_ip = net.src_addr();
     let dst_ip = net.dst_addr();
@@ -49,14 +57,7 @@ fn route_revalidate(
             .map(NonZero::get)
             .zip(t.dst_port().map(NonZero::get))
     });
-    match context.lookup(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports) {
-        LookupResult::Route((dst_vpcd, dst_nat, src_nat)) => Some(Route {
-            dst_vpcd,
-            dst_nat,
-            src_nat,
-        }),
-        LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => None,
-    }
+    context.lookup(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports, nat_mode)
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -197,8 +198,7 @@ fn overlapping_source_prefix_disambiguated_by_destination() {
 // We pin down which NAT requirement is returned for each end of a lookup. The source (local) end
 // carries private IPs; the destination (remote) end carries public IPs. Masquerade is only valid on
 // the source side (a masquerade destination cannot receive connections) and port forwarding only on
-// the destination side (a port-forwarding source cannot initiate connections); these constraints
-// are tested in `dst_side_nat_modes`.
+// the destination side (a port-forwarding source cannot initiate connections).
 
 fn nat_modes_overlay() -> FlowFilterContext {
     context(
@@ -296,17 +296,44 @@ fn dst_side_overlay() -> FlowFilterContext {
 fn dst_side_nat_modes() {
     let ctx = dst_side_overlay();
 
-    // Masquerade destination: resolves at table level as a marker (the NF only lets it through
-    // for reply traffic on an established masquerade flow; see crate::tests)
-    let masq = route_revalidate(
+    // Masquerade source
+    let masq = route(
+        &ctx,
+        vpcd(200),
+        &build_tcp_packet(v4("192.168.70.1"), v4("10.0.0.5"), 1234, 5678),
+    )
+    .expect("masquerade destination resolves as a marker");
+    assert_eq!(masq.dst_vpcd, vpcd(100));
+    assert_eq!(masq.dst_nat, None);
+    assert_eq!(masq.src_nat, Some(NatRequirement::Masquerade));
+
+    // Masquerade destination: without the destination VPC discriminant hint, we fail to find the
+    // relevant destination entry. This is expected, because we can never initiate a flow in this
+    // direction, so we need the dst_vpcd from flow info to find the relevant entry (only necessary
+    // when re-validating after a configuration change).
+    let lookup_result = route_lookup(
+        &ctx,
+        vpcd(100),
+        None,
+        None,
+        &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
+    );
+    assert_eq!(lookup_result, LookupResult::DestinationMiss);
+
+    // Masquerade destination: With the destination VPC discriminant (virtually-)retrieved from flow
+    // information, we can determinate the right information for the packet.
+    let LookupResult::Route((dst_vpcd, dst_nat, src_nat)) = route_lookup(
         &ctx,
         vpcd(100),
         Some(vpcd(200)),
+        None,
         &build_tcp_packet(v4("10.0.0.5"), v4("70.0.0.10"), 1234, 5678),
-    )
-    .expect("masquerade destination resolves as a marker");
-    assert_eq!(masq.dst_vpcd, vpcd(200));
-    assert_eq!(masq.dst_nat, Some(NatRequirement::Masquerade));
+    ) else {
+        panic!("masquerade destination resolves as a marker");
+    };
+    assert_eq!(dst_vpcd, vpcd(200));
+    assert_eq!(dst_nat, Some(NatRequirement::Masquerade));
+    assert_eq!(src_nat, None);
 
     // Port-forwarding destination (matching proto + port): returned
     let pf = route(
@@ -318,6 +345,30 @@ fn dst_side_nat_modes() {
     assert_eq!(pf.dst_vpcd, vpcd(200));
     assert_eq!(pf.dst_nat, Some(NatRequirement::PortForwarding));
     assert_eq!(pf.src_nat, None);
+
+    // Port-forwarding source without NAT mode hint: lookup fails
+    let lookup_result = route_lookup(
+        &ctx,
+        vpcd(200),
+        None,
+        None,
+        &build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
+    );
+    assert_eq!(lookup_result, LookupResult::SourceMiss(vpcd(100)));
+
+    // Port-forwarding source without NAT mode hint: lookup fails
+    let LookupResult::Route((dst_vpcd, dst_nat, src_nat)) = route_lookup(
+        &ctx,
+        vpcd(200),
+        None,
+        Some(NatRequirement::PortForwarding),
+        &build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
+    ) else {
+        panic!("masquerade destination resolves as a marker");
+    };
+    assert_eq!(dst_vpcd, vpcd(100));
+    assert_eq!(dst_nat, None);
+    assert_eq!(src_nat, Some(NatRequirement::PortForwarding));
 
     // Port-forwarding destination, wrong port: no match.
     assert_eq!(
@@ -440,12 +491,12 @@ fn port_forwarding_any_protocol_matches_tcp_and_udp() {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Port forwarding is excluded from the source side (it cannot initiate connections). With both a
-// masquerade and a port-forwarding expose on the source manifest, a source in the port-forwarding
-// range is matched by masquerade instead.
+// Port-forwarding and masquerade prefixes may overlap within a manifest. In this case, for
+// re-validating return traffic for port-forwarding, we rely on the NAT mode from the flow
+// information to make the distinction with similar-looking entries for forward masqueraded traffic.
 
 #[test]
-fn source_port_forwarding_is_excluded_and_falls_back_to_masquerade() {
+fn port_forwarding_and_masquerade_overlap_resoves_as_expected() {
     let ctx = context(
         &[("vpc1", 100), ("vpc2", 200)],
         vec![peering(
@@ -467,15 +518,31 @@ fn source_port_forwarding_is_excluded_and_falls_back_to_masquerade() {
         )],
     );
     // Source 1.0.0.27:2000 is inside the port-forwarding private range, yet resolves to masquerade.
-    let r = route(
+    let LookupResult::Route((dst_vpcd, dst_nat, src_nat)) = route_lookup(
         &ctx,
         vpcd(100),
+        None,
+        Some(NatRequirement::PortForwarding),
         &build_tcp_packet(v4("1.0.0.27"), v4("5.0.0.10"), 2000, 5678),
-    )
-    .expect("source resolves via the masquerade expose");
-    assert_eq!(r.dst_vpcd, vpcd(200));
-    assert_eq!(r.src_nat, Some(NatRequirement::Masquerade));
-    assert_eq!(r.dst_nat, None);
+    ) else {
+        panic!("source resolves via the port-forwarding expose");
+    };
+    assert_eq!(dst_vpcd, vpcd(200));
+    assert_eq!(src_nat, Some(NatRequirement::PortForwarding));
+    assert_eq!(dst_nat, None);
+
+    let LookupResult::Route((dst_vpcd, dst_nat, src_nat)) = route_lookup(
+        &ctx,
+        vpcd(100),
+        None,
+        None,
+        &build_tcp_packet(v4("1.0.0.27"), v4("5.0.0.10"), 2000, 5678),
+    ) else {
+        panic!("source resolves via the masquerade expose");
+    };
+    assert_eq!(dst_vpcd, vpcd(200));
+    assert_eq!(src_nat, Some(NatRequirement::Masquerade));
+    assert_eq!(dst_nat, None);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -728,8 +795,8 @@ fn reference_and_dpdk_backends_agree() {
     for &(vni, src_ip, dst_ip, proto, ports) in probes {
         let src_vpcd = vpcd(vni);
         assert_eq!(
-            reference.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports),
-            dpdk.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports),
+            reference.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports, None),
+            dpdk.lookup(src_vpcd, None, src_ip, dst_ip, proto, ports, None),
             "backends disagree on {src_ip} -> {dst_ip} ({proto:?}) from vni {vni}",
         );
     }
@@ -746,6 +813,7 @@ fn reference_and_dpdk_backends_agree() {
             dst_ip,
             proto,
             ports,
+            nat_mode: None,
         })
         .collect();
     assert!(inputs.len() > 32, "want a multi-chunk batch");
@@ -764,6 +832,7 @@ fn reference_and_dpdk_backends_agree() {
             input.dst_ip,
             input.proto,
             input.ports,
+            input.nat_mode,
         );
         assert_eq!(ref_out[i], single, "batched != single at index {i}");
     }
@@ -869,7 +938,7 @@ fn display_is_identical_across_backends() {
     assert_eq!(
         cells(&local_v4, "rank"),
         [
-            "rank", "proto", "src-vni", "dst-vni", "source", "src-port", "|", "NAT"
+            "rank", "proto", "src-vni", "dst-vni", "source", "src-port", "nat-mode", "|", "NAT"
         ],
         "unexpected local heading row:\n{local_v4}"
     );

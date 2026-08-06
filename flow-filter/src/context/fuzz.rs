@@ -183,6 +183,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     probe.dst_ip,
                     probe.proto,
                     probe.ports,
+                    None,
                 );
                 assert_eq!(
                     dpdk.lookup(
@@ -191,7 +192,8 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
-                        probe.ports
+                        probe.ports,
+                        None,
                     ),
                     want,
                     "backends disagree on derived routing probe {probe:?}\nspec: {overlay_spec:?}",
@@ -216,6 +218,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     dst_ip: p.dst_ip,
                     proto: p.proto,
                     ports: p.ports,
+                    nat_mode: None,
                 })
                 .collect();
 
@@ -228,6 +231,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     probe.dst_ip,
                     probe.proto,
                     probe.ports,
+                    None,
                 );
                 assert_eq!(
                     dpdk.lookup(
@@ -236,7 +240,8 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
-                        probe.ports
+                        probe.ports,
+                        None,
                     ),
                     want,
                     "backends disagree on single lookup of {probe:?}\nspec: {overlay_spec:?}",
@@ -271,6 +276,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     dst_ip: "10.0.0.99".parse().unwrap(),
                     proto: NextHeader::TCP,
                     ports: Some((1, 2)),
+                    nat_mode: None,
                 })
                 .collect();
             let mut out = vec![LookupResult::DestinationMiss; all_miss.len()];
@@ -325,6 +331,7 @@ fn batched_lookup_matches_single_lookup() {
                     dst_ip: p.dst_ip,
                     proto: p.proto,
                     ports: p.ports,
+                    nat_mode: None,
                 })
                 .collect();
 
@@ -339,7 +346,8 @@ fn batched_lookup_matches_single_lookup() {
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
-                        probe.ports
+                        probe.ports,
+                        None,
                     ),
                     "batch slot {i} != single lookup for {probe:?}\nspec: {overlay_spec:?}",
                 );
@@ -366,7 +374,8 @@ fn reference_lookup_matches_config_oracle() {
                         probe.src_ip,
                         probe.dst_ip,
                         probe.proto,
-                        probe.ports
+                        probe.ports,
+                        None,
                     ),
                     oracle_lookup(&built.overlay, &probe),
                     "reference tables disagree with the config oracle on {probe:?}\nspec: {overlay_spec:?}",
