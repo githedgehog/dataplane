@@ -16,6 +16,7 @@ pub mod cloud_hypervisor;
 pub mod config;
 pub mod dispatch;
 pub mod error;
+pub mod kernel_manifest;
 pub mod qemu;
 
 pub mod abort_on_drop;
