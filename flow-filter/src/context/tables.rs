@@ -573,7 +573,7 @@ impl RuleSet {
         for vpc in overlay.vpc_table().values() {
             let src_vni = vpc.vni();
             for peering in vpc.peerings() {
-                let remote_vni = overlay.vpc_table().get_remote_vni(peering);
+                let remote_vni = peering.remote_vni();
                 let remote_vpcd = VpcDiscriminant::from_vni(remote_vni);
                 let default_ip = || {
                     if peering.is_v4() {
