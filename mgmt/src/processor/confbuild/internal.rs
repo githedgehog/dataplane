@@ -392,3 +392,123 @@ pub fn build_internal_config(
     debug!("Successfully built internal config for genid {genid}");
     Ok(internal)
 }
+
+#[cfg(test)]
+mod chain_properties {
+    use super::*;
+    use config::{ExternalConfig, GenId};
+    use k8s_intf::bolero::LegalValue;
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use routing::Render;
+    use std::collections::BTreeSet;
+
+    fn chain(agent: &GatewayAgent) -> Option<(GenId, InternalConfig)> {
+        let external = ExternalConfig::try_from(agent)
+            .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+        let validated = external.validate().ok()?;
+        let genid = validated.genid();
+        let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
+            panic!("a validated configuration would not build: {e}\n{validated:#?}")
+        });
+        Some((genid, internal))
+    }
+
+    #[test]
+    fn whatever_validates_builds_and_renders() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                let Some((genid, internal)) = chain(agent.as_ref()) else {
+                    return;
+                };
+                let text = internal.render(&genid).to_string();
+                assert!(
+                    text.contains(&format!("! config for gen {genid}")),
+                    "the rendered config does not say which generation it is for"
+                );
+            });
+    }
+
+    #[test]
+    fn every_vpc_gets_a_vrf_and_no_more() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                let external = ExternalConfig::try_from(agent.as_ref())
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                let internal = build_internal_config(&validated, None)
+                    .unwrap_or_else(|e| panic!("a validated configuration would not build: {e}"));
+
+                let wanted: BTreeSet<u32> = validated
+                    .external()
+                    .overlay()
+                    .vpc_table()
+                    .values()
+                    .map(|vpc| vpc.vni().as_u32())
+                    .collect();
+                let built: BTreeSet<u32> = internal
+                    .vrfs
+                    .iter_by_name()
+                    .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
+                    .collect();
+                assert_eq!(built, wanted, "vrfs do not match the vpcs they come from");
+            });
+    }
+
+    #[test]
+    fn the_properties_are_not_vacuous() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static VALIDATED: AtomicUsize = AtomicUsize::new(0);
+        static VPCS: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(agent.as_ref())
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                if let Ok(validated) = external.validate() {
+                    VALIDATED.fetch_add(1, Ordering::Relaxed);
+                    VPCS.fetch_add(
+                        validated.external().overlay().vpc_table().len(),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let validated = VALIDATED.load(Ordering::Relaxed);
+        let vpcs = VPCS.load(Ordering::Relaxed);
+        println!("{validated}/{seen} configurations validated, carrying {vpcs} vpcs");
+        assert!(seen > 0, "no configurations were generated");
+        assert!(
+            validated * 20 >= seen,
+            "only {validated} of {seen} configurations validated: the properties above are \
+             checking almost nothing"
+        );
+        assert!(vpcs > validated, "validated configurations carry no vpcs");
+    }
+
+    #[test]
+    fn the_chain_is_deterministic() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                let Some((genid, once)) = chain(agent.as_ref()) else {
+                    return;
+                };
+                let (_, twice) = chain(agent.as_ref()).unwrap_or_else(|| {
+                    panic!("the same CRD validated once and not the second time")
+                });
+                assert_eq!(
+                    once.render(&genid).to_string(),
+                    twice.render(&genid).to_string(),
+                    "the configuration chain is not deterministic"
+                );
+            });
+    }
+}
