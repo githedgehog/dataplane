@@ -11,7 +11,6 @@
 
 use crate::errors::RouterError;
 use crate::evpn::{RmacEntry, RmacStore};
-use crate::interfaces::iftablerw::IfTableReader;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
 use crate::rib::vrf::{Route, RouteFlags, RouteNhop, RouteOrigin, Vrf};
@@ -99,11 +98,7 @@ impl TryFrom<&Rmac> for RmacEntry {
 
 impl RouteNhop {
     #[tracing::instrument(level = "debug")]
-    fn from_rpc_nhop(
-        nh: &NextHop,
-        origin: RouteOrigin,
-        iftabler: &IfTableReader,
-    ) -> Result<Self, RouterError> {
+    fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Result<Self, RouterError> {
         let mut ifindex = nh
             .ifindex
             .map(|i| match InterfaceIndex::try_new(i) {
@@ -128,22 +123,13 @@ impl RouteNhop {
             None => None,
         };
 
-        // lookup interface name
-        let ifname = match ifindex {
-            None => None,
-            Some(k) => iftabler
-                .enter()
-                .and_then(|iftable| iftable.get_interface(k).map(|iface| iface.name.clone())),
-        };
-
-        // build key for this next hop
         let key = NhopKey::new(
             origin,
             nh.address,
             ifindex,
             encap,
             FwAction::from(nh.fwaction),
-            ifname,
+            None,
         );
 
         // validate next hop from its key
@@ -179,13 +165,7 @@ impl Route {
 }
 
 impl Vrf {
-    pub fn add_route_rpc(
-        &mut self,
-        iproute: &IpRoute,
-        vrf0: Option<&Vrf>,
-        rstore: &RmacStore,
-        iftabler: &IfTableReader,
-    ) {
+    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
         let prefix = match Prefix::try_from((iproute.prefix, iproute.prefix_len)) {
             Ok(p) => p,
             Err(e) => {
@@ -215,7 +195,7 @@ impl Vrf {
         let route = Route::from_iproute(&prefix, iproute);
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
-            match RouteNhop::from_rpc_nhop(nhop, route.origin, iftabler) {
+            match RouteNhop::from_rpc_nhop(nhop, route.origin) {
                 Ok(nh) => nhops.push(nh),
                 Err(e) => error!("Omitting next-hop {nhop} in route to {prefix}: {e}"),
             }
@@ -238,5 +218,339 @@ impl Vrf {
             return;
         };
         self.del_route(prefix, vrf0, rstore);
+    }
+}
+
+#[cfg(test)]
+mod rpc_properties {
+    use super::*;
+    use crate::fib::fibtype::{FibKey, FibWriter};
+    use crate::rib::vrf::RouterVrfConfig;
+    use bolero::{Driver, ValueGenerator};
+    use dplane_rpc::proto::{Ifindex, MaskLen, VrfId};
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_PREFIXES: u8 = 5;
+    const NUM_ADDRESSES: u8 = 3;
+    const NUM_IFINDEXES: u8 = 4;
+    const NUM_VNIS: u8 = 3;
+    const NUM_RTYPES: u8 = 7;
+    const MAX_NHOPS: u8 = 3;
+
+    const BAD_PREFIX: usize = 4;
+
+    fn prefixes() -> Vec<(IpAddr, MaskLen)> {
+        vec![
+            (
+                IpAddr::from_str("10.0.0.0").unwrap_or_else(|_| unreachable!()),
+                8,
+            ),
+            (
+                IpAddr::from_str("10.1.0.0").unwrap_or_else(|_| unreachable!()),
+                16,
+            ),
+            (
+                IpAddr::from_str("10.1.2.3").unwrap_or_else(|_| unreachable!()),
+                32,
+            ),
+            (
+                IpAddr::from_str("2001:db8::").unwrap_or_else(|_| unreachable!()),
+                32,
+            ),
+            (
+                IpAddr::from_str("10.0.0.0").unwrap_or_else(|_| unreachable!()),
+                33,
+            ),
+        ]
+    }
+
+    fn addresses() -> Vec<Option<IpAddr>> {
+        vec![
+            None,
+            Some(IpAddr::from_str("10.0.0.1").unwrap_or_else(|_| unreachable!())),
+            Some(IpAddr::from_str("7.0.0.1").unwrap_or_else(|_| unreachable!())),
+        ]
+    }
+
+    fn ifindexes() -> Vec<Option<Ifindex>> {
+        vec![None, Some(0), Some(2), Some(99)]
+    }
+
+    fn vnis() -> Vec<Option<u32>> {
+        vec![None, Some(0), Some(3000)]
+    }
+
+    fn rtypes() -> Vec<RouteType> {
+        vec![
+            RouteType::Local,
+            RouteType::Connected,
+            RouteType::Static,
+            RouteType::Ospf,
+            RouteType::Isis,
+            RouteType::Bgp,
+            RouteType::Other,
+        ]
+    }
+
+    #[derive(Debug, Clone)]
+    struct NhopSpec {
+        drop: bool,
+        address: usize,
+        ifindex: usize,
+        vni: usize,
+        vrfid: VrfId,
+    }
+
+    #[derive(Debug, Clone)]
+    struct RouteSpec {
+        prefix: usize,
+        rtype: usize,
+        distance: u8,
+        metric: u32,
+        nhops: Vec<NhopSpec>,
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Routes;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for Routes {
+        type Output = RouteSpec;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<RouteSpec> {
+            let prefix = index(driver, NUM_PREFIXES)?;
+            let rtype = index(driver, NUM_RTYPES)?;
+            let distance = driver.produce::<u8>()?;
+            let metric = driver.produce::<u32>()?;
+            let count = driver.gen_u8(Included(&0), Included(&MAX_NHOPS))?;
+            let mut nhops = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                nhops.push(NhopSpec {
+                    drop: driver.produce::<bool>()?,
+                    address: index(driver, NUM_ADDRESSES)?,
+                    ifindex: index(driver, NUM_IFINDEXES)?,
+                    vni: index(driver, NUM_VNIS)?,
+                    vrfid: 0,
+                });
+            }
+            Some(RouteSpec {
+                prefix,
+                rtype,
+                distance,
+                metric,
+                nhops,
+            })
+        }
+    }
+
+    fn wire_nhop(spec: &NhopSpec) -> NextHop {
+        NextHop {
+            fwaction: if spec.drop {
+                ForwardAction::Drop
+            } else {
+                ForwardAction::Forward
+            },
+            address: addresses()[spec.address],
+            ifindex: ifindexes()[spec.ifindex],
+            vrfid: spec.vrfid,
+            encap: vnis()[spec.vni].map(|vni| NextHopEncap::VXLAN(VxlanEncap { vni })),
+        }
+    }
+
+    fn wire_route(spec: &RouteSpec) -> IpRoute {
+        let (prefix, prefix_len) = prefixes()[spec.prefix];
+        IpRoute {
+            prefix,
+            prefix_len,
+            vrfid: 0,
+            tableid: 254,
+            rtype: rtypes()[spec.rtype],
+            distance: spec.distance,
+            metric: spec.metric,
+            nhops: spec.nhops.iter().map(wire_nhop).collect(),
+        }
+    }
+
+    fn expected_origin(rtype: RouteType, prefix: &Prefix) -> RouteOrigin {
+        if rtype == RouteType::Connected && prefix.is_host() {
+            return RouteOrigin::Local;
+        }
+        match rtype {
+            RouteType::Local => RouteOrigin::Local,
+            RouteType::Connected => RouteOrigin::Connected,
+            RouteType::Static => RouteOrigin::Static,
+            RouteType::Ospf => RouteOrigin::Ospf,
+            RouteType::Isis => RouteOrigin::Isis,
+            RouteType::Bgp => RouteOrigin::Bgp,
+            RouteType::Other => RouteOrigin::Other,
+        }
+    }
+
+    fn expected_key(spec: &NhopSpec, origin: RouteOrigin) -> Option<NhopKey> {
+        let raw = ifindexes()[spec.ifindex];
+        if raw == Some(0) {
+            return None;
+        }
+        let address = addresses()[spec.address];
+
+        let encap = match vnis()[spec.vni] {
+            None => None,
+            Some(vni) => Some(Encapsulation::Vxlan(VxlanEncapsulation {
+                vni: Vni::new_checked(vni).ok()?,
+                remote: address?,
+                dmac: None,
+            })),
+        };
+
+        let ifindex = if encap.is_some() {
+            None
+        } else {
+            raw.and_then(|i| InterfaceIndex::try_new(i).ok())
+        };
+
+        let fwaction = if spec.drop {
+            FwAction::Drop
+        } else {
+            FwAction::Forward
+        };
+        if fwaction == FwAction::Forward && ifindex.is_none() && address.is_none() {
+            return None;
+        }
+
+        Some(NhopKey::new(
+            origin, address, ifindex, encap, fwaction, None,
+        ))
+    }
+
+    fn test_vrf() -> Vrf {
+        let config = RouterVrfConfig::new(1, "test");
+        let mut vrf = Vrf::new(&config);
+        let (fibw, _fibr) = FibWriter::new(FibKey::from_vrfid(1));
+        vrf.set_fibw(fibw);
+        vrf
+    }
+
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(prefixes().len(), usize::from(NUM_PREFIXES));
+        assert_eq!(addresses().len(), usize::from(NUM_ADDRESSES));
+        assert_eq!(ifindexes().len(), usize::from(NUM_IFINDEXES));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(rtypes().len(), usize::from(NUM_RTYPES));
+
+        let (prefix, len) = prefixes()[BAD_PREFIX];
+        assert!(
+            Prefix::try_from((prefix, len)).is_err(),
+            "the bad prefix must not parse"
+        );
+        assert!(
+            Vni::new_checked(0).is_err(),
+            "vni zero must not be a valid vni"
+        );
+        assert!(
+            InterfaceIndex::try_new(0).is_err(),
+            "interface index zero must not be valid"
+        );
+        for (address, len) in prefixes() {
+            assert!(Prefix::try_from((address, len)).is_ok_and(|p| !p.is_root()) || len > 32);
+        }
+    }
+
+    #[test]
+    fn a_wire_next_hop_becomes_the_key_the_message_describes() {
+        bolero::check!()
+            .with_generator(Routes)
+            .cloned()
+            .for_each(|spec: RouteSpec| {
+                for origin in [RouteOrigin::Local, RouteOrigin::Bgp, RouteOrigin::Connected] {
+                    for nhop in &spec.nhops {
+                        let got = RouteNhop::from_rpc_nhop(&wire_nhop(nhop), origin);
+                        match expected_key(nhop, origin) {
+                            Some(want) => {
+                                let got = got.unwrap_or_else(|e| {
+                                    panic!("refused {nhop:?} with {e}, expected {want:?}")
+                                });
+                                assert_eq!(got.key, want, "for {nhop:?} origin {origin:?}");
+                                assert_eq!(got.vrfid, nhop.vrfid, "vrfid for {nhop:?}");
+                            }
+                            None => assert!(got.is_err(), "accepted {nhop:?}, expected refusal"),
+                        }
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn a_wire_route_is_installed_as_the_message_describes() {
+        bolero::check!()
+            .with_generator(Routes)
+            .cloned()
+            .for_each(|spec: RouteSpec| {
+                let rstore = RmacStore::new();
+                let mut vrf = test_vrf();
+                vrf.add_route_rpc(&wire_route(&spec), None, &rstore);
+
+                let (raw, len) = prefixes()[spec.prefix];
+                let Ok(prefix) = Prefix::try_from((raw, len)) else {
+                    assert_eq!(vrf.len_v4() + vrf.len_v6(), 2, "for {spec:?}");
+                    return;
+                };
+
+                let origin = expected_origin(rtypes()[spec.rtype], &prefix);
+                let route = vrf
+                    .get_route(prefix)
+                    .unwrap_or_else(|| panic!("no route for {prefix}, for {spec:?}"));
+
+                assert_eq!(route.origin, origin, "origin for {spec:?}");
+                assert_eq!(route.distance, spec.distance, "distance for {spec:?}");
+                assert_eq!(route.metric, spec.metric, "metric for {spec:?}");
+
+                let mut want: Vec<NhopKey> = spec
+                    .nhops
+                    .iter()
+                    .filter_map(|nhop| expected_key(nhop, origin))
+                    .collect();
+                if want.is_empty() {
+                    want.push(NhopKey::with_drop());
+                }
+                let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.rc.key.clone()).collect();
+                assert_eq!(got, want, "next-hops for {spec:?}");
+            });
+    }
+
+    #[test]
+    fn a_wire_delete_removes_what_the_message_names() {
+        bolero::check!()
+            .with_generator(Routes)
+            .cloned()
+            .for_each(|spec: RouteSpec| {
+                let rstore = RmacStore::new();
+                let mut vrf = test_vrf();
+                let route = wire_route(&spec);
+                vrf.add_route_rpc(&route, None, &rstore);
+                vrf.del_route_rpc(&route, None, &rstore);
+
+                let (raw, len) = prefixes()[spec.prefix];
+                if let Ok(prefix) = Prefix::try_from((raw, len)) {
+                    assert!(
+                        vrf.get_route(prefix).is_none(),
+                        "route to {prefix} survived deletion, for {spec:?}"
+                    );
+                }
+                assert_eq!(vrf.len_v4() + vrf.len_v6(), 2, "for {spec:?}");
+                let keys: Vec<NhopKey> = vrf.nhstore.iter().map(|rc| rc.key.clone()).collect();
+                assert_eq!(
+                    keys,
+                    vec![NhopKey::with_drop()],
+                    "leftover next-hops for {spec:?}"
+                );
+            });
     }
 }
