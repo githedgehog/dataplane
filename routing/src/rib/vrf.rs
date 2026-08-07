@@ -1185,6 +1185,7 @@ mod vrf_properties {
     const NUM_NHOPS: u8 = 3;
     const MAX_CHANGES: u8 = 10;
     const MAX_NHOPS_PER_ROUTE: u8 = 3;
+    const NUM_STATUSES: u8 = 3;
 
     /// `0.0.0.0/0` and `::/0`, at these indices in [`prefixes`]. A vrf always carries a route for
     /// both: `Vrf::lpm` has no answer otherwise and says so with an `unreachable!()`, and
@@ -1226,6 +1227,10 @@ mod vrf_properties {
         .collect()
     }
 
+    fn statuses() -> Vec<VrfStatus> {
+        vec![VrfStatus::Active, VrfStatus::Deleting, VrfStatus::Deleted]
+    }
+
     /// The next-hops a generated route may use. Small, so that routes share them: sharing is what
     /// makes the store's reference counting do any work.
     fn nhops() -> Vec<RouteNhop> {
@@ -1252,6 +1257,12 @@ mod vrf_properties {
             value: bool,
         },
         RemoveStale,
+        /// Move the vrf's status. Worth generating because `del_route` calls `check_deletion`,
+        /// whose whole body sits behind `status == Deleting` -- so without this, the transition
+        /// that `VrfTable::remove_deleting_vrfs` depends on never runs at all.
+        SetStatus {
+            status: usize,
+        },
     }
 
     /// Draws sequences of [`Change`]s.
@@ -1271,7 +1282,7 @@ mod vrf_properties {
             let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
             let mut out = Vec::with_capacity(usize::from(len));
             for _ in 0..len {
-                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                let change = match driver.gen_u8(Included(&0), Included(&4))? {
                     0 => {
                         let prefix = index(driver, NUM_PREFIXES)?;
                         let count = driver.gen_u8(Included(&0), Included(&MAX_NHOPS_PER_ROUTE))?;
@@ -1287,7 +1298,10 @@ mod vrf_properties {
                     2 => Change::SetStale {
                         value: driver.produce::<bool>()?,
                     },
-                    _ => Change::RemoveStale,
+                    3 => Change::RemoveStale,
+                    _ => Change::SetStatus {
+                        status: index(driver, NUM_STATUSES)?,
+                    },
                 };
                 out.push(change);
             }
@@ -1299,29 +1313,42 @@ mod vrf_properties {
     ///
     /// The two root routes are the preset drop routes a vrf is born with; they are never removed,
     /// only reset, and `set_stale` skips them.
+    /// What the model believes about one route.
+    #[derive(Debug, Clone, PartialEq)]
+    struct RouteState {
+        /// The next-hop keys it names, in order. Keys rather than pool indices, because the preset
+        /// drop route names one the generator cannot ask for.
+        nhops: Vec<NhopKey>,
+        stale: bool,
+        /// Whether this is still the drop route a vrf installs for each root on creation.
+        ///
+        /// Distinct from "names the drop next-hop": a generated route for a root prefix with no
+        /// next-hops ends up naming it too, but carries a real origin, distance and metric, so
+        /// `Route::is_preset_drop_route` says no -- and `check_deletion` asks that question.
+        preset: bool,
+    }
+
     #[derive(Debug, Clone)]
     struct Model {
-        /// prefix index -> the next-hop keys of its route in order, and whether it is stale.
-        ///
-        /// Keys rather than pool indices, because the preset drop route names one the generator
-        /// cannot ask for, and because a root route holding a generated route is not the same thing
-        /// as a root route holding the preset one.
-        routes: BTreeMap<usize, (Vec<NhopKey>, bool)>,
+        routes: BTreeMap<usize, RouteState>,
+        status: VrfStatus,
     }
 
     impl Model {
         /// The route a vrf installs for each root on creation: drop, so that a lookup always has an
         /// answer.
-        fn preset() -> Vec<NhopKey> {
-            vec![NhopKey::with_drop()]
+        fn preset() -> RouteState {
+            RouteState {
+                nhops: vec![NhopKey::with_drop()],
+                stale: false,
+                preset: true,
+            }
         }
 
         fn new() -> Self {
             Self {
-                routes: BTreeMap::from([
-                    (ROOT_V4, (Self::preset(), false)),
-                    (ROOT_V6, (Self::preset(), false)),
-                ]),
+                routes: BTreeMap::from([(ROOT_V4, Self::preset()), (ROOT_V6, Self::preset())]),
+                status: VrfStatus::Active,
             }
         }
 
@@ -1333,8 +1360,20 @@ mod vrf_properties {
         fn referenced(&self) -> BTreeSet<NhopKey> {
             self.routes
                 .values()
-                .flat_map(|(nhops, _)| nhops.iter().cloned())
+                .flat_map(|route| route.nhops.iter().cloned())
                 .collect()
+        }
+
+        /// `Vrf::check_deletion`, which `del_route` calls: a vrf on its way out becomes deletable
+        /// once the only routes left are the two preset drop ones.
+        fn check_deletion(&mut self) {
+            let only_presets = self.routes.len() == 2
+                && [ROOT_V4, ROOT_V6]
+                    .iter()
+                    .all(|root| self.routes.get(root).is_some_and(|route| route.preset));
+            if self.status == VrfStatus::Deleting && only_presets {
+                self.status = VrfStatus::Deleted;
+            }
         }
 
         /// The longest prefix carrying a route that covers `addr`.
@@ -1350,28 +1389,36 @@ mod vrf_properties {
             match change {
                 Change::AddRoute { prefix, nhops } => {
                     // a route with no next-hops is installed as a drop rather than left out
-                    let keys = if nhops.is_empty() {
-                        Self::preset()
+                    let nhops = if nhops.is_empty() {
+                        vec![NhopKey::with_drop()]
                     } else {
                         nhops.iter().map(|i| pool[*i].key.clone()).collect()
                     };
-                    self.routes.insert(*prefix, (keys, false));
+                    self.routes.insert(
+                        *prefix,
+                        RouteState {
+                            nhops,
+                            stale: false,
+                            preset: false,
+                        },
+                    );
                 }
                 Change::DelRoute { prefix } => {
                     if Self::is_root(*prefix) {
                         // a root route is reset to the preset drop route, not removed
-                        self.routes.insert(*prefix, (Self::preset(), false));
+                        self.routes.insert(*prefix, Self::preset());
                     } else {
                         self.routes.remove(prefix);
                     }
+                    self.check_deletion();
                 }
                 Change::SetStale { value } => {
                     // `Vrf::set_stale` skips a route whose prefix is a root, and separately one
                     // that is still a preset drop route. Generated routes are never the latter, so
                     // here the root test is the whole of it.
-                    for (prefix, (_, stale)) in &mut self.routes {
+                    for (prefix, route) in &mut self.routes {
                         if !Self::is_root(*prefix) {
-                            *stale = *value;
+                            route.stale = *value;
                         }
                     }
                 }
@@ -1379,11 +1426,15 @@ mod vrf_properties {
                     let stale: Vec<usize> = self
                         .routes
                         .iter()
-                        .filter_map(|(prefix, (_, stale))| stale.then_some(*prefix))
+                        .filter_map(|(prefix, route)| route.stale.then_some(*prefix))
                         .collect();
                     for prefix in stale {
                         self.apply(&Change::DelRoute { prefix }, pool);
                     }
+                }
+                Change::SetStatus { status } => {
+                    // the vrf under test is not the default one, so the move always takes
+                    self.status = statuses()[*status];
                 }
             }
         }
@@ -1400,6 +1451,7 @@ mod vrf_properties {
             Change::DelRoute { prefix } => vrf.del_route(prefixes[*prefix], None, rstore),
             Change::SetStale { value } => vrf.set_stale(*value),
             Change::RemoveStale => vrf.remove_stale_routes(None, rstore),
+            Change::SetStatus { status } => vrf.set_status(statuses()[*status]),
         }
     }
 
@@ -1421,14 +1473,23 @@ mod vrf_properties {
         );
 
         // 2. each route names the next-hops the model says, in order
-        for (prefix, (nhops, stale)) in &model.routes {
+        for (prefix, want) in &model.routes {
             let route = vrf
                 .get_route(prefixes[*prefix])
                 .unwrap_or_else(|| panic!("no route for {prefix} {at}"));
             let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.rc.key.clone()).collect();
-            assert_eq!(got, *nhops, "next-hops of {prefix} {at}");
-            assert_eq!(route.is_stale(), *stale, "stale flag of {prefix} {at}");
+            assert_eq!(got, want.nhops, "next-hops of {prefix} {at}");
+            assert_eq!(route.is_stale(), want.stale, "stale flag of {prefix} {at}");
+            assert_eq!(
+                route.is_preset_drop_route(),
+                want.preset,
+                "preset-drop-route of {prefix} {at}"
+            );
         }
+
+        // the status, and with it `check_deletion`: a vrf on its way out becomes deletable exactly
+        // when the only routes left are the two preset drop ones
+        assert_eq!(vrf.status, model.status, "status {at}");
 
         // 3. the next-hop store holds exactly the next-hops the routes name. One too many is a
         //    leak that keeps a stale fib group alive; one too few and a route names something
@@ -1469,6 +1530,7 @@ mod vrf_properties {
     fn the_pools_are_the_size_the_generator_thinks() {
         assert_eq!(prefixes().len(), usize::from(NUM_PREFIXES));
         assert_eq!(nhops().len(), usize::from(NUM_NHOPS));
+        assert_eq!(statuses().len(), usize::from(NUM_STATUSES));
         assert_eq!(prefixes()[ROOT_V4], Prefix::root_v4());
         assert_eq!(prefixes()[ROOT_V6], Prefix::root_v6());
     }
