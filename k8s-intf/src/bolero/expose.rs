@@ -3,10 +3,10 @@
 
 use std::ops::Bound;
 
-use bolero::{Driver, TypeGenerator, ValueGenerator};
+use bolero::{Driver, ValueGenerator};
 
-use crate::bolero::support::generate_prefixes;
-use crate::bolero::{LegalValue, SubnetMap};
+use crate::bolero::support::blocks;
+use crate::bolero::{AddressFamily, NatFlavour, SubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
@@ -17,106 +17,196 @@ use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeNatStatic,
 };
 
-/// Generate a legal value for `GatewayAgentPeeringsPeeringExpose`
 ///
-/// This is not exhaustive over all legal values due to the complexity of doing this. For example,
-/// the CIDR generators are not exhaustive; and we use a single port range for all CIDRs rather than
-/// trying different combinations.
-pub struct LegalValueExposeGenerator<'a> {
+const MAX_PREFIXES: u8 = 3;
+
+const MAX_PORTS: u16 = 1024;
+
+#[derive(Debug, Clone)]
+pub struct ExposeGenerator<'a> {
+    flavour: NatFlavour,
+    family: AddressFamily,
     subnets: &'a SubnetMap,
 }
 
-impl<'a> LegalValueExposeGenerator<'a> {
+impl<'a> ExposeGenerator<'a> {
     #[must_use]
-    pub fn new(subnets: &'a SubnetMap) -> Self {
-        Self { subnets }
+    pub fn new(flavour: NatFlavour, family: AddressFamily, subnets: &'a SubnetMap) -> Self {
+        Self {
+            flavour,
+            family,
+            subnets,
+        }
+    }
+
+    fn length<D: Driver>(&self, d: &mut D) -> Option<u8> {
+        d.gen_u8(
+            Bound::Included(&blocks::min_len(self.family)),
+            Bound::Included(&blocks::max_len(self.family)),
+        )
+    }
+
+    fn matching_subnets(&self) -> Vec<&'a String> {
+        self.subnets
+            .iter()
+            .filter(|(_, prefix)| prefix.is_ipv4() == self.family.is_v4())
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    fn exclusion<D: Driver>(&self, d: &mut D, parent: &str, private: bool) -> Option<String> {
+        let (_, len) = parent.split_once('/')?;
+        let len: u8 = len.parse().ok()?;
+        let max = blocks::max_len(self.family);
+        if len >= max {
+            return None;
+        }
+        let longer = d.gen_u8(Bound::Excluded(&len), Bound::Included(&max))?;
+        if private {
+            blocks::private(d, self.family, longer)
+        } else {
+            blocks::public(d, self.family, longer)
+        }
+    }
+
+    fn port_pair<D: Driver>(d: &mut D) -> Option<(String, String)> {
+        let size = d.gen_u16(Bound::Included(&1), Bound::Included(&MAX_PORTS))?;
+        let first_start = d.gen_u16(Bound::Included(&1), Bound::Included(&(65535 - size + 1)))?;
+        let second_start = d.gen_u16(Bound::Included(&1), Bound::Included(&(65535 - size + 1)))?;
+        Some((
+            format!("{first_start}-{}", first_start + (size - 1)),
+            format!("{second_start}-{}", second_start + (size - 1)),
+        ))
+    }
+
+    fn translation<D: Driver>(&self, d: &mut D) -> Option<GatewayAgentPeeringsPeeringExposeNat> {
+        let idle_secs = d.gen_u64(Bound::Included(&0), Bound::Included(&(2 * 3600)))?;
+        let idle = std::time::Duration::from_secs(idle_secs);
+        Some(match self.flavour {
+            NatFlavour::None => return None,
+            NatFlavour::Masquerade => GatewayAgentPeeringsPeeringExposeNat {
+                masquerade: Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
+                    idle_timeout: Some(idle.into()),
+                }),
+                port_forward: None,
+                r#static: None,
+            },
+            NatFlavour::Static => GatewayAgentPeeringsPeeringExposeNat {
+                masquerade: None,
+                port_forward: None,
+                r#static: Some(GatewayAgentPeeringsPeeringExposeNatStatic {}),
+            },
+            NatFlavour::PortForward => {
+                let (port, r#as) = Self::port_pair(d)?;
+                GatewayAgentPeeringsPeeringExposeNat {
+                    masquerade: None,
+                    port_forward: Some(GatewayAgentPeeringsPeeringExposeNatPortForward {
+                        idle_timeout: Some(idle.into()),
+                        ports: Some(vec![GatewayAgentPeeringsPeeringExposeNatPortForwardPorts {
+                            r#as: Some(r#as),
+                            port: Some(port),
+                            proto: match d.gen_u8(Bound::Included(&0), Bound::Included(&2))? {
+                                0 => Some(
+                                    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp,
+                                ),
+                                1 => Some(
+                                    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp,
+                                ),
+                                _ => None,
+                            },
+                        }]),
+                    }),
+                    r#static: None,
+                }
+            }
+        })
     }
 }
 
-impl ValueGenerator for LegalValueExposeGenerator<'_> {
+impl ValueGenerator for ExposeGenerator<'_> {
     type Output = GatewayAgentPeeringsPeeringExpose;
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        let num_ips = d.gen_u16(Bound::Included(&1), Bound::Included(&16))?;
-        let num_nots = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
-        let num_subnets = std::cmp::min(
-            self.subnets.len(),
-            d.gen_usize(Bound::Included(&0), Bound::Included(&16))?,
-        );
+        let paired = matches!(self.flavour, NatFlavour::Static | NatFlavour::PortForward);
 
-        let num_as = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
-        let num_as_not = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
+        let mut ips = Vec::new();
+        let mut translations = Vec::new();
 
-        let v4 = d.produce::<bool>()?;
-        let (num_v4_ips, num_v6_ips) = if v4 { (num_ips, 0) } else { (0, num_ips) };
-        let (num_v4_nots, num_v6_nots) = if v4 { (num_nots, 0) } else { (0, num_nots) };
-        let (num_v4_as, num_v6_as) = if v4 { (num_as, 0) } else { (0, num_as) };
-        let (num_v4_not_as, num_v6_not_as) = if v4 { (num_as_not, 0) } else { (0, num_as_not) };
-
-        let ips = generate_prefixes(d, num_v4_ips, num_v6_ips)?
-            .into_iter()
-            .map(|p| GatewayAgentPeeringsPeeringExposeIps {
-                cidr: Some(p),
+        if paired {
+            let len = self.length(d)?;
+            let private = blocks::private(d, self.family, len)?;
+            let public = blocks::public(d, self.family, len)?;
+            ips.push(GatewayAgentPeeringsPeeringExposeIps {
+                cidr: Some(private),
                 not: None,
                 vpc_subnet: None,
-            })
-            .collect::<Vec<_>>();
-        let nots = generate_prefixes(d, num_v4_nots, num_v6_nots)?
-            .into_iter()
-            .map(|p| GatewayAgentPeeringsPeeringExposeIps {
-                cidr: None,
-                not: Some(p),
-                vpc_subnet: None,
-            })
-            .collect::<Vec<_>>();
-        let r#as = generate_prefixes(d, num_v4_as, num_v6_as)?
-            .into_iter()
-            .map(|p| GatewayAgentPeeringsPeeringExposeAs {
-                cidr: Some(p),
+            });
+            translations.push(GatewayAgentPeeringsPeeringExposeAs {
+                cidr: Some(public),
                 not: None,
             });
-        let not_as = generate_prefixes(d, num_v4_not_as, num_v6_not_as)?
-            .into_iter()
-            .map(|p| GatewayAgentPeeringsPeeringExposeAs {
-                cidr: None,
-                not: Some(p),
-            });
+        } else {
+            let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_PREFIXES))?;
+            for _ in 0..count {
+                let len = self.length(d)?;
+                ips.push(GatewayAgentPeeringsPeeringExposeIps {
+                    cidr: Some(blocks::private(d, self.family, len)?),
+                    not: None,
+                    vpc_subnet: None,
+                });
+            }
+            if self.flavour.needs_translation() {
+                let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_PREFIXES))?;
+                for _ in 0..count {
+                    let len = self.length(d)?;
+                    translations.push(GatewayAgentPeeringsPeeringExposeAs {
+                        cidr: Some(blocks::public(d, self.family, len)?),
+                        not: None,
+                    });
+                }
+            }
 
-        let mut subnets = Vec::new();
-        let mut subnet_iter = self
-            .subnets
-            .iter()
-            .filter(|(_, prefix)| prefix.is_ipv4() == v4);
-        for _ in 0..num_subnets {
-            let Some((name, _)) = subnet_iter.next() else {
-                break;
-            };
-            subnets.push(GatewayAgentPeeringsPeeringExposeIps {
-                cidr: None,
-                not: None,
-                vpc_subnet: Some(name.clone()),
-            });
+            let named = self.matching_subnets();
+            if !named.is_empty() {
+                let take = d.gen_usize(Bound::Included(&0), Bound::Included(&named.len()))?;
+                for name in named.into_iter().take(take) {
+                    ips.push(GatewayAgentPeeringsPeeringExposeIps {
+                        cidr: None,
+                        not: None,
+                        vpc_subnet: Some(name.clone()),
+                    });
+                }
+            }
         }
 
-        let mut final_ips = Vec::with_capacity(ips.len() + nots.len() + subnets.len());
-        final_ips.extend(ips);
-        final_ips.extend(nots);
-        final_ips.extend(subnets);
-
-        let mut final_as = Vec::with_capacity(r#as.len() + not_as.len());
-        final_as.extend(r#as);
-        final_as.extend(not_as);
-        let has_as = !final_as.is_empty();
+        if self.flavour.allows_exclusions() && d.produce::<bool>()? {
+            let parents: Vec<String> = ips.iter().filter_map(|e| e.cidr.clone()).collect();
+            if let Some(parent) = parents.first()
+                && let Some(exclusion) = self.exclusion(d, parent, true)
+            {
+                ips.push(GatewayAgentPeeringsPeeringExposeIps {
+                    cidr: None,
+                    not: Some(exclusion),
+                    vpc_subnet: None,
+                });
+            }
+            let parents: Vec<String> = translations.iter().filter_map(|e| e.cidr.clone()).collect();
+            if let Some(parent) = parents.first()
+                && let Some(exclusion) = self.exclusion(d, parent, false)
+            {
+                translations.push(GatewayAgentPeeringsPeeringExposeAs {
+                    cidr: None,
+                    not: Some(exclusion),
+                });
+            }
+        }
 
         Some(GatewayAgentPeeringsPeeringExpose {
-            r#as: Some(final_as).filter(|f| !f.is_empty()),
-            ips: Some(final_ips).filter(|f| !f.is_empty()),
+            r#as: Some(translations).filter(|t| !t.is_empty()),
+            ips: Some(ips).filter(|i| !i.is_empty()),
             default: None,
-            nat: if has_as {
-                Some(
-                    d.produce::<LegalValue<GatewayAgentPeeringsPeeringExposeNat>>()?
-                        .take(),
-                )
+            nat: if self.flavour.needs_translation() {
+                Some(self.translation(d)?)
             } else {
                 None
             },
@@ -124,67 +214,28 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
     }
 }
 
-// This is not exhaustive as it does not generate all possible time
-// strings, just 0 to 2*3600 seconds.
-//
-impl TypeGenerator for LegalValue<GatewayAgentPeeringsPeeringExposeNat> {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let nat_mode = d.produce::<u16>()? % 3;
-        let idle_timeout_secs = d.gen_u64(Bound::Included(&0), Bound::Included(&(2 * 3600)))?;
-        let idle_timeout = std::time::Duration::from_secs(idle_timeout_secs);
-        match nat_mode {
-            0 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-                masquerade: Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
-                    idle_timeout: Some(idle_timeout.into()),
-                }),
-                port_forward: None,
-                r#static: None,
-            })),
-            1 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-                masquerade: None,
-                port_forward: None,
-                r#static: Some(GatewayAgentPeeringsPeeringExposeNatStatic {}),
-            })),
-            2 => {
-                // Generate a valid port range
-                let bound1 = d.gen_u16(Bound::Included(&1), Bound::Included(&65535))?;
-                let bound2 = d.gen_u16(Bound::Included(&1), Bound::Included(&65535))?;
-                let start = bound1.min(bound2);
-                let end = bound1.max(bound2);
-                let port_range = format!("{start}-{end}");
+#[derive(Debug, Clone)]
+pub struct AnyExposeGenerator<'a> {
+    subnets: &'a SubnetMap,
+}
 
-                // Generate another valid port range of the same size
-                let port_range_size = (end - start) as usize + 1;
-                let max_new_start = u16::try_from(65536 - port_range_size).unwrap();
-                let new_bound = d.gen_u16(Bound::Included(&0), Bound::Included(&max_new_start))?;
-                let new_port_range = format!(
-                    "{new_bound}-{}",
-                    new_bound + u16::try_from(port_range_size - 1).unwrap()
-                );
+impl<'a> AnyExposeGenerator<'a> {
+    #[must_use]
+    pub fn new(subnets: &'a SubnetMap) -> Self {
+        Self { subnets }
+    }
+}
 
-                Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-                    masquerade: None,
-                    port_forward: Some(GatewayAgentPeeringsPeeringExposeNatPortForward {
-                        idle_timeout: Some(idle_timeout.into()),
-                        ports: Some(vec![GatewayAgentPeeringsPeeringExposeNatPortForwardPorts {
-                            r#as: Some(new_port_range),
-                            port: Some(port_range),
-                            proto: match d.produce::<u32>()? % 3 {
-                                0 => Some(
-                                    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp,
-                                ),
-                                1 => Some(
-                                    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp,
-                                ),
-                                2 => None,
-                                _ => unreachable!(),
-                            },
-                        }]),
-                    }),
-                    r#static: None,
-                }))
-            }
-            _ => unreachable!(),
-        }
+impl ValueGenerator for AnyExposeGenerator<'_> {
+    type Output = GatewayAgentPeeringsPeeringExpose;
+
+    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+        let flavours = NatFlavour::all();
+        let families = AddressFamily::all();
+        let flavour =
+            flavours[d.gen_usize(Bound::Included(&0), Bound::Excluded(&flavours.len()))?];
+        let family =
+            families[d.gen_usize(Bound::Included(&0), Bound::Excluded(&families.len()))?];
+        ExposeGenerator::new(flavour, family, self.subnets).generate(d)
     }
 }
