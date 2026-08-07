@@ -6,6 +6,7 @@ use std::ops::Bound;
 
 use bolero::{Driver, ValueGenerator};
 
+use crate::bolero::acl::{AclGenerator, SideFacts};
 use crate::bolero::expose::ExposeGenerator;
 use crate::bolero::{AddressFamily, NatFlavour, SubnetMap, VpcSubnetMap};
 use crate::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering};
@@ -194,10 +195,23 @@ impl LegalValuePeeringsGenerator<'_> {
             [d.gen_usize(Bound::Included(&0), Bound::Excluded(&self.groups.len()))?]
         .clone();
 
+        // The ACL is built from the manifests, not beside them: a rule's `match` is checked against
+        // what the two sides actually expose, and `scope: flow` against how they translate.
+        let acl = if d.produce::<bool>()? {
+            let facts: Vec<SideFacts> = peering
+                .iter()
+                .map(|(vpc, manifest)| SideFacts::of(vpc, manifest))
+                .collect();
+            let [left, right] = <[SideFacts; 2]>::try_from(facts).ok()?;
+            Some(AclGenerator::new(left, right).generate(d)?)
+        } else {
+            None
+        };
+
         Some(GatewayAgentPeerings {
             gateway_group: Some(group),
             peering: Some(peering),
-            acl: None, // FIXME: Add a proper implementation when used
+            acl,
         })
     }
 }
