@@ -1314,7 +1314,39 @@ pub mod contract {
     /// Returns whatever validating the resulting overlay returns. A generator from this module
     /// produces exposes that pass, so a caller driving one can treat an error as a failure.
     pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
-        let remote_prefix = match expose.ips.first().map(PrefixWithOptionalPorts::prefix) {
+        overlay_with(expose)?.validate()
+    }
+
+    /// The same two-VPC overlay as [`overlay_offering`], before validation.
+    ///
+    /// Separate because a caller assembling a whole [`crate::ExternalConfig`] has to hand it an
+    /// unvalidated overlay and validate the lot -- validating the overlay alone skips every check
+    /// that spans the underlay and the overlay together.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed vpcs and peering this builds cannot be assembled, which
+    /// would be a bug here rather than anything about `expose`.
+    pub fn overlay_with(expose: VpcExpose) -> Result<Overlay, ConfigError> {
+        overlay_with_exposes(vec![expose])
+    }
+
+    /// The same, with several exposes on the local side.
+    ///
+    /// Worth having separately because one expose at a time only reaches the checks that look at an
+    /// expose on its own. The interesting rejections -- and the interesting things for whatever
+    /// consumes the result to get wrong -- are between exposes.
+    ///
+    /// # Errors
+    ///
+    /// As [`overlay_with`]. Note that *validating* the result may still fail for reasons that are
+    /// about the combination, such as two exposes covering overlapping prefixes, which is a
+    /// legitimate rejection rather than a defect.
+    pub fn overlay_with_exposes(exposes: Vec<VpcExpose>) -> Result<Overlay, ConfigError> {
+        let remote_prefix = match exposes
+            .first()
+            .and_then(|expose| expose.ips.first().map(PrefixWithOptionalPorts::prefix))
+        {
             Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
             _ => "3.3.3.0/24",
         };
@@ -1323,9 +1355,15 @@ pub mod contract {
         vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
         vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
 
-        let local = VpcManifest::new("VPC-1").exposing(expose);
-        let remote =
-            VpcManifest::new("VPC-2").exposing(VpcExpose::empty().ip(remote_prefix.into()));
+        let local = exposes
+            .into_iter()
+            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
+        let remote = VpcManifest::new("VPC-2").exposing(
+            VpcExpose::empty().ip(remote_prefix
+                .parse::<Prefix>()
+                .unwrap_or_else(|_| unreachable!())
+                .into()),
+        );
         let mut peerings = VpcPeeringTable::new();
         peerings.add(VpcPeering::with_default_group(
             "VPC-1--VPC-2",
@@ -1333,7 +1371,7 @@ pub mod contract {
             remote,
         ))?;
 
-        Overlay::new(vpc_table, peerings).validate()
+        Ok(Overlay::new(vpc_table, peerings))
     }
 
     /// Which NAT flavour a generated expose uses, for a caller that wants to branch on it.
