@@ -171,7 +171,7 @@ pub mod test {
     }
 
     /* DEVICE configuration */
-    fn sample_device_config() -> DeviceConfig {
+    pub(super) fn sample_device_config() -> DeviceConfig {
         DeviceConfig::new()
     }
 
@@ -319,7 +319,7 @@ pub mod test {
     }
 
     /* build sample underlay config */
-    fn sample_underlay_config() -> Underlay {
+    pub(super) fn sample_underlay_config() -> Underlay {
         /* main loopback for BGP and vtep */
         let loopback = IpAddr::from_str("7.0.0.100").expect("Bad address");
         let router_id = get_v4_addr(loopback);
@@ -333,7 +333,7 @@ pub mod test {
     }
 
     #[rustfmt::skip]
-    fn sample_gw_groups() -> GwGroupTable {
+    pub(super) fn sample_gw_groups() -> GwGroupTable {
         let mut gwt = GwGroupTable::new();
         let mut group = GwGroup::new("gw-group-1");
         group.add_member(GwGroupMember::new("gw1", 1, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
@@ -348,7 +348,7 @@ pub mod test {
         gwt
     }
 
-    fn sample_community_table() -> PriorityCommunityTable {
+    pub(super) fn sample_community_table() -> PriorityCommunityTable {
         let mut comtable = PriorityCommunityTable::new();
         comtable.insert(0, "65000:800").unwrap();
         comtable.insert(1, "65000:801").unwrap();
@@ -506,5 +506,195 @@ pub mod test {
         /* stop the router */
         debug!("Stopping the router...");
         router.stop();
+    }
+}
+
+#[cfg(test)]
+mod peering_chain {
+    use bolero::{Driver, ValueGenerator};
+    use config::ExternalConfig;
+    use config::external::ExternalConfigBuilder;
+    use config::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::{
+        LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
+        overlay_with_exposes,
+    };
+    use routing::Render;
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    use super::test::{
+        sample_community_table, sample_device_config, sample_gw_groups, sample_underlay_config,
+    };
+    use crate::processor::confbuild::internal::{EVPN_RMAP_NO_ADV_COMM, build_internal_config};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Flavour {
+        PortForwarding,
+        Masquerade,
+        Static,
+    }
+
+    const MAX_EXPOSES: u8 = 3;
+
+    const UNDERLAY_ASN: u32 = 65000;
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct AnyNatExposes;
+
+    impl ValueGenerator for AnyNatExposes {
+        type Output = Vec<(Flavour, VpcExpose)>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let count = driver.gen_u8(Included(&1), Included(&MAX_EXPOSES))?;
+            let mut out = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                out.push(match driver.gen_u8(Included(&0), Included(&2))? {
+                    0 => (
+                        Flavour::PortForwarding,
+                        PortForwardingExpose.generate(driver)?,
+                    ),
+                    1 => (Flavour::Masquerade, MasqueradeExpose.generate(driver)?),
+                    _ => (Flavour::Static, StaticNatExpose.generate(driver)?),
+                });
+            }
+            Some(out)
+        }
+    }
+
+    fn gw_groups_with_default() -> GwGroupTable {
+        let mut groups = sample_gw_groups();
+        let mut default = GwGroup::new("default");
+        default
+            .add_member(GwGroupMember::new(
+                "gw-default",
+                1,
+                IpAddr::from_str("172.128.0.9").unwrap_or_else(|_| unreachable!()),
+            ))
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        groups
+            .add_group(default)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        groups
+    }
+
+    fn external_offering(exposes: Vec<VpcExpose>) -> ExternalConfig {
+        let overlay = overlay_with_exposes(exposes).unwrap_or_else(|e| unreachable!("{e}"));
+        ExternalConfigBuilder::default()
+            .gwname("test-gw".to_string())
+            .genid(1)
+            .device(sample_device_config())
+            .underlay(sample_underlay_config())
+            .overlay(overlay)
+            .gwgroups(gw_groups_with_default())
+            .communities(sample_community_table())
+            .build()
+            .unwrap_or_else(|e| unreachable!("{e}"))
+    }
+
+    #[test]
+    fn a_config_with_a_nat_peering_builds_and_renders() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static BUILT: AtomicUsize = AtomicUsize::new(0);
+        static MULTI: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(AnyNatExposes)
+            .cloned()
+            .for_each(|offered: Vec<(Flavour, VpcExpose)>| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let flavours: Vec<Flavour> = offered.iter().map(|(f, _)| *f).collect();
+                let exposes: Vec<VpcExpose> = offered.iter().map(|(_, e)| e.clone()).collect();
+                let external = external_offering(exposes.clone());
+
+                let validated = match external.validate() {
+                    Ok(validated) => validated,
+                    Err(e) => {
+                        assert!(
+                            exposes.len() > 1,
+                            "a single {:?} expose that is valid by construction was refused: {e}\n{exposes:#?}",
+                            flavours[0]
+                        );
+                        return;
+                    }
+                };
+                BUILT.fetch_add(1, Ordering::Relaxed);
+                if exposes.len() > 1 {
+                    MULTI.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
+                    panic!("a validated {flavours:?} configuration would not build: {e}\n{exposes:#?}")
+                });
+
+                let vnis: Vec<u32> = internal
+                    .vrfs
+                    .iter_by_name()
+                    .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
+                    .collect();
+                for vni in [LOCAL_VNI, REMOTE_VNI] {
+                    assert!(
+                        vnis.contains(&vni),
+                        "vni {vni} of the peering is missing from the built config, got {vnis:?}"
+                    );
+                }
+
+                assert!(
+                    internal.vrfs.default_vrf_config().is_some(),
+                    "the built config has no default vrf"
+                );
+
+                for order in 0..5 {
+                    assert_eq!(
+                        internal.commtable.get_community(order),
+                        validated.external().communities().get_community(order),
+                        "community {order} did not survive the build"
+                    );
+                }
+
+                assert!(
+                    internal
+                        .rmap_table
+                        .values()
+                        .any(|rmap| rmap.name == EVPN_RMAP_NO_ADV_COMM),
+                    "the evpn no-advertise route-map is missing from the built config"
+                );
+
+                let text = internal.render(&validated.genid()).to_string();
+                assert!(
+                    text.contains("! config for gen 1"),
+                    "the rendered config does not say which generation it is for"
+                );
+                assert!(
+                    text.contains(EVPN_RMAP_NO_ADV_COMM),
+                    "the evpn no-advertise route-map is missing from the rendered config"
+                );
+                assert!(
+                    text.contains(&format!("router bgp {UNDERLAY_ASN}")),
+                    "the underlay bgp instance is missing from the rendered config"
+                );
+                for vni in [LOCAL_VNI, REMOTE_VNI] {
+                    assert!(
+                        text.contains(&format!(" vni {vni}")),
+                        "vni {vni} is missing from the rendered config"
+                    );
+                }
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let built = BUILT.load(Ordering::Relaxed);
+        let multi = MULTI.load(Ordering::Relaxed);
+        println!("{built}/{seen} configurations built, {multi} of them with several exposes");
+        assert!(
+            built * 2 >= seen,
+            "most configurations were skipped: {built}/{seen}"
+        );
+        assert!(
+            multi > 0,
+            "no configuration with more than one expose was built"
+        );
     }
 }
