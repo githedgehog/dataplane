@@ -429,3 +429,141 @@ mod test {
         }
     }
 }
+
+/// Prefixes drawn from blocks that are not special-use, with the two sides kept apart.
+///
+/// An expose's prefixes are rejected if they overlap a special-use range, so drawing an address at
+/// random is mostly a way of generating configurations that will be refused. These draw from blocks
+/// this validator does not consider reserved -- `10.0.0.0/8` and `172.16.0.0/12` for v4, halves of
+/// `2001:db8::/32` for v6 -- with the private side and the public side in different blocks so that
+/// an expose's two sides can never be the same prefix.
+///
+/// The same choice, and the same reasoning, as `config`'s own contract generators.
+pub mod blocks {
+    use crate::bolero::AddressFamily;
+    use bolero::Driver;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// The shortest prefix either side can take, per family.
+    ///
+    /// Long enough to sit inside the *narrower* of the two blocks (`172.16.0.0/12` for v4, a half of
+    /// `2001:db8::/32` for v6), so that a length usable on one side is usable on the other. Static
+    /// NAT and port forwarding both need the two sides to be the same length, so a length either
+    /// side cannot take is a length neither can.
+    pub const MIN_V4_LEN: u8 = 16;
+    pub const MIN_V6_LEN: u8 = 48;
+
+    fn v4(base: u32, block_len: u8, host: u32, len: u8) -> String {
+        let block_host_bits = 32 - block_len;
+        let within = if block_host_bits >= 32 {
+            host
+        } else {
+            host & ((1u32 << block_host_bits) - 1)
+        };
+        let mask = u32::MAX.checked_shl(u32::from(32 - len)).unwrap_or(0);
+        let addr = (base | within) & mask;
+        format!("{}/{len}", Ipv4Addr::from(addr))
+    }
+
+    fn v6(base: u128, block_len: u8, host: u128, len: u8) -> String {
+        let block_host_bits = 128 - block_len;
+        let within = if block_host_bits >= 128 {
+            host
+        } else {
+            host & ((1u128 << block_host_bits) - 1)
+        };
+        let mask = u128::MAX.checked_shl(u32::from(128 - len)).unwrap_or(0);
+        let addr = (base | within) & mask;
+        format!("{}/{len}", Ipv6Addr::from(addr))
+    }
+
+    /// A prefix of length `len` for the private side of an expose.
+    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+        Some(if family.is_v4() {
+            // 10.0.0.0/8
+            v4(0x0A00_0000, 8, d.produce::<u32>()?, len)
+        } else {
+            // the lower half of 2001:db8::/32, i.e. 2001:db8:0000::/33
+            v6(
+                0x2001_0db8_0000_0000_0000_0000_0000_0000,
+                33,
+                d.produce::<u128>()?,
+                len,
+            )
+        })
+    }
+
+    /// A prefix of length `len` for the public side of an expose, disjoint from [`private`].
+    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+        Some(if family.is_v4() {
+            // 172.16.0.0/12
+            v4(0xAC10_0000, 12, d.produce::<u32>()?, len)
+        } else {
+            // the upper half of 2001:db8::/32, i.e. 2001:db8:8000::/33
+            v6(
+                0x2001_0db8_8000_0000_0000_0000_0000_0000,
+                33,
+                d.produce::<u128>()?,
+                len,
+            )
+        })
+    }
+
+    /// `count` distinct prefixes of length `len` inside the private block.
+    ///
+    /// Consecutive rather than independently drawn, so they are distinct and non-overlapping without
+    /// a rejection loop. A vpc's subnets are subject to the same rules as an expose's own prefixes,
+    /// because an expose can name one and a named subnet contributes its prefix -- so a subnet in a
+    /// special-use range makes every expose naming it invalid, and two overlapping subnets make an
+    /// expose naming both invalid.
+    pub fn private_run<D: Driver>(
+        d: &mut D,
+        family: AddressFamily,
+        len: u8,
+        count: u16,
+    ) -> Option<Vec<String>> {
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        let mut out = Vec::with_capacity(usize::from(count));
+        if family.is_v4() {
+            // 10.0.0.0/8 holds 2^(len-8) prefixes of length `len`
+            let slots = 1u32.checked_shl(u32::from(len) - 8).unwrap_or(u32::MAX);
+            let first = d.produce::<u32>()? % slots;
+            let shift = u32::from(32 - len);
+            for i in 0..u32::from(count) {
+                let slot = (first + i) % slots;
+                let addr = 0x0A00_0000 | slot.checked_shl(shift).unwrap_or(0);
+                out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
+            }
+        } else {
+            // the lower half of 2001:db8::/32 holds 2^(len-33) prefixes of length `len`
+            let slots = 1u128.checked_shl(u32::from(len) - 33).unwrap_or(u128::MAX);
+            let first = d.produce::<u128>()? % slots;
+            let shift = u32::from(128 - len);
+            for i in 0..u128::from(count) {
+                let slot = (first + i) % slots;
+                let addr = 0x2001_0db8_0000_0000_0000_0000_0000_0000
+                    | slot.checked_shl(shift).unwrap_or(0);
+                out.push(format!("{}/{len}", Ipv6Addr::from(addr)));
+            }
+        }
+        Some(out)
+    }
+
+    /// The shortest prefix length either side of an expose may take.
+    #[must_use]
+    pub fn min_len(family: AddressFamily) -> u8 {
+        if family.is_v4() {
+            MIN_V4_LEN
+        } else {
+            MIN_V6_LEN
+        }
+    }
+
+    /// The longest, which is a host route.
+    #[must_use]
+    pub fn max_len(family: AddressFamily) -> u8 {
+        if family.is_v4() { 32 } else { 128 }
+    }
+}

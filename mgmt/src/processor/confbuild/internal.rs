@@ -500,29 +500,30 @@ mod chain_properties {
     /// validates. It is worth measuring rather than assuming, and the measurement turned out to be
     /// the most useful thing in this module.
     ///
-    /// About a sixth of generated configurations validate, carrying three vpcs each. **None of them
-    /// has a peering**, and that is the gap: peerings are where the exposes, the NAT and the ACLs
-    /// live, so the whole of that half of the model is generated in quantity -- some twenty-four
-    /// thousand peerings per four thousand configurations -- and none of it survives to reach the
-    /// builder.
+    /// This started out measuring a failure. When first written, about a sixth of configurations
+    /// validated and **none of them had a peering** -- twenty-four thousand peerings drawn per four
+    /// thousand configurations, not one surviving. Peerings are where the exposes, the NAT and the
+    /// ACLs live, so that whole half of the model reached the builder never, while the CRD
+    /// generators sat at 94% coverage and every per-converter property passed, because those run
+    /// before validation.
     ///
-    /// Three causes of that have been fixed in the generators: peering pairs were drawn
-    /// independently so a duplicated pair was near-certain; each expose drew a mix of v4 and v6
-    /// prefixes when it must be single-family; and prefixes were drawn as short as `/0`, which
-    /// always overlaps a reserved range. What is left is the relationship between an expose's shape
-    /// and its NAT mode -- the expose is built first and the mode chosen afterwards, so static NAT
-    /// gets mismatched sizes, port forwarding gets the exclusion prefixes it forbids, and
-    /// masquerade gets an empty `as` list. Fixing that means choosing the mode first and shaping
-    /// the expose to fit, as `config`'s own `contract` module does.
+    /// Seven causes, all in the generators, all now fixed: peering pairs drawn independently so a
+    /// duplicated pair was near-certain; exposes drawing a mix of address families when one expose
+    /// must be single-family; prefixes as short as `/0`, which always overlaps a reserved range; the
+    /// NAT flavour chosen *after* the shape it constrains; the two manifests of a peering drawing
+    /// families independently when they must agree; both manifests free to use a stateful flavour
+    /// when only one may; and a peering naming a gateway group drawn freely rather than one that
+    /// exists.
     ///
-    /// So this test asserts what is true now, and is the thing to strengthen when that is done: it
-    /// should come to require peerings.
+    /// So the assertions are now the ones worth making: most configurations validate, and they carry
+    /// peerings.
     #[test]
     fn the_properties_are_not_vacuous() {
         use concurrency::sync::atomic::{AtomicUsize, Ordering};
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         static VALIDATED: AtomicUsize = AtomicUsize::new(0);
         static VPCS: AtomicUsize = AtomicUsize::new(0);
+        static PEERINGS: AtomicUsize = AtomicUsize::new(0);
 
         bolero::check!()
             .with_type::<LegalValue<GatewayAgent>>()
@@ -532,8 +533,13 @@ mod chain_properties {
                     .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
                 if let Ok(validated) = external.validate() {
                     VALIDATED.fetch_add(1, Ordering::Relaxed);
-                    VPCS.fetch_add(
-                        validated.external().overlay().vpc_table().len(),
+                    let table = validated.external().overlay().vpc_table();
+                    VPCS.fetch_add(table.len(), Ordering::Relaxed);
+                    PEERINGS.fetch_add(
+                        table
+                            .values()
+                            .map(|vpc| vpc.peerings().len())
+                            .sum::<usize>(),
                         Ordering::Relaxed,
                     );
                 }
@@ -542,14 +548,20 @@ mod chain_properties {
         let seen = SEEN.load(Ordering::Relaxed);
         let validated = VALIDATED.load(Ordering::Relaxed);
         let vpcs = VPCS.load(Ordering::Relaxed);
-        println!("{validated}/{seen} configurations validated, carrying {vpcs} vpcs");
+        let peerings = PEERINGS.load(Ordering::Relaxed);
+        println!("{validated}/{seen} validated, carrying {vpcs} vpcs and {peerings} peerings");
         assert!(seen > 0, "no configurations were generated");
         assert!(
-            validated * 20 >= seen,
+            validated * 2 >= seen,
             "only {validated} of {seen} configurations validated: the properties above are \
-             checking almost nothing"
+             checking much less than they look like they are"
         );
         assert!(vpcs > validated, "validated configurations carry no vpcs");
+        assert!(
+            peerings > 0,
+            "no validated configuration carries a peering, so nothing downstream of validation \
+             has seen the exposes, the NAT or the ACLs"
+        );
     }
 
     /// Building and rendering the same configuration twice gives the same text.
