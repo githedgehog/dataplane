@@ -1222,3 +1222,399 @@ mod vrftable_properties {
             });
     }
 }
+
+#[cfg(test)]
+mod crossvrf_properties {
+    use super::*;
+    use crate::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
+    use crate::rib::vrf::tests::{build_test_nhop, build_test_route, mk_addr};
+    use crate::rib::vrf::{Route, RouteNhop, RouteOrigin};
+    use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::Prefix;
+    use net::interface::InterfaceIndex;
+    use std::collections::BTreeMap;
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_VRFS: u8 = 2;
+    const NUM_VNIS: u8 = 2;
+    const NUM_UNDERLAY: u8 = 2;
+    const NUM_OVERLAY: u8 = 2;
+    const NUM_IFINDEXES: u8 = 3;
+    const NUM_VIAS: u8 = 3;
+    const MAX_ROUTES: u8 = 3;
+
+    fn vrf_ids() -> Vec<VrfId> {
+        (1..=u32::from(NUM_VRFS)).collect()
+    }
+
+    fn vnis() -> Vec<Vni> {
+        (1..=u32::from(NUM_VNIS))
+            .map(|i| Vni::new_checked(100 * i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn underlay() -> Vec<Prefix> {
+        ["7.0.0.0/8", "7.1.0.0/16"]
+            .iter()
+            .map(|p| Prefix::from_str(p).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn overlay() -> Vec<Prefix> {
+        ["10.0.0.0/8", "10.1.0.0/16"]
+            .iter()
+            .map(|p| Prefix::from_str(p).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn ifindexes() -> Vec<u32> {
+        (1..=u32::from(NUM_IFINDEXES)).collect()
+    }
+
+    fn onlink_addrs() -> Vec<IpAddr> {
+        (1..=NUM_IFINDEXES)
+            .map(|i| mk_addr(&format!("7.200.0.{i}")))
+            .collect()
+    }
+
+    fn vias() -> Vec<IpAddr> {
+        ["7.0.0.1", "7.1.0.1", "8.0.0.1"]
+            .iter()
+            .map(|a| mk_addr(a))
+            .collect()
+    }
+
+    #[derive(Debug, Clone)]
+    struct Topology {
+        vrfs: Vec<bool>,
+        underlay: Vec<(usize, usize, bool)>,
+        overlay: Vec<(usize, usize, usize)>,
+        later: Option<(usize, usize, bool)>,
+        selected: Vec<usize>,
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Topologies;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for Topologies {
+        type Output = Topology;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Topology> {
+            let mut vrfs = Vec::with_capacity(usize::from(NUM_VRFS));
+            for _ in 0..NUM_VRFS {
+                vrfs.push(driver.produce::<bool>()?);
+            }
+
+            let count = driver.gen_u8(Included(&0), Included(&MAX_ROUTES))?;
+            let mut underlay = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                underlay.push((
+                    index(driver, NUM_UNDERLAY)?,
+                    index(driver, NUM_IFINDEXES)?,
+                    driver.produce::<bool>()?,
+                ));
+            }
+
+            let count = driver.gen_u8(Included(&0), Included(&MAX_ROUTES))?;
+            let mut overlay = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                overlay.push((
+                    index(driver, NUM_VRFS)?,
+                    index(driver, NUM_OVERLAY)?,
+                    index(driver, NUM_VIAS)?,
+                ));
+            }
+
+            let later = if driver.produce::<bool>()? {
+                Some((
+                    index(driver, NUM_UNDERLAY)?,
+                    index(driver, NUM_IFINDEXES)?,
+                    driver.produce::<bool>()?,
+                ))
+            } else {
+                None
+            };
+
+            let count = driver.gen_u8(Included(&0), Included(&NUM_VNIS))?;
+            let mut selected = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                selected.push(index(driver, NUM_VNIS)?);
+            }
+
+            Some(Topology {
+                vrfs,
+                underlay,
+                overlay,
+                later,
+                selected,
+            })
+        }
+    }
+
+    type Underlay = BTreeMap<usize, (usize, bool)>;
+
+    type Overlay = BTreeMap<(usize, usize), usize>;
+
+    fn resolves_to(model: &Underlay, via: usize) -> Option<(u32, bool)> {
+        let address = vias()[via];
+        let prefixes = underlay();
+        model
+            .iter()
+            .filter(|(prefix, _)| prefixes[**prefix].covers_addr(&address))
+            .max_by_key(|(prefix, _)| prefixes[**prefix].length())
+            .map(|(_, (ifindex, onlink))| (ifindexes()[*ifindex], *onlink))
+    }
+
+    fn expected_entry(model: &Underlay, via: usize) -> FibEntry {
+        match resolves_to(model, via) {
+            Some((ifindex, onlink)) => {
+                let index = usize::try_from(ifindex).unwrap_or_else(|_| unreachable!()) - 1;
+                let address = if onlink {
+                    onlink_addrs()[index]
+                } else {
+                    vias()[via]
+                };
+                FibEntry::with_inst(PktInstruction::Egress(EgressObject::new(
+                    InterfaceIndex::try_new(ifindex).ok(),
+                    Some(address),
+                    None,
+                )))
+            }
+            None => FibEntry::drop_fibentry(),
+        }
+    }
+
+    fn underlay_route(ifindex: usize, onlink: bool) -> (Route, Vec<RouteNhop>) {
+        let address = onlink.then(|| onlink_addrs()[ifindex].to_string());
+        (
+            build_test_route(RouteOrigin::Connected, 0, 0),
+            vec![build_test_nhop(
+                address.as_deref(),
+                Some(ifindexes()[ifindex]),
+                0,
+                None,
+            )],
+        )
+    }
+
+    fn overlay_route(via: usize) -> (Route, Vec<RouteNhop>) {
+        (
+            build_test_route(RouteOrigin::Bgp, 20, 100),
+            vec![build_test_nhop(
+                Some(&vias()[via].to_string()),
+                None,
+                0,
+                None,
+            )],
+        )
+    }
+
+    fn realize(topology: &Topology, rstore: &RmacStore) -> (VrfTable, Underlay, Overlay) {
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let mut table = VrfTable::new(fibtw);
+        let ids = vrf_ids();
+        let all_vnis = vnis();
+
+        for (vrf, has_vni) in topology.vrfs.iter().enumerate() {
+            let config = RouterVrfConfig::new(ids[vrf], &format!("vrf{vrf}"))
+                .set_vni(has_vni.then(|| all_vnis[vrf]));
+            table
+                .add_vrf(&config)
+                .unwrap_or_else(|e| unreachable!("{e}"));
+        }
+
+        let mut model = Underlay::new();
+        for (prefix, ifindex, onlink) in &topology.underlay {
+            let (route, nhops) = underlay_route(*ifindex, *onlink);
+            let vrf0 = table
+                .get_vrf_mut(Vrf::DEFAULT_VRFID)
+                .unwrap_or_else(|e| unreachable!("{e}"));
+            vrf0.add_route_complete(&underlay()[*prefix], route, &nhops, None, rstore);
+            model.insert(*prefix, (*ifindex, *onlink));
+        }
+
+        let mut overlay_model = Overlay::new();
+        for (vrf, prefix, via) in &topology.overlay {
+            let (route, nhops) = overlay_route(*via);
+            let target = table
+                .get_vrf_mut(ids[*vrf])
+                .unwrap_or_else(|e| unreachable!("{e}"));
+            target.add_route_complete(&overlay()[*prefix], route, &nhops, None, rstore);
+            overlay_model.insert((*vrf, *prefix), *via);
+        }
+
+        (table, model, overlay_model)
+    }
+
+    fn fib_entries(table: &VrfTable, vrfid: VrfId, prefix: Prefix) -> Option<Vec<FibEntry>> {
+        let vrf = table.get_vrf(vrfid).unwrap_or_else(|e| unreachable!("{e}"));
+        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        let Prefix::IPV4(wanted) = prefix else {
+            unreachable!()
+        };
+        fib.iter_v4().find(|(p, _)| *p == wanted).map(|(_, route)| {
+            route
+                .iter()
+                .flat_map(|group| group.entries().iter().cloned())
+                .collect()
+        })
+    }
+
+    fn every_entry_is_executable(table: &VrfTable, at: &str) {
+        for vrf in table.values() {
+            let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+            let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+            for (prefix, route) in fib.iter_v4() {
+                for group in route.iter() {
+                    assert!(!group.is_empty(), "empty group for {prefix} {at}");
+                    for entry in group.iter() {
+                        assert!(
+                            entry.is_valid(),
+                            "vrf {} offers unusable {entry:?} for {prefix} {at}",
+                            vrf.vrfid
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vrf_ids().len(), usize::from(NUM_VRFS));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(underlay().len(), usize::from(NUM_UNDERLAY));
+        assert_eq!(overlay().len(), usize::from(NUM_OVERLAY));
+        assert_eq!(ifindexes().len(), usize::from(NUM_IFINDEXES));
+        assert_eq!(vias().len(), usize::from(NUM_VIAS));
+        const { assert!(NUM_VNIS >= NUM_VRFS) };
+        assert_eq!(onlink_addrs().len(), usize::from(NUM_IFINDEXES));
+        let all: Underlay = (0..usize::from(NUM_UNDERLAY))
+            .map(|p| (p, (0, false)))
+            .collect();
+        assert!(resolves_to(&all, usize::from(NUM_VIAS) - 1).is_none());
+    }
+
+    #[test]
+    fn a_refresh_resolves_other_vrfs_through_the_default_one() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Topologies)
+            .cloned()
+            .for_each(|topology: Topology| {
+                let (mut table, model, routes) = realize(&topology, &rstore);
+                table.refresh_non_default_fibs(&rstore);
+                every_entry_is_executable(&table, "after a refresh");
+
+                let ids = vrf_ids();
+                for ((vrf, prefix), via) in &routes {
+                    let got = fib_entries(&table, ids[*vrf], overlay()[*prefix])
+                        .unwrap_or_else(|| panic!("no fib route for {prefix} in vrf {vrf}"));
+                    assert_eq!(
+                        got,
+                        vec![expected_entry(&model, *via)],
+                        "vrf {vrf} prefix {prefix} via {via}, for {topology:?}"
+                    );
+                }
+            });
+    }
+
+    #[test]
+    fn refreshing_by_vni_touches_only_those_vnis() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Topologies)
+            .cloned()
+            .for_each(|topology: Topology| {
+                let Some(later) = topology.later else { return };
+                let (mut table, mut model, routes) = realize(&topology, &rstore);
+                table.refresh_non_default_fibs(&rstore);
+
+                let ids = vrf_ids();
+                let all_vnis = vnis();
+
+                let before: BTreeMap<(usize, usize), Option<Vec<FibEntry>>> = routes
+                    .keys()
+                    .map(|(vrf, prefix)| {
+                        (
+                            (*vrf, *prefix),
+                            fib_entries(&table, ids[*vrf], overlay()[*prefix]),
+                        )
+                    })
+                    .collect();
+
+                let (prefix, ifindex, onlink) = later;
+                let (route, nhops) = underlay_route(ifindex, onlink);
+                let vrf0 = table
+                    .get_vrf_mut(Vrf::DEFAULT_VRFID)
+                    .unwrap_or_else(|e| unreachable!("{e}"));
+                vrf0.add_route_complete(&underlay()[prefix], route, &nhops, None, &rstore);
+                model.insert(prefix, (ifindex, onlink));
+
+                let selected: Vec<Vni> = topology.selected.iter().map(|i| all_vnis[*i]).collect();
+                table.refresh_fibs_by_vni(&selected, &rstore);
+                every_entry_is_executable(&table, "after refreshing by vni");
+
+                for ((vrf, prefix), via) in &routes {
+                    let got = fib_entries(&table, ids[*vrf], overlay()[*prefix]);
+                    let vni = table
+                        .get_vrf(ids[*vrf])
+                        .unwrap_or_else(|e| unreachable!("{e}"))
+                        .vni;
+                    if vni.is_some_and(|vni| selected.contains(&vni)) {
+                        assert_eq!(
+                            got,
+                            Some(vec![expected_entry(&model, *via)]),
+                            "refreshed vrf {vrf} prefix {prefix}, for {topology:?}"
+                        );
+                    } else {
+                        assert_eq!(
+                            got,
+                            before[&(*vrf, *prefix)],
+                            "untouched vrf {vrf} prefix {prefix}, for {topology:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn a_stale_sweep_empties_every_vrf() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Topologies)
+            .cloned()
+            .for_each(|topology: Topology| {
+                let (mut table, _model, _routes) = realize(&topology, &rstore);
+                table.refresh_non_default_fibs(&rstore);
+
+                table.set_stale(true);
+                table.remove_stale_routes(&rstore);
+
+                for vrf in table.values() {
+                    assert_eq!(vrf.len_v4(), 1, "vrf {} kept ipv4 routes", vrf.vrfid);
+                    assert_eq!(vrf.len_v6(), 1, "vrf {} kept ipv6 routes", vrf.vrfid);
+                    for prefix in [Prefix::root_v4(), Prefix::root_v6()] {
+                        let route = vrf
+                            .get_route(prefix)
+                            .unwrap_or_else(|| panic!("vrf {} lost {prefix}", vrf.vrfid));
+                        assert!(
+                            route.is_preset_drop_route(),
+                            "vrf {} left {prefix} as something other than the preset drop route",
+                            vrf.vrfid
+                        );
+                    }
+                }
+                every_entry_is_executable(&table, "after a stale sweep");
+            });
+    }
+}
