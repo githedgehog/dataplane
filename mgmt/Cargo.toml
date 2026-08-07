@@ -60,6 +60,8 @@ tracing-test = { workspace = true }
 dpdk = { workspace = true, features = ["test"] } # EAL for tests that build the rte_acl-backed ACL filter and flow-filter context
 fixin = { workspace = true }
 id = { workspace = true, features = ["bolero"] }
+# for the generated `GatewayAgent` CRDs the config-chain properties feed through the builder
+k8s-intf = { workspace = true, features = ["bolero"] }
 interface-manager = { workspace = true, features = ["bolero"] }
 lpm = { workspace = true, features = ["testing"] }
 n-vm = { workspace = true }
