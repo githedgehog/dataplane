@@ -111,3 +111,92 @@ pub fn build_port_forwarding_configuration(
     }
     Ok(ruleset)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::external::overlay::Overlay;
+    use config::external::overlay::vpc::{Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::contract::PortForwardingExpose;
+    use config::external::overlay::vpcpeering::{
+        VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
+    };
+    use lpm::prefix::Prefix;
+
+    const LOCAL_VNI: u32 = 100;
+    const REMOTE_VNI: u32 = 200;
+
+    fn overlay_offering(expose: VpcExpose) -> config::external::overlay::ValidatedOverlay {
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI).expect("local vpc"))
+            .expect("add local vpc");
+        vpc_table
+            .add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI).expect("remote vpc"))
+            .expect("add remote vpc");
+
+        let remote_prefix = match expose.ips.first().expect("one prefix").prefix() {
+            Prefix::IPV4(_) => "3.3.3.0/24",
+            Prefix::IPV6(_) => "2001:db8:ffff::/64",
+        };
+        let local = VpcManifest::new("VPC-1").exposing(expose);
+        let remote =
+            VpcManifest::new("VPC-2").exposing(VpcExpose::empty().ip(remote_prefix.into()));
+        let mut peerings = VpcPeeringTable::new();
+        peerings
+            .add(VpcPeering::with_default_group(
+                "VPC-1--VPC-2",
+                local,
+                remote,
+            ))
+            .expect("add peering");
+
+        Overlay::new(vpc_table, peerings)
+            .validate()
+            .expect("the overlay around a valid expose should validate")
+    }
+
+    #[test]
+    fn an_expose_becomes_the_rules_it_describes() {
+        bolero::check!()
+            .with_generator(PortForwardingExpose)
+            .cloned()
+            .for_each(|expose: VpcExpose| {
+                let nat = expose.nat.as_ref().expect("port forwarding sets nat");
+                let proto = nat.proto;
+                let internal = *expose.ips.first().expect("one prefix");
+                let external = *nat.as_range.first().expect("one prefix");
+
+                let overlay = overlay_offering(expose.clone());
+                let rules = build_port_forwarding_configuration(overlay.vpc_table())
+                    .expect("a validated port-forwarding expose should build");
+
+                let expected = if proto == L4Protocol::Any { 2 } else { 1 };
+                assert_eq!(rules.len(), expected, "for {expose}");
+
+                for rule in &rules {
+                    assert_eq!(rule.ext_prefix, external.prefix(), "external prefix");
+                    assert_eq!(rule.int_prefix, internal.prefix(), "internal prefix");
+                    assert_eq!(
+                        rule.ext_ports.first().get(),
+                        external.ports().expect("ports").start(),
+                        "external ports"
+                    );
+                    assert_eq!(
+                        rule.int_ports.first().get(),
+                        internal.ports().expect("ports").start(),
+                        "internal ports"
+                    );
+                    assert_eq!(rule.dst_vpcd, VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
+                    assert_eq!(
+                        rule.key.src_vpcd(),
+                        VpcDiscriminant::from_vni(vni(REMOTE_VNI))
+                    );
+                }
+            });
+    }
+
+    fn vni(raw: u32) -> net::vxlan::Vni {
+        net::vxlan::Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
+    }
+}
