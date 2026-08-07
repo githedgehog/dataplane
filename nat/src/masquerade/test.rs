@@ -1671,3 +1671,32 @@ async fn test_masquerade_reconfig_drop_flow() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(flow_table.active_len(), Some(0));
 }
+
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+// tests that on a new config the genid is updated, whether the allocator changed or not
+async fn test_genid_updated_on_reconfig() {
+    // build some config with genid 1
+    let genid = 1;
+    let (flow_table, _pipeline, mut allocw) = test_setup(genid, &build_overlay_2vpcs());
+
+    // check that allocator's genid matches
+    let observed_genid = allocw.get_reader().get().unwrap().genid();
+    assert_eq!(observed_genid, genid);
+
+    // update the masquerade config, but with NO change so that allocator is the same
+    let overlay = &build_overlay_2vpcs().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid + 1, &flow_table);
+
+    let observed_genid = allocw.get_reader().get().unwrap().genid();
+    assert_eq!(observed_genid, genid + 1);
+
+    // update the NAT allocator with a distinct config, causing allocator to be updated
+    let overlay = build_overlay_2vpcs_modified().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid + 2, &flow_table);
+
+    let observed_genid = allocw.get_reader().get().unwrap().genid();
+    assert_eq!(observed_genid, genid + 2);
+}
