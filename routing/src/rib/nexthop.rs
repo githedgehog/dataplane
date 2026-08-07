@@ -60,6 +60,7 @@ pub struct NhopKey {
     pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
+    /// Optional diagnostic name. Mutable interface metadata must not affect key identity.
     pub ifname: Option<String>,
 }
 
