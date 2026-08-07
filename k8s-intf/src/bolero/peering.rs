@@ -78,11 +78,24 @@ fn pick2<'a, D: Driver, T>(d: &mut D, items: &[&'a T]) -> Option<[&'a T; 2]> {
     Some([items[index1], items[index2]])
 }
 
-impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
-    type Output = GatewayAgentPeerings;
+impl LegalValuePeeringsGenerator<'_> {
+    #[must_use]
+    pub fn pairs(&self) -> Vec<[&String; 2]> {
+        let names = &self.vpc_names;
+        let mut out = Vec::with_capacity(names.len() * names.len() / 2);
+        for (i, first) in names.iter().enumerate() {
+            for second in names.iter().skip(i + 1) {
+                out.push([*first, *second]);
+            }
+        }
+        out
+    }
 
-    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        let vpc_names = pick2(d, &self.vpc_names)?;
+    pub fn generate_for<D: Driver>(
+        &self,
+        d: &mut D,
+        vpc_names: [&String; 2],
+    ) -> Option<GatewayAgentPeerings> {
         let empty_map = SubnetMap::new();
         let peerings_gens = vpc_names.map(|n| {
             LegalValuePeeringsPeeringGenerator::new(self.vpc_subnets.get(n).unwrap_or(&empty_map))
@@ -96,5 +109,14 @@ impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
             peering: Some(peering),
             acl: None, // FIXME: Add a proper implementation when used
         })
+    }
+}
+
+impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
+    type Output = GatewayAgentPeerings;
+
+    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+        let vpc_names = pick2(d, &self.vpc_names)?;
+        self.generate_for(d, vpc_names)
     }
 }
