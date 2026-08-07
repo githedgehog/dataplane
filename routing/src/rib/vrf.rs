@@ -113,7 +113,7 @@ impl ShimNhop {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[allow(unused)]
 pub enum VrfStatus {
     Active,
