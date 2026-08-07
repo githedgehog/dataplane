@@ -311,7 +311,7 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
+pub(crate) const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
 
 /// Create a route-map that adds community "no-advertise" to all routes
 fn route_map_add_noadv_comm() -> RouteMap {
