@@ -451,12 +451,6 @@ impl VpcExpose {
                     "Port forwarding requires a single prefix on each side",
                 ));
             }
-            if ips_sizes != as_range_sizes {
-                return Err(ConfigError::MismatchedPrefixSizes(
-                    ips_sizes,
-                    as_range_sizes,
-                ));
-            }
             // For port forwarding, ensure that a port range is always present. Lack of port range would imply
             // all ports, which is not allowed since port 0 is forbidden in the implementation
             for prefixes in [collapsed_expose.ips(), collapsed_expose.as_range_or_empty()] {
@@ -465,6 +459,29 @@ impl VpcExpose {
                         "Port forwarding requires a port range on each prefix",
                     ));
                 }
+            }
+
+            let internal = collapsed_expose
+                .ips()
+                .first()
+                .unwrap_or_else(|| unreachable!());
+            let external = collapsed_expose
+                .as_range_or_empty()
+                .first()
+                .unwrap_or_else(|| unreachable!());
+            if internal.prefix().length() != external.prefix().length() {
+                return Err(ConfigError::MismatchedPrefixLengths {
+                    private: internal.prefix().length(),
+                    public: external.prefix().length(),
+                });
+            }
+            let internal_ports = internal.ports().unwrap_or_else(|| unreachable!());
+            let external_ports = external.ports().unwrap_or_else(|| unreachable!());
+            if internal_ports.len() != external_ports.len() {
+                return Err(ConfigError::MismatchedPortRangeSizes {
+                    private: internal_ports.len(),
+                    public: external_ports.len(),
+                });
             }
         }
 
@@ -1306,6 +1323,59 @@ pub mod contract {
                         validated.err()
                     );
                 });
+        }
+
+        fn forwarding(internal: (&str, u16, u16), external: (&str, u16, u16)) -> VpcExpose {
+            let side = |(prefix, first, last): (&str, u16, u16)| {
+                PrefixWithOptionalPorts::new(
+                    prefix.into(),
+                    Some(PortRange::new(first, last).unwrap_or_else(|_| unreachable!())),
+                )
+            };
+            VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!())
+                .ip(side(internal))
+                .as_range(side(external))
+                .unwrap_or_else(|_| unreachable!())
+        }
+
+        #[test]
+        fn compensating_sizes_do_not_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/32", 1000, 1099), ("172.16.0.0/30", 2000, 2024));
+            assert!(
+                matches!(
+                    expose.validate(),
+                    Err(ConfigError::MismatchedPrefixLengths {
+                        private: 32,
+                        public: 30
+                    })
+                ),
+                "a /32 with 100 ports opposite a /30 with 25 was accepted: {:?}",
+                expose.validate()
+            );
+        }
+
+        #[test]
+        fn port_ranges_of_different_sizes_do_not_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/32", 1000, 1099), ("172.16.0.0/32", 2000, 2049));
+            assert!(
+                matches!(
+                    expose.validate(),
+                    Err(ConfigError::MismatchedPortRangeSizes {
+                        private: 100,
+                        public: 50
+                    })
+                ),
+                "100 ports opposite 50 was accepted: {:?}",
+                expose.validate()
+            );
+        }
+
+        #[test]
+        fn matched_sides_still_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/30", 1000, 1099), ("172.16.0.0/30", 2000, 2099));
+            assert!(expose.validate().is_ok(), "{:?}", expose.validate());
         }
 
         #[test]
