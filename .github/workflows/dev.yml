@@ -120,6 +120,16 @@ jobs:
       - check_changes
     permissions: &check-perms
       contents: "read"
+    # The lab runners have 10 cores. `jobs` is nix's --max-jobs (concurrent
+    # derivations) and `cores` is nix's --cores (NIX_BUILD_CORES, which crane
+    # turns into CARGO_BUILD_JOBS and enableParallelBuilding turns into
+    # `make -j`), so the cap on a job is their product. Every job below that
+    # reaches `nix build` sets `jobs=1 cores=8`: one derivation at a time,
+    # eight compile threads inside it, two cores left for everything else.
+    # A single cargo build of the workspace dominates these jobs, so
+    # serializing derivations costs us little and that build gets the 8.
+    # The exception is `cross`, which runs two matrix entries at once and
+    # so halves its `cores` to stay inside the same budget.
     env: &check-env
       USER: "runner"
       JUST_VARS: >-
@@ -362,6 +372,8 @@ jobs:
             platform="x86-64-v3"
           fi
           base_args=(
+            jobs=1
+            cores=8
             docker_sock=/run/docker/docker.sock
             debug_justfile="${DEBUG_JUSTFILE}"
             profile="${PROFILE}"
@@ -474,7 +486,11 @@ jobs:
       - name: "all packages"
         uses: *just
         env:
+          # miri never reaches `nix build`, so the root justfile's `jobs` and
+          # `cores` can't cap it; the module takes its own `cores` and hands
+          # it to cargo and to nextest. See the comment on `check-env`.
           JUST_VARS: >-
+            miri::cores=8
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
@@ -490,6 +506,7 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
+            miri::cores=8
             miri::seeds=8
             miri::cpu=${{ matrix.cpu }}
             miri::provenance=permissive
@@ -500,6 +517,7 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
+            miri::cores=8
             miri::cpu=${{ matrix.cpu }}
             miri::provenance=strict
         with:
@@ -539,6 +557,8 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
+            jobs=1
+            cores=8
             platform=${{ matrix.platform }}
             profile=${{ matrix.profile }}
             libc=${{ matrix.libc }}
@@ -597,7 +617,12 @@ jobs:
           }}
         uses: *just
         env:
+          # cores=4, not the 8 the rest of CI uses: this is the one job with
+          # `max-parallel: 2`, so two matrix entries that land on the same
+          # lab runner still fit inside its 10 cores.
           JUST_VARS: >-
+            jobs=1
+            cores=4
             platform=${{ matrix.platform }}
             profile=${{ matrix.profile }}
             libc=${{ matrix.libc }}
@@ -607,6 +632,8 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
+            jobs=1
+            cores=4
             platform=${{ matrix.platform }}
             profile=${{ matrix.profile }}
             libc=${{ matrix.libc }}
@@ -631,8 +658,8 @@ jobs:
     # This job doesn't use the `*check-env` anchor: that anchor's
     # `JUST_VARS` references `matrix.build.*`, and this job has no
     # matrix. Each step below sets `JUST_VARS` itself, inlining the
-    # docker_sock / debug_justfile / oci_repo settings that the
-    # anchor would have provided.
+    # jobs / cores / docker_sock / debug_justfile / oci_repo settings
+    # that the anchor would have provided.
     env:
       USER: "runner"
     steps:
@@ -641,6 +668,8 @@ jobs:
       - name: "shuttle"
         env:
           JUST_VARS: >-
+            jobs=1
+            cores=8
             docker_sock=/run/docker/docker.sock
             debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
             profile=fuzz
@@ -652,6 +681,8 @@ jobs:
       - name: "loom"
         env:
           JUST_VARS: >-
+            jobs=1
+            cores=8
             docker_sock=/run/docker/docker.sock
             debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
             profile=fuzz
@@ -865,6 +896,8 @@ jobs:
         run: |
           set -euo pipefail;
           just \
+            jobs=1 \
+            cores=8 \
             docker_sock=/run/docker/docker.sock \
             oci_repo=ghcr.io \
             version="${ref_name}" \
