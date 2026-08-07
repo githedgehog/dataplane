@@ -75,8 +75,21 @@ pub enum ConfigError {
     #[error("Invalid ACL configuration: {0}")]
     InvalidAcl(String),
     // NAT-specific
-    #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
+    #[error(
+        "Mismatched sizes for static NAT: the exposed prefixes and the range they translate to \
+         must cover the same number of address-port pairs (they cover {0:?} and {1:?})"
+    )]
     MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
+    #[error(
+        "Mismatched prefix lengths for port forwarding: /{private} exposed and /{public} \
+         translated to; a rule maps addresses one for one, so the two must be the same length"
+    )]
+    MismatchedPrefixLengths { private: u8, public: u8 },
+    #[error(
+        "Mismatched port range sizes for port forwarding: {private} ports exposed and {public} \
+         translated to; a rule maps ports one for one, so the two must be the same size"
+    )]
+    MismatchedPortRangeSizes { private: usize, public: usize },
     #[error("Peering {0} has manifests using incompatible NAT modes")]
     IncompatibleNatModes(String),
     #[error("Vpc {0} has a peering with no exposes")]

@@ -646,7 +646,13 @@ mod test {
             .unwrap();
         let result = expose.validate();
         assert!(
-            matches!(result, Err(ConfigError::MismatchedPrefixSizes(_, _))),
+            matches!(
+                result,
+                Err(ConfigError::MismatchedPrefixLengths {
+                    private: 24,
+                    public: 25
+                })
+            ),
             "{result:?}",
         );
     }
