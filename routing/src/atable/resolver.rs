@@ -148,6 +148,67 @@ impl AtResolver {
     }
 }
 
+/// Checks the device-name lookup used while importing kernel ARP entries.
+#[cfg(test)]
+mod resolver_properties {
+    use super::*;
+    use netdev::Interface;
+
+    fn interface(index: u32, name: &str) -> Interface {
+        Interface {
+            index,
+            name: name.to_string(),
+            ..Interface::dummy()
+        }
+    }
+
+    #[test]
+    fn a_device_name_resolves_to_its_own_interface() {
+        let interfaces = [interface(2, "eth0"), interface(3, "eth1")];
+
+        for (index, name) in [(2, "eth0"), (3, "eth1")] {
+            let found = get_interface_ifindex(&interfaces, name)
+                .unwrap_or_else(|e| unreachable!("{e}"))
+                .unwrap_or_else(|| panic!("{name} did not resolve"));
+            assert_eq!(found.to_u32(), index, "{name} resolved to the wrong index");
+        }
+
+        assert_eq!(
+            get_interface_ifindex(&interfaces, "eth2").unwrap_or_else(|e| unreachable!("{e}")),
+            None,
+            "an unknown device must resolve to nothing, not to something else"
+        );
+        assert_eq!(
+            get_interface_ifindex(&[], "eth0").unwrap_or_else(|e| unreachable!("{e}")),
+            None,
+            "no interfaces, nothing to resolve to"
+        );
+    }
+
+    #[test]
+    fn an_interface_index_of_zero_is_an_error_not_a_miss() {
+        let interfaces = [interface(0, "eth0")];
+        assert!(
+            get_interface_ifindex(&interfaces, "eth0").is_err(),
+            "index zero must be an error"
+        );
+        assert_eq!(
+            get_interface_ifindex(&interfaces, "eth1").unwrap_or_else(|e| unreachable!("{e}")),
+            None,
+            "a different name is still just a miss"
+        );
+    }
+
+    #[test]
+    fn a_repeated_device_name_resolves_to_the_first() {
+        let interfaces = [interface(2, "eth0"), interface(9, "eth0")];
+        let found = get_interface_ifindex(&interfaces, "eth0")
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(found.to_u32(), 2);
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
