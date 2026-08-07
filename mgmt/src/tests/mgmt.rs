@@ -761,3 +761,117 @@ mod peering_chain {
         );
     }
 }
+
+/// Properties over the *rest* of applying a configuration: the dataplane tables.
+///
+/// `build_internal_config` turns a validated configuration into the FRR half of it, and the chain
+/// properties in `processor::confbuild::internal` cover that. The other half is the dataplane's own
+/// tables, built from the same validated configuration by
+///
+/// * `build_nat_configuration` -- static NAT,
+/// * `MasqueradeConfig::new` and `update_nat_allocator` -- masquerade,
+/// * `build_port_forwarding_configuration` and `PortFwTableWriter::update_table` -- port forwarding.
+///
+/// All of them are fallible from a configuration that has already validated, and the last is where
+/// the one confirmed bug of this class actually fired: `PortFwEntry::is_valid` refused a rule whose
+/// two sides had matching address-port *totals* but mismatched prefix lengths, during apply, at the
+/// last of the NAT stages -- by which point the kernel interfaces, the flow filter, the ACLs, the
+/// static NAT tables and the masquerade allocator had all been committed. See
+/// `fix(config): Refuse a port-forwarding expose the dataplane cannot build`.
+///
+/// So the claim is the same one, carried one step further: **a configuration that validates builds
+/// every table it implies.**
+///
+/// One property per NAT flavour rather than one over all of them, using the generator knobs. A
+/// single property over the default flavour mix reaches each flavour eventually; asking for one
+/// reaches it in every case, and says in its name which one failed.
+#[cfg(test)]
+mod dataplane_tables {
+    use config::{ExternalConfig, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::NatFlavour;
+    use k8s_intf::bolero::crd::GatewayAgentBuilder;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::NatTablesWriter;
+    use nat::static_nat::setup::build_nat_configuration;
+
+    /// Build every dataplane table the configuration implies, in the order `apply_gw_config` does.
+    fn build_tables(validated: &ValidatedGwConfig, flavour: NatFlavour) {
+        let vpc_table = validated.external().overlay().vpc_table();
+
+        let nat_tables = build_nat_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("a validated {flavour:?} configuration would not build static NAT: {e}")
+        });
+        let mut nattablesw = NatTablesWriter::new();
+        nattablesw.update_nat_tables(nat_tables);
+
+        let masquerade = MasqueradeConfig::new(vpc_table, validated.genid()).set_randomize(false);
+        let mut natallocatorw = NatAllocatorWriter::new();
+        let flow_table = FlowTable::new(16);
+        natallocatorw.update_nat_allocator(masquerade, &flow_table);
+
+        let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("a validated {flavour:?} configuration would not build port forwarding: {e}")
+        });
+        let mut portfw_w = PortFwTableWriter::new();
+        // The step that used to fail during apply: the ruleset builds and the table still refuses
+        // it, because a rule can be well-formed as configuration and unrepresentable as a rule.
+        portfw_w.update_table(&ruleset).unwrap_or_else(|e| {
+            panic!("a validated {flavour:?} port-forwarding ruleset was refused by the table: {e}")
+        });
+    }
+
+    /// Drive the whole chain for one NAT flavour, and report how much of it got through.
+    fn drive(flavour: NatFlavour) {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        let seen = AtomicUsize::new(0);
+        let built = AtomicUsize::new(0);
+
+        let generator = GatewayAgentBuilder::new().flavours(vec![flavour]).build();
+
+        bolero::check!()
+            .with_generator(generator)
+            .cloned()
+            .for_each(|agent| {
+                seen.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(&agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                built.fetch_add(1, Ordering::Relaxed);
+                build_tables(&validated, flavour);
+            });
+
+        let seen = seen.load(Ordering::Relaxed);
+        let built = built.load(Ordering::Relaxed);
+        println!("{flavour:?}: {built}/{seen} configurations validated and built their tables");
+        assert!(
+            built * 2 >= seen,
+            "only {built} of {seen} {flavour:?} configurations validated, so this checked much \
+             less than it looks like it did"
+        );
+    }
+
+    #[test]
+    fn a_static_nat_configuration_builds_its_tables() {
+        drive(NatFlavour::Static);
+    }
+
+    #[test]
+    fn a_masquerade_configuration_builds_its_tables() {
+        drive(NatFlavour::Masquerade);
+    }
+
+    /// The flavour the historical bug was in.
+    #[test]
+    fn a_port_forwarding_configuration_builds_its_tables() {
+        drive(NatFlavour::PortForward);
+    }
+
+    #[test]
+    fn a_configuration_with_no_nat_builds_its_tables() {
+        drive(NatFlavour::None);
+    }
+}
