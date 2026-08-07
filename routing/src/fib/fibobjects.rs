@@ -16,6 +16,7 @@ use std::net::IpAddr;
 pub struct EgressObject {
     pub(crate) ifindex: Option<InterfaceIndex>,
     pub(crate) address: Option<IpAddr>,
+    /// Optional interface name for diagnostics.
     pub(crate) ifname: Option<String>,
 }
 
