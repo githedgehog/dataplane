@@ -479,16 +479,18 @@ impl VpcExpose {
                 .first()
                 .unwrap_or_else(|| unreachable!());
             if internal.prefix().length() != external.prefix().length() {
-                return Err(ConfigError::Forbidden(
-                    "Port forwarding requires prefixes of the same length on each side",
-                ));
+                return Err(ConfigError::MismatchedPrefixLengths {
+                    private: internal.prefix().length(),
+                    public: external.prefix().length(),
+                });
             }
             let internal_ports = internal.ports().unwrap_or_else(|| unreachable!());
             let external_ports = external.ports().unwrap_or_else(|| unreachable!());
             if internal_ports.len() != external_ports.len() {
-                return Err(ConfigError::Forbidden(
-                    "Port forwarding requires port ranges of the same size on each side",
-                ));
+                return Err(ConfigError::MismatchedPortRangeSizes {
+                    private: internal_ports.len(),
+                    public: external_ports.len(),
+                });
             }
         }
 
@@ -1436,9 +1438,10 @@ pub mod contract {
             assert!(
                 matches!(
                     expose.validate(),
-                    Err(ConfigError::Forbidden(
-                        "Port forwarding requires prefixes of the same length on each side"
-                    ))
+                    Err(ConfigError::MismatchedPrefixLengths {
+                        private: 32,
+                        public: 30
+                    })
                 ),
                 "a /32 with 100 ports opposite a /30 with 25 was accepted: {:?}",
                 expose.validate()
@@ -1452,9 +1455,10 @@ pub mod contract {
             assert!(
                 matches!(
                     expose.validate(),
-                    Err(ConfigError::Forbidden(
-                        "Port forwarding requires port ranges of the same size on each side"
-                    ))
+                    Err(ConfigError::MismatchedPortRangeSizes {
+                        private: 100,
+                        public: 50
+                    })
                 ),
                 "100 ports opposite 50 was accepted: {:?}",
                 expose.validate()
