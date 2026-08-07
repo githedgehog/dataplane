@@ -4,12 +4,12 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
 
-use bolero::{Driver, TypeGenerator};
+use bolero::{Driver, TypeGenerator, ValueGenerator};
 
 use lpm::prefix::Prefix;
 
 use crate::bolero::peering::LegalValuePeeringsGenerator;
-use crate::bolero::{LegalValue, SubnetMap, VpcSubnetMap};
+use crate::bolero::{AddressFamily, LegalValue, NatFlavour, SubnetMap, VpcSubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentGateway, GatewayAgentGroups, GatewayAgentSpec, GatewayAgentVpcs,
 };
@@ -44,17 +44,127 @@ fn increment_string(s: &mut str) {
     }
 }
 
+/// How much of a `GatewayAgentSpec` to generate, and of what.
+///
+/// The knobs exist so that a property can aim: at one NAT flavour, at one address family, at a
+/// single small vpc, at a fabric with a dozen. Without them every draw is a coin flip inside one
+/// function and a property can only take what it is given.
+///
+/// The defaults are deliberately **small**. The generator this replaced drew up to sixteen vpcs,
+/// sixteen peerings per spec and sixteen exposes per peering, each with up to sixteen prefixes: a
+/// single case ran to thousands of prefixes, which costs throughput and makes a counterexample
+/// unreadable. Nothing here needs to be large to be interesting; a caller that wants large can ask.
+#[derive(Debug, Clone)]
+pub struct SpecBuilder {
+    max_vpcs: u8,
+    max_peerings: u8,
+    max_exposes: u8,
+    max_subnets: u8,
+    flavours: Vec<NatFlavour>,
+    families: Vec<AddressFamily>,
+}
+
+impl Default for SpecBuilder {
+    fn default() -> Self {
+        Self {
+            max_vpcs: 4,
+            max_peerings: 3,
+            max_exposes: 2,
+            max_subnets: 3,
+            flavours: NatFlavour::all(),
+            families: AddressFamily::all(),
+        }
+    }
+}
+
+impl SpecBuilder {
+    /// The most vpcs a generated spec will carry. At least two are needed for any peering.
+    #[must_use]
+    pub fn max_vpcs(mut self, max: u8) -> Self {
+        self.max_vpcs = max;
+        self
+    }
+
+    /// The most peerings a generated spec will carry.
+    #[must_use]
+    pub fn max_peerings(mut self, max: u8) -> Self {
+        self.max_peerings = max;
+        self
+    }
+
+    /// The most exposes one side of a peering will offer.
+    #[must_use]
+    pub fn max_exposes(mut self, max: u8) -> Self {
+        self.max_exposes = max;
+        self
+    }
+
+    /// The most subnets a generated vpc will have.
+    #[must_use]
+    pub fn max_subnets(mut self, max: u8) -> Self {
+        self.max_subnets = max;
+        self
+    }
+
+    /// Which NAT flavours the exposes may use. Empty is treated as all of them.
+    #[must_use]
+    pub fn flavours(mut self, flavours: Vec<NatFlavour>) -> Self {
+        if !flavours.is_empty() {
+            self.flavours = flavours;
+        }
+        self
+    }
+
+    /// Which address families the exposes may use. Empty is treated as both.
+    #[must_use]
+    pub fn families(mut self, families: Vec<AddressFamily>) -> Self {
+        if !families.is_empty() {
+            self.families = families;
+        }
+        self
+    }
+
+    /// The generator these knobs describe.
+    #[must_use]
+    pub fn build(self) -> GatewayAgentSpecs {
+        GatewayAgentSpecs(self)
+    }
+}
+
+/// Draws `GatewayAgentSpec`s, as configured by a [`SpecBuilder`].
+#[derive(Debug, Clone)]
+pub struct GatewayAgentSpecs(pub(crate) SpecBuilder);
+
+impl Default for GatewayAgentSpecs {
+    fn default() -> Self {
+        SpecBuilder::default().build()
+    }
+}
+
 /// Generate a random legal `GatewayAgentSpec`
 ///
 /// This does not cover all legal `GatewayAgentSpecs`,
 /// it is limited by the underlying generators and it generates
 /// vpcs and peerings with a fixed name pattern and not all
 /// vni combinations are generated.
+///
+/// Delegates to [`GatewayAgentSpecs`] with its default knobs, so a caller who wants to aim can use
+/// [`SpecBuilder`] instead.
 impl TypeGenerator for LegalValue<GatewayAgentSpec> {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let num_vpcs = d.gen_usize(Bound::Included(&0), Bound::Included(&16))?;
+        Some(LegalValue(GatewayAgentSpecs::default().generate(d)?))
+    }
+}
+
+impl ValueGenerator for GatewayAgentSpecs {
+    type Output = GatewayAgentSpec;
+
+    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+        let knobs = &self.0;
+        let num_vpcs =
+            usize::from(d.gen_u8(Bound::Included(&0), Bound::Included(&knobs.max_vpcs))?);
         let num_peerings = if num_vpcs > 1 {
-            d.gen_usize(Bound::Included(&0), Bound::Included(&16))?
+            usize::from(d.gen_u8(Bound::Included(&0), Bound::Included(&knobs.max_peerings))?)
         } else {
             0
         };
@@ -64,8 +174,8 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
         let mut vpc_internal_ids = HashSet::new();
         for i in 0..num_vpcs {
             let vni_offset = u32::try_from(i).expect("too many vpcs");
-            let lv_vpc = d.produce::<LegalValue<GatewayAgentVpcs>>()?;
-            let mut vpc = lv_vpc.take();
+            let mut vpc = crate::bolero::vpc::VpcGenerator::new(knobs.max_subnets, &knobs.families)
+                .generate(d)?;
             let vpc_id = vpc.internal_id.as_mut().unwrap();
             while !vpc_internal_ids.insert(vpc_id.clone()) {
                 // We already have a VPC with this internal_id, "increment" the string to generate a
@@ -78,9 +188,26 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
 
         let vpc_subnet_map = extract_subnets(&vpcs);
 
+        // Gateway groups before peerings: a peering names one, and whole-config validation checks
+        // that the name exists. Generating the peerings first left them naming groups drawn freely,
+        // which is to say groups that do not exist.
+        let num_groups = d.gen_usize(Bound::Included(&0), Bound::Included(&6))?;
+        let mut groups = BTreeMap::new();
+        for i in 0..=num_groups {
+            groups.insert(format!("gwgroup-{i}"), d.produce::<GatewayAgentGroups>()?);
+        }
+        let group_names: Vec<String> = groups.keys().cloned().collect();
+
         let mut peerings = BTreeMap::new();
         if num_peerings > 0 {
-            let peering_gen = LegalValuePeeringsGenerator::new(&vpc_subnet_map).unwrap();
+            let peering_gen = LegalValuePeeringsGenerator::new(
+                &vpc_subnet_map,
+                &knobs.flavours,
+                &knobs.families,
+                knobs.max_exposes,
+                &group_names,
+            )
+            .unwrap();
             // Draw *distinct* vpc pairs. Validation refuses a configuration that peers one pair
             // twice, so drawing each peering's pair independently -- as this used to -- makes almost
             // every configuration with more than one peering invalid, and the whole peering half of
@@ -94,12 +221,6 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
             }
         }
 
-        let num_groups = d.gen_usize(Bound::Included(&0), Bound::Included(&6))?;
-        let mut groups = BTreeMap::new();
-        for i in 0..=num_groups {
-            groups.insert(format!("gwgroup-{i}"), d.produce::<GatewayAgentGroups>()?);
-        }
-
         let num_communities = d.gen_usize(Bound::Included(&0), Bound::Included(&9))?;
         let mut communities = BTreeMap::new();
         for i in 0..=num_communities {
@@ -107,7 +228,7 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
             communities.insert(i.to_string(), community);
         }
 
-        Some(LegalValue(GatewayAgentSpec {
+        Some(GatewayAgentSpec {
             agent_version: None,
             config: None,
             groups: Some(groups),
@@ -115,6 +236,6 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
             gateway: Some(d.produce::<LegalValue<GatewayAgentGateway>>()?.take()),
             vpcs: Some(vpcs).filter(|v| !v.is_empty()),
             peerings: Some(peerings).filter(|p| !p.is_empty()),
-        }))
+        })
     }
 }
