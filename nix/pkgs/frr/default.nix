@@ -63,8 +63,8 @@
   # Whether this FRR source carries our vtysh extension loader, i.e. whether
   # its vtysh understands `-X <path-to-extension.so>`.  Our fork (`frr-dp`)
   # does; upstream (`frr`, used for the host image) does not, and passing it
-  # `-X` would only earn us an "invalid option".  When set, the install phase
-  # wraps `vtysh` so that it loads `vtysh-extension-libs` without being asked.
+  # `-X` would only earn us an "invalid option".  When set, `postFixup` wraps
+  # `vtysh` so that it loads `vtysh-extension-libs` without being asked.
   vtysh-extensions ? false,
 
   # Extensions the `vtysh` wrapper loads, as paths in the *image*, not the nix
