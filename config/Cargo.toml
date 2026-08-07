@@ -5,6 +5,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Generators for the configuration types, for property tests in this crate and downstream.
+bolero = ["dep:bolero", "lpm/bolero"]
+
 [dependencies]
 # internal
 common = { workspace = true }
@@ -16,6 +20,7 @@ net = { workspace = true }
 
 # external
 arc-swap = { workspace = true }
+bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 chrono = { workspace = true, features = ["alloc", "std"] }
 derive_builder = { workspace = true, features = [] }
 ipnet = { workspace = true }
