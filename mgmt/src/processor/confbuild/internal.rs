@@ -464,6 +464,7 @@ mod chain_properties {
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         static VALIDATED: AtomicUsize = AtomicUsize::new(0);
         static VPCS: AtomicUsize = AtomicUsize::new(0);
+        static PEERINGS: AtomicUsize = AtomicUsize::new(0);
 
         bolero::check!()
             .with_type::<LegalValue<GatewayAgent>>()
@@ -473,8 +474,13 @@ mod chain_properties {
                     .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
                 if let Ok(validated) = external.validate() {
                     VALIDATED.fetch_add(1, Ordering::Relaxed);
-                    VPCS.fetch_add(
-                        validated.external().overlay().vpc_table().len(),
+                    let table = validated.external().overlay().vpc_table();
+                    VPCS.fetch_add(table.len(), Ordering::Relaxed);
+                    PEERINGS.fetch_add(
+                        table
+                            .values()
+                            .map(|vpc| vpc.peerings().len())
+                            .sum::<usize>(),
                         Ordering::Relaxed,
                     );
                 }
@@ -483,14 +489,20 @@ mod chain_properties {
         let seen = SEEN.load(Ordering::Relaxed);
         let validated = VALIDATED.load(Ordering::Relaxed);
         let vpcs = VPCS.load(Ordering::Relaxed);
-        println!("{validated}/{seen} configurations validated, carrying {vpcs} vpcs");
+        let peerings = PEERINGS.load(Ordering::Relaxed);
+        println!("{validated}/{seen} validated, carrying {vpcs} vpcs and {peerings} peerings");
         assert!(seen > 0, "no configurations were generated");
         assert!(
-            validated * 20 >= seen,
+            validated * 2 >= seen,
             "only {validated} of {seen} configurations validated: the properties above are \
-             checking almost nothing"
+             checking much less than they look like they are"
         );
         assert!(vpcs > validated, "validated configurations carry no vpcs");
+        assert!(
+            peerings > 0,
+            "no validated configuration carries a peering, so nothing downstream of validation \
+             has seen the exposes, the NAT or the ACLs"
+        );
     }
 
     #[test]
