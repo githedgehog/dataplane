@@ -439,8 +439,6 @@ impl VpcExpose {
         // - we have no exclusion prefixes (note: we could relax this constraint now that we
         //   collapse exclusion prefixes early)
         // - we have a single prefix on each side (private and public addresses)
-        // - we have the same number of addresses on each side
-        // - the list of associated port ranges also has the same size on each side
         if collapsed_expose.has_port_forwarding() {
             if !self.nots.is_empty() || !self.not_as_or_empty().is_empty() {
                 return Err(ConfigError::Forbidden(
