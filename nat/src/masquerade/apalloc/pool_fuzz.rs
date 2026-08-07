@@ -19,7 +19,7 @@
 
 #![cfg(test)]
 
-use super::alloc::PoolSet;
+use super::alloc::{MAX_ADDRESSES_PER_ALLOCATION, PoolSet};
 use super::region::AddrInterval;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
@@ -88,7 +88,6 @@ impl Config {
             .into_iter()
             .map(|public_ranges| PoolSpec {
                 public_ranges,
-                reserved: PrefixPortsSet::new(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect()
@@ -96,7 +95,12 @@ impl Config {
 
     fn pool_sets(&self) -> Vec<PoolSet<Ipv4Addr>> {
         // No randomization: a failure has to reproduce from its seed alone.
-        pool_sets_for_specs::<Ipv4Addr>(&self.specs(), NextHeader::TCP, false)
+        pool_sets_for_specs::<Ipv4Addr>(
+            &self.specs(),
+            &PrefixPortsSet::new(),
+            NextHeader::TCP,
+            false,
+        )
     }
 
     fn owner_count(&self) -> usize {
@@ -110,6 +114,10 @@ fn bits(ip: Ipv4Addr) -> u128 {
 
 fn declares(ranges: &[AddrInterval], ip: Ipv4Addr) -> bool {
     ranges.iter().any(|range| range.contains(bits(ip)))
+}
+
+fn port(value: u16) -> NatPort {
+    NatPort::new_port_checked(value).unwrap_or_else(|_| unreachable!())
 }
 
 /// Allocate round-robin across the exposes, holding every allocation so nothing is freed and
@@ -278,11 +286,11 @@ fn an_exhausted_region_falls_through_to_the_next() {
 
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(full, full), AddrInterval::new(free, free)],
-        reserved: [every_port].into_iter().collect(),
         idle_timeout: IDLE_TIMEOUT,
     }];
 
-    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let claimed = PrefixPortsSet::from([every_port]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
     let allocation = pool_sets[0]
         .allocate(false)
         .expect("the second region has room, so allocation must succeed");
@@ -290,6 +298,267 @@ fn an_exhausted_region_falls_through_to_the_next() {
         allocation.ip(),
         Ipv4Addr::from(u32::try_from(free).unwrap_or_else(|_| unreachable!())),
         "allocation did not fall through to the region with room"
+    );
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Exhaustion
+///////////////////////////////////////////////////////////////////////////////
+
+// Claiming every port masquerade could hand out on an address, which is how a test reaches
+// address exhaustion without making 64k allocations.
+fn claim_whole_address(offset: u128) -> PrefixWithOptionalPorts {
+    let address = Ipv4Addr::from(u32::try_from(BASE + offset).unwrap_or_else(|_| unreachable!()));
+    PrefixWithOptionalPorts::new(
+        format!("{address}/32").as_str().into(),
+        Some(PortRange::new(1024, u16::MAX).unwrap_or_else(|_| unreachable!())),
+    )
+}
+
+/// An address with nothing left to give is passed over, and the next one serves.
+///
+/// Allocation draws the lowest free address and, finding no port on it, used to hand it straight
+/// back. The same address was lowest next time, so the pool served nothing at all for as long as
+/// it stayed there: one address fully claimed by port forwarding took a whole region out of
+/// service. Claims on a later address never showed it, since allocation stopped before reaching
+/// them.
+#[test]
+fn an_address_with_no_free_port_is_passed_over() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + 2)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let claimed = PrefixPortsSet::from([claim_whole_address(0)]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    // Repeatedly, so that an address taken out of the pool stays out.
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .expect("two addresses of the region are free");
+        assert_ne!(
+            allocation.ip(),
+            Ipv4Addr::from(u32::try_from(BASE).unwrap()),
+            "an address whose ports are all claimed was handed out"
+        );
+        held.push(allocation);
+    }
+}
+
+/// With every address claimed the pool has nothing to give, and says so rather than looping.
+#[test]
+fn a_fully_claimed_region_reports_exhaustion() {
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + 2)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let claimed: PrefixPortsSet = (0..3).map(claim_whole_address).collect();
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    let error = pool_sets[0]
+        .allocate(false)
+        .expect_err("no address in the region can serve");
+    assert!(
+        error.is_exhaustion(),
+        "a region with nothing to give reported {error} rather than being out of space"
+    );
+}
+
+/// An expose falls through to a region it shares once the region it has to itself is used up.
+///
+/// The ordinary tests never reach this: a region is only given up when every port of every address
+/// in it is taken, and allocation stays on one address for 64k ports, so a handful of allocations
+/// never leaves the first address of the first region. Claiming the exclusive region away is how
+/// the fallback gets exercised at all.
+#[test]
+fn an_expose_falls_back_to_shared_space_when_its_own_is_used_up() {
+    // Owner 0 has BASE..=BASE+1 to itself and shares BASE+2 with owner 1.
+    let specs = vec![
+        PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE + 2)],
+            idle_timeout: IDLE_TIMEOUT,
+        },
+        PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE + 2, BASE + 2)],
+            idle_timeout: IDLE_TIMEOUT,
+        },
+    ];
+    // Claim the exclusive region away, leaving owner 0 only the shared one.
+    let claimed: PrefixPortsSet = (0..2).map(claim_whole_address).collect();
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+    let allocation = pool_sets[0]
+        .allocate(false)
+        .expect("the shared region still has room");
+    assert_eq!(
+        allocation.ip(),
+        Ipv4Addr::from(u32::try_from(BASE + 2).unwrap()),
+        "the expose did not fall back to the region it shares"
+    );
+}
+
+/// Addresses are used up in turn, and every address of a region is reachable.
+///
+/// Claims stand in for the 64k allocations it would otherwise take to move off an address, so the
+/// walk over addresses is exercised at every depth rather than only at the first one.
+#[test]
+fn every_address_of_a_region_can_be_reached() {
+    const ADDRESSES: u128 = 6;
+    for claimed_count in 0..ADDRESSES {
+        let specs = vec![PoolSpec {
+            public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        // Claim a prefix of the region away, so the first address left is the one after it.
+        let claimed: PrefixPortsSet = (0..claimed_count).map(claim_whole_address).collect();
+        let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+        let allocation = pool_sets[0].allocate(false).unwrap_or_else(|e| {
+            panic!("{claimed_count} addresses claimed, allocation failed: {e}")
+        });
+        assert_eq!(
+            allocation.ip(),
+            Ipv4Addr::from(u32::try_from(BASE + claimed_count).unwrap()),
+            "with {claimed_count} addresses claimed the next one should serve"
+        );
+    }
+}
+
+/// A run of claimed addresses costs nothing, however long it is.
+///
+/// Allocation draws the lowest free address, so a port-forwarded prefix at the bottom of a region
+/// is what it meets first. Those addresses used to sit in the pool and be discovered one at a
+/// time, and since an allocation gives up after `MAX_ADDRESSES_PER_ALLOCATION` of them, a run shed
+/// a dropped packet for every bound's worth -- sixteen for a claimed `/25` -- and shed them again
+/// after every config change. They are excluded when the pool is built now.
+#[test]
+fn a_run_of_claimed_addresses_costs_no_allocations() {
+    let bound = u128::try_from(MAX_ADDRESSES_PER_ALLOCATION).unwrap_or_else(|_| unreachable!());
+
+    // Around the old cliff, and then well past it: the last of these used to cost three packets.
+    for claimed_count in [0, 1, bound - 1, bound, bound + 1, 3 * bound + 5] {
+        let specs = vec![PoolSpec {
+            // One address past the claimed run, which is the one that has to serve.
+            public_ranges: vec![AddrInterval::new(BASE, BASE + claimed_count)],
+            idle_timeout: IDLE_TIMEOUT,
+        }];
+        let claimed: PrefixPortsSet = (0..claimed_count).map(claim_whole_address).collect();
+        let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+
+        let allocation = pool_sets[0].allocate(false).unwrap_or_else(|e| {
+            panic!("a run of {claimed_count} claimed addresses cost the first allocation: {e}")
+        });
+        assert_eq!(
+            allocation.ip(),
+            Ipv4Addr::from(u32::try_from(BASE + claimed_count).unwrap_or_else(|_| unreachable!())),
+            "the address past a run of {claimed_count} claimed ones should be the one that serves"
+        );
+    }
+}
+
+/// An address the pool may never draw is not put into it by a flow that fails to carry over.
+///
+/// Reserving reaches addresses allocation never touches. A flow that survives a config change
+/// presents the address it already holds, and the pool takes that address into use in order to try
+/// to give the port back. Where the new configuration has claimed every port on it the reservation
+/// fails, as it must -- but the address has been through the pool by then, and releasing it on the
+/// way out used to hand it to the bitmap. The exclusion would undo itself on the first config
+/// change that needed it, which is also the first one that could produce such a flow.
+#[test]
+fn a_failed_carry_over_does_not_put_a_claimed_address_into_the_pool() {
+    const ADDRESSES: u128 = 4;
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    // The lowest two addresses are claimed end to end, so neither may ever be handed out.
+    let claimed: PrefixPortsSet = (0..2).map(claim_whole_address).collect();
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
+    let claimed_address = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+
+    let free_offsets = || {
+        let region = pool_sets[0]
+            .regions()
+            .next()
+            .expect("the specs describe one region");
+        let (bitmap, _) = region.allocator().get_pool_clone_for_tests();
+        bitmap
+    };
+    assert!(
+        !free_offsets().contains(claimed_address.to_bits()),
+        "a fully claimed address was in the pool to begin with"
+    );
+
+    // Carry a flow over onto it. Refused, and the address goes back where it came from.
+    assert!(
+        pool_sets[0].reserve(claimed_address, port(5000)).is_err(),
+        "a port on a fully claimed address was carried over"
+    );
+
+    assert!(
+        !free_offsets().contains(claimed_address.to_bits()),
+        "a fully claimed address was put into the pool by a carry-over that failed on it"
+    );
+
+    // And allocation still goes straight to the first address that can serve.
+    let allocation = pool_sets[0]
+        .allocate(false)
+        .expect("the region has addresses that can serve");
+    assert_eq!(
+        allocation.ip(),
+        Ipv4Addr::from(u32::try_from(BASE + 2).unwrap_or_else(|_| unreachable!())),
+        "allocation did not go straight past the claimed addresses"
+    );
+}
+
+/// An address that still has room is reused, rather than a fresh one being drawn.
+///
+/// Reuse walks the addresses already in hand and skips those with nothing left. The skip is
+/// decided by a count of blocks still free, and a block that port forwarding has claimed used to
+/// be marked unusable without being taken off that count. The count then said an address had room
+/// when it had none; the attempt failed with "no port block", and the walk gave up on that error
+/// rather than trying the next address in hand. Every allocation after that drew a fresh address
+/// while addresses already in hand sat with tens of thousands of free ports, until the region ran
+/// out of addresses altogether.
+#[test]
+fn an_address_with_room_is_reused_before_a_fresh_one_is_drawn() {
+    const ADDRESSES: u128 = 4;
+    // Everything above the first block, so the first address has exactly one block: 1024..=1279.
+    let claim = PrefixWithOptionalPorts::new(
+        format!("{}/32", Ipv4Addr::from(u32::try_from(BASE).unwrap()))
+            .as_str()
+            .into(),
+        Some(PortRange::new(1280, u16::MAX).unwrap_or_else(|_| unreachable!())),
+    );
+    let specs = vec![PoolSpec {
+        public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        idle_timeout: IDLE_TIMEOUT,
+    }];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(
+        &specs,
+        &PrefixPortsSet::from([claim]),
+        NextHeader::TCP,
+        false,
+    );
+
+    // One block on the first address, then a handful more that the second address can serve
+    // many times over.
+    let mut held = Vec::new();
+    let mut used = BTreeSet::new();
+    for step in 0..(256 + 4) {
+        let allocation = pool_sets[0]
+            .allocate(false)
+            .unwrap_or_else(|e| panic!("allocation {step} failed: {e}"));
+        used.insert(allocation.ip());
+        held.push(allocation);
+    }
+
+    assert_eq!(
+        used.len(),
+        2,
+        "the region spent {} addresses on what two can serve: {used:?}",
+        used.len()
     );
 }
 
@@ -307,10 +576,10 @@ fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
     // Far wider than the bitmap can index.
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(start, start + (1u128 << 40))],
-        reserved: PrefixPortsSet::new(),
         idle_timeout: IDLE_TIMEOUT,
     }];
-    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
+    let pool_sets =
+        pool_sets_for_specs::<Ipv6Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
     let port = NatPort::new_port_checked(4096).unwrap_or_else(|_| unreachable!());
 
     // Just inside the indexable span: an ordinary carry-over, which must still work.
@@ -337,10 +606,10 @@ fn ipv6_pools_allocate_within_their_range() {
     let end = start + 3;
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(start, end)],
-        reserved: PrefixPortsSet::new(),
         idle_timeout: IDLE_TIMEOUT,
     }];
-    let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
+    let pool_sets =
+        pool_sets_for_specs::<Ipv6Addr>(&specs, &PrefixPortsSet::new(), NextHeader::TCP, false);
 
     let mut held = Vec::new();
     let mut seen = BTreeSet::new();
@@ -437,14 +706,20 @@ impl ReservedConfig {
             .config
             .owner_ranges()
             .into_iter()
-            .zip(&self.reservations)
-            .map(|(public_ranges, claims)| PoolSpec {
+            .map(|public_ranges| PoolSpec {
                 public_ranges,
-                reserved: claims.iter().map(|claim| claim.as_prefix()).collect(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect();
-        pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
+        // A claim binds the public space towards a peer, whichever expose declared it, so the
+        // claims of every expose apply to every pool built over that space.
+        let claimed: PrefixPortsSet = self
+            .reservations
+            .iter()
+            .flatten()
+            .map(|claim| claim.as_prefix())
+            .collect();
+        pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false)
     }
 }
 
@@ -455,32 +730,27 @@ impl ReservedConfig {
 /// through one expose still has to hold against an allocation made through another, or masquerade
 /// would hand out a port that port forwarding is statically mapping elsewhere.
 ///
-/// # Ignored: this does not hold today
-///
-/// A pool keeps at most one reserved port range per public address, so several claims on one
-/// address collapse to whichever was recorded last and the rest are silently handed out. See
-/// [`several_claims_on_one_address_are_all_honoured`] for the minimal case, and the note there for
-/// the two places that need to change. Unignore both once they do.
-#[ignore = "a pool holds one reserved port range per address; see several_claims_on_one_address_are_all_honoured"]
+/// This is a property of the pools, which are given claims already expressed in public space.
+/// Translating a configuration into those claims is a separate step, covered by the tests on
+/// `ReserveSets` in `setup.rs` and end to end by `test_forwarded_ports_are_not_masqueraded_onto`.
 #[test]
 fn reserved_ports_are_never_allocated() {
     bolero::check!()
         .with_type()
         .cloned()
         .for_each(|reserved_config: ReservedConfig| {
-            let ranges = reserved_config.config.owner_ranges();
             let pool_sets = reserved_config.pool_sets();
 
             for (owner, allocation) in allocate_round_robin(&pool_sets, ALLOCATIONS) {
                 let ip = allocation.ip();
                 let port = allocation.port().as_u16();
 
-                // Every expose that declares this address shares the region it came from, so its
-                // claims apply to this allocation too.
+                // A claim binds the public space it names, whoever made it. The pool is built
+                // from the union of every claim, so the oracle unions them too: gating on the
+                // claimant's own ranges here would let a claim made through one expose go
+                // unchecked against an allocation made through another, which is the case the
+                // property exists to state.
                 for (claimant, claims) in reserved_config.reservations.iter().enumerate() {
-                    if !declares(&ranges[claimant], ip) {
-                        continue;
-                    }
                     for claim in claims {
                         assert!(
                             !claim.covers(ip, port),
@@ -495,23 +765,11 @@ fn reserved_ports_are_never_allocated() {
 }
 
 /// The minimal shape behind [`reserved_ports_are_never_allocated`]: one public address carrying
-/// two port-forwarding claims.
+/// two port-forwarding claims, both of which have to be honoured.
 ///
-/// # Ignored: this does not hold today
-///
-/// `build_reserved_prefixes_ports` records the claims in a `DisjointRangesBTreeMap` keyed by
-/// address range, so two claims on one address are inserted under the same key and the second
-/// replaces the first. Even with that fixed, `NatPool::use_new_ip` resolves a single
-/// `Option<PortRange>` per address and `PortAllocator` stores one `reserved_port_range`, so the
-/// data model cannot hold more than one claim per address either. Both need to take a set of
-/// ranges.
-///
-/// This is not a consequence of allocating from regions; the same collapse existed when each
-/// expose had its own pool. It stays latent in production only because the claims are currently
-/// computed from private prefixes and never match the public address they are looked up by, which
-/// is the separate defect noted on `find_masquerade_portfw_overlap`. Fixing that without fixing
-/// this would turn an inert path into a wrong one.
-#[ignore = "a pool holds one reserved port range per address, so the earlier claim is dropped"]
+/// This used to hold only the last claim recorded on an address, at three points in a row: the
+/// claims were collected into a map keyed by address range, the pool resolved one range per
+/// address out of it, and the port allocator stored one range. Each now carries the whole set.
 #[test]
 fn several_claims_on_one_address_are_all_honoured() {
     let address: u128 = BASE;
@@ -524,11 +782,11 @@ fn several_claims_on_one_address_are_all_honoured() {
 
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(address, address)],
-        reserved: [claim(1024, 1024), claim(2000, 2000)].into_iter().collect(),
         idle_timeout: IDLE_TIMEOUT,
     }];
 
-    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let claimed = PrefixPortsSet::from([claim(1024, 1024), claim(2000, 2000)]);
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, &claimed, NextHeader::TCP, false);
     let allocated: BTreeSet<u16> = allocate_round_robin(&pool_sets, 4)
         .iter()
         .map(|(_, allocation)| allocation.port().as_u16())

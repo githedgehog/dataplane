@@ -11,13 +11,12 @@
 
 use super::alloc::{IpAllocator, NatPool, PoolSet};
 use super::region::{AddrInterval, Region, decompose, regions_by_owner};
+use super::reserved::ReservedPorts;
 use super::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use crate::masquerade::allocator_writer::MasqueradeConfig;
 use crate::masquerade::natip::NatIp;
-use crate::ranges::IpRange;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
-use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+use lpm::prefix::{L4Protocol, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -60,10 +59,17 @@ struct GatheredExpose<'a> {
     // The public range this expose allocates from, as raw address intervals.
     public_ranges: Vec<AddrInterval>,
     idle_timeout: Duration,
-    reserved: ReserveSets,
 }
 
-/// Ports that port forwarding has claimed, and that masquerade must not hand out.
+/// Everything masquerading towards one peer VPC: the exposes that allocate from its public space,
+/// and the public ports port forwarding has already claimed in that same space.
+#[derive(Default)]
+struct GatheredGroup<'a> {
+    exposes: Vec<GatheredExpose<'a>>,
+    claimed: ReserveSets,
+}
+
+/// Public ports that port forwarding has claimed, and that masquerade must not hand out.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ReserveSets {
     tcp: PrefixPortsSet,
@@ -79,6 +85,22 @@ impl ReserveSets {
             _ => None,
         }
     }
+
+    // Record what a port-forwarding expose has taken, under the protocols it applies to. The claim
+    // is on the public side, which is the space masquerade allocates from and the space a pool is
+    // asked about; the private side describes addresses the pools never see.
+    fn add(&mut self, expose: &ValidatedExpose) {
+        let claimed = expose.as_range_or_empty();
+        let proto = expose.nat().map_or(L4Protocol::Any, |nat| nat.proto);
+        match proto {
+            L4Protocol::Tcp => self.tcp.extend(claimed.clone()),
+            L4Protocol::Udp => self.udp.extend(claimed.clone()),
+            L4Protocol::Any => {
+                self.tcp.extend(claimed.clone());
+                self.udp.extend(claimed.clone());
+            }
+        }
+    }
 }
 
 // Collect the masquerade exposes of every peering, grouped by the VPC they masquerade towards.
@@ -88,7 +110,7 @@ fn gather_exposes<'a, J, F, FIter, P, PIter>(
     config: &'a MasqueradeConfig,
     exposes_filter: &F,
     port_forwarding_exposes_filter: &P,
-) -> BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>>
+) -> BTreeMap<VpcDiscriminant, GatheredGroup<'a>>
 where
     J: NatIp,
     F: Fn(&'a ValidatedManifest) -> FIter,
@@ -96,12 +118,20 @@ where
     P: Fn(&'a ValidatedManifest) -> PIter,
     PIter: Iterator<Item = &'a ValidatedExpose>,
 {
-    let mut groups: BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>> = BTreeMap::new();
+    let mut groups: BTreeMap<VpcDiscriminant, GatheredGroup<'a>> = BTreeMap::new();
 
     for nat_peering in config.iter() {
         let manifest = nat_peering.peering.local();
-        let port_forwarding_exposes: Vec<&'a ValidatedExpose> =
-            port_forwarding_exposes_filter(manifest).collect();
+        let group = groups.entry(nat_peering.dst_vpcd).or_default();
+
+        // Port forwarding claims public space towards this peer whichever VPC declared it, because
+        // the public space towards a peer is shared: return traffic carries nothing that says
+        // which VPC it belongs to. Claims are therefore collected per peer VPC rather than per
+        // manifest, so a claim made by one VPC is honoured by another VPC's pools, and a peering
+        // that port-forwards without masquerading still has its claims respected.
+        for pf_expose in port_forwarding_exposes_filter(manifest) {
+            group.claimed.add(pf_expose);
+        }
 
         for expose in exposes_filter(manifest) {
             let public_ranges = public_intervals::<J>(expose.as_range_or_empty());
@@ -110,18 +140,14 @@ where
                 // happens if none of its prefixes are of the version we are building.
                 continue;
             }
-            groups
-                .entry(nat_peering.dst_vpcd)
-                .or_default()
-                .push(GatheredExpose {
-                    src_vpc_id: nat_peering.src_vpcd,
-                    private_prefixes: expose.ips(),
-                    public_ranges,
-                    idle_timeout: expose
-                        .idle_timeout()
-                        .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT),
-                    reserved: find_masquerade_portfw_overlap(&port_forwarding_exposes, expose),
-                });
+            group.exposes.push(GatheredExpose {
+                src_vpc_id: nat_peering.src_vpcd,
+                private_prefixes: expose.ips(),
+                public_ranges,
+                idle_timeout: expose
+                    .idle_timeout()
+                    .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT),
+            });
         }
     }
 
@@ -165,26 +191,27 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
     let groups =
         gather_exposes::<J, _, _, _, _>(config, &exposes_filter, &port_forwarding_exposes_filter);
 
-    for (dst_vpc_id, exposes) in groups {
+    for (dst_vpc_id, group) in groups {
         // Allocations for TCP, for example, do not affect allocations for UDP or for ICMP: the
         // space made of addresses and L4 ports or identifiers is distinct for each protocol. So
         // each region backs one allocator per protocol, over the same addresses.
         for protocol in [NextHeader::TCP, NextHeader::UDP, icmp_proto] {
-            let specs: Vec<PoolSpec> = exposes
+            let specs: Vec<PoolSpec> = group
+                .exposes
                 .iter()
                 .map(|expose| PoolSpec {
                     public_ranges: expose.public_ranges.clone(),
-                    reserved: expose
-                        .reserved
-                        .for_protocol(protocol)
-                        .cloned()
-                        .unwrap_or_default(),
                     idle_timeout: expose.idle_timeout,
                 })
                 .collect();
 
-            let pool_sets = pool_sets_for_specs::<J>(&specs, protocol, randomize);
-            for (expose, pool_set) in exposes.iter().zip(pool_sets) {
+            let claimed = group
+                .claimed
+                .for_protocol(protocol)
+                .cloned()
+                .unwrap_or_default();
+            let pool_sets = pool_sets_for_specs::<J>(&specs, &claimed, protocol, randomize);
+            for (expose, pool_set) in group.exposes.iter().zip(pool_sets) {
                 add_pool_entries(
                     table,
                     expose.private_prefixes,
@@ -203,7 +230,6 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
 #[derive(Clone)]
 pub(crate) struct PoolSpec {
     pub(crate) public_ranges: Vec<AddrInterval>,
-    pub(crate) reserved: PrefixPortsSet,
     pub(crate) idle_timeout: Duration,
 }
 
@@ -215,6 +241,7 @@ pub(crate) struct PoolSpec {
 /// ranges cover.
 pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
     specs: &[PoolSpec],
+    claimed: &PrefixPortsSet,
     protocol: NextHeader,
     randomize: bool,
 ) -> Vec<PoolSet<J>> {
@@ -229,7 +256,7 @@ pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
         specs.len()
     );
 
-    let allocators = build_region_allocators::<J>(&regions, specs, protocol, randomize);
+    let allocators = build_region_allocators::<J>(&regions, claimed, protocol, randomize);
     let by_owner = regions_by_owner(&regions);
 
     specs
@@ -252,7 +279,7 @@ pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
 // keeps a public address and port from being handed out twice.
 fn build_region_allocators<J: NatIpWithBitmap>(
     regions: &[Region],
-    specs: &[PoolSpec],
+    claimed: &PrefixPortsSet,
     protocol: NextHeader,
     randomize: bool,
 ) -> Vec<IpAllocator<J>> {
@@ -260,72 +287,36 @@ fn build_region_allocators<J: NatIpWithBitmap>(
     // ICMP identifiers are allocated independently and are not subject to that policy.
     let exclude_wellknown_ports = matches!(protocol, NextHeader::TCP | NextHeader::UDP);
 
+    // The claims cover the whole public space towards this peer VPC, so every region gets the
+    // same set and each pool keeps only what covers an address when it hands one out. A region is
+    // shared between exposes, and a claim binds the space rather than the expose that declared it,
+    // so there is nothing per-owner to work out here.
+    let reserved = build_reserved_ports(claimed);
+
     regions
         .iter()
         .map(|region| {
-            // A region is shared, so it must honour every claim on it: reserve what port
-            // forwarding has taken from any of its owners.
-            let reserved = region
-                .owners
-                .iter()
-                .fold(PrefixPortsSet::new(), |accumulated, &owner| {
-                    accumulated.union_prefixes_and_ports(&specs[owner].reserved)
-                });
-
-            let pool = NatPool::for_range(
-                region.range,
-                build_reserved_prefixes_ports(&reserved),
-                exclude_wellknown_ports,
-            );
+            let pool = NatPool::for_range(region.range, reserved.clone(), exclude_wellknown_ports);
             IpAllocator::new(pool, randomize)
         })
         .collect()
 }
 
-fn find_masquerade_portfw_overlap<'a>(
-    port_forwarding_exposes: &Vec<&'a ValidatedExpose>,
-    expose: &'a ValidatedExpose,
-) -> ReserveSets {
-    let expose_nat = expose.nat().unwrap_or_else(|| unreachable!());
-    let mut reserve_sets = ReserveSets::default();
-
-    for pf_expose in port_forwarding_exposes {
-        let pf_nat = pf_expose.nat().unwrap_or_else(|| unreachable!());
-        let Some(relevant_proto) = expose_nat.proto.intersection(&pf_nat.proto) else {
-            // No overlap on L4 protocols, so no overlap for prefixes and ports.
-            continue;
-        };
-        let ranges_intersection = pf_expose
-            .ips()
-            .intersection_prefixes_and_ports(expose.ips());
-        match relevant_proto {
-            L4Protocol::Tcp => reserve_sets.tcp.extend(ranges_intersection),
-            L4Protocol::Udp => reserve_sets.udp.extend(ranges_intersection),
-            L4Protocol::Any => {
-                reserve_sets.tcp.extend(ranges_intersection.clone());
-                reserve_sets.udp.extend(ranges_intersection);
-            }
-        }
-    }
-    reserve_sets
-}
-
-fn build_reserved_prefixes_ports(
+// Every claim is kept, including several on one address: a set of claims is not a map from
+// address to port range, and recording it as one silently honoured whichever came last.
+fn build_reserved_ports(
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
-) -> Option<DisjointRangesBTreeMap<IpRange, PortRange>> {
-    if prefixes_and_ports_to_exclude_from_pools.is_empty() {
-        return None;
-    }
-    let mut reserved_prefixes_ports = DisjointRangesBTreeMap::new();
+) -> ReservedPorts {
+    let mut reserved = ReservedPorts::default();
     for prefix in prefixes_and_ports_to_exclude_from_pools {
         debug_assert!(prefix.ports().is_some());
         let Some(ports) = prefix.ports() else {
             error!("Stepped on a port-forwarding prefix without ports. This is a bug");
             continue;
         };
-        reserved_prefixes_ports.insert(prefix.prefix().into(), ports);
+        reserved.claim(prefix.prefix().into(), ports);
     }
-    Some(reserved_prefixes_ports)
+    reserved
 }
 
 fn pool_table_key_for_expose<I: NatIp>(
@@ -362,7 +353,7 @@ fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> (I, I) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReserveSets, find_masquerade_portfw_overlap};
+    use super::ReserveSets;
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 
@@ -370,145 +361,83 @@ mod tests {
         PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
     }
 
-    // tests for find_masquerade_portfw_overlap()
+    // A port-forwarding expose, mapping a private range onto a public one.
+    fn port_forwarding(private: &str, public: &str, proto: Option<L4Protocol>) -> VpcExpose {
+        VpcExpose::empty()
+            .make_port_forwarding(None, proto)
+            .unwrap()
+            .ip(prefix_with_ports(private, 8080, 8090))
+            .as_range(prefix_with_ports(public, 8080, 8090))
+            .unwrap()
+    }
 
+    fn claims_of(exposes: &[VpcExpose]) -> ReserveSets {
+        let mut sets = ReserveSets::default();
+        for expose in exposes {
+            sets.add(&expose.clone().validate().unwrap());
+        }
+        sets
+    }
+
+    // The claim is on the public address and ports, because that is what masquerade allocates and
+    // what a pool is asked about. Recording the private side instead described a space the pools
+    // never look in, so nothing was ever actually reserved.
     #[test]
-    fn find_masquerade_portfw_overlap_multiple_pf_exposes() {
-        let expose = VpcExpose::empty()
-            .make_masquerade(None)
-            .unwrap()
-            .ip("10.0.0.0/16".into())
-            .ip("172.16.0.0/16".into())
-            .as_range("192.168.0.0/16".into())
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_expose1 = VpcExpose::empty()
-            .make_port_forwarding(None, None)
-            .unwrap()
-            .ip(prefix_with_ports("10.0.1.0/24", 8080, 8090))
-            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_expose2 = VpcExpose::empty()
-            .make_port_forwarding(None, None)
-            .unwrap()
-            .ip(prefix_with_ports("172.16.5.0/24", 8080, 8090))
-            .as_range(prefix_with_ports("192.168.2.0/24", 8080, 8090))
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
-        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+    fn a_claim_is_recorded_on_the_public_range() {
+        let claims = claims_of(&[port_forwarding("10.0.0.0/24", "192.168.1.0/24", None)]);
+        let expected = PrefixPortsSet::from([prefix_with_ports("192.168.1.0/24", 8080, 8090)]);
         assert_eq!(
-            result,
+            claims,
             ReserveSets {
-                tcp: PrefixPortsSet::from([
-                    prefix_with_ports("10.0.1.0/24", 8080, 8090),
-                    prefix_with_ports("172.16.5.0/24", 8080, 8090),
-                ]),
-                udp: PrefixPortsSet::from([
-                    prefix_with_ports("10.0.1.0/24", 8080, 8090),
-                    prefix_with_ports("172.16.5.0/24", 8080, 8090),
-                ]),
+                tcp: expected.clone(),
+                udp: expected,
             }
         );
     }
 
     #[test]
-    fn find_masquerade_portfw_overlap_with_ports() {
-        let expose = VpcExpose::empty()
-            .make_masquerade(None)
-            .unwrap()
-            .ip("10.0.0.0/24".into())
-            .as_range("192.168.0.0/24".into())
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_expose = VpcExpose::empty()
-            .make_port_forwarding(None, None)
-            .unwrap()
-            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090))
-            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_exposes_vec = vec![&pf_expose];
-        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+    fn a_protocol_specific_claim_only_binds_that_protocol() {
+        let claims = claims_of(&[port_forwarding(
+            "10.0.0.0/24",
+            "192.168.1.0/24",
+            Some(L4Protocol::Tcp),
+        )]);
         assert_eq!(
-            result,
+            claims,
             ReserveSets {
-                tcp: PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)]),
-                udp: PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)]),
+                tcp: PrefixPortsSet::from([prefix_with_ports("192.168.1.0/24", 8080, 8090)]),
+                udp: PrefixPortsSet::default(),
             }
         );
     }
 
     #[test]
-    fn find_masquerade_portfw_overlap_with_ports_tcp() {
-        let expose = VpcExpose::empty()
-            .make_masquerade(None)
-            .unwrap()
-            .ip("10.0.0.0/24".into())
-            .as_range("192.168.0.0/24".into())
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_expose = VpcExpose::empty()
-            .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP only
-            .unwrap()
-            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090))
-            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_exposes_vec = vec![&pf_expose];
-        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+    fn claims_from_several_exposes_accumulate() {
+        let claims = claims_of(&[
+            port_forwarding("10.0.1.0/24", "192.168.1.0/24", None),
+            port_forwarding("172.16.5.0/24", "192.168.2.0/24", None),
+        ]);
+        let expected = PrefixPortsSet::from([
+            prefix_with_ports("192.168.1.0/24", 8080, 8090),
+            prefix_with_ports("192.168.2.0/24", 8080, 8090),
+        ]);
         assert_eq!(
-            result,
+            claims,
             ReserveSets {
-                tcp: PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)]),
-                udp: PrefixPortsSet::default()
+                tcp: expected.clone(),
+                udp: expected,
             }
         );
     }
 
+    // Two exposes forwarding different private ranges onto one public range describe one claim.
     #[test]
-    fn find_masquerade_portfw_overlap_duplicates_collapsed() {
-        // Two port-forwarding exposes with the same prefix should produce one entry
-        let expose = VpcExpose::empty()
-            .make_masquerade(None)
-            .unwrap()
-            .ip("10.0.0.0/16".into())
-            .as_range("192.168.0.0/24".into())
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_expose1 = VpcExpose::empty()
-            .make_port_forwarding(None, None)
-            .unwrap()
-            .ip(prefix_with_ports("10.0.1.0/24", 8080, 8090))
-            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_expose2 = VpcExpose::empty()
-            .make_port_forwarding(None, None)
-            .unwrap()
-            .ip(prefix_with_ports("10.0.1.0/24", 8080, 8090))
-            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
-            .unwrap()
-            .validate()
-            .unwrap();
-        let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
-        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
-        assert_eq!(
-            result,
-            ReserveSets {
-                tcp: PrefixPortsSet::from([prefix_with_ports("10.0.1.0/24", 8080, 8090)]),
-                udp: PrefixPortsSet::from([prefix_with_ports("10.0.1.0/24", 8080, 8090)]),
-            }
-        );
+    fn duplicate_public_claims_collapse() {
+        let claims = claims_of(&[
+            port_forwarding("10.0.1.0/24", "192.168.1.0/24", None),
+            port_forwarding("10.0.2.0/24", "192.168.1.0/24", None),
+        ]);
+        assert_eq!(claims.tcp.len(), 1);
+        assert_eq!(claims.udp.len(), 1);
     }
 }

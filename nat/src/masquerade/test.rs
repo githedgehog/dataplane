@@ -329,6 +329,69 @@ fn build_overlay_2vpcs_modified() -> Overlay {
     Overlay::new(vpc_table, peering_table)
 }
 
+// Two source VPCs using the *same* private prefix, both masquerading towards VPC-3 and each onto
+// a public range of its own. Tenants reusing private address space is ordinary, and is much of
+// what NAT is for, so a private address only identifies a pool together with the VPC it belongs
+// to.
+fn build_overlay_shared_private_prefix() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-3", "CCCCC", 300).expect("Failed to add VPC"));
+
+    let expose13 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("2.2.0.0/16".into())
+        .unwrap();
+    // The same private space as VPC-1, onto a different public range.
+    let expose23 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("4.4.0.0/16".into())
+        .unwrap();
+
+    let peering13 = VpcPeering::with_default_group(
+        "VPC-1--VPC-3",
+        VpcManifest::new("VPC-1").exposing(expose13),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+    let peering23 = VpcPeering::with_default_group(
+        "VPC-2--VPC-3",
+        VpcManifest::new("VPC-2").exposing(expose23),
+        VpcManifest::new("VPC-3").exposing(VpcExpose::empty().ip("3.3.3.0/24".into())),
+    );
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering13).expect("Failed to add peering");
+    peering_table.add(peering23).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
+// A TCP packet towards VPC-3, from a given source VPC and private address. A SYN opens a flow;
+// anything else is only translated if one already exists.
+fn tcp_from(src_vni_id: u32, src_ip: &str, syn: bool) -> Packet<TestBuffer> {
+    let mut packet = build_test_tcp_ipv4_packet(src_ip, "3.3.3.1", 4321, 80);
+    {
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_syn(syn);
+        tcp.set_ack(false);
+        tcp.set_fin(false);
+        tcp.set_rst(false);
+    }
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().src_vpcd = Some(vpcd(src_vni_id));
+    packet.meta_mut().set_masquerade(true);
+    packet
+}
+
+fn translated_source(packet: &Packet<TestBuffer>) -> Ipv4Addr {
+    packet.try_ipv4().unwrap().source().inner()
+}
+
 fn check_packet(
     nat: &mut Masquerade,
     src_vni: Vni,
@@ -1638,6 +1701,70 @@ async fn test_masquerade_reconfig_keep_flow() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(flow_table.active_len(), Some(2));
+}
+
+// Two VPCs using the same private address, masquerading towards the same peer. Each has to be
+// given its own public range, and has to keep it across a config change: re-reservation looks the
+// pool up by source VPC as well, so a flow carried over must land back in the pool its own expose
+// describes rather than in the other VPC's.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_masquerade_reconfig_two_vpcs_sharing_a_private_prefix() {
+    let genid = 1;
+    let (flow_table, mut pipeline, mut allocw) =
+        test_setup(genid, &build_overlay_shared_private_prefix());
+
+    // The same private source address, in two different VPCs. The SYN opens the flow; the packet
+    // that creates a flow does not carry it, so a follow-up packet is what shows the flow state.
+    process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", true));
+    process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", true));
+
+    let from_vpc1 = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", false));
+    let from_vpc2 = process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", false));
+
+    let public1 = translated_source(&from_vpc1);
+    let public2 = translated_source(&from_vpc2);
+    assert_eq!(
+        public1.octets()[0..2],
+        [2, 2],
+        "VPC-1 was not masqueraded onto the range its own expose declares, got {public1}"
+    );
+    assert_eq!(
+        public2.octets()[0..2],
+        [4, 4],
+        "VPC-2 was not masqueraded onto the range its own expose declares, got {public2}"
+    );
+    assert_eq!(flow_genid(&from_vpc1).unwrap(), genid);
+    assert_eq!(flow_genid(&from_vpc2).unwrap(), genid);
+
+    // Apply an identical config. Nothing is re-reserved: `MasqueradeConfig`'s equality leaves
+    // genid out, so the writer keeps the allocator it has and only upgrades the flows onto the new
+    // genid. What this pins is that the two flows come through that untouched, still told apart by
+    // source VPC. Carrying flows into a *new* allocator is a different path, and reaching it takes
+    // a config that actually differs.
+    let overlay = build_overlay_shared_private_prefix().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table(), genid + 1);
+    allocw.update_nat_allocator(nat_config, &flow_table);
+
+    // Both survive, each still translated exactly as before.
+    let from_vpc1 = process_packet(&mut pipeline, tcp_from(100, "1.1.0.1", false));
+    let from_vpc2 = process_packet(&mut pipeline, tcp_from(200, "1.1.0.1", false));
+
+    assert_eq!(
+        translated_source(&from_vpc1),
+        public1,
+        "VPC-1's flow did not keep its public address across the config change"
+    );
+    assert_eq!(
+        translated_source(&from_vpc2),
+        public2,
+        "VPC-2's flow did not keep its public address across the config change"
+    );
+    assert_eq!(flow_genid(&from_vpc1).unwrap(), genid + 1);
+    assert_eq!(flow_genid(&from_vpc2).unwrap(), genid + 1);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(4));
 }
 
 #[tokio::test]

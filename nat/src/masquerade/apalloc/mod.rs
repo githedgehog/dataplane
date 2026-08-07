@@ -103,6 +103,7 @@ mod natip_with_bitmap;
 mod pool_fuzz;
 mod port_alloc;
 mod region;
+mod reserved;
 mod setup;
 mod test_alloc;
 

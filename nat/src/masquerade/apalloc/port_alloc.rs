@@ -10,6 +10,7 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
+use super::reserved::{IANA_WELLKNOWN_PORT_LIMIT, PortClaims};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use concurrency::concurrency_mode;
@@ -85,20 +86,13 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     current_alloc_index: AtomicUsize,
     thread_blocks: ThreadPortMap,
     allocated_blocks: AllocatedPortBlockMap<I>,
-    reserved_port_range: Option<PortRange>,
+    reserved_ports: PortClaims,
     exclude_wellknown_ports: bool,
 }
 
-/// Ports 0..=1023 cover the IANA system/well-known range and should not be
-/// allocated by masquerade NAT for TCP or UDP.
-const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
-
-/// Number of 256-port blocks covering the IANA well-known port range (0-1023).
-const IANA_WELLKNOWN_BLOCKS: u16 = IANA_WELLKNOWN_PORT_LIMIT / 256;
-
 impl<I: NatIpWithBitmap> PortAllocator<I> {
     pub(crate) fn new(
-        reserved_port_range: Option<PortRange>,
+        reserved_ports: PortClaims,
         randomize: bool,
         exclude_wellknown_ports: bool,
     ) -> Self {
@@ -111,39 +105,49 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         if randomize {
             Self::shuffle_slice(&mut base_ports);
         }
-        let blocks = std::array::from_fn(|i| {
+        let blocks: [AllocatorPortBlock; 256] = std::array::from_fn(|i| {
             let block = AllocatorPortBlock::new(base_ports[i]);
-            // Pre-mark IANA well-known port blocks (0-1023) as permanently non-free so they are
-            // never handed out by masquerade NAT for TCP or UDP.
-            if exclude_wellknown_ports && block.to_port_number() < IANA_WELLKNOWN_PORT_LIMIT {
+            let base = block.to_port_number();
+            // Mark the blocks masquerade can never draw from as permanently non-free: the IANA
+            // well-known range (0-1023) for TCP and UDP, and any block port forwarding has claimed
+            // in full. Deciding this once, here, is what keeps the count of usable blocks honest:
+            // a block ruled out later would be marked non-free without ever being counted out.
+            if reserved_ports.block_is_unusable(base, exclude_wellknown_ports) {
                 block
                     .free
                     .store(false, concurrency::sync::atomic::Ordering::Relaxed);
             }
             block
         });
-        let usable_blocks = if exclude_wellknown_ports {
-            256 - IANA_WELLKNOWN_BLOCKS
-        } else {
-            256
-        };
+        // Counted from the blocks themselves rather than assumed, so the two cannot disagree.
+        let usable_blocks = u16::try_from(
+            blocks
+                .iter()
+                .filter(|block| {
+                    block
+                        .free
+                        .load(concurrency::sync::atomic::Ordering::Relaxed)
+                })
+                .count(),
+        )
+        .unwrap_or(u16::MAX);
         Self {
             blocks,
             usable_blocks: AtomicU16::new(usable_blocks),
             current_alloc_index: AtomicUsize::new(0),
             thread_blocks: ThreadPortMap::new(),
             allocated_blocks: AllocatedPortBlockMap::new(),
-            reserved_port_range,
+            reserved_ports,
             exclude_wellknown_ports,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn new_no_randomness(
-        reserved_port_range: Option<PortRange>,
+        reserved_ports: PortClaims,
         exclude_wellknown_ports: bool,
     ) -> Self {
-        Self::new(reserved_port_range, false, exclude_wellknown_ports)
+        Self::new(reserved_ports, false, exclude_wellknown_ports)
     }
 
     #[concurrency_mode(std)]
@@ -194,13 +198,19 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // finding a weak reference that won't upgrade. Removing here would require an additional
         // lookup in the list.
         //
-        // TODO: Should we move usable_blocks and blocks into a lock-protected struct? Or adjust the
-        // ordering for the atomic operations?
+        // TODO: Should we move usable_blocks and blocks into a lock-protected struct?
+        //
+        // The count is given back before the flag, and the order matters. A claimant subtracts
+        // from the count only after winning the flag, so raising the flag first leaves a window in
+        // which the count is still short by this block and someone else's subtraction takes it
+        // below zero -- on a `u16`, to 65535, which says the address has room it does not have.
+        // This way round the count is briefly one too high instead, which only says an address has
+        // room a moment before it truly does.
+        self.usable_blocks
+            .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
         self.blocks[index]
             .free
             .store(true, concurrency::sync::atomic::Ordering::Relaxed);
-        self.usable_blocks
-            .fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
     }
 
     fn has_allocated_blocks_with_free_ports(&self) -> bool {
@@ -208,13 +218,17 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     }
 
     // Find an available block to allocate ports from, and mark it as non-free.
+    //
+    // The blocks masquerade may never draw from, the well-known range and those port forwarding
+    // has claimed in full, were marked non-free when the allocator was built, so taking the first
+    // block whose flag can be claimed is the whole of the decision.
     fn pick_available_block(&self) -> Result<(usize, u16), AllocatorError> {
-        // Find the first free block in the list, starting from the current self.current_alloc_index
+        // Starting from the current self.current_alloc_index, take the first block for which the
+        // atomic compare_exchange succeeds.
         let (index, block) = self
             .cycle_blocks()
             .find(|(_, block)| {
-                // Find the first block for which the atomic compare_exchange succeeds
-                if block
+                block
                     .free
                     .compare_exchange(
                         true,
@@ -222,30 +236,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
                         concurrency::sync::atomic::Ordering::Relaxed,
                         concurrency::sync::atomic::Ordering::Relaxed,
                     )
-                    .is_err()
-                {
-                    return false;
-                }
-
-                // Check if this block is fully contained in the reserved range
-                if let Some(reserved_range) = self.reserved_port_range
-                    && reserved_range.len() >= 255
-                {
-                    // Corner case: reserved_range is 1-255+, but 0 cannot be allocated so
-                    // reserved_range effectively renders the block unusable (except maybe for ICMP
-                    // but never mind)
-                    let adjusted_reserved_range = if reserved_range.start() == 1 {
-                        PortRange::new(0, reserved_range.end()).unwrap_or_else(|_| unreachable!())
-                    } else {
-                        reserved_range
-                    };
-
-                    let block_range = PortRange::from(*block);
-                    if adjusted_reserved_range.covers(block_range) {
-                        return false;
-                    }
-                }
-                true
+                    .is_ok()
             })
             .ok_or(AllocatorError::NoPortBlock)?;
         Ok((index, block.to_port_number()))
@@ -269,20 +260,18 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
-        let reserved_port_range_for_block = self.reserved_port_range.and_then(|range| {
-            range.intersection(
-                PortRange::new(base_port_index, base_port_index + 255)
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-        });
+        // Clip the claims to this block before they reach its bitmap, which indexes ports modulo
+        // 256 and cannot represent a range reaching past the block's end.
+        let reserved_for_block: Vec<PortRange> =
+            self.reserved_ports.within_block(base_port_index).collect();
 
-        AllocatedPortBlock::new(
-            ip,
-            index,
-            base_port_index,
-            reserved_port_range_for_block,
-            allow_null,
-        )
+        // Building the block is the last thing that can fail, and by here its flag is taken and
+        // the count is down. Nothing would give either back: no `Arc` exists yet, so no `Drop` is
+        // coming, and the block would sit claimed by nobody for the life of the allocator. Only
+        // reachable through an `InternalIssue` that should not happen, which is exactly the sort
+        // of thing that turns one bad block into a slow leak.
+        AllocatedPortBlock::new(ip, index, base_port_index, &reserved_for_block, allow_null)
+            .inspect_err(|_| self.deallocate_block(index))
     }
 
     pub(crate) fn allocate_port(
@@ -341,16 +330,31 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
     ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
-        let block = Arc::new(AllocatedPortBlock::new(
-            ip,
-            index,
-            (port.as_u16() / 256) * 256, // port block base index, discard offset within block
-            None,
-            allow_null,
-        )?);
+        let base_port_index = (port.as_u16() / 256) * 256; // discard the offset within the block
+        // A block entering the allocator through a reservation serves later allocations like any
+        // other, so it carries the same claims, clipped to it.
+        let reserved_for_block: Vec<PortRange> =
+            self.reserved_ports.within_block(base_port_index).collect();
+        // As in `allocate_block`: the flag is already taken and the count already down, and only
+        // a `Drop` gives them back. There is no `Arc` to drop if this fails.
+        let block = Arc::new(
+            AllocatedPortBlock::new(ip, index, base_port_index, &reserved_for_block, allow_null)
+                .inspect_err(|_| self.deallocate_block(index))?,
+        );
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
         Ok(block)
+    }
+
+    // Whether the block holding this port is one masquerade may never draw from, and so was marked
+    // non-free when the allocator was built without ever having been allocated.
+    //
+    // Mirrors the condition in `new`, and has to keep mirroring it: a block ruled out there but not
+    // recognized here is taken for a live allocation that has gone missing.
+    fn block_is_excluded(&self, port: NatPort) -> bool {
+        let base = (port.as_u16() / 256) * 256;
+        self.reserved_ports
+            .block_is_unusable(base, self.exclude_wellknown_ports)
     }
 
     fn find_block_for_port(
@@ -363,16 +367,30 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         if block_was_free {
             return self.allocate_block_for_reservation(ip, index, port, allow_null);
         }
-        self.allocated_blocks
-            .search_for_block(port)
-            // Block was not free but is not in the list of allocated blocks either??
-            //
-            // FIXME: This can legitimately happen if the block was released just after we checked
-            // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
-            // lock around the PortAllocator?
-            .ok_or(AllocatorError::InternalIssue(
-                "Block not free, although absent from list of allocated blocks".to_string(),
-            ))
+        if let Some(block) = self.allocated_blocks.search_for_block(port) {
+            return Ok(block);
+        }
+        // A block masquerade may never draw from never joins the list of allocated blocks, so its
+        // absence from that list says nothing about the bookkeeping. Port forwarding claiming a
+        // block in full is the way to reach this from a configuration: a flow carried across a
+        // config change may hold a port in a block the new configuration has claimed.
+        //
+        // Answer as a claim on part of the same block does, where the block is allocatable and its
+        // own bitmap refuses the port. How much of a block an operator happened to claim is not
+        // something the caller should be able to tell apart, and it is certainly not the difference
+        // between a policy conflict and a broken allocator.
+        if self.block_is_excluded(port) {
+            debug!("Port {port} lies in a block that port forwarding has claimed in full");
+            return Err(AllocatorError::PortReservationFailed(port.as_u16()));
+        }
+        // Block was not free but is not in the list of allocated blocks either??
+        //
+        // FIXME: This can legitimately happen if the block was released just after we checked
+        // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
+        // lock around the PortAllocator?
+        Err(AllocatorError::InternalIssue(
+            "Block not free, although absent from list of allocated blocks".to_string(),
+        ))
     }
 
     pub(crate) fn reserve_port(
@@ -383,7 +401,15 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // Reject explicit reservations into the IANA system/well-known range up front so callers
         // get a policy-oriented error rather than a misleading resource-exhaustion error from the
         // pre-excluded low-port blocks.
-        if self.exclude_wellknown_ports && port.as_u16() < IANA_WELLKNOWN_PORT_LIMIT {
+        //
+        // The range is a port-number convention, so it says nothing about an ICMP identifier,
+        // which is drawn from the whole 16 bits. Identifiers cannot meet this today -- ICMP pools
+        // are built with the exclusion off -- but that is decided in `setup.rs`, and a reader here
+        // would have to go and find it to know a low identifier is not silently denied.
+        if self.exclude_wellknown_ports
+            && !matches!(port, NatPort::Identifier(_))
+            && port.as_u16() < IANA_WELLKNOWN_PORT_LIMIT
+        {
             debug!("Explicit reservation for well-known port {port} denied by allocator policy");
             return Err(AllocatorError::Denied);
         }
@@ -391,8 +417,8 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         block.reserve_port_from_block(port)
     }
 
-    pub(crate) fn reserved_port_range(&self) -> Option<PortRange> {
-        self.reserved_port_range
+    pub(crate) fn reserved_ports(&self) -> &PortClaims {
+        &self.reserved_ports
     }
 
     // Used for Display
@@ -427,7 +453,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         ip: Arc<AllocatedIp<I>>,
         index: usize,
         base_port_idx: u16,
-        reserved_port_range: Option<PortRange>,
+        reserved_ports: &[PortRange],
         allow_null: bool,
     ) -> Result<Self, AllocatorError> {
         let block = Self {
@@ -438,8 +464,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         };
         // Port 0 may be reserved, in which case we don't want to use it, so we mark it as not free.
         let reserve_zero = !allow_null && block.base_port_idx == 0;
-        let reserve_range = reserved_port_range.is_some();
-        if reserve_zero || reserve_range {
+        if reserve_zero || !reserved_ports.is_empty() {
             let mut mutex_guard = block.usage_bitmap.lock();
             if reserve_zero {
                 mutex_guard.reserve_port_from_bitmap(0).map_err(|()| {
@@ -448,12 +473,11 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
                     )
                 })?;
             }
-            if reserve_range {
+            // Reserving in the bitmap is an OR, so claims that overlap each other, or that
+            // overlap port 0 reserved just above, are harmless in any order.
+            for claim in reserved_ports {
                 mutex_guard
-                    .reserve_port_range_from_bitmap(
-                        // We just check that reserved_port_range.is_some()
-                        reserved_port_range.unwrap_or_else(|| unreachable!()),
-                    )
+                    .reserve_port_range_from_bitmap(*claim)
                     .map_err(|()| {
                         AllocatorError::InternalIssue(
                             "Failed to reserve port range from new block".to_string(),
@@ -1257,7 +1281,7 @@ mod tests {
 
     #[test]
     fn pick_available_block_no_reserved_range() {
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, false);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(PortClaims::default(), false);
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 0);
         assert_eq!(base_port, 0);
@@ -1267,7 +1291,8 @@ mod tests {
     fn pick_available_block_reserved_range_covers_first_block() {
         // Reserve 0..=255 (entire first block) → should skip to block 1 (ports 256-511)
         let reserved = PortRange::new(0, 255).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 1);
         assert_eq!(base_port, 256);
@@ -1279,7 +1304,8 @@ mod tests {
         // be allocated anyway, so the block is effectively unusable. The code adjusts the
         // reserved range to start at 0, causing the block to be skipped.
         let reserved = PortRange::new(1, 255).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 1);
         assert_eq!(base_port, 256);
@@ -1289,7 +1315,8 @@ mod tests {
     fn pick_available_block_reserved_range_covers_multiple_blocks() {
         // Reserve 0..=511 (first two blocks) → should skip to block 2 (ports 512-767)
         let reserved = PortRange::new(0, 511).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 2);
         assert_eq!(base_port, 512);
@@ -1299,7 +1326,8 @@ mod tests {
     fn pick_available_block_reserved_range_does_not_cover_other_blocks() {
         // Reserve 0..=255 only covers block 0, block 1 is unaffected
         let reserved = PortRange::new(0, 255).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         // First pick skips block 0, gets block 1
         let (_, base_port1) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port1, 256);
@@ -1313,7 +1341,8 @@ mod tests {
         // Reserve 1..=200 (len 200 < 255) → block is NOT skipped entirely, individual ports
         // are reserved within the block instead
         let reserved = PortRange::new(1, 200).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 0);
         assert_eq!(base_port, 0);
@@ -1323,7 +1352,8 @@ mod tests {
     fn pick_available_block_reserved_middle_block() {
         // Reserve 256..=511 (block 1 only) → block 0 is fine, block 1 is skipped
         let reserved = PortRange::new(256, 511).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         // First pick: block 0
         let (_, base_port1) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port1, 0);
@@ -1336,7 +1366,8 @@ mod tests {
     fn pick_available_block_all_blocks_reserved() {
         // Reserve 0..=65535 (all blocks) → NoPortBlock error
         let reserved = PortRange::new(0, 65535).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), false);
         assert!(allocator.pick_available_block().is_err());
     }
 
@@ -1467,7 +1498,7 @@ mod tests {
     fn exclude_wellknown_ports_first_available_block_is_1024() {
         // With no randomness and IANA exclusion, blocks 0-3 (ports 0-1023) are pre-marked
         // non-free, so the first block handed out should start at port 1024.
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, true);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(PortClaims::default(), true);
         let (_, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port, 1024);
     }
@@ -1476,7 +1507,7 @@ mod tests {
     fn exclude_wellknown_ports_all_252_blocks_are_above_1023() {
         // Exactly 252 blocks (256 - 4 IANA blocks) should be allocatable; every one should
         // start at port >= 1024. The 253rd attempt should fail with NoPortBlock.
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, true);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(PortClaims::default(), true);
         for _ in 0..252 {
             let (_, base_port) = allocator.pick_available_block().unwrap();
             assert!(
@@ -1490,7 +1521,7 @@ mod tests {
     #[test]
     fn exclude_wellknown_ports_disabled_starts_at_port_zero() {
         // Sanity check: without the flag, block 0 (port 0) is returned first.
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, false);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(PortClaims::default(), false);
         let (_, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port, 0);
     }
@@ -1498,7 +1529,8 @@ mod tests {
     #[test]
     fn exclude_wellknown_ports_combined_with_reserved_range() {
         let reserved = PortRange::new(2048, 2303).unwrap(); // entire block 8
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), true);
+        let allocator =
+            PortAllocator::<Ipv4Addr>::new_no_randomness([reserved].into_iter().collect(), true);
 
         let (_, b0) = allocator.pick_available_block().unwrap();
         assert_eq!(b0, 1024); // block 4
