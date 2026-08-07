@@ -225,16 +225,51 @@ let
   # does, the test VM is software-emulated (TCG) rather than KVM-accelerated.
   is-cross-guest = platform'.arch != host-arch;
 
-  # The bootable kernel image filename for the guest architecture.
-  # x86_64 produces a `bzImage`; aarch64 produces a raw `Image`.  These
-  # match the paths in `n_vm::Arch::kernel_image_path`.
+  # The bootable kernel image filename as linux-fancy emits it.
+  # x86_64 produces a `bzImage`; aarch64 produces a raw `Image`.  Both are
+  # installed into the manifest as `vmlinuz`, so nothing downstream has to
+  # care which one this build produced.
   kernel-image-name = if platform'.arch == "aarch64" then "Image" else "bzImage";
 
-  # Minimal derivation containing only the bootable kernel image.
+  # Guest architecture as spelled in the kernel manifest.  Must match
+  # `n_vm::Arch::manifest_name`.
+  kernel-manifest-arch = if platform'.arch == "aarch64" then "aarch64" else "x86_64";
+
+  # Name of the kernel profile built from our own config fragments.
+  #
+  # "union" because it carries the union of what the whole test suite needs
+  # -- today from the hand-maintained fragment list in
+  # nix/overlays/dataplane-dev.nix, later from the requirements the tests
+  # themselves declare.  The profile's identity does not change when that
+  # switch happens, only how its fragment list is produced.
+  kernel-profile-name = "union";
+
+  # nix's declaration of which guest kernels exist, read by the container
+  # tier (see `n_vm::kernel_manifest`).
+  #
+  # This is the seam that keeps `cargo` from ever having to invoke `nix`:
+  # the artifacts are materialized first (`just setup-roots`), and the tests
+  # only read them.  Paths are container-absolute because the container tier
+  # is what consumes them -- every first-level `testroot` entry is
+  # bind-mounted at the container root, so `kernels/` lands at `/kernels`.
+  kernel-manifest = builtins.toJSON {
+    default = kernel-profile-name;
+    profiles.${kernel-profile-name} = {
+      arch = kernel-manifest-arch;
+      # This kernel has virtiofs built in, so it mounts its own root and
+      # needs no initramfs.  A kernel with virtiofs as a module cannot, and
+      # would be `"initramfs"` here.
+      boot = "direct";
+      kernel = "/kernels/${kernel-profile-name}/vmlinuz";
+    };
+  };
+
+  # Minimal derivation containing the bootable kernel image and the
+  # manifest describing it.
   #
   # The full linux-fancy output includes modules, headers, etc. that are
   # not needed inside the test container -- we extract just the bootable
-  # image so that symlinkJoin produces a top-level image entry in testroot
+  # image so that symlinkJoin produces the `kernels/` tree in testroot
   # without pulling in the rest of the kernel tree.
   #
   # IMPORTANT: this is `pkgs.linux-fancy` (the *host*-platform kernel), not
@@ -243,8 +278,11 @@ let
   # native build the two package sets coincide, so this is a no-op for
   # x86_64; for a cross build it selects the aarch64 kernel.
   kernel-image = pkgs.runCommand "kernel-image" { } ''
-    mkdir -p $out
-    cp ${pkgs.linux-fancy}/${kernel-image-name} $out/${kernel-image-name}
+    mkdir -p $out/kernels/${kernel-profile-name}
+    cp ${pkgs.linux-fancy}/${kernel-image-name} \
+      $out/kernels/${kernel-profile-name}/vmlinuz
+    cp ${pkgs.writeText "n-vm-manifest.json" kernel-manifest} \
+      $out/n-vm-manifest.json
   '';
 
   # The QEMU system emulator for the test VM, always a build-native (host

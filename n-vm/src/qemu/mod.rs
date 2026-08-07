@@ -670,7 +670,7 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
 
     args.extend([
         "-kernel".into(),
-        params.arch.kernel_image_path().into(),
+        params.kernel_image.clone(),
         "-append".into(),
         cmdline,
     ]);
@@ -924,10 +924,17 @@ mod tests {
             test_name: "module::test_name",
             vm_config: config::VmConfig::default(),
             arch: config::Arch::X86_64,
+            kernel_image: SAMPLE_KERNEL.to_owned(),
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
     }
+
+    /// A stand-in for whatever the kernel manifest resolved to.  The point
+    /// of threading the path through [`TestVmParams`] is that this lowering
+    /// no longer knows or cares which kernel it is, so the test asserts the
+    /// path is forwarded rather than that it has any particular value.
+    const SAMPLE_KERNEL: &str = "/kernels/union/vmlinuz";
 
     // -- Machine and CPU ----------------------------------------------
 
@@ -1084,11 +1091,11 @@ mod tests {
     // -- Kernel -------------------------------------------------------
 
     #[test]
-    fn kernel_args_use_kernel_image_path() {
+    fn kernel_args_use_resolved_kernel_image() {
         let mut args = Vec::new();
         push_kernel_args(&mut args, &sample_params());
         let idx = args.iter().position(|a| a == "-kernel").unwrap();
-        assert_eq!(args[idx + 1], config::Arch::X86_64.kernel_image_path());
+        assert_eq!(args[idx + 1], SAMPLE_KERNEL);
     }
 
     #[test]

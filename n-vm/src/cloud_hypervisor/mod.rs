@@ -309,7 +309,7 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
 fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
     PayloadConfig {
         firmware: None,
-        kernel: Some(params.arch.kernel_image_path().into()),
+        kernel: Some(params.kernel_image.clone()),
         cmdline: Some(config::build_kernel_cmdline(
             &params.vm_bin_path,
             params.test_name,
@@ -516,21 +516,25 @@ mod tests {
             test_name: "tests::my_test",
             vm_config: config::VmConfig::default(),
             arch: config::Arch::X86_64,
+            kernel_image: SAMPLE_KERNEL.to_owned(),
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
     }
 
+    /// A stand-in for whatever the kernel manifest resolved to.  The point
+    /// of threading the path through [`TestVmParams`] is that this lowering
+    /// no longer knows or cares which kernel it is, so the test asserts the
+    /// path is forwarded rather than that it has any particular value.
+    const SAMPLE_KERNEL: &str = "/kernels/union/vmlinuz";
+
     // -- Payload config -----------------------------------------------
 
     #[test]
-    fn payload_config_uses_kernel_image_path() {
+    fn payload_config_uses_resolved_kernel_image() {
         let params = sample_params();
         let payload = build_payload_config(&params);
-        assert_eq!(
-            payload.kernel.as_deref(),
-            Some(config::Arch::X86_64.kernel_image_path()),
-        );
+        assert_eq!(payload.kernel.as_deref(), Some(SAMPLE_KERNEL));
     }
 
     #[test]
