@@ -465,6 +465,7 @@ mod chain_properties {
         static VALIDATED: AtomicUsize = AtomicUsize::new(0);
         static VPCS: AtomicUsize = AtomicUsize::new(0);
         static PEERINGS: AtomicUsize = AtomicUsize::new(0);
+        static ACLS: AtomicUsize = AtomicUsize::new(0);
 
         bolero::check!()
             .with_type::<LegalValue<GatewayAgent>>()
@@ -483,6 +484,14 @@ mod chain_properties {
                             .sum::<usize>(),
                         Ordering::Relaxed,
                     );
+                    ACLS.fetch_add(
+                        table
+                            .values()
+                            .flat_map(|vpc| vpc.peerings())
+                            .filter(|peering| peering.acl().is_some())
+                            .count(),
+                        Ordering::Relaxed,
+                    );
                 }
             });
 
@@ -490,7 +499,10 @@ mod chain_properties {
         let validated = VALIDATED.load(Ordering::Relaxed);
         let vpcs = VPCS.load(Ordering::Relaxed);
         let peerings = PEERINGS.load(Ordering::Relaxed);
-        println!("{validated}/{seen} validated, carrying {vpcs} vpcs and {peerings} peerings");
+        let acls = ACLS.load(Ordering::Relaxed);
+        println!(
+            "{validated}/{seen} validated, carrying {vpcs} vpcs, {peerings} peerings, {acls} acls"
+        );
         assert!(seen > 0, "no configurations were generated");
         assert!(
             validated * 2 >= seen,
@@ -501,7 +513,12 @@ mod chain_properties {
         assert!(
             peerings > 0,
             "no validated configuration carries a peering, so nothing downstream of validation \
-             has seen the exposes, the NAT or the ACLs"
+             has seen the exposes or the NAT"
+        );
+        assert!(
+            acls * 2 >= validated,
+            "only {acls} of {validated} validated configurations carry an ACL: most generated ACLs \
+             are being refused for something other than what they say"
         );
     }
 
