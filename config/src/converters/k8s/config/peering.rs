@@ -91,6 +91,7 @@ mod test {
     use k8s_intf::bolero::peering::{
         LegalValuePeeringsGenerator, LegalValuePeeringsPeeringGenerator,
     };
+    use k8s_intf::bolero::{AddressFamily, NatFlavour};
     use lpm::prefix::Prefix;
 
     use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
@@ -98,7 +99,11 @@ mod test {
     #[test]
     fn test_vpc_manifest_conversion() {
         let subnets = SubnetMap::new(); // Let this be empty since we are test subnet conversion elsewhere
-        let generator = LegalValuePeeringsPeeringGenerator::new(&subnets);
+        // any flavour, one family, a couple of exposes: this is testing the conversion, not the
+        // rules the generators satisfy
+        let flavours = NatFlavour::all();
+        let generator =
+            LegalValuePeeringsPeeringGenerator::new(&subnets, &flavours, AddressFamily::V4, 3);
         bolero::check!()
             .with_generator(generator)
             .for_each(|peering| {
@@ -169,7 +174,11 @@ mod test {
                 ]),
             ),
         ]);
-        let generator = LegalValuePeeringsGenerator::new(&subnets).unwrap();
+        let flavours = NatFlavour::all();
+        let families = AddressFamily::all();
+        let groups = vec!["gwgroup-0".to_string()];
+        let generator =
+            LegalValuePeeringsGenerator::new(&subnets, &flavours, &families, 3, &groups).unwrap();
         bolero::check!()
             .with_generator(generator)
             .for_each(|peering| {
