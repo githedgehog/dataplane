@@ -39,7 +39,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
         let num_ips = d.gen_u16(Bound::Included(&1), Bound::Included(&16))?;
         let num_nots = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
-        let num_subnets = std::cmp::max(
+        let num_subnets = std::cmp::min(
             self.subnets.len(),
             d.gen_usize(Bound::Included(&0), Bound::Included(&16))?,
         );
@@ -47,15 +47,11 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         let num_as = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
         let num_as_not = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
 
-        let num_v4_ips = d.gen_u16(Bound::Included(&0), Bound::Included(&num_ips))?;
-        let num_v6_ips = num_ips - num_v4_ips;
-        let num_v4_nots = d.gen_u16(Bound::Included(&0), Bound::Included(&num_nots))?;
-        let num_v6_nots = num_nots - num_v4_nots;
-
-        let num_v4_as = d.gen_u16(Bound::Included(&0), Bound::Included(&num_as))?;
-        let num_v6_as = num_as - num_v4_as;
-        let num_v4_not_as = d.gen_u16(Bound::Included(&0), Bound::Included(&num_as_not))?;
-        let num_v6_not_as = num_as_not - num_v4_not_as;
+        let v4 = d.produce::<bool>()?;
+        let (num_v4_ips, num_v6_ips) = if v4 { (num_ips, 0) } else { (0, num_ips) };
+        let (num_v4_nots, num_v6_nots) = if v4 { (num_nots, 0) } else { (0, num_nots) };
+        let (num_v4_as, num_v6_as) = if v4 { (num_as, 0) } else { (0, num_as) };
+        let (num_v4_not_as, num_v6_not_as) = if v4 { (num_as_not, 0) } else { (0, num_as_not) };
 
         let ips = generate_prefixes(d, num_v4_ips, num_v6_ips)?
             .into_iter()
@@ -87,7 +83,10 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             });
 
         let mut subnets = Vec::new();
-        let mut subnet_iter = self.subnets.iter();
+        let mut subnet_iter = self
+            .subnets
+            .iter()
+            .filter(|(_, prefix)| prefix.is_ipv4() == v4);
         for _ in 0..num_subnets {
             let Some((name, _)) = subnet_iter.next() else {
                 break;
