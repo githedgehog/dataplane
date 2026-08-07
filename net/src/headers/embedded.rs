@@ -22,6 +22,7 @@ use crate::udp::{TruncatedUdp, UdpChecksum, UdpPort};
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use derive_builder::Builder;
+use std::net::IpAddr;
 use std::num::NonZero;
 
 #[cfg(any(test, feature = "bolero"))]
@@ -612,38 +613,63 @@ impl EmbeddedTransport {
     pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = tcp.increment_update_checksum(
+                let updated = tcp.increment_update_checksum(
                     TcpChecksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = tcp.set_checksum(updated);
             }
             EmbeddedTransport::Udp(udp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = udp.increment_update_checksum(
+                let updated = udp.increment_update_checksum(
                     UdpChecksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = udp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp4(icmp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = icmp.increment_update_checksum(
+                let updated = icmp.increment_update_checksum(
                     Icmp4Checksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = icmp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp6(icmp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = icmp.increment_update_checksum(
+                let updated = icmp.increment_update_checksum(
                     Icmp6Checksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = icmp.set_checksum(updated);
             }
         }
+    }
+
+    pub fn update_checksum_for_address(&mut self, old: IpAddr, new: IpAddr) {
+        if matches!(self, EmbeddedTransport::Icmp4(_)) {
+            return;
+        }
+        if old.is_ipv4() != new.is_ipv4() {
+            return;
+        }
+        for (old_word, new_word) in address_words(old).into_iter().zip(address_words(new)) {
+            let Some(current) = self.checksum() else {
+                return;
+            };
+            self.update_checksum(current, old_word, new_word);
+        }
+    }
+}
+
+fn address_words(addr: IpAddr) -> ArrayVec<u16, 8> {
+    match addr {
+        IpAddr::V4(addr) => {
+            let [a, b, c, d] = addr.octets();
+            ArrayVec::from_iter([u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])])
+        }
+        IpAddr::V6(addr) => ArrayVec::from(addr.segments()),
     }
 }
 
@@ -1377,6 +1403,173 @@ mod tests {
 
         // Before calling check_full_payload, should be false
         assert!(!headers.is_full_payload());
+    }
+
+    mod address_folding {
+        use super::*;
+        use crate::icmp4::{Icmp4, Icmp4EchoRequest, Icmp4Type};
+        use crate::ip::NextHeader;
+        use crate::ipv4::UnicastIpv4Addr;
+        use crate::ipv6::UnicastIpv6Addr;
+        use crate::parse::Parse;
+        use crate::tcp::{Tcp, TcpChecksumPayload};
+        use crate::udp::{UdpChecksumPayload, UdpPort};
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        const PAYLOAD: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+        fn v4_net(source: Ipv4Addr, next_header: NextHeader) -> Net {
+            let mut ip = Ipv4::default();
+            ip.set_source(UnicastIpv4Addr::new(source).unwrap_or_else(|_| unreachable!()))
+                .set_destination(Ipv4Addr::new(192, 168, 1, 2))
+                .set_next_header(next_header);
+            Net::Ipv4(ip)
+        }
+
+        fn v6_net(source: Ipv6Addr, next_header: NextHeader) -> Net {
+            let mut ip = Ipv6::default();
+            ip.set_source(UnicastIpv6Addr::new(source).unwrap_or_else(|_| unreachable!()))
+                .set_destination(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2))
+                .set_next_header(next_header);
+            Net::Ipv6(ip)
+        }
+
+        #[test]
+        fn a_v4_address_change_matches_a_fresh_tcp_checksum() {
+            let (old, new) = (Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(10, 11, 12, 13));
+
+            let mut tcp = Tcp::new(123.try_into().unwrap(), 456.try_into().unwrap());
+            tcp.update_checksum(&TcpChecksumPayload::new(
+                &v4_net(old, NextHeader::TCP),
+                &PAYLOAD,
+            ))
+            .unwrap_or_else(|()| unreachable!());
+
+            let mut quoted = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp.clone()));
+            quoted.update_checksum_for_address(IpAddr::V4(old), IpAddr::V4(new));
+
+            let expected = tcp
+                .compute_checksum(&TcpChecksumPayload::new(
+                    &v4_net(new, NextHeader::TCP),
+                    &PAYLOAD,
+                ))
+                .unwrap_or_else(|()| unreachable!());
+            assert_eq!(quoted.checksum(), Some(u16::from(expected)));
+        }
+
+        #[test]
+        fn a_v6_address_change_matches_a_fresh_udp_checksum() {
+            let old = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+            let new = Ipv6Addr::new(0x2001, 0xdb8, 0xdead, 0xbeef, 1, 2, 3, 4);
+
+            let mut udp = Udp::new(
+                UdpPort::new_checked(123).unwrap(),
+                UdpPort::new_checked(456).unwrap(),
+            );
+            udp.update_checksum(&UdpChecksumPayload::new(
+                &v6_net(old, NextHeader::UDP),
+                &PAYLOAD,
+            ))
+            .unwrap_or_else(|()| unreachable!());
+
+            let mut quoted = EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp.clone()));
+            quoted.update_checksum_for_address(IpAddr::V6(old), IpAddr::V6(new));
+
+            let expected = udp
+                .compute_checksum(&UdpChecksumPayload::new(
+                    &v6_net(new, NextHeader::UDP),
+                    &PAYLOAD,
+                ))
+                .unwrap_or_else(|()| unreachable!());
+            assert_eq!(quoted.checksum(), Some(u16::from(expected)));
+        }
+
+        #[test]
+        fn a_v4_address_change_leaves_an_icmpv4_quote_alone() {
+            let mut icmp =
+                Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 18, seq: 2 }));
+            icmp.update_checksum(&PAYLOAD)
+                .unwrap_or_else(|()| unreachable!());
+
+            let mut quoted = EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp));
+            let before = quoted.checksum();
+            quoted.update_checksum_for_address(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)),
+            );
+            assert_eq!(quoted.checksum(), before);
+        }
+
+        #[test]
+        fn a_quote_too_short_to_hold_a_checksum_is_left_alone() {
+            let bytes = [0x00, 0x7b, 0x01, 0xc8, 0x00, 0x00, 0x00, 0x01];
+            let (parsed, _) = TruncatedTcp::parse(&bytes).unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert!(
+                matches!(parsed, TruncatedTcp::PartialHeader(_)),
+                "eight bytes is a partial header"
+            );
+
+            let mut quoted = EmbeddedTransport::Tcp(parsed);
+            let before = quoted.clone();
+            quoted.update_checksum_for_address(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)),
+            );
+
+            assert_eq!(quoted, before, "a truncated quote must not be rewritten");
+            assert_eq!(quoted.checksum(), None);
+        }
+
+        #[test]
+        fn a_quote_holding_a_checksum_it_cannot_validate_keeps_it() {
+            let mut bytes = [0u8; 18];
+            bytes[0..2].copy_from_slice(&123u16.to_be_bytes());
+            bytes[2..4].copy_from_slice(&456u16.to_be_bytes());
+            bytes[16..18].copy_from_slice(&0xbeef_u16.to_be_bytes());
+
+            let (parsed, _) = TruncatedTcp::parse(&bytes).unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert!(
+                matches!(parsed, TruncatedTcp::PartialHeader(_)),
+                "eighteen bytes is still short of a full header"
+            );
+
+            let mut quoted = EmbeddedTransport::Tcp(parsed);
+            let before = quoted.clone();
+            quoted.update_checksum_for_address(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)),
+            );
+
+            assert_eq!(quoted, before, "the stale checksum ships as received");
+            assert_eq!(quoted.checksum(), None);
+
+            let mut wire = [0u8; 18];
+            quoted
+                .deparse(&mut wire)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert_eq!(
+                u16::from_be_bytes([wire[16], wire[17]]),
+                0xbeef,
+                "the checksum bytes are unchanged on the wire"
+            );
+        }
+
+        #[test]
+        fn a_partial_udp_quote_is_left_alone() {
+            let bytes = [0x00, 0x7b, 0x01, 0xc8, 0x00, 0x08];
+            let (parsed, _) = TruncatedUdp::parse(&bytes).unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert!(matches!(parsed, TruncatedUdp::PartialHeader(_)));
+
+            let mut quoted = EmbeddedTransport::Udp(parsed);
+            let before = quoted.clone();
+            quoted.update_checksum_for_address(
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+            );
+
+            assert_eq!(quoted, before, "a truncated quote must not be rewritten");
+            assert_eq!(quoted.checksum(), None);
+        }
     }
 }
 
