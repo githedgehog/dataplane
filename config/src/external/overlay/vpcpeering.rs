@@ -1167,6 +1167,109 @@ pub mod contract {
         }
     }
 
+    /// Generates [`VpcExpose`]s that use static NAT and that [`VpcExpose::validate`] accepts.
+    ///
+    /// The interesting rule for static NAT is that the two sides must be the same total size while
+    /// being free to have completely different shapes: a `/26` on one side can be answered by four
+    /// `/28`s on the other. That fragmenting is what `RangeBuilder` exists to work out, so the
+    /// generator produces it deliberately -- one total, split independently into a different set
+    /// of prefixes per side.
+    ///
+    /// Sizes stay small so that a property can enumerate every address on both sides rather than
+    /// sampling. Parts are placed largest first from an aligned base, which keeps every prefix
+    /// aligned to its own size and keeps them from overlapping.
+    ///
+    /// No port ranges yet: static NAT permits them, and they take the mapping down a second path
+    /// (`PortAddrTranslationValue` rather than `AddrTranslationValue`) that carries its own
+    /// unfinished work. That path wants a generator of its own.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct StaticNatExpose;
+
+    /// The largest total either side covers, as a power of two. Small enough to enumerate.
+    const MAX_TOTAL_LOG: u8 = 6;
+
+    impl ValueGenerator for StaticNatExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = driver.produce::<bool>()?;
+            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
+            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
+
+            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+            for prefix in privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+            }
+            for prefix in publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    // Split 2^total_log into powers of two, largest first. Halving a part keeps the total the
+    // same, which is what lets the two sides be split independently and still agree.
+    fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
+        let mut parts = vec![total_log];
+        for _ in 0..driver.gen_u8(Included(&0), Included(&3))? {
+            let splittable: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, log)| **log > 0)
+                .map(|(index, _)| index)
+                .collect();
+            if splittable.is_empty() {
+                break;
+            }
+            let choice = usize::from(driver.gen_u8(
+                Included(&0),
+                Included(&u8::try_from(splittable.len() - 1).ok()?),
+            )?);
+            let log = parts.swap_remove(splittable[choice]);
+            parts.push(log - 1);
+            parts.push(log - 1);
+        }
+        parts.sort_unstable_by(|a, b| b.cmp(a));
+        Some(parts)
+    }
+
+    // Lay the parts out from the side's base, largest first, so each lands on a multiple of its
+    // own size and none of them overlap.
+    //
+    // Each part is followed by a gap of its own size. Placed end to end they would be aligned
+    // siblings, and validation normalizes those back into one prefix -- so the shape the generator
+    // worked out to differ between the sides would be collapsed away before anything saw it.
+    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let mut cursor = if v4 {
+            u128::from(match side {
+                Side::Private => 0x0A00_0000u32,
+                Side::Public => 0xAC10_0000,
+            })
+        } else {
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            (0x2001_0db8u128 << 96) | (selector << 80)
+        };
+
+        let mut out = Vec::with_capacity(parts.len());
+        for &log in parts {
+            let prefix = if v4 {
+                prefix_v4(u32::try_from(cursor).ok()?, 32 - log)?
+            } else {
+                prefix_v6(cursor, 128 - log)?
+            };
+            out.push(prefix);
+            cursor += 2u128 << log;
+        }
+        Some(out)
+    }
+
     /// The VNI of the VPC offering the expose in [`overlay_offering`].
     pub const LOCAL_VNI: u32 = 100;
     /// The VNI of the peer it is offered to.
@@ -1311,6 +1414,32 @@ pub mod contract {
                         "could not build an overlay around {shown}"
                     );
                 });
+        }
+
+        /// The static NAT generator's cases validate, and the two sides really do differ in shape.
+        ///
+        /// The second half is the part worth asserting: a generator that always produced one
+        /// prefix per side would pass the first half while never exercising the fragmenting that
+        /// `RangeBuilder` exists for.
+        #[test]
+        fn every_generated_static_nat_expose_validates() {
+            let mut shapes_differed = false;
+            bolero::check!()
+                .with_generator(StaticNatExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_static_nat());
+                    if validated.ips().len() != validated.as_range_or_empty().len() {
+                        shapes_differed = true;
+                    }
+                });
+            assert!(
+                shapes_differed,
+                "no generated expose had a different number of prefixes on each side, so the \
+                 mapping was never asked to fragment"
+            );
         }
 
         /// And it is port forwarding that comes out the other side, with both sides intact.
