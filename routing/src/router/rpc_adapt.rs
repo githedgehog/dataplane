@@ -222,12 +222,12 @@ impl Vrf {
             }
         }
 
-        // If no next-hop was received with the route (or we could not successfully process any),
-        // install the route anyway with an action drop. This is better than not installing the
-        // route as that could break consistency (e.g. resolving via a default) and cause a loop.
+        // If no next-hop was received with the route, or none of them could be processed, the
+        // route is still installed -- with an action drop, which `Vrf::nhops_or_drop` substitutes.
+        // Not installing it would break consistency (e.g. resolving via a default) and cause a
+        // loop. Warn here rather than there, since only this layer can tell the two cases apart.
         if nhops.is_empty() {
-            warn!("Route to {prefix} from RPC would have no next-hop. Will inject DROP next-hop");
-            nhops.push(RouteNhop::default());
+            warn!("Route to {prefix} from RPC has no usable next-hop: will be a DROP route");
         }
 
         // N.B. route and next-hops are passed separately
