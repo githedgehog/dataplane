@@ -262,3 +262,197 @@ pub enum PktInstruction {
     Encap(Encapsulation),  /* encapsulate the packet */
     Egress(EgressObject),  /* send the packet over interface to some ip */
 }
+
+#[cfg(test)]
+mod squash_properties {
+    use super::*;
+    use crate::rib::encapsulation::VxlanEncapsulation;
+    use bolero::{Driver, ValueGenerator};
+    use std::net::Ipv4Addr;
+    use std::num::NonZero;
+    use std::ops::Bound::Included;
+
+    // Values come from a small alphabet, so that several egress objects disagreeing about the same
+    // field is the common case rather than a rarity. Deciding between them is the whole of what
+    // `squash` does; independently drawn values would almost never collide.
+    const ADDRESSES: [IpAddr; 3] = [
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
+    ];
+    const IFNAMES: [&str; 2] = ["eth0", "eth1"];
+
+    fn index(raw: u8) -> InterfaceIndex {
+        InterfaceIndex::new(NonZero::new(u32::from(raw)).unwrap_or_else(|| unreachable!()))
+    }
+
+    // Zero selects `None`, which is one of the choices for every field: an unresolved ifindex or a
+    // missing address is exactly what the merge rules are about. The draw is separate from the
+    // choice so that a driver running out of input stays distinct from a generated `None`.
+    fn choose<T: Clone>(pick: u8, choices: &[T]) -> Option<T> {
+        (pick > 0).then(|| choices[usize::from(pick - 1)].clone())
+    }
+
+    fn egress<D: Driver>(driver: &mut D) -> Option<EgressObject> {
+        let ifindex = driver.gen_u8(Included(&0), Included(&3))?;
+        let address = driver.gen_u8(Included(&0), Included(&3))?;
+        let ifname = driver.gen_u8(Included(&0), Included(&2))?;
+        Some(EgressObject::new(
+            choose(ifindex, &[index(1), index(2), index(3)]),
+            choose(address, &ADDRESSES),
+            choose(ifname, &IFNAMES).map(str::to_string),
+        ))
+    }
+
+    fn instruction<D: Driver>(driver: &mut D) -> Option<PktInstruction> {
+        Some(match driver.gen_u8(Included(&0), Included(&3))? {
+            // `Local` carries a distinguishable index so that order preservation can be checked
+            // rather than merely counted.
+            0 => PktInstruction::Local(index(driver.gen_u8(Included(&1), Included(&3))?)),
+            1 => PktInstruction::Drop,
+            2 => PktInstruction::Encap(Encapsulation::Vxlan(VxlanEncapsulation::new(
+                Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
+                    .unwrap_or_else(|_| unreachable!()),
+                ADDRESSES[0],
+            ))),
+            _ => PktInstruction::Egress(egress(driver)?),
+        })
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Entry;
+
+    impl ValueGenerator for Entry {
+        type Output = FibEntry;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<FibEntry> {
+            let count = driver.gen_u8(Included(&0), Included(&5))?;
+            let mut entry = FibEntry::new();
+            for _ in 0..count {
+                entry.add(instruction(driver)?);
+            }
+            Some(entry)
+        }
+    }
+
+    fn egresses(entry: &FibEntry) -> Vec<&EgressObject> {
+        entry
+            .iter()
+            .filter_map(|inst| match inst {
+                PktInstruction::Egress(e) => Some(e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn others(entry: &FibEntry) -> Vec<&PktInstruction> {
+        entry
+            .iter()
+            .filter(|inst| !matches!(inst, PktInstruction::Egress(_)))
+            .collect()
+    }
+
+    /// Squashing an entry leaves everything that is not an egress exactly as it was.
+    ///
+    /// The instructions before the egress are what gets executed on the way out -- encapsulation
+    /// above all -- so reordering or dropping one of them changes what goes on the wire.
+    #[test]
+    fn squash_preserves_the_other_instructions_in_order() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                let before: Vec<PktInstruction> = others(&entry).into_iter().cloned().collect();
+                let mut squashed = entry.clone();
+                squashed.squash();
+                // A single instruction is returned untouched, egress or not.
+                if entry.len() == 1 {
+                    assert_eq!(squashed, entry);
+                    return;
+                }
+                let after: Vec<PktInstruction> = others(&squashed).into_iter().cloned().collect();
+                assert_eq!(after, before, "for {entry:?}");
+            });
+    }
+
+    /// What comes out has at most one egress, and it is last.
+    ///
+    /// Last because `FibEntry::is_valid` requires it: a multi-instruction entry is only usable if
+    /// its final instruction is an egress with a known interface.
+    #[test]
+    fn squash_leaves_at_most_one_egress_and_puts_it_last() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                if entry.len() == 1 {
+                    return;
+                }
+                let mut squashed = entry.clone();
+                squashed.squash();
+
+                assert!(egresses(&squashed).len() <= 1, "for {entry:?}");
+                if let Some(position) = squashed
+                    .iter()
+                    .position(|inst| matches!(inst, PktInstruction::Egress(_)))
+                {
+                    assert_eq!(position, squashed.len() - 1, "for {entry:?}");
+                }
+            });
+    }
+
+    /// The merged egress is the first interface, the last address and the first name.
+    ///
+    /// The asymmetry is deliberate and load-bearing: `rib2fib` relies on it so that the address of
+    /// a recursive next-hop reaches the fib while the interface of the nearest resolver wins. An
+    /// oracle worked out from the input directly, rather than by folding with `merge` again.
+    #[test]
+    fn squash_merges_first_interface_last_address_first_name() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                if entry.len() == 1 {
+                    return;
+                }
+                let inputs = egresses(&entry);
+                let ifindex = inputs.iter().find_map(|e| *e.ifindex());
+                let address = inputs.iter().rev().find_map(|e| *e.address());
+                let ifname = inputs.iter().find_map(|e| e.ifname().clone());
+
+                let mut squashed = entry.clone();
+                squashed.squash();
+
+                match egresses(&squashed).first() {
+                    Some(merged) => {
+                        assert_eq!(*merged.ifindex(), ifindex, "interface, for {entry:?}");
+                        assert_eq!(*merged.address(), address, "address, for {entry:?}");
+                        assert_eq!(*merged.ifname(), ifname, "name, for {entry:?}");
+                    }
+                    // An egress survives exactly when one of the inputs knew an interface. With
+                    // none, there is nowhere to send the packet and the egress is dropped -- which
+                    // is what leaves the entry to be refused by `is_valid`.
+                    None => assert!(ifindex.is_none(), "for {entry:?}"),
+                }
+            });
+    }
+
+    /// Squashing twice is squashing once.
+    ///
+    /// Worth pinning because the entries are built by accumulating down a resolution chain and
+    /// squashed at the end of it; a squash that drifted on a second application would make the
+    /// result depend on how many times the chain was walked.
+    #[test]
+    fn squash_is_idempotent() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                let mut once = entry.clone();
+                once.squash();
+                let mut twice = once.clone();
+                twice.squash();
+                assert_eq!(twice, once, "for {entry:?}");
+            });
+    }
+}
