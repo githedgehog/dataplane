@@ -176,6 +176,14 @@ pub struct TestVmParams<'a> {
     /// explicitly so the arg lowering is a pure function of (config, arch,
     /// accel) and testable for every ISA on any build host.
     pub arch: config::Arch,
+    /// Container-absolute path to the guest kernel image, resolved from the
+    /// kernel manifest before launch.
+    ///
+    /// Threaded through as a resolved value rather than looked up in the
+    /// backends for the same reason `arch` is: it keeps the argument
+    /// lowering a pure function of its inputs, so both backends can be
+    /// tested for any kernel on any host without a manifest on disk.
+    pub kernel_image: String,
     /// Acceleration mode (KVM for same-arch, TCG for a cross-arch guest).
     pub accel: config::Accel,
     /// Dynamically-allocated vsock resources for this VM instance.
@@ -569,14 +577,29 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
     let vsock = allocate_vsock_resources();
     info!("allocated vsock resources: {vsock}");
 
+    // The guest arch is this binary's target arch.
+    let arch = config::Arch::current();
+
+    // Which kernels exist is a fact about the nix build, so it is read from
+    // the manifest nix materialized into `testroot` rather than hardcoded
+    // here.  Resolved once, before launch, so a bad manifest fails with a
+    // manifest error instead of a VM that boots nothing.
+    let manifest = crate::kernel_manifest::KernelManifest::load()?;
+    let (profile_name, profile) = manifest.default_profile()?;
+    profile.check_arch(profile_name, arch)?;
+    info!(
+        "using kernel profile `{profile_name}` ({kernel})",
+        kernel = profile.kernel,
+    );
+
     let params = TestVmParams {
         full_bin_path: Path::new(&full_bin_path),
         vm_bin_path,
         bin_name,
         test_name,
         vm_config,
-        // The guest arch is this binary's target arch.
-        arch: config::Arch::current(),
+        arch,
+        kernel_image: profile.kernel.clone(),
         accel,
         vsock,
     };

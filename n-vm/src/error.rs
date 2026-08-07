@@ -70,6 +70,16 @@ pub enum VmError {
         reason: String,
     },
 
+    /// The kernel manifest could not be read, or does not describe a kernel
+    /// usable for this guest.
+    ///
+    /// Forwarded verbatim: the manifest errors already carry the diagnostic
+    /// the developer needs (usually "run `just setup-roots`"), and wrapping
+    /// them in a second layer of prose would bury it.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    KernelManifest(#[from] crate::kernel_manifest::KernelManifestError),
+
     /// `argv[0]` was not available, so the test binary path could not be
     /// determined.
     ///
