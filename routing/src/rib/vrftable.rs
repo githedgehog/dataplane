@@ -189,7 +189,7 @@ impl VrfTable {
         // delete the corresponding fib
         if let Some(fibw) = vrf.fibw.take() {
             debug!("Deleting Fib for vrf {vrfid} from the FibTable");
-            self.fibtablew.del_fib(vrfid, vrf.vni);
+            self.fibtablew.del_fib(vrfid);
             fibw.destroy();
         }
 
