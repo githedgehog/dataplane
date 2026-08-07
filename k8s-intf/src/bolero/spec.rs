@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
 
-use bolero::{Driver, TypeGenerator, ValueGenerator};
+use bolero::{Driver, TypeGenerator};
 
 use lpm::prefix::Prefix;
 
@@ -81,8 +81,16 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
         let mut peerings = BTreeMap::new();
         if num_peerings > 0 {
             let peering_gen = LegalValuePeeringsGenerator::new(&vpc_subnet_map).unwrap();
-            for i in 0..num_peerings {
-                peerings.insert(format!("peering{i}"), peering_gen.generate(d)?);
+            // Draw *distinct* vpc pairs. Validation refuses a configuration that peers one pair
+            // twice, so drawing each peering's pair independently -- as this used to -- makes almost
+            // every configuration with more than one peering invalid, and the whole peering half of
+            // the model never reaches anything downstream of validation.
+            let mut available = peering_gen.pairs();
+            let wanted = num_peerings.min(available.len());
+            for i in 0..wanted {
+                let choice = d.gen_usize(Bound::Included(&0), Bound::Excluded(&available.len()))?;
+                let pair = available.swap_remove(choice);
+                peerings.insert(format!("peering{i}"), peering_gen.generate_for(d, pair)?);
             }
         }
 
