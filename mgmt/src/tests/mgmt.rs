@@ -171,7 +171,7 @@ pub mod test {
     }
 
     /* DEVICE configuration */
-    fn sample_device_config() -> DeviceConfig {
+    pub(super) fn sample_device_config() -> DeviceConfig {
         DeviceConfig::new()
     }
 
@@ -319,7 +319,7 @@ pub mod test {
     }
 
     /* build sample underlay config */
-    fn sample_underlay_config() -> Underlay {
+    pub(super) fn sample_underlay_config() -> Underlay {
         /* main loopback for BGP and vtep */
         let loopback = IpAddr::from_str("7.0.0.100").expect("Bad address");
         let router_id = get_v4_addr(loopback);
@@ -333,7 +333,7 @@ pub mod test {
     }
 
     #[rustfmt::skip]
-    fn sample_gw_groups() -> GwGroupTable {
+    pub(super) fn sample_gw_groups() -> GwGroupTable {
         let mut gwt = GwGroupTable::new();
         let mut group = GwGroup::new("gw-group-1");
         group.add_member(GwGroupMember::new("gw1", 1, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
@@ -348,7 +348,7 @@ pub mod test {
         gwt
     }
 
-    fn sample_community_table() -> PriorityCommunityTable {
+    pub(super) fn sample_community_table() -> PriorityCommunityTable {
         let mut comtable = PriorityCommunityTable::new();
         comtable.insert(0, "65000:800").unwrap();
         comtable.insert(1, "65000:801").unwrap();
@@ -506,5 +506,258 @@ pub mod test {
         /* stop the router */
         debug!("Stopping the router...");
         router.stop();
+    }
+}
+
+/// Properties over the third arrow of the configuration chain, with peerings.
+///
+/// A gateway configuration passes through
+///
+/// ```text
+/// GatewayAgent (CRD) ─▶ ExternalConfig ─▶ validated ─▶ InternalConfig ─▶ FRR
+/// ```
+///
+/// and `build_internal_config` -- the third arrow -- had only ever been given hand-built input:
+/// `test::check_frr_config` above builds one sample configuration, renders it and prints the result.
+///
+/// The properties in `processor::confbuild::internal` drive the whole chain from a generated
+/// `GatewayAgent`, but measuring them showed that **no generated configuration with a peering ever
+/// survives validation**, so the arrow has never been exercised for the half of the model that
+/// carries the exposes, the NAT and the ACLs. Fixing that in the CRD generators is a separate piece
+/// of work.
+///
+/// This gets at the same question from the other side, and today rather than after that work:
+/// `config`'s own contract generators already produce exposes that are valid *by construction* for
+/// each of the three NAT flavours, so an overlay built around one of those, spliced into the sample
+/// underlay, reaches the builder with a peering in it.
+///
+/// The claim is the one that matters: **a configuration that validates can be built and rendered.**
+/// A configuration that validates and then fails to build is a half-applied dataplane --
+/// `apply_gw_config` is a linear `?`-chain with no transaction, so by the time a late step fails the
+/// kernel interfaces, the flow filter, the ACLs, static NAT and the masquerade allocator have all
+/// been committed, and rolling the configuration back does not restore the masquerade flows already
+/// torn down.
+#[cfg(test)]
+mod peering_chain {
+    use bolero::{Driver, ValueGenerator};
+    use config::ExternalConfig;
+    use config::external::ExternalConfigBuilder;
+    use config::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::{
+        LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
+        overlay_with_exposes,
+    };
+    use routing::Render;
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    use super::test::{
+        sample_community_table, sample_device_config, sample_gw_groups, sample_underlay_config,
+    };
+    use crate::processor::confbuild::internal::{EVPN_RMAP_NO_ADV_COMM, build_internal_config};
+
+    /// Which NAT flavour a generated expose uses.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Flavour {
+        PortForwarding,
+        Masquerade,
+        Static,
+    }
+
+    /// The most exposes one generated manifest offers.
+    ///
+    /// More than one because the interesting rejections, and the interesting things for the builder
+    /// to get wrong, are *between* exposes rather than within one.
+    const MAX_EXPOSES: u8 = 3;
+
+    /// The autonomous system the sample underlay uses, so the rendered text can be checked for it.
+    const UNDERLAY_ASN: u32 = 65000;
+
+    /// Draws exposes of each NAT flavour, each valid by construction, for one manifest.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct AnyNatExposes;
+
+    impl ValueGenerator for AnyNatExposes {
+        type Output = Vec<(Flavour, VpcExpose)>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let count = driver.gen_u8(Included(&1), Included(&MAX_EXPOSES))?;
+            let mut out = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                out.push(match driver.gen_u8(Included(&0), Included(&2))? {
+                    0 => (
+                        Flavour::PortForwarding,
+                        PortForwardingExpose.generate(driver)?,
+                    ),
+                    1 => (Flavour::Masquerade, MasqueradeExpose.generate(driver)?),
+                    _ => (Flavour::Static, StaticNatExpose.generate(driver)?),
+                });
+            }
+            Some(out)
+        }
+    }
+
+    /// The sample gateway groups, plus the `default` group the contract module's peering names.
+    ///
+    /// `VpcPeering::with_default_group` sets the group to `"default"`, and whole-config validation
+    /// checks that a peering's group exists. Validating the overlay on its own -- which is what
+    /// `overlay_offering` does, and what every existing user of these generators does -- cannot make
+    /// that check, because the group table sits beside the overlay rather than in it. So an overlay
+    /// those generators produce is not embeddable in a whole configuration without this.
+    fn gw_groups_with_default() -> GwGroupTable {
+        let mut groups = sample_gw_groups();
+        let mut default = GwGroup::new("default");
+        default
+            .add_member(GwGroupMember::new(
+                "gw-default",
+                1,
+                IpAddr::from_str("172.128.0.9").unwrap_or_else(|_| unreachable!()),
+            ))
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        groups
+            .add_group(default)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        groups
+    }
+
+    /// A whole configuration: the sample underlay, and an overlay whose local vpc offers `exposes`.
+    fn external_offering(exposes: Vec<VpcExpose>) -> ExternalConfig {
+        let overlay = overlay_with_exposes(exposes).unwrap_or_else(|e| unreachable!("{e}"));
+        ExternalConfigBuilder::default()
+            .gwname("test-gw".to_string())
+            .genid(1)
+            .device(sample_device_config())
+            .underlay(sample_underlay_config())
+            .overlay(overlay)
+            .gwgroups(gw_groups_with_default())
+            .communities(sample_community_table())
+            .build()
+            .unwrap_or_else(|e| unreachable!("{e}"))
+    }
+
+    /// A configuration carrying a peering with NAT validates, builds, and renders.
+    ///
+    /// A single expose is always accepted -- the generators make it valid by construction -- but
+    /// several together may legitimately be refused, for overlapping prefixes or a port range
+    /// claimed twice. Those are skipped rather than treated as findings, and counted so that the
+    /// property cannot quietly become vacuous.
+    #[test]
+    fn a_config_with_a_nat_peering_builds_and_renders() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static BUILT: AtomicUsize = AtomicUsize::new(0);
+        static MULTI: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(AnyNatExposes)
+            .cloned()
+            .for_each(|offered: Vec<(Flavour, VpcExpose)>| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let flavours: Vec<Flavour> = offered.iter().map(|(f, _)| *f).collect();
+                let exposes: Vec<VpcExpose> = offered.iter().map(|(_, e)| e.clone()).collect();
+                let external = external_offering(exposes.clone());
+
+                let validated = match external.validate() {
+                    Ok(validated) => validated,
+                    Err(e) => {
+                        // one expose on its own is valid by construction, so a rejection there is a
+                        // finding; several may disagree with each other, which is not
+                        assert!(
+                            exposes.len() > 1,
+                            "a single {:?} expose that is valid by construction was refused: {e}\n{exposes:#?}",
+                            flavours[0]
+                        );
+                        return;
+                    }
+                };
+                BUILT.fetch_add(1, Ordering::Relaxed);
+                if exposes.len() > 1 {
+                    MULTI.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
+                    panic!("a validated {flavours:?} configuration would not build: {e}\n{exposes:#?}")
+                });
+
+                // both vpcs of the peering reach the built configuration
+                let vnis: Vec<u32> = internal
+                    .vrfs
+                    .iter_by_name()
+                    .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
+                    .collect();
+                for vni in [LOCAL_VNI, REMOTE_VNI] {
+                    assert!(
+                        vnis.contains(&vni),
+                        "vni {vni} of the peering is missing from the built config, got {vnis:?}"
+                    );
+                }
+
+                // the underlay's own vrf reaches the built config too. Checking the overlay vnis
+                // alone would not notice it going missing, since the default vrf carries no vni.
+                assert!(
+                    internal.vrfs.default_vrf_config().is_some(),
+                    "the built config has no default vrf"
+                );
+
+                // the community table is carried across unchanged. It is copied rather than derived,
+                // so nothing else in this property would notice it being dropped -- and the
+                // communities are what the overlay's route maps tag routes with.
+                for order in 0..5 {
+                    assert_eq!(
+                        internal.commtable.get_community(order),
+                        validated.external().communities().get_community(order),
+                        "community {order} did not survive the build"
+                    );
+                }
+
+                // the route-map that keeps learnt evpn routes from being re-advertised. Only
+                // `configure_bgp_peers` adds it, and it is what applies to the underlay neighbours'
+                // l2vpn-evpn address family -- so its absence means the neighbours were never
+                // configured, which the vni checks above would not notice.
+                assert!(
+                    internal
+                        .rmap_table
+                        .values()
+                        .any(|rmap| rmap.name == EVPN_RMAP_NO_ADV_COMM),
+                    "the evpn no-advertise route-map is missing from the built config"
+                );
+
+                let text = internal.render(&validated.genid()).to_string();
+                assert!(
+                    text.contains("! config for gen 1"),
+                    "the rendered config does not say which generation it is for"
+                );
+                assert!(
+                    text.contains(EVPN_RMAP_NO_ADV_COMM),
+                    "the evpn no-advertise route-map is missing from the rendered config"
+                );
+                // and the underlay's bgp instance reaches the rendered text, which is what ties the
+                // asn the overlay vrfs are built with back to the configuration it came from
+                assert!(
+                    text.contains(&format!("router bgp {UNDERLAY_ASN}")),
+                    "the underlay bgp instance is missing from the rendered config"
+                );
+                for vni in [LOCAL_VNI, REMOTE_VNI] {
+                    assert!(
+                        text.contains(&format!(" vni {vni}")),
+                        "vni {vni} is missing from the rendered config"
+                    );
+                }
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let built = BUILT.load(Ordering::Relaxed);
+        let multi = MULTI.load(Ordering::Relaxed);
+        println!("{built}/{seen} configurations built, {multi} of them with several exposes");
+        assert!(
+            built * 2 >= seen,
+            "most configurations were skipped: {built}/{seen}"
+        );
+        assert!(
+            multi > 0,
+            "no configuration with more than one expose was built"
+        );
     }
 }
