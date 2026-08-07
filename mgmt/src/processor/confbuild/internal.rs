@@ -392,3 +392,187 @@ pub fn build_internal_config(
     debug!("Successfully built internal config for genid {genid}");
     Ok(internal)
 }
+
+/// Properties over the whole configuration chain.
+///
+/// A gateway configuration passes through four steps before the dataplane sees it:
+///
+/// ```text
+/// GatewayAgent (CRD) ──▶ ExternalConfig ──▶ validated ──▶ InternalConfig ──▶ FRR text
+/// ```
+///
+/// The converters and the validator are well covered, and the renderers now are too -- but the
+/// renderers were tested against an `InternalConfig` built by hand, and this builder was covered by
+/// one sample configuration in a test that printed its output. So the third arrow, the one that
+/// turns a *validated* configuration into the one the dataplane applies, has never seen a generated
+/// input.
+///
+/// That arrow is where the interesting failure lives, and there is precedent: a port-forwarding
+/// expose that validated and could not be built (`fix(config): Refuse a port-forwarding expose the
+/// dataplane cannot build`). It matters because `apply_gw_config` is a linear `?`-chain and there is
+/// no transaction: by the time a late step fails, kernel interfaces, the flow filter, ACLs, static
+/// NAT and the masquerade allocator have all been committed.
+///
+/// So the claim is: **whatever validates, builds; and whatever builds, renders.**
+#[cfg(test)]
+mod chain_properties {
+    use super::*;
+    use config::{ExternalConfig, GenId};
+    use k8s_intf::bolero::LegalValue;
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use routing::Render;
+    use std::collections::BTreeSet;
+
+    /// Everything the chain produces for one generated CRD, or `None` if the configuration was
+    /// legal as a CRD but not a valid gateway configuration.
+    ///
+    /// Validation failing is not a defect: `LegalValue` generates values that are legal against the
+    /// *schema*, and plenty of those describe configurations that are semantically wrong -- two vpcs
+    /// claiming one vni, exposes that overlap. The claim starts after validation succeeds.
+    fn chain(agent: &GatewayAgent) -> Option<(GenId, InternalConfig)> {
+        let external = ExternalConfig::try_from(agent)
+            .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+        let validated = external.validate().ok()?;
+        let genid = validated.genid();
+        let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
+            panic!("a validated configuration would not build: {e}\n{validated:#?}")
+        });
+        Some((genid, internal))
+    }
+
+    /// A configuration that validates can be built and rendered.
+    ///
+    /// The rendering half is not incidental: `Render` returns no `Result`, so the only way it can
+    /// fail is to panic, and the renderers had only ever been given hand-written input.
+    #[test]
+    fn whatever_validates_builds_and_renders() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                let Some((genid, internal)) = chain(agent.as_ref()) else {
+                    return;
+                };
+                let text = internal.render(&genid).to_string();
+                assert!(
+                    text.contains(&format!("! config for gen {genid}")),
+                    "the rendered config does not say which generation it is for"
+                );
+            });
+    }
+
+    /// The built configuration carries a vrf for exactly the vnis the overlay's vpcs have.
+    ///
+    /// This is the correspondence the third arrow is supposed to establish. A vpc without a vrf is a
+    /// tenant with no forwarding table; a vrf without a vpc is one FRR will configure and nothing
+    /// will use.
+    #[test]
+    fn every_vpc_gets_a_vrf_and_no_more() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                let external = ExternalConfig::try_from(agent.as_ref())
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                let internal = build_internal_config(&validated, None)
+                    .unwrap_or_else(|e| panic!("a validated configuration would not build: {e}"));
+
+                let wanted: BTreeSet<u32> = validated
+                    .external()
+                    .overlay()
+                    .vpc_table()
+                    .values()
+                    .map(|vpc| vpc.vni().as_u32())
+                    .collect();
+                let built: BTreeSet<u32> = internal
+                    .vrfs
+                    .iter_by_name()
+                    .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
+                    .collect();
+                assert_eq!(built, wanted, "vrfs do not match the vpcs they come from");
+            });
+    }
+
+    /// The properties above are not vacuous, and say how far they reach.
+    ///
+    /// They are all of the form "if it validates, then ..." -- so they are worth nothing if nothing
+    /// validates. It is worth measuring rather than assuming, and the measurement turned out to be
+    /// the most useful thing in this module.
+    ///
+    /// About a sixth of generated configurations validate, carrying three vpcs each. **None of them
+    /// has a peering**, and that is the gap: peerings are where the exposes, the NAT and the ACLs
+    /// live, so the whole of that half of the model is generated in quantity -- some twenty-four
+    /// thousand peerings per four thousand configurations -- and none of it survives to reach the
+    /// builder.
+    ///
+    /// Three causes of that have been fixed in the generators: peering pairs were drawn
+    /// independently so a duplicated pair was near-certain; each expose drew a mix of v4 and v6
+    /// prefixes when it must be single-family; and prefixes were drawn as short as `/0`, which
+    /// always overlaps a reserved range. What is left is the relationship between an expose's shape
+    /// and its NAT mode -- the expose is built first and the mode chosen afterwards, so static NAT
+    /// gets mismatched sizes, port forwarding gets the exclusion prefixes it forbids, and
+    /// masquerade gets an empty `as` list. Fixing that means choosing the mode first and shaping
+    /// the expose to fit, as `config`'s own `contract` module does.
+    ///
+    /// So this test asserts what is true now, and is the thing to strengthen when that is done: it
+    /// should come to require peerings.
+    #[test]
+    fn the_properties_are_not_vacuous() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static VALIDATED: AtomicUsize = AtomicUsize::new(0);
+        static VPCS: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(agent.as_ref())
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                if let Ok(validated) = external.validate() {
+                    VALIDATED.fetch_add(1, Ordering::Relaxed);
+                    VPCS.fetch_add(
+                        validated.external().overlay().vpc_table().len(),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let validated = VALIDATED.load(Ordering::Relaxed);
+        let vpcs = VPCS.load(Ordering::Relaxed);
+        println!("{validated}/{seen} configurations validated, carrying {vpcs} vpcs");
+        assert!(seen > 0, "no configurations were generated");
+        assert!(
+            validated * 20 >= seen,
+            "only {validated} of {seen} configurations validated: the properties above are \
+             checking almost nothing"
+        );
+        assert!(vpcs > validated, "validated configurations carry no vpcs");
+    }
+
+    /// Building and rendering the same configuration twice gives the same text.
+    ///
+    /// Already checked over hand-built `InternalConfig`s; here the input comes from a generated CRD,
+    /// so the whole chain has to be deterministic, not just the last step of it. It matters because
+    /// `frr-reload.py` diffs the output against what FRR is running.
+    #[test]
+    fn the_chain_is_deterministic() {
+        bolero::check!()
+            .with_type::<LegalValue<GatewayAgent>>()
+            .for_each(|agent| {
+                let Some((genid, once)) = chain(agent.as_ref()) else {
+                    return;
+                };
+                let (_, twice) = chain(agent.as_ref()).unwrap_or_else(|| {
+                    panic!("the same CRD validated once and not the second time")
+                });
+                assert_eq!(
+                    once.render(&genid).to_string(),
+                    twice.render(&genid).to_string(),
+                    "the configuration chain is not deterministic"
+                );
+            });
+    }
+}
