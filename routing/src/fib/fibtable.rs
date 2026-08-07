@@ -39,9 +39,14 @@ impl FibTable {
         self.entries.insert(id, entry);
     }
     /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
+    ///
+    /// Every key that reaches the fib goes, not just its own: a fib registered under a [`Vni`] is
+    /// reachable by that alias too, and an alias must not outlive the fib it names. Each entry
+    /// records the identity of the fib it points at, so the table can find its own aliases rather
+    /// than relying on the caller to remember which vni a fib was registered under.
     fn del_fib(&mut self, id: FibKey) {
         info!("Unregistering Fib with id {id} from the FibTable");
-        self.entries.remove(&id);
+        self.entries.retain(|_, entry| entry.id != id);
     }
     /// Register an existing `Fib` with a given [`Vni`].
     /// This allows looking up a Fib (`FibReaderFactory`) from a [`Vni`]
@@ -144,12 +149,14 @@ impl FibTableWriter {
         self.0.append(FibTableChange::UnRegisterVni(vni));
         self.0.publish();
     }
-    pub fn del_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) {
-        let fibid = FibKey::from_vrfid(vrfid);
-        self.0.append(FibTableChange::Del(fibid));
-        if let Some(vni) = vni {
-            self.0.append(FibTableChange::UnRegisterVni(vni));
-        }
+    /// Remove the fib for `vrfid`, and with it every key that reached it.
+    ///
+    /// This used to take the fib's [`Vni`] so as to drop that alias as well, which made a leaked
+    /// alias a matter of the caller passing the right thing. [`FibTable::del_fib`] now finds the
+    /// aliases itself.
+    pub fn del_fib(&mut self, vrfid: VrfId) {
+        self.0
+            .append(FibTableChange::Del(FibKey::from_vrfid(vrfid)));
         self.0.publish();
     }
 }
@@ -232,5 +239,217 @@ impl FibTableReader {
         };
         let rhandle = ReadHandleCache::get_reader(&FIBTABLE_CACHE, id, &*fibtable)?;
         Ok(FibReader::rc_from_rc_rhandle(rhandle))
+    }
+}
+
+/// Model-based properties over a [`FibTable`].
+///
+/// The table is a map, so most of it is uninteresting. The part that is not is the **vni alias**: a
+/// fib is reachable both by its own [`FibKey::Id`] and, optionally, by a [`FibKey::Vni`] pointing
+/// at the same entry. Nothing in the table ties the two together -- `del_fib` removes the alias
+/// only because the caller passes the vni it was registered with -- so an alias outliving its fib
+/// is the failure worth generating for.
+#[cfg(test)]
+mod fibtable_properties {
+    use super::*;
+    use crate::fib::fibtype::FibWriter;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound::Included;
+
+    const NUM_VRFS: u8 = 3;
+    const NUM_VNIS: u8 = 2;
+    const MAX_CHANGES: u8 = 10;
+
+    fn vrf_ids() -> Vec<VrfId> {
+        (0..u32::from(NUM_VRFS)).collect()
+    }
+
+    fn vnis() -> Vec<Vni> {
+        (1..=u32::from(NUM_VNIS))
+            .map(|i| Vni::new_checked(100 * i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    /// Every key a generated table could be looked up by.
+    fn keys() -> Vec<FibKey> {
+        vrf_ids()
+            .into_iter()
+            .map(FibKey::from_vrfid)
+            .chain(vnis().into_iter().map(FibKey::from_vni))
+            .collect()
+    }
+
+    /// One change, as [`FibTableWriter`] exposes them, over indices into the pools above.
+    #[derive(Debug, Clone)]
+    enum Change {
+        AddFib { vrf: usize, vni: Option<usize> },
+        RegisterByVni { vrf: usize, vni: usize },
+        UnregisterVni { vni: usize },
+        DelFib { vrf: usize },
+    }
+
+    /// Draws sequences of [`Change`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                    0 => {
+                        // A fib created with no vni and aliased later, or never, is the ordinary
+                        // case, so it is worth drawing. Drawn as one index over `NUM_VNIS + 1`
+                        // with the last meaning "none": a helper returning `Option<Option<_>>`
+                        // cannot tell "no vni" from the driver running out of input.
+                        let vrf = index(driver, NUM_VRFS)?;
+                        let drawn = index(driver, NUM_VNIS + 1)?;
+                        Change::AddFib {
+                            vrf,
+                            vni: (drawn < usize::from(NUM_VNIS)).then_some(drawn),
+                        }
+                    }
+                    1 => Change::RegisterByVni {
+                        vrf: index(driver, NUM_VRFS)?,
+                        vni: index(driver, NUM_VNIS)?,
+                    },
+                    2 => Change::UnregisterVni {
+                        vni: index(driver, NUM_VNIS)?,
+                    },
+                    _ => Change::DelFib {
+                        vrf: index(driver, NUM_VRFS)?,
+                    },
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// Which fib each key should reach, by vrf id. The table stripped of its left-right wrapping,
+    /// its `Arc` sharing and its reader factories.
+    type Model = BTreeMap<FibKey, VrfId>;
+
+    /// The writers behind a generated table, which the harness has to keep alive: a `FibReader`
+    /// whose `FibWriter` is gone cannot be entered, and that would look like an alias fault.
+    struct Fibs {
+        live: BTreeMap<VrfId, FibWriter>,
+        /// Writers displaced by a second `add_fib` for the same vrf. Nothing in the table points at
+        /// them any more, but they are not destroyed either, so they are parked rather than
+        /// dropped -- dropping one is not what production does on a replacement.
+        retired: Vec<FibWriter>,
+    }
+
+    fn apply(table: &mut FibTableWriter, fibs: &mut Fibs, model: &mut Model, change: &Change) {
+        let vrfs = vrf_ids();
+        let all_vnis = vnis();
+        match change {
+            Change::AddFib { vrf, vni } => {
+                let vrf = vrfs[*vrf];
+                let vni = vni.map(|i| all_vnis[i]);
+                let writer = table.add_fib(vrf, vni);
+                if let Some(displaced) = fibs.live.insert(vrf, writer) {
+                    fibs.retired.push(displaced);
+                }
+                model.insert(FibKey::from_vrfid(vrf), vrf);
+                if let Some(vni) = vni {
+                    model.insert(FibKey::from_vni(vni), vrf);
+                }
+            }
+            Change::RegisterByVni { vrf, vni } => {
+                let vrf = vrfs[*vrf];
+                let vni = all_vnis[*vni];
+                table.register_fib_by_vni(vrf, vni);
+                // the table refuses to alias a fib it does not hold
+                if model.contains_key(&FibKey::from_vrfid(vrf)) {
+                    model.insert(FibKey::from_vni(vni), vrf);
+                }
+            }
+            Change::UnregisterVni { vni } => {
+                let vni = all_vnis[*vni];
+                table.unregister_vni(vni);
+                model.remove(&FibKey::from_vni(vni));
+            }
+            Change::DelFib { vrf } => {
+                let vrf = vrfs[*vrf];
+                table.del_fib(vrf);
+                // every key that reached this fib goes, alias included
+                model.retain(|_, named| *named != vrf);
+                // production destroys the fib once the table no longer names it, which is what
+                // makes a leaked alias observable: it would hand out a reader that cannot be
+                // entered
+                if let Some(writer) = fibs.live.remove(&vrf) {
+                    writer.destroy();
+                }
+            }
+        }
+    }
+
+    /// The pools and the constants that index them agree.
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vrf_ids().len(), usize::from(NUM_VRFS));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(keys().len(), usize::from(NUM_VRFS + NUM_VNIS));
+    }
+
+    /// Every key a fib table holds reaches a live fib, and reaches it under its own identity.
+    ///
+    /// Two things at once, and the second is the point. A `FibKey::Vni` is an alias for a
+    /// `FibKey::Id`, and the thread-local read-handle cache keys on the identity the table reports
+    /// for a key, not on the key asked for -- so an alias reporting the wrong identity would have
+    /// two threads caching handles to different fibs under one name. Nothing else checks that the
+    /// alias and the entry it aliases stay in step.
+    #[test]
+    fn every_key_in_a_fib_table_reaches_the_fib_it_names() {
+        let keys = keys();
+
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (mut table, _reader) = FibTableWriter::new();
+                let mut fibs = Fibs {
+                    live: BTreeMap::new(),
+                    retired: Vec::new(),
+                };
+                let mut model = Model::new();
+
+                for (step, change) in changes.iter().enumerate() {
+                    apply(&mut table, &mut fibs, &mut model, change);
+
+                    let at = || format!("at step {step} of {changes:?}");
+                    let held = table.enter().unwrap_or_else(|| unreachable!());
+
+                    assert_eq!(held.len(), model.len(), "{}", at());
+
+                    for key in &keys {
+                        let Some(reader) = held.get_fib(*key) else {
+                            assert!(!model.contains_key(key), "{key} missing {}", at());
+                            continue;
+                        };
+                        let want = *model
+                            .get(key)
+                            .unwrap_or_else(|| panic!("{key} unexpected {}", at()));
+
+                        assert!(reader.is_valid(), "{key} reaches a dead fib {}", at());
+                        assert_eq!(
+                            reader.get_id(),
+                            Some(FibKey::from_vrfid(want)),
+                            "{key} reaches the wrong fib {}",
+                            at()
+                        );
+                    }
+                }
+            });
     }
 }
