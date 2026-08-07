@@ -26,13 +26,16 @@ let
       '';
     });
   frr-build =
-    frrSrc:
+    {
+      frrSrc,
+      vtysh-extensions ? false,
+    }:
     dep (
       (final.callPackage ../pkgs/frr (
         final.fancy
         // {
           stdenv = final.stdenv';
-          inherit frrSrc;
+          inherit frrSrc vtysh-extensions;
         }
       )).overrideAttrs
         (orig: {
@@ -286,7 +289,12 @@ in
     frr-config = dep (final.callPackage ../pkgs/frr-config final.fancy);
     dplane-rpc = dep (final.callPackage ../pkgs/dplane-rpc final.fancy);
     dplane-plugin = dep (final.callPackage ../pkgs/dplane-plugin final.fancy);
-    frr.host = frr-build sources.frr;
-    frr.dataplane = frr-build sources.frr-dp;
+    # Upstream FRR: its vtysh has never heard of `-X`, so no wrapper.
+    frr.host = frr-build { frrSrc = sources.frr; };
+    # Our fork, and the only image that carries `libvtysh_hedgehog.so`.
+    frr.dataplane = frr-build {
+      frrSrc = sources.frr-dp;
+      vtysh-extensions = true;
+    };
   };
 }
