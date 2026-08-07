@@ -477,7 +477,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             return Some(self);
         }
         match self.get_done() {
-            Some(DoneReason::Delivered) | None => Some(self),
+            Some(DoneReason::Delivered | DoneReason::Local) | None => Some(self),
             Some(_) => None,
         }
     }

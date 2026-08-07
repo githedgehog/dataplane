@@ -216,6 +216,7 @@ impl Worker {
                     intf.if_name
                 );
 
+                let mut to_tx: u64 = 0; // number of packets to send
                 let mut tx_pkts: u64 = 0; // number of packets successfully sent
                 let mut tx_drops: u64 = 0; // number of packets dropped on tx
                 let rx_pkts = packets_vec.len() as u64; // number of packets received
@@ -231,59 +232,33 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
-                // number of packets output by pipeline
+                // number of packets output by pipeline: includes delivered and local (which should not be
+                // accounted as pipeline drops)
                 let num_out_pkts: u64 = out_pkts.len() as u64;
 
-                // Computing the number of packets dropped by pipeline.
-                // The pipeline may not return to the driver all of the packets it was fed with,
-                // since it may drop some (e.g. due to routing, filtering, etc.). So, the number of
-                // packets dropped in a batch can be computed as `rx_pkts - out_pkts.len() as u64`.
-                // However, this assumes that the pipeline does not generate new packets.
-                // With the packet injection, it may happen that the pipeline outputs more packets
-                // than it was fed with. So, the injection of N packets could mask the drop of N packets
-                // by the pipeline if computed that way.
-                // The number of packets output by the pipeline in a batch is
-                //    num_out_pkts = in_pkts + injected_pkts - dropped
-                // So, we can compute the number of packets dropped by the pipeline as
-                //    dropped = in_pkts + injected_pkts - num_out_pkts
-                //
-                // Now, we can't know, here, the number of packets that were injected and those
-                // packets may be dropped by the pipeline as well. In these stats, we mostly care about
-                // incoming packets that got dropped. So, if `injected_pkts` is the number of injected
-                // packets OBSERVED at the output of the pipeline, then `dropped` is the number of packets
-                // received and dropped by the pipeline.
-                // This requires the ability to tell if an ouput packet was injected, which we'll have
-                // as those packets will be annotated.
-                //
-                // An alternative to the above would be to let the pipeline not to drop any packet
-                // (currently, the last stage of stats does the actual drop). But that means that
-                // drivers would get packets that they should not transmit and they should decide.
-
-                let mut injected: u64 = 0;
-
-                // send each of the packets
+                // send each of the packets output by the pipeline, except those to be locally delivered
                 for out_pkt in out_pkts {
-                    if false {
-                        injected += 1; // packet wasn't received but injected by pipeline
-                    }
-                    if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
-                        tx_pkts += 1;
-                    } else {
-                        tx_drops += 1;
+                    let done = out_pkt.get_done();
+                    debug_assert!(done.is_some());
+                    if done == Some(DoneReason::Delivered) {
+                        to_tx += 1;
+                        if tx_packet(id, &intf.if_name, &if_table, out_pkt).await {
+                            tx_pkts += 1;
+                        } else {
+                            tx_drops += 1;
+                        }
                     }
                 }
-
-                let ppline_drops = rx_pkts + injected - num_out_pkts;
 
                 tracing::debug!(
                     worker = id,
                     rx_intf_name = intf.if_name,
-                    "Sent {tx_pkts} packets out of {num_out_pkts}, dropped {tx_drops}",
+                    "Sent {tx_pkts} packets out of {to_tx}, dropped {tx_drops}",
                 );
 
                 // update rx task stats
+                counters.ppline_drops = rx_pkts.saturating_sub(num_out_pkts);
                 counters.tx = tx_pkts;
-                counters.ppline_drops = ppline_drops;
                 counters.tx_drops = tx_drops;
                 intf.watchdog.record(&counters);
             }
@@ -577,35 +552,17 @@ async fn tx_packet(
     if_table: &WorkerIfTable,
     pkt: Packet<TestBuffer>,
 ) -> bool {
-    // get outgoing interface marking. Should have one, except if packet is to be dropped.
+    debug_assert_eq!(pkt.get_done(), Some(DoneReason::Delivered));
+    // get outgoing interface marking. Should always have one. Otherwise the egress stage is buggy
     let Some(oif) = pkt.meta().oif else {
-        match pkt.get_done() {
-            Some(DoneReason::Delivered) => {
-                error!(
-                    worker = id,
-                    rx_intf_name = rx_if_name,
-                    "Missing oif in packet metadata. Will drop packet (pipeline bug)"
-                );
-            }
-            Some(done_reason) => {
-                trace!(
-                    worker = id,
-                    rx_intf_name = rx_if_name,
-                    "Dropping packet, reason: {:?}",
-                    done_reason
-                );
-            }
-            None => {
-                // The drop impl of the packet metadata also logs this, but without context.
-                error!(
-                    worker = id,
-                    rx_intf_name = rx_if_name,
-                    "Dropping packet with no verdict (pipeline bug)"
-                );
-            }
-        }
+        error!(
+            worker = id,
+            rx_intf_name = rx_if_name,
+            "Missing oif in packet metadata. Will drop packet (pipeline bug)"
+        );
         return false;
     };
+
     // lookup interface
     let Some(outgoing_unlocked) = if_table.get(&oif) else {
         warn!(
