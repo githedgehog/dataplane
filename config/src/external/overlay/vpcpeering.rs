@@ -1122,6 +1122,85 @@ pub mod contract {
         }
     }
 
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct StaticNatExpose;
+
+    const MAX_TOTAL_LOG: u8 = 6;
+
+    impl ValueGenerator for StaticNatExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = driver.produce::<bool>()?;
+            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
+            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
+
+            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+            for prefix in privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+            }
+            for prefix in publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
+        let mut parts = vec![total_log];
+        for _ in 0..driver.gen_u8(Included(&0), Included(&3))? {
+            let splittable: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, log)| **log > 0)
+                .map(|(index, _)| index)
+                .collect();
+            if splittable.is_empty() {
+                break;
+            }
+            let choice = usize::from(driver.gen_u8(
+                Included(&0),
+                Included(&u8::try_from(splittable.len() - 1).ok()?),
+            )?);
+            let log = parts.swap_remove(splittable[choice]);
+            parts.push(log - 1);
+            parts.push(log - 1);
+        }
+        parts.sort_unstable_by(|a, b| b.cmp(a));
+        Some(parts)
+    }
+
+    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let mut cursor = if v4 {
+            u128::from(match side {
+                Side::Private => 0x0A00_0000u32,
+                Side::Public => 0xAC10_0000,
+            })
+        } else {
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            (0x2001_0db8u128 << 96) | (selector << 80)
+        };
+
+        let mut out = Vec::with_capacity(parts.len());
+        for &log in parts {
+            let prefix = if v4 {
+                prefix_v4(u32::try_from(cursor).ok()?, 32 - log)?
+            } else {
+                prefix_v6(cursor, 128 - log)?
+            };
+            out.push(prefix);
+            cursor += 2u128 << log;
+        }
+        Some(out)
+    }
+
     pub const LOCAL_VNI: u32 = 100;
     pub const REMOTE_VNI: u32 = 200;
 
@@ -1234,6 +1313,27 @@ pub mod contract {
                         "could not build an overlay around {shown}"
                     );
                 });
+        }
+
+        #[test]
+        fn every_generated_static_nat_expose_validates() {
+            let mut shapes_differed = false;
+            bolero::check!()
+                .with_generator(StaticNatExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_static_nat());
+                    if validated.ips().len() != validated.as_range_or_empty().len() {
+                        shapes_differed = true;
+                    }
+                });
+            assert!(
+                shapes_differed,
+                "no generated expose had a different number of prefixes on each side, so the \
+                 mapping was never asked to fragment"
+            );
         }
 
         #[test]
