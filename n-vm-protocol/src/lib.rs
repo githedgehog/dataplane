@@ -612,10 +612,32 @@ pub const ENV_WORKSPACE: &str = "N_VM_WORKSPACE";
 
 // == Binary paths (inside the container) ==
 
-// NOTE: the guest kernel image and `qemu-system-<arch>` binary paths are
-// architecture-specific and live on `n_vm::Arch` (`kernel_image_path` /
-// `qemu_system_binary`), not here, so the aarch64 path can never silently
-// resolve to an x86 default.
+// NOTE: the `qemu-system-<arch>` binary path is architecture-specific and
+// lives on `n_vm::Arch::qemu_system_binary`, not here, so the aarch64 path
+// can never silently resolve to an x86 default.
+//
+// The guest kernel image is *not* a constant at all: it is looked up in the
+// kernel manifest below, because which kernels exist is a fact about the nix
+// build, not about this protocol.
+
+/// Path to the kernel manifest inside the container.
+///
+/// nix writes this file into `testroot`, and every first-level `testroot`
+/// entry is bind-mounted at the container root (see
+/// `n_vm::container`), so it lands here.  It declares which guest kernels
+/// were built and where their images are -- the single source of truth that
+/// keeps the nix build and the Rust test tiers from disagreeing.
+///
+/// This exists because cargo must never invoke nix: the artifacts are
+/// materialized first (`just setup-roots`), and the tests only ever read
+/// them.
+pub const KERNEL_MANIFEST_PATH: &str = "/n-vm-manifest.json";
+
+/// Directory holding per-profile kernel artifacts inside the container.
+///
+/// Paths in the manifest are absolute and already include this prefix; the
+/// constant exists so the nix side and the tests agree on one spelling.
+pub const KERNELS_DIR: &str = "/kernels";
 
 /// Path to the `n-it` init system binary inside the container.
 ///
