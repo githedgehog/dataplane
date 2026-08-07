@@ -21,7 +21,7 @@ use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
 
-use tracing::debug;
+use tracing::{debug, error};
 
 #[concurrency_mode(std)]
 use rand::seq::SliceRandom;
@@ -576,7 +576,7 @@ impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
 ///
 /// It contains a back reference to its parent [`AllocatedPortBlock`], to deallocate the port when
 /// the [`AllocatedPort`] is dropped.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AllocatedPort<I: NatIpWithBitmap> {
     port: NatPort,                               // the actual allocated value
     block_allocator: Arc<AllocatedPortBlock<I>>, // block/IP the allocated value belongs to
@@ -612,7 +612,14 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
 impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
     fn drop(&mut self) {
         debug!("Dropping allocated port {self}...");
-        let _ = self.block_allocator.deallocate_port_from_block(self.port);
+        // Not panicking on a drop path is right; discarding the answer is not. A port that cannot
+        // be given back has either been given back already or was never recorded as taken, and
+        // both mean the bitmap no longer says what is in use -- the same accounting whose silence
+        // let a pair be handed out twice until the error above was made load-bearing. There is
+        // nothing to do about it here, but it should not pass unsaid.
+        if let Err(e) = self.block_allocator.deallocate_port_from_block(self.port) {
+            error!("Failed to give back {self}: {e}");
+        }
     }
 }
 
@@ -845,27 +852,36 @@ impl Bitmap256 {
         Err(())
     }
 
-    fn set_bitmap_value(&mut self, port_in_block: u8, value: u128) -> Result<(), ()> {
-        if port_in_block < 128 {
-            if self.first_half & (1 << port_in_block) == value {
-                return Err(());
-            }
-            self.first_half |= value << port_in_block;
+    /// Mark a port used or free, failing if it is already in that state.
+    ///
+    /// The error is load-bearing in both directions: it is how reserving a port that has already
+    /// been handed out is refused, rather than the pair going to two flows at once, and how giving
+    /// back a port that was never taken is reported as the bookkeeping mistake it is.
+    fn set_bitmap_value(&mut self, port_in_block: u8, used: bool) -> Result<(), ()> {
+        let (half, bit) = if port_in_block < 128 {
+            (&mut self.first_half, port_in_block)
         } else {
-            if self.second_half & (1 << (port_in_block - 128)) == value {
-                return Err(());
-            }
-            self.second_half |= value << (port_in_block - 128);
+            (&mut self.second_half, port_in_block - 128)
+        };
+        let mask = 1u128 << bit;
+
+        if (*half & mask != 0) == used {
+            return Err(());
+        }
+        if used {
+            *half |= mask;
+        } else {
+            *half &= !mask;
         }
         Ok(())
     }
 
     fn deallocate_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
-        self.set_bitmap_value(port_in_block, 0)
+        self.set_bitmap_value(port_in_block, false)
     }
 
     fn reserve_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
-        self.set_bitmap_value(port_in_block, 1)
+        self.set_bitmap_value(port_in_block, true)
     }
 
     fn set_half_bitmap_range(
@@ -1066,6 +1082,93 @@ mod tests {
         Bitmap256::set_half_bitmap_range(&mut half, 120, 127, 1).unwrap();
         let expected = ((1u128 << 8) - 1) << 120;
         assert_eq!(half, expected);
+    }
+
+    // set_bitmap_value(), through the two operations built on it
+
+    fn port_is_used(bitmap: &Bitmap256, port: u8) -> bool {
+        if port < 128 {
+            bitmap.first_half & (1u128 << port) != 0
+        } else {
+            bitmap.second_half & (1u128 << (port - 128)) != 0
+        }
+    }
+
+    // A port given back is free again. Blocks outlive the ports drawn from them, so a port that
+    // stays marked used is one the block can never hand out again.
+    #[test]
+    fn a_deallocated_port_becomes_free_again() {
+        let mut bitmap = Bitmap256::new();
+        for port in [5u8, 200] {
+            bitmap.reserve_port_from_bitmap(port).unwrap();
+            assert!(
+                port_is_used(&bitmap, port),
+                "port {port} was not marked used"
+            );
+
+            bitmap.deallocate_port_from_bitmap(port).unwrap();
+            assert!(
+                !port_is_used(&bitmap, port),
+                "port {port} is still marked used after being given back"
+            );
+        }
+    }
+
+    // Allocation hands out the lowest free port, so a freed port is the next one out.
+    #[test]
+    fn a_deallocated_port_is_handed_out_again() {
+        let mut bitmap = Bitmap256::new();
+        let first = bitmap.allocate_port_from_bitmap().unwrap();
+        let second = bitmap.allocate_port_from_bitmap().unwrap();
+        assert_eq!((first, second), (0, 1));
+
+        bitmap
+            .deallocate_port_from_bitmap(u8::try_from(first).unwrap())
+            .unwrap();
+        assert_eq!(
+            bitmap.allocate_port_from_bitmap().unwrap(),
+            first,
+            "a freed port was not handed out again"
+        );
+    }
+
+    // Reserving a port already in use has to fail: that is what tells a flow being carried across
+    // a config change that its address and port have been taken, rather than handing the same pair
+    // to two flows.
+    #[test]
+    fn reserving_a_used_port_fails() {
+        for port in [0u8, 7, 128, 201] {
+            let mut bitmap = Bitmap256::new();
+            bitmap.reserve_port_from_bitmap(port).unwrap();
+            assert!(
+                bitmap.reserve_port_from_bitmap(port).is_err(),
+                "reserving port {port} twice was allowed"
+            );
+        }
+    }
+
+    // The same, for a port taken by allocation rather than by an earlier reservation. Port 0 is
+    // skipped deliberately: it is the one bit position a broken guard still gets right, so testing
+    // only the first allocation would pass either way.
+    #[test]
+    fn reserving_an_allocated_port_fails() {
+        let mut bitmap = Bitmap256::new();
+        let mut allocated = 0;
+        for _ in 0..4 {
+            allocated = u8::try_from(bitmap.allocate_port_from_bitmap().unwrap()).unwrap();
+        }
+        assert_ne!(allocated, 0);
+        assert!(
+            bitmap.reserve_port_from_bitmap(allocated).is_err(),
+            "reserving port {allocated}, which is allocated, was allowed"
+        );
+    }
+
+    // Giving back a port that is already free is a bookkeeping error, and says so.
+    #[test]
+    fn deallocating_a_free_port_fails() {
+        let mut bitmap = Bitmap256::new();
+        assert!(bitmap.deallocate_port_from_bitmap(9).is_err());
     }
 
     // set_bitmap_range()

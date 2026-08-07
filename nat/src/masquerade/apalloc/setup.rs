@@ -1,34 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::NatIpWithBitmap;
-use super::alloc::{IpAllocator, NatPool, PoolBitmap};
-use super::{NatAllocator, PoolTable, PoolTableKey};
+//! Construction of the masquerade address and port pools.
+//!
+//! Pools cannot be built one expose at a time, because exposes that masquerade towards the same
+//! peer VPC may claim overlapping public ranges and a public address may only be handed out by one
+//! allocator. Building happens in two passes instead: collect every masquerade expose, group them
+//! by peer VPC, cut the public space each group claims into disjoint regions (see [`super::region`])
+//! and build one allocator per region, then give each expose the regions its own range covers.
+
+use super::alloc::{IpAllocator, NatPool, PoolSet};
+use super::region::{AddrInterval, Region, decompose, regions_by_owner};
+use super::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
+use crate::masquerade::allocator_writer::MasqueradeConfig;
 use crate::masquerade::natip::NatIp;
 use crate::ranges::IpRange;
-use config::external::overlay::vpc::ValidatedPeering;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{
-    IpPrefix, L4Protocol, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
-};
+use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
-use tracing::error;
+use tracing::{debug, error};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
 impl NatAllocator {
-    pub(crate) fn add_peering_addresses(
-        &mut self,
-        peering: &ValidatedPeering,
-        dst_vpc_id: VpcDiscriminant,
-    ) {
-        build_nat_pool_generic(
-            peering.local(),
-            dst_vpc_id,
+    pub(crate) fn build_pools(&mut self, config: &MasqueradeConfig) {
+        build_pools_generic(
+            config,
             ValidatedManifest::masquerade_exposes_44,
             ValidatedManifest::port_forwarding_exposes_44,
             &mut self.pools_src44,
@@ -36,9 +37,8 @@ impl NatAllocator {
             self.randomize,
         );
 
-        build_nat_pool_generic(
-            peering.local(),
-            dst_vpc_id,
+        build_pools_generic(
+            config,
             ValidatedManifest::masquerade_exposes_66,
             ValidatedManifest::port_forwarding_exposes_66,
             &mut self.pools_src66,
@@ -48,75 +48,238 @@ impl NatAllocator {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, P, PIter>(
-    manifest: &'a ValidatedManifest,
-    dst_vpc_id: VpcDiscriminant,
-    // A filter to select relevant exposes: those with masquerade, for the relevant IP version
+///////////////////////////////////////////////////////////////////////////////
+// Gathering
+///////////////////////////////////////////////////////////////////////////////
+
+/// One masquerade expose, with everything the pools need from it.
+struct GatheredExpose<'a> {
+    src_vpc_id: VpcDiscriminant,
+    // The private prefixes this expose masquerades, which is what the pool table is keyed by.
+    private_prefixes: &'a PrefixPortsSet,
+    // The public range this expose allocates from, as raw address intervals.
+    public_ranges: Vec<AddrInterval>,
+    idle_timeout: Duration,
+    reserved: ReserveSets,
+}
+
+/// Ports that port forwarding has claimed, and that masquerade must not hand out.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ReserveSets {
+    tcp: PrefixPortsSet,
+    udp: PrefixPortsSet,
+}
+
+impl ReserveSets {
+    fn for_protocol(&self, protocol: NextHeader) -> Option<&PrefixPortsSet> {
+        match protocol {
+            NextHeader::TCP => Some(&self.tcp),
+            NextHeader::UDP => Some(&self.udp),
+            // ICMP identifiers are a space of their own, untouched by port forwarding.
+            _ => None,
+        }
+    }
+}
+
+// Collect the masquerade exposes of every peering, grouped by the VPC they masquerade towards.
+// Grouping by peer VPC is what matters, because return traffic is only told apart by the peer it
+// comes back from: exposes towards different peers can safely claim the same public range.
+fn gather_exposes<'a, J, F, FIter, P, PIter>(
+    config: &'a MasqueradeConfig,
+    exposes_filter: &F,
+    port_forwarding_exposes_filter: &P,
+) -> BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>>
+where
+    J: NatIp,
+    F: Fn(&'a ValidatedManifest) -> FIter,
+    FIter: Iterator<Item = &'a ValidatedExpose>,
+    P: Fn(&'a ValidatedManifest) -> PIter,
+    PIter: Iterator<Item = &'a ValidatedExpose>,
+{
+    let mut groups: BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>> = BTreeMap::new();
+
+    for nat_peering in config.iter() {
+        let manifest = nat_peering.peering.local();
+        let port_forwarding_exposes: Vec<&'a ValidatedExpose> =
+            port_forwarding_exposes_filter(manifest).collect();
+
+        for expose in exposes_filter(manifest) {
+            let public_ranges = public_intervals::<J>(expose.as_range_or_empty());
+            if public_ranges.is_empty() {
+                // A masquerade expose is validated to have a non-empty as_range, so this only
+                // happens if none of its prefixes are of the version we are building.
+                continue;
+            }
+            groups
+                .entry(nat_peering.dst_vpcd)
+                .or_default()
+                .push(GatheredExpose {
+                    src_vpc_id: nat_peering.src_vpcd,
+                    private_prefixes: expose.ips(),
+                    public_ranges,
+                    idle_timeout: expose
+                        .idle_timeout()
+                        .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT),
+                    reserved: find_masquerade_portfw_overlap(&port_forwarding_exposes, expose),
+                });
+        }
+    }
+
+    groups
+}
+
+// Convert a set of public prefixes into raw address intervals, dropping any that are not of the
+// version being built.
+fn public_intervals<J: NatIp>(ranges: &PrefixPortsSet) -> Vec<AddrInterval> {
+    ranges
+        .iter()
+        .filter_map(|prefix| {
+            // FIXME: Account for port ranges. A public range may be restricted to a port range,
+            // which the pools do not model, so the whole port space of the address is used.
+            let start = J::try_from_addr(prefix.prefix().as_address()).ok()?;
+            let end = J::try_from_addr(prefix.prefix().last_address()).ok()?;
+            Some(AddrInterval::new(start.to_addr_bits(), end.to_addr_bits()))
+        })
+        .collect()
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Building
+///////////////////////////////////////////////////////////////////////////////
+
+fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
+    config: &'a MasqueradeConfig,
     exposes_filter: F,
-    // A filter to select other exposes with port forwarding, for the relevant IP version
     port_forwarding_exposes_filter: P,
     table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
     randomize: bool,
 ) where
-    F: FnOnce(&'a ValidatedManifest) -> FIter,
+    I: NatIpWithBitmap,
+    J: NatIpWithBitmap,
+    F: Fn(&'a ValidatedManifest) -> FIter,
     FIter: Iterator<Item = &'a ValidatedExpose>,
-    P: FnOnce(&'a ValidatedManifest) -> PIter,
+    P: Fn(&'a ValidatedManifest) -> PIter,
     PIter: Iterator<Item = &'a ValidatedExpose>,
 {
-    let port_forwarding_exposes: Vec<&'a ValidatedExpose> =
-        port_forwarding_exposes_filter(manifest).collect();
+    let groups =
+        gather_exposes::<J, _, _, _, _>(config, &exposes_filter, &port_forwarding_exposes_filter);
 
-    exposes_filter(manifest).for_each(|expose| {
-        let prefixes_and_ports_to_exclude_from_pools =
-            find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
+    for (dst_vpc_id, exposes) in groups {
+        // Allocations for TCP, for example, do not affect allocations for UDP or for ICMP: the
+        // space made of addresses and L4 ports or identifiers is distinct for each protocol. So
+        // each region backs one allocator per protocol, over the same addresses.
+        for protocol in [NextHeader::TCP, NextHeader::UDP, icmp_proto] {
+            let specs: Vec<PoolSpec> = exposes
+                .iter()
+                .map(|expose| PoolSpec {
+                    public_ranges: expose.public_ranges.clone(),
+                    reserved: expose
+                        .reserved
+                        .for_protocol(protocol)
+                        .cloned()
+                        .unwrap_or_default(),
+                    idle_timeout: expose.idle_timeout,
+                })
+                .collect();
 
-        let idle_timeout = expose
-            .idle_timeout()
-            .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT);
-
-        // TCP/UDP masquerade allocators should avoid the IANA system/well-known range
-        // (0-1023). ICMP identifiers are allocated independently and are not subject to that
-        // TCP/UDP source-port policy.
-        let tcp_ip_allocator = ip_allocator_for_prefixes(
-            expose.as_range_or_empty(),
-            idle_timeout,
-            &prefixes_and_ports_to_exclude_from_pools.tcp,
-            randomize,
-            true,
-        );
-        let udp_ip_allocator = ip_allocator_for_prefixes(
-            expose.as_range_or_empty(),
-            idle_timeout,
-            &prefixes_and_ports_to_exclude_from_pools.udp,
-            randomize,
-            true,
-        );
-        let icmp_ip_allocator = ip_allocator_for_prefixes(
-            expose.as_range_or_empty(),
-            idle_timeout,
-            &PrefixPortsSet::default(),
-            randomize,
-            false,
-        );
-
-        add_pool_entries(
-            table,
-            expose.ips(),
-            dst_vpc_id,
-            &tcp_ip_allocator,
-            &udp_ip_allocator,
-            &icmp_ip_allocator,
-            icmp_proto,
-        );
-    });
+            let pool_sets = pool_sets_for_specs::<J>(&specs, protocol, randomize);
+            for (expose, pool_set) in exposes.iter().zip(pool_sets) {
+                add_pool_entries(
+                    table,
+                    expose.private_prefixes,
+                    expose.src_vpc_id,
+                    dst_vpc_id,
+                    protocol,
+                    &pool_set,
+                );
+            }
+        }
+    }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct ReserveSets {
-    tcp: PrefixPortsSet,
-    udp: PrefixPortsSet,
+/// What building a pool needs to know about one expose, independent of where it came from. Keeping
+/// this free of config types is what lets the property tests drive the real construction.
+#[derive(Clone)]
+pub(crate) struct PoolSpec {
+    pub(crate) public_ranges: Vec<AddrInterval>,
+    pub(crate) reserved: PrefixPortsSet,
+    pub(crate) idle_timeout: Duration,
+}
+
+/// Cut the space the given exposes claim into disjoint regions, build one allocator per region,
+/// and return the pools each expose may allocate from, in the same order as `specs`.
+///
+/// This is where the guarantee lives: exposes sharing a region share its allocator, so a public
+/// address and port cannot be handed out twice, and an expose is only ever offered regions its own
+/// ranges cover.
+pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
+    specs: &[PoolSpec],
+    protocol: NextHeader,
+    randomize: bool,
+) -> Vec<PoolSet<J>> {
+    let owner_ranges: Vec<Vec<AddrInterval>> = specs
+        .iter()
+        .map(|spec| spec.public_ranges.clone())
+        .collect();
+    let regions = decompose(&owner_ranges);
+    debug!(
+        "Public space cut into {} region(s) for {} expose(s) ({protocol})",
+        regions.len(),
+        specs.len()
+    );
+
+    let allocators = build_region_allocators::<J>(&regions, specs, protocol, randomize);
+    let by_owner = regions_by_owner(&regions);
+
+    specs
+        .iter()
+        .enumerate()
+        .map(|(owner, spec)| {
+            let mut pool_set = PoolSet::new(spec.idle_timeout);
+            for &region_index in by_owner.get(&owner).map_or(&[][..], Vec::as_slice) {
+                pool_set.push_region(
+                    regions[region_index].range,
+                    allocators[region_index].clone(),
+                );
+            }
+            pool_set
+        })
+        .collect()
+}
+
+// One allocator per region. Every expose owning a region shares that allocator, which is what
+// keeps a public address and port from being handed out twice.
+fn build_region_allocators<J: NatIpWithBitmap>(
+    regions: &[Region],
+    specs: &[PoolSpec],
+    protocol: NextHeader,
+    randomize: bool,
+) -> Vec<IpAllocator<J>> {
+    // TCP and UDP masquerade allocators should avoid the IANA system/well-known range (0-1023).
+    // ICMP identifiers are allocated independently and are not subject to that policy.
+    let exclude_wellknown_ports = matches!(protocol, NextHeader::TCP | NextHeader::UDP);
+
+    regions
+        .iter()
+        .map(|region| {
+            // A region is shared, so it must honour every claim on it: reserve what port
+            // forwarding has taken from any of its owners.
+            let reserved = region
+                .owners
+                .iter()
+                .fold(PrefixPortsSet::new(), |accumulated, &owner| {
+                    accumulated.union_prefixes_and_ports(&specs[owner].reserved)
+                });
+
+            let pool = NatPool::for_range(
+                region.range,
+                build_reserved_prefixes_ports(&reserved),
+                exclude_wellknown_ports,
+            );
+            IpAllocator::new(pool, randomize)
+        })
+        .collect()
 }
 
 fn find_masquerade_portfw_overlap<'a>(
@@ -147,92 +310,6 @@ fn find_masquerade_portfw_overlap<'a>(
     reserve_sets
 }
 
-fn pool_table_key_for_expose<I: NatIp>(
-    prefix: &PrefixWithOptionalPorts,
-    protocol: NextHeader,
-    dst_vpc_id: VpcDiscriminant,
-) -> PoolTableKey<I> {
-    let (addr, addr_range_end) = prefix_bounds(prefix);
-    PoolTableKey::new(protocol, dst_vpc_id, addr, addr_range_end)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
-    table: &mut PoolTable<I, J>,
-    prefixes: &PrefixPortsSet,
-    dst_vpc_id: VpcDiscriminant,
-    tcp_allocator: &IpAllocator<J>,
-    udp_allocator: &IpAllocator<J>,
-    icmp_allocator: &IpAllocator<J>,
-    icmp_proto: NextHeader,
-) {
-    for prefix in prefixes {
-        // We insert three times the entry, once for TCP, once for UDP and once for ICMP (v4 or v6
-        // depending on the case). Allocations for TCP, for example, do not affect allocations for UDP
-        // or for ICMP, the space defined by the combination of IP addresses and L4 ports/id is distinct
-        // for each protocol.
-
-        let tcp_key = pool_table_key_for_expose(prefix, NextHeader::TCP, dst_vpc_id);
-        let udp_key = pool_table_key_for_expose(prefix, NextHeader::UDP, dst_vpc_id);
-        let icmp_key = pool_table_key_for_expose(prefix, icmp_proto, dst_vpc_id);
-
-        table.add_entry(tcp_key, tcp_allocator.clone());
-        table.add_entry(udp_key, udp_allocator.clone());
-        table.add_entry(icmp_key, icmp_allocator.clone());
-    }
-}
-
-fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
-    prefixes: &PrefixPortsSet,
-    idle_timeout: Duration,
-    prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
-    randomize: bool,
-    exclude_wellknown_ports: bool,
-) -> IpAllocator<J> {
-    let pool = create_natpool(
-        prefixes,
-        prefixes_and_ports_to_exclude_from_pools,
-        idle_timeout,
-        exclude_wellknown_ports,
-    );
-    IpAllocator::new(pool, randomize)
-}
-
-fn create_natpool<J: NatIpWithBitmap>(
-    prefixes: &PrefixPortsSet,
-    prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
-    idle_timeout: Duration,
-    exclude_wellknown_ports: bool,
-) -> NatPool<J> {
-    // Build mappings for IPv6 <-> u32 bitmap translation
-    let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(
-        &prefixes
-            .iter()
-            // FIXME: Add port range, too
-            .map(PrefixWithOptionalPorts::prefix)
-            .collect::<BTreeSet<Prefix>>(),
-    );
-
-    // Mark all addresses as available (free) in bitmap
-    let mut bitmap = PoolBitmap::new();
-    prefixes
-        .iter()
-        // FIXME: Add port range, too
-        .for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping));
-
-    let reserved_prefixes_ports =
-        build_reserved_prefixes_ports(prefixes_and_ports_to_exclude_from_pools);
-
-    NatPool::new(
-        bitmap,
-        bitmap_mapping,
-        reverse_bitmap_mapping,
-        reserved_prefixes_ports,
-        idle_timeout,
-        exclude_wellknown_ports,
-    )
-}
-
 fn build_reserved_prefixes_ports(
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
 ) -> Option<DisjointRangesBTreeMap<IpRange, PortRange>> {
@@ -251,47 +328,36 @@ fn build_reserved_prefixes_ports(
     Some(reserved_prefixes_ports)
 }
 
+fn pool_table_key_for_expose<I: NatIp>(
+    prefix: &PrefixWithOptionalPorts,
+    protocol: NextHeader,
+    src_vpc_id: VpcDiscriminant,
+    dst_vpc_id: VpcDiscriminant,
+) -> PoolTableKey<I> {
+    let (addr, addr_range_end) = prefix_bounds(prefix);
+    PoolTableKey::new(protocol, src_vpc_id, dst_vpc_id, addr, addr_range_end)
+}
+
+fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+    table: &mut PoolTable<I, J>,
+    prefixes: &PrefixPortsSet,
+    src_vpc_id: VpcDiscriminant,
+    dst_vpc_id: VpcDiscriminant,
+    protocol: NextHeader,
+    pool_set: &PoolSet<J>,
+) {
+    for prefix in prefixes {
+        let key = pool_table_key_for_expose(prefix, protocol, src_vpc_id, dst_vpc_id);
+        table.add_entry(key, pool_set.clone());
+    }
+}
+
 fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> (I, I) {
     let addr = I::try_from_addr(prefix.prefix().as_address()).unwrap_or_else(|()| unreachable!());
     let addr_range_end =
         I::try_from_addr(prefix.prefix().last_address()).unwrap_or_else(|()| unreachable!());
     // FIXME: Account for port ranges
     (addr, addr_range_end)
-}
-
-// The allocator's bitmap contains u32 only. For IPv4, it maps well to the address space. For IPv6,
-// we need some mapping to associate IPv6 addresses with u32 indices. This also means that we cannot
-// use more than 2^32 addresses for one expose, for NAT. If the prefixes we get contain more, we'll
-// just ignore the remaining addresses. Hardware limitations are such that working with 4 billion
-// allocated addresses is unreallistic anyway.
-#[allow(clippy::type_complexity)]
-fn create_ipv6_bitmap_mappings(
-    prefixes: &BTreeSet<Prefix>,
-) -> (BTreeMap<u32, u128>, BTreeMap<u128, u32>) {
-    let mut bitmap_mapping = BTreeMap::new();
-    let mut reverse_bitmap_mapping = BTreeMap::new();
-    let mut index = 0;
-
-    for prefix in prefixes {
-        if let Prefix::IPV6(p) = prefix {
-            let start_address = p.network().to_bits();
-            bitmap_mapping.insert(index, start_address);
-            reverse_bitmap_mapping.insert(start_address, index);
-            if p.size() + u128::from(index) >= 2_u128.pow(32) {
-                break;
-            }
-            let Ok(psize) = u128::try_from(p.size()) else {
-                error!("Failed to get u128 from prefix {:#?}", p.size());
-                continue;
-            };
-            let Ok(psize_u32) = u32::try_from(psize) else {
-                error!("Failed to convert {psize} to u32");
-                continue;
-            };
-            index += psize_u32;
-        }
-    }
-    (bitmap_mapping, reverse_bitmap_mapping)
 }
 
 #[cfg(test)]

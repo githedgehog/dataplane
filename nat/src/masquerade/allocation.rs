@@ -35,6 +35,32 @@ pub enum AllocatorError {
     NoPoolFound,
 }
 
+impl AllocatorError {
+    /// Whether this error says the space simply ran out, rather than that something is wrong.
+    ///
+    /// A caller holding several allocators over disjoint space may move on to the next one when
+    /// this holds, and only then: any other error is about the allocator rather than about how
+    /// full it is, and would be buried by a later success. The classification is the one
+    /// [`DoneReason`] already draws, where exactly these become `NatOutOfResources`.
+    /// The match is exhaustive on purpose: a new error has to be classified here rather than
+    /// silently defaulting to one side of it.
+    #[must_use]
+    pub fn is_exhaustion(&self) -> bool {
+        match self {
+            AllocatorError::NoFreeIp
+            | AllocatorError::NoPortBlock
+            | AllocatorError::NoFreePort(_) => true,
+            AllocatorError::PortAllocationFailed(_)
+            | AllocatorError::PortReservationFailed(_)
+            | AllocatorError::UnsupportedProtocol(_)
+            | AllocatorError::MissingDiscriminant
+            | AllocatorError::InternalIssue(_)
+            | AllocatorError::Denied
+            | AllocatorError::NoPoolFound => false,
+        }
+    }
+}
+
 impl From<&AllocatorError> for DoneReason {
     fn from(error: &AllocatorError) -> Self {
         match error {

@@ -1,5 +1,8 @@
 **.profraw
 **/__fuzz__/**
+# libfuzzer writes one of these per worker into the working directory when
+# `just fuzz` is given -j; the corpus itself lives under __fuzz__.
+fuzz-*.log
 # qemu-user core dumps from SIGABRT under emulated tests.
 **/qemu_*.core
 result*

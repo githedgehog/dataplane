@@ -193,6 +193,89 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn shuttle() {
                     #krate::stress(|| #block);
                 }
+
+            }
+        }
+    }
+    .into()
+}
+
+/// Give a test the backend-named module shape of [`macro@test`] without touching its body.
+///
+/// [`macro@test`] wraps the whole body in [`stress`](../dataplane_concurrency/fn.stress.html),
+/// which is what you want when the body *is* the thing being model-checked. It is the wrong shape
+/// when a generator has to be the outer loop:
+///
+/// ```ignore
+/// bolero::check!().with_type().cloned().for_each(|scenario: Scenario| {
+///     concurrency::stress(move || scenario.run());   // one exploration per generated shape
+/// });
+/// ```
+///
+/// Wrapping *that* in `stress` would put the whole generator campaign inside a single
+/// model-checking execution, making the generator's own choices part of the explored state space.
+/// So such tests call `stress` themselves, and until now paid for it by losing the backend-named
+/// leaf that `just features=shuttle test` filters on: the suite compiled under the model checker
+/// and was never selected to run.
+///
+/// This attribute emits the module shape and nothing else, leaving the body verbatim:
+///
+/// ```ignore
+/// #[concurrency::model_test]
+/// fn stress_it() { /* ... calls stress itself ... */ }
+/// ```
+///
+/// becomes `mod stress_it { mod concurrency_model { #[test] fn <backend>() { /* body */ } } }`,
+/// where `<backend>` is `loom`, `shuttle` or `plain`. Unlike [`macro@test`], the wrapper is emitted
+/// on every backend, so the name does not change shape between them; there is no existing flat
+/// name to keep compatible here.
+#[proc_macro_attribute]
+pub fn model_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+
+    let attrs = &func.attrs;
+    let sig = &func.sig;
+    let block = &func.block;
+    let fn_name = &sig.ident;
+
+    if let Some(asyncness) = sig.asyncness {
+        return syn::Error::new_spanned(
+            asyncness,
+            "#[concurrency::model_test] does not support async functions yet",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !sig.inputs.is_empty() {
+        return syn::Error::new_spanned(
+            &sig.inputs,
+            "#[concurrency::model_test] functions must take no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    quote! {
+        #[allow(non_snake_case)]
+        mod #fn_name {
+            use super::*;
+            mod concurrency_model {
+                use super::*;
+
+                #[cfg(feature = "loom")]
+                #[::core::prelude::v1::test]
+                #(#attrs)*
+                fn loom() #block
+
+                #[cfg(feature = "shuttle")]
+                #[::core::prelude::v1::test]
+                #(#attrs)*
+                fn shuttle() #block
+
+                #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+                #[::core::prelude::v1::test]
+                #(#attrs)*
+                fn plain() #block
             }
         }
     }

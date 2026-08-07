@@ -9,19 +9,20 @@
 //!
 //! See also the architecture diagram at the top of mod.rs.
 
+use super::region::AddrInterval;
 use super::{NatIpWithBitmap, port_alloc};
 use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use lpm::prefix::PortRange;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{IpPrefix, PortRange, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, error};
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -49,10 +50,6 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         self.pool.read()
     }
 
-    pub(crate) fn idle_timeout(&self) -> Duration {
-        self.pool.read().idle_timeout()
-    }
-
     fn deallocate_ip(&self, ip: I) {
         self.pool.write().deallocate_from_pool(ip);
     }
@@ -61,25 +58,46 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        let allocated_ips = self.pool.read();
-        for ip_weak in allocated_ips.ips_in_use() {
-            let Some(ip) = ip_weak.upgrade() else {
-                continue;
-            };
-            if !ip.has_free_ports() {
-                continue;
-            }
-            match ip.allocate_port_for_ip(allow_null) {
-                Ok(port) => {
-                    debug!("Allocated port {port}");
-                    return Ok(port);
+        // An address upgraded out of the in-use list has to outlive the guard below.
+        //
+        // The list holds weak references; the strong ones belong to the blocks handed out from
+        // each address. Another thread ending the last flow on an address drops the last of those
+        // at any moment, which leaves the reference upgraded here as the only one. Letting it go
+        // while the guard is held runs `AllocatedIp::drop` on this thread, and that takes the same
+        // lock for writing: a self-deadlock that wedges the core for good, on the path every new
+        // flow takes.
+        //
+        // Every upgrade is therefore kept until the guard is gone, and released after it.
+        let mut examined: Vec<Arc<AllocatedIp<I>>> = Vec::new();
+        let outcome = {
+            let allocated_ips = self.pool.read();
+            let mut outcome = Err(AllocatorError::NoFreeIp);
+            for ip_weak in allocated_ips.ips_in_use() {
+                let Some(ip) = ip_weak.upgrade() else {
+                    continue;
+                };
+                examined.push(ip.clone());
+                if !ip.has_free_ports() {
+                    continue;
                 }
-                // If there is no free port left, loop again to try another IP address
-                Err(AllocatorError::NoFreePort(_)) => {}
-                Err(e) => return Err(e),
+                match ip.allocate_port_for_ip(allow_null) {
+                    Ok(port) => {
+                        debug!("Allocated port {port}");
+                        outcome = Ok(port);
+                        break;
+                    }
+                    // If there is no free port left, loop again to try another IP address
+                    Err(AllocatorError::NoFreePort(_)) => {}
+                    Err(e) => {
+                        outcome = Err(e);
+                        break;
+                    }
+                }
             }
-        }
-        Err(AllocatorError::NoFreeIp)
+            outcome
+        };
+        drop(examined);
+        outcome
     }
 
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
@@ -100,8 +118,16 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     }
 
     fn cleanup_used_ips(&self) {
-        let mut allocated_ips = self.pool.write();
-        allocated_ips.cleanup();
+        // Same trap as in `reuse_allocated_ip`, and worse: `cleanup` upgrades each weak reference
+        // to see whether it still resolves, and does it holding the pool's *write* lock. An
+        // upgrade that turns out to be the last strong reference runs `AllocatedIp::drop` on this
+        // thread, which asks for that same lock again.
+        let mut released = Vec::new();
+        {
+            let mut allocated_ips = self.pool.write();
+            allocated_ips.cleanup(&mut released);
+        }
+        drop(released);
     }
 
     pub(crate) fn allocate(
@@ -111,16 +137,29 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
 
-        if let Ok(port) = self.reuse_allocated_ip(allow_null) {
-            return Ok(port);
+        // Drawing a fresh address is what to do when the addresses already in hand have no room,
+        // and only then. `reuse_allocated_ip` distinguishes the two: it walks past an address that
+        // has run out and reports anything else as it found it. Taking only `Ok` here would put
+        // that back, burying an error about the allocator under whatever the fresh address
+        // returns -- the same mistake `PoolSet::allocate` avoids one level up, where trying the
+        // next region on any error would bury it under a success.
+        match self.reuse_allocated_ip(allow_null) {
+            Ok(port) => Ok(port),
+            Err(e) if e.is_exhaustion() => self.allocate_from_new_ip(allow_null),
+            Err(e) => Err(e),
         }
-        self.allocate_from_new_ip(allow_null)
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        self.pool
-            .write()
-            .reserve_from_pool(ip, self.clone(), self.randomize)
+        // The third place that upgrades an in-use entry under the pool lock, and so the third that
+        // must not let the upgrade go while holding it. See `cleanup_used_ips`.
+        let mut examined = Vec::new();
+        let outcome =
+            self.pool
+                .write()
+                .reserve_from_pool(ip, self.clone(), self.randomize, &mut examined);
+        drop(examined);
+        outcome
     }
 
     pub(crate) fn reserve(
@@ -137,6 +176,99 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     pub fn get_pool_clone_for_tests(&self) -> (RoaringBitmap, VecDeque<Weak<AllocatedIp<I>>>) {
         let pool = self.pool.read();
         (pool.bitmap.0.clone(), pool.in_use.clone())
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PoolSet
+///////////////////////////////////////////////////////////////////////////////
+
+/// One region of the public address space, and the allocator that owns it.
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRegion<I: NatIpWithBitmap> {
+    range: AddrInterval,
+    allocator: IpAllocator<I>,
+}
+
+impl<I: NatIpWithBitmap> PoolRegion<I> {
+    pub(crate) fn range(&self) -> AddrInterval {
+        self.range
+    }
+
+    pub(crate) fn allocator(&self) -> &IpAllocator<I> {
+        &self.allocator
+    }
+}
+
+/// What a single expose may allocate from: the regions its public range covers, in the order to
+/// try them, plus the settings that belong to the expose rather than to the address space.
+///
+/// An expose's range is exactly the union of its regions, so allocating from any of them yields an
+/// address the expose is configured for, and regions shared with another expose are backed by one
+/// allocator, so no address is handed out twice.
+#[derive(Debug, Clone)]
+pub(crate) struct PoolSet<I: NatIpWithBitmap> {
+    regions: Vec<PoolRegion<I>>,
+    idle_timeout: Duration,
+}
+
+impl<I: NatIpWithBitmap> PoolSet<I> {
+    pub(crate) fn new(idle_timeout: Duration) -> Self {
+        Self {
+            regions: Vec::new(),
+            idle_timeout,
+        }
+    }
+
+    pub(crate) fn push_region(&mut self, range: AddrInterval, allocator: IpAllocator<I>) {
+        self.regions.push(PoolRegion { range, allocator });
+    }
+
+    pub(crate) fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    pub(crate) fn regions(&self) -> impl Iterator<Item = &PoolRegion<I>> {
+        self.regions.iter()
+    }
+
+    /// Allocate from the first region with room. Regions are ordered so that those the expose has
+    /// to itself are tried first, leaving shared space for exposes that have nowhere else to go.
+    ///
+    /// Only a region being full moves on to the next one. Any other error is about the allocator
+    /// rather than about how full that region is, and trying the next region would either bury it
+    /// under a success or replace it with a later region's `NoFreeIp`.
+    pub(crate) fn allocate(
+        &self,
+        allow_null: bool,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        let mut exhausted = None;
+        for region in &self.regions {
+            match region.allocator.allocate(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(e) if e.is_exhaustion() => {
+                    debug!("Region {:?} is out of space: {e}", region.range);
+                    exhausted = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(exhausted.unwrap_or(AllocatorError::NoFreeIp))
+    }
+
+    /// Reserve a specific address and port, which has to come from the region owning that address.
+    pub(crate) fn reserve(
+        &self,
+        ip: I,
+        port: NatPort,
+    ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
+        let bits = ip.to_addr_bits();
+        let region = self
+            .regions
+            .iter()
+            .find(|region| region.range.contains(bits))
+            .ok_or(AllocatorError::NoPoolFound)?;
+        region.allocator.reserve(ip, port)
     }
 }
 
@@ -228,33 +360,50 @@ impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
 /// A [`NatPool`] is a pool of IP addresses that can be allocated from. It contains a bitmap of
 /// available IP addresses, and a list of weak references to [`AllocatedIp`] objects representing
 /// the allocated IPs potentially available for use (if they still have free ports)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
     reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
-    idle_timeout: Duration,
     exclude_wellknown_ports: bool,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
-    pub(crate) fn new(
-        bitmap: PoolBitmap,
-        bitmap_mapping: BTreeMap<u32, u128>,
-        reverse_bitmap_mapping: BTreeMap<u128, u32>,
+    /// Build the pool covering one contiguous region of the public address space.
+    ///
+    /// Pools own a region rather than an expose's range, because ranges from different exposes
+    /// overlap and a public address may only be handed out by one pool.
+    pub(crate) fn for_range(
+        range: AddrInterval,
         reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
-        idle_timeout: Duration,
         exclude_wellknown_ports: bool,
     ) -> Self {
+        // Index the region from its own start. IPv4 indexes its bitmap by the address bits and
+        // ignores the mapping; IPv6 cannot fit its space in a u32, so indices count from the start
+        // of the region and the mapping carries them back to real addresses. Going through
+        // try_to_offset gets both right without naming either version here.
+        let bitmap_mapping = BTreeMap::from([(0u32, range.start)]);
+        let reverse_bitmap_mapping = BTreeMap::from([(range.start, 0u32)]);
+
+        // A region holding more addresses than the u32 bitmap can index is truncated. We would run
+        // out of memory long before allocating four billion addresses.
+        let span = range.len().saturating_sub(1).min(u128::from(u32::MAX));
+        let to_offset = |bits: u128| {
+            let address = I::try_from_bits(bits).unwrap_or_else(|()| unreachable!());
+            I::try_to_offset(address, &reverse_bitmap_mapping).unwrap_or_else(|_| unreachable!())
+        };
+
         Self {
-            bitmap,
+            bitmap: PoolBitmap::with_offset_range(
+                to_offset(range.start),
+                to_offset(range.start + span),
+            ),
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
             reserved_prefixes_ports,
-            idle_timeout,
             exclude_wellknown_ports,
         }
     }
@@ -263,12 +412,16 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.in_use.push_back(Arc::downgrade(ip));
     }
 
-    fn cleanup(&mut self) {
-        self.in_use.retain(|ip| ip.upgrade().is_some());
-    }
-
-    pub(crate) fn idle_timeout(&self) -> Duration {
-        self.idle_timeout
+    /// Drop the entries whose addresses are gone, handing the caller every address that is still
+    /// alive so it can release them once the pool lock is no longer held. See `cleanup_used_ips`.
+    fn cleanup(&mut self, keep_alive: &mut Vec<Arc<AllocatedIp<I>>>) {
+        self.in_use.retain(|ip| match ip.upgrade() {
+            Some(alive) => {
+                keep_alive.push(alive);
+                true
+            }
+            None => false,
+        });
     }
 
     pub(crate) fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
@@ -314,22 +467,34 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
     fn deallocate_from_pool(&mut self, ip: I) {
         debug!("Address {ip} was deallocated");
-        let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap();
-        self.bitmap.set_ip_free(offset);
+        // The address was handed out by this pool, so it maps back into it. This runs while an
+        // allocation is being dropped and has nowhere to report a failure, so say so and leave the
+        // address marked in use rather than panicking on the drop path.
+        match I::try_to_offset(ip, &self.reverse_bitmap_mapping) {
+            Ok(offset) => {
+                self.bitmap.set_ip_free(offset);
+            }
+            Err(e) => error!("Address {ip} does not map back into the pool it came from: {e}"),
+        }
     }
 
+    /// `keep_alive` collects every address upgraded here, for the caller to release once the pool
+    /// lock is gone. See `cleanup_used_ips`.
     fn reserve_from_pool(
         &mut self,
         ip: I,
         ip_allocator: IpAllocator<I>,
         randomize: bool,
+        keep_alive: &mut Vec<Arc<AllocatedIp<I>>>,
     ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
 
         for ip_weak in self.ips_in_use() {
-            if let Some(ip_arc) = ip_weak.upgrade()
-                && ip_arc.ip() == ip
-            {
+            let Some(ip_arc) = ip_weak.upgrade() else {
+                continue;
+            };
+            keep_alive.push(ip_arc.clone());
+            if ip_arc.ip() == ip {
                 // We found the allocated IP in the list of IPs in use, return it
                 debug!("Reserved ip {ip_arc}");
                 return Ok(ip_arc);
@@ -418,8 +583,11 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 pub(crate) struct PoolBitmap(RoaringBitmap);
 
 impl PoolBitmap {
-    pub(crate) fn new() -> Self {
-        Self(RoaringBitmap::new())
+    /// Mark every index in the inclusive range as free.
+    pub(crate) fn with_offset_range(start: u32, end: u32) -> Self {
+        let mut bitmap = RoaringBitmap::new();
+        bitmap.insert_range(start..=end);
+        Self(bitmap)
     }
 
     fn pop_ip(&mut self) -> Result<u32, AllocatorError> {
@@ -434,21 +602,6 @@ impl PoolBitmap {
 
     fn set_ip_free(&mut self, index: u32) -> bool {
         self.0.insert(index)
-    }
-
-    pub(crate) fn add_prefix(&mut self, prefix: &Prefix, bitmap_mapping: &BTreeMap<u128, u32>) {
-        match prefix {
-            Prefix::IPV4(p) => {
-                let start = p.network().to_bits();
-                let end = p.last_address().to_bits();
-                self.0.insert_range(start..=end);
-            }
-            Prefix::IPV6(p) => {
-                let start = map_address(p.network(), bitmap_mapping);
-                let end = map_address(p.last_address(), bitmap_mapping);
-                self.0.insert_range(start..=end);
-            }
-        }
     }
 }
 
@@ -480,11 +633,25 @@ pub(crate) fn map_offset(
 }
 
 // Reverse operation from map_offset()
-pub(crate) fn map_address(address: Ipv6Addr, bitmap_mapping: &BTreeMap<u128, u32>) -> u32 {
+//
+// Not every address of a region has an offset. A region may hold more addresses than a u32 can
+// index, in which case the bitmap covers only the first 2^32 of them (see `NatPool::for_range`),
+// and an address beyond that is simply not one this pool can serve. That is reachable from
+// configuration rather than a bug: a flow carried across a config change presents the address it
+// already holds, and the region it falls in may have grown downwards underneath it. Report it as
+// the pool not serving the address, so the flow is dropped like any other that cannot be carried
+// over, rather than panicking in the middle of applying a config.
+pub(crate) fn map_address(
+    address: Ipv6Addr,
+    bitmap_mapping: &BTreeMap<u128, u32>,
+) -> Result<u32, AllocatorError> {
     let (prefix_start_bits, prefix_offset) = bitmap_mapping
         .range(..=address.to_bits())
         .next_back()
-        .expect("This should never fail");
+        .ok_or(AllocatorError::NoPoolFound)?;
 
-    prefix_offset + u32::try_from(address.to_bits() - prefix_start_bits).unwrap()
+    u32::try_from(address.to_bits() - prefix_start_bits)
+        .ok()
+        .and_then(|offset| prefix_offset.checked_add(offset))
+        .ok_or(AllocatorError::NoPoolFound)
 }
