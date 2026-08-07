@@ -11,6 +11,14 @@ debug_justfile := "false"
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
+# threads miri may use ("0" means every core on the machine).
+#
+# This module compiles and runs on the host inside `nix-shell`, so the root
+# justfile's `cores` (which is just `nix build --cores`) never reaches it.
+# We therefore hand the cap to cargo and to nextest ourselves: cargo through
+# CARGO_BUILD_JOBS for the build, nextest through --test-threads for the run.
+export cores := "0"
+
 export cpu := "powerpc64"
 [private]
 export target := cpu + "-unknown-linux-gnu"
@@ -52,7 +60,14 @@ test *args="":
       # Umbrella cfg shared with the qemu-user path in nix/profiles.nix.
       RUSTFLAGS+="--cfg=emulated"
       declare -rx RUSTFLAGS
-      declare -ra cmd=("nice" "-n" "19" "cargo" "miri" "nextest" "run" "--profile=miri" "--target=${target}")
+      declare -a cmd=("nice" "-n" "19" "cargo" "miri" "nextest" "run" "--profile=miri" "--target=${target}")
+      if [ "${cores}" != "0" ]; then
+        # nextest defaults --test-threads to the core count; the miri profile
+        # then spends `threads-required` (== ${seeds}) of those slots per test.
+        declare -rx CARGO_BUILD_JOBS="${cores}"
+        cmd+=("--test-threads=${cores}")
+      fi
+      declare -r cmd
       echo "Running Miri with args: {{ args }}"
       echo "MIRIFLAGS=$MIRIFLAGS"
       echo "RUSTFLAGS=$RUSTFLAGS"

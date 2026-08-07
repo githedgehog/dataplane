@@ -338,7 +338,8 @@ push-container target="dataplane" *args: (build-container target args) && versio
             exit 99
     esac
 
-# Note: deliberately ignores all recipe parameters save version, debug_justfile, and oci_repo.
+# Note: deliberately ignores all recipe parameters save version, debug_justfile,
+# oci_repo, and the jobs/cores build-parallelism caps.
 # Pushes all release container images.
 [script]
 push:
@@ -349,7 +350,7 @@ push:
         else
           platform="x86-64-v3"
         fi
-        just debug_justfile="{{debug_justfile}}" oci_repo="{{oci_repo}}" version="{{version}}" profile=release platform="${platform}" sanitize= instrument=none push-container "${container}"
+        just jobs="{{jobs}}" cores="{{cores}}" debug_justfile="{{debug_justfile}}" oci_repo="{{oci_repo}}" version="{{version}}" profile=release platform="${platform}" sanitize= instrument=none push-container "${container}"
     done
 
 # Print names of container images to build or push
