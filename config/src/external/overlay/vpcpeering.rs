@@ -1009,7 +1009,10 @@ impl VpcPeeringTable {
 #[cfg(any(test, feature = "bolero"))]
 pub mod contract {
 
-    use super::{VpcExpose, VpcExposeNatConfig};
+    use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
+    use crate::ConfigError;
+    use crate::external::overlay::vpc::{Vpc, VpcTable};
+    use crate::external::overlay::{Overlay, ValidatedOverlay};
     use bolero::{Driver, ValueGenerator};
     use lpm::prefix::{
         IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
@@ -1058,6 +1061,91 @@ pub mod contract {
                 .as_range(PrefixWithOptionalPorts::new(external, Some(external_ports)))
                 .ok()
         }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct MasqueradeExpose;
+
+    impl ValueGenerator for MasqueradeExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = driver.produce::<bool>()?;
+            let privates = driver.gen_u8(Included(&1), Included(&3))?;
+            let publics = driver.gen_u8(Included(&1), Included(&2))?;
+            let base = driver.produce::<u8>()?;
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(30)),
+                _ => Some(Duration::from_mins(2)),
+            };
+
+            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+            for index in 0..privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Private, base.wrapping_add(index))?,
+                    None,
+                ));
+            }
+            for index in 0..publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(
+                        block(v4, Side::Public, base.wrapping_add(index))?,
+                        None,
+                    ))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Side {
+        Private,
+        Public,
+    }
+
+    fn block(v4: bool, side: Side, index: u8) -> Option<Prefix> {
+        if v4 {
+            let bits = match side {
+                Side::Private => 0x0A00_0000 | (u32::from(index) << 16),
+                Side::Public => 0xAC10_0000 | (u32::from(index) << 8),
+            };
+            prefix_v4(bits, 24)
+        } else {
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            let bits = (0x2001_0db8u128 << 96) | (selector << 80) | (u128::from(index) << 64);
+            prefix_v6(bits, 64)
+        }
+    }
+
+    pub const LOCAL_VNI: u32 = 100;
+    pub const REMOTE_VNI: u32 = 200;
+
+    pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
+        let remote_prefix = match expose.ips.first().map(PrefixWithOptionalPorts::prefix) {
+            Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
+            _ => "3.3.3.0/24",
+        };
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
+
+        let local = VpcManifest::new("VPC-1").exposing(expose);
+        let remote =
+            VpcManifest::new("VPC-2").exposing(VpcExpose::empty().ip(remote_prefix.into()));
+        let mut peerings = VpcPeeringTable::new();
+        peerings.add(VpcPeering::with_default_group(
+            "VPC-1--VPC-2",
+            local,
+            remote,
+        ))?;
+
+        Overlay::new(vpc_table, peerings).validate()
     }
 
     #[must_use]
@@ -1116,6 +1204,34 @@ pub mod contract {
                         validated.is_ok(),
                         "generated expose was rejected: {expose} -- {:?}",
                         validated.err()
+                    );
+                });
+        }
+
+        #[test]
+        fn every_generated_masquerade_expose_validates() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_masquerade());
+                    assert!(!validated.ips().is_empty());
+                    assert!(!validated.as_range_or_empty().is_empty());
+                });
+        }
+
+        #[test]
+        fn a_generated_expose_can_be_offered_in_an_overlay() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose)
+                .cloned()
+                .for_each(|expose: VpcExpose| {
+                    let shown = expose.to_string();
+                    assert!(
+                        overlay_offering(expose).is_ok(),
+                        "could not build an overlay around {shown}"
                     );
                 });
         }
