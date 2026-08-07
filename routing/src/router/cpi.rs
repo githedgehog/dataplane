@@ -209,14 +209,13 @@ impl RpcOperation for IpRoute {
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
-        let iftabler = &db.iftw.as_reader();
 
         if self.vrfid == Vrf::DEFAULT_VRFID {
             let Ok(vrf0) = vrftable.get_vrf_mut(self.vrfid) else {
                 error!("Unable to find default VRF!");
                 return RpcResultCode::Failure;
             };
-            vrf0.add_route_rpc(self, None, rmac_store, iftabler);
+            vrf0.add_route_rpc(self, None, rmac_store);
             vrftable.refresh_non_default_fibs(rmac_store);
         } else {
             // this assumes that we always resolve non-default vrfs with the default vrf
@@ -229,7 +228,7 @@ impl RpcOperation for IpRoute {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
             };
-            vrf.add_route_rpc(self, Some(vrf0), rmac_store, iftabler);
+            vrf.add_route_rpc(self, Some(vrf0), rmac_store);
         }
         RpcResultCode::Ok
     }
