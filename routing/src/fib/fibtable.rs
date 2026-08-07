@@ -38,10 +38,10 @@ impl FibTable {
         info!("Registering Fib with id {id} in the FibTable");
         self.entries.insert(id, entry);
     }
-    /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
+    /// Delete a `Fib` and every alias that refers to it.
     fn del_fib(&mut self, id: FibKey) {
         info!("Unregistering Fib with id {id} from the FibTable");
-        self.entries.remove(&id);
+        self.entries.retain(|_, entry| entry.id != id);
     }
     /// Register an existing `Fib` with a given [`Vni`].
     /// This allows looking up a Fib (`FibReaderFactory`) from a [`Vni`]
@@ -144,12 +144,10 @@ impl FibTableWriter {
         self.0.append(FibTableChange::UnRegisterVni(vni));
         self.0.publish();
     }
-    pub fn del_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) {
-        let fibid = FibKey::from_vrfid(vrfid);
-        self.0.append(FibTableChange::Del(fibid));
-        if let Some(vni) = vni {
-            self.0.append(FibTableChange::UnRegisterVni(vni));
-        }
+    /// Remove the fib for `vrfid`, including its aliases.
+    pub fn del_fib(&mut self, vrfid: VrfId) {
+        self.0
+            .append(FibTableChange::Del(FibKey::from_vrfid(vrfid)));
         self.0.publish();
     }
 }
@@ -232,5 +230,189 @@ impl FibTableReader {
         };
         let rhandle = ReadHandleCache::get_reader(&FIBTABLE_CACHE, id, &*fibtable)?;
         Ok(FibReader::rc_from_rc_rhandle(rhandle))
+    }
+}
+
+/// Model-checks fib ids and vni aliases against a map from lookup key to vrf.
+#[cfg(test)]
+mod fibtable_properties {
+    use super::*;
+    use crate::fib::fibtype::FibWriter;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound::Included;
+
+    const NUM_VRFS: u8 = 3;
+    const NUM_VNIS: u8 = 2;
+    const MAX_CHANGES: u8 = 10;
+
+    fn vrf_ids() -> Vec<VrfId> {
+        (0..u32::from(NUM_VRFS)).collect()
+    }
+
+    fn vnis() -> Vec<Vni> {
+        (1..=u32::from(NUM_VNIS))
+            .map(|i| Vni::new_checked(100 * i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn keys() -> Vec<FibKey> {
+        vrf_ids()
+            .into_iter()
+            .map(FibKey::from_vrfid)
+            .chain(vnis().into_iter().map(FibKey::from_vni))
+            .collect()
+    }
+
+    #[derive(Debug, Clone)]
+    enum Change {
+        AddFib { vrf: usize, vni: Option<usize> },
+        RegisterByVni { vrf: usize, vni: usize },
+        UnregisterVni { vni: usize },
+        DelFib { vrf: usize },
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                    0 => {
+                        // The final index encodes no vni without conflating it with exhaustion.
+                        let vrf = index(driver, NUM_VRFS)?;
+                        let drawn = index(driver, NUM_VNIS + 1)?;
+                        Change::AddFib {
+                            vrf,
+                            vni: (drawn < usize::from(NUM_VNIS)).then_some(drawn),
+                        }
+                    }
+                    1 => Change::RegisterByVni {
+                        vrf: index(driver, NUM_VRFS)?,
+                        vni: index(driver, NUM_VNIS)?,
+                    },
+                    2 => Change::UnregisterVni {
+                        vni: index(driver, NUM_VNIS)?,
+                    },
+                    _ => Change::DelFib {
+                        vrf: index(driver, NUM_VRFS)?,
+                    },
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// Expected vrf id for each lookup key.
+    type Model = BTreeMap<FibKey, VrfId>;
+
+    /// Writers kept alive while the table can refer to them.
+    struct Fibs {
+        live: BTreeMap<VrfId, FibWriter>,
+        /// Displaced writers, retained to match replacement behavior.
+        retired: Vec<FibWriter>,
+    }
+
+    fn apply(table: &mut FibTableWriter, fibs: &mut Fibs, model: &mut Model, change: &Change) {
+        let vrfs = vrf_ids();
+        let all_vnis = vnis();
+        match change {
+            Change::AddFib { vrf, vni } => {
+                let vrf = vrfs[*vrf];
+                let vni = vni.map(|i| all_vnis[i]);
+                let writer = table.add_fib(vrf, vni);
+                if let Some(displaced) = fibs.live.insert(vrf, writer) {
+                    fibs.retired.push(displaced);
+                }
+                model.insert(FibKey::from_vrfid(vrf), vrf);
+                if let Some(vni) = vni {
+                    model.insert(FibKey::from_vni(vni), vrf);
+                }
+            }
+            Change::RegisterByVni { vrf, vni } => {
+                let vrf = vrfs[*vrf];
+                let vni = all_vnis[*vni];
+                table.register_fib_by_vni(vrf, vni);
+                if model.contains_key(&FibKey::from_vrfid(vrf)) {
+                    model.insert(FibKey::from_vni(vni), vrf);
+                }
+            }
+            Change::UnregisterVni { vni } => {
+                let vni = all_vnis[*vni];
+                table.unregister_vni(vni);
+                model.remove(&FibKey::from_vni(vni));
+            }
+            Change::DelFib { vrf } => {
+                let vrf = vrfs[*vrf];
+                table.del_fib(vrf);
+                model.retain(|_, named| *named != vrf);
+                // Destruction makes a leaked alias observable as an invalid reader.
+                if let Some(writer) = fibs.live.remove(&vrf) {
+                    writer.destroy();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vrf_ids().len(), usize::from(NUM_VRFS));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(keys().len(), usize::from(NUM_VRFS + NUM_VNIS));
+    }
+
+    #[test]
+    fn every_key_in_a_fib_table_reaches_the_fib_it_names() {
+        let keys = keys();
+
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (mut table, _reader) = FibTableWriter::new();
+                let mut fibs = Fibs {
+                    live: BTreeMap::new(),
+                    retired: Vec::new(),
+                };
+                let mut model = Model::new();
+
+                for (step, change) in changes.iter().enumerate() {
+                    apply(&mut table, &mut fibs, &mut model, change);
+
+                    let at = || format!("at step {step} of {changes:?}");
+                    let held = table.enter().unwrap_or_else(|| unreachable!());
+
+                    assert_eq!(held.len(), model.len(), "{}", at());
+
+                    for key in &keys {
+                        let Some(reader) = held.get_fib(*key) else {
+                            assert!(!model.contains_key(key), "{key} missing {}", at());
+                            continue;
+                        };
+                        let want = *model
+                            .get(key)
+                            .unwrap_or_else(|| panic!("{key} unexpected {}", at()));
+
+                        assert!(reader.is_valid(), "{key} reaches a dead fib {}", at());
+                        assert_eq!(
+                            reader.get_id(),
+                            Some(FibKey::from_vrfid(want)),
+                            "{key} reaches the wrong fib {}",
+                            at()
+                        );
+                    }
+                }
+            });
     }
 }

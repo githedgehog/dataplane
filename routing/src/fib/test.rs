@@ -367,7 +367,7 @@ mod tests {
             }
 
             if updates.is_multiple_of(50) && fibw.is_some() {
-                fibtw.del_fib(vrfid, None);
+                fibtw.del_fib(vrfid);
                 if let Some(fib) = fibw.take() {
                     // fib is destroyed here
                     fib.destroy();
@@ -519,7 +519,7 @@ mod concurrency_tests {
         loop {
             let fibw = fibtw.add_fib(vrfid, None);
             thread::sleep(Duration::from_millis(5));
-            fibtw.del_fib(vrfid, None);
+            fibtw.del_fib(vrfid);
             fibw.destroy();
             iterations += 1;
             if iterations == MAX_ITERATIONS {
