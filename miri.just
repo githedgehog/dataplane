@@ -32,7 +32,13 @@ test *args="":
       declare -ri START_SEED="$((10#$schedule_seed))"
       declare -ri END_SEED="$((START_SEED + ${seeds}))"
       declare MIRIFLAGS=""
-      declare RUSTFLAGS=""
+      # RUSTFLAGS in the environment *replaces* `build.rustflags` from .cargo/config.toml
+      # rather than adding to it, so whatever lives there has to be repeated here or it is
+      # silently dropped for this run alone. Losing the check-cfg registration makes every
+      # site using `emulated` warn, and losing --cfg=tokio_unstable would have miri check a
+      # different build of tokio from the one every other job builds. Keep in step with
+      # `common.RUSTFLAGS` in nix/profiles.nix, which carries the same two for the qemu path.
+      declare RUSTFLAGS="--cfg=tokio_unstable --check-cfg=cfg(emulated) "
       MIRIFLAGS+="-Zmiri-compare-exchange-weak-failure-rate=${weak_failure_rate} "
       MIRIFLAGS+="-Zmiri-disable-isolation "
       MIRIFLAGS+="-Zmiri-many-seeds=${START_SEED}..${END_SEED} "

@@ -19,7 +19,7 @@ mod context {
     use net::udp::UdpPort;
     use net::vxlan::Vni;
     use net::{IpProtoKey, UdpProtoKey};
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
 
     #[allow(dead_code)]
@@ -339,6 +339,53 @@ mod context {
         NatAllocator::new(config)
     }
 
+    // An IPv6 masquerade expose. The pools are generic over the address family, but everything
+    // else here is IPv4, and IPv6 does not merely substitute: it indexes its pool bitmap through
+    // an offset mapping that IPv4 skips entirely.
+    #[allow(dead_code)]
+    fn build_context_v6() -> ValidatedVpcTable {
+        let masquerade = VpcExpose::empty()
+            .make_masquerade(None)
+            .unwrap()
+            .ip("2001:db8:1::/64".into())
+            .as_range("2001:db8:ffff::/112".into())
+            .unwrap();
+        let remote = VpcManifest::with_exposes(
+            "VPC-2",
+            vec![VpcExpose::empty().ip("2001:db8:2::/64".into())],
+        );
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+
+        vpc1.peerings.push(Peering {
+            name: "v6_peering".into(),
+            local: VpcManifest::with_exposes("VPC-1", vec![masquerade]),
+            remote,
+            remote_id: "12345".try_into().unwrap(),
+            remote_vni: vpc2.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.validate().unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn build_allocator_v6() -> NatAllocator {
+        let vpc_table = build_context_v6();
+        let config = MasqueradeConfig::new(&vpc_table, 1).set_randomize(false);
+        NatAllocator::new(config)
+    }
+
+    #[allow(dead_code)]
+    pub fn addr_v6(ip: &str) -> Ipv6Addr {
+        Ipv6Addr::from_str(ip).unwrap()
+    }
+
     // VPC-1 masquerades onto a single public address towards VPC-3, and forwards a range of
     // ports on that same address towards the same peer, both declared by the one manifest. The
     // public space towards a peer is shared between every expose that reaches it, so those ports
@@ -479,6 +526,7 @@ mod std_tests {
     use crate::masquerade::apalloc::PoolTableKey;
     use crate::masquerade::apalloc::alloc::PoolRegion;
     use net::ip::NextHeader;
+    use std::net::IpAddr;
 
     #[test]
     fn test_build_allocator() {
@@ -909,6 +957,102 @@ mod std_tests {
         // Allocation starts at the lowest port it may use, so the first one lands just past the
         // claim. Without the reservation it would be 1024, which is what makes this test bite.
         assert_eq!(ports[0], 1031);
+    }
+
+    // Masquerade over IPv6, end to end from configuration to a translated address and port.
+    // Nothing else here covers it, and IPv6 takes a different route through the pool: its bitmap
+    // is indexed from the start of the region through an offset mapping, where IPv4 uses the
+    // address bits directly.
+    #[test]
+    fn test_masquerade_v6_allocates_within_the_public_range() {
+        let allocator = build_allocator_v6();
+
+        // The v4 tables stay empty: an IPv6 expose belongs to the v6 pools alone.
+        assert_eq!(allocator.pools_src44.0.len(), 0);
+        assert_ne!(allocator.pools_src66.0.len(), 0);
+
+        let mut held = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for step in 0..8 {
+            let allocation = allocator
+                .allocate(
+                    vpcd1(),
+                    vpcd2(),
+                    IpAddr::V6(addr_v6("2001:db8:1::1")),
+                    NextHeader::TCP,
+                )
+                .expect("the v6 pool has room");
+            let IpAddr::V6(ip) = allocation.allocation.ip() else {
+                panic!("an IPv6 source was masqueraded onto an IPv4 address");
+            };
+            let port = allocation.allocation.port().as_u16();
+
+            // Inside 2001:db8:ffff::/112, which is what the expose declares.
+            assert_eq!(
+                ip.segments()[0..7],
+                addr_v6("2001:db8:ffff::").segments()[0..7],
+                "{ip} is outside the range the expose declares"
+            );
+            // And exactly the first address of it. Range membership alone would not notice the
+            // offset mapping being off by a constant, since every address would shift together.
+            if step == 0 {
+                assert_eq!(
+                    ip,
+                    addr_v6("2001:db8:ffff::"),
+                    "the first allocation is not the first address of the range"
+                );
+            }
+            assert!(port >= 1024, "{ip}:{port} is in the well-known port range");
+            assert!(seen.insert((ip, port)), "{ip}:{port} was handed out twice");
+            held.push(allocation);
+        }
+    }
+
+    // A v6 flow carried across a configuration change re-reserves what it holds, which is the
+    // path that turns an address back into a bitmap offset.
+    #[test]
+    fn test_masquerade_v6_reserves_a_carried_address() {
+        let allocator = build_allocator_v6();
+        let allocation = allocator
+            .allocate(
+                vpcd1(),
+                vpcd2(),
+                IpAddr::V6(addr_v6("2001:db8:1::1")),
+                NextHeader::TCP,
+            )
+            .expect("the v6 pool has room");
+        let held = allocation.allocation.ip();
+        let port = allocation.allocation.port();
+
+        // A second generation of the same configuration, as a config apply would build.
+        let next = build_allocator_v6();
+        let carried = next
+            .reserve_port(
+                NextHeader::TCP,
+                vpcd1(),
+                vpcd2(),
+                IpAddr::V6(addr_v6("2001:db8:1::1")),
+                held,
+                port,
+            )
+            .expect("the address is still served by the new configuration");
+        assert_eq!(carried.ip(), held);
+        assert_eq!(carried.port(), port);
+
+        // And having been carried over, it is not handed to a new flow.
+        let fresh = next
+            .allocate(
+                vpcd1(),
+                vpcd2(),
+                IpAddr::V6(addr_v6("2001:db8:1::2")),
+                NextHeader::TCP,
+            )
+            .expect("the v6 pool has room");
+        assert_ne!(
+            (fresh.allocation.ip(), fresh.allocation.port()),
+            (held, port),
+            "a new flow was given the pair a carried-over flow holds"
+        );
     }
 
     // Both VPCs keep their own entry, rather than the second overwriting the first.
