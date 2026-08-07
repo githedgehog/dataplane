@@ -4,10 +4,11 @@
 //! VRF module to store Ipv4 and Ipv6 routing tables
 
 use bitflags::bitflags;
+use std::borrow::Cow;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::{Rc, Weak};
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[cfg(test)]
 use common::cliprovider::Frame;
@@ -393,6 +394,27 @@ impl Vrf {
     }
 
     /////////////////////////////////////////////////////////////////////////
+    /// The next-hops to install for a route, substituting an explicit drop if there are none.
+    ///
+    /// A route with no next-hops cannot forward anything, and leaving it out of the table
+    /// altogether is worse than installing it as a drop: the rib would keep it while the fib
+    /// declined it -- `FibWriter::add_fibroute` refuses a route with no next-hop keys -- so a
+    /// packet matching it would fall through to a shorter prefix in the fib and be forwarded
+    /// somewhere else rather than dropped. Resolving via a default is how a routing loop starts.
+    ///
+    /// `add_route_rpc` used to do this, for the one path that could produce an empty list. Doing
+    /// it here means no caller can skip it.
+    /////////////////////////////////////////////////////////////////////////
+    fn nhops_or_drop<'a>(prefix: &Prefix, nhops: &'a [RouteNhop]) -> Cow<'a, [RouteNhop]> {
+        if nhops.is_empty() {
+            warn!("Route to {prefix} has no next-hop: will install it with action drop");
+            Cow::Owned(vec![RouteNhop::default()])
+        } else {
+            Cow::Borrowed(nhops)
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////////////
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
     fn add_route(
@@ -403,7 +425,7 @@ impl Vrf {
         vrf0: Option<&Vrf>,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(nhops);
+        route.s_nhops = self.register_shared_nhops(&Self::nhops_or_drop(prefix, nhops));
 
         // resolve the new route next-hops. This is only for testing. In prod code,
         // this method is only used for drop routes which require no resolution.
@@ -464,7 +486,7 @@ impl Vrf {
         rstore: &RmacStore,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(nhops);
+        route.s_nhops = self.register_shared_nhops(&Self::nhops_or_drop(prefix, nhops));
 
         let rvrf = vrf0.unwrap_or(self);
 
@@ -1139,4 +1161,340 @@ pub mod tests {
         vrf
     }
 
+}
+
+/// Model-based properties over a [`Vrf`]'s route table.
+///
+/// Two structures move together on every route change: the route tries, and the [`NhopStore`] whose
+/// entries the routes hold `Rc`s into. A route that comes or goes has to leave the store holding
+/// exactly the next-hops the remaining routes name -- one too many is a leak that keeps a stale
+/// fib group alive, one too few and a route names a next-hop nothing will resolve. A third, the
+/// vrf's `Fib`, is written through on the same calls and has to end up describing the same
+/// prefixes.
+#[cfg(test)]
+mod vrf_properties {
+    use super::*;
+    use crate::fib::fibtype::{FibKey, FibWriter};
+    use crate::rib::nexthop::NhopKey;
+    use bolero::{Driver, ValueGenerator};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_PREFIXES: u8 = 8;
+    const NUM_NHOPS: u8 = 3;
+    const MAX_CHANGES: u8 = 10;
+    const MAX_NHOPS_PER_ROUTE: u8 = 3;
+
+    /// `0.0.0.0/0` and `::/0`, at these indices in [`prefixes`]. A vrf always carries a route for
+    /// both: `Vrf::lpm` has no answer otherwise and says so with an `unreachable!()`, and
+    /// `check_deletion` reaches for them by name.
+    const ROOT_V4: usize = 0;
+    const ROOT_V6: usize = 5;
+
+    /// The prefixes a generated vrf may carry routes for. Nested, and both roots.
+    fn prefixes() -> Vec<Prefix> {
+        [
+            "0.0.0.0/0",
+            "10.0.0.0/8",
+            "10.1.0.0/16",
+            "10.1.2.0/24",
+            "10.1.2.3/32",
+            "::/0",
+            "2001:db8::/32",
+            "2001:db8:1::/48",
+        ]
+        .iter()
+        .map(|p| Prefix::from_str(p).unwrap_or_else(|_| unreachable!()))
+        .collect()
+    }
+
+    /// Addresses to look up: inside each level of the nesting, and outside all of them.
+    fn probes() -> Vec<IpAddr> {
+        [
+            "9.9.9.9",
+            "10.9.9.9",
+            "10.1.9.9",
+            "10.1.2.9",
+            "10.1.2.3",
+            "2000::1",
+            "2001:db8::1",
+            "2001:db8:1::1",
+        ]
+        .iter()
+        .map(|a| IpAddr::from_str(a).unwrap_or_else(|_| unreachable!()))
+        .collect()
+    }
+
+    /// The next-hops a generated route may use. Small, so that routes share them: sharing is what
+    /// makes the store's reference counting do any work.
+    fn nhops() -> Vec<RouteNhop> {
+        vec![
+            tests::build_test_nhop(Some("10.0.0.1"), Some(1), 0, None),
+            tests::build_test_nhop(Some("10.0.0.2"), None, 0, None),
+            tests::build_test_nhop(None, Some(3), 0, None),
+        ]
+    }
+
+    /// One change, over indices into the pools above.
+    #[derive(Debug, Clone)]
+    enum Change {
+        /// A route. `nhops` may be empty: `add_route_complete` takes whatever the control plane
+        /// hands it, and a route with nowhere to go is the interesting end of that.
+        AddRoute {
+            prefix: usize,
+            nhops: Vec<usize>,
+        },
+        DelRoute {
+            prefix: usize,
+        },
+        SetStale {
+            value: bool,
+        },
+        RemoveStale,
+    }
+
+    /// Draws sequences of [`Change`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                    0 => {
+                        let prefix = index(driver, NUM_PREFIXES)?;
+                        let count = driver.gen_u8(Included(&0), Included(&MAX_NHOPS_PER_ROUTE))?;
+                        let mut nhops = Vec::with_capacity(usize::from(count));
+                        for _ in 0..count {
+                            nhops.push(index(driver, NUM_NHOPS)?);
+                        }
+                        Change::AddRoute { prefix, nhops }
+                    }
+                    1 => Change::DelRoute {
+                        prefix: index(driver, NUM_PREFIXES)?,
+                    },
+                    2 => Change::SetStale {
+                        value: driver.produce::<bool>()?,
+                    },
+                    _ => Change::RemoveStale,
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// Which prefixes carry routes, and for each the next-hops it names and whether it is stale.
+    ///
+    /// The two root routes are the preset drop routes a vrf is born with; they are never removed,
+    /// only reset, and `set_stale` skips them.
+    #[derive(Debug, Clone)]
+    struct Model {
+        /// prefix index -> the next-hop keys of its route in order, and whether it is stale.
+        ///
+        /// Keys rather than pool indices, because the preset drop route names one the generator
+        /// cannot ask for, and because a root route holding a generated route is not the same thing
+        /// as a root route holding the preset one.
+        routes: BTreeMap<usize, (Vec<NhopKey>, bool)>,
+    }
+
+    impl Model {
+        /// The route a vrf installs for each root on creation: drop, so that a lookup always has an
+        /// answer.
+        fn preset() -> Vec<NhopKey> {
+            vec![NhopKey::with_drop()]
+        }
+
+        fn new() -> Self {
+            Self {
+                routes: BTreeMap::from([
+                    (ROOT_V4, (Self::preset(), false)),
+                    (ROOT_V6, (Self::preset(), false)),
+                ]),
+            }
+        }
+
+        fn is_root(prefix: usize) -> bool {
+            prefix == ROOT_V4 || prefix == ROOT_V6
+        }
+
+        /// Every next-hop key the routes name -- the set the store should hold, no more and no less.
+        fn referenced(&self) -> BTreeSet<NhopKey> {
+            self.routes
+                .values()
+                .flat_map(|(nhops, _)| nhops.iter().cloned())
+                .collect()
+        }
+
+        /// The longest prefix carrying a route that covers `addr`.
+        fn lpm(&self, addr: &IpAddr, pool: &[Prefix]) -> Option<usize> {
+            self.routes
+                .keys()
+                .copied()
+                .filter(|i| pool[*i].covers_addr(addr))
+                .max_by_key(|i| pool[*i].length())
+        }
+
+        fn apply(&mut self, change: &Change, pool: &[RouteNhop]) {
+            match change {
+                Change::AddRoute { prefix, nhops } => {
+                    // a route with no next-hops is installed as a drop rather than left out
+                    let keys = if nhops.is_empty() {
+                        Self::preset()
+                    } else {
+                        nhops.iter().map(|i| pool[*i].key.clone()).collect()
+                    };
+                    self.routes.insert(*prefix, (keys, false));
+                }
+                Change::DelRoute { prefix } => {
+                    if Self::is_root(*prefix) {
+                        // a root route is reset to the preset drop route, not removed
+                        self.routes.insert(*prefix, (Self::preset(), false));
+                    } else {
+                        self.routes.remove(prefix);
+                    }
+                }
+                Change::SetStale { value } => {
+                    // `Vrf::set_stale` skips a route whose prefix is a root, and separately one
+                    // that is still a preset drop route. Generated routes are never the latter, so
+                    // here the root test is the whole of it.
+                    for (prefix, (_, stale)) in &mut self.routes {
+                        if !Self::is_root(*prefix) {
+                            *stale = *value;
+                        }
+                    }
+                }
+                Change::RemoveStale => {
+                    let stale: Vec<usize> = self
+                        .routes
+                        .iter()
+                        .filter_map(|(prefix, (_, stale))| stale.then_some(*prefix))
+                        .collect();
+                    for prefix in stale {
+                        self.apply(&Change::DelRoute { prefix }, pool);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_to_vrf(vrf: &mut Vrf, rstore: &RmacStore, change: &Change, pool: &[RouteNhop]) {
+        let prefixes = prefixes();
+        match change {
+            Change::AddRoute { prefix, nhops } => {
+                let route = tests::build_test_route(RouteOrigin::Bgp, 20, 100);
+                let nhops: Vec<RouteNhop> = nhops.iter().map(|i| pool[*i].clone()).collect();
+                vrf.add_route_complete(&prefixes[*prefix], route, &nhops, None, rstore);
+            }
+            Change::DelRoute { prefix } => vrf.del_route(prefixes[*prefix], None, rstore),
+            Change::SetStale { value } => vrf.set_stale(*value),
+            Change::RemoveStale => vrf.remove_stale_routes(None, rstore),
+        }
+    }
+
+    /// Check the vrf, its next-hop store and its fib against the one model.
+    fn check(vrf: &Vrf, model: &Model, at: &str) {
+        let prefixes = prefixes();
+        let probes = probes();
+
+        // 1. the route tries hold exactly the prefixes the model says
+        let held: BTreeSet<usize> = (0..prefixes.len())
+            .filter(|i| vrf.get_route(prefixes[*i]).is_some())
+            .collect();
+        let want: BTreeSet<usize> = model.routes.keys().copied().collect();
+        assert_eq!(held, want, "route set {at}");
+        assert_eq!(
+            vrf.len_v4() + vrf.len_v6(),
+            model.routes.len(),
+            "route count {at}"
+        );
+
+        // 2. each route names the next-hops the model says, in order
+        for (prefix, (nhops, stale)) in &model.routes {
+            let route = vrf
+                .get_route(prefixes[*prefix])
+                .unwrap_or_else(|| panic!("no route for {prefix} {at}"));
+            let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.rc.key.clone()).collect();
+            assert_eq!(got, *nhops, "next-hops of {prefix} {at}");
+            assert_eq!(route.is_stale(), *stale, "stale flag of {prefix} {at}");
+        }
+
+        // 3. the next-hop store holds exactly the next-hops the routes name. One too many is a
+        //    leak that keeps a stale fib group alive; one too few and a route names something
+        //    nothing will resolve
+        let stored: BTreeSet<NhopKey> = vrf.nhstore.iter().map(|rc| rc.key.clone()).collect();
+        assert_eq!(stored, model.referenced(), "next-hop store {at}");
+
+        // 4. lpm resolves for every address, and lands where the model says
+        for probe in &probes {
+            let want = model
+                .lpm(probe, &prefixes)
+                .unwrap_or_else(|| panic!("model has no route for {probe} {at}"));
+            let (hit, _) = vrf.lpm(*probe);
+            assert_eq!(hit, prefixes[want], "lpm for {probe} {at}");
+        }
+
+        // 5. the fib describes the same prefixes as the vrf. Otherwise a packet matching a route
+        //    the fib never heard about falls through to a shorter prefix and is forwarded
+        //    somewhere else rather than dropped
+        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        let mut want_v4 = BTreeSet::new();
+        let mut want_v6 = BTreeSet::new();
+        for prefix in model.routes.keys() {
+            match prefixes[*prefix] {
+                Prefix::IPV4(p) => want_v4.insert(p),
+                Prefix::IPV6(p) => want_v6.insert(p),
+            };
+        }
+        let fib_v4: BTreeSet<Ipv4Prefix> = fib.iter_v4().map(|(prefix, _)| prefix).collect();
+        let fib_v6: BTreeSet<Ipv6Prefix> = fib.iter_v6().map(|(prefix, _)| prefix).collect();
+        assert_eq!(fib_v4, want_v4, "fib ipv4 prefixes {at}");
+        assert_eq!(fib_v6, want_v6, "fib ipv6 prefixes {at}");
+    }
+
+    /// The pools and the constants that index them agree.
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(prefixes().len(), usize::from(NUM_PREFIXES));
+        assert_eq!(nhops().len(), usize::from(NUM_NHOPS));
+        assert_eq!(prefixes()[ROOT_V4], Prefix::root_v4());
+        assert_eq!(prefixes()[ROOT_V6], Prefix::root_v6());
+    }
+
+    /// After any sequence of route changes, the vrf, its next-hop store and its fib agree.
+    #[test]
+    fn a_vrfs_routes_and_next_hops_stay_in_step() {
+        let pool = nhops();
+        let rstore = RmacStore::new();
+
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let config = RouterVrfConfig::new(1, "test");
+                let mut vrf = Vrf::new(&config);
+                let (fibw, _fibr) = FibWriter::new(FibKey::from_vrfid(1));
+                vrf.set_fibw(fibw);
+                let mut model = Model::new();
+
+                check(&vrf, &model, "on a fresh vrf");
+                for (step, change) in changes.iter().enumerate() {
+                    apply_to_vrf(&mut vrf, &rstore, change, &pool);
+                    model.apply(change, &pool);
+                    check(&vrf, &model, &format!("at step {step} of {changes:?}"));
+                }
+            });
+    }
 }
