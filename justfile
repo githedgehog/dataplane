@@ -13,8 +13,17 @@ debug_justfile := "false"
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
-# number of nix jobs to run in parallel
+# number of nix derivations to build concurrently
 jobs := "8"
+
+# threads each nix derivation may use ("0" means every core on the machine).
+#
+# nix hands this to the builder as NIX_BUILD_CORES, which crane turns into
+# CARGO_BUILD_JOBS and nixpkgs' enableParallelBuilding turns into make -j, so
+# it is the cap on concurrent compile/link jobs *within* one derivation. The
+# cap on the whole build is therefore `jobs` x `cores`; a runner with fewer
+# cores than that will oversubscribe itself.
+cores := "0"
 
 # libc
 libc := if platform == "wasm32-wasip1" { "none" } else { "gnu" }
@@ -139,6 +148,7 @@ build target="dataplane.tar" *args:
       --show-trace \
       --out-link "results/${target}" \
       --max-jobs "{{jobs}}" \
+      --cores "{{cores}}" \
       --keep-failed \
       {{ args }}
 
