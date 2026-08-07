@@ -640,8 +640,7 @@ mod test {
     // Reported as the prefix lengths differing rather than as `MismatchedPrefixSizes`. Port
     // forwarding compares the two lengths and the two port counts directly now, instead of the
     // product of the two, because a product accepts pairings a rule cannot express -- see
-    // `contract::tests::compensating_sizes_do_not_make_a_valid_expose`. It says what to change,
-    // where the totals it used to report did not.
+    // `contract::tests::compensating_sizes_do_not_make_a_valid_expose`.
     #[test]
     fn test_port_forwarding_mismatched_sizes_rejected() {
         let expose = VpcExpose::empty()
@@ -654,9 +653,10 @@ mod test {
         assert!(
             matches!(
                 result,
-                Err(ConfigError::Forbidden(
-                    "Port forwarding requires prefixes of the same length on each side"
-                ))
+                Err(ConfigError::MismatchedPrefixLengths {
+                    private: 24,
+                    public: 25
+                })
             ),
             "{result:?}",
         );
