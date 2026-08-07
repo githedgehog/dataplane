@@ -235,6 +235,7 @@ let
       # would be `"initramfs"` here.
       boot = "direct";
       kernel = "/kernels/${kernel-profile-name}/vmlinuz";
+      config = "/kernels/${kernel-profile-name}/config";
     };
   };
 
@@ -251,10 +252,22 @@ let
   # guest kernel must match the guest (= test binary) architecture.  For a
   # native build the two package sets coincide, so this is a no-op for
   # x86_64; for a cross build it selects the aarch64 kernel.
+  # The `config` is the kernel's own resolved `.config`, recorded so that a
+  # test's declared kernel requirements can be checked against what this
+  # kernel actually provides -- before booting, with a message naming the
+  # missing symbol rather than a mysterious runtime failure.
+  #
+  # `linux-fancy.configfile` is the merged, dependency-resolved output of
+  # nix/pkgs/linux/merge-config.nix, which is what `linuxManualConfig` built
+  # from.  A *foreign* kernel has no such derivation and its config is
+  # recovered from the image with `extract-ikconfig` instead; both land here
+  # under the same name, so nothing downstream has to care which it was.
   kernel-image = pkgs.runCommand "kernel-image" { } ''
     mkdir -p $out/kernels/${kernel-profile-name}
     cp ${pkgs.linux-fancy}/${kernel-image-name} \
       $out/kernels/${kernel-profile-name}/vmlinuz
+    cp ${pkgs.linux-fancy.configfile} \
+      $out/kernels/${kernel-profile-name}/config
     cp ${pkgs.writeText "n-vm-manifest.json" kernel-manifest} \
       $out/n-vm-manifest.json
   '';
