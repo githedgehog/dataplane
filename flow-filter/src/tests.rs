@@ -1121,23 +1121,24 @@ struct InvalidationCase {
     meta_port_forwarding: bool,
     has_flow: bool,
     genid: GenidRel,
-    /// `Some(true)`: the flow's destination equals the route's; `Some(false)`: a different one;
-    /// `None`: the flow records no destination.
-    flow_dst_matches: Option<bool>,
+    /// `true`: the flow's destination equals the route's; `false`: a different one. A flow that
+    /// records no destination at all cannot reach this decision: `FlowSummary::from_meta`
+    /// invalidates it and reports no summary, which the `has_flow: false` cases already cover.
+    flow_dst_matches: bool,
     flow_masquerade: bool,
     flow_port_forwarding: bool,
 }
 
 // The specification: a flow is invalidated iff it comes from a DIFFERENT config generation
 // (older or newer -- only an equal genid is trusted) AND the filter can prove it stale: the
-// destination changed (or was never recorded), a stateful-NAT requirement appeared or
-// disappeared, or the route no longer needs state at all. Anything else is deferred to the
-// stateful NFs, which own the state's validity.
+// destination changed, a stateful-NAT requirement appeared or disappeared, or the route no longer
+// needs state at all. Anything else is deferred to the stateful NFs, which own the state's
+// validity.
 fn expected_invalidation(case: &InvalidationCase) -> bool {
     if !case.has_flow || matches!(case.genid, GenidRel::Same) {
         return false;
     }
-    case.flow_dst_matches != Some(true)
+    !case.flow_dst_matches
         || case.meta_masquerade != case.flow_masquerade
         || case.meta_port_forwarding != case.flow_port_forwarding
         || (!case.meta_masquerade && !case.meta_port_forwarding)
@@ -1174,10 +1175,10 @@ fn invalidation_decision_matches_spec() {
                     GenidRel::Same => GENID,
                     GenidRel::Newer => GENID + 3,
                 },
-                dst_vpcd: match case.flow_dst_matches {
-                    Some(true) => Some(route_dst),
-                    Some(false) => Some(vpcd(300)),
-                    None => None,
+                dst_vpcd: if case.flow_dst_matches {
+                    route_dst
+                } else {
+                    vpcd(300)
                 },
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,

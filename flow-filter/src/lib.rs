@@ -269,7 +269,7 @@ impl FlowFilter {
             return false;
         }
         let (nfi, flowkey) = (&self.name, flow_summary.flow_info.flowkey());
-        if flow_summary.dst_vpcd != Some(new_dst_vpcd) {
+        if flow_summary.dst_vpcd != new_dst_vpcd {
             debug!("{nfi}: Outdated flow {flowkey} (new dst: {new_dst_vpcd}) will be invalidated.");
             return true;
         }
@@ -308,7 +308,7 @@ impl FlowFilter {
         if flow_summary.needs_masquerade {
             // If we need revalidation and the flow is masqueraded, we may need the destination VPC
             // id from the flow to look up for reverse traffic's entry in the "remote" table.
-            (flow_summary.dst_vpcd, SourceGate::Ungated)
+            (Some(flow_summary.dst_vpcd), SourceGate::Ungated)
         } else if flow_summary.needs_port_forwarding {
             // We need revalidation and the flow is with port-forwarding, although we don't know if
             // it's on the source (reply traffic) or destination side (forward traffic). In doubt,
@@ -338,18 +338,10 @@ impl FlowFilter {
             return None;
         }
 
-        let Some(dst_vpcd) = flow_summary.dst_vpcd else {
-            debug!(
-                "{nfi}: Flow information does not specify destination VPC. This is a bug. Ignoring it..."
-            );
-            flow_summary.flow_info.invalidate_pair();
-            return None;
-        };
-
         // Current and newer-generation flows bypass the filter. Workers may observe a new config
         // generation after flows have already been stamped with it.
         debug!("{nfi}: Packet can bypass flow filter thanks to flow information");
-        Some(dst_vpcd)
+        Some(flow_summary.dst_vpcd)
     }
 }
 
@@ -374,7 +366,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
 #[derive(Debug, Clone)]
 struct FlowSummary {
     genid: i64,
-    dst_vpcd: Option<VpcDiscriminant>,
+    dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
     flow_info: Arc<FlowInfo>,
@@ -384,9 +376,14 @@ impl FlowSummary {
     fn from_meta(meta: &PacketMeta) -> Option<Self> {
         let flow_info = meta.flow_info.as_ref()?;
         let locked_info = flow_info.locked.read();
+        let Some(dst_vpcd) = locked_info.dst_vpcd else {
+            debug!("Flow info lacks destination VPC. This is a bug. Invalidating flow..");
+            flow_info.invalidate_pair();
+            return None;
+        };
         Some(Self {
             genid: flow_info.genid(),
-            dst_vpcd: locked_info.dst_vpcd,
+            dst_vpcd,
             needs_masquerade: locked_info.nat_state.is_some(),
             needs_port_forwarding: locked_info.port_fw_state.is_some(),
             flow_info: flow_info.clone(),
