@@ -206,3 +206,94 @@ mod tests {
             .expect("Failed to build NAT tables");
     }
 }
+
+#[cfg(test)]
+mod config_driven {
+    use super::*;
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::{
+        LOCAL_VNI, REMOTE_VNI, StaticNatExpose, overlay_offering,
+    };
+    use lpm::prefix::PrefixWithOptionalPorts;
+    use std::collections::BTreeSet;
+    use std::net::IpAddr;
+
+    fn vni(raw: u32) -> Vni {
+        Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
+    }
+
+    fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpAddr> {
+        let mut out = Vec::new();
+        for prefix in prefixes {
+            let prefix = prefix.prefix();
+            let (start, end) = (prefix.as_address(), prefix.last_address());
+            let (mut bits, last) = match (start, end) {
+                (IpAddr::V4(a), IpAddr::V4(b)) => {
+                    (u128::from(a.to_bits()), u128::from(b.to_bits()))
+                }
+                (IpAddr::V6(a), IpAddr::V6(b)) => (a.to_bits(), b.to_bits()),
+                _ => unreachable!("a prefix does not change address family"),
+            };
+            while bits <= last {
+                out.push(match start {
+                    IpAddr::V4(_) => IpAddr::V4(
+                        u32::try_from(bits)
+                            .unwrap_or_else(|_| unreachable!())
+                            .into(),
+                    ),
+                    IpAddr::V6(_) => IpAddr::V6(bits.into()),
+                });
+                bits += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_two_sides_of_an_expose_map_one_to_one() {
+        bolero::check!()
+            .with_generator(StaticNatExpose)
+            .cloned()
+            .for_each(|expose: VpcExpose| {
+                let private = addresses(&expose.ips);
+                let public: BTreeSet<IpAddr> = addresses(
+                    &expose
+                        .nat
+                        .as_ref()
+                        .expect("static nat sets nat")
+                        .as_range
+                        .clone(),
+                )
+                .into_iter()
+                .collect();
+
+                let overlay = overlay_offering(expose.clone()).expect("overlay");
+                let tables = build_nat_configuration(overlay.vpc_table())
+                    .expect("a validated expose builds");
+                let table = tables
+                    .get_table(vni(LOCAL_VNI))
+                    .expect("the offering vpc has a table");
+
+                let mut seen = BTreeSet::new();
+                for source in &private {
+                    let (mapped, _) = table
+                        .find_src_mapping(source, None, vni(REMOTE_VNI))
+                        .unwrap_or_else(|| panic!("{source} has no mapping in {expose}"));
+                    let mapped = mapped.inner();
+                    assert!(
+                        public.contains(&mapped),
+                        "{source} mapped to {mapped}, which the expose does not offer"
+                    );
+                    assert!(
+                        seen.insert(mapped),
+                        "{source} mapped to {mapped}, which another address already took"
+                    );
+                }
+                assert_eq!(
+                    seen.len(),
+                    public.len(),
+                    "the mapping left part of the public side unused, for {expose}"
+                );
+            });
+    }
+}
