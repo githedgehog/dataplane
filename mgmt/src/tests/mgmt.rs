@@ -698,3 +698,89 @@ mod peering_chain {
         );
     }
 }
+
+#[cfg(test)]
+mod dataplane_tables {
+    use config::{ExternalConfig, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::NatFlavour;
+    use k8s_intf::bolero::crd::GatewayAgentBuilder;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::NatTablesWriter;
+    use nat::static_nat::setup::build_nat_configuration;
+
+    fn build_tables(validated: &ValidatedGwConfig, flavour: NatFlavour) {
+        let vpc_table = validated.external().overlay().vpc_table();
+
+        let nat_tables = build_nat_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("a validated {flavour:?} configuration would not build static NAT: {e}")
+        });
+        let mut nattablesw = NatTablesWriter::new();
+        nattablesw.update_nat_tables(nat_tables);
+
+        let masquerade = MasqueradeConfig::new(vpc_table, validated.genid()).set_randomize(false);
+        let mut natallocatorw = NatAllocatorWriter::new();
+        let flow_table = FlowTable::new(16);
+        natallocatorw.update_nat_allocator(masquerade, &flow_table);
+
+        let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("a validated {flavour:?} configuration would not build port forwarding: {e}")
+        });
+        let mut portfw_w = PortFwTableWriter::new();
+        portfw_w.update_table(&ruleset).unwrap_or_else(|e| {
+            panic!("a validated {flavour:?} port-forwarding ruleset was refused by the table: {e}")
+        });
+    }
+
+    fn drive(flavour: NatFlavour) {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        let seen = AtomicUsize::new(0);
+        let built = AtomicUsize::new(0);
+
+        let generator = GatewayAgentBuilder::new().flavours(vec![flavour]).build();
+
+        bolero::check!()
+            .with_generator(generator)
+            .cloned()
+            .for_each(|agent| {
+                seen.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(&agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                built.fetch_add(1, Ordering::Relaxed);
+                build_tables(&validated, flavour);
+            });
+
+        let seen = seen.load(Ordering::Relaxed);
+        let built = built.load(Ordering::Relaxed);
+        println!("{flavour:?}: {built}/{seen} configurations validated and built their tables");
+        assert!(
+            built * 2 >= seen,
+            "only {built} of {seen} {flavour:?} configurations validated, so this checked much \
+             less than it looks like it did"
+        );
+    }
+
+    #[test]
+    fn a_static_nat_configuration_builds_its_tables() {
+        drive(NatFlavour::Static);
+    }
+
+    #[test]
+    fn a_masquerade_configuration_builds_its_tables() {
+        drive(NatFlavour::Masquerade);
+    }
+
+    #[test]
+    fn a_port_forwarding_configuration_builds_its_tables() {
+        drive(NatFlavour::PortForward);
+    }
+
+    #[test]
+    fn a_configuration_with_no_nat_builds_its_tables() {
+        drive(NatFlavour::None);
+    }
+}
