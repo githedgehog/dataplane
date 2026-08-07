@@ -1243,7 +1243,18 @@ pub mod contract {
     pub const REMOTE_VNI: u32 = 200;
 
     pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
-        let remote_prefix = match expose.ips.first().map(PrefixWithOptionalPorts::prefix) {
+        overlay_with(expose)?.validate()
+    }
+
+    pub fn overlay_with(expose: VpcExpose) -> Result<Overlay, ConfigError> {
+        overlay_with_exposes(vec![expose])
+    }
+
+    pub fn overlay_with_exposes(exposes: Vec<VpcExpose>) -> Result<Overlay, ConfigError> {
+        let remote_prefix = match exposes
+            .first()
+            .and_then(|expose| expose.ips.first().map(PrefixWithOptionalPorts::prefix))
+        {
             Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
             _ => "3.3.3.0/24",
         };
@@ -1252,9 +1263,15 @@ pub mod contract {
         vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
         vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
 
-        let local = VpcManifest::new("VPC-1").exposing(expose);
-        let remote =
-            VpcManifest::new("VPC-2").exposing(VpcExpose::empty().ip(remote_prefix.into()));
+        let local = exposes
+            .into_iter()
+            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
+        let remote = VpcManifest::new("VPC-2").exposing(
+            VpcExpose::empty().ip(remote_prefix
+                .parse::<Prefix>()
+                .unwrap_or_else(|_| unreachable!())
+                .into()),
+        );
         let mut peerings = VpcPeeringTable::new();
         peerings.add(VpcPeering::with_default_group(
             "VPC-1--VPC-2",
@@ -1262,7 +1279,7 @@ pub mod contract {
             remote,
         ))?;
 
-        Overlay::new(vpc_table, peerings).validate()
+        Ok(Overlay::new(vpc_table, peerings))
     }
 
     #[must_use]
