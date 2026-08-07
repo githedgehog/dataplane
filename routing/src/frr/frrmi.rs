@@ -327,6 +327,11 @@ impl Frrmi {
             return Err(FrrErr::NotConnected);
         };
         loop {
+            if let Some(announced) = self.readb.oversized() {
+                error!("Frr-agent announced a {announced}-octet message: refusing it");
+                self.readb.clear();
+                return Err(FrrErr::DecodeFailure);
+            }
             let pending = self.readb.next_read_len();
             debug!("Recv data (read:{} pending:{pending})", self.readb.used);
             match Self::recv(sock, &mut self.readb, pending) {
@@ -400,6 +405,12 @@ struct IoBuffer {
     used: usize,
 }
 impl IoBuffer {
+    /// Octets of `|length|genid|` ahead of every message body.
+    const HEADER_LEN: usize = 16;
+
+    /// Maximum accepted body size, bounding allocation from the peer-provided length.
+    const MAX_MSG_LEN: usize = 16 * 1024 * 1024;
+
     #[must_use]
     #[allow(unused)]
     pub fn new() -> Self {
@@ -412,6 +423,7 @@ impl IoBuffer {
         self.buffer.clear();
         self.used = 0;
     }
+    /// Buffer length, used only for writes; receive progress is tracked by `used`.
     #[must_use]
     fn len(&self) -> usize {
         self.buffer.len()
@@ -426,37 +438,33 @@ impl IoBuffer {
         self.extend(msg);
     }
 
-    /// Tell the length that a message (encoded as |length|genid|data|) must have.
-    /// If less than 8 octets have been read it is not possible to know how big the message is yet.
+    /// Return the announced body length after the complete header has arrived.
     #[must_use]
     fn msg_len(&self) -> Option<usize> {
-        if self.buffer.len() < 8 {
-            None
-        } else {
-            let len_buf = &self.buffer[0..8]
-                .try_into()
-                .unwrap_or_else(|_| unreachable!());
-
-            #[allow(clippy::cast_possible_truncation)]
-            let msg_len = u64::from_ne_bytes(*len_buf) as usize;
-            Some(msg_len)
+        if self.used < Self::HEADER_LEN {
+            return None;
         }
+        let len_buf: &[u8; 8] = &self.buffer[0..8]
+            .try_into()
+            .unwrap_or_else(|_| unreachable!());
+
+        #[allow(clippy::cast_possible_truncation)]
+        let msg_len = u64::from_ne_bytes(*len_buf) as usize;
+        Some(msg_len)
     }
-    /// Tell the number of octets that should be read next according to the contents of the read buffer
-    /// to get a message or be able to determine its length.
-    /// If less than 16 octets have been received, this returns the number needed to have exactly 16.
-    /// Else, we return the number of octets that are pending to have the complete message.
+
+    /// Return an announced body length that exceeds the allocation limit.
+    #[must_use]
+    fn oversized(&self) -> Option<usize> {
+        self.msg_len().filter(|len| *len > Self::MAX_MSG_LEN)
+    }
+
+    /// Return the bytes needed to complete the header or body.
     #[must_use]
     fn next_read_len(&self) -> usize {
-        if self.len() < 16 {
-            16 - self.len()
-        } else {
-            let msg_len = self.msg_len().unwrap_or_else(|| unreachable!());
-            if msg_len > (self.len() - 16) {
-                msg_len - (self.len() - 16)
-            } else {
-                0
-            }
+        match self.msg_len() {
+            None => Self::HEADER_LEN - self.used,
+            Some(msg_len) => msg_len.saturating_sub(self.used - Self::HEADER_LEN),
         }
     }
 
@@ -464,7 +472,9 @@ impl IoBuffer {
     #[must_use]
     fn is_ready(&self) -> bool {
         match self.msg_len() {
-            Some(m) => self.len() == m + 16,
+            // subtracting rather than adding 16: the announced length is peer-supplied, and
+            // `m + 16` overflows for one close enough to `usize::MAX`
+            Some(msg_len) => self.used - Self::HEADER_LEN == msg_len,
             None => false,
         }
     }
@@ -486,5 +496,174 @@ impl IoBuffer {
         let data = data.to_string();
         self.clear();
         Ok(FrrmiResponse { genid, data })
+    }
+}
+
+/// Checks framing across arbitrary read boundaries and consecutive messages.
+#[cfg(test)]
+mod framing_properties {
+    use super::*;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound::Included;
+
+    const MAX_BODY: u8 = 20;
+    const MAX_CHUNK: u8 = 24;
+    const MAX_CHUNKS: u8 = 8;
+    const MAX_MESSAGES: u8 = 4;
+
+    #[derive(Debug, Clone)]
+    struct Delivery {
+        genid: GenId,
+        /// Empty bodies exercise an all-zero length prefix.
+        body: String,
+        chunks: Vec<usize>,
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Deliveries;
+
+    impl ValueGenerator for Deliveries {
+        type Output = Delivery;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Delivery> {
+            let genid = GenId::from(driver.gen_u8(Included(&0), Included(&3))?);
+            let body_len = usize::from(driver.gen_u8(Included(&0), Included(&MAX_BODY))?);
+            let body: String = (0..body_len)
+                .map(|i| char::from(b'a' + u8::try_from(i % 26).unwrap_or_else(|_| unreachable!())))
+                .collect();
+
+            let count = driver.gen_u8(Included(&0), Included(&MAX_CHUNKS))?;
+            let mut chunks = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                chunks.push(usize::from(
+                    driver.gen_u8(Included(&1), Included(&MAX_CHUNK))?,
+                ));
+            }
+            Some(Delivery {
+                genid,
+                body,
+                chunks,
+            })
+        }
+    }
+
+    fn connected_pair() -> (UnixStream, Frrmi) {
+        let (peer, ours) = UnixStream::pair().unwrap_or_else(|e| unreachable!("{e}"));
+        let frrmi = Frrmi {
+            sock: Some(ours),
+            ..Frrmi::default()
+        };
+        (peer, frrmi)
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Streams;
+
+    impl ValueGenerator for Streams {
+        type Output = Vec<Delivery>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Delivery>> {
+            let count = driver.gen_u8(Included(&1), Included(&MAX_MESSAGES))?;
+            let mut out = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                out.push(Deliveries.generate(driver)?);
+            }
+            Some(out)
+        }
+    }
+
+    #[test]
+    fn a_message_survives_any_division_into_reads() {
+        bolero::check!()
+            .with_generator(Deliveries)
+            .cloned()
+            .for_each(|delivery: Delivery| {
+                let mut wire = IoBuffer::new();
+                wire.serialize(delivery.genid, delivery.body.as_bytes());
+                let bytes = wire.buffer;
+
+                let (mut peer, mut frrmi) = connected_pair();
+
+                let mut sent = 0;
+                let mut got = None;
+                let mut sizes = delivery.chunks.iter().copied();
+                while sent < bytes.len() {
+                    let take = sizes.next().unwrap_or(usize::MAX).min(bytes.len() - sent);
+                    peer.write_all(&bytes[sent..sent + take])
+                        .unwrap_or_else(|e| unreachable!("{e}"));
+                    sent += take;
+
+                    match frrmi.recv_msg() {
+                        Ok(Some(response)) => {
+                            assert!(got.is_none(), "two messages from one, for {delivery:?}");
+                            got = Some(response);
+                        }
+                        Ok(None) => (),
+                        Err(e) => panic!("recv failed with {e} for {delivery:?}"),
+                    }
+                }
+
+                let response = got.unwrap_or_else(|| panic!("no message, for {delivery:?}"));
+                assert_eq!(response.genid, delivery.genid, "genid for {delivery:?}");
+                assert_eq!(response.data, delivery.body, "body for {delivery:?}");
+            });
+    }
+
+    #[test]
+    fn a_connection_carries_one_message_after_another() {
+        bolero::check!()
+            .with_generator(Streams)
+            .cloned()
+            .for_each(|deliveries: Vec<Delivery>| {
+                let mut bytes = Vec::new();
+                for delivery in &deliveries {
+                    let mut wire = IoBuffer::new();
+                    wire.serialize(delivery.genid, delivery.body.as_bytes());
+                    bytes.extend_from_slice(&wire.buffer);
+                }
+
+                let (mut peer, mut frrmi) = connected_pair();
+
+                let mut sizes = deliveries.iter().flat_map(|d| d.chunks.iter().copied());
+                let mut got: Vec<(GenId, String)> = Vec::new();
+                let mut sent = 0;
+                while sent < bytes.len() {
+                    let take = sizes.next().unwrap_or(usize::MAX).min(bytes.len() - sent);
+                    peer.write_all(&bytes[sent..sent + take])
+                        .unwrap_or_else(|e| unreachable!("{e}"));
+                    sent += take;
+
+                    // One write may complete more than one message.
+                    loop {
+                        match frrmi.recv_msg() {
+                            Ok(Some(response)) => got.push((response.genid, response.data)),
+                            Ok(None) => break,
+                            Err(e) => panic!("recv failed with {e} for {deliveries:?}"),
+                        }
+                    }
+                }
+
+                let want: Vec<(GenId, String)> = deliveries
+                    .iter()
+                    .map(|d| (d.genid, d.body.clone()))
+                    .collect();
+                assert_eq!(got, want, "for {deliveries:?}");
+            });
+    }
+
+    #[test]
+    fn an_absurd_announced_length_is_refused() {
+        let mut header = Vec::new();
+        header.extend_from_slice(&u64::MAX.to_ne_bytes());
+        header.extend_from_slice(&0i64.to_ne_bytes());
+
+        let (mut peer, mut frrmi) = connected_pair();
+        peer.write_all(&header)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+
+        assert!(
+            matches!(frrmi.recv_msg(), Err(FrrErr::DecodeFailure)),
+            "an absurd length must be refused"
+        );
     }
 }
