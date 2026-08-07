@@ -60,6 +60,12 @@ pub struct NhopKey {
     pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
+    /// The name of `ifindex`'s interface, for diagnostics only.
+    ///
+    /// Not populated when a next-hop is learned over the CPI, and it must not be: the name has to
+    /// be looked up against the interface table, which is populated out of band, so a key carrying
+    /// one would differ before and after we learn about the interface -- two next-hops where there
+    /// is one. See `RouteNhop::from_rpc_nhop`, and the same argument for a vxlan dmac above it.
     pub ifname: Option<String>,
 }
 
