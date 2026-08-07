@@ -29,6 +29,17 @@ use rand::seq::SliceRandom;
 #[concurrency_mode(shuttle)]
 use shuttle::rand::{Rng, thread_rng};
 
+/// How many times a reservation will look a port's block up before giving up on it.
+///
+/// A block's flag and its entry in the map of allocated blocks are set apart from one another at
+/// both ends of its life, so a lookup landing between them finds it neither free nor allocated and
+/// has to start over. Releasing stores the flag `true` and lets the weak entry expire with the
+/// `Arc`; claiming takes the flag first and inserts the entry after building the block. Either gap
+/// is enough, and the second needs no release at all -- a thread descheduled between the two holds
+/// it open for as long as it is parked. This is a bound on livelock, not a number of expected
+/// attempts.
+const BLOCK_LOOKUP_ATTEMPTS: usize = 4;
+
 ///////////////////////////////////////////////////////////////////////////////
 // AllocatorPortBlock
 ///////////////////////////////////////////////////////////////////////////////
@@ -362,35 +373,43 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         ip: Arc<AllocatedIp<I>>,
         port: NatPort,
     ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
-        let (block_was_free, index) = self.try_to_reserve_block(port)?;
         let allow_null = matches!(port, NatPort::Identifier(_));
-        if block_was_free {
-            return self.allocate_block_for_reservation(ip, index, port, allow_null);
+        for _ in 0..BLOCK_LOOKUP_ATTEMPTS {
+            let (block_was_free, index) = self.try_to_reserve_block(port)?;
+            if block_was_free {
+                return self.allocate_block_for_reservation(ip, index, port, allow_null);
+            }
+            if let Some(block) = self.allocated_blocks.search_for_block(port) {
+                return Ok(block);
+            }
+            // A block masquerade may never draw from never joins the list of allocated blocks, so
+            // its absence from that list says nothing about the bookkeeping. Port forwarding
+            // claiming a block in full is the way to reach this from a configuration: a flow
+            // carried across a config change may hold a port in a block the new configuration has
+            // claimed.
+            //
+            // Answer as a claim on part of the same block does, where the block is allocatable and
+            // its own bitmap refuses the port. How much of a block an operator happened to claim is
+            // not something the caller should be able to tell apart, and it is certainly not the
+            // difference between a policy conflict and a broken allocator.
+            if self.block_is_excluded(port) {
+                debug!("Port {port} lies in a block that port forwarding has claimed in full");
+                return Err(AllocatorError::PortReservationFailed(port.as_u16()));
+            }
+            // Not free, not allocated, not excluded: the block is mid-handover. Either its last
+            // holder released it between the flag being read and the map being searched, or
+            // another thread has claimed it and not yet published it. Nothing is wrong either
+            // way, and starting over is the answer to both -- the next attempt finds the block
+            // free if it was released, and in the map once the claimant gets there.
+            debug!("Block holding port {port} was released mid-lookup, retrying");
         }
-        if let Some(block) = self.allocated_blocks.search_for_block(port) {
-            return Ok(block);
-        }
-        // A block masquerade may never draw from never joins the list of allocated blocks, so its
-        // absence from that list says nothing about the bookkeeping. Port forwarding claiming a
-        // block in full is the way to reach this from a configuration: a flow carried across a
-        // config change may hold a port in a block the new configuration has claimed.
-        //
-        // Answer as a claim on part of the same block does, where the block is allocatable and its
-        // own bitmap refuses the port. How much of a block an operator happened to claim is not
-        // something the caller should be able to tell apart, and it is certainly not the difference
-        // between a policy conflict and a broken allocator.
-        if self.block_is_excluded(port) {
-            debug!("Port {port} lies in a block that port forwarding has claimed in full");
-            return Err(AllocatorError::PortReservationFailed(port.as_u16()));
-        }
-        // Block was not free but is not in the list of allocated blocks either??
-        //
-        // FIXME: This can legitimately happen if the block was released just after we checked
-        // whether it was free? (Not observed in shuttle tests so far.) Do we need an additional
-        // lock around the PortAllocator?
-        Err(AllocatorError::InternalIssue(
-            "Block not free, although absent from list of allocated blocks".to_string(),
-        ))
+        // Every attempt landed in that window: either this block kept changing hands, or a thread
+        // claiming it stayed parked between taking its flag and publishing it. Say the reservation
+        // failed rather than claim the bookkeeping is broken -- the caller drops one flow, where
+        // `InternalIssue` is read as the allocator being unfit and costs the packet its whole
+        // batch.
+        debug!("Block holding port {port} was released mid-lookup {BLOCK_LOOKUP_ATTEMPTS} times");
+        Err(AllocatorError::PortReservationFailed(port.as_u16()))
     }
 
     pub(crate) fn reserve_port(
@@ -712,13 +731,27 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
         self.0.read().get(&index).cloned()
     }
 
-    fn remove(&self, index: usize) {
-        self.0.write().remove(&index);
+    // Drop the entry at this index, but only if what is there now is still dead.
+    //
+    // The caller found its own copy of the weak reference expired, under no lock. By the time it
+    // gets here another thread may have claimed the freed block and inserted a live reference at
+    // the same index, and removing that would orphan a block that is in use: reservations into it
+    // would find it neither free nor listed, and its free ports would be invisible to
+    // `has_entries_with_free_ports`. Re-checking under the write lock is what makes the removal
+    // apply to the entry the caller actually saw. A different *dead* entry is fine to drop; that
+    // is the same tidying, one turn later.
+    fn remove_if_still_dead(&self, index: usize) {
+        let mut blocks = self.0.write();
+        if let Some(stored) = blocks.get(&index)
+            && stored.upgrade().is_none()
+        {
+            blocks.remove(&index);
+        }
     }
 
     fn get(&self, index: usize) -> Option<Arc<AllocatedPortBlock<I>>> {
         self.get_weak(index)?.upgrade().or_else(|| {
-            self.remove(index);
+            self.remove_if_still_dead(index);
             None
         })
     }
@@ -735,11 +768,13 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     }
 
     fn search_for_block(&self, port: NatPort) -> Option<Arc<AllocatedPortBlock<I>>> {
-        let blocks = self.0.read();
-        blocks
+        // One upgrade, kept. Upgrading to test the block and again to return it let the block die
+        // in between, so a block that was there a moment ago read as absent -- which the caller
+        // cannot tell from a block that was never listed.
+        self.0
+            .read()
             .values()
-            .find(|block| block.upgrade().is_some_and(|block| block.covers(port)))?
-            .upgrade()
+            .find_map(|block| block.upgrade().filter(|block| block.covers(port)))
     }
 
     // Used for Display
