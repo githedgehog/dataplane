@@ -112,14 +112,18 @@ impl Arch {
         }
     }
 
-    /// Path to the guest kernel image inside the container.
+    /// This architecture's name as spelled in the kernel manifest.
     ///
-    /// x86_64 boots a `bzImage`; aarch64 boots a raw `Image`.
+    /// The guest kernel image is *not* derived from the architecture any
+    /// more -- it is looked up in the manifest nix writes into `testroot`
+    /// (see [`kernel_manifest`](crate::kernel_manifest)), because which
+    /// kernels exist is a fact about the nix build.  This is what lets the
+    /// manifest's claimed architecture be checked against the guest's.
     #[must_use]
-    pub const fn kernel_image_path(self) -> &'static str {
+    pub const fn manifest_name(self) -> &'static str {
         match self {
-            Self::X86_64 => "/bzImage",
-            Self::Aarch64 => "/Image",
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
         }
     }
 
@@ -647,7 +651,7 @@ mod tests {
     fn arch_x86_64_profile() {
         let a = Arch::X86_64;
         assert_eq!(a.qemu_system_binary(), "/bin/qemu-system-x86_64");
-        assert_eq!(a.kernel_image_path(), "/bzImage");
+        assert_eq!(a.manifest_name(), "x86_64");
         assert_eq!(a.qemu_machine_base(), "q35");
         assert_eq!(a.pvpanic_device(), "pvpanic");
         assert!(a.console_kernel_params().contains("ttyS0"));
@@ -663,7 +667,7 @@ mod tests {
     fn arch_aarch64_profile() {
         let a = Arch::Aarch64;
         assert_eq!(a.qemu_system_binary(), "/bin/qemu-system-aarch64");
-        assert_eq!(a.kernel_image_path(), "/Image");
+        assert_eq!(a.manifest_name(), "aarch64");
         assert!(a.qemu_machine_base().starts_with("virt"));
         assert_eq!(a.pvpanic_device(), "pvpanic-pci");
         assert!(a.console_kernel_params().contains("ttyAMA0"));
