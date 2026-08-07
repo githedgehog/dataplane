@@ -123,6 +123,8 @@ jobs:
     env: &check-env
       USER: "runner"
       JUST_VARS: >-
+        jobs=1
+        cores=8
         docker_sock=/run/docker/docker.sock
         debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
         profile=${{ matrix.build.profile }}
