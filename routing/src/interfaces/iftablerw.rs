@@ -80,10 +80,6 @@ impl IfTableWriter {
         (IfTableWriter(w), IfTableReader(r))
     }
     #[must_use]
-    pub fn as_reader(&self) -> IfTableReader {
-        IfTableReader::new(self.0.clone())
-    }
-    #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
     }
