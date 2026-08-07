@@ -491,7 +491,7 @@ mod test {
                 "10.0.4.0/24".parse::<Prefix>().unwrap(),
             ),
         ]);
-        let expose_gen = k8s_intf::bolero::expose::LegalValueExposeGenerator::new(&subnets);
+        let expose_gen = k8s_intf::bolero::expose::AnyExposeGenerator::new(&subnets);
         bolero::check!()
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {
@@ -549,6 +549,7 @@ mod test {
                     })
                     .unwrap_or(vec![]);
                 k8s_nots.sort();
+                k8s_nots.dedup();
                 let k8s_subnets = k8s_expose
                     .ips
                     .as_ref()
@@ -565,7 +566,13 @@ mod test {
                     })
                     .unwrap_or(vec![]);
                 k8s_ips.extend(k8s_subnets);
+                // Sorted *and* deduplicated, because the conversion collects into a set-like
+                // structure: a prefix written twice in one expose means the same as writing it once,
+                // and comes out once. This only came up when the generators started producing
+                // repeats -- the previous ones drew each prefix from a uniqueness-preserving
+                // generator, so the question never arose.
                 k8s_ips.sort();
+                k8s_ips.dedup();
 
                 let k8s_as = k8s_expose.r#as.as_ref().map(|r#as| {
                     let mut ret = r#as
@@ -574,6 +581,7 @@ mod test {
                         .map(|r#as| r#as.cidr.as_ref().unwrap().clone())
                         .collect::<Vec<_>>();
                     ret.sort();
+                    ret.dedup();
                     ret
                 });
 
@@ -584,6 +592,7 @@ mod test {
                         .map(|r#as| r#as.not.as_ref().unwrap().clone())
                         .collect::<Vec<_>>();
                     ret.sort();
+                    ret.dedup();
                     ret
                 });
 
