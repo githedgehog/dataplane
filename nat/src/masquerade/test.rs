@@ -6,7 +6,7 @@
 use crate::common::{NatAction, NatFlowStatus};
 use crate::masquerade::state::MasqueradeState;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
-use crate::{IcmpErrorHandler, Masquerade};
+use crate::{IcmpErrorHandler, Masquerade, NatPort};
 use ahash::HashMap;
 use common::cliprovider::Frame;
 use concurrency::sync::Arc;
@@ -21,8 +21,8 @@ use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
-use net::flows::FlowStatus;
 use net::flows::flow_info_item::ExtractRef;
+use net::flows::{FlowInfo, FlowStatus};
 use net::headers::TryTcpMut;
 use net::headers::{
     EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
@@ -33,7 +33,7 @@ use net::ip::NextHeader;
 use net::packet::test_utils::build_test_tcp_ipv4_packet;
 use net::packet::test_utils::{
     IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
-    build_test_udp_ipv4_frame,
+    build_test_udp_ipv4_frame, build_test_udp_ipv4_packet,
 };
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp::TruncatedTcp;
@@ -53,7 +53,7 @@ const ONE_MINUTE: Duration = Duration::from_mins(1);
 use crate::static_nat::test::build_gwconfig_from_overlay;
 
 fn test_case(msg: &str) {
-    debug!("{}", Frame(msg));
+    println!("{}", Frame(msg));
 }
 
 #[derive(Default)]
@@ -1699,4 +1699,71 @@ async fn test_genid_updated_on_reconfig() {
 
     let observed_genid = allocw.get_reader().get().unwrap().genid();
     assert_eq!(observed_genid, genid + 2);
+}
+
+fn get_flow_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
+    let locked = flow_info.locked.read();
+    let alloc = locked
+        .nat_state
+        .as_ref()?
+        .extract_ref::<MasqueradeState>()?
+        .allocation()?;
+    Some((alloc.ip(), alloc.port()))
+}
+
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn test_recheck_flow_when_allocator_is_kept() {
+    let genid = 1;
+    let (mut nat, mut allocw) = Masquerade::new_with_defaults();
+    let flow_table = nat.sessions().clone();
+
+    let overlay = build_overlay_2vpcs().validate().unwrap();
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table());
+    allocw.update_nat_allocator(nat_config, genid, &flow_table);
+
+    test_case("Create a masqueraded flow with the current config");
+    let mut packet: Packet<TestBuffer> = build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 4321, 80);
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(true);
+    packet.meta_mut().src_vpcd = Some(vpcd(100));
+    packet.meta_mut().dst_vpcd = Some(vpcd(200));
+    let flow_key = FlowKey::try_from(&packet).unwrap();
+    let out: Vec<_> = nat.process(std::iter::once(packet)).collect();
+    assert_eq!(out[0].get_done(), None);
+
+    test_case("Check that the flow is there");
+    let installed = flow_table.lookup(&flow_key).expect("Flow must be there");
+    let reverse = installed
+        .related
+        .as_ref()
+        .expect("Flow must have a related flow")
+        .upgrade()
+        .expect("Reverse flow must be there");
+
+    assert!(installed.is_active());
+    assert!(reverse.is_active());
+    assert_eq!(reverse.genid(), genid);
+    assert_eq!(installed.genid(), genid);
+    let allocation = get_flow_allocation(&installed).expect("Flow must have an allocation");
+
+    test_case("Advance the genid of the installed allocator (without checking flows)");
+    // we advance the genid of the allocator, without checking the flows to simulate the
+    // race where a flow would be installed and race against the check made when a new
+    // config would be applied, to exercise `recheck_flow`
+    let allocator = allocw.get_reader().get().expect("Allocator must be there");
+    allocator.set_genid(genid + 1);
+    assert_eq!(installed.genid(), genid); // flow was left behind by the sweep
+
+    test_case("Re-check the flow: it must be upgraded, not invalidated");
+    assert!(nat.recheck_flow(&allocator, &installed).is_ok());
+    assert!(installed.is_active());
+    assert!(reverse.is_active());
+    assert_eq!(installed.genid(), genid + 1);
+    assert_eq!(reverse.genid(), genid + 1);
+    assert_eq!(get_flow_allocation(&installed), Some(allocation)); // flow keeps its allocation
+
+    test_case("Done (logs beyond this point are irrelevant)");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(2));
 }
