@@ -497,3 +497,341 @@ pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: 
         }
     }
 }
+
+#[cfg(test)]
+mod cpi_properties {
+    use super::*;
+    use crate::atable::atablerw::AtableWriter;
+    use crate::config::RouterConfig;
+    use crate::evpn::RmacStore;
+    use crate::fib::fibobjects::{FibEntry, PktInstruction};
+    use crate::fib::fibtable::FibTableWriter;
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::interfaces::tests::build_test_iftable;
+    use crate::rib::encapsulation::Encapsulation;
+    use crate::rib::vrf::tests::{build_test_nhop, build_test_route};
+    use crate::rib::vrf::{RouteOrigin, RouterVrfConfig, VrfStatus};
+    use bolero::{Driver, ValueGenerator};
+    use dplane_rpc::msg::{ForwardAction, NextHop, VxlanEncap};
+    use dplane_rpc::objects::MacAddress;
+    use lpm::prefix::Prefix;
+    use net::eth::mac::Mac;
+    use net::vxlan::Vni;
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const OVERLAY_VRF: VrfId = 7;
+    const OVERLAY_VNI: u32 = 3000;
+    const UNDERLAY_IFINDEX: u32 = 2;
+
+    const NUM_VTEPS: u8 = 2;
+    const NUM_MACS: u8 = 2;
+
+    fn addr(a: &str) -> IpAddr {
+        IpAddr::from_str(a).unwrap_or_else(|_| unreachable!())
+    }
+
+    fn vteps() -> Vec<IpAddr> {
+        vec![addr("7.0.0.1"), addr("7.0.0.2")]
+    }
+
+    fn macs() -> Vec<[u8; 6]> {
+        vec![
+            [0x00, 0xaa, 0x00, 0x00, 0x00, 0x01],
+            [0x00, 0xbb, 0x00, 0x00, 0x00, 0x02],
+        ]
+    }
+
+    fn fabric() -> RoutingDb {
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let (iftw, _iftr) = IfTableWriter::new_with_data(build_test_iftable());
+        let (_atw, atabler) = AtableWriter::new();
+        let mut db = RoutingDb::new(fibtw, iftw, atabler);
+
+        let vrf0 = db
+            .vrftable
+            .get_vrf_mut(Vrf::DEFAULT_VRFID)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        vrf0.add_route_complete(
+            &Prefix::from_str("7.0.0.0/8").unwrap_or_else(|_| unreachable!()),
+            build_test_route(RouteOrigin::Connected, 0, 0),
+            &[build_test_nhop(None, Some(UNDERLAY_IFINDEX), 0, None)],
+            None,
+            &RmacStore::new(),
+        );
+
+        let vni = Vni::new_checked(OVERLAY_VNI).unwrap_or_else(|_| unreachable!());
+        let config = RouterVrfConfig::new(OVERLAY_VRF, "overlay").set_vni(Some(vni));
+        db.vrftable
+            .add_vrf(&config)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        db
+    }
+
+    fn overlay_route(vrfid: VrfId, prefix: &str, vtep: IpAddr) -> IpRoute {
+        let (address, len) = prefix.split_once('/').unwrap_or_else(|| unreachable!());
+        IpRoute {
+            prefix: addr(address),
+            prefix_len: len.parse().unwrap_or_else(|_| unreachable!()),
+            vrfid,
+            tableid: 254,
+            rtype: RouteType::Bgp,
+            distance: 20,
+            metric: 100,
+            nhops: vec![NextHop {
+                fwaction: ForwardAction::Forward,
+                address: Some(vtep),
+                ifindex: None,
+                vrfid,
+                encap: Some(NextHopEncap::VXLAN(VxlanEncap { vni: OVERLAY_VNI })),
+            }],
+        }
+    }
+
+    fn rmac_msg(vtep: IpAddr, mac: [u8; 6]) -> Rmac {
+        Rmac {
+            address: vtep,
+            mac: MacAddress::new(mac),
+            vni: OVERLAY_VNI,
+        }
+    }
+
+    fn fib_entries(db: &RoutingDb, vrfid: VrfId, prefix: &str) -> Vec<FibEntry> {
+        let prefix = Prefix::from_str(prefix).unwrap_or_else(|_| unreachable!());
+        let Prefix::IPV4(wanted) = prefix else {
+            unreachable!()
+        };
+        let vrf = db
+            .vrftable
+            .get_vrf(vrfid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        fib.iter_v4()
+            .find(|(p, _)| *p == wanted)
+            .map(|(_, route)| {
+                route
+                    .iter()
+                    .flat_map(|group| group.entries().iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn entries_are_well_formed(entries: &[FibEntry], at: &str) {
+        for entry in entries {
+            assert!(entry.is_valid(), "unusable {entry:?} {at}");
+            let drop_at = entry
+                .iter()
+                .position(|inst| matches!(inst, PktInstruction::Drop));
+            if let Some(index) = drop_at {
+                assert_eq!(index, 0, "a drop is not first in {entry:?} {at}");
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Fabrics;
+
+    impl ValueGenerator for Fabrics {
+        type Output = (usize, usize);
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<(usize, usize)> {
+            let vtep = driver.gen_u8(Included(&0), Included(&(NUM_VTEPS - 1)))?;
+            let mac = driver.gen_u8(Included(&0), Included(&(NUM_MACS - 1)))?;
+            Some((usize::from(vtep), usize::from(mac)))
+        }
+    }
+
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vteps().len(), usize::from(NUM_VTEPS));
+        assert_eq!(macs().len(), usize::from(NUM_MACS));
+        let underlay = Prefix::from_str("7.0.0.0/8").unwrap_or_else(|_| unreachable!());
+        for vtep in vteps() {
+            assert!(underlay.covers_addr(&vtep), "{vtep} is not in the underlay");
+        }
+    }
+
+    #[test]
+    fn an_overlay_route_drops_until_its_router_mac_arrives() {
+        bolero::check!().with_generator(Fabrics).cloned().for_each(
+            |(vtep, mac): (usize, usize)| {
+                let mut db = fabric();
+                let vtep = vteps()[vtep];
+                let prefix = "10.0.0.0/24";
+
+                assert_eq!(
+                    overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db),
+                    RpcResultCode::Ok
+                );
+
+                let before = fib_entries(&db, OVERLAY_VRF, prefix);
+                entries_are_well_formed(&before, "before the rmac");
+                assert!(
+                    before
+                        .iter()
+                        .all(|entry| matches!(entry.iter().next(), Some(PktInstruction::Drop))),
+                    "an overlay route with no router mac must drop, got {before:?}"
+                );
+
+                assert_eq!(rmac_msg(vtep, macs()[mac]).add(&mut db), RpcResultCode::Ok);
+
+                let after = fib_entries(&db, OVERLAY_VRF, prefix);
+                entries_are_well_formed(&after, "after the rmac");
+                let expected_mac = Mac::from(macs()[mac]);
+                for entry in &after {
+                    let mut instructions = entry.iter();
+                    match instructions.next() {
+                        Some(PktInstruction::Encap(Encapsulation::Vxlan(vxlan))) => {
+                            assert_eq!(vxlan.vni.as_u32(), OVERLAY_VNI, "vni in {entry:?}");
+                            assert_eq!(vxlan.remote, vtep, "remote in {entry:?}");
+                            assert_eq!(vxlan.dmac, Some(expected_mac), "dmac in {entry:?}");
+                        }
+                        other => panic!("expected an encapsulation first, got {other:?}"),
+                    }
+                    match instructions.next() {
+                        Some(PktInstruction::Egress(egress)) => {
+                            assert_eq!(
+                                egress.ifindex().map(InterfaceIndex::to_u32),
+                                Some(UNDERLAY_IFINDEX),
+                                "egress interface in {entry:?}"
+                            );
+                            assert_eq!(
+                                *egress.address(),
+                                Some(vtep),
+                                "egress address in {entry:?}"
+                            );
+                        }
+                        other => panic!("expected an egress second, got {other:?}"),
+                    }
+                    assert!(instructions.next().is_none(), "extra work in {entry:?}");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn withdrawing_a_router_mac_leaves_the_route_forwarding() {
+        bolero::check!().with_generator(Fabrics).cloned().for_each(
+            |(vtep, mac): (usize, usize)| {
+                let mut db = fabric();
+                let vtep = vteps()[vtep];
+                let prefix = "10.0.0.0/24";
+                let rmac = rmac_msg(vtep, macs()[mac]);
+
+                overlay_route(OVERLAY_VRF, prefix, vtep).add(&mut db);
+                rmac.add(&mut db);
+                let before = fib_entries(&db, OVERLAY_VRF, prefix);
+
+                assert_eq!(rmac.del(&mut db), RpcResultCode::Ok);
+                db.vrftable.refresh_non_default_fibs(&db.rmac_store);
+
+                let after = fib_entries(&db, OVERLAY_VRF, prefix);
+                entries_are_well_formed(&after, "after withdrawing the rmac");
+                assert_eq!(after, before, "withdrawing a router mac changed the fib");
+            },
+        );
+    }
+
+    #[test]
+    fn an_unknown_vrf_fails_on_add_and_forgives_on_delete() {
+        let missing = OVERLAY_VRF + 1;
+        let prefix = "10.9.0.0/24";
+        let vtep = vteps()[0];
+
+        let mut db = fabric();
+        assert_eq!(
+            overlay_route(missing, prefix, vtep).add(&mut db),
+            RpcResultCode::Failure
+        );
+        assert_eq!(
+            overlay_route(missing, prefix, vtep).del(&mut db),
+            RpcResultCode::Ok,
+            "a delete for an unknown vrf is forgiven while we have no config"
+        );
+
+        db.set_config(RouterConfig::new(1));
+        assert!(db.have_config());
+        assert_eq!(
+            overlay_route(missing, prefix, vtep).del(&mut db),
+            RpcResultCode::Failure,
+            "once a config is applied the same lookup is a real failure"
+        );
+    }
+
+    #[test]
+    fn deleting_the_last_route_of_a_dying_vrf_removes_it() {
+        let mut db = fabric();
+        let prefix = "10.0.0.0/24";
+        let vtep = vteps()[0];
+        let route = overlay_route(OVERLAY_VRF, prefix, vtep);
+        route.add(&mut db);
+
+        assert_eq!(route.del(&mut db), RpcResultCode::Ok);
+        assert!(db.vrftable.contains(OVERLAY_VRF));
+
+        route.add(&mut db);
+        db.vrftable
+            .get_vrf_mut(OVERLAY_VRF)
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .set_status(VrfStatus::Deleting);
+
+        assert_eq!(route.del(&mut db), RpcResultCode::Ok);
+        assert!(
+            !db.vrftable.contains(OVERLAY_VRF),
+            "a vrf that became deletable was left behind"
+        );
+    }
+
+    #[test]
+    fn an_interface_address_is_refused_unless_it_is_usable() {
+        let cases = [
+            (UNDERLAY_IFINDEX, 24, RpcResultCode::Ok),
+            (UNDERLAY_IFINDEX, 0, RpcResultCode::InvalidRequest),
+            (UNDERLAY_IFINDEX, 33, RpcResultCode::InvalidRequest),
+            (0, 24, RpcResultCode::InvalidRequest),
+        ];
+        for (ifindex, mask, want) in cases {
+            let mut db = fabric();
+            let message = IfAddress {
+                ifname: "eth0".to_string(),
+                address: addr("10.0.0.1"),
+                mask_len: mask,
+                ifindex,
+                vrfid: Vrf::DEFAULT_VRFID,
+            };
+            let present = |db: &RoutingDb| {
+                let iftable = db.iftw.enter().unwrap_or_else(|| unreachable!());
+                let Ok(index) = InterfaceIndex::try_new(ifindex) else {
+                    return false;
+                };
+                iftable
+                    .get_interface(index)
+                    .is_some_and(|iface| !iface.addresses.is_empty())
+            };
+
+            assert_eq!(message.add(&mut db), want, "adding {message}");
+            assert_eq!(
+                present(&db),
+                want == RpcResultCode::Ok,
+                "after adding {message}"
+            );
+
+            assert_eq!(message.del(&mut db), want, "deleting {message}");
+            assert!(!present(&db), "the address survived its own deletion");
+        }
+    }
+
+    #[test]
+    fn a_next_hop_in_another_vrf_is_nonlocal() {
+        let vtep = vteps()[0];
+        let mut route = overlay_route(OVERLAY_VRF, "10.0.0.0/24", vtep);
+        assert!(!nonlocal_nhop(&route), "its own vrf is not nonlocal");
+        route.nhops[0].vrfid = Vrf::DEFAULT_VRFID;
+        assert!(nonlocal_nhop(&route), "another vrf is nonlocal");
+        route.nhops.clear();
+        assert!(!nonlocal_nhop(&route), "no next-hops, nothing nonlocal");
+    }
+}
