@@ -636,6 +636,11 @@ mod test {
     }
 
     // Port forwarding: mismatched sizes rejected
+    //
+    // Reported as the prefix lengths differing rather than as `MismatchedPrefixSizes`. Port
+    // forwarding compares the two lengths and the two port counts directly now, instead of the
+    // product of the two, because a product accepts pairings a rule cannot express -- see
+    // `contract::tests::compensating_sizes_do_not_make_a_valid_expose`.
     #[test]
     fn test_port_forwarding_mismatched_sizes_rejected() {
         let expose = VpcExpose::empty()
@@ -646,7 +651,13 @@ mod test {
             .unwrap();
         let result = expose.validate();
         assert!(
-            matches!(result, Err(ConfigError::MismatchedPrefixSizes(_, _))),
+            matches!(
+                result,
+                Err(ConfigError::MismatchedPrefixLengths {
+                    private: 24,
+                    public: 25
+                })
+            ),
             "{result:?}",
         );
     }
