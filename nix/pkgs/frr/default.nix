@@ -8,6 +8,7 @@
   bison,
   buildPackages,
   flex,
+  makeWrapper,
   perl,
   pkg-config,
   python3Minimal,
@@ -59,7 +60,21 @@
   # OSPF options
   ospfApi ? false,
 
+  # Whether this FRR source carries our vtysh extension loader, i.e. whether
+  # its vtysh understands `-X <path-to-extension.so>`.  Our fork (`frr-dp`)
+  # does; upstream (`frr`, used for the host image) does not, and passing it
+  # `-X` would only earn us an "invalid option".  When set, the install phase
+  # wraps `vtysh` so that it loads `vtysh-extension-libs` without being asked.
   vtysh-extensions ? false,
+
+  # Extensions the `vtysh` wrapper loads, as paths in the *image*, not the nix
+  # store.  Store paths are not an option here: the only extension we ship,
+  # `libvtysh_hedgehog.so`, is built by `dplane-plugin`, which links against
+  # this derivation.  Naming its output would be a dependency cycle.  Absolute
+  # image paths are how the rest of this build already talks about FRR's own
+  # runtime layout (see `--with-moduledir` and `--libdir` below), so the
+  # wrapper is in good company.
+  vtysh-extension-libs ? [ "/lib/libvtysh_hedgehog.so" ],
 
   ...
 }:
@@ -92,7 +107,10 @@ stdenv.mkDerivation (finalAttrs: {
     python3Minimal
     nukeReferences
     removeReferencesTo
-  ];
+  ]
+  # Conditional so that the host FRR, which gets no wrapper, keeps the exact
+  # derivation it has today rather than rebuilding to reach the same bytes.
+  ++ lib.optionals vtysh-extensions [ makeWrapper ];
 
   buildInputs = [
     c-ares
@@ -199,9 +217,6 @@ stdenv.mkDerivation (finalAttrs: {
   patches = [
     ./patches/yang-hack.patch
     ./patches/xrelifo.py.fix.patch
-  ]
-  ++ lib.optionals vtysh-extensions [
-    ./patches/vtysh-extensions.h.patch
   ];
 
   buildPhase = ''
@@ -216,4 +231,32 @@ stdenv.mkDerivation (finalAttrs: {
 
   doCheck = false;
   enableParallelBuilding = true;
-})
+}
+# Teach `vtysh` to load our extensions without being asked.
+#
+# The flag exists because our FRR fork patches vtysh to take `-X <path>`, and
+# the gateway's commands live in such an extension.  Leaving the flag to the
+# caller -- the shell alias the issue asked for -- only reaches callers that
+# read a shell rc, and `kubectl exec` and `docker exec` do not: the alias would
+# be missing in exactly the session someone opened to find out what a running
+# gateway is doing.  Wrapping the binary puts the flag where every caller gets
+# it, which is the guide's "make the easy path the correct path"
+# (development/code/avoid-global-reasoning.md).
+#
+# `optionalAttrs` rather than an `optionalString` postFixup so the attribute is
+# absent, not empty, when the wrapper is off: an empty `postFixup` is still an
+# environment variable in the derivation, and setting one would rebuild the
+# upstream host FRR to arrive at exactly the bytes it builds today.
+#
+# `postFixup` rather than anywhere earlier, because `preFixup` (see
+# nix/overlays/frr.nix) runs `nuke-refs` over `$out`, which blanks the hash of
+# any store path it finds in a file -- including the interpreter and the real
+# binary that `wrapProgram` writes into the wrapper.
+//
+  lib.optionalAttrs vtysh-extensions {
+    postFixup = ''
+      wrapProgram "$out/bin/vtysh" --add-flags ${
+        lib.escapeShellArg (lib.concatMapStringsSep " " (ext: "-X ${ext}") vtysh-extension-libs)
+      }
+    '';
+  })
