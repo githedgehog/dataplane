@@ -82,3 +82,298 @@ impl AtableReaderFactory {
         AtableReader(self.0.handle())
     }
 }
+
+/// Model-based properties over the adjacency table and its left-right wrapper.
+///
+/// The table is a map. What is not map-like is the *publishing*: `add_adjacency`, `del_adjacency`
+/// and `clear` all take a `publish` flag, and `AtResolver::refresh_atable_from_proc` relies on it --
+/// it clears the table with `publish: false`, adds every entry it found with `publish: false`, and
+/// publishes once at the end. So a reader must never observe the cleared-but-not-yet-repopulated
+/// state. If it could, the egress stage would find an empty adjacency table on every refresh and
+/// have no destination mac for anything.
+#[cfg(test)]
+mod atable_properties {
+    use super::*;
+    use bolero::{Driver, ValueGenerator};
+    use net::eth::mac::Mac;
+    use std::collections::BTreeMap;
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_IFACES: u8 = 2;
+    const NUM_ADDRESSES: u8 = 3;
+    const NUM_MACS: u8 = 2;
+    const MAX_CHANGES: u8 = 12;
+
+    fn ifindexes() -> Vec<InterfaceIndex> {
+        (1..=u32::from(NUM_IFACES))
+            .map(|i| InterfaceIndex::try_new(i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn addresses() -> Vec<IpAddr> {
+        ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+            .iter()
+            .map(|a| IpAddr::from_str(a).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn macs() -> Vec<Mac> {
+        vec![
+            Mac::from([0x00, 0xaa, 0x00, 0x00, 0x00, 0x01]),
+            Mac::from([0x00, 0xbb, 0x00, 0x00, 0x00, 0x02]),
+        ]
+    }
+
+    /// One change, over indices into the pools above. Every mutation carries the writer's `publish`
+    /// flag, since whether a change is visible yet is the point.
+    #[derive(Debug, Clone)]
+    enum Change {
+        Add {
+            iface: usize,
+            address: usize,
+            mac: usize,
+            publish: bool,
+        },
+        Del {
+            iface: usize,
+            address: usize,
+            publish: bool,
+        },
+        Clear {
+            publish: bool,
+        },
+        Publish,
+    }
+
+    /// Draws sequences of [`Change`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                    0 => Change::Add {
+                        iface: index(driver, NUM_IFACES)?,
+                        address: index(driver, NUM_ADDRESSES)?,
+                        mac: index(driver, NUM_MACS)?,
+                        publish: driver.produce::<bool>()?,
+                    },
+                    1 => Change::Del {
+                        iface: index(driver, NUM_IFACES)?,
+                        address: index(driver, NUM_ADDRESSES)?,
+                        publish: driver.produce::<bool>()?,
+                    },
+                    2 => Change::Clear {
+                        publish: driver.produce::<bool>()?,
+                    },
+                    _ => Change::Publish,
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// The adjacencies, by `(interface, address)` index pair, to mac index.
+    type Entries = BTreeMap<(usize, usize), usize>;
+
+    /// Two states, which is the whole point: what the writer has appended, and what a reader is
+    /// entitled to see.
+    #[derive(Debug, Clone, Default)]
+    struct Model {
+        appended: Entries,
+        published: Entries,
+    }
+
+    impl Model {
+        fn publish(&mut self) {
+            self.published = self.appended.clone();
+        }
+
+        fn apply(&mut self, change: &Change) {
+            match change {
+                Change::Add {
+                    iface,
+                    address,
+                    mac,
+                    publish,
+                } => {
+                    // an adjacency is keyed by the interface and address it carries, so re-learning
+                    // one with a different mac replaces it
+                    self.appended.insert((*iface, *address), *mac);
+                    if *publish {
+                        self.publish();
+                    }
+                }
+                Change::Del {
+                    iface,
+                    address,
+                    publish,
+                } => {
+                    self.appended.remove(&(*iface, *address));
+                    if *publish {
+                        self.publish();
+                    }
+                }
+                Change::Clear { publish } => {
+                    self.appended.clear();
+                    if *publish {
+                        self.publish();
+                    }
+                }
+                Change::Publish => self.publish(),
+            }
+        }
+    }
+
+    fn apply_to_table(writer: &mut AtableWriter, change: &Change) {
+        let ifaces = ifindexes();
+        let addrs = addresses();
+        match change {
+            Change::Add {
+                iface,
+                address,
+                mac,
+                publish,
+            } => writer.add_adjacency(
+                Adjacency::new(addrs[*address], ifaces[*iface], macs()[*mac]),
+                *publish,
+            ),
+            Change::Del {
+                iface,
+                address,
+                publish,
+            } => writer.del_adjacency(addrs[*address], ifaces[*iface], *publish),
+            Change::Clear { publish } => writer.clear(*publish),
+            Change::Publish => writer.publish(),
+        }
+    }
+
+    /// Everything a reader can see of the table, as index pairs.
+    fn seen(table: &AdjacencyTable) -> Entries {
+        let ifaces = ifindexes();
+        let addrs = addresses();
+        let all = macs();
+        let mut out = Entries::new();
+        for (iface, ifindex) in ifaces.iter().enumerate() {
+            for (address, addr) in addrs.iter().enumerate() {
+                if let Some(adjacency) = table.get_adjacency(*addr, *ifindex) {
+                    let mac = all
+                        .iter()
+                        .position(|m| *m == adjacency.get_mac())
+                        .unwrap_or_else(|| unreachable!());
+                    // and the adjacency agrees with the key it was found under
+                    assert_eq!(adjacency.get_ifindex(), *ifindex, "adjacency ifindex");
+                    assert_eq!(adjacency.get_ip(), *addr, "adjacency address");
+                    out.insert((iface, address), mac);
+                }
+            }
+        }
+        assert_eq!(
+            out.len(),
+            table.len(),
+            "the table holds entries outside the pools"
+        );
+        out
+    }
+
+    /// The pools and the constants that index them agree.
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(ifindexes().len(), usize::from(NUM_IFACES));
+        assert_eq!(addresses().len(), usize::from(NUM_ADDRESSES));
+        assert_eq!(macs().len(), usize::from(NUM_MACS));
+        // the macs must be distinguishable, or a replacement would not be visible
+        assert_ne!(macs()[0], macs()[1]);
+    }
+
+    /// A reader sees the table as of the last publish, and never an intermediate state.
+    ///
+    /// The unpublished half is what `AtResolver::refresh_atable_from_proc` depends on: it clears and
+    /// repopulates the whole table without publishing, so between the two a reader must still see
+    /// the previous contents rather than nothing.
+    #[test]
+    fn a_reader_sees_the_table_as_of_the_last_publish() {
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (mut writer, reader) = AtableWriter::new();
+                let mut model = Model::default();
+
+                for (step, change) in changes.iter().enumerate() {
+                    apply_to_table(&mut writer, change);
+                    model.apply(change);
+                    let at = format!("at step {step} of {changes:?}");
+
+                    let view = reader.enter().unwrap_or_else(|| unreachable!());
+                    assert_eq!(seen(&view), model.published, "reader {at}");
+                }
+
+                // and once everything is published, the reader sees everything appended
+                writer.publish();
+                model.publish();
+                let view = reader.enter().unwrap_or_else(|| unreachable!());
+                assert_eq!(seen(&view), model.appended, "reader after a final publish");
+            });
+    }
+
+    /// A refresh that clears and repopulates without publishing is invisible until it does.
+    ///
+    /// The same claim as above, spelled out in the shape the resolver actually uses, because that is
+    /// the sequence whose failure would empty the adjacency table under the egress stage.
+    #[test]
+    fn a_clear_and_repopulate_is_invisible_until_published() {
+        let (mut writer, reader) = AtableWriter::new();
+        let ifindex = ifindexes()[0];
+        let (old, new) = (addresses()[0], addresses()[1]);
+
+        writer.add_adjacency(Adjacency::new(old, ifindex, macs()[0]), true);
+        assert!(
+            reader
+                .enter()
+                .unwrap_or_else(|| unreachable!())
+                .get_adjacency(old, ifindex)
+                .is_some()
+        );
+
+        // a refresh: clear, repopulate, and only then publish
+        writer.clear(false);
+        writer.add_adjacency(Adjacency::new(new, ifindex, macs()[1]), false);
+
+        let view = reader.enter().unwrap_or_else(|| unreachable!());
+        assert!(
+            view.get_adjacency(old, ifindex).is_some(),
+            "the table emptied under a reader mid-refresh"
+        );
+        assert!(
+            view.get_adjacency(new, ifindex).is_none(),
+            "an unpublished addition was visible"
+        );
+        drop(view);
+
+        writer.publish();
+        let view = reader.enter().unwrap_or_else(|| unreachable!());
+        assert!(
+            view.get_adjacency(old, ifindex).is_none(),
+            "the clear was lost"
+        );
+        assert!(
+            view.get_adjacency(new, ifindex).is_some(),
+            "the addition was lost"
+        );
+    }
+}
