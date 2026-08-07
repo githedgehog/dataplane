@@ -1014,7 +1014,10 @@ pub mod contract {
     //! port-forwarding tables -- can be driven by generated configurations rather than by a
     //! handful of hand-written ones.
 
-    use super::{VpcExpose, VpcExposeNatConfig};
+    use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
+    use crate::ConfigError;
+    use crate::external::overlay::vpc::{Vpc, VpcTable};
+    use crate::external::overlay::{Overlay, ValidatedOverlay};
     use bolero::{Driver, ValueGenerator};
     use lpm::prefix::{
         IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
@@ -1094,6 +1097,114 @@ pub mod contract {
         }
     }
 
+    /// Generates [`VpcExpose`]s that masquerade and that [`VpcExpose::validate`] accepts.
+    ///
+    /// Looser than [`PortForwardingExpose`], because masquerade is: several prefixes are allowed on
+    /// each side and their sizes need not agree, which is the point of masquerade -- many private
+    /// addresses behind few public ones. What it does forbid is port ranges, on either side.
+    ///
+    /// Prefixes within a side are carved so as not to overlap, since a manifest rejects
+    /// overlapping ones, and the two sides are drawn from separate blocks.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct MasqueradeExpose;
+
+    impl ValueGenerator for MasqueradeExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = driver.produce::<bool>()?;
+            let privates = driver.gen_u8(Included(&1), Included(&3))?;
+            let publics = driver.gen_u8(Included(&1), Included(&2))?;
+            let base = driver.produce::<u8>()?;
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(30)),
+                _ => Some(Duration::from_mins(2)),
+            };
+
+            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+            for index in 0..privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Private, base.wrapping_add(index))?,
+                    None,
+                ));
+            }
+            for index in 0..publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(
+                        block(v4, Side::Public, base.wrapping_add(index))?,
+                        None,
+                    ))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Side {
+        Private,
+        Public,
+    }
+
+    // One non-overlapping block per index, from a range that is not special-use.
+    fn block(v4: bool, side: Side, index: u8) -> Option<Prefix> {
+        if v4 {
+            // 10.<index>.0.0/24 and 172.16.<index>.0/24.
+            let bits = match side {
+                Side::Private => 0x0A00_0000 | (u32::from(index) << 16),
+                Side::Public => 0xAC10_0000 | (u32::from(index) << 8),
+            };
+            prefix_v4(bits, 24)
+        } else {
+            // 2001:db8:0:<index>::/64 and 2001:db8:1:<index>::/64.
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            let bits = (0x2001_0db8u128 << 96) | (selector << 80) | (u128::from(index) << 64);
+            prefix_v6(bits, 64)
+        }
+    }
+
+    /// The VNI of the VPC offering the expose in [`overlay_offering`].
+    pub const LOCAL_VNI: u32 = 100;
+    /// The VNI of the peer it is offered to.
+    pub const REMOTE_VNI: u32 = 200;
+
+    /// A two-VPC overlay whose local side offers `expose`.
+    ///
+    /// The remote side exposes an unrelated prefix, because a manifest with no exposes is
+    /// rejected, and one of the same address family, because a peering's two manifests must agree
+    /// on that.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever validating the resulting overlay returns. A generator from this module
+    /// produces exposes that pass, so a caller driving one can treat an error as a failure.
+    pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
+        let remote_prefix = match expose.ips.first().map(PrefixWithOptionalPorts::prefix) {
+            Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
+            _ => "3.3.3.0/24",
+        };
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
+
+        let local = VpcManifest::new("VPC-1").exposing(expose);
+        let remote =
+            VpcManifest::new("VPC-2").exposing(VpcExpose::empty().ip(remote_prefix.into()));
+        let mut peerings = VpcPeeringTable::new();
+        peerings.add(VpcPeering::with_default_group(
+            "VPC-1--VPC-2",
+            local,
+            remote,
+        ))?;
+
+        Overlay::new(vpc_table, peerings).validate()
+    }
+
     /// Which NAT flavour a generated expose uses, for a caller that wants to branch on it.
     #[must_use]
     pub fn nat_config(expose: &VpcExpose) -> Option<&VpcExposeNatConfig> {
@@ -1162,6 +1273,42 @@ pub mod contract {
                         validated.is_ok(),
                         "generated expose was rejected: {expose} -- {:?}",
                         validated.err()
+                    );
+                });
+        }
+
+        /// The masquerade generator's cases validate too, and stay masquerade.
+        ///
+        /// Masquerade's own rule is that neither side carries a port range, which is easy to break
+        /// by reusing the port-forwarding shape.
+        #[test]
+        fn every_generated_masquerade_expose_validates() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_masquerade());
+                    assert!(!validated.ips().is_empty());
+                    assert!(!validated.as_range_or_empty().is_empty());
+                });
+        }
+
+        /// A generated expose can be dropped into an overlay that validates.
+        ///
+        /// The helper is what every downstream property is built on, so a case it cannot place is
+        /// a case none of them see.
+        #[test]
+        fn a_generated_expose_can_be_offered_in_an_overlay() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose)
+                .cloned()
+                .for_each(|expose: VpcExpose| {
+                    let shown = expose.to_string();
+                    assert!(
+                        overlay_offering(expose).is_ok(),
+                        "could not build an overlay around {shown}"
                     );
                 });
         }
