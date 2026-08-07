@@ -382,9 +382,7 @@ struct FlowSummary {
 
 impl FlowSummary {
     fn from_meta(meta: &PacketMeta) -> Option<Self> {
-        let Some(flow_info) = &meta.flow_info else {
-            return None;
-        };
+        let flow_info = meta.flow_info.as_ref()?;
         let locked_info = flow_info.locked.read();
         Some(Self {
             genid: flow_info.genid(),
