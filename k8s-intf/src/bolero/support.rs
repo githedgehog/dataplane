@@ -254,15 +254,28 @@ pub fn choose<T: Clone, D: Driver>(d: &mut D, choices: &[T]) -> Option<T> {
     Some(choices[index].clone())
 }
 
+/// The shortest prefixes these generators will draw.
+///
+/// A prefix shorter than this necessarily contains one of the special-use ranges that a `VpcExpose`
+/// may not overlap -- a v4 `/0` covers loopback, a `/2` at 64 covers `127.0.0.0/8`, and so on -- so
+/// drawing them only ever produces configurations that validation refuses. Longer prefixes can still
+/// land inside a reserved range and be refused; they just are not guaranteed to.
+const MIN_V4_MASK: u8 = 8;
+const MIN_V6_MASK: u8 = 16;
+
 pub fn generate_v4_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr4_gen =
-        UniqueV4CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&32))?);
+    let cidr4_gen = UniqueV4CidrGenerator::new(
+        count,
+        d.gen_u8(Bound::Included(&MIN_V4_MASK), Bound::Included(&32))?,
+    );
     cidr4_gen.generate(d)
 }
 
 pub fn generate_v6_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr6_gen =
-        UniqueV6CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&128))?);
+    let cidr6_gen = UniqueV6CidrGenerator::new(
+        count,
+        d.gen_u8(Bound::Included(&MIN_V6_MASK), Bound::Included(&128))?,
+    );
     cidr6_gen.generate(d)
 }
 
