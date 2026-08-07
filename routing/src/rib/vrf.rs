@@ -1165,6 +1165,7 @@ mod vrf_properties {
     const NUM_NHOPS: u8 = 3;
     const MAX_CHANGES: u8 = 10;
     const MAX_NHOPS_PER_ROUTE: u8 = 3;
+    const NUM_STATUSES: u8 = 3;
 
     const ROOT_V4: usize = 0;
     const ROOT_V6: usize = 5;
@@ -1201,6 +1202,10 @@ mod vrf_properties {
         .collect()
     }
 
+    fn statuses() -> Vec<VrfStatus> {
+        vec![VrfStatus::Active, VrfStatus::Deleting, VrfStatus::Deleted]
+    }
+
     fn nhops() -> Vec<RouteNhop> {
         vec![
             tests::build_test_nhop(Some("10.0.0.1"), Some(1), 0, None),
@@ -1211,17 +1216,11 @@ mod vrf_properties {
 
     #[derive(Debug, Clone)]
     enum Change {
-        AddRoute {
-            prefix: usize,
-            nhops: Vec<usize>,
-        },
-        DelRoute {
-            prefix: usize,
-        },
-        SetStale {
-            value: bool,
-        },
+        AddRoute { prefix: usize, nhops: Vec<usize> },
+        DelRoute { prefix: usize },
+        SetStale { value: bool },
         RemoveStale,
+        SetStatus { status: usize },
     }
 
     #[derive(Debug, Clone, Copy, Default)]
@@ -1240,7 +1239,7 @@ mod vrf_properties {
             let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
             let mut out = Vec::with_capacity(usize::from(len));
             for _ in 0..len {
-                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                let change = match driver.gen_u8(Included(&0), Included(&4))? {
                     0 => {
                         let prefix = index(driver, NUM_PREFIXES)?;
                         let count = driver.gen_u8(Included(&0), Included(&MAX_NHOPS_PER_ROUTE))?;
@@ -1256,7 +1255,10 @@ mod vrf_properties {
                     2 => Change::SetStale {
                         value: driver.produce::<bool>()?,
                     },
-                    _ => Change::RemoveStale,
+                    3 => Change::RemoveStale,
+                    _ => Change::SetStatus {
+                        status: index(driver, NUM_STATUSES)?,
+                    },
                 };
                 out.push(change);
             }
@@ -1264,22 +1266,32 @@ mod vrf_properties {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    struct RouteState {
+        nhops: Vec<NhopKey>,
+        stale: bool,
+        preset: bool,
+    }
+
     #[derive(Debug, Clone)]
     struct Model {
-        routes: BTreeMap<usize, (Vec<NhopKey>, bool)>,
+        routes: BTreeMap<usize, RouteState>,
+        status: VrfStatus,
     }
 
     impl Model {
-        fn preset() -> Vec<NhopKey> {
-            vec![NhopKey::with_drop()]
+        fn preset() -> RouteState {
+            RouteState {
+                nhops: vec![NhopKey::with_drop()],
+                stale: false,
+                preset: true,
+            }
         }
 
         fn new() -> Self {
             Self {
-                routes: BTreeMap::from([
-                    (ROOT_V4, (Self::preset(), false)),
-                    (ROOT_V6, (Self::preset(), false)),
-                ]),
+                routes: BTreeMap::from([(ROOT_V4, Self::preset()), (ROOT_V6, Self::preset())]),
+                status: VrfStatus::Active,
             }
         }
 
@@ -1290,8 +1302,18 @@ mod vrf_properties {
         fn referenced(&self) -> BTreeSet<NhopKey> {
             self.routes
                 .values()
-                .flat_map(|(nhops, _)| nhops.iter().cloned())
+                .flat_map(|route| route.nhops.iter().cloned())
                 .collect()
+        }
+
+        fn check_deletion(&mut self) {
+            let only_presets = self.routes.len() == 2
+                && [ROOT_V4, ROOT_V6]
+                    .iter()
+                    .all(|root| self.routes.get(root).is_some_and(|route| route.preset));
+            if self.status == VrfStatus::Deleting && only_presets {
+                self.status = VrfStatus::Deleted;
+            }
         }
 
         fn lpm(&self, addr: &IpAddr, pool: &[Prefix]) -> Option<usize> {
@@ -1305,24 +1327,32 @@ mod vrf_properties {
         fn apply(&mut self, change: &Change, pool: &[RouteNhop]) {
             match change {
                 Change::AddRoute { prefix, nhops } => {
-                    let keys = if nhops.is_empty() {
-                        Self::preset()
+                    let nhops = if nhops.is_empty() {
+                        vec![NhopKey::with_drop()]
                     } else {
                         nhops.iter().map(|i| pool[*i].key.clone()).collect()
                     };
-                    self.routes.insert(*prefix, (keys, false));
+                    self.routes.insert(
+                        *prefix,
+                        RouteState {
+                            nhops,
+                            stale: false,
+                            preset: false,
+                        },
+                    );
                 }
                 Change::DelRoute { prefix } => {
                     if Self::is_root(*prefix) {
-                        self.routes.insert(*prefix, (Self::preset(), false));
+                        self.routes.insert(*prefix, Self::preset());
                     } else {
                         self.routes.remove(prefix);
                     }
+                    self.check_deletion();
                 }
                 Change::SetStale { value } => {
-                    for (prefix, (_, stale)) in &mut self.routes {
+                    for (prefix, route) in &mut self.routes {
                         if !Self::is_root(*prefix) {
-                            *stale = *value;
+                            route.stale = *value;
                         }
                     }
                 }
@@ -1330,11 +1360,14 @@ mod vrf_properties {
                     let stale: Vec<usize> = self
                         .routes
                         .iter()
-                        .filter_map(|(prefix, (_, stale))| stale.then_some(*prefix))
+                        .filter_map(|(prefix, route)| route.stale.then_some(*prefix))
                         .collect();
                     for prefix in stale {
                         self.apply(&Change::DelRoute { prefix }, pool);
                     }
+                }
+                Change::SetStatus { status } => {
+                    self.status = statuses()[*status];
                 }
             }
         }
@@ -1351,6 +1384,7 @@ mod vrf_properties {
             Change::DelRoute { prefix } => vrf.del_route(prefixes[*prefix], None, rstore),
             Change::SetStale { value } => vrf.set_stale(*value),
             Change::RemoveStale => vrf.remove_stale_routes(None, rstore),
+            Change::SetStatus { status } => vrf.set_status(statuses()[*status]),
         }
     }
 
@@ -1369,14 +1403,21 @@ mod vrf_properties {
             "route count {at}"
         );
 
-        for (prefix, (nhops, stale)) in &model.routes {
+        for (prefix, want) in &model.routes {
             let route = vrf
                 .get_route(prefixes[*prefix])
                 .unwrap_or_else(|| panic!("no route for {prefix} {at}"));
             let got: Vec<NhopKey> = route.s_nhops.iter().map(|s| s.rc.key.clone()).collect();
-            assert_eq!(got, *nhops, "next-hops of {prefix} {at}");
-            assert_eq!(route.is_stale(), *stale, "stale flag of {prefix} {at}");
+            assert_eq!(got, want.nhops, "next-hops of {prefix} {at}");
+            assert_eq!(route.is_stale(), want.stale, "stale flag of {prefix} {at}");
+            assert_eq!(
+                route.is_preset_drop_route(),
+                want.preset,
+                "preset-drop-route of {prefix} {at}"
+            );
         }
+
+        assert_eq!(vrf.status, model.status, "status {at}");
 
         let stored: BTreeSet<NhopKey> = vrf.nhstore.iter().map(|rc| rc.key.clone()).collect();
         assert_eq!(stored, model.referenced(), "next-hop store {at}");
@@ -1409,6 +1450,7 @@ mod vrf_properties {
     fn the_pools_are_the_size_the_generator_thinks() {
         assert_eq!(prefixes().len(), usize::from(NUM_PREFIXES));
         assert_eq!(nhops().len(), usize::from(NUM_NHOPS));
+        assert_eq!(statuses().len(), usize::from(NUM_STATUSES));
         assert_eq!(prefixes()[ROOT_V4], Prefix::root_v4());
         assert_eq!(prefixes()[ROOT_V6], Prefix::root_v6());
     }
