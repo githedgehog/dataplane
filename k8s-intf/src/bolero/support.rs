@@ -423,3 +423,109 @@ mod test {
         }
     }
 }
+
+pub mod blocks {
+    use crate::bolero::AddressFamily;
+    use bolero::Driver;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    pub const MIN_V4_LEN: u8 = 16;
+    pub const MIN_V6_LEN: u8 = 48;
+
+    fn v4(base: u32, block_len: u8, host: u32, len: u8) -> String {
+        let block_host_bits = 32 - block_len;
+        let within = if block_host_bits >= 32 {
+            host
+        } else {
+            host & ((1u32 << block_host_bits) - 1)
+        };
+        let mask = u32::MAX.checked_shl(u32::from(32 - len)).unwrap_or(0);
+        let addr = (base | within) & mask;
+        format!("{}/{len}", Ipv4Addr::from(addr))
+    }
+
+    fn v6(base: u128, block_len: u8, host: u128, len: u8) -> String {
+        let block_host_bits = 128 - block_len;
+        let within = if block_host_bits >= 128 {
+            host
+        } else {
+            host & ((1u128 << block_host_bits) - 1)
+        };
+        let mask = u128::MAX.checked_shl(u32::from(128 - len)).unwrap_or(0);
+        let addr = (base | within) & mask;
+        format!("{}/{len}", Ipv6Addr::from(addr))
+    }
+
+    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+        Some(if family.is_v4() {
+            v4(0x0A00_0000, 8, d.produce::<u32>()?, len)
+        } else {
+            v6(
+                0x2001_0db8_0000_0000_0000_0000_0000_0000,
+                33,
+                d.produce::<u128>()?,
+                len,
+            )
+        })
+    }
+
+    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+        Some(if family.is_v4() {
+            v4(0xAC10_0000, 12, d.produce::<u32>()?, len)
+        } else {
+            v6(
+                0x2001_0db8_8000_0000_0000_0000_0000_0000,
+                33,
+                d.produce::<u128>()?,
+                len,
+            )
+        })
+    }
+
+    pub fn private_run<D: Driver>(
+        d: &mut D,
+        family: AddressFamily,
+        len: u8,
+        count: u16,
+    ) -> Option<Vec<String>> {
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        let mut out = Vec::with_capacity(usize::from(count));
+        if family.is_v4() {
+            let slots = 1u32.checked_shl(u32::from(len) - 8).unwrap_or(u32::MAX);
+            let first = d.produce::<u32>()? % slots;
+            let shift = u32::from(32 - len);
+            for i in 0..u32::from(count) {
+                let slot = (first + i) % slots;
+                let addr = 0x0A00_0000 | slot.checked_shl(shift).unwrap_or(0);
+                out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
+            }
+        } else {
+            let slots = 1u128.checked_shl(u32::from(len) - 33).unwrap_or(u128::MAX);
+            let first = d.produce::<u128>()? % slots;
+            let shift = u32::from(128 - len);
+            for i in 0..u128::from(count) {
+                let slot = (first + i) % slots;
+                let addr = 0x2001_0db8_0000_0000_0000_0000_0000_0000
+                    | slot.checked_shl(shift).unwrap_or(0);
+                out.push(format!("{}/{len}", Ipv6Addr::from(addr)));
+            }
+        }
+        Some(out)
+    }
+
+    #[must_use]
+    pub fn min_len(family: AddressFamily) -> u8 {
+        if family.is_v4() {
+            MIN_V4_LEN
+        } else {
+            MIN_V6_LEN
+        }
+    }
+
+    #[must_use]
+    pub fn max_len(family: AddressFamily) -> u8 {
+        if family.is_v4() { 32 } else { 128 }
+    }
+}
