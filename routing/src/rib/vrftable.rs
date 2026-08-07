@@ -176,6 +176,14 @@ impl VrfTable {
         vrfid: VrfId,
         iftablew: &mut IfTableWriter,
     ) -> Result<(), RouterError> {
+        // Lookup and cross-vrf resolution assume the default vrf always exists.
+        if vrfid == Vrf::DEFAULT_VRFID {
+            error!("Refusing to remove the default vrf");
+            return Err(RouterError::Internal(
+                "Bug: the default vrf cannot be removed",
+            ));
+        }
+
         // remove the vrf from the vrf table
         debug!("Removing VRF {vrfid}...");
         let Some(mut vrf) = self.by_id.remove(&vrfid) else {
@@ -935,5 +943,293 @@ mod tests {
     #[test]
     fn test_vrf_fibgroup_2() {
         test_vrf_fibgroup(build_test_vrf_nhops_partially_resolved());
+    }
+}
+
+/// Model-checks vrf id/vni indexes, statuses, and fib aliases.
+#[cfg(test)]
+mod vrftable_properties {
+    use super::*;
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::rib::vrf::VrfStatus;
+    use bolero::{Driver, ValueGenerator};
+    use std::collections::BTreeMap;
+    use std::ops::Bound::Included;
+
+    const NUM_VRFS: u8 = 3;
+    const NUM_VNIS: u8 = 2;
+    const NUM_STATUSES: u8 = 3;
+    const MAX_CHANGES: u8 = 12;
+
+    fn vrf_ids() -> Vec<VrfId> {
+        (0..u32::from(NUM_VRFS)).collect()
+    }
+
+    fn vnis() -> Vec<Vni> {
+        (1..=u32::from(NUM_VNIS))
+            .map(|i| Vni::new_checked(100 * i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn statuses() -> Vec<VrfStatus> {
+        vec![VrfStatus::Active, VrfStatus::Deleting, VrfStatus::Deleted]
+    }
+
+    #[derive(Debug, Clone)]
+    enum Change {
+        AddVrf { vrf: usize, vni: Option<usize> },
+        SetVni { vrf: usize, vni: usize },
+        UnsetVni { vrf: usize },
+        RemoveVrf { vrf: usize },
+        SetStatus { vrf: usize, status: usize },
+        RemoveDeleted,
+        RemoveDeleting,
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&6))? {
+                    0 => {
+                        // The final index encodes no vni without conflating it with exhaustion.
+                        let vrf = index(driver, NUM_VRFS)?;
+                        let drawn = index(driver, NUM_VNIS + 1)?;
+                        Change::AddVrf {
+                            vrf,
+                            vni: (drawn < usize::from(NUM_VNIS)).then_some(drawn),
+                        }
+                    }
+                    1 => Change::SetVni {
+                        vrf: index(driver, NUM_VRFS)?,
+                        vni: index(driver, NUM_VNIS)?,
+                    },
+                    2 => Change::UnsetVni {
+                        vrf: index(driver, NUM_VRFS)?,
+                    },
+                    3 => Change::RemoveVrf {
+                        vrf: index(driver, NUM_VRFS)?,
+                    },
+                    4 => Change::SetStatus {
+                        vrf: index(driver, NUM_VRFS)?,
+                        status: index(driver, NUM_STATUSES)?,
+                    },
+                    5 => Change::RemoveDeleted,
+                    _ => Change::RemoveDeleting,
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// Expected vni and status for each vrf.
+    type Model = BTreeMap<VrfId, (Option<Vni>, VrfStatus)>;
+
+    fn owner_of(model: &Model, vni: Vni) -> Option<VrfId> {
+        model
+            .iter()
+            .find_map(|(id, (carried, _))| (*carried == Some(vni)).then_some(*id))
+    }
+
+    fn fresh_model() -> Model {
+        Model::from([(Vrf::DEFAULT_VRFID, (None, VrfStatus::Active))])
+    }
+
+    fn apply(table: &mut VrfTable, iftw: &mut IfTableWriter, model: &mut Model, change: &Change) {
+        let ids = vrf_ids();
+        let all_vnis = vnis();
+        match change {
+            Change::AddVrf { vrf, vni } => {
+                let id = ids[*vrf];
+                let vni = vni.map(|i| all_vnis[i]);
+                let config = RouterVrfConfig::new(id, &format!("vrf{id}")).set_vni(vni);
+                let _ = table.add_vrf(&config);
+                if model.contains_key(&id) || vni.is_some_and(|v| owner_of(model, v).is_some()) {
+                    return;
+                }
+                model.insert(id, (vni, VrfStatus::Active));
+            }
+            Change::SetVni { vrf, vni } => {
+                let id = ids[*vrf];
+                let vni = all_vnis[*vni];
+                let _ = table.set_vni(id, vni);
+                match owner_of(model, vni) {
+                    Some(_) => (),
+                    None => {
+                        if let Some(entry) = model.get_mut(&id) {
+                            entry.0 = Some(vni);
+                        }
+                    }
+                }
+            }
+            Change::UnsetVni { vrf } => {
+                let id = ids[*vrf];
+                let _ = table.unset_vni(id);
+                if let Some(entry) = model.get_mut(&id) {
+                    entry.0 = None;
+                }
+            }
+            Change::RemoveVrf { vrf } => {
+                let id = ids[*vrf];
+                let _ = table.remove_vrf(id, iftw);
+                if id != Vrf::DEFAULT_VRFID {
+                    model.remove(&id);
+                }
+            }
+            Change::SetStatus { vrf, status } => {
+                let id = ids[*vrf];
+                let status = statuses()[*status];
+                if let Ok(vrf) = table.get_vrf_mut(id) {
+                    vrf.set_status(status);
+                }
+                // The default vrf remains active.
+                if id != Vrf::DEFAULT_VRFID
+                    && let Some(entry) = model.get_mut(&id)
+                {
+                    entry.1 = status;
+                }
+            }
+            Change::RemoveDeleted => {
+                table.remove_deleted_vrfs(iftw);
+                model.retain(|_, (_, status)| *status != VrfStatus::Deleted);
+            }
+            Change::RemoveDeleting => {
+                table.remove_deleting_vrfs(iftw);
+                model.retain(|_, (_, status)| *status != VrfStatus::Deleting);
+            }
+        }
+    }
+
+    fn check(table: &VrfTable, model: &Model, at: &str) {
+        let ids = vrf_ids();
+        let all_vnis = vnis();
+
+        // Id index.
+        assert_eq!(table.len(), model.len(), "vrf count {at}");
+        for id in &ids {
+            let Ok(vrf) = table.get_vrf(*id) else {
+                assert!(!model.contains_key(id), "vrf {id} missing {at}");
+                continue;
+            };
+            let (vni, status) = model
+                .get(id)
+                .unwrap_or_else(|| panic!("vrf {id} unexpected {at}"));
+            assert_eq!(vrf.vrfid, *id, "vrf {id} filed under the wrong key {at}");
+            assert_eq!(vrf.vni, *vni, "vrf {id} vni {at}");
+            assert_eq!(vrf.status, *status, "vrf {id} status {at}");
+        }
+
+        // Vni index.
+        assert_eq!(
+            table.by_vni.len(),
+            model.values().filter(|(vni, _)| vni.is_some()).count(),
+            "vni index size {at}"
+        );
+        for vni in &all_vnis {
+            assert_eq!(
+                table.get_vrfid_by_vni(*vni).ok(),
+                owner_of(model, *vni),
+                "vni {vni} index {at}"
+            );
+            assert_eq!(
+                table.get_vrf_by_vni(*vni).map(|vrf| vrf.vrfid).ok(),
+                owner_of(model, *vni),
+                "vni {vni} lookup {at}"
+            );
+        }
+
+        // Fib ids and aliases.
+        let fibs = table.fibtablew.enter().unwrap_or_else(|| unreachable!());
+        let expected_keys = model.len() + model.values().filter(|(v, _)| v.is_some()).count();
+        assert_eq!(fibs.len(), expected_keys, "fib table size {at}");
+        for id in &ids {
+            let key = FibKey::from_vrfid(*id);
+            let Some(fib) = fibs.get_fib(key) else {
+                assert!(!model.contains_key(id), "no fib for vrf {id} {at}");
+                continue;
+            };
+            assert!(fib.is_valid(), "fib for vrf {id} is dead {at}");
+            assert_eq!(
+                fib.get_id(),
+                Some(key),
+                "fib for vrf {id} is not its own {at}"
+            );
+        }
+        for vni in &all_vnis {
+            let Some(fib) = fibs.get_fib(FibKey::from_vni(*vni)) else {
+                assert!(owner_of(model, *vni).is_none(), "no fib for vni {vni} {at}");
+                continue;
+            };
+            let owner = owner_of(model, *vni)
+                .unwrap_or_else(|| panic!("fib aliased by vni {vni} with no owner {at}"));
+            assert!(fib.is_valid(), "fib aliased by vni {vni} is dead {at}");
+            assert_eq!(
+                fib.get_id(),
+                Some(FibKey::from_vrfid(owner)),
+                "vni {vni} reaches the wrong fib {at}"
+            );
+        }
+        drop(fibs);
+
+        // Permanent default vrf.
+        assert!(table.contains(Vrf::DEFAULT_VRFID), "no default vrf {at}");
+        assert_eq!(
+            table.get_default_vrf().status,
+            VrfStatus::Active,
+            "default vrf not active {at}"
+        );
+
+        // Built-in consistency check.
+        for id in &ids {
+            let Some((vni, _)) = model.get(id) else {
+                continue;
+            };
+            assert_eq!(
+                table.check_vni(*id).is_ok(),
+                vni.is_some(),
+                "check_vni disagrees for vrf {id} {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vrf_ids().len(), usize::from(NUM_VRFS));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(statuses().len(), usize::from(NUM_STATUSES));
+        assert_eq!(vrf_ids()[0], Vrf::DEFAULT_VRFID);
+    }
+
+    /// After any sequence of changes, every view of the vrf table still describes the same vrfs.
+    #[test]
+    fn a_vrf_tables_four_views_stay_in_step() {
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (fibtw, _fibtr) = FibTableWriter::new();
+                let (mut iftw, _iftr) = IfTableWriter::new();
+                let mut table = VrfTable::new(fibtw);
+                let mut model = fresh_model();
+
+                check(&table, &model, "on a fresh table");
+                for (step, change) in changes.iter().enumerate() {
+                    apply(&mut table, &mut iftw, &mut model, change);
+                    check(&table, &model, &format!("at step {step} of {changes:?}"));
+                }
+            });
     }
 }
