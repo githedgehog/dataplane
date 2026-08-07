@@ -1005,3 +1005,131 @@ impl VpcPeeringTable {
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+pub mod contract {
+
+    use super::{VpcExpose, VpcExposeNatConfig};
+    use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::{
+        IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
+    };
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::ops::Bound::Included;
+    use std::time::Duration;
+
+    const MAX_HOST_BITS: u8 = 8;
+
+    const MAX_PORTS: u16 = 1024;
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct PortForwardingExpose;
+
+    impl ValueGenerator for PortForwardingExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let host_bits = driver.gen_u8(Included(&0), Included(&MAX_HOST_BITS))?;
+            let (internal, external) = if driver.produce::<bool>()? {
+                v4_pair(driver, host_bits)?
+            } else {
+                v6_pair(driver, host_bits)?
+            };
+
+            let count = driver.gen_u16(Included(&1), Included(&MAX_PORTS))?;
+            let internal_ports = port_range(driver, count)?;
+            let external_ports = port_range(driver, count)?;
+
+            let proto = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => L4Protocol::Tcp,
+                1 => L4Protocol::Udp,
+                _ => L4Protocol::Any,
+            };
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(5)),
+                _ => Some(Duration::from_mins(5)),
+            };
+
+            VpcExpose::empty()
+                .make_port_forwarding(idle_timeout, Some(proto))
+                .ok()?
+                .ip(PrefixWithOptionalPorts::new(internal, Some(internal_ports)))
+                .as_range(PrefixWithOptionalPorts::new(external, Some(external_ports)))
+                .ok()
+        }
+    }
+
+    #[must_use]
+    pub fn nat_config(expose: &VpcExpose) -> Option<&VpcExposeNatConfig> {
+        expose.nat_config()
+    }
+
+    fn v4_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
+        let len = 32 - host_bits;
+        let mask = u32::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let internal = (0x0A00_0000 | (driver.produce::<u32>()? & 0x00FF_FFFF)) & mask;
+        let external = (0xAC10_0000 | (driver.produce::<u32>()? & 0x000F_FFFF)) & mask;
+        Some((prefix_v4(internal, len)?, prefix_v4(external, len)?))
+    }
+
+    const INTERNAL_BASE: u128 = 0x2001_0db8_0000_0000_0000_0000_0000_0000;
+    const EXTERNAL_BASE: u128 = 0x2001_0db8_0001_0000_0000_0000_0000_0000;
+
+    fn v6_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
+        let len = 128 - host_bits;
+        let mask = u128::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let internal = (INTERNAL_BASE | u128::from(driver.produce::<u64>()?)) & mask;
+        let external = (EXTERNAL_BASE | u128::from(driver.produce::<u64>()?)) & mask;
+        Some((prefix_v6(internal, len)?, prefix_v6(external, len)?))
+    }
+
+    fn prefix_v4(bits: u32, len: u8) -> Option<Prefix> {
+        Ipv4Prefix::new(Ipv4Addr::from_bits(bits), len)
+            .ok()
+            .map(Prefix::from)
+    }
+
+    fn prefix_v6(bits: u128, len: u8) -> Option<Prefix> {
+        Ipv6Prefix::new(Ipv6Addr::from_bits(bits), len)
+            .ok()
+            .map(Prefix::from)
+    }
+
+    fn port_range<D: Driver>(driver: &mut D, count: u16) -> Option<PortRange> {
+        let last_start = u16::MAX - (count - 1);
+        let start = driver.gen_u16(Included(&1), Included(&last_start))?;
+        PortRange::new(start, start + (count - 1)).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_generated_expose_validates() {
+            bolero::check!()
+                .with_generator(PortForwardingExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate();
+                    assert!(
+                        validated.is_ok(),
+                        "generated expose was rejected: {expose} -- {:?}",
+                        validated.err()
+                    );
+                });
+        }
+
+        #[test]
+        fn a_generated_expose_survives_validation_as_port_forwarding() {
+            bolero::check!()
+                .with_generator(PortForwardingExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| panic!("{e:?}"));
+                    assert!(validated.has_port_forwarding());
+                    assert_eq!(validated.ips().len(), 1);
+                    assert_eq!(validated.as_range_or_empty().len(), 1);
+                });
+        }
+    }
+}
