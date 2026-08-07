@@ -8,7 +8,7 @@ use crate::common::NatFlowStatus;
 use crate::masquerade::NatAllocatorWriter;
 use crate::masquerade::allocation::{AllocationResult, AllocatorError};
 use crate::masquerade::allocator_writer::NatAllocatorReader;
-use crate::masquerade::apalloc::Allocation;
+use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::flows::check_masquerading_flow;
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::protocol::next_flow_status;
@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 #[derive(Debug, thiserror::Error)]
-enum MasqueradeError {
+pub(crate) enum MasqueradeError {
     #[error("Unexpected failure: {0}")]
     Bug(&'static str),
     #[error("failure to get transport header")]
@@ -246,7 +246,7 @@ impl Masquerade {
         current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
         genid: GenId,
-    ) -> Result<(), MasqueradeError> {
+    ) -> Result<Arc<FlowInfo>, MasqueradeError> {
         let idle_timeout = alloc.idle_timeout;
 
         // src and dst vpc of this packet
@@ -299,7 +299,7 @@ impl Masquerade {
             debug_assert!(false, "reverse flow insert failed: {e:?}");
             return Err(MasqueradeError::CapacityExceeded);
         }
-        Ok(())
+        Ok(forward)
     }
 
     fn new_reverse_session(
@@ -408,13 +408,8 @@ impl Masquerade {
         debug!("{nfi}: Allocated: {alloc}");
 
         // create flow pair
-        self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc, genid)?;
-
-        // lookup the flow (forward) just created. We should always find it.
-        let installed = self
-            .flow_table
-            .lookup(&initial_flow_key)
-            .ok_or(MasqueradeError::Bug("Unexpected flow lookup failure"))?;
+        let installed =
+            self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc, genid)?;
 
         // check that the masquerade state is readable
         let translate = installed
@@ -431,32 +426,42 @@ impl Masquerade {
             return Err(e.into());
         }
 
-        // .. and check whether the allocation we made and stored in the flows is still fine
-        // with the current allocator. This counters for the potential race where we got a port
-        // allocated but before we could install the flows, a new config was applied. If that
-        // happened, our flow would not be checked against the new config. So we'd have a flow
-        // with an allocation drawn from an allocator that was replaced by a newer one, and the
-        // new allocator would not be aware of that allocation. So, here we repeat the logic that
-        // checks flows against a new config / allocation.
-        match self.allocator.get() {
-            None => {
-                // allocator got removed. Get rid of the flows and drop the packet.
-                installed.invalidate_pair();
-                Err(MasqueradeError::IntendedDrop("allocator was removed"))
+        // It may happen that between the time we got an allocation and the moment we installed the flows
+        // the allocator was swapped. So, here we have to check if the allocator we used is still there:
+        // it may have been removed or replaced. If so, the newly installed flows may no longer be valid
+        // and we have to remove them. Also, the genid may have changed and we need to bump it.
+        self.recheck_flow(&allocator, &installed)
+    }
+
+    /// Re-check a freshly installed flow against the latest allocator, that could have been installed
+    /// while we were installing a flow.
+    pub(crate) fn recheck_flow(
+        &self,
+        used_allocator: &Arc<NatAllocator>,
+        flow: &Arc<FlowInfo>,
+    ) -> Result<(), MasqueradeError> {
+        let Some(current) = self.allocator.get() else {
+            debug!("Allocator got removed!");
+            flow.invalidate_pair();
+            return Err(MasqueradeError::IntendedDrop("Allocator got removed"));
+        };
+        if Arc::ptr_eq(used_allocator, &current) {
+            // Allocator did not change. So the allocation of the newly installed flow is
+            // still valid. However, the genid of the allocator may have been bumped.
+            // So, update it in the new flow.
+            if flow.genid() != current.genid() {
+                flow.set_genid_pair(current.genid());
             }
-            Some(allocator) => {
-                check_masquerading_flow(
-                    installed.flowkey(),
-                    installed.as_ref(),
-                    allocator.as_ref(),
-                );
-                if installed.is_active() {
-                    Ok(())
-                } else {
-                    // we invalidated the flow. Signal that packet should be dropped
-                    Err(MasqueradeError::IntendedDrop("Config changed"))
-                }
-            }
+            return Ok(());
+        }
+        debug!("NAT allocator got updated. Re-checking newly-installed flow...");
+        check_masquerading_flow(flow.flowkey(), flow.as_ref(), current.as_ref());
+        if flow.is_active() {
+            Ok(())
+        } else {
+            Err(MasqueradeError::IntendedDrop(
+                "Flow is not valid with the new allocator",
+            ))
         }
     }
 
