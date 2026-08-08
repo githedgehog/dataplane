@@ -2575,3 +2575,116 @@ mod tests {
         assert_eq!(v.vid(), vid_updated);
     }
 }
+
+/// The `unsafe` boundary, checked against the safe implementation of the same semantics.
+///
+/// [`HeadersView`] earns its zero-cost extraction with `unwrap_unchecked`: [`Look::look`] repeats the
+/// [`ViewStep::step`] chain that [`sealed::Sealed::matches`] already ran and tells the compiler the
+/// `None` arms cannot happen. **The soundness of that rests entirely on the two chains agreeing**, and
+/// they are written out separately for every arity by the macro above -- eight-odd hand-written pairs,
+/// each threading the VLAN and extension cursors through by hand. A transposed cursor in one of them
+/// is not a wrong answer, it is undefined behaviour.
+///
+/// That is the same shape as every defect this campaign found in `routing`: an invariant enforced at a
+/// distance by a different function from the one relying on it. The difference is the consequence.
+///
+/// The oracle is [`Matcher`](super::pat::Matcher), which decides the same question safely and returns
+/// an `Option`. Comparing the two is a differential test between two existing implementations rather
+/// than against a third transcription of the rules -- if they disagree, either `matches` admits a
+/// packet `look` cannot extract from (undefined behaviour) or `Matcher` mis-matches in the datapath.
+/// Both are worth knowing.
+///
+/// References are compared by **address**, not by value: two VLAN tags with identical contents are a
+/// pass under `assert_eq!` and a bug if the two implementations picked different ones.
+///
+/// # What this cannot catch
+///
+/// Both `matches` and `look` call the same [`ViewStep::step`], so a bug *inside* `step` is invisible
+/// here -- it moves both sides together. What is checked is the hand-written *chaining* around it,
+/// which is where the duplication is.
+///
+/// And it can only observe the safe direction of a divergence. If `matches` were ever too **strict**,
+/// the matcher accepts where `as_view` refuses and this fails with a counterexample. If it were too
+/// **permissive**, `look` reaches `unwrap_unchecked` on a `None`, and a test that has already invoked
+/// undefined behaviour is in no position to report it. **That direction is what miri is for**, and
+/// these run clean under `just miri test -p dataplane-net view_properties`.
+///
+/// Note what that costs: bolero manages 5 cases a second under miri against roughly 35,000 native, and
+/// the miri recipe spawns its own `nix-shell`, so `BOLERO_RANDOM_TEST_TIME_MS` from the caller's
+/// environment does not reach it and the run stops at **25 cases per property**. That is a smoke test
+/// of the unsafe path, not a proof. Raising it means setting the budget inside `miri.just`.
+#[cfg(test)]
+mod view_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::Look;
+    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::vlan::Vlan;
+
+    /// `as_view` and `Matcher` must agree on whether the packet has the shape, and on which layers.
+    #[test]
+    fn eth_net_transport_agrees_with_the_matcher() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let matched = h.pat().eth().net().transport().done();
+                match h.as_view::<(&Eth, &Net, &Transport)>() {
+                    None => assert!(
+                        matched.is_none(),
+                        "the matcher accepted a shape as_view refused: {h:?}"
+                    ),
+                    Some(view) => {
+                        let Some((m_eth, m_net, m_transport)) = matched else {
+                            panic!("as_view accepted a shape the matcher refused: {h:?}");
+                        };
+                        let (v_eth, v_net, v_transport) = view.look();
+                        assert!(std::ptr::eq(v_eth, m_eth), "eth differs: {h:?}");
+                        assert!(std::ptr::eq(v_net, m_net), "net differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_transport, m_transport),
+                            "transport differs: {h:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    /// The same, for a shape that names a VLAN tag.
+    ///
+    /// This is where the interesting half of the contract lives: a tag the shape does not mention is a
+    /// miss, so the two implementations have to agree about *how many* tags were consumed, not merely
+    /// that some were.
+    #[test]
+    fn eth_vlan_net_transport_agrees_with_the_matcher() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let matched = h.pat().eth().vlan().net().transport().done();
+                match h.as_view::<(&Eth, &Vlan, &Net, &Transport)>() {
+                    None => assert!(
+                        matched.is_none(),
+                        "the matcher accepted a vlan shape as_view refused: {h:?}"
+                    ),
+                    Some(view) => {
+                        let Some((m_eth, m_vlan, m_net, m_transport)) = matched else {
+                            panic!("as_view accepted a vlan shape the matcher refused: {h:?}");
+                        };
+                        let (v_eth, v_vlan, v_net, v_transport) = view.look();
+                        assert!(std::ptr::eq(v_eth, m_eth), "eth differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_vlan, m_vlan),
+                            "the two implementations consumed different vlan tags: {h:?}"
+                        );
+                        assert!(std::ptr::eq(v_net, m_net), "net differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_transport, m_transport),
+                            "transport differs: {h:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    // A shape starting at `Net` rather than `Eth` was tried here and does not compile: `Net` does not
+    // satisfy `Within<()>`, so the adjacency graph forbids a shape that begins mid-stack. That half of
+    // the contract is enforced at compile time and needs no property.
+}
