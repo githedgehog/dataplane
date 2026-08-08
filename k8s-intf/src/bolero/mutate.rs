@@ -7,9 +7,9 @@ use bolero::{Driver, ValueGenerator};
 
 use crate::bolero::crd::GatewayAgents;
 use crate::gateway_agent_crd::{
-    GatewayAgent, GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeeringExpose,
-    GatewayAgentPeeringsPeeringExposeAs, GatewayAgentPeeringsPeeringExposeIps,
-    GatewayAgentPeeringsPeeringExposeNatMasquerade,
+    GatewayAgent, GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeering,
+    GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
+    GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNatMasquerade,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,10 +99,196 @@ fn is_static(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation) -> Option<bool> {
-    let bit = match mutation {
-        Mutation::None => false,
+fn stateful_throughout(manifest: &GatewayAgentPeeringsPeering) -> bool {
+    let exposes = manifest.expose.as_deref().unwrap_or(&[]);
+    !exposes.is_empty()
+        && exposes.iter().all(|expose| {
+            expose
+                .nat
+                .as_ref()
+                .is_some_and(|nat| nat.masquerade.is_some() || nat.port_forward.is_some())
+        })
+}
 
+fn advertises_its_ips(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
+    expose.nat.is_none()
+        && expose.default != Some(true)
+        && expose.ips.iter().flatten().all(|ip| ip.not.is_none())
+}
+
+fn overlap_with_another_peer(agent: &mut GatewayAgent) -> bool {
+    let mut donor: Option<(String, String, String)> = None;
+    for (key, peering) in agent.spec.peerings.iter().flatten() {
+        let Some(manifests) = peering.peering.as_ref() else {
+            continue;
+        };
+        for shared in manifests.keys() {
+            let elsewhere = agent
+                .spec
+                .peerings
+                .iter()
+                .flatten()
+                .any(|(other, peering)| {
+                    other != key
+                        && peering
+                            .peering
+                            .as_ref()
+                            .is_some_and(|m| m.contains_key(shared))
+                });
+            if !elsewhere {
+                continue;
+            }
+            let prefix = manifests
+                .iter()
+                .filter(|(name, _)| *name != shared)
+                .flat_map(|(_, manifest)| manifest.expose.iter().flatten())
+                .filter(|expose| advertises_its_ips(expose))
+                .flat_map(|expose| expose.ips.iter().flatten())
+                .find_map(|ip| ip.cidr.clone());
+            if let Some(prefix) = prefix {
+                donor = Some((key.clone(), shared.clone(), prefix));
+                break;
+            }
+        }
+        if donor.is_some() {
+            break;
+        }
+    }
+
+    let mut done = false;
+    if let Some((donor_key, shared, prefix)) = donor {
+        for (key, peering) in agent.spec.peerings.iter_mut().flatten() {
+            if *key == donor_key {
+                continue;
+            }
+            let Some(manifests) = peering.peering.as_mut() else {
+                continue;
+            };
+            if !manifests.contains_key(&shared) {
+                continue;
+            }
+            let names: Vec<String> = manifests
+                .keys()
+                .filter(|name| **name != shared)
+                .cloned()
+                .collect();
+            for name in names {
+                let Some(manifest) = manifests.get_mut(&name) else {
+                    continue;
+                };
+                if let Some(ip) = manifest
+                    .expose
+                    .iter_mut()
+                    .flatten()
+                    .filter(|expose| advertises_its_ips(expose))
+                    .flat_map(|expose| expose.ips.iter_mut().flatten())
+                    .find(|ip| ip.cidr.is_some())
+                {
+                    ip.cidr = Some(prefix.clone());
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                break;
+            }
+        }
+    }
+    done
+}
+
+fn mutate_peering_metadata(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
+    match mutation {
+        Mutation::MakeBothSidesStateful => {
+            let mut done = false;
+            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
+                let manifests = peerings.peering.iter_mut().flatten();
+                let mut touched = 0;
+                for (_, manifest) in manifests {
+                    for expose in manifest.expose.iter_mut().flatten() {
+                        let nat = expose.nat.get_or_insert(
+                            crate::gateway_agent_crd::GatewayAgentPeeringsPeeringExposeNat {
+                                masquerade: None,
+                                port_forward: None,
+                                r#static: None,
+                            },
+                        );
+                        nat.port_forward = None;
+                        nat.r#static = None;
+                        nat.masquerade = Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
+                            idle_timeout: None,
+                        });
+                        if expose.r#as.is_none() {
+                            expose.r#as = Some(vec![GatewayAgentPeeringsPeeringExposeAs {
+                                cidr: Some("172.31.0.0/16".to_string()),
+                                not: None,
+                            }]);
+                        }
+                    }
+                    touched += 1;
+                }
+                if touched == 2 {
+                    done = true;
+                    break;
+                }
+            }
+            done
+        }
+
+        Mutation::NameAMissingGroup => {
+            if let Some((_, peerings)) = agent.spec.peerings.iter_mut().flatten().next() {
+                peerings.gateway_group = Some("no-such-group".to_string());
+                true
+            } else {
+                false
+            }
+        }
+
+        Mutation::NameAStrangerInARule => {
+            let mut done = false;
+            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
+                let Some(acl) = peerings.acl.as_mut() else {
+                    continue;
+                };
+                if let Some(rule) = acl.rules.iter_mut().flatten().next() {
+                    rule.from = Some("not-in-this-peering".to_string());
+                    done = true;
+                    break;
+                }
+            }
+            done
+        }
+
+        Mutation::DemandFlowScope => {
+            let mut done = false;
+            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
+                let allowed = peerings
+                    .peering
+                    .iter()
+                    .flatten()
+                    .any(|(_, manifest)| stateful_throughout(manifest));
+                if allowed {
+                    continue;
+                }
+                let Some(acl) = peerings.acl.as_mut() else {
+                    continue;
+                };
+                for rule in acl.rules.iter_mut().flatten() {
+                    rule.scope = Some(GatewayAgentPeeringsAclRulesScope::Flow);
+                    done = true;
+                }
+                if done {
+                    break;
+                }
+            }
+            done
+        }
+        _ => unreachable!("mutate_peering_metadata called for {mutation:?}"),
+    }
+}
+
+fn mutate_expose_shape(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
+    match mutation {
         Mutation::MismatchPortForwardPrefixes | Mutation::MismatchStaticNatPrefixes => {
             let wanted: fn(&GatewayAgentPeeringsPeeringExpose) -> bool =
                 if mutation == Mutation::MismatchPortForwardPrefixes {
@@ -181,7 +367,18 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             }
             done
         }
+        _ => unreachable!("mutate_expose_shape called for {mutation:?}"),
+    }
+}
 
+pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation) -> Option<bool> {
+    let bit = match mutation {
+        Mutation::None => false,
+
+        Mutation::MismatchPortForwardPrefixes
+        | Mutation::MismatchStaticNatPrefixes
+        | Mutation::ExcludeFromPortForwarding
+        | Mutation::MixAddressFamilies => mutate_expose_shape(agent, mutation),
         Mutation::UseReservedPrefix => {
             let reserved = ["127.0.0.0/8", "224.0.0.0/4", "0.0.0.0/8", "ff00::/8"];
             let choice =
@@ -223,83 +420,10 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
-        Mutation::MakeBothSidesStateful => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let manifests = peerings.peering.iter_mut().flatten();
-                let mut touched = 0;
-                for (_, manifest) in manifests {
-                    for expose in manifest.expose.iter_mut().flatten() {
-                        let nat = expose.nat.get_or_insert(
-                            crate::gateway_agent_crd::GatewayAgentPeeringsPeeringExposeNat {
-                                masquerade: None,
-                                port_forward: None,
-                                r#static: None,
-                            },
-                        );
-                        nat.port_forward = None;
-                        nat.r#static = None;
-                        nat.masquerade = Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
-                            idle_timeout: None,
-                        });
-                        if expose.r#as.is_none() {
-                            expose.r#as = Some(vec![GatewayAgentPeeringsPeeringExposeAs {
-                                cidr: Some("172.31.0.0/16".to_string()),
-                                not: None,
-                            }]);
-                        }
-                    }
-                    touched += 1;
-                }
-                if touched == 2 {
-                    done = true;
-                    break;
-                }
-            }
-            done
-        }
-
-        Mutation::NameAMissingGroup => {
-            if let Some((_, peerings)) = agent.spec.peerings.iter_mut().flatten().next() {
-                peerings.gateway_group = Some("no-such-group".to_string());
-                true
-            } else {
-                false
-            }
-        }
-
-        Mutation::NameAStrangerInARule => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let Some(acl) = peerings.acl.as_mut() else {
-                    continue;
-                };
-                if let Some(rule) = acl.rules.iter_mut().flatten().next() {
-                    rule.from = Some("not-in-this-peering".to_string());
-                    done = true;
-                    break;
-                }
-            }
-            done
-        }
-
-        Mutation::DemandFlowScope => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let Some(acl) = peerings.acl.as_mut() else {
-                    continue;
-                };
-                for rule in acl.rules.iter_mut().flatten() {
-                    rule.scope = Some(GatewayAgentPeeringsAclRulesScope::Flow);
-                    done = true;
-                }
-                if done {
-                    break;
-                }
-            }
-            done
-        }
-
+        Mutation::MakeBothSidesStateful
+        | Mutation::NameAMissingGroup
+        | Mutation::NameAStrangerInARule
+        | Mutation::DemandFlowScope => mutate_peering_metadata(agent, mutation),
         Mutation::UsePortZero => {
             let mut done = false;
             for expose in exposes_mut(agent) {
@@ -319,84 +443,7 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
-        Mutation::OverlapWithAnotherPeer => {
-            let mut donor: Option<(String, String, String)> = None;
-            for (key, peering) in agent.spec.peerings.iter().flatten() {
-                let Some(manifests) = peering.peering.as_ref() else {
-                    continue;
-                };
-                for shared in manifests.keys() {
-                    let elsewhere = agent
-                        .spec
-                        .peerings
-                        .iter()
-                        .flatten()
-                        .any(|(other, peering)| {
-                            other != key
-                                && peering
-                                    .peering
-                                    .as_ref()
-                                    .is_some_and(|m| m.contains_key(shared))
-                        });
-                    if !elsewhere {
-                        continue;
-                    }
-                    let prefix = manifests
-                        .iter()
-                        .filter(|(name, _)| *name != shared)
-                        .flat_map(|(_, manifest)| manifest.expose.iter().flatten())
-                        .flat_map(|expose| expose.ips.iter().flatten())
-                        .find_map(|ip| ip.cidr.clone());
-                    if let Some(prefix) = prefix {
-                        donor = Some((key.clone(), shared.clone(), prefix));
-                        break;
-                    }
-                }
-                if donor.is_some() {
-                    break;
-                }
-            }
-
-            let mut done = false;
-            if let Some((donor_key, shared, prefix)) = donor {
-                for (key, peering) in agent.spec.peerings.iter_mut().flatten() {
-                    if *key == donor_key {
-                        continue;
-                    }
-                    let Some(manifests) = peering.peering.as_mut() else {
-                        continue;
-                    };
-                    if !manifests.contains_key(&shared) {
-                        continue;
-                    }
-                    let names: Vec<String> = manifests
-                        .keys()
-                        .filter(|name| **name != shared)
-                        .cloned()
-                        .collect();
-                    for name in names {
-                        let Some(manifest) = manifests.get_mut(&name) else {
-                            continue;
-                        };
-                        if let Some(ip) = manifest
-                            .expose
-                            .iter_mut()
-                            .flatten()
-                            .flat_map(|expose| expose.ips.iter_mut().flatten())
-                            .find(|ip| ip.cidr.is_some())
-                        {
-                            ip.cidr = Some(prefix.clone());
-                            done = true;
-                            break;
-                        }
-                    }
-                    if done {
-                        break;
-                    }
-                }
-            }
-            done
-        }
+        Mutation::OverlapWithAnotherPeer => overlap_with_another_peer(agent),
     };
     Some(bit)
 }
