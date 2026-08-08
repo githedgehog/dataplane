@@ -49,20 +49,49 @@ const MAX_PORTS: u16 = 1024;
 pub struct ExposeGenerator<'a> {
     flavour: NatFlavour,
     family: AddressFamily,
-    /// Which slot of the private and public blocks this expose's prefixes come from, and how many
-    /// slots the manifest is dividing between its exposes.
-    ///
-    /// Every prefix this generator writes out sits inside that one slot, so two exposes given
-    /// different slots cannot overlap -- which is the validator's rule for the exposes of a single
-    /// manifest, satisfied by construction. See [`blocks`].
-    ///
-    /// `slots` is needed as well because a *named* subnet contributes its prefix just as surely as a
-    /// written-out one does, and the subnets live in a region of their own that the slot scheme does
-    /// not divide. Two exposes naming the same subnet overlap. So the subnets are dealt out
-    /// round-robin, `slot` taking every `slots`th one.
-    slot: u8,
-    slots: u8,
+    which: Which,
     subnets: &'a SubnetMap,
+}
+
+/// Which expose this is, at the two levels that matter for keeping prefixes apart.
+///
+/// `slot` is the block slot the prefixes come from, and it is unique across the *whole*
+/// configuration -- see [`blocks::expose_slot`], which explains why the vpc has to be part of it.
+/// Every prefix this generator writes out sits inside that slot, so no two exposes anywhere can
+/// overlap.
+///
+/// `index` and `count` are this expose's place within its own manifest, which the slot does not
+/// capture. They are needed because a *named* subnet contributes its prefix just as surely as a
+/// written-out one does, and the subnets live in slots of their own: two exposes of one manifest
+/// naming the same subnet share a prefix. So the manifest's subnets are dealt out round-robin,
+/// `index` taking every `count`th one.
+#[derive(Debug, Clone, Copy)]
+pub struct Which {
+    pub slot: u8,
+    pub index: u8,
+    pub count: u8,
+}
+
+impl Which {
+    /// A lone expose, for a caller generating one at a time.
+    #[must_use]
+    pub fn only(slot: u8) -> Self {
+        Self {
+            slot,
+            index: 0,
+            count: 1,
+        }
+    }
+
+    /// Expose `index` of `count` in a manifest, drawing from `slot`.
+    #[must_use]
+    pub fn nth(slot: u8, index: u8, count: u8) -> Self {
+        Self {
+            slot,
+            index,
+            count: count.max(index.saturating_add(1)),
+        }
+    }
 }
 
 impl<'a> ExposeGenerator<'a> {
@@ -70,15 +99,13 @@ impl<'a> ExposeGenerator<'a> {
     pub fn new(
         flavour: NatFlavour,
         family: AddressFamily,
-        slot: u8,
-        slots: u8,
+        which: Which,
         subnets: &'a SubnetMap,
     ) -> Self {
         Self {
             flavour,
             family,
-            slot,
-            slots: slots.max(slot.saturating_add(1)),
+            which,
             subnets,
         }
     }
@@ -107,7 +134,9 @@ impl<'a> ExposeGenerator<'a> {
             .filter(|(_, prefix)| prefix.is_ipv4() == self.family.is_v4())
             .map(|(name, _)| name)
             .enumerate()
-            .filter(|(index, _)| index % usize::from(self.slots) == usize::from(self.slot))
+            .filter(|(index, _)| {
+                index % usize::from(self.which.count) == usize::from(self.which.index)
+            })
             .map(|(_, name)| name)
             .collect()
     }
@@ -214,7 +243,7 @@ impl ValueGenerator for ExposeGenerator<'_> {
         let mut translations = Vec::new();
 
         if paired {
-            let at = blocks::At::whole(self.slot);
+            let at = blocks::At::whole(self.which.slot);
             let len = self.length(d, at)?;
             let private = blocks::private(d, self.family, at, len)?;
             let public = blocks::public(d, self.family, at, len)?;
@@ -232,7 +261,7 @@ impl ValueGenerator for ExposeGenerator<'_> {
             // disjoint from each other, not just from the other exposes'.
             let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_PREFIXES))?;
             for sub in 0..count {
-                let at = blocks::At::nth(self.slot, sub, count);
+                let at = blocks::At::nth(self.which.slot, sub, count);
                 let len = self.length(d, at)?;
                 ips.push(GatewayAgentPeeringsPeeringExposeIps {
                     cidr: Some(blocks::private(d, self.family, at, len)?),
@@ -243,7 +272,7 @@ impl ValueGenerator for ExposeGenerator<'_> {
             if self.flavour.needs_translation() {
                 let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_PREFIXES))?;
                 for sub in 0..count {
-                    let at = blocks::At::nth(self.slot, sub, count);
+                    let at = blocks::At::nth(self.which.slot, sub, count);
                     let len = self.length(d, at)?;
                     translations.push(GatewayAgentPeeringsPeeringExposeAs {
                         cidr: Some(blocks::public(d, self.family, at, len)?),
@@ -271,7 +300,8 @@ impl ValueGenerator for ExposeGenerator<'_> {
         // the list, so it can never remove all of it.
         if self.flavour.allows_exclusions() && d.produce::<bool>()? {
             let parents: Vec<String> = ips.iter().filter_map(|e| e.cidr.clone()).collect();
-            let first = blocks::At::nth(self.slot, 0, u8::try_from(parents.len()).unwrap_or(1));
+            let first =
+                blocks::At::nth(self.which.slot, 0, u8::try_from(parents.len()).unwrap_or(1));
             if let Some(parent) = parents.first()
                 && let Some(exclusion) = self.exclusion(d, parent, first, true)
             {
@@ -282,7 +312,8 @@ impl ValueGenerator for ExposeGenerator<'_> {
                 });
             }
             let parents: Vec<String> = translations.iter().filter_map(|e| e.cidr.clone()).collect();
-            let first = blocks::At::nth(self.slot, 0, u8::try_from(parents.len()).unwrap_or(1));
+            let first =
+                blocks::At::nth(self.which.slot, 0, u8::try_from(parents.len()).unwrap_or(1));
             if let Some(parent) = parents.first()
                 && let Some(exclusion) = self.exclusion(d, parent, first, false)
             {
@@ -313,14 +344,17 @@ impl ValueGenerator for ExposeGenerator<'_> {
 /// expose" -- a converter test, say -- can use this instead.
 #[derive(Debug, Clone)]
 pub struct AnyExposeGenerator<'a> {
-    slot: u8,
+    which: Which,
     subnets: &'a SubnetMap,
 }
 
 impl<'a> AnyExposeGenerator<'a> {
     #[must_use]
     pub fn new(slot: u8, subnets: &'a SubnetMap) -> Self {
-        Self { slot, subnets }
+        Self {
+            which: Which::only(slot),
+            subnets,
+        }
     }
 }
 
@@ -334,6 +368,6 @@ impl ValueGenerator for AnyExposeGenerator<'_> {
             flavours[d.gen_usize(Bound::Included(&0), Bound::Excluded(&flavours.len()))?];
         let family =
             families[d.gen_usize(Bound::Included(&0), Bound::Excluded(&families.len()))?];
-        ExposeGenerator::new(flavour, family, self.slot, 1, self.subnets).generate(d)
+        ExposeGenerator::new(flavour, family, self.which, self.subnets).generate(d)
     }
 }

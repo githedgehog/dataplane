@@ -467,21 +467,29 @@ pub mod blocks {
     pub const MIN_V4_LEN: u8 = SLOT_V4_LEN;
     pub const MIN_V6_LEN: u8 = SLOT_V6_LEN;
 
-    /// How many slots at the bottom of each *private* block are set aside for a vpc's own subnets.
+    /// How many slots at the bottom of each *private* block are set aside for vpcs' own subnets:
+    /// one slot per vpc, so this is also the most vpcs the scheme separates.
     ///
     /// A subnet is subject to the same rules as a prefix written out in an expose, because an expose
-    /// may name one and a named subnet contributes its prefix. So a subnet that overlaps another
-    /// expose's prefix breaks the same rule -- and keeping subnets out of the slots exposes draw from
-    /// is what stops that. Sixteen because that is what the number of subnets a vpc is given needs;
-    /// the reservation only bounds `private_run`, and [`min_subnet_len`] enforces the rest.
+    /// may name one and a named subnet contributes its prefix. So a subnet has to be as carefully
+    /// placed as anything else: out of the slots exposes draw from, and out of the other vpcs'.
     pub const SUBNET_SLOTS: u8 = 16;
 
-    /// The prefix length of the reserved subnet region: `10.0.0.0/16`, `2001:db8:0000::/44`.
-    fn subnet_region_len(family: AddressFamily) -> u8 {
-        // `SUBNET_SLOTS` is a power of two, so the region is the slot length less its exponent. That
-        // exponent is at most 7, so the conversion cannot lose anything.
-        let exponent = u8::try_from(SUBNET_SLOTS.trailing_zeros()).unwrap_or(0);
-        min_len(family) - exponent
+    /// The slot an expose draws from, given which vpc owns it and which expose of that vpc it is.
+    ///
+    /// **A vpc's prefixes have to be disjoint from every other vpc's**, not merely from its own
+    /// siblings', because `VpcRouteTable` is built per vpc from the prefixes its *peers* expose to
+    /// it: if two peers of one vpc expose overlapping prefixes, that vpc has one destination and two
+    /// places to send it, and validation refuses the configuration. So the vpc is the outermost
+    /// level of the scheme and the slot index carries it.
+    ///
+    /// `slots_per_vpc` should be the most exposes any one manifest may hold. The arithmetic
+    /// saturates, so a caller asking for more vpcs or exposes than a `u8` of slots can separate gets
+    /// collisions rather than a panic -- see [`SUBNET_SLOTS`] and the 256 slots of `172.16.0.0/12`
+    /// for the budget.
+    #[must_use]
+    pub fn expose_slot(vpc: u8, slots_per_vpc: u8, expose: u8) -> u8 {
+        vpc.saturating_mul(slots_per_vpc).saturating_add(expose)
     }
 
     /// Where one prefix is drawn from: a sub-slot of a slot of a block.
@@ -616,58 +624,59 @@ pub mod blocks {
         })
     }
 
-    /// The shortest prefix length the subnet region can hold `count` distinct prefixes at.
+    /// The shortest prefix length one vpc's subnet slot can hold `count` distinct prefixes at.
     ///
-    /// A caller draws the length *after* the count, since drawing it first can ask the region for
-    /// more prefixes than it has at that length -- and [`private_run`] would then wrap and hand back
+    /// A caller draws the length *after* the count, since drawing it first can ask the slot for more
+    /// prefixes than it has at that length -- and [`private_run`] would then wrap and hand back
     /// duplicates, which are overlapping subnets and refused.
     #[must_use]
     pub fn min_subnet_len(family: AddressFamily, count: u16) -> u8 {
-        let region = subnet_region_len(family);
-        // the number of bits needed to index `count` slots
-        let bits = u8::try_from(count.next_power_of_two().trailing_zeros()).unwrap_or(u8::MAX);
-        region.saturating_add(bits).min(max_len(family))
+        let bits = u8::try_from(count.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0);
+        min_len(family).saturating_add(bits).min(max_len(family))
     }
 
-    /// `count` distinct prefixes of length `len` inside the private block's subnet reservation.
+    /// `count` distinct prefixes of length `len` inside vpc `vpc`'s subnet slot.
     ///
     /// Consecutive rather than independently drawn, so they are distinct and non-overlapping without
-    /// a rejection loop. `len` should be at least [`min_subnet_len`] for this `count`, or the region
-    /// runs out of slots and the run wraps onto itself.
+    /// a rejection loop. `len` should be at least [`min_subnet_len`] for this `count`, or the slot
+    /// runs out of room and the run wraps onto itself.
     pub fn private_run<D: Driver>(
         d: &mut D,
         family: AddressFamily,
+        vpc: u8,
         len: u8,
         count: u16,
     ) -> Option<Vec<String>> {
         if count == 0 {
             return Some(Vec::new());
         }
-        let region = u32::from(subnet_region_len(family));
+        let slot_len = u32::from(min_len(family));
         let mut out = Vec::with_capacity(usize::from(count));
         if family.is_v4() {
-            // 10.0.0.0/16 holds 2^(len-16) prefixes of length `len`
+            // vpc `vpc`'s slot of 10.0.0.0/8, which holds 2^(len - SLOT_V4_LEN) prefixes of `len`
+            let base = 0x0A00_0000 | (u32::from(vpc) << (32 - slot_len));
             let slots = 1u32
-                .checked_shl(u32::from(len) - region)
+                .checked_shl(u32::from(len) - slot_len)
                 .unwrap_or(u32::MAX);
             let first = d.produce::<u32>()? % slots;
             let shift = u32::from(32 - len);
             for i in 0..u32::from(count) {
                 let slot = (first + i) % slots;
-                let addr = 0x0A00_0000 | slot.checked_shl(shift).unwrap_or(0);
+                let addr = base | slot.checked_shl(shift).unwrap_or(0);
                 out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
             }
         } else {
-            // 2001:db8:0000::/44 holds 2^(len-44) prefixes of length `len`
+            // likewise in the lower half of 2001:db8::/32
+            let base =
+                0x2001_0db8_0000_0000_0000_0000_0000_0000 | (u128::from(vpc) << (128 - slot_len));
             let slots = 1u128
-                .checked_shl(u32::from(len) - region)
+                .checked_shl(u32::from(len) - slot_len)
                 .unwrap_or(u128::MAX);
             let first = d.produce::<u128>()? % slots;
             let shift = u32::from(128 - len);
             for i in 0..u128::from(count) {
                 let slot = (first + i) % slots;
-                let addr = 0x2001_0db8_0000_0000_0000_0000_0000_0000
-                    | slot.checked_shl(shift).unwrap_or(0);
+                let addr = base | slot.checked_shl(shift).unwrap_or(0);
                 out.push(format!("{}/{len}", Ipv6Addr::from(addr)));
             }
         }
