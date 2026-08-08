@@ -2575,3 +2575,69 @@ mod tests {
         assert_eq!(v.vid(), vid_updated);
     }
 }
+
+#[cfg(test)]
+mod view_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::Look;
+    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::vlan::Vlan;
+
+    #[test]
+    fn eth_net_transport_agrees_with_the_matcher() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let matched = h.pat().eth().net().transport().done();
+                match h.as_view::<(&Eth, &Net, &Transport)>() {
+                    None => assert!(
+                        matched.is_none(),
+                        "the matcher accepted a shape as_view refused: {h:?}"
+                    ),
+                    Some(view) => {
+                        let Some((m_eth, m_net, m_transport)) = matched else {
+                            panic!("as_view accepted a shape the matcher refused: {h:?}");
+                        };
+                        let (v_eth, v_net, v_transport) = view.look();
+                        assert!(std::ptr::eq(v_eth, m_eth), "eth differs: {h:?}");
+                        assert!(std::ptr::eq(v_net, m_net), "net differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_transport, m_transport),
+                            "transport differs: {h:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn eth_vlan_net_transport_agrees_with_the_matcher() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let matched = h.pat().eth().vlan().net().transport().done();
+                match h.as_view::<(&Eth, &Vlan, &Net, &Transport)>() {
+                    None => assert!(
+                        matched.is_none(),
+                        "the matcher accepted a vlan shape as_view refused: {h:?}"
+                    ),
+                    Some(view) => {
+                        let Some((m_eth, m_vlan, m_net, m_transport)) = matched else {
+                            panic!("as_view accepted a vlan shape the matcher refused: {h:?}");
+                        };
+                        let (v_eth, v_vlan, v_net, v_transport) = view.look();
+                        assert!(std::ptr::eq(v_eth, m_eth), "eth differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_vlan, m_vlan),
+                            "the two implementations consumed different vlan tags: {h:?}"
+                        );
+                        assert!(std::ptr::eq(v_net, m_net), "net differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_transport, m_transport),
+                            "transport differs: {h:?}"
+                        );
+                    }
+                }
+            });
+    }
+}
