@@ -1075,3 +1075,167 @@ mod validator_completeness {
         );
     }
 }
+
+/// A validated configuration must have exactly *one* meaning.
+///
+/// [`super::validator_completeness`] asks whether an accepted configuration can be **enacted**. This
+/// asks whether it can be enacted only one way, which is a different failure and a worse one. An
+/// unenactable configuration fails to build, and something gets an error. An ambiguous one builds
+/// perfectly: two readings, both valid outputs of the code as written, and the chain takes whichever
+/// its containers hand it first. There is no error to report, so nothing reports it -- only traffic
+/// going somewhere nobody chose, discovered much later.
+///
+/// The oracle is permutation, and its virtue is that it restates no rule: it notices an ambiguity
+/// whether or not anyone thought to forbid it. See `k8s_intf::bolero::permute`.
+///
+/// # What this catches, and what it does not
+///
+/// It catches ambiguity the chain resolves **at build time**: two readings of the input, one artifact,
+/// and a container's iteration order deciding which. That is a real class and this is a real guard on
+/// it, run over near-misses so the question is asked of configurations the validator was willing to
+/// bless rather than only of ones the generator took care to keep clean.
+///
+/// It does **not** catch ambiguity the chain resolves at *run* time, and the break test says so
+/// plainly. Delete the `OverlappingPrefixes` check from `VpcRouteTable::validate`, so that two peers
+/// of one vpc may advertise the same destination, and this property stays silent across 13,908
+/// comparisons. The reason is structural: an import prefix-list is rendered per peer, so both routes
+/// are installed, in two lists, and the rendered configuration is **the same whichever order the
+/// peerings are walked in**. Nothing was silently picked at build time. The picking happens later, in
+/// the forwarding plane, on a packet.
+///
+/// So the ambiguity concern has two halves and this is one of them:
+///
+/// * **build-time** -- one artifact, two possible contents. Covered here.
+/// * **run-time** -- one artifact, two rules inside it that match the same packet. *Not* covered, by
+///   anything, and it is the half that misbehaves in production rather than in a build.
+///
+/// The second needs a different oracle: a check over the *installed tables* that no two entries match
+/// one packet with different actions. Worth knowing before writing it that for a rule with no
+/// downstream consumer -- and the overlap rule is exactly that, as its green break test showed -- such
+/// a check is necessarily a second statement of the requirement rather than an independent one. It
+/// would still earn its place, since it would fail if the validator regressed, but it should be
+/// written knowing what it is.
+mod ambiguity {
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::mutate::Mutation;
+    use k8s_intf::bolero::permute::PermutedAgents;
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::setup::build_nat_configuration;
+    use routing::Render;
+
+    use crate::processor::confbuild::internal::build_internal_config;
+
+    /// Exactly what the wasm validator does, as in the near-miss property.
+    fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
+        let external = ExternalConfig::try_from(crd)
+            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
+        external.validate()
+    }
+
+    /// Everything the dataplane installs, as text, in a form two runs can be compared in.
+    ///
+    /// Lines are sorted. Some of these tables are hash maps, so their iteration order is not part of
+    /// the configuration's meaning and comparing it would give false alarms. Sorting costs nothing
+    /// that matters: the artifacts whose order *is* semantic -- route maps, prefix lists -- carry
+    /// their sequence numbers in the text, so reordering those changes the lines themselves and is
+    /// still caught.
+    fn artifacts(validated: &ValidatedGwConfig) -> Option<Vec<String>> {
+        let genid = validated.genid();
+        let internal = build_internal_config(validated, None).ok()?;
+        let vpc_table = validated.external().overlay().vpc_table();
+
+        let nat_tables = build_nat_configuration(vpc_table).ok()?;
+        let ruleset = build_port_forwarding_configuration(vpc_table).ok()?;
+        let mut portfw = PortFwTableWriter::new();
+        portfw.update_table(&ruleset).ok()?;
+
+        let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
+        let mut allocator = NatAllocatorWriter::new();
+        allocator.update_nat_allocator(masquerade, &FlowTable::new(16));
+
+        let mut lines: Vec<String> =
+            format!("{}\n{nat_tables}\n{ruleset:#?}", internal.render(&genid))
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .filter(|line| !line.is_empty())
+                .collect();
+        lines.sort();
+        Some(lines)
+    }
+
+    /// Reordering a configuration's sets does not change what it means.
+    #[test]
+    fn a_configuration_has_only_one_meaning() {
+        static MOVED: AtomicUsize = AtomicUsize::new(0);
+        static COMPARED: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(PermutedAgents::default())
+            .cloned()
+            .for_each(
+                |(mutation, agent, permuted, moved): (Mutation, GatewayAgent, GatewayAgent, bool)| {
+                let Ok(first) = validator(&agent) else {
+                    // Refused, which is the validator doing its job. Only what it *accepts* has to
+                    // have one meaning.
+                    return;
+                };
+
+                // A permutation cannot make a legal configuration illegal. If it does, the validator
+                // is reading order as meaning, which is its own kind of ambiguity.
+                let second = validator(&permuted).unwrap_or_else(|e| {
+                    panic!(
+                        "{mutation:?}: reordering a configuration's sets made the validator refuse \
+                         it, so it is treating list order as meaning: {e}"
+                    )
+                });
+
+                let (Some(before), Some(after)) = (artifacts(&first), artifacts(&second)) else {
+                    return;
+                };
+
+                if moved {
+                    MOVED.fetch_add(1, Ordering::Relaxed);
+                }
+                COMPARED.fetch_add(1, Ordering::Relaxed);
+
+                if before != after {
+                    let mut differences: Vec<String> = Vec::new();
+                    for line in &before {
+                        if !after.contains(line) {
+                            differences.push(format!("  only before: {line}"));
+                        }
+                    }
+                    for line in &after {
+                        if !before.contains(line) {
+                            differences.push(format!("  only after:  {line}"));
+                        }
+                    }
+                    differences.truncate(20);
+                    panic!(
+                        "{mutation:?}: reordering a configuration's sets changed what the dataplane \
+                         installs, so the configuration had more than one meaning and the chain \
+                         picked one:\n{}",
+                        differences.join("\n")
+                    );
+                }
+                },
+            );
+
+        // Without this the property passes trivially on configurations with nothing to reorder --
+        // one peering with one expose holding one prefix has no second order to be in. A tenth is
+        // well above what a dead permutation would give and well below what is observed (a fifth,
+        // driven by near-misses, since several mutations shorten the very lists this reorders).
+        let compared = COMPARED.load(Ordering::Relaxed);
+        let moved = MOVED.load(Ordering::Relaxed);
+        println!("{moved} of {compared} comparisons were of a genuinely reordered configuration");
+        assert!(
+            compared > 0 && moved * 10 >= compared,
+            "only {moved} of {compared} comparisons actually reordered anything: the permutation is \
+             not doing any work"
+        );
+    }
+}
