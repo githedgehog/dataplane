@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use n_vm::{GuestHugePageConfig, GuestHugePageSize, HostPageSize, VmConfig};
+use n_vm::{GuestHugePageConfig, GuestHugePageSize, HostPageSize, VmConfig, features};
 
 fn hugepages_total() -> u64 {
     std::fs::read_to_string("/proc/meminfo")
@@ -60,9 +60,31 @@ const HOST_4K_GUEST_2M_VM: VmConfig = VmConfig {
     ..VmConfig::DEFAULT
 };
 
+/// Declares the kernel features it actually leans on.
+///
+/// `hugetlbfs` and the `tc` flower classifier are both checked against the
+/// kernel's own config before the VM boots, so a fragment list that stopped
+/// providing them would fail here by name rather than somewhere far from the
+/// cause.
+const TC_VM: VmConfig = VmConfig {
+    kernel_features: &[features::HUGETLBFS, features::NET_CLS_FLOWER],
+    // 4 KiB host pages so this runs on a host with no hugepage reservation.
+    host_page_size: HostPageSize::Standard,
+    ..VmConfig::DEFAULT
+};
+
 #[n_vm::test]
 fn test_which_runs_in_vm() {
     assert_eq!(2 + 2, 4);
+}
+
+/// The declared-requirement path, end to end: these features are verified
+/// against `kernels/<profile>/config` before launch, and the VM boots.
+#[n_vm::test(config = TC_VM)]
+fn vm_boots_with_declared_kernel_features() {
+    // `tc` flower needs both the classifier and action support; if the
+    // pre-boot check passed, the kernel really does have them.
+    assert!(std::path::Path::new("/proc/net").exists());
 }
 
 // NOTE: there is deliberately no `#[n_vm::test] #[should_panic]` negative
