@@ -645,6 +645,35 @@ pub const KERNEL_MANIFEST_PATH: &str = "/n-vm-manifest.json";
 /// which profile is in play.
 pub const ENV_PROFILE: &str = "N_VM_PROFILE";
 
+/// File to append a record to whenever a test is skipped.
+///
+/// libtest has no run-time "skipped" state -- `#[ignore]` is decided at
+/// compile time -- so a test that skips is counted as *passed*, and the
+/// reason it printed is swallowed by output capture unless the test also
+/// fails.  A suite can therefore report a clean run having actually
+/// exercised almost nothing, which is the failure mode this exists to
+/// prevent.
+///
+/// Writing to a file rather than to stderr is what makes the record
+/// survive: it is outside libtest's capture, and outside the
+/// process-per-test model that nextest uses, so records from a whole run
+/// accumulate in one place that CI can assert on.
+///
+/// One JSON object per line, appended.  Unset means no record is kept,
+/// which is the default: this costs nothing when nobody is looking.
+pub const ENV_SKIP_LOG: &str = "N_VM_SKIP_LOG";
+
+/// When set to a non-empty value, a skipped test fails instead.
+///
+/// For a run that is *supposed* to exercise everything -- a release gate
+/// against the production kernel, say -- where a skip is not a neutral
+/// outcome but a hole in the thing being certified.
+///
+/// Deliberately not the default: a skip is the correct answer to a genuine
+/// mismatch, such as cloud-hypervisor being asked to emulate a foreign
+/// architecture.
+pub const ENV_STRICT_SKIPS: &str = "N_VM_STRICT_SKIPS";
+
 /// Directory holding per-profile kernel artifacts inside the container.
 ///
 /// Paths in the manifest are absolute and already include this prefix; the
