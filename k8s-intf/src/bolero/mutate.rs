@@ -27,10 +27,11 @@ pub enum Mutation {
     NameAStrangerInARule,
     DemandFlowScope,
     UsePortZero,
+    OverlapWithAnotherPeer,
 }
 
 impl Mutation {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 14;
 
     #[must_use]
     pub fn index(self) -> usize {
@@ -56,6 +57,7 @@ impl Mutation {
             Self::NameAStrangerInARule,
             Self::DemandFlowScope,
             Self::UsePortZero,
+            Self::OverlapWithAnotherPeer,
         ]
     }
 }
@@ -312,6 +314,85 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
                     ports.r#as = Some("0-100".to_string());
                     done = true;
                     break;
+                }
+            }
+            done
+        }
+
+        Mutation::OverlapWithAnotherPeer => {
+            let mut donor: Option<(String, String, String)> = None;
+            for (key, peering) in agent.spec.peerings.iter().flatten() {
+                let Some(manifests) = peering.peering.as_ref() else {
+                    continue;
+                };
+                for shared in manifests.keys() {
+                    let elsewhere = agent
+                        .spec
+                        .peerings
+                        .iter()
+                        .flatten()
+                        .any(|(other, peering)| {
+                            other != key
+                                && peering
+                                    .peering
+                                    .as_ref()
+                                    .is_some_and(|m| m.contains_key(shared))
+                        });
+                    if !elsewhere {
+                        continue;
+                    }
+                    let prefix = manifests
+                        .iter()
+                        .filter(|(name, _)| *name != shared)
+                        .flat_map(|(_, manifest)| manifest.expose.iter().flatten())
+                        .flat_map(|expose| expose.ips.iter().flatten())
+                        .find_map(|ip| ip.cidr.clone());
+                    if let Some(prefix) = prefix {
+                        donor = Some((key.clone(), shared.clone(), prefix));
+                        break;
+                    }
+                }
+                if donor.is_some() {
+                    break;
+                }
+            }
+
+            let mut done = false;
+            if let Some((donor_key, shared, prefix)) = donor {
+                for (key, peering) in agent.spec.peerings.iter_mut().flatten() {
+                    if *key == donor_key {
+                        continue;
+                    }
+                    let Some(manifests) = peering.peering.as_mut() else {
+                        continue;
+                    };
+                    if !manifests.contains_key(&shared) {
+                        continue;
+                    }
+                    let names: Vec<String> = manifests
+                        .keys()
+                        .filter(|name| **name != shared)
+                        .cloned()
+                        .collect();
+                    for name in names {
+                        let Some(manifest) = manifests.get_mut(&name) else {
+                            continue;
+                        };
+                        if let Some(ip) = manifest
+                            .expose
+                            .iter_mut()
+                            .flatten()
+                            .flat_map(|expose| expose.ips.iter_mut().flatten())
+                            .find(|ip| ip.cidr.is_some())
+                        {
+                            ip.cidr = Some(prefix.clone());
+                            done = true;
+                            break;
+                        }
+                    }
+                    if done {
+                        break;
+                    }
                 }
             }
             done
