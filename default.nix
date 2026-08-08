@@ -483,6 +483,14 @@ let
   initramfs-modular = mk-initramfs {
     kernel = pkgs.linux-fancy-modular;
     pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+    # `virtiofs` to reach the root, `vmw_vsock_virtio_transport` because
+    # n-it needs the result channel the moment it starts and cannot load it
+    # itself -- it is the process the channel reports on.  modprobe expands
+    # each to its own dependency closure.
+    boot-modules = [
+      "virtiofs"
+      "vmw_vsock_virtio_transport"
+    ];
   };
 
   # The QEMU system emulator for the test VM, always a build-native (host
