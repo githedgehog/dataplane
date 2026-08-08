@@ -63,6 +63,33 @@ pub enum Mutation {
     DemandFlowScope,
     /// Put port 0 in a port range, which is not a port.
     UsePortZero,
+    /// Duplicate one static-NAT expose over a sibling in the same manifest.
+    ///
+    /// The two exposes then claim the same private prefix, which `validate_expose_collisions` refuses
+    /// for every pair of NAT modes except masquerade-with-port-forwarding.
+    ///
+    /// The reason to aim at static NAT specifically is what happens downstream when the validator does
+    /// not catch it. `NatRuleTable::insert` takes no `Result` and checks nothing: two entries for one
+    /// prefix and the second **silently replaces** the first. Compare the port-forwarding table, whose
+    /// `RangeSet::insert_range` says "overlap is forbidden" and returns an error, and whose lookup is
+    /// a longest-prefix match for distinct prefixes -- structurally incapable of this. So static NAT
+    /// is where an unrefused duplicate becomes a table that quietly holds one of the two rules the
+    /// configuration asked for.
+    ///
+    /// The recipient is a copy of the donor whose translation range is moved to the prefix next door,
+    /// and both halves of that matter.
+    ///
+    /// A *plain* copy is not enough: the two exposes would then be identical, the table entry would be
+    /// overwritten with the same value, and there would be nothing to pick between. Run against a
+    /// validator with the overlap check removed, the ambiguity property saw no difference across 43,269
+    /// comparisons -- and was right not to. Ambiguity needs one prefix with **two different**
+    /// translations.
+    ///
+    /// Moving the range to a *sibling* prefix keeps every length equal, so static NAT's equal-totals
+    /// rule still holds and overlap stays the only rule broken; keeps it disjoint from the donor's, so
+    /// the public-prefix rule holds too; and needs no agreement between the two exposes' prefix
+    /// lengths, which an earlier version required and which made it apply to one draw in 250.
+    DuplicateAStaticExpose,
     /// Make two peers of one vpc expose the same prefix to it.
     ///
     /// `VpcRouteTable` is built per vpc from what its *peers* expose to it, so this leaves that vpc
@@ -85,7 +112,7 @@ pub enum Mutation {
 
 impl Mutation {
     /// How many mutations there are, so a harness can keep a counter per mutation without a lock.
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 15;
 
     /// This mutation's position in [`Mutation::all`].
     #[must_use]
@@ -113,6 +140,7 @@ impl Mutation {
             Self::NameAStrangerInARule,
             Self::DemandFlowScope,
             Self::UsePortZero,
+            Self::DuplicateAStaticExpose,
             Self::OverlapWithAnotherPeer,
         ]
     }
@@ -128,6 +156,25 @@ fn lengthen(cidr: &str, by: u8) -> Option<String> {
         return None;
     }
     Some(format!("{address}/{longer}"))
+}
+
+/// The prefix next door: same length, differing only in its last network bit.
+///
+/// A prefix and its sibling are disjoint by construction, and the sibling sits inside the same parent,
+/// so it stays in whatever block and slot the original came from and cannot stray into a reserved
+/// range or another expose's territory.
+fn sibling(cidr: &str) -> Option<String> {
+    let (address, len) = cidr.split_once('/')?;
+    let len: u8 = len.parse().ok()?;
+    if address.contains(':') {
+        let bits = address.parse::<std::net::Ipv6Addr>().ok()?.to_bits();
+        let flipped = bits ^ (1u128 << (128u8.checked_sub(len)?));
+        Some(format!("{}/{len}", std::net::Ipv6Addr::from(flipped)))
+    } else {
+        let bits = address.parse::<std::net::Ipv4Addr>().ok()?.to_bits();
+        let flipped = bits ^ (1u32 << (32u8.checked_sub(len)?));
+        Some(format!("{}/{len}", std::net::Ipv4Addr::from(flipped)))
+    }
 }
 
 /// Every expose of every manifest of every peering, in a stable order.
@@ -479,6 +526,53 @@ fn mutate_expose_shape(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
     }
 }
 
+/// Copy one static-NAT expose over a sibling in the same manifest, so both claim one private prefix,
+/// then move the copy's translation range next door so the two claims disagree.
+///
+/// Split out of [`apply`] only for length.
+fn duplicate_a_static_expose(agent: &mut GatewayAgent) -> bool {
+    for (_, peering) in agent.spec.peerings.iter_mut().flatten() {
+        for manifest in peering.peering.iter_mut().flatten().map(|(_, m)| m) {
+            let Some(exposes) = manifest.expose.as_mut() else {
+                continue;
+            };
+            // Both must use static NAT: it is the mode whose table silently replaces a duplicate
+            // rather than refusing it, and a pair of modes the validator lets overlap would make a
+            // case that is legitimately legal.
+            let statics: Vec<usize> = exposes
+                .iter()
+                .enumerate()
+                .filter(|(_, expose)| {
+                    expose
+                        .nat
+                        .as_ref()
+                        .is_some_and(|nat| nat.r#static.is_some())
+                })
+                .map(|(index, _)| index)
+                .collect();
+
+            let (Some(donor), Some(recipient)) = (statics.first(), statics.get(1)) else {
+                continue;
+            };
+            let mut copy = exposes[*donor].clone();
+            let moved = copy
+                .r#as
+                .as_mut()
+                .and_then(|ranges| ranges.first_mut())
+                .and_then(|range| {
+                    let next_door = sibling(range.cidr.as_ref()?)?;
+                    range.cidr = Some(next_door);
+                    Some(())
+                });
+            if moved.is_some() {
+                exposes[*recipient] = copy;
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Apply `mutation`, returning whether it found something to break.
 ///
 /// **A `true` return means the result is certainly illegal**, not merely that something changed. Every
@@ -559,6 +653,7 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
+        Mutation::DuplicateAStaticExpose => duplicate_a_static_expose(agent),
         Mutation::OverlapWithAnotherPeer => overlap_with_another_peer(agent),
     };
     Some(bit)
