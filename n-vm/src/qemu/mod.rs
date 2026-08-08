@@ -586,10 +586,25 @@ fn push_cpu_args(args: &mut Vec<String>, arch: config::Arch) {
 /// guest's address space.
 fn push_memory_args(args: &mut Vec<String>, host_page_size: config::HostPageSize) {
     let mib = config::VM_MEMORY_MIB;
+    // `memory-backend-memfd` with `hugetlb=on`, not `memory-backend-file`
+    // with `mem-path=/dev/hugepages`.
+    //
+    // `memory-backend-file` infers the page size from the mount it is
+    // pointed at, so it produced byte-identical arguments for Huge2M and
+    // Huge1G and silently allocated whatever `/dev/hugepages` happened to
+    // be -- 2 MiB pages on a typical host, while the 1 GiB pool sat
+    // untouched.  A test asking for 1 GiB pages was never getting them, and
+    // a 1 GiB VM consumed 512 pages of the wrong pool.
+    //
+    // memfd takes the size as an option and draws from that pool directly,
+    // which is what cloud-hypervisor has always done, so the two backends
+    // now mean the same thing by `HostPageSize`.  It also needs no
+    // hugetlbfs mount at all.
     let backend = if host_page_size.requires_hugepages() {
         format!(
-            "memory-backend-file,id=mem0,size={mib}M,\
-             mem-path=/dev/hugepages,share=on,prealloc=on"
+            "memory-backend-memfd,id=mem0,size={mib}M,share=on,\
+             hugetlb=on,hugetlbsize={size},prealloc=on",
+            size = host_page_size.qemu_hugetlbsize(),
         )
     } else {
         format!("memory-backend-memfd,id=mem0,size={mib}M,share=on")
@@ -1054,12 +1069,56 @@ mod tests {
         push_memory_args(&mut args, config::HostPageSize::Huge1G);
         let obj = args
             .iter()
-            .find(|a| a.starts_with("memory-backend-file"))
+            .find(|a| a.starts_with("memory-backend-memfd"))
             .unwrap();
         assert!(obj.contains("size=1024M"), "{obj}");
-        assert!(obj.contains("mem-path=/dev/hugepages"), "{obj}");
+        assert!(obj.contains("hugetlb=on"), "{obj}");
+        assert!(obj.contains("hugetlbsize=1G"), "{obj}");
         assert!(obj.contains("share=on"), "{obj}");
         assert!(obj.contains("prealloc=on"), "{obj}");
+    }
+
+    /// The test that would have caught the bug: the two huge sizes must
+    /// produce *different* arguments.
+    ///
+    /// They previously did not.  `memory-backend-file` infers the page size
+    /// from the mount it is pointed at, so `Huge2M` and `Huge1G` emitted
+    /// byte-identical strings and QEMU silently allocated whatever
+    /// `/dev/hugepages` happened to be -- 2 MiB pages -- while the 1 GiB
+    /// pool went untouched.  Every existing assertion still passed.
+    #[test]
+    fn each_huge_page_size_asks_for_that_size() {
+        let arg_for = |size| {
+            let mut args = Vec::new();
+            push_memory_args(&mut args, size);
+            args.iter()
+                .find(|a| a.starts_with("memory-backend"))
+                .expect("a memory backend object")
+                .clone()
+        };
+
+        let two_m = arg_for(config::HostPageSize::Huge2M);
+        let one_g = arg_for(config::HostPageSize::Huge1G);
+
+        assert!(two_m.contains("hugetlbsize=2M"), "{two_m}");
+        assert!(one_g.contains("hugetlbsize=1G"), "{one_g}");
+        assert_ne!(
+            two_m, one_g,
+            "a 2 MiB and a 1 GiB request must not produce the same arguments",
+        );
+    }
+
+    /// Standard pages take a plain memfd: no pool to draw from, and asking
+    /// for `hugetlb=on` would fail on a host with no hugepages reserved.
+    #[test]
+    fn standard_pages_use_a_plain_memfd() {
+        let mut args = Vec::new();
+        push_memory_args(&mut args, config::HostPageSize::Standard);
+        let obj = args
+            .iter()
+            .find(|a| a.starts_with("memory-backend-memfd"))
+            .unwrap();
+        assert!(!obj.contains("hugetlb"), "{obj}");
     }
 
     #[test]
@@ -1068,9 +1127,10 @@ mod tests {
         push_memory_args(&mut args, config::HostPageSize::Huge2M);
         let obj = args
             .iter()
-            .find(|a| a.starts_with("memory-backend-file"))
+            .find(|a| a.starts_with("memory-backend-memfd"))
             .unwrap();
-        assert!(obj.contains("mem-path=/dev/hugepages"), "{obj}");
+        assert!(obj.contains("hugetlb=on"), "{obj}");
+        assert!(obj.contains("hugetlbsize=2M"), "{obj}");
         assert!(obj.contains("share=on"), "{obj}");
         assert!(obj.contains("prealloc=on"), "{obj}");
     }

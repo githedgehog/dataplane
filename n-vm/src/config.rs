@@ -266,12 +266,50 @@ impl HostPageSize {
         }
     }
 
-    /// Whether this page size requires a hugetlbfs mount on the host.
+    /// Whether this page size draws from a hugepage pool.
+    ///
+    /// Renamed in spirit from "requires a hugetlbfs mount": neither backend
+    /// mounts anything any more.  Both allocate through `memfd` with the
+    /// `MFD_HUGE_*` flags, which draws straight from the kernel's pool for
+    /// that size.
     #[must_use]
     pub const fn requires_hugepages(self) -> bool {
         match self {
             Self::Standard => false,
             Self::Huge2M | Self::Huge1G => true,
+        }
+    }
+
+    /// QEMU's `hugetlbsize=` spelling for this page size.
+    ///
+    /// Needed because QEMU's `memory-backend-memfd` takes the size as an
+    /// option, unlike `memory-backend-file`, which infers it from whatever
+    /// the mount happens to be -- see [`Self::pool_dir`].
+    #[must_use]
+    pub const fn qemu_hugetlbsize(self) -> &'static str {
+        match self {
+            // Not reachable for a non-huge page size, which uses a plain
+            // memfd with no `hugetlb=on`.
+            Self::Standard => "",
+            Self::Huge2M => "2M",
+            Self::Huge1G => "1G",
+        }
+    }
+
+    /// The sysfs directory for this size's hugepage pool.
+    ///
+    /// `None` for [`Standard`](Self::Standard), which has no pool.
+    ///
+    /// This is what a pre-flight check should look at.  The previous check
+    /// tested whether `/dev/hugepages` *existed*, which passed happily while
+    /// the pool it stands for was empty -- and an empty pool is exactly the
+    /// failure it was meant to catch.
+    #[must_use]
+    pub const fn pool_dir(self) -> Option<&'static str> {
+        match self {
+            Self::Standard => None,
+            Self::Huge2M => Some("/sys/kernel/mm/hugepages/hugepages-2048kB"),
+            Self::Huge1G => Some("/sys/kernel/mm/hugepages/hugepages-1048576kB"),
         }
     }
 }
