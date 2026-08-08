@@ -1,0 +1,9 @@
+error: `config` takes the path of a `const VmConfig`, not an inline value; declare it as an item and name it here, e.g.
+
+       const FAST_VM: n_vm::VmConfig = n_vm::VmConfig { iommu: true, ..n_vm::VmConfig::DEFAULT };
+
+       #[n_vm::test(config = FAST_VM)]
+  --> tests/compile_fail/config_must_be_a_path.rs:11:23
+   |
+11 | #[n_vm::test(config = 42)]
+   |                       ^^
