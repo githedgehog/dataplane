@@ -689,12 +689,18 @@ pub(crate) fn build_kernel_cmdline(
     vm_bin_path: &str,
     test_name: &str,
     vsock: &VsockAllocation,
-    iommu: bool,
-    guest_hugepages: &GuestHugePageConfig,
+    // Grouped rather than passed field by field: `iommu`, the hugepage
+    // reservation and the corpus mount all come from here, and threading
+    // them separately made the signature grow every time the config did.
+    vm_config: &VmConfig,
     arch: Arch,
-    corpus_mount: Option<&str>,
+    boot: crate::kernel_manifest::BootMode,
 ) -> String {
     let vsock_cmdline = vsock.kernel_cmdline_fragment();
+    let iommu = vm_config.iommu;
+    let guest_hugepages = &vm_config.guest_hugepages;
+    let corpus_mount = vm_config.corpus_guest_path();
+    let corpus_mount = corpus_mount.as_deref();
 
     // Without a vIOMMU, allow DPDK to bind devices via vfio-pci.
     let noiommu_fragment = if iommu {
@@ -720,17 +726,37 @@ pub(crate) fn build_kernel_cmdline(
         format!("{key}={path} ", key = n_vm_protocol::CMDLINE_CORPUS_MOUNT)
     });
 
+    // How the kernel is told to find its root.
+    //
+    // A direct boot names the virtiofs share and the init to exec once it
+    // is mounted.  An initramfs boot reaches none of that code:
+    // `prepare_namespace` is skipped entirely when a cpio supplies the
+    // root, so `root=`/`rootfstype=` would be read by nothing, and `init=`
+    // applies only after a switch_root the pre-init does not perform.
+    // Naming them anyway would be inert *and* misleading about how the
+    // guest actually boots.
+    //
+    // `rdinit=` is spelled explicitly even though `/init` is the kernel's
+    // default, because an external initramfs layered onto a foreign
+    // kernel's embedded one (as Flatcar would need) resolves `/init` to
+    // whichever cpio was unpacked last.  Naming the path does not depend on
+    // that ordering.
+    let root_params = match boot {
+        crate::kernel_manifest::BootMode::Direct => {
+            format!("rootfstype=virtiofs root=root init={INIT_BINARY_PATH}")
+        }
+        crate::kernel_manifest::BootMode::Initramfs => "rdinit=/init".to_owned(),
+    };
+
     format!(
         "{iommu_params} \
          {noiommu_fragment}\
          {console_params} \
          ro \
-         rootfstype=virtiofs \
-         root=root \
+         {root_params} \
          {hugepage_fragment}\
          {corpus_fragment}\
          {vsock_cmdline} \
-         init={INIT_BINARY_PATH} \
          -- {vm_bin_path} {test_name} --exact --no-capture --format=terse",
     )
 }
@@ -888,10 +914,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &hp,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: hp,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains("hugepages=1"),
@@ -918,10 +948,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &hp,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: hp,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains("hugepages=512"),
@@ -944,10 +978,12 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &GuestHugePageConfig::None,
+            &VmConfig {
+                guest_hugepages: GuestHugePageConfig::None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             !cmdline.contains("hugepagesz"),
@@ -966,10 +1002,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains(&format!("init={INIT_BINARY_PATH}")),
@@ -984,10 +1024,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains("-- /test/bin my::test --exact"),
@@ -1003,10 +1047,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains(&fragment),
@@ -1021,10 +1069,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains("vfio.enable_unsafe_noiommu_mode=1"),
@@ -1039,10 +1091,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            true,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: true,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             !cmdline.contains("noiommu"),
@@ -1063,10 +1119,14 @@ mod tests {
                 "/test/bin",
                 "my::test",
                 &vsock,
-                iommu,
-                &DEFAULT_HP,
+                &VmConfig {
+                    iommu,
+                    guest_hugepages: DEFAULT_HP,
+                    corpus_source_file: None,
+                    ..VmConfig::DEFAULT
+                },
                 Arch::X86_64,
-                None,
+                crate::kernel_manifest::BootMode::Direct,
             );
             assert!(x86.contains("intel_iommu=on"), "x86 (iommu={iommu}): {x86}");
 
@@ -1074,10 +1134,14 @@ mod tests {
                 "/test/bin",
                 "my::test",
                 &vsock,
-                iommu,
-                &DEFAULT_HP,
+                &VmConfig {
+                    iommu,
+                    guest_hugepages: DEFAULT_HP,
+                    corpus_source_file: None,
+                    ..VmConfig::DEFAULT
+                },
                 Arch::Aarch64,
-                None,
+                crate::kernel_manifest::BootMode::Direct,
             );
             assert!(
                 !arm.contains("intel_iommu"),
@@ -1093,10 +1157,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(x86.contains("console=ttyS0"), "x86: {x86}");
 
@@ -1104,10 +1172,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::Aarch64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(arm.contains("console=ttyAMA0"), "aarch64: {arm}");
         assert!(!arm.contains("ttyS0"), "aarch64 must not use ttyS0: {arm}");
@@ -1120,10 +1192,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains("rootfstype=virtiofs"),
@@ -1139,10 +1215,14 @@ mod tests {
             "/test/bin",
             "my::test",
             &vsock,
-            false,
-            &DEFAULT_HP,
+            &VmConfig {
+                iommu: false,
+                guest_hugepages: DEFAULT_HP,
+                corpus_source_file: None,
+                ..VmConfig::DEFAULT
+            },
             Arch::X86_64,
-            None,
+            crate::kernel_manifest::BootMode::Direct,
         );
         assert!(
             cmdline.contains("--no-capture"),
