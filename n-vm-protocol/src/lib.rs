@@ -633,6 +633,18 @@ pub const ENV_WORKSPACE: &str = "N_VM_WORKSPACE";
 /// them.
 pub const KERNEL_MANIFEST_PATH: &str = "/n-vm-manifest.json";
 
+/// Selects a kernel profile by name, overriding the manifest's `default`.
+///
+/// A *run mode*, not a per-test setting: it names the environment the whole
+/// invocation runs in, e.g. `N_VM_PROFILE=qemu cargo test`.  Tests that
+/// cannot run in the selected environment skip with a reason rather than
+/// failing, because "this environment does not suit this test" is a fact
+/// about the pairing and not a defect in either.
+///
+/// Set on the host and forwarded into the container, so both tiers agree on
+/// which profile is in play.
+pub const ENV_PROFILE: &str = "N_VM_PROFILE";
+
 /// Directory holding per-profile kernel artifacts inside the container.
 ///
 /// Paths in the manifest are absolute and already include this prefix; the
