@@ -1003,13 +1003,35 @@ mod validator_completeness {
                 }
             });
 
+        // Everything from here on describes the *distribution* of the inputs, which is the random
+        // engine's contract and not a coverage-guided one's. libfuzzer keeps a corpus and steers
+        // toward inputs that reach new code, so it will happily spend a run replaying one mutation
+        // ten thousand times -- the right behaviour for finding a gap, and fatal to a check that
+        // every mutation gets drawn. The property above is what a fuzzing engine is here to break;
+        // these are here to catch the generator rotting, which only the random engine can see.
+        #[cfg(fuzzing)]
+        println!("under a coverage-guided engine: skipping the generator-health checks");
+
+        #[cfg(not(fuzzing))]
+        check_generator_health(&DRAWN, &APPLIED, &REFUSED);
+    }
+
+    /// The generator-health checks, which only hold under the uniform random engine.
+    ///
+    /// Split out so the `cfg` above gates one call rather than half a function body.
+    #[cfg(not(fuzzing))]
+    fn check_generator_health(
+        drawn_at: &[AtomicUsize; Mutation::COUNT],
+        applied_at: &[AtomicUsize; Mutation::COUNT],
+        refused_at: &[AtomicUsize; Mutation::COUNT],
+    ) {
         let mut total_applied = 0;
         let mut total_refused = 0;
         for mutation in Mutation::all() {
             let slot = mutation.index();
-            let drawn = DRAWN[slot].load(Ordering::Relaxed);
-            let applied = APPLIED[slot].load(Ordering::Relaxed);
-            let refused = REFUSED[slot].load(Ordering::Relaxed);
+            let drawn = drawn_at[slot].load(Ordering::Relaxed);
+            let applied = applied_at[slot].load(Ordering::Relaxed);
+            let refused = refused_at[slot].load(Ordering::Relaxed);
             println!("{mutation:<32?} {drawn:>7} drawn {applied:>7} applied {refused:>7} refused");
             assert!(drawn > 0, "{mutation:?} was never drawn");
             if mutation != Mutation::None {
@@ -1021,8 +1043,8 @@ mod validator_completeness {
         // The control must rarely be refused: if a legal configuration is usually rejected, the
         // mutated ones are being rejected for the wrong reasons and this checks little.
         let control = Mutation::None.index();
-        let drawn = DRAWN[control].load(Ordering::Relaxed);
-        let refused = REFUSED[control].load(Ordering::Relaxed);
+        let drawn = drawn_at[control].load(Ordering::Relaxed);
+        let refused = refused_at[control].load(Ordering::Relaxed);
         assert!(
             refused * 4 <= drawn,
             "the unmutated control was refused {refused} times in {drawn}: the near-miss generator \
