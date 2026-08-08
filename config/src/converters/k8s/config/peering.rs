@@ -101,7 +101,7 @@ mod test {
         let subnets = SubnetMap::new(); // Let this be empty since we are test subnet conversion elsewhere
         let flavours = NatFlavour::all();
         let generator =
-            LegalValuePeeringsPeeringGenerator::new(&subnets, &flavours, AddressFamily::V4, 3);
+            LegalValuePeeringsPeeringGenerator::new(&subnets, &flavours, AddressFamily::V4, 3, 0);
         bolero::check!()
             .with_generator(generator)
             .for_each(|peering| {
