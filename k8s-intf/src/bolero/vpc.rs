@@ -23,14 +23,16 @@ fn generate_internal_id<D: Driver>(d: &mut D) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub struct VpcGenerator<'a> {
+    vpc: u8,
     max_subnets: u8,
     families: &'a [AddressFamily],
 }
 
 impl<'a> VpcGenerator<'a> {
     #[must_use]
-    pub fn new(max_subnets: u8, families: &'a [AddressFamily]) -> Self {
+    pub fn new(vpc: u8, max_subnets: u8, families: &'a [AddressFamily]) -> Self {
         Self {
+            vpc,
             max_subnets,
             families,
         }
@@ -69,8 +71,8 @@ impl ValueGenerator for VpcGenerator<'_> {
         )?;
 
         let subnets_cidrs = vec![
-            blocks::private_run(d, AddressFamily::V4, v4_masklen, num_v4_cidrs)?,
-            blocks::private_run(d, AddressFamily::V6, v6_masklen, num_v6_cidrs)?,
+            blocks::private_run(d, AddressFamily::V4, self.vpc, v4_masklen, num_v4_cidrs)?,
+            blocks::private_run(d, AddressFamily::V6, self.vpc, v6_masklen, num_v6_cidrs)?,
         ];
         let subnets = subnets_cidrs
             .into_iter()
@@ -95,6 +97,6 @@ impl ValueGenerator for VpcGenerator<'_> {
 impl TypeGenerator for LegalValue<GatewayAgentVpcs> {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
         let families = AddressFamily::all();
-        Some(LegalValue(VpcGenerator::new(3, &families).generate(d)?))
+        Some(LegalValue(VpcGenerator::new(0, 3, &families).generate(d)?))
     }
 }
