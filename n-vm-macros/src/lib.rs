@@ -525,8 +525,19 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
     }
+    // `CARGO_MANIFEST_DIR` rides along because `file!()` is not reliably
+    // workspace-relative here: this workspace builds with
+    // `--remap-path-prefix==${src}`, which rewrites it to an absolute nix
+    // store path.  The crate directory is the anchor that recovers the
+    // workspace-relative tail (see `VmConfig::corpus_rel_dir`).  Both are
+    // expanded at the call site for the same reason `file!()` is.
     let corpus_source_file = if corpus_attr.is_some() {
-        quote! { ::core::option::Option::Some(::core::file!()) }
+        quote! {
+            ::core::option::Option::Some((
+                ::core::file!(),
+                ::core::env!("CARGO_MANIFEST_DIR"),
+            ))
+        }
     } else {
         quote! { ::core::option::Option::None }
     };
