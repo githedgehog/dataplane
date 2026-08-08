@@ -1361,3 +1361,208 @@ mod ambiguity {
         );
     }
 }
+
+/// Every expose earns its place: remove one and the dataplane must install something different.
+///
+/// The third question about a blessed configuration, after "can it be enacted" and "does it have one
+/// meaning": **is the dataplane doing all of it?**
+///
+/// The failure this hunts is a builder that silently ignores part of its input -- a shape it does not
+/// handle, a `continue` on a branch nobody expected to be reachable. Nothing else here covers that, and
+/// unlike the ambiguity work it needs no mutation to reach it: such a bug would live in the builder
+/// rather than behind a validator rule, so it shows up on configurations that are entirely legal.
+///
+/// The artifacts are asked **one at a time**, and that is the whole design. Every expose contributes
+/// prefixes to the FRR render whatever else it does, so a merged comparison would report a difference
+/// even where a NAT builder had ignored the expose completely -- which is precisely the case worth
+/// catching. What each artifact is entitled to expect comes from the removed expose's own NAT mode, a
+/// fact read straight off the CRD: no model of `collapse_prefixes` or of the PAT splitting is needed,
+/// and none is wanted, since a wrong model would make this property lie rather than fail.
+///
+/// It rests on there being no *legitimately* no-op expose. That is a domain claim, not a code one; it is
+/// asserted here on the understanding that it holds, and `k8s_intf::bolero::reduce` is where an
+/// exemption would belong if some shape turns out to be exempt.
+mod relevance {
+    use super::enacted::{Artifacts, validator};
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use k8s_intf::bolero::mutate::Mutation;
+    use k8s_intf::bolero::reduce::{Dropped, ReducedAgents};
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+
+    /// Whether this gateway is a member of the group the named peering points at.
+    ///
+    /// The peering only reaches the routing configuration if it is.
+    fn handled_here(agent: &GatewayAgent, peering: &str) -> bool {
+        let Some(name) = agent.metadata.name.as_deref() else {
+            return false;
+        };
+        let Some(group) = agent
+            .spec
+            .peerings
+            .as_ref()
+            .and_then(|peerings| peerings.get(peering))
+            .and_then(|peering| peering.gateway_group.as_deref())
+        else {
+            return false;
+        };
+        agent
+            .spec
+            .groups
+            .as_ref()
+            .and_then(|groups| groups.get(group))
+            .and_then(|group| group.members.as_ref())
+            .is_some_and(|members| members.iter().any(|m| m.name == name))
+    }
+
+    /// Whether `left` and `right` differ, and by what, for a failure message.
+    fn difference(left: &[String], right: &[String]) -> Option<String> {
+        if left == right {
+            return None;
+        }
+        let mut out: Vec<String> = Vec::new();
+        for line in left {
+            if !right.contains(line) {
+                out.push(format!("  only with it:    {line}"));
+            }
+        }
+        for line in right {
+            if !left.contains(line) {
+                out.push(format!("  only without it: {line}"));
+            }
+        }
+        out.truncate(10);
+        Some(out.join("\n"))
+    }
+
+    /// # Why IPv4 only
+    ///
+    /// `NatAllocator`'s `Display` never returns on an IPv6 masquerade pool. `ips_in_bitmap` walks
+    /// **every set bit** of the pool's bitmap (`for offset in &self.bitmap.0`), which is a few thousand
+    /// iterations for a v4 `/20` and unbounded for a v6 pool. Measured, not surmised: over IPv4 it
+    /// completes 380 times in a one-second run with a worst case of 6ms; over both families it does not
+    /// complete once in 200 seconds.
+    ///
+    /// This property is the one that trips over it because it renders every artifact, the allocator
+    /// included, twice per case. See `.scratch/next-phase-assessment.md` -- the defect is not confined
+    /// to tests, since that `Display` is a `CliSource` and holds a read lock across the whole print.
+    ///
+    /// # Yield
+    ///
+    /// About one case in fourteen reaches the comparison; the rest are configurations with no manifest
+    /// holding two exposes, overwhelmingly because they have no peerings at all. Hence `sizes` below
+    /// and the loose bound in the health check, which is set from that measurement rather than hope.
+    #[test]
+    fn every_expose_leaves_a_trace() {
+        static CHECKED: AtomicUsize = AtomicUsize::new(0);
+        static NOTHING_TO_DROP: AtomicUsize = AtomicUsize::new(0);
+        static REFUSED_WITHOUT: AtomicUsize = AtomicUsize::new(0);
+        static NOT_OURS: AtomicUsize = AtomicUsize::new(0);
+        static TRANSLATING: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(ReducedAgents::new(
+                k8s_intf::bolero::mutate::MutatedAgents::new(
+                    k8s_intf::bolero::crd::GatewayAgentBuilder::new()
+                        .families(vec![k8s_intf::bolero::AddressFamily::V4])
+                        // Manifests of three or four exposes, where the default is at most two: this
+                        // property has to *remove* one and still leave a legal manifest, so a
+                        // one-expose manifest is a case it can only throw away. At the default that
+                        // was 84% of every case drawn.
+                        .sizes(4, 3, 4, 3)
+                        .build(),
+                ),
+            ))
+            .cloned()
+            .for_each(
+                |(mutation, agent, reduced, dropped): (
+                    Mutation,
+                    GatewayAgent,
+                    GatewayAgent,
+                    Option<Dropped>,
+                )| {
+                    let Some(dropped) = dropped else {
+                        NOTHING_TO_DROP.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    };
+                    let Ok(whole) = validator(&agent) else {
+                        // Refused, which is `validator_completeness`'s business and not this one's.
+                        return;
+                    };
+                    // Removing an expose can make a configuration illegal for reasons of its own: a
+                    // manifest left empty, or an ACL rule whose `match` named the departed prefix and
+                    // now matches nothing. Those are honest refusals and the case is dropped, but
+                    // counted, so a property that had quietly become all-skips would say so.
+                    let Ok(less) = validator(&reduced) else {
+                        REFUSED_WITHOUT.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    };
+                    let (Some(with), Some(without)) = (Artifacts::of(&whole), Artifacts::of(&less))
+                    else {
+                        return;
+                    };
+
+                    // A peering whose gateway group does not list *this* gateway is not this
+                    // gateway's to route: `build_routing_config_peer` never runs for it, so nothing
+                    // it contains reaches any artifact. That is correct behaviour and the one
+                    // legitimate way an expose leaves no trace -- a fact of *context* rather than of
+                    // the expose's shape, which is why reading the expose alone could never have
+                    // predicted it. This property found it by failing.
+                    if !handled_here(&agent, &dropped.peering) {
+                        NOT_OURS.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+
+                    CHECKED.fetch_add(1, Ordering::Relaxed);
+
+                    // Every expose reaches the routing configuration, whatever else it does: its
+                    // prefixes go into the lists its peer imports and advertises.
+                    assert!(
+                        difference(&with.frr, &without.frr).is_some(),
+                        "{mutation:?}: removing {dropped} changed nothing in the routing \
+                         configuration, so the dataplane was never routing it"
+                    );
+
+                    // And an expose that translates must reach the table for the mode it asked for. A
+                    // builder that ignores a shape it does not recognise fails here and nowhere else.
+                    let (table, name) = match dropped.nat {
+                        None => return,
+                        Some("static") => (&with.static_nat, &without.static_nat),
+                        Some("port forwarding") => {
+                            (&with.port_forwarding, &without.port_forwarding)
+                        }
+                        Some("masquerade") => (&with.masquerade, &without.masquerade),
+                        Some(other) => unreachable!("unknown nat mode {other}"),
+                    };
+                    TRANSLATING.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        difference(table, name).is_some(),
+                        "{mutation:?}: removing {dropped} changed nothing in the table for its own \
+                         NAT mode, so that translation was never installed"
+                    );
+                },
+            );
+
+        let checked = CHECKED.load(Ordering::Relaxed);
+        let nothing = NOTHING_TO_DROP.load(Ordering::Relaxed);
+        let refused = REFUSED_WITHOUT.load(Ordering::Relaxed);
+        let not_ours = NOT_OURS.load(Ordering::Relaxed);
+        let translating = TRANSLATING.load(Ordering::Relaxed);
+        println!(
+            "{checked} exposes checked ({translating} of them translating); {nothing} \
+             configurations had nothing to drop, {refused} became illegal without it, {not_ours} \
+             sat in a peering this gateway does not handle"
+        );
+
+        // Skipping is expected here in a way it is not in the other properties, so the guard is that
+        // skipping did not become the whole story.
+        let seen = checked + nothing + refused + not_ours;
+        #[cfg(not(fuzzing))]
+        if seen > 200 {
+            assert!(
+                checked * 40 > seen,
+                "only {checked} of {seen} cases got as far as comparing artifacts: this property has \
+                 become mostly skips"
+            );
+        }
+    }
+}
