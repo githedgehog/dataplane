@@ -17,6 +17,7 @@ pub mod config;
 pub mod dispatch;
 pub mod error;
 pub mod kernel_config;
+pub mod kernel_feature;
 pub mod kernel_manifest;
 pub mod qemu;
 
@@ -40,6 +41,7 @@ pub use dispatch::{
     run_container_tier, run_host_tier,
 };
 pub use error::{ContainerError, VmError};
+pub use kernel_feature::{KernelFeature, features};
 pub use n_vm_macros::{corpus, test};
 pub use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_IN_VM,

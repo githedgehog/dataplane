@@ -380,6 +380,21 @@ pub struct VmConfig {
     pub guest_hugepages: GuestHugePageConfig,
     /// NIC model for all network interfaces in the VM.
     pub nic_model: NicModel,
+    /// Kernel features this test depends on.
+    ///
+    /// Checked against the kernel's own config before launch, so a missing
+    /// feature is reported by name rather than surfacing as whatever it
+    /// breaks deep inside the test body.  See
+    /// [`kernel_feature`](crate::kernel_feature) for why these are verified
+    /// rather than used to generate the kernel's config.
+    ///
+    /// ```ignore
+    /// const TC_VM: VmConfig = VmConfig {
+    ///     kernel_features: &[features::NET_CLS_FLOWER, features::NET_CLS_ACT],
+    ///     ..VmConfig::DEFAULT
+    /// };
+    /// ```
+    pub kernel_features: &'static [crate::kernel_feature::KernelFeature],
     /// The test's own source path (`file!()`) when it opted in to a
     /// writable corpus directory via `#[corpus]`; `None` otherwise.
     ///
@@ -427,6 +442,7 @@ impl VmConfig {
             count: 1,
         },
         nic_model: NicModel::VirtioNet,
+        kernel_features: &[],
         corpus_source_file: None,
     };
 
