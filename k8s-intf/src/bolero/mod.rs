@@ -9,6 +9,7 @@ pub mod gateway;
 pub mod gwgroups;
 pub mod interface;
 pub mod logs;
+pub mod mutate;
 pub mod peering;
 pub mod spec;
 pub mod support;
