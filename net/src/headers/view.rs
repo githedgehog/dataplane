@@ -2648,45 +2648,144 @@ mod view_mut_properties {
     use crate::headers::view::LookMut;
     use crate::headers::{Headers, Net, ShapedHeaders, Transport};
     use crate::vlan::Vlan;
+    use concurrency::sync::OnceLock;
+    use concurrency::sync::atomic::AtomicUsize;
 
-    #[test]
-    fn view_and_pat_agree_eth_net_trans() {
-        bolero::check!()
-            .with_generator(ShapedHeaders)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let view = owned.as_view_mut::<(&Eth, &Net, &Transport)>().is_some();
-                let pattern = owned.pat_mut().eth().net().transport().done().is_some();
-                assert_eq!(
-                    view, pattern,
-                    "view and pat disagree: `unreachable_unchecked`: {h:?}"
-                );
-            });
+    // `AtomicUsize::new` is not const under loom, so counters init on first use.
+    fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
+        slot.get_or_init(|| AtomicUsize::new(0))
     }
 
-    #[test]
-    fn view_and_pat_agree_eth_vlan_net_trans() {
-        bolero::check!()
-            .with_generator(ShapedHeaders)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let view = owned
-                    .as_view_mut::<(&Eth, &Vlan, &Net, &Transport)>()
-                    .is_some();
-                let pattern = owned
-                    .pat_mut()
-                    .eth()
-                    .vlan()
-                    .net()
-                    .transport()
-                    .done()
-                    .is_some();
-                assert_eq!(
-                    view, pattern,
-                    "view and pat disagree: `unreachable_unchecked`: {h:?}"
+    macro_rules! arity_agrees {
+        ($read:ident, $mutable:ident, $shape:ty, $($layer:ident),+) => {
+            #[test]
+            fn $read() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ShapedHeaders)
+                    .for_each(|h: &Headers| {
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let licensed = h.as_view::<$shape>().is_some();
+                        if licensed {
+                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable = h.pat()$(.$layer())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the read walk disagree for ",
+                                stringify!($shape),
+                                ", so `look` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    stringify!($shape),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&HIT).load(Ordering::Relaxed),
                 );
-            });
+            }
+
+            #[test]
+            fn $mutable() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ShapedHeaders)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let licensed = owned.as_view_mut::<$shape>().is_some();
+                        if licensed {
+                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable = owned.pat_mut()$(.$layer())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the mutable walk disagree for ",
+                                stringify!($shape),
+                                ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    stringify!($shape),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&HIT).load(Ordering::Relaxed),
+                );
+            }
+        };
     }
+
+    fn agreement_is_not_vacuous(shape: &str, seen: usize, hit: usize) {
+        println!("{shape}: matched {hit} of {seen}");
+        if seen > 500 {
+            assert!(
+                hit > 0,
+                "{shape} never matched in {seen} packets: the two walks agree only because the \
+                 generator cannot produce this shape"
+            );
+        }
+    }
+
+    arity_agrees!(read_1, mutable_1, (&Eth,), eth);
+    arity_agrees!(read_2, mutable_2, (&Eth, &Net), eth, net);
+    arity_agrees!(
+        read_3,
+        mutable_3,
+        (&Eth, &Net, &Transport),
+        eth,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_4,
+        mutable_4,
+        (&Eth, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_5,
+        mutable_5,
+        (&Eth, &Vlan, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_6,
+        mutable_6,
+        (&Eth, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_7,
+        mutable_7,
+        (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
 
     fn exercise_the_mutable_split() {
         bolero::check!()
