@@ -992,6 +992,16 @@ mod validator_completeness {
                 let accepted = outcome.is_ok();
 
                 if let Ok(validated) = &outcome {
+                    // A mutation reports `true` only when the result is *certainly* illegal, so the
+                    // validator accepting it is a hole. This is the only guard against the validator
+                    // growing more permissive about a rule nothing downstream enforces: for those,
+                    // `enact` below succeeds happily and says nothing, which is exactly what the
+                    // green break test on `OverlappingPrefixes` demonstrated.
+                    assert!(
+                        !bit,
+                        "{mutation:?} broke a rule outright and the validator accepted the result, \
+                         so nothing downstream will ever report it"
+                    );
                     enact(validated, mutation);
                 } else if let Err(e) = &outcome {
                     // The control is legal by construction, so a rejection of it is a defect in the
@@ -1047,32 +1057,60 @@ mod validator_completeness {
         applied_at: &[AtomicUsize; Mutation::COUNT],
         refused_at: &[AtomicUsize; Mutation::COUNT],
     ) {
-        let mut total_applied = 0;
-        let mut total_refused = 0;
+        let mut total = 0;
         for mutation in Mutation::all() {
             let slot = mutation.index();
             let drawn = drawn_at[slot].load(Ordering::Relaxed);
             let applied = applied_at[slot].load(Ordering::Relaxed);
             let refused = refused_at[slot].load(Ordering::Relaxed);
             println!("{mutation:<32?} {drawn:>7} drawn {applied:>7} applied {refused:>7} refused");
-            assert!(drawn > 0, "{mutation:?} was never drawn");
-            if mutation != Mutation::None {
-                total_applied += applied;
-                total_refused += refused;
-            }
+            total += drawn;
         }
 
-        // Nothing here about the control's rejection rate: it is asserted to be zero above, which
-        // is both stronger and shrinkable.
+        // Nothing here about rejection rates. The control is asserted never to be refused and an
+        // applied mutation is asserted always to be, per case, which is both stronger and
+        // shrinkable; a ratio over the whole run could only restate them more weakly.
+        //
+        // What is left is coverage of the mutations themselves, and that needs a sample big enough to
+        // expect one. The default run is a second long, which is a few hundred cases across fourteen
+        // mutations -- too few to conclude anything from a mutation's absence, and the thresholds say
+        // so rather than letting a short run either fail spuriously or look like it checked.
+        let cases_for_drawn = 50 * Mutation::COUNT;
+        let cases_for_applied = 2_000 * Mutation::COUNT;
+        if total < cases_for_drawn {
+            println!(
+                "only {total} cases: too few to say anything about mutation coverage \
+                 (needs {cases_for_drawn} to check each was drawn, {cases_for_applied} to check each \
+                 found a target)"
+            );
+            return;
+        }
 
-        // And a mutation that finds a target should usually be refused. This does not have to hold
-        // case by case -- `DemandFlowScope` on a peering that *is* stateful throughout is legal --
-        // but a mutation that has quietly stopped breaking anything shows up here.
-        assert!(
-            total_applied > 0 && total_refused * 2 >= total_applied,
-            "only {total_refused} of {total_applied} applied mutations were refused: the near-miss \
-             generator is mostly producing legal configurations"
-        );
+        for mutation in Mutation::all() {
+            assert!(
+                drawn_at[mutation.index()].load(Ordering::Relaxed) > 0,
+                "{mutation:?} was never drawn in {total} cases"
+            );
+        }
+
+        if total < cases_for_applied {
+            println!(
+                "{total} cases: enough to check every mutation was drawn, too few to check each \
+                 found a target (needs {cases_for_applied})"
+            );
+            return;
+        }
+
+        // A mutation that has quietly stopped finding anything to break still shows up as drawn. The
+        // rarest is `OverlapWithAnotherPeer`, which needs two peerings sharing a vpc and an expose on
+        // each that advertises its `ips` verbatim; it applies to about one draw in forty.
+        for mutation in Mutation::all().into_iter().filter(|m| *m != Mutation::None) {
+            assert!(
+                applied_at[mutation.index()].load(Ordering::Relaxed) > 0,
+                "{mutation:?} never found anything to break in {total} cases, so it is testing \
+                 nothing"
+            );
+        }
     }
 }
 
