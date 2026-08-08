@@ -45,6 +45,105 @@ fn vm_test_timeout(accel: config::Accel) -> Duration {
     }
 }
 
+/// The complete argument list for a virtiofsd serving one share.
+///
+/// A pure function of its inputs, matching the QEMU argument builders, so the
+/// policy below is asserted by unit tests instead of only being observable by
+/// booting a VM and seeing whether the guest survives.
+///
+/// # Why `--cache=always` on the read-only share
+///
+/// virtiofsd's default is `auto`, and `auto` corrupts the guest's
+/// file-backed pages.  Every binary the guest runs -- `ld.so`, `libc`, the
+/// test binary itself -- is mmapped from this share, and there is no DAX
+/// window (neither this virtiofsd nor QEMU 11's `vhost-user-fs-pci` supports
+/// one), so those mappings are served out of the guest page cache over FUSE.
+/// An aarch64 guest then executes and dereferences stale or partially-filled
+/// pages: garbage relocations, pointers with their low word zeroed, jumps
+/// into `.rodata`.  It reproduced 5/5 and was independent of the guest kernel
+/// config.
+///
+/// `always` is not a preference among several working settings; it is the
+/// only one that works.  Swept on aarch64, one test per policy, everything
+/// else held fixed:
+///
+/// | policy     | aarch64            | x86_64 |
+/// |------------|--------------------|--------|
+/// | `auto`     | guest faults       | passes |
+/// | `always`   | passes             | passes |
+/// | `never`    | guest faults       | passes |
+/// | `metadata` | guest faults       | passes |
+///
+/// So the trigger is not specifically `auto`'s timeout-driven revalidation:
+/// `never` and `metadata` do not cache file contents in the guest at all and
+/// fail the same way, and adding `--allow-mmap` does not rescue either.  What
+/// the three failing policies share is that a file page can have to be
+/// fetched more than once.  `always` tells the guest its page cache is
+/// authoritative, so a page is read once and never refilled -- and refilling
+/// is what goes wrong.
+///
+/// Sound here because the share is read-only for the guest *and* immutable on
+/// the host: a /nix/store closure plus the workspace, neither of which
+/// changes while a VM is up.
+///
+/// Every policy passes on x86_64, which is why this went unnoticed for so
+/// long, and is the trap for anyone tempted to loosen it: the setting reads
+/// like a performance tunable and relaxing it looks fine locally while
+/// breaking only the emulated guest.  Do not change it without re-running
+/// that sweep on aarch64, which
+/// [`N_VM_VIRTIOFS_CACHE`](n_vm_protocol::ENV_VIRTIOFS_CACHE) exists to make
+/// cheap.
+///
+/// The writable corpus share keeps virtiofsd's default: it must stay coherent
+/// with the host that reads results back afterwards.
+///
+/// `cache_override` is the caller's
+/// [`N_VM_VIRTIOFS_CACHE`](n_vm_protocol::ENV_VIRTIOFS_CACHE), read at the
+/// call site rather than here so this stays a pure function: reading the
+/// environment inside it would make its own tests depend on whatever the
+/// suite happens to run under.
+fn virtiofsd_args(
+    path: &Path,
+    tag: &str,
+    socket: &str,
+    writable: bool,
+    cache_override: Option<&str>,
+) -> Vec<String> {
+    let uid = nix::unistd::getuid().as_raw();
+    let gid = nix::unistd::getgid().as_raw();
+
+    let mut args = vec!["--shared-dir".to_owned(), path.display().to_string()];
+
+    if !writable {
+        args.push("--readonly".to_owned());
+
+        let cache = cache_override.unwrap_or("always");
+        // `metadata` and `never` refuse to mmap a shared file unless asked,
+        // and the guest cannot execute a binary it cannot mmap.  Passed only
+        // for those two, so the default path is unchanged and a sweep
+        // compares each policy at its best rather than failing one on a flag
+        // it needed.
+        if cache == "metadata" || cache == "never" {
+            args.push("--allow-mmap".to_owned());
+        }
+        args.push(format!("--cache={cache}"));
+    }
+
+    args.extend([
+        "--tag".to_owned(),
+        tag.to_owned(),
+        "--socket-path".to_owned(),
+        socket.to_owned(),
+        "--announce-submounts".to_owned(),
+        "--sandbox=none".to_owned(),
+        "--rlimit-nofile=0".to_owned(),
+        format!("--translate-uid=squash-host:0:{uid}:{MAX}", MAX = u32::MAX),
+        format!("--translate-gid=squash-host:0:{gid}:{MAX}", MAX = u32::MAX),
+    ]);
+
+    args
+}
+
 /// Polls the filesystem until `path` exists, returning an error on timeout
 /// or I/O failure.
 pub(crate) async fn wait_for_socket(path: impl AsRef<Path>) -> Result<(), VmError> {
@@ -311,76 +410,17 @@ impl<B: HypervisorBackend> TestVm<B> {
         socket: &str,
         writable: bool,
     ) -> Result<tokio::process::Child, VmError> {
-        let uid = nix::unistd::getuid().as_raw();
-        let gid = nix::unistd::getgid().as_raw();
+        let cache_override = std::env::var(n_vm_protocol::ENV_VIRTIOFS_CACHE)
+            .ok()
+            .filter(|v| !v.is_empty());
         let mut command = tokio::process::Command::new(VIRTIOFSD_BINARY_PATH);
-        command.arg("--shared-dir").arg(path.as_ref());
-        if !writable {
-            command.arg("--readonly");
-            // `--cache=always` on the read-only share, because virtiofsd's
-            // default (`auto`) corrupts the guest's file-backed pages.
-            //
-            // Every binary the guest runs -- `ld.so`, `libc`, the test
-            // binary itself -- is mmapped from this share, and there is no
-            // DAX window, so those mappings are served out of the guest page
-            // cache over FUSE.  An aarch64 guest then executes and
-            // dereferences stale or partially-filled pages: garbage
-            // relocations, pointers with their low word zeroed, jumps into
-            // `.rodata`.  It reproduced 5/5 and was independent of the guest
-            // kernel config.
-            //
-            // `always` is not a preference among several working settings.
-            // It is the only one that works.  Swept on aarch64, one test per
-            // policy, everything else held fixed:
-            //
-            //     auto      guest faults (DABT)   <- virtiofsd's default
-            //     always    passes
-            //     never     guest faults (DABT)
-            //     metadata  guest faults (DABT)
-            //
-            // So the trigger is not specifically `auto`'s timeout-driven
-            // revalidation: `never` and `metadata` do not cache file
-            // contents in the guest at all, and fail the same way.  What the
-            // three failing policies share is that a file page can have to
-            // be fetched more than once.  `always` tells the guest its page
-            // cache is authoritative, so a page is read once and never
-            // refilled -- and refilling is what goes wrong.
-            //
-            // Sound here because the share is read-only for the guest *and*
-            // immutable on the host: a /nix/store closure plus the
-            // workspace, neither of which changes while a VM is up.
-            //
-            // All four policies pass on x86_64, which is why this went
-            // unnoticed: the fault is on the guest side of a path only the
-            // emulated guest takes.  Do not relax this without re-running
-            // that sweep on aarch64.
-            //
-            // Only the read-only share.  The corpus share is writable and
-            // must stay coherent with the host that reads results back
-            // afterwards, so it keeps virtiofsd's default.
-            command.arg(format!(
-                "--cache={}",
-                std::env::var(n_vm_protocol::ENV_VIRTIOFS_CACHE)
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| "always".into())
-            ));
-        }
         command
-            .arg("--tag")
-            .arg(tag)
-            .arg("--socket-path")
-            .arg(socket)
-            .arg("--announce-submounts")
-            .arg("--sandbox=none")
-            .arg("--rlimit-nofile=0")
-            .arg(format!(
-                "--translate-uid=squash-host:0:{uid}:{MAX}",
-                MAX = u32::MAX
-            ))
-            .arg(format!(
-                "--translate-gid=squash-host:0:{gid}:{MAX}",
-                MAX = u32::MAX
+            .args(virtiofsd_args(
+                path.as_ref(),
+                tag,
+                socket,
+                writable,
+                cache_override.as_deref(),
             ))
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
@@ -729,4 +769,98 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
 
     let vm = TestVm::<B>::launch(&params).await?;
     Ok(vm.collect().await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(writable: bool, cache: Option<&str>) -> Vec<String> {
+        virtiofsd_args(
+            Path::new("/share"),
+            "root",
+            "/run/virtiofsd.sock",
+            writable,
+            cache,
+        )
+    }
+
+    /// The read-only share must be served with `--cache=always`.
+    ///
+    /// The one assertion standing between us and a repeat of the bug that
+    /// made every aarch64 test fail.  Worth a unit test rather than only the
+    /// in-guest coverage, because the in-guest symptom is the guest dying in
+    /// `ld.so` before any test body runs -- which reads as "the VM is broken"
+    /// and sends the next person looking at kernel configs, as it did.
+    #[test]
+    fn read_only_share_is_served_with_cache_always() {
+        let args = args(false, None);
+        assert!(
+            args.contains(&"--cache=always".to_owned()),
+            "read-only share must be `--cache=always`; see the sweep in \
+             `virtiofsd_args`: {args:?}",
+        );
+        assert!(args.contains(&"--readonly".to_owned()), "{args:?}");
+    }
+
+    /// The writable corpus share keeps virtiofsd's default.
+    ///
+    /// `always` would tell the guest its cache is authoritative for a
+    /// directory the host reads back afterwards.  It is also how the corpus
+    /// share was first broken: applying the override to both daemons made the
+    /// corpus read-only to the guest.
+    #[test]
+    fn writable_share_gets_no_cache_policy() {
+        let args = args(true, None);
+        assert!(
+            !args.iter().any(|a| a.starts_with("--cache")),
+            "writable share must keep virtiofsd's default: {args:?}",
+        );
+        assert!(
+            !args.contains(&"--readonly".to_owned()),
+            "the corpus share is writable: {args:?}",
+        );
+    }
+
+    /// The override reaches virtiofsd, which is what makes a policy sweep a
+    /// single build plus an environment variable.
+    #[test]
+    fn cache_override_is_honoured() {
+        assert!(args(false, Some("auto")).contains(&"--cache=auto".to_owned()));
+        assert!(args(false, Some("never")).contains(&"--cache=never".to_owned()));
+    }
+
+    /// The restrictive policies get `--allow-mmap`, and only they do.
+    ///
+    /// Without it they refuse to mmap a shared file and the guest cannot
+    /// execute anything, so a sweep would fail them on a missing flag rather
+    /// than on the property being measured.  (It does not save them: both
+    /// still fault on aarch64.)
+    #[test]
+    fn only_restrictive_policies_allow_mmap() {
+        for policy in ["metadata", "never"] {
+            assert!(
+                args(false, Some(policy)).contains(&"--allow-mmap".to_owned()),
+                "{policy} needs --allow-mmap to serve an executable",
+            );
+        }
+        for policy in ["always", "auto"] {
+            assert!(
+                !args(false, Some(policy)).contains(&"--allow-mmap".to_owned()),
+                "{policy} caches contents and does not need --allow-mmap",
+            );
+        }
+    }
+
+    /// The corpus share's isolation is `--shared-dir`, not guest mount flags:
+    /// a fuzz target that remounts rw must still reach only `__fuzz__`.
+    #[test]
+    fn each_share_is_scoped_to_its_own_directory() {
+        let args = args(true, None);
+        let i = args
+            .iter()
+            .position(|a| a == "--shared-dir")
+            .expect("present");
+        assert_eq!(args[i + 1], "/share", "{args:?}");
+    }
 }
