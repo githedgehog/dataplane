@@ -444,14 +444,120 @@ pub mod blocks {
     use bolero::Driver;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// The shortest prefix either side can take, per family.
+    /// Each block is carved into fixed-size **slots**, and nothing is ever drawn that crosses one.
     ///
-    /// Long enough to sit inside the *narrower* of the two blocks (`172.16.0.0/12` for v4, a half of
-    /// `2001:db8::/32` for v6), so that a length usable on one side is usable on the other. Static
-    /// NAT and port forwarding both need the two sides to be the same length, so a length either
-    /// side cannot take is a length neither can.
-    pub const MIN_V4_LEN: u8 = 16;
-    pub const MIN_V6_LEN: u8 = 48;
+    /// Two prefixes taken from different slots therefore cannot overlap, whatever their lengths, so a
+    /// manifest that hands each of its exposes a slot of its own satisfies the validator's
+    /// no-overlap-within-a-manifest rule *by construction* rather than by luck.
+    ///
+    /// This is not a nicety. Before it, every expose in a manifest drew from one shared block, so
+    /// overlap was a matter of chance -- rare enough under uniform random input to look like noise.
+    /// A coverage-guided run found it and drove it hard: **89% of the configurations libfuzzer
+    /// produced that should have been legal were refused with `VPC prefixes overlap`**, against 6%
+    /// under random input. A fuzzer steers toward whatever reaches new code, and "the validator
+    /// rejects this" is new code.
+    ///
+    /// A slot length is also the shortest prefix its block can hold, since a shorter one would span
+    /// slots. It is long enough to sit inside the *narrower* of the two blocks (`172.16.0.0/12` for
+    /// v4, a half of `2001:db8::/32` for v6), so a length usable on one side is usable on the other:
+    /// static NAT and port forwarding both need the two sides to be the same length, and a length
+    /// either side cannot take is a length neither can.
+    pub const SLOT_V4_LEN: u8 = 20;
+    pub const SLOT_V6_LEN: u8 = 48;
+    pub const MIN_V4_LEN: u8 = SLOT_V4_LEN;
+    pub const MIN_V6_LEN: u8 = SLOT_V6_LEN;
+
+    /// How many slots at the bottom of each *private* block are set aside for a vpc's own subnets.
+    ///
+    /// A subnet is subject to the same rules as a prefix written out in an expose, because an expose
+    /// may name one and a named subnet contributes its prefix. So a subnet that overlaps another
+    /// expose's prefix breaks the same rule -- and keeping subnets out of the slots exposes draw from
+    /// is what stops that. Sixteen because that is what the number of subnets a vpc is given needs;
+    /// the reservation only bounds `private_run`, and [`min_subnet_len`] enforces the rest.
+    pub const SUBNET_SLOTS: u8 = 16;
+
+    /// The prefix length of the reserved subnet region: `10.0.0.0/16`, `2001:db8:0000::/44`.
+    fn subnet_region_len(family: AddressFamily) -> u8 {
+        // `SUBNET_SLOTS` is a power of two, so the region is the slot length less its exponent. That
+        // exponent is at most 7, so the conversion cannot lose anything.
+        let exponent = u8::try_from(SUBNET_SLOTS.trailing_zeros()).unwrap_or(0);
+        min_len(family) - exponent
+    }
+
+    /// Where one prefix is drawn from: a sub-slot of a slot of a block.
+    ///
+    /// Overlap is broken by *sharing an address range*, so the answer is to make sharing impossible:
+    /// every prefix is confined to a nested box, and two prefixes in different boxes cannot overlap
+    /// however long they are. Three levels, outermost first:
+    ///
+    /// * **block** -- private or public. Keeps an expose's two sides from being the same prefix.
+    /// * **slot** -- one per expose of a manifest. Keeps the exposes of a manifest from overlapping,
+    ///   which is what `validate_expose_collisions` refuses.
+    /// * **sub-slot** -- one per prefix of an expose's own list. An expose's private list may hold
+    ///   several prefixes, and those have to be disjoint from each other too.
+    #[derive(Debug, Clone, Copy)]
+    pub struct At {
+        /// Which expose of the manifest this is.
+        pub slot: u8,
+        /// Which prefix of this expose's list this is, and how many the list holds.
+        pub sub: u8,
+        pub subs: u8,
+    }
+
+    impl At {
+        /// The whole of slot `slot`, for a caller drawing a single prefix.
+        #[must_use]
+        pub fn whole(slot: u8) -> Self {
+            Self {
+                slot,
+                sub: 0,
+                subs: 1,
+            }
+        }
+
+        /// Prefix `sub` of `subs`, in slot `slot`.
+        #[must_use]
+        pub fn nth(slot: u8, sub: u8, subs: u8) -> Self {
+            Self {
+                slot,
+                sub,
+                subs: subs.max(sub.saturating_add(1)),
+            }
+        }
+
+        /// How many bits of the slot the sub-slot index consumes.
+        fn sub_bits(self) -> u8 {
+            u8::try_from(self.subs.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0)
+        }
+
+        /// The prefix length at which this sub-slot begins: nothing shorter fits inside it.
+        fn level(self, family: AddressFamily) -> u8 {
+            min_len(family)
+                .saturating_add(self.sub_bits())
+                .min(max_len(family))
+        }
+
+        /// The sub-slot's base address within `block_base`, and the length it begins at.
+        fn place(self, family: AddressFamily, block_base: u128, slot_index: u32) -> (u128, u8) {
+            let width = max_len(family);
+            let level = self.level(family);
+            let slot = u128::from(slot_index) << (width - min_len(family));
+            // masked rather than trusted, so a caller passing `sub >= 1 << sub_bits` lands in a real
+            // sub-slot instead of bleeding into the next slot
+            let sub_mask = (1u128 << self.sub_bits()) - 1;
+            let sub = (u128::from(self.sub) & sub_mask) << (width - level);
+            (block_base | slot | sub, level)
+        }
+    }
+
+    /// The shortest prefix length available at `at`.
+    ///
+    /// A sub-slot is shorter than a slot, so an expose drawing several prefixes has to draw longer
+    /// ones. A caller should draw the *count* first and take this as the floor for the length.
+    #[must_use]
+    pub fn min_len_at(family: AddressFamily, at: At) -> u8 {
+        at.level(family)
+    }
 
     fn v4(base: u32, block_len: u8, host: u32, len: u8) -> String {
         let block_host_bits = 32 - block_len;
@@ -477,45 +583,57 @@ pub mod blocks {
         format!("{}/{len}", Ipv6Addr::from(addr))
     }
 
-    /// A prefix of length `len` for the private side of an expose.
-    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+    /// A prefix of length `len` at `at` in the private block.
+    ///
+    /// The private block's slots start past the subnet reservation, since a vpc's subnets are private
+    /// addresses and an expose may name one.
+    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
+        let slot = u32::from(SUBNET_SLOTS) + u32::from(at.slot);
         Some(if family.is_v4() {
             // 10.0.0.0/8
-            v4(0x0A00_0000, 8, d.produce::<u32>()?, len)
+            let (base, level) = at.place(family, 0x0A00_0000, slot);
+            v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
         } else {
             // the lower half of 2001:db8::/32, i.e. 2001:db8:0000::/33
-            v6(
-                0x2001_0db8_0000_0000_0000_0000_0000_0000,
-                33,
-                d.produce::<u128>()?,
-                len,
-            )
+            let (base, level) = at.place(family, 0x2001_0db8_0000_0000_0000_0000_0000_0000, slot);
+            v6(base, level, d.produce::<u128>()?, len)
         })
     }
 
-    /// A prefix of length `len` for the public side of an expose, disjoint from [`private`].
-    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+    /// A prefix of length `len` at `at` in the public block, disjoint from [`private`].
+    ///
+    /// No reservation here: subnets are private, so the public block's slots start at zero.
+    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
+        let slot = u32::from(at.slot);
         Some(if family.is_v4() {
-            // 172.16.0.0/12
-            v4(0xAC10_0000, 12, d.produce::<u32>()?, len)
+            // 172.16.0.0/12, which holds 256 slots of SLOT_V4_LEN -- a u8 index cannot exceed it
+            let (base, level) = at.place(family, 0xAC10_0000, slot);
+            v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
         } else {
             // the upper half of 2001:db8::/32, i.e. 2001:db8:8000::/33
-            v6(
-                0x2001_0db8_8000_0000_0000_0000_0000_0000,
-                33,
-                d.produce::<u128>()?,
-                len,
-            )
+            let (base, level) = at.place(family, 0x2001_0db8_8000_0000_0000_0000_0000_0000, slot);
+            v6(base, level, d.produce::<u128>()?, len)
         })
     }
 
-    /// `count` distinct prefixes of length `len` inside the private block.
+    /// The shortest prefix length the subnet region can hold `count` distinct prefixes at.
+    ///
+    /// A caller draws the length *after* the count, since drawing it first can ask the region for
+    /// more prefixes than it has at that length -- and [`private_run`] would then wrap and hand back
+    /// duplicates, which are overlapping subnets and refused.
+    #[must_use]
+    pub fn min_subnet_len(family: AddressFamily, count: u16) -> u8 {
+        let region = subnet_region_len(family);
+        // the number of bits needed to index `count` slots
+        let bits = u8::try_from(count.next_power_of_two().trailing_zeros()).unwrap_or(u8::MAX);
+        region.saturating_add(bits).min(max_len(family))
+    }
+
+    /// `count` distinct prefixes of length `len` inside the private block's subnet reservation.
     ///
     /// Consecutive rather than independently drawn, so they are distinct and non-overlapping without
-    /// a rejection loop. A vpc's subnets are subject to the same rules as an expose's own prefixes,
-    /// because an expose can name one and a named subnet contributes its prefix -- so a subnet in a
-    /// special-use range makes every expose naming it invalid, and two overlapping subnets make an
-    /// expose naming both invalid.
+    /// a rejection loop. `len` should be at least [`min_subnet_len`] for this `count`, or the region
+    /// runs out of slots and the run wraps onto itself.
     pub fn private_run<D: Driver>(
         d: &mut D,
         family: AddressFamily,
@@ -525,10 +643,13 @@ pub mod blocks {
         if count == 0 {
             return Some(Vec::new());
         }
+        let region = u32::from(subnet_region_len(family));
         let mut out = Vec::with_capacity(usize::from(count));
         if family.is_v4() {
-            // 10.0.0.0/8 holds 2^(len-8) prefixes of length `len`
-            let slots = 1u32.checked_shl(u32::from(len) - 8).unwrap_or(u32::MAX);
+            // 10.0.0.0/16 holds 2^(len-16) prefixes of length `len`
+            let slots = 1u32
+                .checked_shl(u32::from(len) - region)
+                .unwrap_or(u32::MAX);
             let first = d.produce::<u32>()? % slots;
             let shift = u32::from(32 - len);
             for i in 0..u32::from(count) {
@@ -537,8 +658,10 @@ pub mod blocks {
                 out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
             }
         } else {
-            // the lower half of 2001:db8::/32 holds 2^(len-33) prefixes of length `len`
-            let slots = 1u128.checked_shl(u32::from(len) - 33).unwrap_or(u128::MAX);
+            // 2001:db8:0000::/44 holds 2^(len-44) prefixes of length `len`
+            let slots = 1u128
+                .checked_shl(u32::from(len) - region)
+                .unwrap_or(u128::MAX);
             let first = d.produce::<u128>()? % slots;
             let shift = u32::from(128 - len);
             for i in 0..u128::from(count) {
