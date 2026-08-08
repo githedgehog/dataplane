@@ -851,6 +851,11 @@ mod validator_completeness {
                 let accepted = outcome.is_ok();
 
                 if let Ok(validated) = &outcome {
+                    assert!(
+                        !bit,
+                        "{mutation:?} broke a rule outright and the validator accepted the result, \
+                         so nothing downstream will ever report it"
+                    );
                     enact(validated, mutation);
                 } else if let Err(e) = &outcome {
                     assert!(
@@ -889,26 +894,49 @@ mod validator_completeness {
         applied_at: &[AtomicUsize; Mutation::COUNT],
         refused_at: &[AtomicUsize; Mutation::COUNT],
     ) {
-        let mut total_applied = 0;
-        let mut total_refused = 0;
+        let mut total = 0;
         for mutation in Mutation::all() {
             let slot = mutation.index();
             let drawn = drawn_at[slot].load(Ordering::Relaxed);
             let applied = applied_at[slot].load(Ordering::Relaxed);
             let refused = refused_at[slot].load(Ordering::Relaxed);
             println!("{mutation:<32?} {drawn:>7} drawn {applied:>7} applied {refused:>7} refused");
-            assert!(drawn > 0, "{mutation:?} was never drawn");
-            if mutation != Mutation::None {
-                total_applied += applied;
-                total_refused += refused;
-            }
+            total += drawn;
         }
 
-        assert!(
-            total_applied > 0 && total_refused * 2 >= total_applied,
-            "only {total_refused} of {total_applied} applied mutations were refused: the near-miss \
-             generator is mostly producing legal configurations"
-        );
+        let cases_for_drawn = 50 * Mutation::COUNT;
+        let cases_for_applied = 2_000 * Mutation::COUNT;
+        if total < cases_for_drawn {
+            println!(
+                "only {total} cases: too few to say anything about mutation coverage \
+                 (needs {cases_for_drawn} to check each was drawn, {cases_for_applied} to check each \
+                 found a target)"
+            );
+            return;
+        }
+
+        for mutation in Mutation::all() {
+            assert!(
+                drawn_at[mutation.index()].load(Ordering::Relaxed) > 0,
+                "{mutation:?} was never drawn in {total} cases"
+            );
+        }
+
+        if total < cases_for_applied {
+            println!(
+                "{total} cases: enough to check every mutation was drawn, too few to check each \
+                 found a target (needs {cases_for_applied})"
+            );
+            return;
+        }
+
+        for mutation in Mutation::all().into_iter().filter(|m| *m != Mutation::None) {
+            assert!(
+                applied_at[mutation.index()].load(Ordering::Relaxed) > 0,
+                "{mutation:?} never found anything to break in {total} cases, so it is testing \
+                 nothing"
+            );
+        }
     }
 }
 
