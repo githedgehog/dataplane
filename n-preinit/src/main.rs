@@ -44,8 +44,8 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 
 use nix::kmod::{ModuleInitFlags, finit_module};
-use nix::mount::{MntFlags, MsFlags, mount, umount2};
-use nix::unistd::pivot_root;
+use nix::mount::{MsFlags, mount};
+use nix::unistd::chroot;
 
 use n_vm_protocol::{INIT_BINARY_PATH, VIRTIOFS_ROOT_TAG};
 
@@ -77,7 +77,7 @@ fn run() -> Result<(), String> {
 
     load_modules(Path::new(MODULES_LOAD))?;
     mount_new_root()?;
-    pivot()?;
+    switch_root()?;
     exec_init()
 }
 
@@ -189,22 +189,39 @@ fn mount_new_root() -> Result<(), String> {
     })
 }
 
-/// Makes [`NEW_ROOT`] the root and detaches the initramfs.
+/// Makes [`NEW_ROOT`] the root.
 ///
-/// Uses the `pivot_root(".", ".")` idiom rather than a separate `put_old`
-/// directory: it needs no writable directory under the new root, which
-/// matters because the new root is mounted read-only.  After the call the
-/// old root is stacked over the new one at `.`, and detaching it there frees
-/// the initramfs memory.
-fn pivot() -> Result<(), String> {
+/// **Not** `pivot_root`.  The kernel's own documentation is explicit that it
+/// cannot work from here (`Documentation/filesystems/ramfs-rootfs-initramfs.rst`):
+///
+/// > initramfs is rootfs: you can neither pivot_root rootfs, nor unmount it.
+/// > Instead ... overmount rootfs with the new root
+/// > (`cd /newmount; mount --move . /; chroot .`)
+///
+/// An earlier version did use `pivot_root` and failed at exactly this point
+/// with `EINVAL`, after everything before it had worked.  This is the
+/// `switch_root` idiom instead, which is why that is a separate tool from
+/// `pivot_root` rather than a wrapper around it.
+///
+/// The initramfs contents are deliberately *not* deleted first.  The docs
+/// suggest it to reclaim the memory, but rootfs holds well under 1% of this
+/// VM's RAM, and recursively unlinking the filesystem this process was
+/// loaded from is a poor trade for that.
+fn switch_root() -> Result<(), String> {
     std::env::set_current_dir(NEW_ROOT)
         .map_err(|err| format!("cannot chdir to {NEW_ROOT}: {err}"))?;
 
-    pivot_root(".", ".").map_err(|err| format!("pivot_root onto {NEW_ROOT} failed: {err}"))?;
+    // Move the new root's mount over `/`, rather than mounting something
+    // new there: the same filesystem, relocated, so open descriptors and
+    // the mount's identity survive.
+    mount(Some("."), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>)
+        .map_err(|err| format!("cannot move {NEW_ROOT} onto /: {err}"))?;
 
-    umount2(".", MntFlags::MNT_DETACH)
-        .map_err(|err| format!("cannot detach the old root: {err}"))?;
+    chroot(".").map_err(|err| format!("cannot chroot into the new root: {err}"))?;
 
+    // stdio stays attached to the console opened before the move.  Those
+    // descriptors are already open, so they survive `chroot` even though
+    // the devtmpfs they came from is no longer reachable by path.
     std::env::set_current_dir("/").map_err(|err| format!("cannot chdir to the new root: {err}"))
 }
 
