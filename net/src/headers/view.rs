@@ -2641,3 +2641,113 @@ mod view_properties {
             });
     }
 }
+
+#[cfg(test)]
+mod view_mut_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::LookMut;
+    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::vlan::Vlan;
+
+    #[test]
+    fn view_and_pat_agree_eth_net_trans() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let view = owned.as_view_mut::<(&Eth, &Net, &Transport)>().is_some();
+                let pattern = owned.pat_mut().eth().net().transport().done().is_some();
+                assert_eq!(
+                    view, pattern,
+                    "view and pat disagree: `unreachable_unchecked`: {h:?}"
+                );
+            });
+    }
+
+    #[test]
+    fn view_and_pat_agree_eth_vlan_net_trans() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let view = owned
+                    .as_view_mut::<(&Eth, &Vlan, &Net, &Transport)>()
+                    .is_some();
+                let pattern = owned
+                    .pat_mut()
+                    .eth()
+                    .vlan()
+                    .net()
+                    .transport()
+                    .done()
+                    .is_some();
+                assert_eq!(
+                    view, pattern,
+                    "view and pat disagree: `unreachable_unchecked`: {h:?}"
+                );
+            });
+    }
+
+    fn exercise_the_mutable_split() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let Some(view) = owned.as_view_mut::<(&Eth, &Net, &Transport)>() else {
+                    return;
+                };
+                let (eth, net, transport) = view.look_mut();
+
+                let want_src =
+                    crate::eth::mac::SourceMac::try_from(crate::eth::mac::Mac([2, 0, 0, 0, 0, 1]))
+                        .unwrap_or_else(|_| {
+                            unreachable!("a locally-administered unicast mac is a valid source")
+                        });
+                eth.set_source(want_src);
+                let seen_net = net.dst_addr();
+                let seen_transport = transport.dst_port();
+
+                assert_eq!(
+                    eth.source(),
+                    want_src,
+                    "the write through eth did not stick"
+                );
+                assert_eq!(net.dst_addr(), seen_net, "net changed under a write to eth");
+                assert_eq!(
+                    transport.dst_port(),
+                    seen_transport,
+                    "transport changed under a write to eth"
+                );
+            });
+    }
+
+    macro_rules! split_shards {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    exercise_the_mutable_split();
+                }
+            )*
+        };
+    }
+
+    split_shards!(
+        the_mutable_split_hands_out_distinct_layers,
+        split_shard_02,
+        split_shard_03,
+        split_shard_04,
+        split_shard_05,
+        split_shard_06,
+        split_shard_07,
+        split_shard_08,
+        split_shard_09,
+        split_shard_10,
+        split_shard_11,
+        split_shard_12,
+        split_shard_13,
+        split_shard_14,
+        split_shard_15,
+        split_shard_16,
+    );
+}
