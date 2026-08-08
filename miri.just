@@ -25,7 +25,11 @@ export target := cpu + "-unknown-linux-gnu"
 export provenance := "permissive"
 export schedule_seed := choose('5', "0123456789")
 export seeds := "1"
-export stacked_borrow_check := "disabled"
+# Imported-module settings are configurable through the environment.
+export stacked_borrow_check := env("STACKED_BORROW_CHECK", "disabled")
+
+# Bolero's per-property budget in milliseconds, forwarded into the recipe's nix shell.
+export bolero_test_time_ms := env("BOLERO_TEST_TIME_MS", "30000")
 export preemption_rate := "0.10"
 export weak_failure_rate := "0.05"
 export randomize_struct_layout := "enabled"
@@ -63,6 +67,7 @@ test *args="":
       # Umbrella cfg shared with the qemu-user path in nix/profiles.nix.
       RUSTFLAGS+="--cfg=emulated"
       declare -rx RUSTFLAGS
+      declare -rx BOLERO_RANDOM_TEST_TIME_MS="${bolero_test_time_ms}"
       declare -a cmd=("nice" "-n" "19" "cargo" "miri" "nextest" "run" "--profile=miri" "--target=${target}")
       if [ "${cores}" != "0" ]; then
         # nextest defaults --test-threads to the core count; the miri profile
