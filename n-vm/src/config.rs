@@ -764,6 +764,14 @@ pub(crate) fn build_kernel_cmdline(
         format!("{key}={path} ", key = n_vm_protocol::CMDLINE_CORPUS_MOUNT)
     });
 
+    // `sysctl.debug.exception-trace=1` makes the kernel report a userspace
+    // fault -- faulting PC, SP and address -- instead of killing the process
+    // silently.  It defaults to 0 (`show_unhandled_signals` in
+    // arch/arm64/kernel/traps.c), which meant a test binary taking SIGSEGV
+    // in the guest produced no diagnostic at all: `n-it` could say only
+    // "main process exited with failure status signal: 11".  A VM that
+    // exists to run tests should say why one died.
+    //
     // How the kernel is told to find its root.
     //
     // A direct boot names the virtiofs share and the init to exec once it
@@ -790,6 +798,7 @@ pub(crate) fn build_kernel_cmdline(
         "{iommu_params} \
          {noiommu_fragment}\
          {console_params} \
+         sysctl.debug.exception-trace=1 \
          ro \
          {root_params} \
          {hugepage_fragment}\
