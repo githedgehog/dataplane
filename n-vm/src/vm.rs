@@ -322,19 +322,38 @@ impl<B: HypervisorBackend> TestVm<B> {
             //
             // Every binary the guest runs -- `ld.so`, `libc`, the test
             // binary itself -- is mmapped from this share, and there is no
-            // DAX window (CONFIG_FUSE_DAX is off), so those mappings are
-            // served out of the guest page cache over FUSE.  Under `auto`
-            // the guest re-validates and drops cached pages on a timeout,
-            // and an aarch64 guest then executes and dereferences stale or
-            // partially-filled pages: garbage relocations, pointers with
-            // their low word zeroed, jumps into `.rodata`.  It reproduced
-            // 5/5 and was independent of the guest kernel config.
+            // DAX window, so those mappings are served out of the guest page
+            // cache over FUSE.  An aarch64 guest then executes and
+            // dereferences stale or partially-filled pages: garbage
+            // relocations, pointers with their low word zeroed, jumps into
+            // `.rodata`.  It reproduced 5/5 and was independent of the guest
+            // kernel config.
             //
-            // `always` tells the guest its page cache is authoritative and
-            // suppresses that revalidation.  Sound here because the share is
-            // read-only for the guest *and* immutable on the host: it is a
-            // /nix/store closure plus the workspace, neither of which
-            // changes while a VM is up.
+            // `always` is not a preference among several working settings.
+            // It is the only one that works.  Swept on aarch64, one test per
+            // policy, everything else held fixed:
+            //
+            //     auto      guest faults (DABT)   <- virtiofsd's default
+            //     always    passes
+            //     never     guest faults (DABT)
+            //     metadata  guest faults (DABT)
+            //
+            // So the trigger is not specifically `auto`'s timeout-driven
+            // revalidation: `never` and `metadata` do not cache file
+            // contents in the guest at all, and fail the same way.  What the
+            // three failing policies share is that a file page can have to
+            // be fetched more than once.  `always` tells the guest its page
+            // cache is authoritative, so a page is read once and never
+            // refilled -- and refilling is what goes wrong.
+            //
+            // Sound here because the share is read-only for the guest *and*
+            // immutable on the host: a /nix/store closure plus the
+            // workspace, neither of which changes while a VM is up.
+            //
+            // All four policies pass on x86_64, which is why this went
+            // unnoticed: the fault is on the guest side of a path only the
+            // emulated guest takes.  Do not relax this without re-running
+            // that sweep on aarch64.
             //
             // Only the read-only share.  The corpus share is writable and
             // must stay coherent with the host that reads results back
