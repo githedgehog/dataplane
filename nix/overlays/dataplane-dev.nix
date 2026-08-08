@@ -306,6 +306,13 @@ in
     extractIkconfig = "${final.linux-fancy.src}/scripts/extract-ikconfig";
   };
 
+  # A pinned Ubuntu kernel, repackaged into the same layout.  Not a second
+  # copy of the Flatcar test: this one exists to find out whether the harness
+  # is distro-agnostic or merely Flatcar-shaped.  Needs no `extractIkconfig`
+  # -- Ubuntu does not set `CONFIG_IKCONFIG`, so its config comes from a
+  # separate package instead of from the image.
+  ubuntu-kernel = final.callPackage ../pkgs/ubuntu { };
+
   # The default guest kernel: everything built in, no modules at all.
   linux-fancy = final.mkLinuxFancy { };
 
