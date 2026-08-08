@@ -219,6 +219,30 @@ let
   # referenced by each.
   union-kernel-dir = "union";
 
+  # Directory for the deliberately-modular kernel (see modular.config).
+  modular-kernel-dir = "modular";
+
+  # Every guest kernel that gets installed, keyed by its artifact directory.
+  #
+  # Keyed by *kernel* rather than by profile because several profiles can
+  # share one: the image is installed once and referenced by each.  `boot`
+  # is a property of the kernel, not of the profile -- it follows from
+  # whether that kernel can reach its own root.
+  guest-kernels = {
+    ${union-kernel-dir} = {
+      drv = pkgs.linux-fancy;
+      boot = "direct";
+      initramfs = null;
+      modules = null;
+    };
+    ${modular-kernel-dir} = {
+      drv = pkgs.linux-fancy-modular;
+      boot = "initramfs";
+      initramfs = initramfs-modular;
+      modules = pkgs.linux-fancy-modular.modules;
+    };
+  };
+
   # The environments a test can run in.
   #
   # A profile is a (kernel, hypervisor) pair.  Today they differ only in
@@ -239,6 +263,14 @@ let
       hypervisor = "qemu";
       kernel-dir = union-kernel-dir;
     };
+    # The modular kernel, whose virtiofs is a module, so it can only be
+    # reached through an initramfs.  QEMU because it is the backend whose
+    # initrd handling we exercise first; a cloud-hypervisor variant is a
+    # one-line addition once that is proven.
+    modular = {
+      hypervisor = "qemu";
+      kernel-dir = modular-kernel-dir;
+    };
   };
 
   # The profile used when a test does not name one.
@@ -254,16 +286,27 @@ let
   # bind-mounted at the container root, so `kernels/` lands at `/kernels`.
   kernel-manifest = builtins.toJSON {
     default = default-kernel-profile;
-    profiles = lib.mapAttrs (_name: profile: {
-      arch = kernel-manifest-arch;
-      inherit (profile) hypervisor;
-      # This kernel has virtiofs built in, so it mounts its own root and
-      # needs no initramfs.  A kernel with virtiofs as a module cannot, and
-      # would be `"initramfs"` here.
-      boot = "direct";
-      kernel = "/kernels/${profile.kernel-dir}/vmlinuz";
-      config = "/kernels/${profile.kernel-dir}/config";
-    }) kernel-profiles;
+    profiles = lib.mapAttrs (
+      _name: profile:
+      let
+        k = guest-kernels.${profile.kernel-dir};
+        dir = "/kernels/${profile.kernel-dir}";
+      in
+      {
+        arch = kernel-manifest-arch;
+        inherit (profile) hypervisor;
+        # `boot` follows from the kernel, not from the profile: it is
+        # "direct" when the kernel can mount its own root, and "initramfs"
+        # when the transport that reaches the root is itself a module.
+        inherit (k) boot;
+        kernel = "${dir}/vmlinuz";
+        config = "${dir}/config";
+      }
+      // lib.optionalAttrs (k.initramfs != null) { initramfs = "${dir}/initramfs"; }
+      // lib.optionalAttrs (k.modules != null) {
+        modules = "${dir}/modules/${k.drv.modDirVersion}";
+      }
+    ) kernel-profiles;
   };
 
   # Minimal derivation containing the bootable kernel image and the
@@ -289,15 +332,29 @@ let
   # from.  A *foreign* kernel has no such derivation and its config is
   # recovered from the image with `extract-ikconfig` instead; both land here
   # under the same name, so nothing downstream has to care which it was.
-  kernel-image = pkgs.runCommand "kernel-image" { } ''
-    mkdir -p $out/kernels/${union-kernel-dir}
-    cp ${pkgs.linux-fancy}/${kernel-image-name} \
-      $out/kernels/${union-kernel-dir}/vmlinuz
-    cp ${pkgs.linux-fancy.configfile} \
-      $out/kernels/${union-kernel-dir}/config
-    cp ${pkgs.writeText "n-vm-manifest.json" kernel-manifest} \
-      $out/n-vm-manifest.json
-  '';
+  kernel-image = pkgs.runCommand "kernel-image" { } (
+    ''
+      mkdir -p $out
+      cp ${pkgs.writeText "n-vm-manifest.json" kernel-manifest} \
+        $out/n-vm-manifest.json
+    ''
+    + lib.concatStrings (
+      lib.mapAttrsToList (dir: k: ''
+        mkdir -p $out/kernels/${dir}
+        cp ${k.drv}/${kernel-image-name} $out/kernels/${dir}/vmlinuz
+        cp ${k.drv.configfile} $out/kernels/${dir}/config
+        ${lib.optionalString (k.initramfs != null) ''
+          cp ${k.initramfs}/initramfs $out/kernels/${dir}/initramfs
+        ''}
+        ${lib.optionalString (k.modules != null) ''
+          mkdir -p $out/kernels/${dir}/modules
+          cp -r ${k.modules}/lib/modules/${k.drv.modDirVersion} \
+            $out/kernels/${dir}/modules/${k.drv.modDirVersion}
+          chmod -R u+w $out/kernels/${dir}/modules
+        ''}
+      '') guest-kernels
+    )
+  );
 
   # Builds the initramfs for a kernel whose boot-critical drivers are
   # modules.
@@ -399,6 +456,34 @@ let
 
         cp "$root/modules.load" $out/modules.load
       '';
+
+  # The pre-init, linked statically.
+  #
+  # It runs as PID 1 before /nix/store is mounted, so it cannot be
+  # dynamically linked: its ELF interpreter would name a path that does not
+  # exist yet, and the kernel would fail to exec it.
+  #
+  # Two things are needed and neither is the default.  `+crt-static` asks
+  # for a static link; glibc's static archives then have to be found, and
+  # they live in a *separate output* that is not part of the sysroot -- so
+  # without the library path the link fails on `-lc` and friends.
+  #
+  # `overrideAttrs` rather than an argument to `workspace-builder` because
+  # `args` is merged with `//`, which would replace the whole `env` attrset
+  # rather than adding to it, discarding the sysroot and toolchain settings
+  # every other crate depends on.
+  n-preinit-static = workspace."n-preinit".overrideAttrs (orig: {
+    env = orig.env // {
+      RUSTFLAGS = "${orig.env.RUSTFLAGS} -Ctarget-feature=+crt-static";
+      LIBRARY_PATH = "${pkgs.pkgsHostHost.glibc.static}/lib:${orig.env.LIBRARY_PATH}";
+    };
+  });
+
+  # The initramfs for the modular kernel.
+  initramfs-modular = mk-initramfs {
+    kernel = pkgs.linux-fancy-modular;
+    pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+  };
 
   # The QEMU system emulator for the test VM, always a build-native (host
   # CI arch) binary that runs in the Docker container.
