@@ -55,6 +55,9 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 [dev-dependencies]
 # internal
 dpdk = { workspace = true, features = ["test"] } # EAL for tests that build the rte_acl-backed ACL filter and flow-filter context
