@@ -215,6 +215,34 @@ impl KernelManifest {
             })
     }
 
+    /// The profile this invocation should use.
+    ///
+    /// [`ENV_PROFILE`] overrides the manifest's `default`, which is how a
+    /// whole run is pointed at a different environment
+    /// (`N_VM_PROFILE=qemu cargo test`) without editing any test.  An
+    /// unset variable, or an empty one, falls back to the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KernelManifestError::UnknownProfile`] if the variable names
+    /// a profile that does not exist -- a typo there would otherwise
+    /// silently run the default environment while appearing to select
+    /// another, which is the one outcome worth failing over.
+    pub fn selected(&self) -> Result<(&str, &KernelProfile), KernelManifestError> {
+        match std::env::var(n_vm_protocol::ENV_PROFILE) {
+            Ok(name) if !name.is_empty() => {
+                let profile = self.profile(&name)?;
+                let key = self
+                    .profiles
+                    .get_key_value(&name)
+                    .map(|(k, _)| k.as_str())
+                    .expect("profile() succeeded, so the key is present");
+                Ok((key, profile))
+            }
+            _ => self.default_profile(),
+        }
+    }
+
     /// The default profile and its name.
     ///
     /// # Errors
