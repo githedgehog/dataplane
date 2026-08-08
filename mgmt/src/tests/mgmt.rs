@@ -875,3 +875,167 @@ mod dataplane_tables {
         drive(NatFlavour::None);
     }
 }
+
+/// The property the whole validation chain exists for.
+///
+/// The validator ships as a wasm module in a process of its own. Its entire surface is
+///
+/// ```text
+/// ExternalConfig::try_from(&crd)?.validate()?
+/// ```
+///
+/// -- convert, then validate, and nothing else. If it blesses a configuration, that process writes
+/// the configuration to Kubernetes. The dataplane runs the same two steps later, but it has no way to
+/// tell anyone that something is wrong: by then the configuration is already the desired state.
+///
+/// So the requirement is not "the dataplane reports bad configurations well". It is:
+///
+/// > **anything the validator accepts must be enactable.**
+///
+/// A validator that is too strict is a nuisance -- the user sees an error and fixes their input. A
+/// validator that is too permissive is unrecoverable, and every check that lives only in a
+/// downstream builder is exactly that kind of gap. Nothing downstream of `validate` can help.
+///
+/// A panic is the same failure in a different coat: in wasm it traps, so the calling process gets a
+/// failure with no `ValidateError` in it and the user gets nothing to act on.
+///
+/// The generator here is the near-miss one: a legal configuration with **one** rule deliberately
+/// broken, which is the input most likely to slip past. The valid-by-construction properties
+/// elsewhere test everything downstream of validation; these test validation itself.
+#[cfg(test)]
+mod validator_completeness {
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::mutate::{MutatedAgents, Mutation};
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::NatTablesWriter;
+    use nat::static_nat::setup::build_nat_configuration;
+    use routing::Render;
+
+    use crate::processor::confbuild::internal::build_internal_config;
+
+    /// Exactly what the wasm validator does, and nothing more.
+    fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
+        // The conversion's error type is not `ConfigError`, and a conversion failure is a rejection
+        // just as much as a validation failure is, so it is folded in here.
+        let external = ExternalConfig::try_from(crd)
+            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
+        external.validate()
+    }
+
+    /// Everything the dataplane has to be able to do with a blessed configuration.
+    ///
+    /// Any error here is the failure this module exists to find: the validator said yes and the
+    /// dataplane cannot comply, with nowhere to report it.
+    fn enact(validated: &ValidatedGwConfig, mutation: Mutation) {
+        let genid = validated.genid();
+
+        let internal = build_internal_config(validated, None).unwrap_or_else(|e| {
+            panic!("{mutation:?}: validator accepted a config the builder rejects: {e}")
+        });
+        let _ = internal.render(&genid).to_string();
+
+        let vpc_table = validated.external().overlay().vpc_table();
+
+        let nat_tables = build_nat_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("{mutation:?}: validator accepted a config static NAT rejects: {e}")
+        });
+        NatTablesWriter::new().update_nat_tables(nat_tables);
+
+        let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
+        NatAllocatorWriter::new().update_nat_allocator(masquerade, &FlowTable::new(16));
+
+        let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("{mutation:?}: validator accepted a config port forwarding rejects: {e}")
+        });
+        PortFwTableWriter::new()
+            .update_table(&ruleset)
+            .unwrap_or_else(|e| {
+                panic!("{mutation:?}: validator accepted a ruleset the table rejects: {e}")
+            });
+    }
+
+    /// Whatever the validator accepts, the dataplane can enact.
+    ///
+    /// Also: it never panics, since reaching the assertions at all means it returned. In wasm a panic
+    /// is a trap, so it is a rejection with no reason attached -- worse for the user than any error.
+    #[test]
+    fn whatever_the_validator_accepts_can_be_enacted() {
+        // What each mutation did, so the run can say whether the generator is doing any work: how
+        // often it was drawn, how often it found a target, and how often the result was refused.
+        // Counters per mutation rather than a map behind a lock, since a lock is not wanted here.
+        const N: usize = Mutation::COUNT;
+        #[allow(clippy::declare_interior_mutable_const)]
+        const ZERO: AtomicUsize = AtomicUsize::new(0);
+        static DRAWN: [AtomicUsize; N] = [ZERO; N];
+        static APPLIED: [AtomicUsize; N] = [ZERO; N];
+        static REFUSED: [AtomicUsize; N] = [ZERO; N];
+
+        bolero::check!()
+            .with_generator(MutatedAgents::default())
+            .cloned()
+            .for_each(|(mutation, bit, agent): (Mutation, bool, GatewayAgent)| {
+                let outcome = validator(&agent);
+                let accepted = outcome.is_ok();
+
+                if let Ok(validated) = &outcome {
+                    enact(validated, mutation);
+                } else if let Err(e) = &outcome {
+                    // A rejection has to say something the user can act on. An internal failure says
+                    // "this is our bug", which is not something anyone can fix from the outside.
+                    assert!(
+                        !matches!(e, ConfigError::InternalFailure(_)),
+                        "{mutation:?}: rejected with an internal failure, which tells the user \
+                         nothing they can act on: {e}"
+                    );
+                }
+
+                let slot = mutation.index();
+                DRAWN[slot].fetch_add(1, Ordering::Relaxed);
+                if bit {
+                    APPLIED[slot].fetch_add(1, Ordering::Relaxed);
+                }
+                if !accepted {
+                    REFUSED[slot].fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let mut total_applied = 0;
+        let mut total_refused = 0;
+        for mutation in Mutation::all() {
+            let slot = mutation.index();
+            let drawn = DRAWN[slot].load(Ordering::Relaxed);
+            let applied = APPLIED[slot].load(Ordering::Relaxed);
+            let refused = REFUSED[slot].load(Ordering::Relaxed);
+            println!("{mutation:<32?} {drawn:>7} drawn {applied:>7} applied {refused:>7} refused");
+            assert!(drawn > 0, "{mutation:?} was never drawn");
+            if mutation != Mutation::None {
+                total_applied += applied;
+                total_refused += refused;
+            }
+        }
+
+        // The control must rarely be refused: if a legal configuration is usually rejected, the
+        // mutated ones are being rejected for the wrong reasons and this checks little.
+        let control = Mutation::None.index();
+        let drawn = DRAWN[control].load(Ordering::Relaxed);
+        let refused = REFUSED[control].load(Ordering::Relaxed);
+        assert!(
+            refused * 4 <= drawn,
+            "the unmutated control was refused {refused} times in {drawn}: the near-miss generator \
+             is not starting from legal configurations"
+        );
+
+        // And a mutation that finds a target should usually be refused. This does not have to hold
+        // case by case -- `DemandFlowScope` on a peering that *is* stateful throughout is legal --
+        // but a mutation that has quietly stopped breaking anything shows up here.
+        assert!(
+            total_applied > 0 && total_refused * 2 >= total_applied,
+            "only {total_refused} of {total_applied} applied mutations were refused: the near-miss \
+             generator is mostly producing legal configurations"
+        );
+    }
+}
