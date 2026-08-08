@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use n_vm::{GuestHugePageConfig, GuestHugePageSize, HostPageSize, VmConfig};
+
 fn hugepages_total() -> u64 {
     std::fs::read_to_string("/proc/meminfo")
         .unwrap()
@@ -10,6 +12,53 @@ fn hugepages_total() -> u64 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
 }
+
+// -- Configurations under test ----------------------------------------
+//
+// Named once and shared, which is most of the point: the same VM shape can
+// be exercised on both backends without restating it, and the names say what
+// each one is for at the call site.
+
+/// A virtual IOMMU.  Both backends support one; only the aarch64 *guest*
+/// lacks a lowering, which the container tier resolves to a skip.
+const IOMMU_VM: VmConfig = VmConfig {
+    iommu: true,
+    ..VmConfig::DEFAULT
+};
+
+/// Standard 4 KiB host pages, so the VM needs no hugetlbfs reservation on
+/// the host.
+const HOST_4K_VM: VmConfig = VmConfig {
+    host_page_size: HostPageSize::Standard,
+    ..VmConfig::DEFAULT
+};
+
+/// No guest hugepage reservation at all.
+const NO_GUEST_HUGEPAGES_VM: VmConfig = VmConfig {
+    guest_hugepages: GuestHugePageConfig::None,
+    ..VmConfig::DEFAULT
+};
+
+/// 64 x 2 MiB guest hugepages.
+const GUEST_2M_HUGEPAGES_VM: VmConfig = VmConfig {
+    guest_hugepages: GuestHugePageConfig::Allocate {
+        size: GuestHugePageSize::Huge2M,
+        count: 64,
+    },
+    ..VmConfig::DEFAULT
+};
+
+/// 4 KiB host pages *and* 64 x 2 MiB guest hugepages -- the guest can back
+/// hugepages that the host is not itself backing with hugepages.
+const HOST_4K_GUEST_2M_VM: VmConfig = VmConfig {
+    host_page_size: HostPageSize::Standard,
+    guest_hugepages: GuestHugePageConfig::Allocate {
+        size: GuestHugePageSize::Huge2M,
+        count: 64,
+    },
+    iommu: true,
+    ..VmConfig::DEFAULT
+};
 
 #[n_vm::test]
 fn test_which_runs_in_vm() {
@@ -41,32 +90,27 @@ fn tmp_filesystem_in_vm_is_read_write() {
     std::fs::File::create_new("/tmp/some.file").unwrap();
 }
 
-#[n_vm::test]
-#[hypervisor(iommu)]
+#[n_vm::test(config = IOMMU_VM)]
 fn test_which_runs_in_vm_with_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-#[n_vm::test(qemu)]
-#[hypervisor(iommu)]
+#[n_vm::test(qemu, config = IOMMU_VM)]
 fn test_which_runs_in_vm_with_qemu_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-#[n_vm::test]
-#[hypervisor(host_pages = "4k")]
+#[n_vm::test(config = HOST_4K_VM)]
 fn vm_boots_with_standard_host_pages() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-#[n_vm::test(qemu)]
-#[hypervisor(host_pages = "4k")]
+#[n_vm::test(qemu, config = HOST_4K_VM)]
 fn vm_boots_with_standard_host_pages_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-#[n_vm::test]
-#[guest(hugepage_size = "none")]
+#[n_vm::test(config = NO_GUEST_HUGEPAGES_VM)]
 fn vm_boots_without_guest_hugepages() {
     assert_eq!(
         hugepages_total(),
@@ -75,8 +119,7 @@ fn vm_boots_without_guest_hugepages() {
     );
 }
 
-#[n_vm::test]
-#[guest(hugepage_size = "2m", hugepage_count = 64)]
+#[n_vm::test(config = GUEST_2M_HUGEPAGES_VM)]
 fn vm_boots_with_2m_guest_hugepages() {
     assert_eq!(
         hugepages_total(),
@@ -85,9 +128,7 @@ fn vm_boots_with_2m_guest_hugepages() {
     );
 }
 
-#[n_vm::test(qemu)]
-#[hypervisor(iommu, host_pages = "4k")]
-#[guest(hugepage_size = "2m", hugepage_count = 64)]
+#[n_vm::test(qemu, config = HOST_4K_GUEST_2M_VM)]
 async fn vm_boots_with_4k_host_and_2m_guest_hugepages_on_qemu() {
     assert_eq!(
         hugepages_total(),
