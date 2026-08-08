@@ -95,18 +95,46 @@ pub(crate) async fn check_kvm_accessible() -> Result<(), VmError> {
 pub(crate) async fn check_hugepages_accessible(
     host_page_size: config::HostPageSize,
 ) -> Result<(), VmError> {
-    if !host_page_size.requires_hugepages() {
+    let Some(pool) = host_page_size.pool_dir() else {
         return Ok(());
+    };
+
+    // The *pool*, not `/dev/hugepages`.
+    //
+    // Both backends allocate through `memfd` with `MFD_HUGE_*` now, so no
+    // hugetlbfs mount is involved at all.  The old check tested whether that
+    // mount existed, which passed happily on a host whose pool was empty --
+    // precisely the case it was supposed to catch, and one that surfaced
+    // instead as `unable to map backing store for guest RAM` from deep
+    // inside QEMU.
+    let free_path = format!("{pool}/free_hugepages");
+    let free = match tokio::fs::read_to_string(&free_path).await {
+        Ok(contents) => contents.trim().parse::<u64>().unwrap_or(0),
+        Err(err) => {
+            return Err(VmError::HugepagesNotAccessible(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "cannot read {free_path}: {err}; this kernel may not support \
+                     {size}-byte hugepages",
+                    size = host_page_size.bytes(),
+                ),
+            )));
+        }
+    };
+
+    let page = host_page_size.bytes();
+    let needed = (config::VM_MEMORY_BYTES + page - 1) / page;
+    if (free as i64) < needed {
+        return Err(VmError::HugepagesNotAccessible(std::io::Error::other(
+            format!(
+                "the {size}-byte hugepage pool has {free} free page(s); this VM needs \
+                 {needed}.  Reserve them on the host, e.g. \
+                 `echo {needed} > {pool}/nr_hugepages`",
+                size = host_page_size.bytes(),
+            ),
+        )));
     }
-    match tokio::fs::try_exists("/dev/hugepages").await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(VmError::HugepagesNotAccessible(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "/dev/hugepages does not exist; ensure hugetlbfs is mounted on the host \
-             and propagated into the container",
-        ))),
-        Err(err) => Err(VmError::HugepagesNotAccessible(err)),
-    }
+    Ok(())
 }
 
 /// Collected stdout and stderr from a child process.
