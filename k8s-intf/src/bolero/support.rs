@@ -429,8 +429,68 @@ pub mod blocks {
     use bolero::Driver;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    pub const MIN_V4_LEN: u8 = 16;
-    pub const MIN_V6_LEN: u8 = 48;
+    pub const SLOT_V4_LEN: u8 = 20;
+    pub const SLOT_V6_LEN: u8 = 48;
+    pub const MIN_V4_LEN: u8 = SLOT_V4_LEN;
+    pub const MIN_V6_LEN: u8 = SLOT_V6_LEN;
+
+    pub const SUBNET_SLOTS: u8 = 16;
+
+    fn subnet_region_len(family: AddressFamily) -> u8 {
+        let exponent = u8::try_from(SUBNET_SLOTS.trailing_zeros()).unwrap_or(0);
+        min_len(family) - exponent
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct At {
+        pub slot: u8,
+        pub sub: u8,
+        pub subs: u8,
+    }
+
+    impl At {
+        #[must_use]
+        pub fn whole(slot: u8) -> Self {
+            Self {
+                slot,
+                sub: 0,
+                subs: 1,
+            }
+        }
+
+        #[must_use]
+        pub fn nth(slot: u8, sub: u8, subs: u8) -> Self {
+            Self {
+                slot,
+                sub,
+                subs: subs.max(sub.saturating_add(1)),
+            }
+        }
+
+        fn sub_bits(self) -> u8 {
+            u8::try_from(self.subs.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0)
+        }
+
+        fn level(self, family: AddressFamily) -> u8 {
+            min_len(family)
+                .saturating_add(self.sub_bits())
+                .min(max_len(family))
+        }
+
+        fn place(self, family: AddressFamily, block_base: u128, slot_index: u32) -> (u128, u8) {
+            let width = max_len(family);
+            let level = self.level(family);
+            let slot = u128::from(slot_index) << (width - min_len(family));
+            let sub_mask = (1u128 << self.sub_bits()) - 1;
+            let sub = (u128::from(self.sub) & sub_mask) << (width - level);
+            (block_base | slot | sub, level)
+        }
+    }
+
+    #[must_use]
+    pub fn min_len_at(family: AddressFamily, at: At) -> u8 {
+        at.level(family)
+    }
 
     fn v4(base: u32, block_len: u8, host: u32, len: u8) -> String {
         let block_host_bits = 32 - block_len;
@@ -456,30 +516,33 @@ pub mod blocks {
         format!("{}/{len}", Ipv6Addr::from(addr))
     }
 
-    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
+        let slot = u32::from(SUBNET_SLOTS) + u32::from(at.slot);
         Some(if family.is_v4() {
-            v4(0x0A00_0000, 8, d.produce::<u32>()?, len)
+            let (base, level) = at.place(family, 0x0A00_0000, slot);
+            v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
         } else {
-            v6(
-                0x2001_0db8_0000_0000_0000_0000_0000_0000,
-                33,
-                d.produce::<u128>()?,
-                len,
-            )
+            let (base, level) = at.place(family, 0x2001_0db8_0000_0000_0000_0000_0000_0000, slot);
+            v6(base, level, d.produce::<u128>()?, len)
         })
     }
 
-    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, len: u8) -> Option<String> {
+    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
+        let slot = u32::from(at.slot);
         Some(if family.is_v4() {
-            v4(0xAC10_0000, 12, d.produce::<u32>()?, len)
+            let (base, level) = at.place(family, 0xAC10_0000, slot);
+            v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
         } else {
-            v6(
-                0x2001_0db8_8000_0000_0000_0000_0000_0000,
-                33,
-                d.produce::<u128>()?,
-                len,
-            )
+            let (base, level) = at.place(family, 0x2001_0db8_8000_0000_0000_0000_0000_0000, slot);
+            v6(base, level, d.produce::<u128>()?, len)
         })
+    }
+
+    #[must_use]
+    pub fn min_subnet_len(family: AddressFamily, count: u16) -> u8 {
+        let region = subnet_region_len(family);
+        let bits = u8::try_from(count.next_power_of_two().trailing_zeros()).unwrap_or(u8::MAX);
+        region.saturating_add(bits).min(max_len(family))
     }
 
     pub fn private_run<D: Driver>(
@@ -491,9 +554,12 @@ pub mod blocks {
         if count == 0 {
             return Some(Vec::new());
         }
+        let region = u32::from(subnet_region_len(family));
         let mut out = Vec::with_capacity(usize::from(count));
         if family.is_v4() {
-            let slots = 1u32.checked_shl(u32::from(len) - 8).unwrap_or(u32::MAX);
+            let slots = 1u32
+                .checked_shl(u32::from(len) - region)
+                .unwrap_or(u32::MAX);
             let first = d.produce::<u32>()? % slots;
             let shift = u32::from(32 - len);
             for i in 0..u32::from(count) {
@@ -502,7 +568,9 @@ pub mod blocks {
                 out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
             }
         } else {
-            let slots = 1u128.checked_shl(u32::from(len) - 33).unwrap_or(u128::MAX);
+            let slots = 1u128
+                .checked_shl(u32::from(len) - region)
+                .unwrap_or(u128::MAX);
             let first = d.produce::<u128>()? % slots;
             let shift = u32::from(128 - len);
             for i in 0..u128::from(count) {

@@ -48,8 +48,6 @@ impl ValueGenerator for VpcGenerator<'_> {
         let internal_id = generate_internal_id(d)?;
         let vni = d.produce::<Vni>()?;
 
-        let v4_masklen = d.gen_u8(Bound::Included(&blocks::MIN_V4_LEN), Bound::Included(&32))?;
-        let v6_masklen = d.gen_u8(Bound::Included(&blocks::MIN_V6_LEN), Bound::Included(&128))?;
         let num_v4_cidrs = if self.wants(AddressFamily::V4) {
             u16::from(d.gen_u8(Bound::Included(&0), Bound::Included(&self.max_subnets))?)
         } else {
@@ -60,6 +58,15 @@ impl ValueGenerator for VpcGenerator<'_> {
         } else {
             0
         };
+
+        let v4_masklen = d.gen_u8(
+            Bound::Included(&blocks::min_subnet_len(AddressFamily::V4, num_v4_cidrs)),
+            Bound::Included(&32),
+        )?;
+        let v6_masklen = d.gen_u8(
+            Bound::Included(&blocks::min_subnet_len(AddressFamily::V6, num_v6_cidrs)),
+            Bound::Included(&128),
+        )?;
 
         let subnets_cidrs = vec![
             blocks::private_run(d, AddressFamily::V4, v4_masklen, num_v4_cidrs)?,
