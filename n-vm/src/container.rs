@@ -270,6 +270,14 @@ impl ContainerParams {
                         .filter(|v| !v.is_empty())
                         .map(|v| format!("{}={v}", n_vm_protocol::ENV_PROFILE)),
                 )
+                // Same "only when set" discipline: virtiofsd runs in this
+                // tier, so the override has to reach it here.
+                .chain(
+                    std::env::var(n_vm_protocol::ENV_VIRTIOFS_CACHE)
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                        .map(|v| format!("{}={v}", n_vm_protocol::ENV_VIRTIOFS_CACHE)),
+                )
                 .collect(),
             ),
             user: Some("0:0".into()),
