@@ -870,13 +870,26 @@ mod validator_completeness {
                 }
             });
 
+        #[cfg(fuzzing)]
+        println!("under a coverage-guided engine: skipping the generator-health checks");
+
+        #[cfg(not(fuzzing))]
+        check_generator_health(&DRAWN, &APPLIED, &REFUSED);
+    }
+
+    #[cfg(not(fuzzing))]
+    fn check_generator_health(
+        drawn_at: &[AtomicUsize; Mutation::COUNT],
+        applied_at: &[AtomicUsize; Mutation::COUNT],
+        refused_at: &[AtomicUsize; Mutation::COUNT],
+    ) {
         let mut total_applied = 0;
         let mut total_refused = 0;
         for mutation in Mutation::all() {
             let slot = mutation.index();
-            let drawn = DRAWN[slot].load(Ordering::Relaxed);
-            let applied = APPLIED[slot].load(Ordering::Relaxed);
-            let refused = REFUSED[slot].load(Ordering::Relaxed);
+            let drawn = drawn_at[slot].load(Ordering::Relaxed);
+            let applied = applied_at[slot].load(Ordering::Relaxed);
+            let refused = refused_at[slot].load(Ordering::Relaxed);
             println!("{mutation:<32?} {drawn:>7} drawn {applied:>7} applied {refused:>7} refused");
             assert!(drawn > 0, "{mutation:?} was never drawn");
             if mutation != Mutation::None {
@@ -886,8 +899,8 @@ mod validator_completeness {
         }
 
         let control = Mutation::None.index();
-        let drawn = DRAWN[control].load(Ordering::Relaxed);
-        let refused = REFUSED[control].load(Ordering::Relaxed);
+        let drawn = drawn_at[control].load(Ordering::Relaxed);
+        let refused = refused_at[control].load(Ordering::Relaxed);
         assert!(
             refused * 4 <= drawn,
             "the unmutated control was refused {refused} times in {drawn}: the near-miss generator \
