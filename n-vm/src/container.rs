@@ -873,39 +873,24 @@ impl Drop for ContainerGuard<'_> {
     }
 }
 
-/// Reports why the selected kernel profile does not suit `backend`, or
-/// `None` when it does.
+/// The hypervisor the selected kernel profile runs on.
 ///
-/// Reads the manifest from `testroot` on the host.  A manifest that cannot
-/// be read is *not* treated as a mismatch: the container tier reads the same
-/// file and reports that failure with a better path, and skipping here would
-/// disguise a broken `testroot` as a routine environment mismatch.
-fn profile_mismatch(
-    roots: &n_vm_protocol::ScratchRoots,
-    backend: EffectiveBackend,
-) -> Result<Option<String>, ContainerError> {
+/// `None` when it cannot be determined -- an unreadable or malformed
+/// manifest -- which is deliberately *not* treated as a mismatch.  The
+/// container tier reads the same file and reports that failure with a far
+/// better message; skipping here would disguise a broken `testroot` as a
+/// routine environment mismatch.
+///
+/// Read from `testroot` on the host because this is the last tier where a
+/// skip can still be expressed; inside the container the only outcomes left
+/// are pass and fail.
+fn profile_backend(roots: &n_vm_protocol::ScratchRoots) -> Option<EffectiveBackend> {
     let path = roots
         .test_root
         .join(n_vm_protocol::KERNEL_MANIFEST_PATH.trim_start_matches('/'));
-    let Ok(manifest) = crate::kernel_manifest::KernelManifest::load_from(&path) else {
-        return Ok(None);
-    };
-    let Ok((name, profile)) = manifest.selected() else {
-        return Ok(None);
-    };
-    let Ok(profile_backend) = profile.backend(name) else {
-        return Ok(None);
-    };
-
-    if profile_backend == backend {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "kernel profile `{name}` runs on {profile_hv}, but this test resolved \
-         to {backend:?}; select a matching profile with {env}=<name>",
-        profile_hv = profile.hypervisor,
-        env = n_vm_protocol::ENV_PROFILE,
-    )))
+    let manifest = crate::kernel_manifest::KernelManifest::load_from(&path).ok()?;
+    let (name, profile) = manifest.selected().ok()?;
+    profile.backend(name).ok()
 }
 
 /// Launches a Docker container and re-runs the current test binary inside it.
@@ -956,26 +941,16 @@ pub fn run_test_in_vm<F: FnOnce()>(
         let daemon_arch = query_daemon_arch(&client).await?;
         let cross = is_cross_arch(&daemon_arch, std::env::consts::ARCH);
         let needs_qemu = vm_config.nic_model.requires_qemu();
-        let (backend, accel) = match requested.resolve(cross, needs_qemu) {
+        // The selected profile decides the hypervisor unless the test asked
+        // for a specific one.  Read here rather than in the container tier
+        // because this is the last place a skip can be expressed.
+        let profile = profile_backend(&params.scratch_roots);
+        let (backend, accel) = match requested.resolve(cross, needs_qemu, profile) {
             BackendResolution::Run { backend, accel } => (backend, accel),
             BackendResolution::Skip { reason } => {
                 return Ok(ContainerOutcome::Skipped { reason });
             }
         };
-
-        // A profile names the environment for the whole run, so a test that
-        // resolved to a different hypervisor does not belong in it.  Skip
-        // rather than fail: "this test does not suit this environment" is a
-        // fact about the pairing, not a defect in either.
-        //
-        // Checked here rather than in the container tier because this is
-        // where a skip can still be expressed -- once inside the container
-        // the only outcomes left are pass and fail.  The manifest is read
-        // from `testroot` on the host; the container tier reads the same
-        // file from its own mount point.
-        if let Some(skip) = profile_mismatch(&params.scratch_roots, backend)? {
-            return Ok(ContainerOutcome::Skipped { reason: skip });
-        }
 
         // Skip a test that requests a capability the guest ISA can't
         // provide (rather than panicking deep in launch).  The guest ISA is
