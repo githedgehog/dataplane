@@ -1098,3 +1098,146 @@ mod ambiguity {
         );
     }
 }
+
+mod relevance {
+    use super::enacted::{Artifacts, validator};
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use k8s_intf::bolero::mutate::Mutation;
+    use k8s_intf::bolero::reduce::{Dropped, ReducedAgents};
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+
+    fn handled_here(agent: &GatewayAgent, peering: &str) -> bool {
+        let Some(name) = agent.metadata.name.as_deref() else {
+            return false;
+        };
+        let Some(group) = agent
+            .spec
+            .peerings
+            .as_ref()
+            .and_then(|peerings| peerings.get(peering))
+            .and_then(|peering| peering.gateway_group.as_deref())
+        else {
+            return false;
+        };
+        agent
+            .spec
+            .groups
+            .as_ref()
+            .and_then(|groups| groups.get(group))
+            .and_then(|group| group.members.as_ref())
+            .is_some_and(|members| members.iter().any(|m| m.name == name))
+    }
+
+    fn difference(left: &[String], right: &[String]) -> Option<String> {
+        if left == right {
+            return None;
+        }
+        let mut out: Vec<String> = Vec::new();
+        for line in left {
+            if !right.contains(line) {
+                out.push(format!("  only with it:    {line}"));
+            }
+        }
+        for line in right {
+            if !left.contains(line) {
+                out.push(format!("  only without it: {line}"));
+            }
+        }
+        out.truncate(10);
+        Some(out.join("\n"))
+    }
+
+    #[test]
+    fn every_expose_leaves_a_trace() {
+        static CHECKED: AtomicUsize = AtomicUsize::new(0);
+        static NOTHING_TO_DROP: AtomicUsize = AtomicUsize::new(0);
+        static REFUSED_WITHOUT: AtomicUsize = AtomicUsize::new(0);
+        static NOT_OURS: AtomicUsize = AtomicUsize::new(0);
+        static TRANSLATING: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(ReducedAgents::new(
+                k8s_intf::bolero::mutate::MutatedAgents::new(
+                    k8s_intf::bolero::crd::GatewayAgentBuilder::new()
+                        .families(vec![k8s_intf::bolero::AddressFamily::V4])
+                        .sizes(4, 3, 4, 3)
+                        .build(),
+                ),
+            ))
+            .cloned()
+            .for_each(
+                |(mutation, agent, reduced, dropped): (
+                    Mutation,
+                    GatewayAgent,
+                    GatewayAgent,
+                    Option<Dropped>,
+                )| {
+                    let Some(dropped) = dropped else {
+                        NOTHING_TO_DROP.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    };
+                    let Ok(whole) = validator(&agent) else {
+                        return;
+                    };
+                    let Ok(less) = validator(&reduced) else {
+                        REFUSED_WITHOUT.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    };
+                    let (Some(with), Some(without)) = (Artifacts::of(&whole), Artifacts::of(&less))
+                    else {
+                        return;
+                    };
+
+                    if !handled_here(&agent, &dropped.peering) {
+                        NOT_OURS.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+
+                    CHECKED.fetch_add(1, Ordering::Relaxed);
+
+                    assert!(
+                        difference(&with.frr, &without.frr).is_some(),
+                        "{mutation:?}: removing {dropped} changed nothing in the routing \
+                         configuration, so the dataplane was never routing it"
+                    );
+
+                    let (table, name) = match dropped.nat {
+                        None => return,
+                        Some("static") => (&with.static_nat, &without.static_nat),
+                        Some("port forwarding") => {
+                            (&with.port_forwarding, &without.port_forwarding)
+                        }
+                        Some("masquerade") => (&with.masquerade, &without.masquerade),
+                        Some(other) => unreachable!("unknown nat mode {other}"),
+                    };
+                    TRANSLATING.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        difference(table, name).is_some(),
+                        "{mutation:?}: removing {dropped} changed nothing in the table for its own \
+                         NAT mode, so that translation was never installed"
+                    );
+                },
+            );
+
+        let checked = CHECKED.load(Ordering::Relaxed);
+        let nothing = NOTHING_TO_DROP.load(Ordering::Relaxed);
+        let refused = REFUSED_WITHOUT.load(Ordering::Relaxed);
+        let not_ours = NOT_OURS.load(Ordering::Relaxed);
+        let translating = TRANSLATING.load(Ordering::Relaxed);
+        println!(
+            "{checked} exposes checked ({translating} of them translating); {nothing} \
+             configurations had nothing to drop, {refused} became illegal without it, {not_ours} \
+             sat in a peering this gateway does not handle"
+        );
+
+        let seen = checked + nothing + refused + not_ours;
+        #[cfg(not(fuzzing))]
+        if seen > 200 {
+            assert!(
+                checked * 40 > seen,
+                "only {checked} of {seen} cases got as far as comparing artifacts: this property has \
+                 become mostly skips"
+            );
+        }
+    }
+}
