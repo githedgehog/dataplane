@@ -2661,51 +2661,168 @@ mod view_mut_properties {
     use crate::headers::{Headers, Net, ShapedHeaders, Transport};
     use crate::vlan::Vlan;
 
-    /// Whatever licensed the unchecked call must be deliverable by the walk that has to deliver it.
+    /// Both walks, at every arity the oracle can express.
     ///
-    /// Checked without calling `look_mut`, so a divergence is a clean counterexample rather than
-    /// undefined behaviour: `as_view_mut` consults `matches`, and the chain below is the same one
-    /// `look_mut` would run, but safely.
-    #[test]
-    fn what_matches_licenses_the_mutable_walk_can_deliver() {
-        bolero::check!()
-            .with_generator(ShapedHeaders)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let licensed = owned.as_view_mut::<(&Eth, &Net, &Transport)>().is_some();
-                let deliverable = owned.pat_mut().eth().net().transport().done().is_some();
-                assert_eq!(
-                    licensed, deliverable,
-                    "`matches` and the mutable walk disagree, so `look_mut` would reach \
-                     `unreachable_unchecked`: {h:?}"
+    /// The decision is what soundness turns on: if `matches` says yes where the walk that must deliver
+    /// says no, `look`/`look_mut` reach `unreachable_unchecked`. So this compares decisions across the
+    /// whole family, for the read path and the mutable path both.
+    ///
+    /// Arity matters because `matches`, `look` and `look_mut` are generated separately for each one, by
+    /// a macro, with the VLAN and extension cursors threaded through by hand every time. Testing two
+    /// arities tested two of eight copies.
+    ///
+    /// Pointer identity -- did the two implementations pick the *same* layer, not merely agree that one
+    /// exists -- is checked separately, at arities 3 and 4, where the tuple can be destructured
+    /// concretely. That is a correctness question rather than a soundness one, so it is checked deeply
+    /// at representative arities rather than shallowly at all of them.
+    macro_rules! arity_agrees {
+        ($read:ident, $mutable:ident, $shape:ty, $($layer:ident),+) => {
+            #[test]
+            fn $read() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator(ShapedHeaders)
+                    .for_each(|h: &Headers| {
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        let licensed = h.as_view::<$shape>().is_some();
+                        if licensed {
+                            HIT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable = h.pat()$(.$layer())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the read walk disagree for ",
+                                stringify!($shape),
+                                ", so `look` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    stringify!($shape),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
                 );
-            });
+            }
+
+            #[test]
+            fn $mutable() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator(ShapedHeaders)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        let licensed = owned.as_view_mut::<$shape>().is_some();
+                        if licensed {
+                            HIT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable = owned.pat_mut()$(.$layer())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the mutable walk disagree for ",
+                                stringify!($shape),
+                                ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    stringify!($shape),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
+                );
+            }
+        };
     }
 
-    /// The same for a shape naming a VLAN tag, where the walks have to agree on how many were consumed.
-    #[test]
-    fn what_matches_licenses_the_mutable_vlan_walk_can_deliver() {
-        bolero::check!()
-            .with_generator(ShapedHeaders)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let licensed = owned
-                    .as_view_mut::<(&Eth, &Vlan, &Net, &Transport)>()
-                    .is_some();
-                let deliverable = owned
-                    .pat_mut()
-                    .eth()
-                    .vlan()
-                    .net()
-                    .transport()
-                    .done()
-                    .is_some();
-                assert_eq!(
-                    licensed, deliverable,
-                    "`matches` and the mutable vlan walk disagree: {h:?}"
-                );
-            });
+    /// Fail nontrivial runs in which the generated shape never matched.
+    fn agreement_is_not_vacuous(shape: &str, seen: usize, hit: usize) {
+        println!("{shape}: matched {hit} of {seen}");
+        // Deliberately short runs skip the vacuity guard.
+        if seen > 500 {
+            assert!(
+                hit > 0,
+                "{shape} never matched in {seen} packets: the two walks agree only because the \
+                 generator cannot produce this shape"
+            );
+        }
     }
+
+    // Every arity from one to seven, which is as far as the oracle reaches.
+    //
+    // `Matcher`'s vocabulary is `eth`, `vlan`, `net`, `transport`, `vxlan` and `embedded`. The last two
+    // are unreachable in a builder chain: `Vxlan: Within<Udp>` and the embedded header sits under
+    // `Icmp4`/`Icmp6`, both *concrete* layers, and `Matcher` has no concrete-layer methods -- no
+    // `.udp()`, no `.tcp()`. So the longest chain it can express is `Eth`, four VLAN tags
+    // (`MAX_VLANS`), `Net`, `Transport`: seven.
+    //
+    // Two gaps follow, and both are about the oracle rather than the code:
+    //
+    //   * the **arity-8** arm of the macro is generated and goes unchecked here, because nothing the
+    //     oracle can say is eight elements long;
+    //   * shapes entering the **IPv6 extension region** cannot be expressed at all, and that is the
+    //     more interesting loss -- `ExtGapCheck` is the subtlest part of the contract, the part the
+    //     module documentation spends most of its words on, and it has no oracle. Closing it means
+    //     either extension-header methods on `Matcher` or a different oracle.
+    arity_agrees!(read_1, mutable_1, (&Eth,), eth);
+    arity_agrees!(read_2, mutable_2, (&Eth, &Net), eth, net);
+    arity_agrees!(
+        read_3,
+        mutable_3,
+        (&Eth, &Net, &Transport),
+        eth,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_4,
+        mutable_4,
+        (&Eth, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_5,
+        mutable_5,
+        (&Eth, &Vlan, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_6,
+        mutable_6,
+        (&Eth, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_7,
+        mutable_7,
+        (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
 
     /// Write through every returned `&mut` so Miri can detect aliasing in [`Fields`](super::pat::Fields).
     fn exercise_the_mutable_split() {
