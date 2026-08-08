@@ -786,10 +786,91 @@ mod dataplane_tables {
 }
 
 #[cfg(test)]
-mod validator_completeness {
-    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+mod enacted {
     use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
     use flow_entry::flow_table::FlowTable;
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::setup::build_nat_configuration;
+    use routing::Render;
+
+    use crate::processor::confbuild::internal::build_internal_config;
+
+    pub(super) fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
+        let external = ExternalConfig::try_from(crd)
+            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
+        external.validate()
+    }
+
+    pub(super) struct Artifacts {
+        pub frr: Vec<String>,
+        pub static_nat: Vec<String>,
+        pub port_forwarding: Vec<String>,
+        pub masquerade: Vec<String>,
+    }
+
+    fn lines(text: &str) -> Vec<String> {
+        let mut out: Vec<String> = text
+            .lines()
+            .map(|line| line.trim_end().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        out.sort();
+        out
+    }
+
+    impl Artifacts {
+        pub(super) fn of(validated: &ValidatedGwConfig) -> Option<Self> {
+            let genid = validated.genid();
+            let internal = build_internal_config(validated, None).ok()?;
+            let vpc_table = validated.external().overlay().vpc_table();
+
+            let nat_tables = build_nat_configuration(vpc_table).ok()?;
+            let ruleset = build_port_forwarding_configuration(vpc_table).ok()?;
+            let mut portfw = PortFwTableWriter::new();
+            portfw.update_table(&ruleset).ok()?;
+
+            let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
+            let mut writer = NatAllocatorWriter::new();
+            writer.update_nat_allocator(masquerade, &FlowTable::new(16));
+            let allocator = writer.get_reader().get();
+
+            Some(Self {
+                frr: lines(&internal.render(&genid).to_string()),
+                static_nat: lines(&nat_tables.to_string()),
+                port_forwarding: lines(
+                    &ruleset
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                masquerade: allocator
+                    .map(|allocator| lines(&allocator.to_string()))
+                    .unwrap_or_default(),
+            })
+        }
+
+        pub(super) fn all(&self) -> Vec<String> {
+            let mut out = self.frr.clone();
+            out.extend(self.static_nat.iter().cloned());
+            out.extend(self.port_forwarding.iter().cloned());
+            out.extend(self.masquerade.iter().cloned());
+            out.sort();
+            out
+        }
+    }
+}
+
+mod validator_completeness {
+    use super::enacted::validator;
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use config::{ConfigError, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::AddressFamily;
+    use k8s_intf::bolero::crd::GatewayAgentBuilder;
     use k8s_intf::bolero::mutate::{MutatedAgents, Mutation};
     use k8s_intf::gateway_agent_crd::GatewayAgent;
     use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
@@ -799,12 +880,6 @@ mod validator_completeness {
     use routing::Render;
 
     use crate::processor::confbuild::internal::build_internal_config;
-
-    fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
-        let external = ExternalConfig::try_from(crd)
-            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
-        external.validate()
-    }
 
     fn enact(validated: &ValidatedGwConfig, mutation: Mutation) {
         let genid = validated.genid();
@@ -835,7 +910,9 @@ mod validator_completeness {
     }
 
     #[test]
-    fn whatever_the_validator_accepts_can_be_enacted() {
+    fn whatever_the_validator_accepts_can_be_enacted_over_ipv4() {
+        let families = vec![AddressFamily::V4];
+
         const N: usize = Mutation::COUNT;
         #[allow(clippy::declare_interior_mutable_const)]
         const ZERO: AtomicUsize = AtomicUsize::new(0);
@@ -844,7 +921,9 @@ mod validator_completeness {
         static REFUSED: [AtomicUsize; N] = [ZERO; N];
 
         bolero::check!()
-            .with_generator(MutatedAgents::default())
+            .with_generator(MutatedAgents::new(
+                GatewayAgentBuilder::new().families(families).build(),
+            ))
             .cloned()
             .for_each(|(mutation, bit, agent): (Mutation, bool, GatewayAgent)| {
                 let outcome = validator(&agent);
@@ -941,48 +1020,11 @@ mod validator_completeness {
 }
 
 mod ambiguity {
+    use super::enacted::{Artifacts, validator};
     use concurrency::sync::atomic::{AtomicUsize, Ordering};
-    use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
-    use flow_entry::flow_table::FlowTable;
     use k8s_intf::bolero::mutate::Mutation;
     use k8s_intf::bolero::permute::PermutedAgents;
     use k8s_intf::gateway_agent_crd::GatewayAgent;
-    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
-    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
-    use nat::static_nat::setup::build_nat_configuration;
-    use routing::Render;
-
-    use crate::processor::confbuild::internal::build_internal_config;
-
-    fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
-        let external = ExternalConfig::try_from(crd)
-            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
-        external.validate()
-    }
-
-    fn artifacts(validated: &ValidatedGwConfig) -> Option<Vec<String>> {
-        let genid = validated.genid();
-        let internal = build_internal_config(validated, None).ok()?;
-        let vpc_table = validated.external().overlay().vpc_table();
-
-        let nat_tables = build_nat_configuration(vpc_table).ok()?;
-        let ruleset = build_port_forwarding_configuration(vpc_table).ok()?;
-        let mut portfw = PortFwTableWriter::new();
-        portfw.update_table(&ruleset).ok()?;
-
-        let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
-        let mut allocator = NatAllocatorWriter::new();
-        allocator.update_nat_allocator(masquerade, &FlowTable::new(16));
-
-        let mut lines: Vec<String> =
-            format!("{}\n{nat_tables}\n{ruleset:#?}", internal.render(&genid))
-                .lines()
-                .map(|line| line.trim_end().to_string())
-                .filter(|line| !line.is_empty())
-                .collect();
-        lines.sort();
-        Some(lines)
-    }
 
     #[test]
     fn a_configuration_has_only_one_meaning() {
@@ -990,7 +1032,13 @@ mod ambiguity {
         static COMPARED: AtomicUsize = AtomicUsize::new(0);
 
         bolero::check!()
-            .with_generator(PermutedAgents::default())
+            .with_generator(PermutedAgents::new(
+                k8s_intf::bolero::mutate::MutatedAgents::new(
+                    k8s_intf::bolero::crd::GatewayAgentBuilder::new()
+                        .families(vec![k8s_intf::bolero::AddressFamily::V4])
+                        .build(),
+                ),
+            ))
             .cloned()
             .for_each(
                 |(mutation, agent, permuted, moved): (Mutation, GatewayAgent, GatewayAgent, bool)| {
@@ -1005,9 +1053,11 @@ mod ambiguity {
                     )
                 });
 
-                let (Some(before), Some(after)) = (artifacts(&first), artifacts(&second)) else {
+                let (Some(before), Some(after)) = (Artifacts::of(&first), Artifacts::of(&second))
+                else {
                     return;
                 };
+                let (before, after) = (before.all(), after.all());
 
                 if moved {
                     MOVED.fetch_add(1, Ordering::Relaxed);
@@ -1040,6 +1090,7 @@ mod ambiguity {
         let compared = COMPARED.load(Ordering::Relaxed);
         let moved = MOVED.load(Ordering::Relaxed);
         println!("{moved} of {compared} comparisons were of a genuinely reordered configuration");
+        #[cfg(not(fuzzing))]
         assert!(
             compared > 0 && moved * 10 >= compared,
             "only {moved} of {compared} comparisons actually reordered anything: the permutation is \

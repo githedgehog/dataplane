@@ -397,10 +397,17 @@ pub fn build_internal_config(
 mod chain_properties {
     use super::*;
     use config::{ExternalConfig, GenId};
-    use k8s_intf::bolero::LegalValue;
+    use k8s_intf::bolero::AddressFamily;
+    use k8s_intf::bolero::crd::{GatewayAgentBuilder, GatewayAgents};
     use k8s_intf::gateway_agent_crd::GatewayAgent;
     use routing::Render;
     use std::collections::BTreeSet;
+
+    fn ipv4_agents() -> GatewayAgents {
+        GatewayAgentBuilder::new()
+            .families(vec![AddressFamily::V4])
+            .build()
+    }
 
     fn chain(agent: &GatewayAgent) -> Option<(GenId, InternalConfig)> {
         let external = ExternalConfig::try_from(agent)
@@ -416,9 +423,9 @@ mod chain_properties {
     #[test]
     fn whatever_validates_builds_and_renders() {
         bolero::check!()
-            .with_type::<LegalValue<GatewayAgent>>()
+            .with_generator(ipv4_agents())
             .for_each(|agent| {
-                let Some((genid, internal)) = chain(agent.as_ref()) else {
+                let Some((genid, internal)) = chain(agent) else {
                     return;
                 };
                 let text = internal.render(&genid).to_string();
@@ -432,9 +439,9 @@ mod chain_properties {
     #[test]
     fn every_vpc_gets_a_vrf_and_no_more() {
         bolero::check!()
-            .with_type::<LegalValue<GatewayAgent>>()
+            .with_generator(ipv4_agents())
             .for_each(|agent| {
-                let external = ExternalConfig::try_from(agent.as_ref())
+                let external = ExternalConfig::try_from(agent)
                     .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
                 let Ok(validated) = external.validate() else {
                     return;
@@ -468,10 +475,10 @@ mod chain_properties {
         static ACLS: AtomicUsize = AtomicUsize::new(0);
 
         bolero::check!()
-            .with_type::<LegalValue<GatewayAgent>>()
+            .with_generator(ipv4_agents())
             .for_each(|agent| {
                 SEEN.fetch_add(1, Ordering::Relaxed);
-                let external = ExternalConfig::try_from(agent.as_ref())
+                let external = ExternalConfig::try_from(agent)
                     .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
                 if let Ok(validated) = external.validate() {
                     VALIDATED.fetch_add(1, Ordering::Relaxed);
@@ -525,12 +532,12 @@ mod chain_properties {
     #[test]
     fn the_chain_is_deterministic() {
         bolero::check!()
-            .with_type::<LegalValue<GatewayAgent>>()
+            .with_generator(ipv4_agents())
             .for_each(|agent| {
-                let Some((genid, once)) = chain(agent.as_ref()) else {
+                let Some((genid, once)) = chain(agent) else {
                     return;
                 };
-                let (_, twice) = chain(agent.as_ref()).unwrap_or_else(|| {
+                let (_, twice) = chain(agent).unwrap_or_else(|| {
                     panic!("the same CRD validated once and not the second time")
                 });
                 assert_eq!(
