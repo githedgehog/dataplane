@@ -222,13 +222,26 @@ impl KernelManifest {
     /// (`N_VM_PROFILE=qemu cargo test`) without editing any test.  An
     /// unset variable, or an empty one, falls back to the default.
     ///
+    /// `emulation_required` says the guest cannot run natively on this host,
+    /// so the chosen profile's hypervisor has to be able to emulate.  It
+    /// only affects the fallback -- see
+    /// [`default_emulating_profile`](Self::default_emulating_profile).
+    /// Callers must derive it from the same fact in every tier: the host
+    /// tier from the Docker daemon's architecture, later tiers from the
+    /// [`ENV_ACCEL`](n_vm_protocol::ENV_ACCEL) it forwards.  Two tiers
+    /// disagreeing here would boot a different kernel than the one whose
+    /// hypervisor was resolved.
+    ///
     /// # Errors
     ///
     /// Returns [`KernelManifestError::UnknownProfile`] if the variable names
     /// a profile that does not exist -- a typo there would otherwise
     /// silently run the default environment while appearing to select
     /// another, which is the one outcome worth failing over.
-    pub fn selected(&self) -> Result<(&str, &KernelProfile), KernelManifestError> {
+    pub fn selected(
+        &self,
+        emulation_required: bool,
+    ) -> Result<(&str, &KernelProfile), KernelManifestError> {
         match std::env::var(n_vm_protocol::ENV_PROFILE) {
             Ok(name) if !name.is_empty() => {
                 let profile = self.profile(&name)?;
@@ -239,8 +252,64 @@ impl KernelManifest {
                     .expect("profile() succeeded, so the key is present");
                 Ok((key, profile))
             }
+            _ if emulation_required => Ok(self.default_emulating_profile()),
             _ => self.default_profile(),
         }
+    }
+
+    /// The profile to use by default when the guest must be *emulated*.
+    ///
+    /// Falls back to [`default_profile`](Self::default_profile) when that
+    /// profile's hypervisor can emulate, or when no profile can.
+    ///
+    /// This exists because the manifest's `default` is a fact about the nix
+    /// build, not about the machine the tests run on, and a cross-arch run
+    /// is the case where those diverge: `default` is `cloud_hypervisor`,
+    /// which cannot emulate a foreign guest at all.  Left alone, every
+    /// unpinned test skipped -- and a skip is reported as a pass, so an
+    /// aarch64 run went green in 1.5s having executed 2 of 19 in_vm tests.
+    /// A harness that cannot run the guest must not look like one that did.
+    ///
+    /// Only for the *unset* case.  An explicit `N_VM_PROFILE` naming a
+    /// profile that cannot emulate is honoured and skips, because "run this
+    /// environment" is a request worth failing to satisfy visibly rather
+    /// than silently substituting another.
+    ///
+    /// Among the profiles that can emulate, prefers one whose `boot` matches
+    /// the default's, so the substitute differs from the default in its
+    /// hypervisor and nothing else; ties break on name order, which
+    /// [`BTreeMap`] makes deterministic.
+    fn default_emulating_profile(&self) -> (&str, &KernelProfile) {
+        let default = self.default_profile();
+        let Ok((default_name, default_profile)) = default else {
+            // `parse` rejects a `default` naming a missing profile, so this
+            // is a hand-built manifest; let the caller's own lookup report
+            // it rather than guessing here.
+            return self
+                .profiles
+                .iter()
+                .next()
+                .map(|(k, v)| (k.as_str(), v))
+                .unwrap_or_else(|| unreachable!("a manifest with no profiles cannot parse"));
+        };
+
+        let can_emulate = |p: &KernelProfile, name: &str| {
+            p.backend(name).is_ok_and(EffectiveBackend::can_emulate)
+        };
+        if can_emulate(default_profile, default_name) {
+            return (default_name, default_profile);
+        }
+
+        let candidates = || {
+            self.profiles
+                .iter()
+                .map(|(k, v)| (k.as_str(), v))
+                .filter(|(name, p)| can_emulate(p, name))
+        };
+        candidates()
+            .find(|(_, p)| p.boot == default_profile.boot)
+            .or_else(|| candidates().next())
+            .unwrap_or((default_name, default_profile))
     }
 
     /// The default profile and its name.
@@ -356,6 +425,97 @@ mod test {
 
     fn parse(raw: &str) -> Result<KernelManifest, KernelManifestError> {
         KernelManifest::parse(raw, Path::new("<test>"))
+    }
+
+    /// The shape nix writes for a cross build: the default cannot emulate,
+    /// and two profiles that can.
+    const CROSS: &str = r#"{
+      "default": "cloud_hypervisor",
+      "profiles": {
+        "cloud_hypervisor": {
+          "arch": "aarch64",
+          "hypervisor": "cloud_hypervisor",
+          "boot": "direct",
+          "kernel": "/kernels/union/vmlinuz"
+        },
+        "modular": {
+          "arch": "aarch64",
+          "hypervisor": "qemu",
+          "boot": "initramfs",
+          "kernel": "/kernels/modular/vmlinuz"
+        },
+        "qemu": {
+          "arch": "aarch64",
+          "hypervisor": "qemu",
+          "boot": "direct",
+          "kernel": "/kernels/union/vmlinuz"
+        }
+      }
+    }"#;
+
+    /// An emulated guest must not default to a hypervisor that cannot
+    /// emulate it.
+    ///
+    /// Every unpinned test then skips, and a skip counts as a pass, so the
+    /// run goes green having executed almost nothing -- the failure this
+    /// whole fallback exists to prevent.  Asserted on the private resolver
+    /// rather than through `selected`, which reads the environment and would
+    /// make the test depend on the ambient `N_VM_PROFILE`.
+    #[test]
+    fn an_emulated_guest_does_not_default_to_a_non_emulating_hypervisor() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, profile) = manifest.default_emulating_profile();
+        assert_ne!(name, "cloud_hypervisor", "cannot emulate a foreign guest");
+        assert!(
+            profile
+                .backend(name)
+                .expect("known hypervisor")
+                .can_emulate(),
+            "substituted profile `{name}` must be able to emulate",
+        );
+    }
+
+    /// The substitute differs from the default in its hypervisor and nothing
+    /// else, so switching to it does not quietly also switch boot path.
+    #[test]
+    fn the_substituted_profile_keeps_the_defaults_boot_mode() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest.default_emulating_profile();
+        assert_eq!(
+            name, "qemu",
+            "`qemu` boots directly like the default; `modular` would also \
+             change the boot path",
+        );
+    }
+
+    /// The fallback applies only on the emulation path: a native run still
+    /// gets the manifest's own default, even when it cannot emulate.
+    ///
+    /// Asserted via `default_profile` rather than `selected(false)` because
+    /// `selected` consults `N_VM_PROFILE`, which would make the result depend
+    /// on the environment the suite happens to run under -- as it did, when
+    /// this test was first written that way and failed under
+    /// `N_VM_PROFILE=qemu`.
+    #[test]
+    fn a_native_guest_keeps_the_manifest_default() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest
+            .default_profile()
+            .expect("default must resolve for a native guest");
+        assert_eq!(
+            name, "cloud_hypervisor",
+            "a native guest runs the default even though it cannot emulate",
+        );
+    }
+
+    /// With nothing able to emulate, the default is returned unchanged so
+    /// the caller skips with its own specific reason rather than this code
+    /// inventing a profile that cannot work either.
+    #[test]
+    fn no_emulating_profile_leaves_the_default_alone() {
+        let manifest = parse(SAMPLE).expect("sample manifest should parse");
+        let (name, _) = manifest.default_emulating_profile();
+        assert_eq!(name, "union");
     }
 
     #[test]
