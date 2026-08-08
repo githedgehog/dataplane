@@ -55,6 +55,13 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
 
+[lints.rust]
+# `cargo bolero` sets `--cfg fuzzing` for every coverage-guided engine it drives. A property whose
+# assertions describe the *distribution* of its inputs -- how often a generated case is refused, say
+# -- only holds under the uniform random engine, since a coverage-guided one skews its inputs toward
+# whatever reaches new code. Such a property reads the cfg to tell which engine it is under.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 [dev-dependencies]
 # internal
 dpdk = { workspace = true, features = ["test"] } # EAL for tests that build the rte_acl-backed ACL filter and flow-filter context
