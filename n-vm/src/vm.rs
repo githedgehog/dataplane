@@ -585,10 +585,11 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
     // here.  Resolved once, before launch, so a bad manifest fails with a
     // manifest error instead of a VM that boots nothing.
     let manifest = crate::kernel_manifest::KernelManifest::load()?;
-    let (profile_name, profile) = manifest.default_profile()?;
+    let (profile_name, profile) = manifest.selected()?;
     profile.check_arch(profile_name, arch)?;
     info!(
-        "using kernel profile `{profile_name}` ({kernel})",
+        "using kernel profile `{profile_name}` ({hypervisor}, {kernel})",
+        hypervisor = profile.hypervisor,
         kernel = profile.kernel,
     );
 
