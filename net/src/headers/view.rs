@@ -2647,6 +2647,9 @@ mod view_mut_properties {
     use crate::eth::Eth;
     use crate::headers::view::LookMut;
     use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::ip_auth::Ipv4Auth;
+    use crate::ipv4::Ipv4;
+    use crate::ipv6::{DestOpts, HopByHop, Ipv6, Routing};
     use crate::vlan::Vlan;
     use concurrency::sync::OnceLock;
     use concurrency::sync::atomic::AtomicUsize;
@@ -2785,6 +2788,69 @@ mod view_mut_properties {
         vlan,
         net,
         transport
+    );
+    arity_agrees!(
+        read_8,
+        mutable_8,
+        (
+            &Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv6, &HopByHop, &Transport
+        ),
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        vlan,
+        ipv6,
+        hop_by_hop,
+        transport
+    );
+
+    arity_agrees!(
+        read_ext_v6_one,
+        mutable_ext_v6_one,
+        (&Eth, &Ipv6, &HopByHop, &Transport),
+        eth,
+        ipv6,
+        hop_by_hop,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_two,
+        mutable_ext_v6_two,
+        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Transport),
+        eth,
+        ipv6,
+        hop_by_hop,
+        dest_opts,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_three,
+        mutable_ext_v6_three,
+        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Routing, &Transport),
+        eth,
+        ipv6,
+        hop_by_hop,
+        dest_opts,
+        routing,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v4_auth,
+        mutable_ext_v4_auth,
+        (&Eth, &Ipv4, &Ipv4Auth, &Transport),
+        eth,
+        ipv4,
+        ipv4_auth,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_no_transport,
+        mutable_ext_v6_no_transport,
+        (&Eth, &Ipv6, &HopByHop),
+        eth,
+        ipv6,
+        hop_by_hop
     );
 
     fn exercise_the_mutable_split() {
