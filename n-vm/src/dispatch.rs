@@ -170,7 +170,10 @@ pub fn run_host_tier<F: FnOnce()>(test_fn: F, requested: RequestedBackend, vm_co
 
     match outcome {
         ContainerOutcome::Skipped { reason } => {
-            eprintln!("SKIPPED: {reason}");
+            report_skip(
+                crate::test_identity::TestIdentity::resolve::<F>().test_name,
+                &reason,
+            );
         }
         ContainerOutcome::Ran(state) => match state.exit_code {
             Some(0) => {}
@@ -181,5 +184,109 @@ pub fn run_host_tier<F: FnOnce()>(test_fn: F, requested: RequestedBackend, vm_co
                 panic!("test container did not return an exit code");
             }
         },
+    }
+}
+
+/// Records a skipped test, and fails it when the run does not tolerate
+/// skips.
+///
+/// libtest has no run-time "skipped" state: `#[ignore]` is a compile-time
+/// decision, so a test that skips here is counted as **passed**, and the
+/// reason it printed is swallowed by output capture unless the test also
+/// fails.  A profile can therefore skip nearly everything and still report
+/// a clean run -- which is exactly what a Flatcar run does today, where 12
+/// of 16 "passes" never boot a VM.
+///
+/// So the reason is written somewhere that survives: a file named by
+/// [`ENV_SKIP_LOG`], outside libtest's capture and outside the
+/// process-per-test model, so a whole run's skips accumulate in one place
+/// CI can assert on.
+///
+/// [`ENV_STRICT_SKIPS`] turns a skip into a failure, for a run that is
+/// meant to exercise everything and where a skip is a hole in what is being
+/// certified rather than a neutral outcome.
+fn report_skip(test_name: &str, reason: &str) {
+    eprintln!("SKIPPED: {reason}");
+
+    if let Ok(path) = std::env::var(n_vm_protocol::ENV_SKIP_LOG)
+        && !path.is_empty()
+    {
+        // Appended, not rewritten: nextest runs each test in its own
+        // process, so the records of one run arrive from many writers.
+        // `O_APPEND` keeps single short writes from interleaving.
+        use std::io::Write as _;
+        let record = format!(
+            "{{\"test\":{},\"profile\":{},\"reason\":{}}}\n",
+            json_string(test_name),
+            json_string(&std::env::var(n_vm_protocol::ENV_PROFILE).unwrap_or_default()),
+            json_string(reason),
+        );
+        // Best-effort: failing to record a skip must not turn a skip into a
+        // failure, which would be a worse outcome than the missing record.
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = f.write_all(record.as_bytes());
+        }
+    }
+
+    if std::env::var(n_vm_protocol::ENV_STRICT_SKIPS).is_ok_and(|v| !v.is_empty()) {
+        panic!(
+            "test skipped, and {} is set: {reason}",
+            n_vm_protocol::ENV_STRICT_SKIPS,
+        );
+    }
+}
+
+/// Minimal JSON string escaping, to avoid a serde dependency in a path
+/// that writes at most a few dozen short records per run.
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod test {
+    use super::json_string;
+
+    /// A skip reason is free text that ends up inside a JSON record, and
+    /// the reasons already contain backticks and quotes.  Escaping wrong
+    /// would produce a log that no parser can read -- silently, since
+    /// nothing reads it during the run that wrote it.
+    #[test]
+    fn escapes_quotes_and_backslashes() {
+        assert_eq!(json_string(r#"a "quoted" word"#), r#""a \"quoted\" word""#);
+        assert_eq!(json_string(r"back\slash"), r#""back\\slash""#);
+    }
+
+    #[test]
+    fn escapes_control_characters() {
+        assert_eq!(json_string("line\nbreak"), r#""line\nbreak""#);
+        assert_eq!(json_string("tab\there"), r#""tab\there""#);
+        // Anything else below 0x20 has no short form and must be \uXXXX.
+        assert_eq!(json_string("\u{1}"), r#""\u0001""#);
+    }
+
+    /// Reason strings routinely carry backticks and paths; those are
+    /// ordinary characters and must survive untouched.
+    #[test]
+    fn leaves_ordinary_text_alone() {
+        let reason = "kernel profile `flatcar` runs on qemu; use N_VM_PROFILE=<name>";
+        assert_eq!(json_string(reason), format!("\"{reason}\""));
     }
 }
