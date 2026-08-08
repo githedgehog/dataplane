@@ -1194,7 +1194,10 @@ where
 mod contract {
     use crate::eth::ethtype::CommonEthType;
     use crate::eth::{Eth, GenWithEthType};
-    use crate::headers::{Headers, MAX_NET_EXTENSIONS, MAX_VLANS, Net, NetExt, Transport};
+    use crate::headers::{
+        EmbeddedHeaders, EmbeddedTransport, Headers, MAX_NET_EXTENSIONS, MAX_VLANS, Net, NetExt,
+        Transport,
+    };
     use crate::icmp4::Icmp4;
     use crate::icmp6::Icmp6;
     use crate::ipv4;
@@ -1266,28 +1269,193 @@ mod contract {
                 headers.vlan.push(driver.produce()?);
             }
 
-            let ipv4 = matches!(headers.net, Some(Net::Ipv4(_)));
             if headers.net.is_some() {
-                let exts =
-                    driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_NET_EXTENSIONS))?;
-                for _ in 0..exts {
-                    let ext = if ipv4 {
-                        NetExt::Ipv4Auth(driver.produce()?)
-                    } else {
-                        match driver.gen_u8(Bound::Included(&0), Bound::Included(&4))? {
-                            0 => NetExt::HopByHop(driver.produce()?),
-                            1 => NetExt::DestOpts(driver.produce()?),
-                            2 => NetExt::Routing(driver.produce()?),
-                            3 => NetExt::Fragment(driver.produce()?),
-                            _ => NetExt::Ipv6Auth(driver.produce()?),
-                        }
-                    };
-                    headers.net_ext.push(ext);
-                }
+                headers.net_ext = ext_run(driver, matches!(headers.net, Some(Net::Ipv4(_))))?;
             }
 
             Some(headers)
         }
+    }
+
+    fn ext_run<D: Driver>(
+        driver: &mut D,
+        v4: bool,
+    ) -> Option<ArrayVec<NetExt, MAX_NET_EXTENSIONS>> {
+        let mut out = ArrayVec::default();
+        let count = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_NET_EXTENSIONS))?;
+        let ordered = driver.gen_u8(Bound::Included(&0), Bound::Included(&3))? == 0;
+        for slot in 0..count {
+            let pick = if ordered {
+                u8::try_from(slot).unwrap_or(u8::MAX)
+            } else {
+                driver.gen_u8(Bound::Included(&0), Bound::Included(&4))?
+            };
+            out.push(one_ext(driver, v4, pick)?);
+        }
+        Some(out)
+    }
+
+    fn one_ext<D: Driver>(driver: &mut D, v4: bool, pick: u8) -> Option<NetExt> {
+        if v4 {
+            return Some(NetExt::Ipv4Auth(driver.produce()?));
+        }
+        Some(match pick {
+            0 => NetExt::HopByHop(driver.produce()?),
+            1 => NetExt::DestOpts(driver.produce()?),
+            2 => NetExt::Routing(driver.produce()?),
+            3 => NetExt::Fragment(driver.produce()?),
+            _ => NetExt::Ipv6Auth(driver.produce()?),
+        })
+    }
+
+    #[allow(dead_code)]
+    pub struct ShapedQuote {
+        pub ext: u8,
+        pub v4: bool,
+    }
+
+    impl ValueGenerator for ShapedQuote {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let eth_type = if self.v4 {
+                CommonEthType::Ipv4
+            } else {
+                CommonEthType::Ipv6
+            };
+            let eth = GenWithEthType(eth_type.into()).generate(driver)?;
+
+            let mut quoted_ext = ArrayVec::default();
+            quoted_ext.push(one_ext(driver, self.v4, self.ext)?);
+            let quoted_transport = EmbeddedTransport::Tcp(driver.produce()?);
+
+            let (net, transport, quoted_net) = if self.v4 {
+                (
+                    Net::Ipv4(
+                        ipv4::GenWithNextHeader(ipv4::CommonNextHeader::Icmp4.into())
+                            .generate(driver)?,
+                    ),
+                    Transport::Icmp4(driver.produce()?),
+                    Net::Ipv4(
+                        ipv4::GenWithNextHeader(ipv4::CommonNextHeader::Tcp.into())
+                            .generate(driver)?,
+                    ),
+                )
+            } else {
+                (
+                    Net::Ipv6(
+                        ipv6::GenWithNextHeader(ipv6::CommonNextHeader::Icmp6.into())
+                            .generate(driver)?,
+                    ),
+                    Transport::Icmp6(driver.produce()?),
+                    Net::Ipv6(
+                        ipv6::GenWithNextHeader(ipv6::CommonNextHeader::Tcp.into())
+                            .generate(driver)?,
+                    ),
+                )
+            };
+
+            Some(Headers {
+                eth: Some(eth),
+                vlan: ArrayVec::default(),
+                net: Some(net),
+                net_ext: ArrayVec::default(),
+                transport: Some(transport),
+                udp_encap: None,
+                embedded_ip: Some(EmbeddedHeaders::new(
+                    Some(quoted_net),
+                    Some(quoted_transport),
+                    quoted_ext,
+                    None,
+                )),
+            })
+        }
+    }
+
+    #[allow(dead_code)]
+    #[repr(transparent)]
+    pub struct ShapedIcmpError;
+
+    impl ValueGenerator for ShapedIcmpError {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let outer_v4 = driver.produce::<bool>()?;
+            let eth_type = if outer_v4 {
+                CommonEthType::Ipv4
+            } else {
+                CommonEthType::Ipv6
+            };
+            let eth = GenWithEthType(eth_type.into()).generate(driver)?;
+
+            let mut vlan = ArrayVec::default();
+            let vlans = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_VLANS))?;
+            for _ in 0..vlans {
+                vlan.push(driver.produce()?);
+            }
+
+            let (net, transport) = if outer_v4 {
+                let ip = ipv4::GenWithNextHeader(ipv4::CommonNextHeader::Icmp4.into())
+                    .generate(driver)?;
+                (Net::Ipv4(ip), Transport::Icmp4(driver.produce()?))
+            } else {
+                let ip = ipv6::GenWithNextHeader(ipv6::CommonNextHeader::Icmp6.into())
+                    .generate(driver)?;
+                (Net::Ipv6(ip), Transport::Icmp6(driver.produce()?))
+            };
+
+            let embedded_ip = if driver.produce::<bool>()? {
+                Some(quoted_packet(driver, outer_v4)?)
+            } else {
+                None
+            };
+
+            Some(Headers {
+                eth: Some(eth),
+                vlan,
+                net: Some(net),
+                net_ext: ext_run(driver, outer_v4)?,
+                transport: Some(transport),
+                udp_encap: None,
+                embedded_ip,
+            })
+        }
+    }
+
+    fn quoted_packet<D: Driver>(driver: &mut D, outer_v4: bool) -> Option<EmbeddedHeaders> {
+        let mismatch = driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0;
+        let v4 = outer_v4 != mismatch;
+
+        let transport = match driver.gen_u8(Bound::Included(&0), Bound::Included(&3))? {
+            0 => Some(EmbeddedTransport::Tcp(driver.produce()?)),
+            1 => Some(EmbeddedTransport::Udp(driver.produce()?)),
+            2 if v4 => Some(EmbeddedTransport::Icmp4(driver.produce()?)),
+            2 => Some(EmbeddedTransport::Icmp6(driver.produce()?)),
+            _ => None,
+        };
+
+        let net = if v4 {
+            let next = match transport {
+                Some(EmbeddedTransport::Udp(_)) => ipv4::CommonNextHeader::Udp,
+                Some(EmbeddedTransport::Icmp4(_)) => ipv4::CommonNextHeader::Icmp4,
+                _ => ipv4::CommonNextHeader::Tcp,
+            };
+            Net::Ipv4(ipv4::GenWithNextHeader(next.into()).generate(driver)?)
+        } else {
+            let next = match transport {
+                Some(EmbeddedTransport::Udp(_)) => ipv6::CommonNextHeader::Udp,
+                Some(EmbeddedTransport::Icmp6(_)) => ipv6::CommonNextHeader::Icmp6,
+                _ => ipv6::CommonNextHeader::Tcp,
+            };
+            Net::Ipv6(ipv6::GenWithNextHeader(next.into()).generate(driver)?)
+        };
+
+        Some(EmbeddedHeaders::new(
+            Some(net),
+            transport,
+            ext_run(driver, v4)?,
+            None,
+        ))
     }
 
     #[allow(dead_code)] // rustc not able to infer we construct this through .with_generator()

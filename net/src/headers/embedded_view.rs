@@ -1790,3 +1790,519 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod embedded_view_properties {
+    use super::*;
+    use crate::eth::Eth;
+    use crate::headers::{Headers, ShapedIcmpError, ShapedQuote};
+    use crate::icmp4::Icmp4;
+    use crate::icmp6::Icmp6;
+    use crate::vlan::Vlan;
+    use concurrency::sync::OnceLock;
+    use concurrency::sync::atomic::AtomicUsize;
+
+    // `AtomicUsize::new` is not const under loom, so counters init on first use.
+    fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
+        slot.get_or_init(|| AtomicUsize::new(0))
+    }
+
+    macro_rules! embedded_agrees {
+        (
+            $read:ident, $mutable:ident,
+            ($outer:ty, $($ol:ident),+),
+            ($inner:ty, $($il:ident),+)
+        ) => {
+            #[test]
+            fn $read() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ShapedIcmpError)
+                    .for_each(|h: &Headers| {
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let licensed = h
+                            .as_view::<$outer>()
+                            .is_some_and(|w| w.as_embedded::<$inner>().is_some());
+                        if licensed {
+                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable =
+                            h.pat()$(.$ol())+.embedded()$(.$il())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the read walk disagree for ",
+                                stringify!($inner),
+                                " inside ",
+                                stringify!($outer),
+                                ", so `look` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    concat!(stringify!($inner), " in ", stringify!($outer)),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&HIT).load(Ordering::Relaxed),
+                );
+            }
+
+            #[test]
+            fn $mutable() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ShapedIcmpError)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let licensed = match owned.as_view_mut::<$outer>() {
+                            Some(w) => w.as_embedded_mut::<$inner>().is_some(),
+                            None => false,
+                        };
+                        if licensed {
+                            counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable =
+                            owned.pat_mut()$(.$ol())+.embedded()$(.$il())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the mutable walk disagree for ",
+                                stringify!($inner),
+                                " inside ",
+                                stringify!($outer),
+                                ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    concat!(stringify!($inner), " in ", stringify!($outer)),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&HIT).load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    fn agreement_is_not_vacuous(shape: &str, seen: usize, hit: usize) {
+        println!("{shape}: matched {hit} of {seen}");
+        if seen > 20_000 {
+            assert!(
+                hit > 0,
+                "{shape} never matched in {seen} packets: the two walks agree only because the \
+                 generator cannot produce this shape"
+            );
+        }
+    }
+
+    type O4V4 = (&'static Eth, &'static Ipv4, &'static Icmp4);
+    type O4V6 = (&'static Eth, &'static Ipv6, &'static Icmp6);
+
+    embedded_agrees!(
+        read_inner_v4_tcp,
+        mutable_inner_v4_tcp,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_inner_v6_udp,
+        mutable_inner_v6_udp,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &TruncatedUdp), ipv6, udp)
+    );
+    embedded_agrees!(
+        read_inner_net_only,
+        mutable_inner_net_only,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Net,), net)
+    );
+    embedded_agrees!(
+        read_inner_v6_only,
+        mutable_inner_v6_only,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6,), ipv6)
+    );
+    embedded_agrees!(
+        read_inner_icmp_in_icmp4,
+        mutable_inner_icmp_in_icmp4,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Ipv4, &TruncatedIcmp4), ipv4, icmp4)
+    );
+    embedded_agrees!(
+        read_inner_icmp_in_icmp6,
+        mutable_inner_icmp_in_icmp6,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &TruncatedIcmp6), ipv6, icmp6)
+    );
+
+    embedded_agrees!(
+        read_inner_ext_v6,
+        mutable_inner_ext_v6,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &HopByHop, &TruncatedTcp), ipv6, hop_by_hop, tcp)
+    );
+    embedded_agrees!(
+        read_inner_ext_v4_auth,
+        mutable_inner_ext_v4_auth,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Ipv4, &Ipv4Auth, &TruncatedTcp), ipv4, ipv4_auth, tcp)
+    );
+    embedded_agrees!(
+        read_inner_ext_no_transport,
+        mutable_inner_ext_no_transport,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &HopByHop), ipv6, hop_by_hop)
+    );
+
+    embedded_agrees!(
+        read_outer_4,
+        mutable_outer_4,
+        ((&Eth, &Vlan, &Ipv4, &Icmp4), eth, vlan, ipv4, icmp4),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_outer_5,
+        mutable_outer_5,
+        (
+            (&Eth, &Vlan, &Vlan, &Ipv6, &Icmp6),
+            eth,
+            vlan,
+            vlan,
+            ipv6,
+            icmp6
+        ),
+        ((&Ipv6, &TruncatedUdp), ipv6, udp)
+    );
+    embedded_agrees!(
+        read_outer_6,
+        mutable_outer_6,
+        (
+            (&Eth, &Vlan, &Vlan, &Vlan, &Ipv4, &Icmp4),
+            eth,
+            vlan,
+            vlan,
+            vlan,
+            ipv4,
+            icmp4
+        ),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_outer_7,
+        mutable_outer_7,
+        (
+            (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv4, &Icmp4),
+            eth,
+            vlan,
+            vlan,
+            vlan,
+            vlan,
+            ipv4,
+            icmp4
+        ),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_outer_8,
+        mutable_outer_8,
+        (
+            (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv6, &HopByHop, &Icmp6),
+            eth,
+            vlan,
+            vlan,
+            vlan,
+            vlan,
+            ipv6,
+            hop_by_hop,
+            icmp6
+        ),
+        ((&Ipv6,), ipv6)
+    );
+
+    #[test]
+    fn mutable_inner_transport_enum() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+        static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+        bolero::check!()
+            .with_generator(ShapedIcmpError)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                let licensed = match owned.as_view_mut::<O4V4>() {
+                    Some(w) => w.as_embedded_mut::<(&Net, &EmbeddedTransport)>().is_some(),
+                    None => false,
+                };
+                if licensed {
+                    counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                }
+                let deliverable = owned
+                    .pat_mut()
+                    .eth()
+                    .ipv4()
+                    .icmp4()
+                    .embedded()
+                    .net()
+                    .transport()
+                    .done()
+                    .is_some();
+                assert_eq!(
+                    licensed, deliverable,
+                    "`matches` and the mutable walk disagree for (&Net, &EmbeddedTransport): {h:?}"
+                );
+            });
+        agreement_is_not_vacuous(
+            "(&Net, &EmbeddedTransport)",
+            counter(&SEEN).load(Ordering::Relaxed),
+            counter(&HIT).load(Ordering::Relaxed),
+        );
+    }
+
+    fn exercise_the_embedded_split() {
+        bolero::check!()
+            .with_generator(ShapedIcmpError)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let Some(outer) = owned.as_view_mut::<O4V6>() else {
+                    return;
+                };
+                let Some(ew) = outer.as_embedded_mut::<(&Ipv6, &HopByHop, &TruncatedTcp)>() else {
+                    return;
+                };
+                let (ip, ext, tcp) = ew.look_mut();
+
+                let want_hops = ip.hop_limit().wrapping_add(1);
+                ip.set_hop_limit(want_hops);
+                let seen_ext = ext.next_header();
+                let seen_tcp = matches!(tcp, TruncatedTcp::FullHeader(_));
+
+                assert_eq!(
+                    ip.hop_limit(),
+                    want_hops,
+                    "the write through ipv6 did not stick"
+                );
+                assert_eq!(
+                    ext.next_header(),
+                    seen_ext,
+                    "the extension header changed under a write to ipv6"
+                );
+                assert_eq!(
+                    matches!(tcp, TruncatedTcp::FullHeader(_)),
+                    seen_tcp,
+                    "the quoted transport changed under a write to ipv6"
+                );
+            });
+    }
+
+    macro_rules! split_shards {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    exercise_the_embedded_split();
+                }
+            )*
+        };
+    }
+
+    split_shards!(
+        the_embedded_split_hands_out_distinct_layers,
+        embedded_split_shard_2,
+        embedded_split_shard_3,
+        embedded_split_shard_4,
+        embedded_split_shard_5,
+        embedded_split_shard_6,
+        embedded_split_shard_7,
+        embedded_split_shard_8,
+    );
+
+    macro_rules! same_layers {
+        ($name:ident, $gen:expr, $outer:ty, $shape:ty, $($binding:ident),+) => {
+            #[test]
+            fn $name() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                static HIT: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator($gen)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let immutable = {
+                            let Some(outer) = owned.as_view::<$outer>() else {
+                                return;
+                            };
+                            let Some(ew) = outer.as_embedded::<$shape>() else {
+                                return;
+                            };
+                            let ($($binding,)+) = ew.look();
+                            ($(std::ptr::from_ref($binding),)+)
+                        };
+                        counter(&HIT).fetch_add(1, Ordering::Relaxed);
+                        let mutable = {
+                            let outer = owned.as_view_mut::<$outer>().unwrap_or_else(|| {
+                                unreachable!("the same packet matched a moment ago")
+                            });
+                            let ew = outer.as_embedded_mut::<$shape>().unwrap_or_else(|| {
+                                unreachable!("the same shape matched a moment ago")
+                            });
+                            let ($($binding,)+) = ew.look_mut();
+                            ($(std::ptr::from_ref(&*$binding),)+)
+                        };
+                        assert_eq!(
+                            immutable, mutable,
+                            concat!(
+                                "`look` and `look_mut` selected different layers of the quoted \
+                                 packet for ",
+                                stringify!($shape)
+                            )
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    concat!("look/look_mut ", stringify!($shape)),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&HIT).load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    #[test]
+    fn the_transport_enum_still_refuses_an_unconsumed_extension() {
+        bolero::check!()
+            .with_generator(ShapedQuote { ext: 0, v4: false })
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let quoted = owned
+                    .embedded_ip_mut()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote always attaches a quote"));
+                let first = quoted
+                    .net_ext
+                    .first()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote always places one extension"))
+                    .clone();
+                quoted.net_ext.push(first);
+
+                let outer = owned
+                    .as_view::<O4V6>()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote draws an ICMPv6 error"));
+                assert!(
+                    outer
+                        .as_embedded::<(&Ipv6, &HopByHop, &EmbeddedTransport)>()
+                        .is_none(),
+                    "naming one extension of two matched anyway, so the gap check did not run for \
+                     the transport enum"
+                );
+                assert!(
+                    outer.as_embedded::<(&Ipv6, &EmbeddedTransport)>().is_some(),
+                    "a shape that never entered the extension region was refused"
+                );
+            });
+    }
+
+    same_layers!(same_layers_v4_only, ShapedIcmpError, O4V4, (&Ipv4,), ip);
+    same_layers!(same_layers_v6_only, ShapedIcmpError, O4V6, (&Ipv6,), ip);
+    same_layers!(same_layers_net_only, ShapedIcmpError, O4V4, (&Net,), net);
+
+    same_layers!(
+        same_layers_v4_tcp,
+        ShapedIcmpError,
+        O4V4,
+        (&Ipv4, &TruncatedTcp),
+        ip,
+        tcp
+    );
+    same_layers!(
+        same_layers_v6_udp,
+        ShapedIcmpError,
+        O4V6,
+        (&Ipv6, &TruncatedUdp),
+        ip,
+        udp
+    );
+    same_layers!(
+        same_layers_icmp_in_icmp4,
+        ShapedIcmpError,
+        O4V4,
+        (&Ipv4, &TruncatedIcmp4),
+        ip,
+        icmp
+    );
+    same_layers!(
+        same_layers_icmp_in_icmp6,
+        ShapedIcmpError,
+        O4V6,
+        (&Ipv6, &TruncatedIcmp6),
+        ip,
+        icmp
+    );
+    same_layers!(
+        same_layers_transport_enum,
+        ShapedIcmpError,
+        O4V4,
+        (&Net, &EmbeddedTransport),
+        net,
+        transport
+    );
+
+    same_layers!(
+        same_layers_ext_hop_by_hop,
+        ShapedQuote { ext: 0, v4: false },
+        O4V6,
+        (&Ipv6, &HopByHop, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_dest_opts,
+        ShapedQuote { ext: 1, v4: false },
+        O4V6,
+        (&Ipv6, &DestOpts, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_routing,
+        ShapedQuote { ext: 2, v4: false },
+        O4V6,
+        (&Ipv6, &Routing, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_fragment,
+        ShapedQuote { ext: 3, v4: false },
+        O4V6,
+        (&Ipv6, &Fragment, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_v6_auth,
+        ShapedQuote { ext: 4, v4: false },
+        O4V6,
+        (&Ipv6, &Ipv6Auth, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_v4_auth,
+        ShapedQuote { ext: 0, v4: true },
+        O4V4,
+        (&Ipv4, &Ipv4Auth, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+}
