@@ -3,6 +3,20 @@
 
 use n_vm::{GuestHugePageConfig, GuestHugePageSize, HostPageSize, VmConfig, features};
 
+/// Reads the first `len` bytes of `path`, or the whole file if it is shorter.
+fn read_prefix(path: &str, len: usize) -> Vec<u8> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).unwrap_or_else(|e| panic!("cannot open {path}: {e}"));
+    let mut buf = Vec::with_capacity(len);
+    file.by_ref()
+        .take(len as u64)
+        .read_to_end(&mut buf)
+        .unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    assert!(!buf.is_empty(), "{path} is empty");
+    buf
+}
+
 fn hugepages_total() -> u64 {
     std::fs::read_to_string("/proc/meminfo")
         .unwrap()
@@ -95,6 +109,73 @@ fn vm_boots_with_declared_kernel_features() {
 // unit level by the verdict-decoding tests (`cloud_hypervisor::events`,
 // `n_vm_protocol::TestResult` parse tests: an absent/failed verdict ->
 // failure), not by a panicking end-to-end test.
+
+/// A file on the read-only share reads back the same after its pages are
+/// dropped and refetched.
+///
+/// This is the property the harness silently depended on and never checked,
+/// and getting it wrong cost a lot: every aarch64 test failed for a whole
+/// debugging session, presenting as guest userspace corruption -- garbage ELF
+/// relocations, pointers with their low word zeroed, jumps into `.rodata` --
+/// which looked convincingly like a guest kernel misconfiguration and was
+/// chased as one through many kernel configs before virtiofsd's cache policy
+/// turned out to be the cause.
+///
+/// Refetching is the specific thing to exercise.  Sweeping virtiofsd's four
+/// policies on aarch64 showed `auto`, `never` and `metadata` all faulting and
+/// only `always` surviving, and what the three failures share is that a file
+/// page can have to be fetched more than once.  So this drops the guest page
+/// cache between two reads to force exactly that, rather than reading twice
+/// and being served the same cached copy both times.
+///
+/// `drop_caches` frees only clean, unreferenced pages, so it cannot evict the
+/// running binary's own mapped text -- the process stays alive to make the
+/// assertion, which a broader eviction would not allow.
+///
+/// Deliberately not a hash against a value baked in at build time: the share
+/// serves the developer's live workspace, so any uncommitted edit would fail
+/// such a test for a reason that has nothing to do with virtiofs.
+#[n_vm::test]
+fn file_on_read_only_share_survives_a_page_cache_drop() {
+    // The test binary itself: guaranteed present, served by the same
+    // virtiofsd as everything else the guest executes, and far larger than
+    // one page, so the comparison spans many.
+    const SLICE: usize = 4 * 1024 * 1024;
+    let exe = std::fs::read_link("/proc/self/exe")
+        .expect("the guest should be able to resolve /proc/self/exe");
+    let exe = exe.to_str().expect("test binary path should be UTF-8");
+
+    let before = read_prefix(exe, SLICE);
+
+    // 3 = page cache + reclaimable slab.  A write to this is what forces the
+    // next read to come from the host again instead of the guest's cache.
+    std::fs::write("/proc/sys/vm/drop_caches", b"3\n")
+        .expect("the guest should be able to drop its page cache");
+
+    let after = read_prefix(exe, SLICE);
+
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "read {} bytes before dropping caches and {} after",
+        before.len(),
+        after.len(),
+    );
+    // Compared by position rather than with `assert_eq!` on the buffers,
+    // because a mismatch dumping 4 MiB of bytes is unreadable and the offset
+    // is the useful part: it says which page came back wrong.
+    if let Some(at) = (0..before.len()).find(|&i| before[i] != after[i]) {
+        panic!(
+            "{exe} changed across a page cache drop at offset {at} \
+             (0x{at:x}, page {page}): {b:#04x} -> {a:#04x}.  The guest \
+             refetched this file and got different bytes, so mappings of it \
+             -- including executable ones -- cannot be trusted.",
+            page = at / 4096,
+            b = before[at],
+            a = after[at],
+        );
+    }
+}
 
 #[n_vm::test]
 fn root_filesystem_in_vm_is_read_only() {
