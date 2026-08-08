@@ -22,9 +22,9 @@ use bolero::{Driver, ValueGenerator};
 
 use crate::bolero::crd::GatewayAgents;
 use crate::gateway_agent_crd::{
-    GatewayAgent, GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeeringExpose,
-    GatewayAgentPeeringsPeeringExposeAs, GatewayAgentPeeringsPeeringExposeIps,
-    GatewayAgentPeeringsPeeringExposeNatMasquerade,
+    GatewayAgent, GatewayAgentPeeringsAclRulesScope, GatewayAgentPeeringsPeering,
+    GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
+    GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNatMasquerade,
 };
 
 /// One way of breaking an otherwise-legal configuration.
@@ -162,10 +162,238 @@ fn is_static(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
 /// properties are all conditional on what the validator says -- but it does mean the case tested
 /// nothing new, so the caller counts them.
 #[allow(clippy::too_many_lines)]
-pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation) -> Option<bool> {
-    let bit = match mutation {
-        Mutation::None => false,
+/// Whether every expose of a manifest translates statefully.
+///
+/// `scope: flow` needs one side of a peering to be stateful throughout, since a flow-scoped rule has
+/// nothing to attach to for connections that never reach the flow table. Mirrors
+/// `Acl::validate_scope`, and the two being separate statements of the same rule is the point: a
+/// mutation that asserts the validator refuses something has to know when it is entitled to.
+fn stateful_throughout(manifest: &GatewayAgentPeeringsPeering) -> bool {
+    let exposes = manifest.expose.as_deref().unwrap_or(&[]);
+    !exposes.is_empty()
+        && exposes.iter().all(|expose| {
+            expose
+                .nat
+                .as_ref()
+                .is_some_and(|nat| nat.masquerade.is_some() || nat.port_forward.is_some())
+        })
+}
 
+/// Whether an expose advertises exactly its `ips`, with nothing subtracted and nothing translated.
+///
+/// Route destinations come from `VpcExpose::public_ips`, which is the **translation range** for any
+/// expose that translates and the private prefixes only for one that does not. So a prefix copied out
+/// of a static-NAT expose's `ips` never becomes a route at all, and copying one is not the overlap it
+/// looks like -- the assertion that whatever a mutation touches must be refused caught exactly that
+/// mistake, on a static expose, within seconds.
+///
+/// Exclusions are ruled out for the same reason: `public_ips` is the prefixes *minus* the `not`s, so
+/// an exclusion could carve away the very prefix being copied.
+///
+/// Masquerade would be wrong twice over: it translates, and `VpcRoute::can_overlap` lets two
+/// masqueraded routes share a destination legitimately.
+fn advertises_its_ips(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
+    expose.nat.is_none()
+        && expose.default != Some(true)
+        && expose.ips.iter().flatten().all(|ip| ip.not.is_none())
+}
+
+/// Make two peers of one vpc advertise the same destination to it.
+///
+/// Split out of [`apply`] only for length. Two passes, so nothing has to be borrowed mutably while
+/// the search is still reading -- a single pass with two live borrows would need `leak()` or a clone
+/// of the whole spec, and this runs millions of times.
+fn overlap_with_another_peer(agent: &mut GatewayAgent) -> bool {
+    // Two passes, so nothing has to be borrowed mutably while the search is still reading.
+    // A single pass with two live borrows would need `leak()` or a clone of the whole spec,
+    // and this runs millions of times.
+    //
+    // First: find a vpc that appears in two peerings, and a prefix one of its peers exposes.
+    let mut donor: Option<(String, String, String)> = None;
+    for (key, peering) in agent.spec.peerings.iter().flatten() {
+        let Some(manifests) = peering.peering.as_ref() else {
+            continue;
+        };
+        for shared in manifests.keys() {
+            let elsewhere = agent
+                .spec
+                .peerings
+                .iter()
+                .flatten()
+                .any(|(other, peering)| {
+                    other != key
+                        && peering
+                            .peering
+                            .as_ref()
+                            .is_some_and(|m| m.contains_key(shared))
+                });
+            if !elsewhere {
+                continue;
+            }
+            // Only from an expose that advertises its `ips` verbatim, so the prefix taken
+            // really is one of this peer's route destinations.
+            let prefix = manifests
+                .iter()
+                .filter(|(name, _)| *name != shared)
+                .flat_map(|(_, manifest)| manifest.expose.iter().flatten())
+                .filter(|expose| advertises_its_ips(expose))
+                .flat_map(|expose| expose.ips.iter().flatten())
+                .find_map(|ip| ip.cidr.clone());
+            if let Some(prefix) = prefix {
+                donor = Some((key.clone(), shared.clone(), prefix));
+                break;
+            }
+        }
+        if donor.is_some() {
+            break;
+        }
+    }
+
+    // Second: give that prefix to the shared vpc's *other* peer, in a different peering.
+    let mut done = false;
+    if let Some((donor_key, shared, prefix)) = donor {
+        for (key, peering) in agent.spec.peerings.iter_mut().flatten() {
+            if *key == donor_key {
+                continue;
+            }
+            let Some(manifests) = peering.peering.as_mut() else {
+                continue;
+            };
+            if !manifests.contains_key(&shared) {
+                continue;
+            }
+            let names: Vec<String> = manifests
+                .keys()
+                .filter(|name| **name != shared)
+                .cloned()
+                .collect();
+            for name in names {
+                let Some(manifest) = manifests.get_mut(&name) else {
+                    continue;
+                };
+                if let Some(ip) = manifest
+                    .expose
+                    .iter_mut()
+                    .flatten()
+                    .filter(|expose| advertises_its_ips(expose))
+                    .flat_map(|expose| expose.ips.iter_mut().flatten())
+                    .find(|ip| ip.cidr.is_some())
+                {
+                    ip.cidr = Some(prefix.clone());
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                break;
+            }
+        }
+    }
+    done
+}
+
+/// The mutations that break a peering's ACL or the group it names, rather than an expose's prefixes.
+///
+/// Split out of [`apply`] only for length; none of these needs the driver.
+fn mutate_peering_metadata(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
+    match mutation {
+        Mutation::MakeBothSidesStateful => {
+            let mut done = false;
+            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
+                let manifests = peerings.peering.iter_mut().flatten();
+                let mut touched = 0;
+                for (_, manifest) in manifests {
+                    for expose in manifest.expose.iter_mut().flatten() {
+                        let nat = expose.nat.get_or_insert(
+                            crate::gateway_agent_crd::GatewayAgentPeeringsPeeringExposeNat {
+                                masquerade: None,
+                                port_forward: None,
+                                r#static: None,
+                            },
+                        );
+                        nat.port_forward = None;
+                        nat.r#static = None;
+                        nat.masquerade = Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
+                            idle_timeout: None,
+                        });
+                        // masquerade needs somewhere to translate to
+                        if expose.r#as.is_none() {
+                            expose.r#as = Some(vec![GatewayAgentPeeringsPeeringExposeAs {
+                                cidr: Some("172.31.0.0/16".to_string()),
+                                not: None,
+                            }]);
+                        }
+                    }
+                    touched += 1;
+                }
+                if touched == 2 {
+                    done = true;
+                    break;
+                }
+            }
+            done
+        }
+
+        Mutation::NameAMissingGroup => {
+            if let Some((_, peerings)) = agent.spec.peerings.iter_mut().flatten().next() {
+                peerings.gateway_group = Some("no-such-group".to_string());
+                true
+            } else {
+                false
+            }
+        }
+
+        Mutation::NameAStrangerInARule => {
+            let mut done = false;
+            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
+                let Some(acl) = peerings.acl.as_mut() else {
+                    continue;
+                };
+                if let Some(rule) = acl.rules.iter_mut().flatten().next() {
+                    rule.from = Some("not-in-this-peering".to_string());
+                    done = true;
+                    break;
+                }
+            }
+            done
+        }
+
+        Mutation::DemandFlowScope => {
+            let mut done = false;
+            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
+                // Flow scope is legal where a side is stateful throughout, so asking for it there
+                // breaks nothing. Skip those peerings rather than produce a case whose legality is
+                // arguable: the assertion this feeds is "whatever was touched must be refused".
+                let allowed = peerings
+                    .peering
+                    .iter()
+                    .flatten()
+                    .any(|(_, manifest)| stateful_throughout(manifest));
+                if allowed {
+                    continue;
+                }
+                let Some(acl) = peerings.acl.as_mut() else {
+                    continue;
+                };
+                for rule in acl.rules.iter_mut().flatten() {
+                    rule.scope = Some(GatewayAgentPeeringsAclRulesScope::Flow);
+                    done = true;
+                }
+                if done {
+                    break;
+                }
+            }
+            done
+        }
+        _ => unreachable!("mutate_peering_metadata called for {mutation:?}"),
+    }
+}
+
+/// The mutations that break the *shape* of an expose's prefix lists -- lengths, families, exclusions.
+///
+/// Split out of [`apply`] only for length; none of these needs the driver.
+fn mutate_expose_shape(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
+    match mutation {
         Mutation::MismatchPortForwardPrefixes | Mutation::MismatchStaticNatPrefixes => {
             let wanted: fn(&GatewayAgentPeeringsPeeringExpose) -> bool =
                 if mutation == Mutation::MismatchPortForwardPrefixes {
@@ -247,7 +475,26 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             }
             done
         }
+        _ => unreachable!("mutate_expose_shape called for {mutation:?}"),
+    }
+}
 
+/// Apply `mutation`, returning whether it found something to break.
+///
+/// **A `true` return means the result is certainly illegal**, not merely that something changed. Every
+/// mutation is written to decline rather than to produce a case whose legality is arguable -- see
+/// `DemandFlowScope` and `OverlapWithAnotherPeer`, both of which break rules that have legitimate
+/// exceptions and so check the exception does not apply before touching anything. That is what lets a
+/// property assert the validator refuses whatever this touched, which is the only guard against the
+/// validator growing more permissive about a rule nothing downstream enforces.
+pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation) -> Option<bool> {
+    let bit = match mutation {
+        Mutation::None => false,
+
+        Mutation::MismatchPortForwardPrefixes
+        | Mutation::MismatchStaticNatPrefixes
+        | Mutation::ExcludeFromPortForwarding
+        | Mutation::MixAddressFamilies => mutate_expose_shape(agent, mutation),
         Mutation::UseReservedPrefix => {
             let reserved = ["127.0.0.0/8", "224.0.0.0/4", "0.0.0.0/8", "ff00::/8"];
             let choice =
@@ -289,84 +536,10 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
-        Mutation::MakeBothSidesStateful => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let manifests = peerings.peering.iter_mut().flatten();
-                let mut touched = 0;
-                for (_, manifest) in manifests {
-                    for expose in manifest.expose.iter_mut().flatten() {
-                        let nat = expose.nat.get_or_insert(
-                            crate::gateway_agent_crd::GatewayAgentPeeringsPeeringExposeNat {
-                                masquerade: None,
-                                port_forward: None,
-                                r#static: None,
-                            },
-                        );
-                        nat.port_forward = None;
-                        nat.r#static = None;
-                        nat.masquerade = Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
-                            idle_timeout: None,
-                        });
-                        // masquerade needs somewhere to translate to
-                        if expose.r#as.is_none() {
-                            expose.r#as = Some(vec![GatewayAgentPeeringsPeeringExposeAs {
-                                cidr: Some("172.31.0.0/16".to_string()),
-                                not: None,
-                            }]);
-                        }
-                    }
-                    touched += 1;
-                }
-                if touched == 2 {
-                    done = true;
-                    break;
-                }
-            }
-            done
-        }
-
-        Mutation::NameAMissingGroup => {
-            if let Some((_, peerings)) = agent.spec.peerings.iter_mut().flatten().next() {
-                peerings.gateway_group = Some("no-such-group".to_string());
-                true
-            } else {
-                false
-            }
-        }
-
-        Mutation::NameAStrangerInARule => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let Some(acl) = peerings.acl.as_mut() else {
-                    continue;
-                };
-                if let Some(rule) = acl.rules.iter_mut().flatten().next() {
-                    rule.from = Some("not-in-this-peering".to_string());
-                    done = true;
-                    break;
-                }
-            }
-            done
-        }
-
-        Mutation::DemandFlowScope => {
-            let mut done = false;
-            for (_, peerings) in agent.spec.peerings.iter_mut().flatten() {
-                let Some(acl) = peerings.acl.as_mut() else {
-                    continue;
-                };
-                for rule in acl.rules.iter_mut().flatten() {
-                    rule.scope = Some(GatewayAgentPeeringsAclRulesScope::Flow);
-                    done = true;
-                }
-                if done {
-                    break;
-                }
-            }
-            done
-        }
-
+        Mutation::MakeBothSidesStateful
+        | Mutation::NameAMissingGroup
+        | Mutation::NameAStrangerInARule
+        | Mutation::DemandFlowScope => mutate_peering_metadata(agent, mutation),
         Mutation::UsePortZero => {
             let mut done = false;
             for expose in exposes_mut(agent) {
@@ -386,90 +559,7 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
-        Mutation::OverlapWithAnotherPeer => {
-            // Two passes, so nothing has to be borrowed mutably while the search is still reading.
-            // A single pass with two live borrows would need `leak()` or a clone of the whole spec,
-            // and this runs millions of times.
-            //
-            // First: find a vpc that appears in two peerings, and a prefix one of its peers exposes.
-            let mut donor: Option<(String, String, String)> = None;
-            for (key, peering) in agent.spec.peerings.iter().flatten() {
-                let Some(manifests) = peering.peering.as_ref() else {
-                    continue;
-                };
-                for shared in manifests.keys() {
-                    let elsewhere = agent
-                        .spec
-                        .peerings
-                        .iter()
-                        .flatten()
-                        .any(|(other, peering)| {
-                            other != key
-                                && peering
-                                    .peering
-                                    .as_ref()
-                                    .is_some_and(|m| m.contains_key(shared))
-                        });
-                    if !elsewhere {
-                        continue;
-                    }
-                    let prefix = manifests
-                        .iter()
-                        .filter(|(name, _)| *name != shared)
-                        .flat_map(|(_, manifest)| manifest.expose.iter().flatten())
-                        .flat_map(|expose| expose.ips.iter().flatten())
-                        .find_map(|ip| ip.cidr.clone());
-                    if let Some(prefix) = prefix {
-                        donor = Some((key.clone(), shared.clone(), prefix));
-                        break;
-                    }
-                }
-                if donor.is_some() {
-                    break;
-                }
-            }
-
-            // Second: give that prefix to the shared vpc's *other* peer, in a different peering.
-            let mut done = false;
-            if let Some((donor_key, shared, prefix)) = donor {
-                for (key, peering) in agent.spec.peerings.iter_mut().flatten() {
-                    if *key == donor_key {
-                        continue;
-                    }
-                    let Some(manifests) = peering.peering.as_mut() else {
-                        continue;
-                    };
-                    if !manifests.contains_key(&shared) {
-                        continue;
-                    }
-                    let names: Vec<String> = manifests
-                        .keys()
-                        .filter(|name| **name != shared)
-                        .cloned()
-                        .collect();
-                    for name in names {
-                        let Some(manifest) = manifests.get_mut(&name) else {
-                            continue;
-                        };
-                        if let Some(ip) = manifest
-                            .expose
-                            .iter_mut()
-                            .flatten()
-                            .flat_map(|expose| expose.ips.iter_mut().flatten())
-                            .find(|ip| ip.cidr.is_some())
-                        {
-                            ip.cidr = Some(prefix.clone());
-                            done = true;
-                            break;
-                        }
-                    }
-                    if done {
-                        break;
-                    }
-                }
-            }
-            done
-        }
+        Mutation::OverlapWithAnotherPeer => overlap_with_another_peer(agent),
     };
     Some(bit)
 }
