@@ -275,6 +275,17 @@ let
       modules = pkgs.linux-fancy-modular.modules;
       inherit (pkgs.linux-fancy-modular) modDirVersion;
     };
+  }
+  # Flatcar is pinned to an `amd64-usr` release, so the profile simply does
+  # not exist for another guest architecture.  Omitted rather than pointed
+  # at the x86_64 artifacts: the manifest's `arch` is derived from the build
+  # platform, so including it would claim an aarch64 kernel and hand over an
+  # x86_64 one -- a mismatch `check_arch` cannot catch because the manifest
+  # would be lying rather than disagreeing.
+  #
+  # Flatcar does publish arm64 releases; wiring one up is a matter of a
+  # second pin, not new mechanism.
+  // lib.optionalAttrs (kernel-manifest-arch == "x86_64") {
     ${flatcar-kernel-dir} = {
       inherit (flatcar-kernel-adapted) image configfile modules modDirVersion;
       boot = "initramfs";
@@ -310,9 +321,12 @@ let
       hypervisor = "qemu";
       kernel-dir = modular-kernel-dir;
     };
+  }
+  // lib.optionalAttrs (kernel-manifest-arch == "x86_64") {
     # The kernel the dataplane actually ships on.  The whole point: our own
     # kernel is built from a config we chose, so it cannot tell us whether
-    # the code works on the one we deploy.
+    # the code works on the one we deploy.  x86_64 only -- see
+    # `guest-kernels`.
     flatcar = {
       hypervisor = "qemu";
       kernel-dir = flatcar-kernel-dir;
