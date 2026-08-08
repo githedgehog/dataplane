@@ -167,10 +167,34 @@ impl RequestedBackend {
     ///   run under QEMU/TCG (the test still runs).
     /// - Cross-arch + explicit [`CloudHypervisor`](Self::CloudHypervisor):
     ///   skip -- cloud-hypervisor cannot emulate.
+    ///
+    /// `needs_qemu` reports whether the test's configuration asks for
+    /// something only QEMU provides (today: an emulated Intel NIC).  An
+    /// *unpinned* test that does so is not an error -- it is a test that
+    /// wants QEMU, so it gets QEMU.  A test that pinned cloud-hypervisor
+    /// *and* asked for one is a contradiction, but it never reaches here:
+    /// [`VmConfig::assert_valid_for`](crate::config::VmConfig::assert_valid_for)
+    /// rejects it at compile time.  The arm below exists so this stays a
+    /// total function rather than relying on that.
     #[must_use]
-    pub fn resolve(self, cross_arch: bool) -> BackendResolution {
+    pub fn resolve(self, cross_arch: bool, needs_qemu: bool) -> BackendResolution {
         use BackendResolution::{Run, Skip};
         use EffectiveBackend::{CloudHypervisor, Qemu};
+
+        // Only QEMU can satisfy the request, whatever the architecture says.
+        if needs_qemu {
+            return match self {
+                Self::Default | Self::Qemu => Run {
+                    backend: Qemu,
+                    accel: if cross_arch { Accel::Tcg } else { Accel::Kvm },
+                },
+                Self::CloudHypervisor => Skip {
+                    reason: "the configured NIC model is emulated only by QEMU, \
+                             but the test pinned cloud-hypervisor"
+                        .to_owned(),
+                },
+            };
+        }
 
         match (self, cross_arch) {
             (Self::Default | Self::CloudHypervisor, false) => Run {
@@ -230,7 +254,7 @@ mod tests {
             RequestedBackend::CloudHypervisor,
             RequestedBackend::Qemu,
         ] {
-            match req.resolve(false) {
+            match req.resolve(false, false) {
                 BackendResolution::Run { accel, .. } => assert_eq!(accel, Accel::Kvm),
                 BackendResolution::Skip { .. } => panic!("native run must not skip: {req:?}"),
             }
@@ -240,7 +264,7 @@ mod tests {
     #[test]
     fn cross_default_falls_back_to_qemu_tcg() {
         assert_eq!(
-            RequestedBackend::Default.resolve(true),
+            RequestedBackend::Default.resolve(true, false),
             BackendResolution::Run {
                 backend: EffectiveBackend::Qemu,
                 accel: Accel::Tcg,
@@ -251,7 +275,7 @@ mod tests {
     #[test]
     fn cross_qemu_uses_tcg() {
         assert_eq!(
-            RequestedBackend::Qemu.resolve(true),
+            RequestedBackend::Qemu.resolve(true, false),
             BackendResolution::Run {
                 backend: EffectiveBackend::Qemu,
                 accel: Accel::Tcg,
@@ -262,9 +286,64 @@ mod tests {
     #[test]
     fn cross_explicit_cloud_hypervisor_skips() {
         assert!(matches!(
-            RequestedBackend::CloudHypervisor.resolve(true),
+            RequestedBackend::CloudHypervisor.resolve(true, false),
             BackendResolution::Skip { .. },
         ));
+    }
+
+    // -- QEMU-only configurations -------------------------------------
+
+    /// An unpinned test that asks for something only QEMU provides is not a
+    /// contradiction -- it is a test that wants QEMU.  Selecting it beats
+    /// making the author restate the backend they already implied.
+    #[test]
+    fn unpinned_qemu_only_config_selects_qemu() {
+        assert_eq!(
+            RequestedBackend::Default.resolve(false, true),
+            BackendResolution::Run {
+                backend: EffectiveBackend::Qemu,
+                accel: Accel::Kvm,
+            },
+        );
+    }
+
+    /// Needing QEMU must not cost hardware acceleration when the guest
+    /// architecture matches the host; only a cross-arch guest falls to TCG.
+    #[test]
+    fn qemu_only_config_keeps_kvm_when_not_cross_arch() {
+        for req in [RequestedBackend::Default, RequestedBackend::Qemu] {
+            match req.resolve(false, true) {
+                BackendResolution::Run { backend, accel } => {
+                    assert_eq!(backend, EffectiveBackend::Qemu);
+                    assert_eq!(accel, Accel::Kvm, "{req:?} should keep KVM natively");
+                }
+                BackendResolution::Skip { .. } => panic!("{req:?} should run"),
+            }
+        }
+        assert_eq!(
+            RequestedBackend::Qemu.resolve(true, true),
+            BackendResolution::Run {
+                backend: EffectiveBackend::Qemu,
+                accel: Accel::Tcg,
+            },
+        );
+    }
+
+    /// Pinning cloud-hypervisor *and* asking for a QEMU-only NIC is a
+    /// contradiction that `VmConfig::assert_valid_for` rejects at compile
+    /// time.  `resolve` still has to answer, so it skips rather than
+    /// silently booting a VM that cannot honour the request.
+    #[test]
+    fn pinned_cloud_hypervisor_with_qemu_only_config_skips() {
+        for cross in [false, true] {
+            assert!(
+                matches!(
+                    RequestedBackend::CloudHypervisor.resolve(cross, true),
+                    BackendResolution::Skip { .. },
+                ),
+                "cross={cross} should skip",
+            );
+        }
     }
 
     #[test]
