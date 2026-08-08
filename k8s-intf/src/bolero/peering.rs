@@ -45,13 +45,16 @@ impl ValueGenerator for LegalValuePeeringsPeeringGenerator<'_> {
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
         let num_expose = d.gen_u8(Bound::Included(&1), Bound::Included(&self.max_exposes))?;
         let mut expose = Vec::with_capacity(usize::from(num_expose));
-        for _ in 0..num_expose {
+        for slot in 0..num_expose {
             // The flavour has to be settled before the prefixes are drawn, since it constrains the
             // shape and cannot be imposed afterwards. The family is settled for the whole peering,
             // one level up: the two manifests must agree on it.
             let flavour = self.flavours
                 [d.gen_usize(Bound::Included(&0), Bound::Excluded(&self.flavours.len()))?];
-            expose.push(ExposeGenerator::new(flavour, self.family, self.subnets).generate(d)?);
+            expose.push(
+                ExposeGenerator::new(flavour, self.family, slot, num_expose, self.subnets)
+                    .generate(d)?,
+            );
         }
 
         Some(GatewayAgentPeeringsPeering {
