@@ -2597,22 +2597,44 @@ mod tests {
 /// References are compared by **address**, not by value: two VLAN tags with identical contents are a
 /// pass under `assert_eq!` and a bug if the two implementations picked different ones.
 ///
-/// # What this cannot catch
+/// # Two lines of defence, and where each one fires
 ///
 /// Both `matches` and `look` call the same [`ViewStep::step`], so a bug *inside* `step` is invisible
 /// here -- it moves both sides together. What is checked is the hand-written *chaining* around it,
 /// which is where the duplication is.
 ///
-/// And it can only observe the safe direction of a divergence. If `matches` were ever too **strict**,
-/// the matcher accepts where `as_view` refuses and this fails with a counterexample. If it were too
-/// **permissive**, `look` reaches `unwrap_unchecked` on a `None`, and a test that has already invoked
-/// undefined behaviour is in no position to report it. **That direction is what miri is for**, and
-/// these run clean under `just miri test -p dataplane-net view_properties`.
+/// Against a divergence in that chaining there are two independent guards, and both were demonstrated
+/// by breaking the arity-3 arm on purpose:
 ///
-/// Note what that costs: bolero manages 5 cases a second under miri against roughly 35,000 native, and
-/// the miri recipe spawns its own `nix-shell`, so `BOLERO_RANDOM_TEST_TIME_MS` from the caller's
-/// environment does not reach it and the run stops at **25 cases per property**. That is a smoke test
-/// of the unsafe path, not a proof. Raising it means setting the budget inside `miri.just`.
+/// 1. **This differential, which fires first.** The `Matcher` comparison happens *before* `look` is
+///    called, so a divergence in either direction fails with a shrunk counterexample rather than by
+///    invoking undefined behaviour. Making `matches` stricter, or making it accept everything, both
+///    fail here in under a second.
+/// 2. **The standard library's own check, as a backstop.** `unwrap_unchecked` bottoms out in
+///    `hint::unreachable_unchecked`, whose `assert_unsafe_precondition!` is gated on `ub_checks` --
+///    which follows `-Cdebug-assertions`, and `profile.fuzz` sets that **on**. So if a divergence ever
+///    slipped past guard 1 -- if `Matcher` carried the same bug, say -- reaching `look` aborts:
+///
+///    ```text
+///    unsafe precondition(s) violated: hint::unreachable_unchecked must never be reached
+///    thread caused non-unwinding panic. aborting.
+///    ```
+///
+///    Verified by calling `look` on a deliberately over-permissive `matches` with the differential
+///    removed: `SIGABRT`, in the fuzz profile, no miri required. Note it is a *non-unwinding* panic, so
+///    bolero cannot catch it and the process dies -- which under libfuzzer is exactly right, a saved
+///    `crash-*` artifact rather than a silent pass.
+///
+/// The practical consequence is that **`just fuzz` on the fuzz profile already detects the unsound
+/// direction**, and that is where the assurance mostly comes from. Miri remains useful for what
+/// `ub_checks` does not model -- aliasing and provenance across the `as_ref_unchecked` boundary -- but
+/// it is not the only thing standing between this and undefined behaviour.
+///
+/// These do run clean under `just miri test -p dataplane-net view_properties`. Worth knowing what that
+/// is worth, though: bolero manages 5 cases a second under miri against roughly 35,000 native, and the
+/// miri recipe spawns its own `nix-shell`, so `BOLERO_RANDOM_TEST_TIME_MS` from the caller's
+/// environment never arrives and the run stops at **25 cases per property**. A smoke test, not a proof.
+/// Raising it means setting the budget inside `miri.just`.
 #[cfg(test)]
 mod view_properties {
     use crate::eth::Eth;
