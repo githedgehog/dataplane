@@ -907,7 +907,8 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // the reliable host signal.
         let daemon_arch = query_daemon_arch(&client).await?;
         let cross = is_cross_arch(&daemon_arch, std::env::consts::ARCH);
-        let (backend, accel) = match requested.resolve(cross) {
+        let needs_qemu = vm_config.nic_model.requires_qemu();
+        let (backend, accel) = match requested.resolve(cross, needs_qemu) {
             BackendResolution::Run { backend, accel } => (backend, accel),
             BackendResolution::Skip { reason } => {
                 return Ok(ContainerOutcome::Skipped { reason });
