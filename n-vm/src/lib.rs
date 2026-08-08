@@ -31,14 +31,16 @@ pub use backend::{
     RequestedBackend, is_cross_arch,
 };
 pub use cloud_hypervisor::CloudHypervisor;
-pub use config::{Accel, GuestHugePageConfig, GuestHugePageSize, HostPageSize, NicModel, VmConfig};
+pub use config::{
+    Accel, ConfigProblem, GuestHugePageConfig, GuestHugePageSize, HostPageSize, NicModel, VmConfig,
+};
 pub use container::{ContainerOutcome, ContainerTestResult, run_test_in_vm};
 pub use dispatch::{
     block_on_in_guest, block_on_in_guest_multi_thread, is_in_test_container, is_in_vm,
     run_container_tier, run_host_tier,
 };
 pub use error::{ContainerError, VmError};
-pub use n_vm_macros::{corpus, guest, hypervisor, network, test};
+pub use n_vm_macros::{corpus, test};
 pub use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_IN_VM,
     ENV_MARKER_VALUE, ENV_TEST_ROOT, ENV_VM_ROOT, HYPERVISOR_API_SOCKET_PATH, INIT_BINARY_PATH,
