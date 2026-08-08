@@ -27,11 +27,12 @@ pub enum Mutation {
     NameAStrangerInARule,
     DemandFlowScope,
     UsePortZero,
+    DuplicateAStaticExpose,
     OverlapWithAnotherPeer,
 }
 
 impl Mutation {
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 15;
 
     #[must_use]
     pub fn index(self) -> usize {
@@ -57,6 +58,7 @@ impl Mutation {
             Self::NameAStrangerInARule,
             Self::DemandFlowScope,
             Self::UsePortZero,
+            Self::DuplicateAStaticExpose,
             Self::OverlapWithAnotherPeer,
         ]
     }
@@ -71,6 +73,20 @@ fn lengthen(cidr: &str, by: u8) -> Option<String> {
         return None;
     }
     Some(format!("{address}/{longer}"))
+}
+
+fn sibling(cidr: &str) -> Option<String> {
+    let (address, len) = cidr.split_once('/')?;
+    let len: u8 = len.parse().ok()?;
+    if address.contains(':') {
+        let bits = address.parse::<std::net::Ipv6Addr>().ok()?.to_bits();
+        let flipped = bits ^ (1u128 << (128u8.checked_sub(len)?));
+        Some(format!("{}/{len}", std::net::Ipv6Addr::from(flipped)))
+    } else {
+        let bits = address.parse::<std::net::Ipv4Addr>().ok()?.to_bits();
+        let flipped = bits ^ (1u32 << (32u8.checked_sub(len)?));
+        Some(format!("{}/{len}", std::net::Ipv4Addr::from(flipped)))
+    }
 }
 
 fn exposes_mut(agent: &mut GatewayAgent) -> Vec<&mut GatewayAgentPeeringsPeeringExpose> {
@@ -371,6 +387,46 @@ fn mutate_expose_shape(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
     }
 }
 
+fn duplicate_a_static_expose(agent: &mut GatewayAgent) -> bool {
+    for (_, peering) in agent.spec.peerings.iter_mut().flatten() {
+        for manifest in peering.peering.iter_mut().flatten().map(|(_, m)| m) {
+            let Some(exposes) = manifest.expose.as_mut() else {
+                continue;
+            };
+            let statics: Vec<usize> = exposes
+                .iter()
+                .enumerate()
+                .filter(|(_, expose)| {
+                    expose
+                        .nat
+                        .as_ref()
+                        .is_some_and(|nat| nat.r#static.is_some())
+                })
+                .map(|(index, _)| index)
+                .collect();
+
+            let (Some(donor), Some(recipient)) = (statics.first(), statics.get(1)) else {
+                continue;
+            };
+            let mut copy = exposes[*donor].clone();
+            let moved = copy
+                .r#as
+                .as_mut()
+                .and_then(|ranges| ranges.first_mut())
+                .and_then(|range| {
+                    let next_door = sibling(range.cidr.as_ref()?)?;
+                    range.cidr = Some(next_door);
+                    Some(())
+                });
+            if moved.is_some() {
+                exposes[*recipient] = copy;
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation) -> Option<bool> {
     let bit = match mutation {
         Mutation::None => false,
@@ -443,6 +499,7 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
             done
         }
 
+        Mutation::DuplicateAStaticExpose => duplicate_a_static_expose(agent),
         Mutation::OverlapWithAnotherPeer => overlap_with_another_peer(agent),
     };
     Some(bit)
