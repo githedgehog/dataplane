@@ -2710,3 +2710,173 @@ mod view_properties {
     // satisfy `Within<()>`, so the adjacency graph forbids a shape that begins mid-stack. That half of
     // the contract is enforced at compile time and needs no property.
 }
+
+/// The **mutable** half of the unsafe boundary, which is the more delicate one.
+///
+/// [`Look::look`] and [`sealed::Sealed::matches`] at least walk the stack the same way: both chain
+/// [`ViewStep::step`]. [`LookMut::look_mut`] does not. It builds a [`MatcherMut`](super::pat::MatcherMut)
+/// from [`Headers::pat_mut`] and chains [`ViewStepMut::chain`] over it, then calls
+/// `unreachable_unchecked` if that comes back `None`.
+///
+/// So the invariant is established by one traversal and consumed by a **different** one. Nothing makes
+/// `ViewStep::step` and `ViewStepMut::chain` agree except that they were written to; where the read path
+/// risks a mis-threaded cursor between two copies of the same walk, this risks two walks disagreeing
+/// outright.
+///
+/// Note what is *not* worth testing here: `look_mut` against `MatcherMut` directly. `look_mut` **is**
+/// `MatcherMut` plus an `unreachable_unchecked`, so that comparison is the implementation against
+/// itself. The question worth asking is whether `matches` -- the `ViewStep` walk that licensed the
+/// unchecked call -- agrees with the `ViewStepMut` walk that has to deliver on it.
+///
+/// # Aliasing, and why `ub_checks` cannot help
+///
+/// `look_mut` hands back several `&mut` into one [`Headers`], pre-split through
+/// [`Fields`](super::pat::Fields). If that split ever aliased, two of those references would point at
+/// the same layer -- undefined behaviour of a kind the `ub_checks` backstop does **not** model. It
+/// checks the `unreachable_unchecked` precondition, nothing about aliasing.
+///
+/// Only miri sees that, and only with stacked borrows *on*, which this repo turns off by default:
+///
+/// ```text
+/// STACKED_BORROW_CHECK=enabled just miri test -p dataplane-net view_mut_properties
+/// ```
+///
+/// Through the environment, not `just`'s command line: a *module's* variables cannot be overridden
+/// there. `just miri stacked_borrow_check=enabled test` parses as a recipe name and
+/// `just --set stacked_borrow_check enabled miri test` is refused, which is why `miri.just` reads both
+/// knobs via `env()`.
+#[cfg(test)]
+mod view_mut_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::LookMut;
+    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::vlan::Vlan;
+
+    /// Whatever licensed the unchecked call must be deliverable by the walk that has to deliver it.
+    ///
+    /// Checked without calling `look_mut`, so a divergence is a clean counterexample rather than
+    /// undefined behaviour: `as_view_mut` consults `matches`, and the chain below is the same one
+    /// `look_mut` would run, but safely.
+    #[test]
+    fn what_matches_licenses_the_mutable_walk_can_deliver() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let licensed = owned.as_view_mut::<(&Eth, &Net, &Transport)>().is_some();
+                let deliverable = owned.pat_mut().eth().net().transport().done().is_some();
+                assert_eq!(
+                    licensed, deliverable,
+                    "`matches` and the mutable walk disagree, so `look_mut` would reach \
+                     `unreachable_unchecked`: {h:?}"
+                );
+            });
+    }
+
+    /// The same for a shape naming a VLAN tag, where the walks have to agree on how many were consumed.
+    #[test]
+    fn what_matches_licenses_the_mutable_vlan_walk_can_deliver() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let licensed = owned
+                    .as_view_mut::<(&Eth, &Vlan, &Net, &Transport)>()
+                    .is_some();
+                let deliverable = owned
+                    .pat_mut()
+                    .eth()
+                    .vlan()
+                    .net()
+                    .transport()
+                    .done()
+                    .is_some();
+                assert_eq!(
+                    licensed, deliverable,
+                    "`matches` and the mutable vlan walk disagree: {h:?}"
+                );
+            });
+    }
+
+    /// Exercise the multi-`&mut` split itself: write through every reference and read the writes back.
+    ///
+    /// The assertions are almost beside the point. What matters is that the references are *created and
+    /// written through*, so that miri with stacked borrows enabled can judge whether
+    /// [`Fields`](super::pat::Fields) handed out two paths to the same layer. Nothing else in the suite
+    /// does that.
+    fn exercise_the_mutable_split() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let Some(view) = owned.as_view_mut::<(&Eth, &Net, &Transport)>() else {
+                    return;
+                };
+                let (eth, net, transport) = view.look_mut();
+
+                // A write through each reference, then a read back through the same one. If two of
+                // these aliased, the writes would interfere and miri would object to the borrow stack
+                // long before the values did.
+                let want_src =
+                    crate::eth::mac::SourceMac::try_from(crate::eth::mac::Mac([2, 0, 0, 0, 0, 1]))
+                        .unwrap_or_else(|_| {
+                            unreachable!("a locally-administered unicast mac is a valid source")
+                        });
+                eth.set_source(want_src);
+                let seen_net = net.dst_addr();
+                let seen_transport = transport.dst_port();
+
+                assert_eq!(
+                    eth.source(),
+                    want_src,
+                    "the write through eth did not stick"
+                );
+                assert_eq!(net.dst_addr(), seen_net, "net changed under a write to eth");
+                assert_eq!(
+                    transport.dst_port(),
+                    seen_transport,
+                    "transport changed under a write to eth"
+                );
+            });
+    }
+
+    /// Shards of [`exercise_the_mutable_split`], so the machine can be used.
+    ///
+    /// Under miri this property is the expensive one and the one that matters most, and its cost is
+    /// wall-clock: bolero manages about five cases a second. Raising the time budget buys cases
+    /// linearly, but only on one core.
+    ///
+    /// Each shard seeds itself from the OS, so `N` shards explore `N` independent streams and nextest
+    /// runs them concurrently -- turning a machine with cores to spare into more cases for the same
+    /// wall time, which is the only lever that does not cost patience. Sixteen rather than sixty: miri
+    /// carries a large memory footprint per process, and the other properties want cores too.
+    macro_rules! split_shards {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    exercise_the_mutable_split();
+                }
+            )*
+        };
+    }
+
+    split_shards!(
+        the_mutable_split_hands_out_distinct_layers,
+        split_shard_02,
+        split_shard_03,
+        split_shard_04,
+        split_shard_05,
+        split_shard_06,
+        split_shard_07,
+        split_shard_08,
+        split_shard_09,
+        split_shard_10,
+        split_shard_11,
+        split_shard_12,
+        split_shard_13,
+        split_shard_14,
+        split_shard_15,
+        split_shard_16,
+    );
+}
