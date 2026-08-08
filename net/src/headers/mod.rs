@@ -1194,7 +1194,7 @@ where
 mod contract {
     use crate::eth::ethtype::CommonEthType;
     use crate::eth::{Eth, GenWithEthType};
-    use crate::headers::{Headers, Net, Transport};
+    use crate::headers::{Headers, MAX_NET_EXTENSIONS, MAX_VLANS, Net, NetExt, Transport};
     use crate::icmp4::Icmp4;
     use crate::icmp6::Icmp6;
     use crate::ipv4;
@@ -1205,6 +1205,7 @@ mod contract {
     use crate::vxlan::Vxlan;
     use arrayvec::ArrayVec;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use std::ops::Bound;
 
     impl TypeGenerator for Headers {
         /// Generate a completely arbitrary value of [`Headers`].
@@ -1247,6 +1248,53 @@ mod contract {
                     .unwrap_or_else(|_| unreachable!())
                     .0,
             )
+        }
+    }
+
+    /// Draws header layouts with varied VLAN and extension-header stacks.
+    ///
+    /// Unlike [`CommonHeaders`], this generator exercises structural view and matcher behavior.
+    /// Wire-level `next_header` consistency is intentionally outside its contract.
+    #[allow(dead_code)] // constructed through `.with_generator()`
+    #[repr(transparent)]
+    pub struct ShapedHeaders;
+
+    impl ValueGenerator for ShapedHeaders {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            // Start from a common stack so the base layers are realistic, then vary the structure the
+            // view and matcher semantics actually turn on.
+            let mut headers = CommonHeaders.generate(driver)?;
+
+            let vlans = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_VLANS))?;
+            for _ in 0..vlans {
+                headers.vlan.push(driver.produce()?);
+            }
+
+            // Extension headers hang off the net layer, so there is nothing to attach them to without
+            // one. The IPv4 authentication header is the only one that belongs on a v4 packet.
+            let ipv4 = matches!(headers.net, Some(Net::Ipv4(_)));
+            if headers.net.is_some() {
+                let exts =
+                    driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_NET_EXTENSIONS))?;
+                for _ in 0..exts {
+                    let ext = if ipv4 {
+                        NetExt::Ipv4Auth(driver.produce()?)
+                    } else {
+                        match driver.gen_u8(Bound::Included(&0), Bound::Included(&4))? {
+                            0 => NetExt::HopByHop(driver.produce()?),
+                            1 => NetExt::DestOpts(driver.produce()?),
+                            2 => NetExt::Routing(driver.produce()?),
+                            3 => NetExt::Fragment(driver.produce()?),
+                            _ => NetExt::Ipv6Auth(driver.produce()?),
+                        }
+                    };
+                    headers.net_ext.push(ext);
+                }
+            }
+
+            Some(headers)
         }
     }
 
