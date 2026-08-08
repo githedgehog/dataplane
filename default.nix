@@ -311,6 +311,132 @@ let
       $out/n-vm-manifest.json
   '';
 
+  # Builds the initramfs for a kernel whose boot-critical drivers are
+  # modules.
+  #
+  # Only needed when the root filesystem transport is `=m`: mounting the
+  # workspace needs virtiofs, virtiofs is a module, and the module tree
+  # lives on the workspace.  The initramfs is the only channel that escapes
+  # that, because the kernel unpacks it itself, from memory, before any
+  # driver loads.
+  #
+  # The dependency closure and load order are resolved *here*, by the real
+  # `modprobe` against the real module tree, rather than in the guest.  We
+  # know the answer at build time, so the pre-init should not be
+  # rediscovering it at boot: it reads an ordered list and calls
+  # `finit_module` down it.  No `modules.dep` parsing, no dependency
+  # resolution, no uevent handling in the VM.
+  #
+  # `boot-modules` are the modules needed to reach the root.  Feature
+  # modules a test asks for are loaded later by `n-it`, from the mounted
+  # tree, and do not belong here.
+  mk-initramfs =
+    {
+      kernel,
+      pre-init,
+      boot-modules ? [ "virtiofs" ],
+    }:
+    pkgs.runCommand "n-vm-initramfs"
+      {
+        nativeBuildInputs = with pkgs.pkgsBuildHost; [
+          cpio
+          kmod
+          xz
+          zstd
+        ];
+      }
+      ''
+        root=$(mktemp -d)
+        mkdir -p "$root/modules" "$root/newroot"
+
+        # Ask modprobe for the closure, in load order.  `--show-depends`
+        # prints one `insmod <path>` line per module, dependencies first.
+        for m in ${pkgs.lib.escapeShellArgs boot-modules}; do
+          modprobe --dirname ${kernel.modules} \
+                   --set-version ${kernel.modDirVersion} \
+                   --show-depends "$m" \
+            || { echo "no such module in the tree: $m" >&2; exit 1; }
+        done | awk '$1 == "insmod" { print $2 }' > "$NIX_BUILD_TOP/ordered"
+
+        # Dedupe while preserving order: a shared dependency (fuse, here)
+        # appears once per dependent, and loading it twice is an error.
+        : > "$root/modules.load"
+        declare -A seen
+        while read -r ko; do
+          [ -n "$ko" ] || continue
+          base=$(basename "$ko")
+          # Decompress on the way in.  A distro tree ships `.ko.xz`, and
+          # `finit_module` cannot read that unless the kernel was built
+          # with CONFIG_MODULE_DECOMPRESS -- which is not something we can
+          # rely on for someone else's kernel.  Doing it here means the
+          # pre-init never needs a decompressor.
+          case "$base" in
+            *.ko.xz)  base=''${base%.xz}; xz  -dc "$ko" > "$root/modules/$base" ;;
+            *.ko.zst) base=''${base%.zst}; zstd -dc "$ko" > "$root/modules/$base" ;;
+            *.ko)     cp "$ko" "$root/modules/$base" ;;
+            *) echo "unrecognised module file: $ko" >&2; exit 1 ;;
+          esac
+          [ -n "''${seen[$base]:-}" ] && continue
+          seen[$base]=1
+          echo "/modules/$base" >> "$root/modules.load"
+        done < "$NIX_BUILD_TOP/ordered"
+
+        cp ${pre-init} "$root/init"
+        chmod +x "$root/init"
+
+        mkdir -p $out
+
+        # The kernel sniffs the initramfs format from its magic bytes, so
+        # the filename carries no information and the compressor is chosen
+        # from what *this* kernel can actually decompress.  Read from the
+        # config at build time rather than at eval time, which keeps this
+        # free of import-from-derivation.
+        #
+        # Not assumable: our kernel has CONFIG_RD_GZIP=n and
+        # CONFIG_RD_ZSTD=y, while Flatcar ships a `.cpio.gz`.  Guessing
+        # would produce a kernel panic with no useful message.
+        cpio_out=$out/initramfs
+        # `$NIX_BUILD_TOP`, not `/tmp`.  A fixed path under `/tmp` is private
+        # to the build only while the sandbox is on; without one -- an
+        # unprivileged container, where nix cannot build the sandbox and
+        # `sandbox-fallback` quietly drops it -- every build shares the host's
+        # `/tmp`, and the three kernels' initramfs derivations build in
+        # parallel.  Two `cpio` runs then write one file while a third `zstd`
+        # reads it, which surfaces as `zstd: error 11 : Src size is incorrect`
+        # from whichever one lost.  `$root` was always safe: `mktemp -d`
+        # answers under `TMPDIR`, which nix does set per build.
+        cpio=$NIX_BUILD_TOP/initramfs.cpio
+
+        # Three things otherwise vary between two builds of the same inputs,
+        # and `cpio` records all three, so the compressed image differs every
+        # time and `nix build --rebuild` calls the derivation non-reproducible:
+        #
+        #   - mtime.  `cp` and the decompressors above stamp the current time.
+        #   - uid/gid.  A multi-user nix build runs as whichever `nixbld` user
+        #     was free, so the archive named e.g. `nixbld1`.  Root is also the
+        #     right answer on its own merits: this is a root filesystem.
+        #   - entry order.  `find` walks in readdir order, which is a property
+        #     of the filesystem rather than of the tree being packed.
+        #
+        # `--reproducible` covers the device and inode numbers as well.
+        find "$root" -exec touch -h -d @1 {} +
+        (cd "$root" && find . -print0 | sort -z \
+          | cpio --null -o -H newc --quiet --reproducible --owner 0:0) > "$cpio"
+
+        if grep -q '^CONFIG_RD_ZSTD=y' ${kernel.configfile}; then
+          zstd -19 -T0 -q -o "$cpio_out" "$cpio"
+        elif grep -q '^CONFIG_RD_GZIP=y' ${kernel.configfile}; then
+          gzip -9 -c "$cpio" > "$cpio_out"
+        elif grep -q '^CONFIG_RD_XZ=y' ${kernel.configfile}; then
+          xz -9 -c --check=crc32 "$cpio" > "$cpio_out"
+        else
+          # Always supported, and a few hundred KB is not worth a panic.
+          cp "$cpio" "$cpio_out"
+        fi
+
+        cp "$root/modules.load" $out/modules.load
+      '';
+
   # The QEMU system emulator for the test VM, always a build-native (host
   # CI arch) binary that runs in the Docker container.
   #
@@ -1490,6 +1616,7 @@ in
     devroot
     doctests
     docs
+    mk-initramfs
     package-list
     pkgs
     sources
