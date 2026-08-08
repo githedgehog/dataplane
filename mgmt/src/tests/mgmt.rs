@@ -854,6 +854,12 @@ mod validator_completeness {
                     enact(validated, mutation);
                 } else if let Err(e) = &outcome {
                     assert!(
+                        mutation != Mutation::None,
+                        "an unmutated configuration was refused, so the generator is producing \
+                         illegal input and every mutated case is suspect: {e}"
+                    );
+
+                    assert!(
                         !matches!(e, ConfigError::InternalFailure(_)),
                         "{mutation:?}: rejected with an internal failure, which tells the user \
                          nothing they can act on: {e}"
@@ -897,15 +903,6 @@ mod validator_completeness {
                 total_refused += refused;
             }
         }
-
-        let control = Mutation::None.index();
-        let drawn = drawn_at[control].load(Ordering::Relaxed);
-        let refused = refused_at[control].load(Ordering::Relaxed);
-        assert!(
-            refused * 4 <= drawn,
-            "the unmutated control was refused {refused} times in {drawn}: the near-miss generator \
-             is not starting from legal configurations"
-        );
 
         assert!(
             total_applied > 0 && total_refused * 2 >= total_applied,

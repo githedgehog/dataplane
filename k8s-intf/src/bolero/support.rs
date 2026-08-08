@@ -436,9 +436,9 @@ pub mod blocks {
 
     pub const SUBNET_SLOTS: u8 = 16;
 
-    fn subnet_region_len(family: AddressFamily) -> u8 {
-        let exponent = u8::try_from(SUBNET_SLOTS.trailing_zeros()).unwrap_or(0);
-        min_len(family) - exponent
+    #[must_use]
+    pub fn expose_slot(vpc: u8, slots_per_vpc: u8, expose: u8) -> u8 {
+        vpc.saturating_mul(slots_per_vpc).saturating_add(expose)
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -540,43 +540,45 @@ pub mod blocks {
 
     #[must_use]
     pub fn min_subnet_len(family: AddressFamily, count: u16) -> u8 {
-        let region = subnet_region_len(family);
-        let bits = u8::try_from(count.next_power_of_two().trailing_zeros()).unwrap_or(u8::MAX);
-        region.saturating_add(bits).min(max_len(family))
+        let bits = u8::try_from(count.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0);
+        min_len(family).saturating_add(bits).min(max_len(family))
     }
 
     pub fn private_run<D: Driver>(
         d: &mut D,
         family: AddressFamily,
+        vpc: u8,
         len: u8,
         count: u16,
     ) -> Option<Vec<String>> {
         if count == 0 {
             return Some(Vec::new());
         }
-        let region = u32::from(subnet_region_len(family));
+        let slot_len = u32::from(min_len(family));
         let mut out = Vec::with_capacity(usize::from(count));
         if family.is_v4() {
+            let base = 0x0A00_0000 | (u32::from(vpc) << (32 - slot_len));
             let slots = 1u32
-                .checked_shl(u32::from(len) - region)
+                .checked_shl(u32::from(len) - slot_len)
                 .unwrap_or(u32::MAX);
             let first = d.produce::<u32>()? % slots;
             let shift = u32::from(32 - len);
             for i in 0..u32::from(count) {
                 let slot = (first + i) % slots;
-                let addr = 0x0A00_0000 | slot.checked_shl(shift).unwrap_or(0);
+                let addr = base | slot.checked_shl(shift).unwrap_or(0);
                 out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
             }
         } else {
+            let base =
+                0x2001_0db8_0000_0000_0000_0000_0000_0000 | (u128::from(vpc) << (128 - slot_len));
             let slots = 1u128
-                .checked_shl(u32::from(len) - region)
+                .checked_shl(u32::from(len) - slot_len)
                 .unwrap_or(u128::MAX);
             let first = d.produce::<u128>()? % slots;
             let shift = u32::from(128 - len);
             for i in 0..u128::from(count) {
                 let slot = (first + i) % slots;
-                let addr = 0x2001_0db8_0000_0000_0000_0000_0000_0000
-                    | slot.checked_shl(shift).unwrap_or(0);
+                let addr = base | slot.checked_shl(shift).unwrap_or(0);
                 out.push(format!("{}/{len}", Ipv6Addr::from(addr)));
             }
         }
