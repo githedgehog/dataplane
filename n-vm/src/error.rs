@@ -213,15 +213,16 @@ pub enum VmError {
     ///
     /// This pre-flight check runs alongside [`KvmNotAccessible`] to
     /// surface the problem early with a clear message.
-    #[error("/dev/hugepages is not accessible (hugetlbfs not mounted?)")]
+    #[error("hugepage pool unavailable")]
     #[diagnostic(
         code(n_vm::hugepages_not_accessible),
         help(
-            "ensure hugetlbfs is mounted on the host: \
-             `mount -t hugetlbfs nodev /dev/hugepages`.  \
-             for 1 GiB pages, also check: \
-             `cat /proc/sys/vm/nr_hugepages` and \
-             `cat /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages`"
+            "reserve pages of the size this VM asks for, e.g. \
+             `echo 16 > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages`.  \
+             no hugetlbfs mount is needed -- both backends allocate through memfd.  \
+             note the pool is shared by every VM running at once, so a parallel \
+             test run needs roughly one page per concurrent test; \
+             `--test-threads=N` bounds that"
         )
     )]
     HugepagesNotAccessible(#[source] std::io::Error),
