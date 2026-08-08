@@ -103,7 +103,8 @@ mod test {
         // rules the generators satisfy
         let flavours = NatFlavour::all();
         let generator =
-            LegalValuePeeringsPeeringGenerator::new(&subnets, &flavours, AddressFamily::V4, 3);
+            // One manifest at a time here, so vpc zero: there is nothing to keep it disjoint from.
+            LegalValuePeeringsPeeringGenerator::new(&subnets, &flavours, AddressFamily::V4, 3, 0);
         bolero::check!()
             .with_generator(generator)
             .for_each(|peering| {
