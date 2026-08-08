@@ -892,12 +892,15 @@ impl Drop for ContainerGuard<'_> {
 /// Read from `testroot` on the host because this is the last tier where a
 /// skip can still be expressed; inside the container the only outcomes left
 /// are pass and fail.
-fn profile_backend(roots: &n_vm_protocol::ScratchRoots) -> Option<EffectiveBackend> {
+fn profile_backend(
+    roots: &n_vm_protocol::ScratchRoots,
+    emulation_required: bool,
+) -> Option<EffectiveBackend> {
     let path = roots
         .test_root
         .join(n_vm_protocol::KERNEL_MANIFEST_PATH.trim_start_matches('/'));
     let manifest = crate::kernel_manifest::KernelManifest::load_from(&path).ok()?;
-    let (name, profile) = manifest.selected().ok()?;
+    let (name, profile) = manifest.selected(emulation_required).ok()?;
     profile.backend(name).ok()
 }
 
@@ -952,7 +955,7 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // The selected profile decides the hypervisor unless the test asked
         // for a specific one.  Read here rather than in the container tier
         // because this is the last place a skip can be expressed.
-        let profile = profile_backend(&params.scratch_roots);
+        let profile = profile_backend(&params.scratch_roots, cross);
         let (backend, accel) = match requested.resolve(cross, needs_qemu, profile) {
             BackendResolution::Run { backend, accel } => (backend, accel),
             BackendResolution::Skip { reason } => {
