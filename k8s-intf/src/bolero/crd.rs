@@ -8,7 +8,7 @@ use kube::core::ObjectMeta;
 
 use crate::bolero::spec::{GatewayAgentSpecs, SpecBuilder};
 use crate::bolero::{AddressFamily, LegalValue, NatFlavour};
-use crate::gateway_agent_crd::GatewayAgent;
+use crate::gateway_agent_crd::{GatewayAgent, GatewayAgentSpec};
 
 const HOSTNAME_BASE: &str = "host-";
 
@@ -24,7 +24,18 @@ fn simple_hostname<D: Driver>(d: &mut D) -> Option<String> {
     )
 }
 
-///
+fn join_own_groups<D: Driver>(d: &mut D, name: &str, spec: &mut GatewayAgentSpec) -> Option<()> {
+    for group in spec.groups.iter_mut().flatten().map(|(_, group)| group) {
+        if !d.produce::<bool>()? {
+            continue;
+        }
+        if let Some(member) = group.members.iter_mut().flatten().next() {
+            member.name = name.to_string();
+        }
+    }
+    Some(())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GatewayAgents(GatewayAgentSpecs);
 
@@ -32,14 +43,18 @@ impl ValueGenerator for GatewayAgents {
     type Output = GatewayAgent;
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+        let name = simple_hostname(d)?;
+        let generation = d.gen_i64(Bound::Excluded(&0), Bound::Unbounded)?;
+        let mut spec = self.0.generate(d)?;
+        join_own_groups(d, &name, &mut spec)?;
         Some(GatewayAgent {
             metadata: ObjectMeta {
-                name: Some(simple_hostname(d)?),
-                generation: Some(d.gen_i64(Bound::Excluded(&0), Bound::Unbounded)?),
+                name: Some(name),
+                generation: Some(generation),
                 namespace: Some("default".to_string()),
                 ..Default::default()
             },
-            spec: self.0.generate(d)?,
+            spec,
             status: None, // Add when we build a generator and converter for status
         })
     }
@@ -84,6 +99,7 @@ impl GatewayAgentBuilder {
 }
 
 /// Generate a random legal `GatewayAgent` value
+///
 /// Is not exhaustive due to hostname generation
 /// Coverage of values is subject to limitations of the `GatewayAgentSpec` `TypeGenerator` as well
 impl TypeGenerator for LegalValue<GatewayAgent> {
