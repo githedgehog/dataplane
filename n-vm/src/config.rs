@@ -329,6 +329,17 @@ impl Default for GuestHugePageConfig {
     }
 }
 
+impl Default for VmConfig {
+    /// Delegates to [`VmConfig::DEFAULT`].
+    ///
+    /// Written out rather than derived so the const and the trait cannot
+    /// drift: a derived `Default` would independently consult each field's
+    /// own `Default`, and nothing would notice if the two answers diverged.
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 impl GuestHugePageConfig {
     /// Builds the kernel command-line fragment for hugepage reservation.
     pub(crate) fn kernel_cmdline_fragment(&self) -> String {
@@ -343,7 +354,23 @@ impl GuestHugePageConfig {
 }
 
 /// Complete VM configuration passed through the dispatch chain.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// Written at the call site as a `const`, so that a test's configuration is
+/// ordinary Rust in an ordinary position -- completion, hover, and
+/// go-to-definition all work on it, which is not true of anything spelled
+/// inside an attribute:
+///
+/// ```ignore
+/// const FAST_VM: VmConfig = VmConfig { iommu: true, ..VmConfig::DEFAULT };
+///
+/// #[n_vm::test(config = FAST_VM)]
+/// fn my_test() { ... }
+/// ```
+///
+/// Being `const` also means [`assert_valid`](Self::assert_valid) can run at
+/// compile time, turning what were runtime launch failures into build
+/// errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VmConfig {
     /// Whether to present a virtual IOMMU device to the guest.
     pub iommu: bool,
@@ -364,7 +391,125 @@ pub struct VmConfig {
     pub corpus_source_file: Option<&'static str>,
 }
 
+/// A way a [`VmConfig`] can be wrong.
+///
+/// Carried as a variant rather than a message so that one `const fn` check
+/// serves both the compile-time assertion (which can only panic with a
+/// literal) and the runtime path (which can afford to format the actual
+/// numbers into the message).  Otherwise the two would each need their own
+/// copy of the conditions, and would drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigProblem {
+    /// VM memory is not a whole number of host pages.
+    MemoryNotAligned,
+    /// The guest hugepage reservation is larger than the VM's memory.
+    HugepagesExceedMemory,
+}
+
 impl VmConfig {
+    /// The default configuration: cloud-hypervisor's usual shape -- 1 GiB
+    /// host pages, one 1 GiB guest hugepage, virtio-net, no IOMMU.
+    ///
+    /// Spell overrides against this with struct update syntax, which works
+    /// in a `const`:
+    ///
+    /// ```ignore
+    /// const NO_HUGE: VmConfig = VmConfig {
+    ///     guest_hugepages: GuestHugePageConfig::None,
+    ///     ..VmConfig::DEFAULT
+    /// };
+    /// ```
+    pub const DEFAULT: Self = Self {
+        iommu: false,
+        host_page_size: HostPageSize::Huge1G,
+        guest_hugepages: GuestHugePageConfig::Allocate {
+            size: GuestHugePageSize::Huge1G,
+            count: 1,
+        },
+        nic_model: NicModel::VirtioNet,
+        corpus_source_file: None,
+    };
+
+    /// Checks the configuration for internal contradictions.
+    ///
+    /// `const` so the same check can run at compile time; see
+    /// [`assert_valid`](Self::assert_valid).
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ConfigProblem`] found.
+    pub const fn check(&self) -> Result<(), ConfigProblem> {
+        let page_bytes = self.host_page_size.bytes();
+        if VM_MEMORY_BYTES % page_bytes != 0 {
+            return Err(ConfigProblem::MemoryNotAligned);
+        }
+        if let GuestHugePageConfig::Allocate { size, count } = self.guest_hugepages {
+            // `as i64` rather than `i64::from`: trait methods are not
+            // callable in a const fn, and this check must stay const.
+            let required = size.bytes() * (count as i64);
+            if required > VM_MEMORY_BYTES {
+                return Err(ConfigProblem::HugepagesExceedMemory);
+            }
+        }
+        Ok(())
+    }
+
+    /// Rejects an invalid configuration at compile time.
+    ///
+    /// The generated test harness emits `const _: () = CONFIG.assert_valid();`
+    /// so that a contradiction is a build error rather than a VM that fails
+    /// to launch several tiers later.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`check`](Self::check) fails.  In a `const` context that
+    /// panic *is* the compile error.
+    pub const fn assert_valid(&self) {
+        match self.check() {
+            Ok(()) => {}
+            Err(ConfigProblem::MemoryNotAligned) => panic!(
+                "VM memory is not a whole number of host pages; \
+                 pick a host_page_size that divides the VM's memory"
+            ),
+            Err(ConfigProblem::HugepagesExceedMemory) => panic!(
+                "the guest hugepage reservation is larger than the VM's memory; \
+                 reduce hugepage_count, use a smaller hugepage size, or set \
+                 guest_hugepages to GuestHugePageConfig::None"
+            ),
+        }
+    }
+
+    /// Rejects a configuration that cannot work with the requested backend.
+    ///
+    /// The config itself is a `const` the macro cannot read, but the
+    /// *backend* is one of the macro's own arguments -- so combining them in
+    /// a `const fn` keeps this a compile error rather than demoting it to a
+    /// runtime skip.  That matters because a NIC model the chosen hypervisor
+    /// cannot emulate is a contradiction in the test as written, true on
+    /// every host, and it should not need a VM boot to discover.
+    ///
+    /// [`RequestedBackend::Default`] is deliberately permissive: an
+    /// unpinned test that asks for an emulated NIC is not a contradiction,
+    /// it is a test that wants QEMU, and
+    /// [`resolve`](crate::backend::RequestedBackend::resolve) selects it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`check`](Self::check) fails, or if the NIC model requires
+    /// QEMU while the test explicitly pinned cloud-hypervisor.
+    pub const fn assert_valid_for(&self, backend: crate::backend::RequestedBackend) {
+        self.assert_valid();
+        if self.nic_model.requires_qemu()
+            && matches!(backend, crate::backend::RequestedBackend::CloudHypervisor)
+        {
+            panic!(
+                "this NIC model is emulated only by QEMU, but the test pinned \
+                 cloud-hypervisor; drop the backend argument to let the harness \
+                 pick QEMU, or write #[n_vm::test(qemu)]"
+            );
+        }
+    }
+
     /// The corpus directory for this test, relative to the workspace root.
     ///
     /// `None` when the test did not opt in, or when its source path has no
@@ -404,24 +549,33 @@ impl VmConfig {
     ///
     /// [`TestVm::launch`]: crate::vm::TestVm::launch
     pub fn validate_memory_alignment(&self) -> Result<(), String> {
-        let page_bytes = self.host_page_size.bytes();
-        if VM_MEMORY_BYTES % page_bytes != 0 {
-            return Err(format!(
+        // Same conditions as `check`, but with the numbers formatted in.
+        // This path survives because a config can reach the launcher without
+        // having gone through `assert_valid` -- it is built at run time in
+        // tests, for one -- and because "1024 MiB is not a multiple of 1 GiB"
+        // is a more useful thing to read than the static message a const
+        // panic is limited to.
+        match self.check() {
+            Ok(()) => Ok(()),
+            Err(ConfigProblem::MemoryNotAligned) => Err(format!(
                 "VM_MEMORY_BYTES ({VM_MEMORY_BYTES}) is not aligned to \
                  host page size ({page_bytes} bytes)",
-            ));
-        }
-        if let GuestHugePageConfig::Allocate { size, count } = self.guest_hugepages {
-            let required = size.bytes() * i64::from(count);
-            if required > VM_MEMORY_BYTES {
-                return Err(format!(
+                page_bytes = self.host_page_size.bytes(),
+            )),
+            Err(ConfigProblem::HugepagesExceedMemory) => {
+                let GuestHugePageConfig::Allocate { size, count } = self.guest_hugepages else {
+                    unreachable!(
+                        "HugepagesExceedMemory is only reachable when hugepages are allocated"
+                    )
+                };
+                let required = size.bytes() * i64::from(count);
+                Err(format!(
                     "guest hugepage reservation ({count} x {} = {required} bytes) \
                      exceeds VM memory ({VM_MEMORY_BYTES} bytes)",
                     size.bytes(),
-                ));
+                ))
             }
         }
-        Ok(())
     }
 }
 
@@ -1048,6 +1202,120 @@ mod tests {
         VmConfig::default()
             .validate_memory_alignment()
             .expect("default VmConfig should pass memory alignment validation");
+    }
+
+    // -- Const configuration ------------------------------------------
+
+    /// `Default` delegates to `DEFAULT`, so the two cannot drift.  A derived
+    /// `Default` would consult each field's own `Default` independently and
+    /// nothing would notice if the answers diverged.
+    #[test]
+    fn default_trait_matches_the_default_const() {
+        assert_eq!(VmConfig::default(), VmConfig::DEFAULT);
+    }
+
+    /// The point of `assert_valid` is that it runs at compile time.  This
+    /// item *is* the assertion: if `assert_valid` ever stopped being
+    /// const-evaluable, this would fail to compile rather than fail a test.
+    const _: () = VmConfig::DEFAULT.assert_valid();
+
+    /// Struct update syntax has to work in a `const`, since that is how
+    /// every call site is expected to spell an override.
+    const OVERRIDDEN: VmConfig = VmConfig {
+        iommu: true,
+        guest_hugepages: GuestHugePageConfig::None,
+        ..VmConfig::DEFAULT
+    };
+    const _: () = OVERRIDDEN.assert_valid();
+
+    // The overridden fields are checked at compile time -- there is nothing
+    // to run, and asserting on a const at run time only defers the answer.
+    // `matches!` rather than `==` because `PartialEq` is a trait, and trait
+    // methods are not callable in a const.
+    const _: () = assert!(OVERRIDDEN.iommu);
+    const _: () = assert!(matches!(
+        OVERRIDDEN.guest_hugepages,
+        GuestHugePageConfig::None
+    ));
+
+    /// Fields the update did not name must keep the default.  This one stays
+    /// a runtime test precisely so it can compare *against*
+    /// `VmConfig::DEFAULT` rather than restating its values -- which would
+    /// pass even if the defaults changed underneath it.
+    #[test]
+    fn struct_update_leaves_unnamed_fields_at_the_default() {
+        assert_eq!(OVERRIDDEN.host_page_size, VmConfig::DEFAULT.host_page_size);
+        assert_eq!(OVERRIDDEN.nic_model, VmConfig::DEFAULT.nic_model);
+        assert_eq!(
+            OVERRIDDEN.corpus_source_file,
+            VmConfig::DEFAULT.corpus_source_file
+        );
+    }
+
+    #[test]
+    fn check_rejects_hugepages_larger_than_vm_memory() {
+        let config = VmConfig {
+            guest_hugepages: GuestHugePageConfig::Allocate {
+                size: GuestHugePageSize::Huge1G,
+                // VM memory is 1 GiB, so two 1 GiB pages cannot fit.
+                count: 2,
+            },
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(
+            config.check(),
+            Err(ConfigProblem::HugepagesExceedMemory),
+            "reserving more hugepages than the VM has memory must be rejected",
+        );
+    }
+
+    /// The runtime formatter and the const check must agree on *whether* a
+    /// config is valid; they differ only in how much detail the message can
+    /// carry.  Sharing one `check` is what keeps them from drifting.
+    #[test]
+    fn runtime_validation_agrees_with_the_const_check() {
+        let configs = [
+            VmConfig::DEFAULT,
+            OVERRIDDEN,
+            VmConfig {
+                guest_hugepages: GuestHugePageConfig::Allocate {
+                    size: GuestHugePageSize::Huge1G,
+                    count: 2,
+                },
+                ..VmConfig::DEFAULT
+            },
+            VmConfig {
+                host_page_size: HostPageSize::Standard,
+                ..VmConfig::DEFAULT
+            },
+        ];
+        for config in configs {
+            assert_eq!(
+                config.check().is_ok(),
+                config.validate_memory_alignment().is_ok(),
+                "const check and runtime validation disagree on {config:?}",
+            );
+        }
+    }
+
+    /// The runtime path exists to say more than a const panic can, so it
+    /// should actually name the numbers involved.
+    #[test]
+    fn runtime_validation_message_names_the_numbers() {
+        let config = VmConfig {
+            guest_hugepages: GuestHugePageConfig::Allocate {
+                size: GuestHugePageSize::Huge1G,
+                count: 2,
+            },
+            ..VmConfig::DEFAULT
+        };
+        let err = config
+            .validate_memory_alignment()
+            .expect_err("two 1 GiB hugepages exceed 1 GiB of VM memory");
+        assert!(
+            err.contains('2') && err.contains(&VM_MEMORY_BYTES.to_string()),
+            "message should carry the reservation and the VM memory: {err}",
+        );
     }
 
     #[test]
