@@ -222,6 +222,10 @@ let
   # Directory for the deliberately-modular kernel (see modular.config).
   modular-kernel-dir = "modular";
 
+  # Directory for the pinned Flatcar release -- the kernel we actually ship
+  # on, and the reason the modular path exists at all.
+  flatcar-kernel-dir = "flatcar";
+
   # Every guest kernel that gets installed, keyed by its artifact directory.
   #
   # Keyed by *kernel* rather than by profile because several profiles can
@@ -230,16 +234,25 @@ let
   # whether that kernel can reach its own root.
   guest-kernels = {
     ${union-kernel-dir} = {
-      drv = pkgs.linux-fancy;
+      image = "${pkgs.linux-fancy}/${kernel-image-name}";
+      configfile = pkgs.linux-fancy.configfile;
       boot = "direct";
       initramfs = null;
       modules = null;
+      modDirVersion = null;
     };
     ${modular-kernel-dir} = {
-      drv = pkgs.linux-fancy-modular;
+      image = "${pkgs.linux-fancy-modular}/${kernel-image-name}";
+      configfile = pkgs.linux-fancy-modular.configfile;
       boot = "initramfs";
       initramfs = initramfs-modular;
       modules = pkgs.linux-fancy-modular.modules;
+      inherit (pkgs.linux-fancy-modular) modDirVersion;
+    };
+    ${flatcar-kernel-dir} = {
+      inherit (flatcar-kernel-adapted) image configfile modules modDirVersion;
+      boot = "initramfs";
+      initramfs = initramfs-flatcar;
     };
   };
 
@@ -270,6 +283,13 @@ let
     modular = {
       hypervisor = "qemu";
       kernel-dir = modular-kernel-dir;
+    };
+    # The kernel the dataplane actually ships on.  The whole point: our own
+    # kernel is built from a config we chose, so it cannot tell us whether
+    # the code works on the one we deploy.
+    flatcar = {
+      hypervisor = "qemu";
+      kernel-dir = flatcar-kernel-dir;
     };
   };
 
@@ -304,7 +324,7 @@ let
       }
       // lib.optionalAttrs (k.initramfs != null) { initramfs = "${dir}/initramfs"; }
       // lib.optionalAttrs (k.modules != null) {
-        modules = "${dir}/modules/${k.drv.modDirVersion}";
+        modules = "${dir}/modules/${k.modDirVersion}";
       }
     ) kernel-profiles;
   };
@@ -341,15 +361,15 @@ let
     + lib.concatStrings (
       lib.mapAttrsToList (dir: k: ''
         mkdir -p $out/kernels/${dir}
-        cp ${k.drv}/${kernel-image-name} $out/kernels/${dir}/vmlinuz
-        cp ${k.drv.configfile} $out/kernels/${dir}/config
+        cp ${k.image} $out/kernels/${dir}/vmlinuz
+        cp ${k.configfile} $out/kernels/${dir}/config
         ${lib.optionalString (k.initramfs != null) ''
           cp ${k.initramfs}/initramfs $out/kernels/${dir}/initramfs
         ''}
         ${lib.optionalString (k.modules != null) ''
           mkdir -p $out/kernels/${dir}/modules
-          cp -r ${k.modules}/lib/modules/${k.drv.modDirVersion} \
-            $out/kernels/${dir}/modules/${k.drv.modDirVersion}
+          cp -r ${k.modules}/lib/modules/${k.modDirVersion} \
+            $out/kernels/${dir}/modules/${k.modDirVersion}
           chmod -R u+w $out/kernels/${dir}/modules
         ''}
       '') guest-kernels
@@ -478,6 +498,44 @@ let
       LIBRARY_PATH = "${pkgs.pkgsHostHost.glibc.static}/lib:${orig.env.LIBRARY_PATH}";
     };
   });
+
+  # Flatcar's repackaged kernel, adapted to the shape `mk-initramfs` and the
+  # kernel-image installer expect of a kernel derivation.
+  #
+  # The adapter exists because those two consumers were written against a
+  # nixpkgs kernel: they ask for `.modules`, `.modDirVersion` and
+  # `.configfile`.  Flatcar's is not built here, so it has none of them --
+  # it has a directory layout instead.  Mapping it here keeps the consumers
+  # ignorant of which kind of kernel they were handed, which is the point of
+  # the normalized output shape.
+  flatcar-kernel-adapted =
+    let
+      k = pkgs.flatcar-kernel;
+    in
+    {
+      drv = k;
+      configfile = "${k}/config";
+      # Discovered by the package rather than restated here; a version bump
+      # would otherwise leave the modules under a directory nothing reads.
+      modDirVersion = lib.removeSuffix "\n" (builtins.readFile "${k}/mod-dir-version");
+      modules = k;
+      image = "${k}/vmlinuz";
+    };
+
+  # The initramfs for Flatcar's kernel.
+  #
+  # The same derivation as the modular kernel's, given a different kernel --
+  # which is the point of normalising the shape.  Flatcar's modules are
+  # `.ko.xz`, which `mk-initramfs` decompresses on the way in because
+  # Flatcar does not set CONFIG_MODULE_DECOMPRESS.
+  initramfs-flatcar = mk-initramfs {
+    kernel = flatcar-kernel-adapted;
+    pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+    boot-modules = [
+      "virtiofs"
+      "vmw_vsock_virtio_transport"
+    ];
+  };
 
   # The initramfs for the modular kernel.
   initramfs-modular = mk-initramfs {

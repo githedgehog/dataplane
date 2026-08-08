@@ -155,6 +155,16 @@ in
       ) { CONFIG_MODULES = "y"; };
     };
 
+  # A pinned Flatcar release, repackaged into the layout the kernel
+  # manifest expects.  This is the kernel the dataplane actually ships on,
+  # which is the whole reason for running tests against it.
+  flatcar-kernel = final.callPackage ../pkgs/flatcar {
+    # `extract-ikconfig` is version-agnostic -- it scans an image for the
+    # embedded IKCFG_ST block -- so our own kernel source's copy reads
+    # Flatcar's image fine, and this avoids a second kernel source fetch.
+    extractIkconfig = "${final.linux-fancy.src}/scripts/extract-ikconfig";
+  };
+
   # The default guest kernel: everything built in, no modules at all.
   linux-fancy = final.mkLinuxFancy { };
 
