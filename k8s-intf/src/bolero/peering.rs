@@ -7,7 +7,8 @@ use std::ops::Bound;
 use bolero::{Driver, ValueGenerator};
 
 use crate::bolero::acl::{AclGenerator, SideFacts};
-use crate::bolero::expose::ExposeGenerator;
+use crate::bolero::expose::{ExposeGenerator, Which};
+use crate::bolero::support::blocks;
 use crate::bolero::{AddressFamily, NatFlavour, SubnetMap, VpcSubnetMap};
 use crate::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering};
 
@@ -20,6 +21,8 @@ pub struct LegalValuePeeringsPeeringGenerator<'a> {
     flavours: &'a [NatFlavour],
     family: AddressFamily,
     max_exposes: u8,
+    /// The first block slot this manifest's vpc owns; see [`crate::bolero::support::blocks`].
+    slot_base: u8,
 }
 
 impl<'a> LegalValuePeeringsPeeringGenerator<'a> {
@@ -29,12 +32,14 @@ impl<'a> LegalValuePeeringsPeeringGenerator<'a> {
         flavours: &'a [NatFlavour],
         family: AddressFamily,
         max_exposes: u8,
+        vpc: u8,
     ) -> Self {
         Self {
             subnets,
             flavours,
             family,
             max_exposes,
+            slot_base: blocks::expose_slot(vpc, max_exposes, 0),
         }
     }
 }
@@ -45,16 +50,15 @@ impl ValueGenerator for LegalValuePeeringsPeeringGenerator<'_> {
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
         let num_expose = d.gen_u8(Bound::Included(&1), Bound::Included(&self.max_exposes))?;
         let mut expose = Vec::with_capacity(usize::from(num_expose));
-        for slot in 0..num_expose {
+        for index in 0..num_expose {
             // The flavour has to be settled before the prefixes are drawn, since it constrains the
             // shape and cannot be imposed afterwards. The family is settled for the whole peering,
             // one level up: the two manifests must agree on it.
             let flavour = self.flavours
                 [d.gen_usize(Bound::Included(&0), Bound::Excluded(&self.flavours.len()))?];
-            expose.push(
-                ExposeGenerator::new(flavour, self.family, slot, num_expose, self.subnets)
-                    .generate(d)?,
-            );
+            let which = Which::nth(self.slot_base.saturating_add(index), index, num_expose);
+            expose
+                .push(ExposeGenerator::new(flavour, self.family, which, self.subnets).generate(d)?);
         }
 
         Some(GatewayAgentPeeringsPeering {
@@ -126,15 +130,16 @@ impl<'a> LegalValuePeeringsGenerator<'a> {
     }
 }
 
-fn pick2<'a, D: Driver, T>(d: &mut D, items: &[&'a T]) -> Option<[&'a T; 2]> {
-    assert!(items.len() >= 2);
+/// Two distinct indices into a list of at least two items.
+fn pick2<D: Driver>(d: &mut D, len: usize) -> Option<[usize; 2]> {
+    assert!(len >= 2);
 
-    let index1 = d.gen_usize(Bound::Included(&0), Bound::Excluded(&items.len()))?;
-    let mut index2 = d.gen_usize(Bound::Included(&0), Bound::Excluded(&items.len()))?;
+    let index1 = d.gen_usize(Bound::Included(&0), Bound::Excluded(&len))?;
+    let mut index2 = d.gen_usize(Bound::Included(&0), Bound::Excluded(&len))?;
     if index1 == index2 {
-        index2 = (index2 + 1) % items.len();
+        index2 = (index2 + 1) % len;
     }
-    Some([items[index1], items[index2]])
+    Some([index1, index2])
 }
 
 impl LegalValuePeeringsGenerator<'_> {
@@ -147,12 +152,12 @@ impl LegalValuePeeringsGenerator<'_> {
     /// configuration. That is how the peering half of the model came to be generated in quantity and
     /// never survive validation -- 28,000 peerings drawn, none validated.
     #[must_use]
-    pub fn pairs(&self) -> Vec<[&String; 2]> {
-        let names = &self.vpc_names;
-        let mut out = Vec::with_capacity(names.len() * names.len() / 2);
-        for (i, first) in names.iter().enumerate() {
-            for second in names.iter().skip(i + 1) {
-                out.push([*first, *second]);
+    pub fn pairs(&self) -> Vec<[usize; 2]> {
+        let n = self.vpc_names.len();
+        let mut out = Vec::with_capacity(n * n / 2);
+        for first in 0..n {
+            for second in (first + 1)..n {
+                out.push([first, second]);
             }
         }
         out
@@ -161,11 +166,15 @@ impl LegalValuePeeringsGenerator<'_> {
     /// Generate a peering between the two named vpcs.
     ///
     /// The pair comes from the caller so that it can keep them distinct; see [`Self::pairs`].
+    /// Indices rather than names, because a vpc's *position* is what decides which block slots its
+    /// prefixes come from -- and those have to differ between vpcs, not merely between the exposes of
+    /// one manifest. See [`blocks::expose_slot`].
     pub fn generate_for<D: Driver>(
         &self,
         d: &mut D,
-        vpc_names: [&String; 2],
+        vpcs: [usize; 2],
     ) -> Option<GatewayAgentPeerings> {
+        let vpc_names = [*self.vpc_names.get(vpcs[0])?, *self.vpc_names.get(vpcs[1])?];
         // One address family for the whole peering: its two manifests must agree on it.
         let family = self.families
             [d.gen_usize(Bound::Included(&0), Bound::Excluded(&self.families.len()))?];
@@ -187,6 +196,7 @@ impl LegalValuePeeringsGenerator<'_> {
                     flavours,
                     family,
                     self.max_exposes,
+                    u8::try_from(vpcs[i]).unwrap_or(u8::MAX),
                 );
                 Some((vpc_names[i].clone(), generator.generate(d)?))
             })
@@ -223,7 +233,7 @@ impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
     type Output = GatewayAgentPeerings;
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        let vpc_names = pick2(d, &self.vpc_names)?;
-        self.generate_for(d, vpc_names)
+        let pair = pick2(d, self.vpc_names.len())?;
+        self.generate_for(d, pair)
     }
 }
