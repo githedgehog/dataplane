@@ -508,8 +508,16 @@ let
   # every other crate depends on.
   n-preinit-static = workspace."n-preinit".overrideAttrs (orig: {
     env = orig.env // {
-      RUSTFLAGS = "${orig.env.RUSTFLAGS} -Ctarget-feature=+crt-static";
-      LIBRARY_PATH = "${pkgs.pkgsHostHost.glibc.static}/lib:${orig.env.LIBRARY_PATH}";
+      # The search path goes through `-Clink-arg=-L`, not `LIBRARY_PATH`.
+      #
+      # `LIBRARY_PATH` is honoured by the *native* cc-wrapper, so it worked
+      # for an x86_64 build and silently did nothing for a cross one: the
+      # target-prefixed wrapper ignores it, and the link failed on `-lc`
+      # with the archives sitting right there in the store.  `-Clink-arg`
+      # reaches the linker either way, which is why the sysroot is already
+      # passed that way in nix/profiles.nix.
+      RUSTFLAGS = "${orig.env.RUSTFLAGS} -Ctarget-feature=+crt-static "
+        + "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib";
     };
   });
 
