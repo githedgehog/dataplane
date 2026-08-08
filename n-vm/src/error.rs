@@ -70,6 +70,41 @@ pub enum VmError {
         reason: String,
     },
 
+    /// The guest kernel does not provide features the test declared it
+    /// needs.
+    ///
+    /// A hard failure rather than a skip because the only kernels that exist
+    /// today are ones *we* build from our own fragments: if such a kernel
+    /// lacks a required symbol, the fragment list is wrong and silently
+    /// skipping would hide that.  Once a profile can name a kernel we did
+    /// not build, an unmet requirement there is a finding about that kernel
+    /// rather than a bug in our config, and should be reported as a skip
+    /// instead.
+    #[error(
+        "guest kernel is missing {} required feature(s): {}",
+        missing.len(),
+        missing.iter().map(|s| format!("CONFIG_{s}")).collect::<Vec<_>>().join(", "),
+    )]
+    #[diagnostic(
+        code(n_vm::kernel_features_unmet),
+        help(
+            "add the symbol to the kernel config fragments in \
+              nix/overlays/dataplane-dev.nix and re-run `just setup-roots`, or \
+              drop it from the test's `kernel_features` if it is not actually \
+              needed"
+        )
+    )]
+    KernelFeaturesUnmet {
+        /// Kconfig symbols the kernel does not provide, without the
+        /// `CONFIG_` prefix.
+        missing: Vec<&'static str>,
+    },
+
+    /// The guest kernel's config could not be read.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    KernelConfig(#[from] crate::kernel_config::KernelConfigError),
+
     /// The kernel manifest could not be read, or does not describe a kernel
     /// usable for this guest.
     ///

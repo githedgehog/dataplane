@@ -592,6 +592,37 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
         kernel = profile.kernel,
     );
 
+    // Check what the test says it needs against what this kernel actually
+    // has, before booting.  A missing symbol otherwise surfaces as whatever
+    // the feature's absence breaks -- an ioctl returning ENOTTY, a filter
+    // that will not attach -- several tiers away from the cause.
+    //
+    // Skipped when the manifest records no config: that is a gap in the
+    // profile, not a licence to ignore what the test asked for, so it is
+    // logged rather than passing quietly.
+    if !vm_config.kernel_features.is_empty() {
+        match &profile.config {
+            Some(path) => {
+                let kernel_config =
+                    crate::kernel_config::KernelConfig::load(std::path::Path::new(path))?;
+                let unmet = crate::kernel_feature::unmet_requirements(
+                    vm_config.kernel_features,
+                    &kernel_config,
+                );
+                if !unmet.is_empty() {
+                    return Err(VmError::KernelFeaturesUnmet {
+                        missing: unmet.into_iter().map(|u| u.symbol).collect(),
+                    });
+                }
+            }
+            None => warn!(
+                "kernel profile `{profile_name}` records no config, so the \
+                 {n} feature(s) this test requires cannot be verified",
+                n = vm_config.kernel_features.len(),
+            ),
+        }
+    }
+
     let params = TestVmParams {
         full_bin_path: Path::new(&full_bin_path),
         vm_bin_path,
