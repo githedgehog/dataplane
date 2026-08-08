@@ -203,7 +203,19 @@ in
         preFixup = "";
       });
 
-  linux-fancy =
+  # Builds a guest kernel from the shared fragment list plus whatever else
+  # the caller asks for.
+  #
+  # Parameterised because profiles need more than one kernel: the default is
+  # fully static, while exercising the initramfs boot path needs one whose
+  # virtiofs is a module.  `extraFragments` are merged *last*, after the
+  # arch fragments and after disable.config, so a caller can override any
+  # earlier setting -- which is the whole point for `modular.config`, whose
+  # job is to turn `=y` into `=m`.
+  mkLinuxFancy =
+    {
+      extraFragments ? [ ],
+    }:
     let
       version = "6.18.20";
       # True only when the kernel's target arch differs from the builder.
@@ -252,7 +264,9 @@ in
       archFragments = final.lib.optionals final.stdenv.hostPlatform.isAarch64 [
         "aarch64-virt.config"
       ];
-      fragments = map (f: ../pkgs/linux/fragments + "/${f}") (sharedFragments ++ archFragments);
+      fragments = map (f: ../pkgs/linux/fragments + "/${f}") (
+        sharedFragments ++ archFragments ++ extraFragments
+      );
       configfile = final.callPackage ../pkgs/linux/merge-config.nix {
         inherit src version fragments kernelArch;
         stdenv = buildStdenv;
@@ -262,5 +276,32 @@ in
     final.linuxManualConfig {
       inherit version src configfile;
       stdenv = crossStdenv;
+      # nixpkgs decides at *eval* time whether this kernel has modules, and
+      # that decision creates a whole extra output (`modules`) plus the
+      # `modules_install` step.  It normally learns this by reading the
+      # configfile -- but only when the configfile is a literal path or
+      # `allowImportFromDerivation` is set.  Ours is a derivation
+      # (merge-config.nix), so without help nixpkgs sees an empty config,
+      # concludes the kernel is not modular, and silently ships a kernel
+      # whose `.ko` files were never installed anywhere.
+      #
+      # Answered by reading our own fragments, which *are* paths, so no
+      # import-from-derivation is involved.  IFD would be the obvious
+      # alternative but it forces the config derivation to build during
+      # evaluation and is unavailable under restricted eval; a hand-set flag
+      # would be a second source of truth that could drift from the
+      # fragments it is supposed to describe.
+      config = final.lib.optionalAttrs (
+        final.lib.any (f: final.lib.hasInfix "CONFIG_MODULES=y" (builtins.readFile f)) fragments
+      ) { CONFIG_MODULES = "y"; };
     };
+
+  # The default guest kernel: everything built in, no modules at all.
+  linux-fancy = final.mkLinuxFancy { };
+
+  # Same kernel with virtiofs and fuse demoted to modules, reproducing the
+  # bootstrap deadlock a distro kernel presents (see modular.config).
+  linux-fancy-modular = final.mkLinuxFancy {
+    extraFragments = [ "modular.config" ];
+  };
 }
