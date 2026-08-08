@@ -310,14 +310,16 @@ fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
     PayloadConfig {
         firmware: None,
         kernel: Some(params.kernel_image.clone()),
+        // Set only for a modular kernel; see the QEMU backend for why an
+        // unconditional initrd would change how a direct-boot kernel boots.
+        initramfs: params.initramfs.clone(),
         cmdline: Some(config::build_kernel_cmdline(
             &params.vm_bin_path,
             params.test_name,
             &params.vsock,
-            params.vm_config.iommu,
-            &params.vm_config.guest_hugepages,
+            &params.vm_config,
             params.arch,
-            params.vm_config.corpus_guest_path().as_deref(),
+            params.boot,
         )),
         ..Default::default()
     }
@@ -517,6 +519,8 @@ mod tests {
             vm_config: config::VmConfig::default(),
             arch: config::Arch::X86_64,
             kernel_image: SAMPLE_KERNEL.to_owned(),
+            initramfs: None,
+            boot: crate::kernel_manifest::BootMode::Direct,
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }

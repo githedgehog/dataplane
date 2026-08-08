@@ -202,3 +202,40 @@ fn corpus_is_writable_and_rest_of_workspace_is_not() {
         );
     }
 }
+
+// -- The initramfs boot path ------------------------------------------
+//
+// These pin QEMU so they can run under the `modular` profile, whose kernel
+// has virtiofs as a module and so can only reach its root through an
+// initramfs (`N_VM_PROFILE=modular`).  Under a direct-boot profile they
+// still run and assert the same invariants, which is the point: the guest
+// is supposed to look identical either way, and only the route to it
+// differs.
+
+/// The root must be the read-only virtiofs share, not the writable rootfs
+/// the initramfs started in.
+///
+/// This is the check that the `switch_root` actually happened.  If the
+/// pre-init failed to move the new root over `/`, the guest would still be
+/// sitting in a perfectly functional tmpfs and almost everything else would
+/// keep working -- so a test that merely boots proves much less than it
+/// appears to.
+#[n_vm::test(qemu, config = HOST_4K_VM)]
+fn root_is_read_only_after_switch_root() {
+    let err = std::fs::File::create_new("/some.file").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::ReadOnlyFilesystem);
+}
+
+/// `n-it`'s own mounts land on the new root, not the abandoned one.
+#[n_vm::test(qemu, config = HOST_4K_VM)]
+fn n_it_mounts_survive_switch_root() {
+    std::fs::File::create_new("/run/probe").expect("/run should be a writable tmpfs");
+    assert!(
+        std::path::Path::new("/proc/self").exists(),
+        "procfs mounted"
+    );
+    assert!(
+        std::path::Path::new("/sys/kernel").exists(),
+        "sysfs mounted"
+    );
+}

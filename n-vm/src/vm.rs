@@ -176,6 +176,19 @@ pub struct TestVmParams<'a> {
     /// explicitly so the arg lowering is a pure function of (config, arch,
     /// accel) and testable for every ISA on any build host.
     pub arch: config::Arch,
+    /// Container-absolute path to the initramfs, when the profile's kernel
+    /// cannot reach its own root.
+    ///
+    /// `None` for a direct boot, which is the case whenever the root
+    /// filesystem transport is built in.
+    pub initramfs: Option<String>,
+    /// How this kernel reaches its root filesystem.
+    ///
+    /// Threaded through because it changes the kernel command line, not
+    /// just which files are passed: an initramfs boot skips
+    /// `prepare_namespace` entirely, so `root=` and `rootfstype=` are never
+    /// read and naming them would be misleading.
+    pub boot: crate::kernel_manifest::BootMode,
     /// Container-absolute path to the guest kernel image, resolved from the
     /// kernel manifest before launch.
     ///
@@ -632,6 +645,8 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
         vm_config,
         arch,
         kernel_image: profile.kernel.clone(),
+        initramfs: profile.initramfs.clone(),
+        boot: profile.boot,
         accel,
         vsock,
     };
