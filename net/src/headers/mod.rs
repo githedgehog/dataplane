@@ -1194,7 +1194,10 @@ where
 mod contract {
     use crate::eth::ethtype::CommonEthType;
     use crate::eth::{Eth, GenWithEthType};
-    use crate::headers::{Headers, MAX_NET_EXTENSIONS, MAX_VLANS, Net, NetExt, Transport};
+    use crate::headers::{
+        EmbeddedHeaders, EmbeddedTransport, Headers, MAX_NET_EXTENSIONS, MAX_VLANS, Net, NetExt,
+        Transport,
+    };
     use crate::icmp4::Icmp4;
     use crate::icmp6::Icmp6;
     use crate::ipv4;
@@ -1290,29 +1293,265 @@ mod contract {
             }
 
             // Extension headers hang off the net layer, so there is nothing to attach them to without
-            // one. The IPv4 authentication header is the only one that belongs on a v4 packet.
-            let ipv4 = matches!(headers.net, Some(Net::Ipv4(_)));
+            // one.
             if headers.net.is_some() {
-                let exts =
-                    driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_NET_EXTENSIONS))?;
-                for _ in 0..exts {
-                    let ext = if ipv4 {
-                        NetExt::Ipv4Auth(driver.produce()?)
-                    } else {
-                        match driver.gen_u8(Bound::Included(&0), Bound::Included(&4))? {
-                            0 => NetExt::HopByHop(driver.produce()?),
-                            1 => NetExt::DestOpts(driver.produce()?),
-                            2 => NetExt::Routing(driver.produce()?),
-                            3 => NetExt::Fragment(driver.produce()?),
-                            _ => NetExt::Ipv6Auth(driver.produce()?),
-                        }
-                    };
-                    headers.net_ext.push(ext);
-                }
+                headers.net_ext = ext_run(driver, matches!(headers.net, Some(Net::Ipv4(_))))?;
             }
 
             Some(headers)
         }
+    }
+
+    /// Draw a run of 0..=[`MAX_NET_EXTENSIONS`] extension headers for the given family.
+    ///
+    /// The IPv4 authentication header is the only extension that belongs on a v4 packet, so `v4`
+    /// selects between one choice and five rather than merely reweighting them.
+    ///
+    /// A quarter of the v6 runs follow RFC 8200's recommended order instead of drawing each slot
+    /// independently. Without that bias a shape naming three specific extensions in sequence is
+    /// drawn about once in fifteen thousand packets, which is enough to keep a property honest and
+    /// nowhere near enough for it to find anything: measured at two hits in 36,000 cases. The
+    /// ordered runs are also the ones a real peer sends, so this makes the generator both more
+    /// useful and more realistic.
+    fn ext_run<D: Driver>(
+        driver: &mut D,
+        v4: bool,
+    ) -> Option<ArrayVec<NetExt, MAX_NET_EXTENSIONS>> {
+        let mut out = ArrayVec::default();
+        let count = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_NET_EXTENSIONS))?;
+        let ordered = driver.gen_u8(Bound::Included(&0), Bound::Included(&3))? == 0;
+        for slot in 0..count {
+            let pick = if ordered {
+                u8::try_from(slot).unwrap_or(u8::MAX)
+            } else {
+                driver.gen_u8(Bound::Included(&0), Bound::Included(&4))?
+            };
+            out.push(one_ext(driver, v4, pick)?);
+        }
+        Some(out)
+    }
+
+    /// Draw one extension header, with fuzzed contents.
+    ///
+    /// `pick` indexes the IPv6 extension order RFC 8200 recommends -- 0 hop-by-hop, 1 destination
+    /// options, 2 routing, 3 fragment, anything else authentication -- and is ignored for `v4`,
+    /// where the IPv4 authentication header is the only extension there is.
+    fn one_ext<D: Driver>(driver: &mut D, v4: bool, pick: u8) -> Option<NetExt> {
+        if v4 {
+            return Some(NetExt::Ipv4Auth(driver.produce()?));
+        }
+        Some(match pick {
+            0 => NetExt::HopByHop(driver.produce()?),
+            1 => NetExt::DestOpts(driver.produce()?),
+            2 => NetExt::Routing(driver.produce()?),
+            3 => NetExt::Fragment(driver.produce()?),
+            _ => NetExt::Ipv6Auth(driver.produce()?),
+        })
+    }
+
+    /// Draws an ICMP error whose quoted packet carries exactly one chosen extension header, and
+    /// nothing else in the way.
+    ///
+    /// Companion to [`ShapedIcmpError`], and the division between them is deliberate. A property
+    /// comparing *hit against miss* needs both, so it wants the broad generator. A property that
+    /// only inspects matches -- does `look` pick the same layer `look_mut` does -- gets nothing from
+    /// a packet it skips, so for that one a narrow generator is not a weaker test but a stronger
+    /// one.
+    ///
+    /// The difference is not marginal. Naming a specific extension inside a quoted packet compounds
+    /// six independent conditions, one of which is `P(no VLAN tags) = 1/5`, since a tag the outer
+    /// shape does not name is a miss. Measured on [`ShapedIcmpError`],
+    /// `(&Ipv6, &DestOpts, &TruncatedTcp)` matched 6 packets in 23,910: a property doing real work
+    /// six times a second, and a hit rate low enough that asserting it is ever non-zero is itself a
+    /// coin flip. This generator produces that shape every time, and fuzzes the contents instead.
+    #[allow(dead_code)] // constructed through `.with_generator()`
+    pub struct ShapedQuote {
+        /// Which extension header to place, as the `pick` index [`one_ext`] uses.
+        pub ext: u8,
+        /// Family of both the quoting message and the packet it quotes.
+        pub v4: bool,
+    }
+
+    impl ValueGenerator for ShapedQuote {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let eth_type = if self.v4 {
+                CommonEthType::Ipv4
+            } else {
+                CommonEthType::Ipv6
+            };
+            let eth = GenWithEthType(eth_type.into()).generate(driver)?;
+
+            let mut quoted_ext = ArrayVec::default();
+            quoted_ext.push(one_ext(driver, self.v4, self.ext)?);
+            let quoted_transport = EmbeddedTransport::Tcp(driver.produce()?);
+
+            let (net, transport, quoted_net) = if self.v4 {
+                (
+                    Net::Ipv4(
+                        ipv4::GenWithNextHeader(ipv4::CommonNextHeader::Icmp4.into())
+                            .generate(driver)?,
+                    ),
+                    Transport::Icmp4(driver.produce()?),
+                    Net::Ipv4(
+                        ipv4::GenWithNextHeader(ipv4::CommonNextHeader::Tcp.into())
+                            .generate(driver)?,
+                    ),
+                )
+            } else {
+                (
+                    Net::Ipv6(
+                        ipv6::GenWithNextHeader(ipv6::CommonNextHeader::Icmp6.into())
+                            .generate(driver)?,
+                    ),
+                    Transport::Icmp6(driver.produce()?),
+                    Net::Ipv6(
+                        ipv6::GenWithNextHeader(ipv6::CommonNextHeader::Tcp.into())
+                            .generate(driver)?,
+                    ),
+                )
+            };
+
+            Some(Headers {
+                eth: Some(eth),
+                // No VLAN tags and no outer extensions: a tag the outer shape does not name is a
+                // miss, and this generator exists to stop producing misses.
+                vlan: ArrayVec::default(),
+                net: Some(net),
+                net_ext: ArrayVec::default(),
+                transport: Some(transport),
+                udp_encap: None,
+                embedded_ip: Some(EmbeddedHeaders::new(
+                    Some(quoted_net),
+                    Some(quoted_transport),
+                    quoted_ext,
+                    None,
+                )),
+            })
+        }
+    }
+
+    /// Draws an ICMP error message quoting an inner packet, with the layer structure of *both* the
+    /// outer message and the quoted packet varying.
+    ///
+    /// [`CommonHeaders`] cannot produce one at all: all six of its construction sites set
+    /// `embedded_ip: None`, so [`ShapedHeaders`], which builds on it, cannot either. That is a
+    /// better explanation of [`embedded_view`](crate::headers::embedded_view) sitting at 34% line
+    /// coverage than any claim about missing tests -- its hand-written tests are thorough, but every
+    /// one of them builds its packet through `HeaderStack`/`header_chain`, which pin the shape at
+    /// `(Eth, Ipv4, Icmp4)` outside and `(Ipv4, Tcp)` inside and offer no way to attach an extension
+    /// header to either side. Six of the eight `as_embedded` arities and the whole embedded
+    /// extension region were unreachable by construction.
+    ///
+    /// What varies here is what `EmbeddedShape`, `EmbeddedStep` and
+    /// [`ExtGapCheck`](crate::headers::pat::ExtGapCheck) actually turn on:
+    ///
+    /// * outer VLAN tags and outer extension headers, so the outer arity spans the range of
+    ///   `as_embedded` impls instead of only the one a builder can express;
+    /// * whether the embedded section is present at all -- an ICMP message that is not an error
+    ///   quotes nothing, and every embedded shape must miss on it;
+    /// * the inner network layer, its extension headers, and its truncated transport, including a
+    ///   quote that stops before the transport header and the ICMP-inside-ICMP case.
+    ///
+    /// The inner family follows the outer family most of the time, because that is what a real ICMP
+    /// error looks like: an `ICMPv4` message quotes an IPv4 packet. It deliberately does not always.
+    /// A family mismatch is where two independent structural walks are most likely to disagree, so
+    /// it wants drawing rather than assuming away.
+    ///
+    /// Structural on purpose, for the same reason as [`ShapedHeaders`]: `next_header` is set to
+    /// match the transport where one was drawn, but nothing keeps the extension chain's own
+    /// `next_header` fields consistent, because no code under test reads them.
+    #[allow(dead_code)] // constructed through `.with_generator()`
+    #[repr(transparent)]
+    pub struct ShapedIcmpError;
+
+    impl ValueGenerator for ShapedIcmpError {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let outer_v4 = driver.produce::<bool>()?;
+            let eth_type = if outer_v4 {
+                CommonEthType::Ipv4
+            } else {
+                CommonEthType::Ipv6
+            };
+            let eth = GenWithEthType(eth_type.into()).generate(driver)?;
+
+            let mut vlan = ArrayVec::default();
+            let vlans = driver.gen_usize(Bound::Included(&0), Bound::Included(&MAX_VLANS))?;
+            for _ in 0..vlans {
+                vlan.push(driver.produce()?);
+            }
+
+            let (net, transport) = if outer_v4 {
+                let ip = ipv4::GenWithNextHeader(ipv4::CommonNextHeader::Icmp4.into())
+                    .generate(driver)?;
+                (Net::Ipv4(ip), Transport::Icmp4(driver.produce()?))
+            } else {
+                let ip = ipv6::GenWithNextHeader(ipv6::CommonNextHeader::Icmp6.into())
+                    .generate(driver)?;
+                (Net::Ipv6(ip), Transport::Icmp6(driver.produce()?))
+            };
+
+            // Echo requests and replies are not errors and quote nothing, so absence is a shape the
+            // API has to handle, not an edge case to skip.
+            let embedded_ip = if driver.produce::<bool>()? {
+                Some(quoted_packet(driver, outer_v4)?)
+            } else {
+                None
+            };
+
+            Some(Headers {
+                eth: Some(eth),
+                vlan,
+                net: Some(net),
+                net_ext: ext_run(driver, outer_v4)?,
+                transport: Some(transport),
+                udp_encap: None,
+                embedded_ip,
+            })
+        }
+    }
+
+    /// Draw the packet quoted inside an ICMP error. `outer_v4` is the family of the quoting
+    /// message; see [`ShapedIcmpError`] for why the quoted packet usually but not always shares it.
+    fn quoted_packet<D: Driver>(driver: &mut D, outer_v4: bool) -> Option<EmbeddedHeaders> {
+        let mismatch = driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0;
+        let v4 = outer_v4 != mismatch;
+
+        // Pick the transport first so the network layer's `next_header` can name it. A quote that
+        // stops before the transport header is the truncation the `Truncated*` types exist for.
+        let transport = match driver.gen_u8(Bound::Included(&0), Bound::Included(&3))? {
+            0 => Some(EmbeddedTransport::Tcp(driver.produce()?)),
+            1 => Some(EmbeddedTransport::Udp(driver.produce()?)),
+            2 if v4 => Some(EmbeddedTransport::Icmp4(driver.produce()?)),
+            2 => Some(EmbeddedTransport::Icmp6(driver.produce()?)),
+            _ => None,
+        };
+
+        let net = if v4 {
+            let next = match transport {
+                Some(EmbeddedTransport::Udp(_)) => ipv4::CommonNextHeader::Udp,
+                Some(EmbeddedTransport::Icmp4(_)) => ipv4::CommonNextHeader::Icmp4,
+                _ => ipv4::CommonNextHeader::Tcp,
+            };
+            Net::Ipv4(ipv4::GenWithNextHeader(next.into()).generate(driver)?)
+        } else {
+            let next = match transport {
+                Some(EmbeddedTransport::Udp(_)) => ipv6::CommonNextHeader::Udp,
+                Some(EmbeddedTransport::Icmp6(_)) => ipv6::CommonNextHeader::Icmp6,
+                _ => ipv6::CommonNextHeader::Tcp,
+            };
+            Net::Ipv6(ipv6::GenWithNextHeader(next.into()).generate(driver)?)
+        };
+
+        Some(EmbeddedHeaders::new(
+            Some(net),
+            transport,
+            ext_run(driver, v4)?,
+            None,
+        ))
     }
 
     #[allow(dead_code)] // rustc not able to infer we construct this through .with_generator()
