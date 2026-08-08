@@ -2648,3 +2648,128 @@ mod view_properties {
             });
     }
 }
+
+/// Checks the mutable [`HeadersView`] boundary.
+///
+/// [`sealed::Sealed::matches`] licenses [`LookMut::look_mut`], whose separate
+/// [`MatcherMut`](super::pat::MatcherMut) traversal ends in `unreachable_unchecked`. The decisions
+/// must agree; Miri with stacked borrows checks that the returned mutable references do not alias.
+#[cfg(test)]
+mod view_mut_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::LookMut;
+    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::vlan::Vlan;
+
+    /// Whatever licensed the unchecked call must be deliverable by the walk that has to deliver it.
+    ///
+    /// Checked without calling `look_mut`, so a divergence is a clean counterexample rather than
+    /// undefined behaviour: `as_view_mut` consults `matches`, and the chain below is the same one
+    /// `look_mut` would run, but safely.
+    #[test]
+    fn what_matches_licenses_the_mutable_walk_can_deliver() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let licensed = owned.as_view_mut::<(&Eth, &Net, &Transport)>().is_some();
+                let deliverable = owned.pat_mut().eth().net().transport().done().is_some();
+                assert_eq!(
+                    licensed, deliverable,
+                    "`matches` and the mutable walk disagree, so `look_mut` would reach \
+                     `unreachable_unchecked`: {h:?}"
+                );
+            });
+    }
+
+    /// The same for a shape naming a VLAN tag, where the walks have to agree on how many were consumed.
+    #[test]
+    fn what_matches_licenses_the_mutable_vlan_walk_can_deliver() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let licensed = owned
+                    .as_view_mut::<(&Eth, &Vlan, &Net, &Transport)>()
+                    .is_some();
+                let deliverable = owned
+                    .pat_mut()
+                    .eth()
+                    .vlan()
+                    .net()
+                    .transport()
+                    .done()
+                    .is_some();
+                assert_eq!(
+                    licensed, deliverable,
+                    "`matches` and the mutable vlan walk disagree: {h:?}"
+                );
+            });
+    }
+
+    /// Write through every returned `&mut` so Miri can detect aliasing in [`Fields`](super::pat::Fields).
+    fn exercise_the_mutable_split() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let Some(view) = owned.as_view_mut::<(&Eth, &Net, &Transport)>() else {
+                    return;
+                };
+                let (eth, net, transport) = view.look_mut();
+
+                // Read each write back through the same reference.
+                let want_src =
+                    crate::eth::mac::SourceMac::try_from(crate::eth::mac::Mac([2, 0, 0, 0, 0, 1]))
+                        .unwrap_or_else(|_| {
+                            unreachable!("a locally-administered unicast mac is a valid source")
+                        });
+                eth.set_source(want_src);
+                let seen_net = net.dst_addr();
+                let seen_transport = transport.dst_port();
+
+                assert_eq!(
+                    eth.source(),
+                    want_src,
+                    "the write through eth did not stick"
+                );
+                assert_eq!(net.dst_addr(), seen_net, "net changed under a write to eth");
+                assert_eq!(
+                    transport.dst_port(),
+                    seen_transport,
+                    "transport changed under a write to eth"
+                );
+            });
+    }
+
+    /// Parallel Miri shards for mutable-aliasing coverage.
+    macro_rules! split_shards {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    exercise_the_mutable_split();
+                }
+            )*
+        };
+    }
+
+    split_shards!(
+        the_mutable_split_hands_out_distinct_layers,
+        split_shard_02,
+        split_shard_03,
+        split_shard_04,
+        split_shard_05,
+        split_shard_06,
+        split_shard_07,
+        split_shard_08,
+        split_shard_09,
+        split_shard_10,
+        split_shard_11,
+        split_shard_12,
+        split_shard_13,
+        split_shard_14,
+        split_shard_15,
+        split_shard_16,
+    );
+}
