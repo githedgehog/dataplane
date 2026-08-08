@@ -433,15 +433,25 @@ pub struct VmConfig {
     /// };
     /// ```
     pub kernel_features: &'static [crate::kernel_feature::KernelFeature],
-    /// The test's own source path (`file!()`) when it opted in to a
+    /// The test's own `(file!(), CARGO_MANIFEST_DIR)` when it opted in to a
     /// writable corpus directory via `#[corpus]`; `None` otherwise.
     ///
-    /// Cargo records `file!()` relative to the workspace root (e.g.
-    /// `mgmt/tests/reconcile.rs`), which is exactly what is needed to locate
-    /// the sibling `__fuzz__` directory on both the host and inside the
-    /// guest.  Carried as the raw path rather than a pre-computed directory
-    /// so that both tiers derive it identically from one constant.
-    pub corpus_source_file: Option<&'static str>,
+    /// Carried as raw compile-time strings rather than a pre-computed
+    /// directory so that both tiers derive the path identically from one
+    /// constant.
+    ///
+    /// Both are needed because `file!()` alone is not reliably
+    /// workspace-relative.  It is relative under a plain `cargo test`, but
+    /// this workspace builds with `--remap-path-prefix==${src}`
+    /// (default.nix), an empty-FROM mapping that deliberately rewrites
+    /// source paths *to* the nix store so debuggers can find them.  Under
+    /// that flag `file!()` is `/nix/store/<hash>-source/n-vm/tests/foo.rs`,
+    /// and treating it as relative produced a corpus path of
+    /// `/workspace//nix/store/...` in the guest and a host path that escaped
+    /// the workspace entirely -- so `#[corpus]` silently got no writable
+    /// directory.  The manifest dir supplies the anchor needed to recover
+    /// the workspace-relative tail; see [`Self::corpus_rel_dir`].
+    pub corpus_source_file: Option<(&'static str, &'static str)>,
 }
 
 /// A way a [`VmConfig`] can be wrong.
@@ -566,13 +576,43 @@ impl VmConfig {
 
     /// The corpus directory for this test, relative to the workspace root.
     ///
-    /// `None` when the test did not opt in, or when its source path has no
-    /// parent directory to hang `__fuzz__` off.
+    /// Guaranteed relative, which the callers rely on: the host tier joins
+    /// it onto the workspace root (an absolute path would silently *replace*
+    /// the root rather than extend it) and the guest path is built by
+    /// concatenation.
+    ///
+    /// A relative `file!()` is used as-is.  An absolute one is the
+    /// `--remap-path-prefix==${src}` case described on
+    /// [`Self::corpus_source_file`]: the remap prepends the workspace's
+    /// store path, so the workspace-relative tail is recovered by cutting at
+    /// the crate directory's own name, which is where the manifest dir and
+    /// the source path necessarily agree.  `rposition` because the anchor is
+    /// the *last* such component -- a store hash like `abc-n-vm-source`
+    /// would otherwise match ahead of the real crate directory.
+    ///
+    /// `None` when the test did not opt in, when the path has no parent to
+    /// hang `__fuzz__` off, or when the anchor is absent (a crate sitting at
+    /// the workspace root, whose directory name the remapped prefix does not
+    /// preserve).  Callers must treat `None` on an opted-in test as an
+    /// error: a missing corpus mount otherwise surfaces as a confusing
+    /// read-only failure inside the guest.
     #[must_use]
     pub fn corpus_rel_dir(&self) -> Option<std::path::PathBuf> {
-        let file = self.corpus_source_file?;
-        let parent = std::path::Path::new(file).parent()?;
-        Some(parent.join(n_vm_protocol::CORPUS_DIR_NAME))
+        use std::path::{Component, Path, PathBuf};
+
+        let (file, crate_dir) = self.corpus_source_file?;
+        let file = Path::new(file);
+
+        let relative: PathBuf = if file.is_relative() {
+            file.to_path_buf()
+        } else {
+            let anchor = Path::new(crate_dir).file_name()?;
+            let components: Vec<Component<'_>> = file.components().collect();
+            let start = components.iter().rposition(|c| c.as_os_str() == anchor)?;
+            components[start..].iter().collect()
+        };
+
+        Some(relative.parent()?.join(n_vm_protocol::CORPUS_DIR_NAME))
     }
 
     /// The absolute path at which the corpus directory appears *inside the
@@ -866,6 +906,86 @@ mod tests {
         size: GuestHugePageSize::Huge1G,
         count: 1,
     };
+
+    // -- Corpus paths -------------------------------------------------
+
+    fn with_corpus(file: &'static str, crate_dir: &'static str) -> VmConfig {
+        VmConfig {
+            corpus_source_file: Some((file, crate_dir)),
+            ..VmConfig::DEFAULT
+        }
+    }
+
+    /// A plain `cargo test` gives a workspace-relative `file!()`.
+    #[test]
+    fn corpus_dir_from_a_relative_source_path() {
+        let config = with_corpus("n-vm/tests/integration.rs", "/home/dev/dataplane/n-vm");
+        assert_eq!(
+            config.corpus_rel_dir().expect("resolvable"),
+            std::path::Path::new("n-vm/tests/__fuzz__"),
+        );
+    }
+
+    /// The `--remap-path-prefix==${src}` build gives an absolute store path.
+    ///
+    /// Treating it as relative is what broke `#[corpus]`: the host tier's
+    /// `workspace.join(rel)` discarded the workspace, and the guest was told
+    /// to look under `/workspace//nix/store/...`.
+    #[test]
+    fn corpus_dir_from_a_remapped_absolute_source_path() {
+        let config = with_corpus(
+            "/nix/store/7qpx1j7sqw6zklc13w0v338vwwykjzpl-source/n-vm/tests/integration.rs",
+            "/build/source/n-vm",
+        );
+        let rel = config.corpus_rel_dir().expect("resolvable");
+        assert!(rel.is_relative(), "must be relative, got {}", rel.display());
+        assert_eq!(rel, std::path::Path::new("n-vm/tests/__fuzz__"));
+    }
+
+    /// The guest path must not contain a doubled root.
+    #[test]
+    fn corpus_guest_path_is_a_single_rooted_path() {
+        let config = with_corpus(
+            "/nix/store/7qpx1j7sqw6zklc13w0v338vwwykjzpl-source/n-vm/tests/integration.rs",
+            "/build/source/n-vm",
+        );
+        assert_eq!(
+            config.corpus_guest_path().expect("resolvable"),
+            "/workspace/n-vm/tests/__fuzz__",
+        );
+    }
+
+    /// The anchor is the *last* matching component, so a store hash that
+    /// happens to contain the crate name does not win.
+    #[test]
+    fn corpus_dir_anchors_on_the_last_matching_component() {
+        let config = with_corpus(
+            "/nix/store/abcd-n-vm-source/n-vm/tests/integration.rs",
+            "/build/source/n-vm",
+        );
+        assert_eq!(
+            config.corpus_rel_dir().expect("resolvable"),
+            std::path::Path::new("n-vm/tests/__fuzz__"),
+        );
+    }
+
+    /// Unresolvable rather than silently wrong when there is no anchor; the
+    /// caller turns this into an error instead of a read-only corpus.
+    #[test]
+    fn corpus_dir_is_unresolvable_without_an_anchor() {
+        let config = with_corpus(
+            "/nix/store/abcd-source/tests/integration.rs",
+            "/build/source",
+        );
+        assert_eq!(config.corpus_rel_dir(), None);
+    }
+
+    /// A test that never opted in has no corpus and no error.
+    #[test]
+    fn no_corpus_opt_in_means_no_corpus_dir() {
+        assert_eq!(VmConfig::DEFAULT.corpus_rel_dir(), None);
+        assert_eq!(VmConfig::DEFAULT.corpus_guest_path(), None);
+    }
 
     // -- Arch profiles (both arches exercised on a single host) -------
 
