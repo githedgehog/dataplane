@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 
 use n_vm_protocol::KERNEL_MANIFEST_PATH;
 
+use crate::backend::EffectiveBackend;
 use crate::config::Arch;
 
 /// How a profile's kernel reaches its root filesystem.
@@ -70,6 +71,13 @@ pub struct KernelProfile {
     /// x86_64 `bzImage` is useless under an aarch64 emulator, and catching
     /// that here beats debugging a VM that never prints anything.
     pub arch: String,
+    /// Hypervisor this profile runs on (`cloud_hypervisor`, `qemu`).
+    ///
+    /// A profile is a (kernel, hypervisor) pair, so the hypervisor is a
+    /// property of the *environment* rather than of the test.  That is what
+    /// lets one test run under several hypervisors instead of being written
+    /// out once per backend.
+    pub hypervisor: String,
     /// How this kernel reaches its root filesystem.
     #[serde(default)]
     pub boot: BootMode,
@@ -93,6 +101,25 @@ pub struct KernelProfile {
 }
 
 impl KernelProfile {
+    /// The hypervisor this profile runs on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KernelManifestError::UnknownHypervisor`] if the manifest
+    /// names one this build does not have a backend for.  Failing loudly
+    /// beats defaulting, which would run the test somewhere other than
+    /// where the profile said.
+    pub fn backend(&self, name: &str) -> Result<EffectiveBackend, KernelManifestError> {
+        match self.hypervisor.as_str() {
+            "cloud_hypervisor" => Ok(EffectiveBackend::CloudHypervisor),
+            "qemu" => Ok(EffectiveBackend::Qemu),
+            other => Err(KernelManifestError::UnknownHypervisor {
+                profile: name.to_owned(),
+                hypervisor: other.to_owned(),
+            }),
+        }
+    }
+
     /// Checks that this kernel matches the guest architecture.
     ///
     /// # Errors
@@ -268,6 +295,19 @@ pub enum KernelManifestError {
         /// The architecture the test binary targets.
         guest_arch: &'static str,
     },
+
+    /// The manifest names a hypervisor this build has no backend for.
+    #[error("kernel profile `{profile}` names unknown hypervisor `{hypervisor}`")]
+    #[diagnostic(
+        code(n_vm::kernel_manifest_unknown_hypervisor),
+        help("valid hypervisors are `cloud_hypervisor` and `qemu`")
+    )]
+    UnknownHypervisor {
+        /// The offending profile's name.
+        profile: String,
+        /// The hypervisor the manifest claimed.
+        hypervisor: String,
+    },
 }
 
 #[cfg(test)]
@@ -279,6 +319,7 @@ mod test {
       "profiles": {
         "union": {
           "arch": "x86_64",
+          "hypervisor": "cloud_hypervisor",
           "boot": "direct",
           "kernel": "/kernels/union/vmlinuz"
         }
@@ -317,6 +358,7 @@ mod test {
           "profiles": {
             "flatcar": {
               "arch": "x86_64",
+              "hypervisor": "qemu",
               "boot": "initramfs",
               "kernel": "/kernels/flatcar/vmlinuz",
               "config": "/kernels/flatcar/config",
@@ -342,7 +384,8 @@ mod test {
         let raw = r#"{
           "default": "nope",
           "profiles": {
-            "union": { "arch": "x86_64", "kernel": "/kernels/union/vmlinuz" }
+            "union": { "arch": "x86_64", "hypervisor": "qemu",
+                       "kernel": "/kernels/union/vmlinuz" }
           }
         }"#;
         let err = parse(raw).expect_err("dangling default must be rejected");
@@ -363,6 +406,78 @@ mod test {
         assert!(
             format!("{err}").contains("union"),
             "error should list available profiles, got: {err}",
+        );
+    }
+
+    // -- Multiple profiles --------------------------------------------
+
+    /// The shape the nix build actually emits: several profiles sharing one
+    /// kernel and differing only in hypervisor.  That is the axis the
+    /// integration suite currently sweeps by hand.
+    const TWO_HYPERVISORS: &str = r#"{
+      "default": "cloud_hypervisor",
+      "profiles": {
+        "cloud_hypervisor": {
+          "arch": "x86_64", "hypervisor": "cloud_hypervisor", "boot": "direct",
+          "kernel": "/kernels/union/vmlinuz", "config": "/kernels/union/config"
+        },
+        "qemu": {
+          "arch": "x86_64", "hypervisor": "qemu", "boot": "direct",
+          "kernel": "/kernels/union/vmlinuz", "config": "/kernels/union/config"
+        }
+      }
+    }"#;
+
+    #[test]
+    fn profiles_may_share_a_kernel_and_differ_only_in_hypervisor() {
+        let manifest = parse(TWO_HYPERVISORS).expect("two-profile manifest should parse");
+        assert_eq!(manifest.profile_names(), vec!["cloud_hypervisor", "qemu"]);
+
+        let chv = manifest.profile("cloud_hypervisor").expect("exists");
+        let qemu = manifest.profile("qemu").expect("exists");
+        assert_eq!(
+            chv.kernel, qemu.kernel,
+            "both profiles should reference the same kernel image",
+        );
+        assert_eq!(
+            chv.backend("cloud_hypervisor").expect("known hypervisor"),
+            EffectiveBackend::CloudHypervisor,
+        );
+        assert_eq!(
+            qemu.backend("qemu").expect("known hypervisor"),
+            EffectiveBackend::Qemu,
+        );
+    }
+
+    #[test]
+    fn default_selects_one_of_several_profiles() {
+        let manifest = parse(TWO_HYPERVISORS).expect("two-profile manifest should parse");
+        let (name, _) = manifest.default_profile().expect("default must resolve");
+        assert_eq!(name, "cloud_hypervisor");
+    }
+
+    /// Defaulting an unrecognised hypervisor would run the test somewhere
+    /// other than where the profile said, which is worse than not running it.
+    #[test]
+    fn unknown_hypervisor_is_rejected_rather_than_defaulted() {
+        let raw = r#"{
+          "default": "weird",
+          "profiles": {
+            "weird": {
+              "arch": "x86_64", "hypervisor": "firecracker",
+              "kernel": "/kernels/union/vmlinuz"
+            }
+          }
+        }"#;
+        let manifest = parse(raw).expect("manifest itself is well-formed");
+        let err = manifest
+            .profile("weird")
+            .expect("exists")
+            .backend("weird")
+            .expect_err("unknown hypervisor must be rejected");
+        assert!(
+            matches!(err, KernelManifestError::UnknownHypervisor { .. }),
+            "expected UnknownHypervisor, got {err:?}",
         );
     }
 
