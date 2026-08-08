@@ -235,14 +235,40 @@ let
   # `n_vm::Arch::manifest_name`.
   kernel-manifest-arch = if platform'.arch == "aarch64" then "aarch64" else "x86_64";
 
-  # Name of the kernel profile built from our own config fragments.
+  # Directory holding the kernel built from our own config fragments.
   #
   # "union" because it carries the union of what the whole test suite needs
   # -- today from the hand-maintained fragment list in
-  # nix/overlays/dataplane-dev.nix, later from the requirements the tests
-  # themselves declare.  The profile's identity does not change when that
-  # switch happens, only how its fragment list is produced.
-  kernel-profile-name = "union";
+  # nix/overlays/dataplane-dev.nix, later checked against the requirements
+  # the tests declare.  Named separately from the profiles because several
+  # profiles share one kernel: the artifacts are installed once and
+  # referenced by each.
+  union-kernel-dir = "union";
+
+  # The environments a test can run in.
+  #
+  # A profile is a (kernel, hypervisor) pair.  Today they differ only in
+  # hypervisor, which is exactly the axis `n-vm/tests/integration.rs`
+  # currently sweeps *by hand* -- `test_which_runs_in_vm_with_iommu` and
+  # `..._with_qemu_iommu` are the same test written twice.  Making it a
+  # profile is what lets those collapse.
+  #
+  # Profile names are Rust identifiers because each becomes a module name in
+  # the generated test tree (`some_test::qemu`), so nextest can filter on
+  # one environment.
+  kernel-profiles = {
+    cloud_hypervisor = {
+      hypervisor = "cloud_hypervisor";
+      kernel-dir = union-kernel-dir;
+    };
+    qemu = {
+      hypervisor = "qemu";
+      kernel-dir = union-kernel-dir;
+    };
+  };
+
+  # The profile used when a test does not name one.
+  default-kernel-profile = "cloud_hypervisor";
 
   # nix's declaration of which guest kernels exist, read by the container
   # tier (see `n_vm::kernel_manifest`).
@@ -253,16 +279,17 @@ let
   # is what consumes them -- every first-level `testroot` entry is
   # bind-mounted at the container root, so `kernels/` lands at `/kernels`.
   kernel-manifest = builtins.toJSON {
-    default = kernel-profile-name;
-    profiles.${kernel-profile-name} = {
+    default = default-kernel-profile;
+    profiles = lib.mapAttrs (_name: profile: {
       arch = kernel-manifest-arch;
+      inherit (profile) hypervisor;
       # This kernel has virtiofs built in, so it mounts its own root and
       # needs no initramfs.  A kernel with virtiofs as a module cannot, and
       # would be `"initramfs"` here.
       boot = "direct";
-      kernel = "/kernels/${kernel-profile-name}/vmlinuz";
-      config = "/kernels/${kernel-profile-name}/config";
-    };
+      kernel = "/kernels/${profile.kernel-dir}/vmlinuz";
+      config = "/kernels/${profile.kernel-dir}/config";
+    }) kernel-profiles;
   };
 
   # Minimal derivation containing the bootable kernel image and the
@@ -289,11 +316,11 @@ let
   # recovered from the image with `extract-ikconfig` instead; both land here
   # under the same name, so nothing downstream has to care which it was.
   kernel-image = pkgs.runCommand "kernel-image" { } ''
-    mkdir -p $out/kernels/${kernel-profile-name}
+    mkdir -p $out/kernels/${union-kernel-dir}
     cp ${pkgs.linux-fancy}/${kernel-image-name} \
-      $out/kernels/${kernel-profile-name}/vmlinuz
+      $out/kernels/${union-kernel-dir}/vmlinuz
     cp ${pkgs.linux-fancy.configfile} \
-      $out/kernels/${kernel-profile-name}/config
+      $out/kernels/${union-kernel-dir}/config
     cp ${pkgs.writeText "n-vm-manifest.json" kernel-manifest} \
       $out/n-vm-manifest.json
   '';
