@@ -662,10 +662,9 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
         &params.vm_bin_path,
         params.test_name,
         &params.vsock,
-        params.vm_config.iommu,
-        &params.vm_config.guest_hugepages,
+        &params.vm_config,
         params.arch,
-        params.vm_config.corpus_guest_path().as_deref(),
+        params.boot,
     );
 
     args.extend([
@@ -674,6 +673,14 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
         "-append".into(),
         cmdline,
     ]);
+
+    // Only for a kernel that cannot reach its own root.  Passing an initrd
+    // to a kernel that does not need one is not harmless: it would be
+    // unpacked into rootfs and its `/init` run in preference to the
+    // `root=` the direct path relies on.
+    if let Some(initramfs) = &params.initramfs {
+        args.extend(["-initrd".into(), initramfs.clone()]);
+    }
 }
 
 /// Virtiofs filesystem device for sharing the container filesystem.
@@ -925,6 +932,8 @@ mod tests {
             vm_config: config::VmConfig::default(),
             arch: config::Arch::X86_64,
             kernel_image: SAMPLE_KERNEL.to_owned(),
+            initramfs: None,
+            boot: crate::kernel_manifest::BootMode::Direct,
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
