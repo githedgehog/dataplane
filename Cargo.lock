@@ -1721,6 +1721,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-n-preinit"
+version = "0.24.0"
+dependencies = [
+ "dataplane-n-vm-protocol",
+ "nix 0.31.3",
+]
+
+[[package]]
 name = "dataplane-n-vm"
 version = "0.25.2"
 dependencies = [
