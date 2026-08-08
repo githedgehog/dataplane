@@ -174,8 +174,12 @@ impl ValueGenerator for GatewayAgentSpecs {
         let mut vpc_internal_ids = HashSet::new();
         for i in 0..num_vpcs {
             let vni_offset = u32::try_from(i).expect("too many vpcs");
-            let mut vpc = crate::bolero::vpc::VpcGenerator::new(knobs.max_subnets, &knobs.families)
-                .generate(d)?;
+            let mut vpc = crate::bolero::vpc::VpcGenerator::new(
+                u8::try_from(i).unwrap_or(u8::MAX),
+                knobs.max_subnets,
+                &knobs.families,
+            )
+            .generate(d)?;
             let vpc_id = vpc.internal_id.as_mut().unwrap();
             while !vpc_internal_ids.insert(vpc_id.clone()) {
                 // We already have a VPC with this internal_id, "increment" the string to generate a

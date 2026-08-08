@@ -63,11 +63,29 @@ pub enum Mutation {
     DemandFlowScope,
     /// Put port 0 in a port range, which is not a port.
     UsePortZero,
+    /// Make two peers of one vpc expose the same prefix to it.
+    ///
+    /// `VpcRouteTable` is built per vpc from what its *peers* expose to it, so this leaves that vpc
+    /// with one destination and two places to send it. The rule the generator's slot scheme exists to
+    /// satisfy, deliberately broken: it was reached for a long time only because the generator broke
+    /// it by accident, and once that was fixed nothing tested it.
+    ///
+    /// Sometimes legal, and correctly so -- `VpcRoute::can_overlap` permits overlap between
+    /// masqueraded or default routes, and then only within one gateway group.
+    ///
+    /// **Note what weakening the validator shows.** Delete the `OverlappingPrefixes` check from
+    /// `VpcRouteTable::validate` and the "whatever validates, builds" property still passes: every
+    /// configuration the weakened validator accepts still builds and enacts. So this rule is not
+    /// about *feasibility* -- the dataplane will cheerfully install two routes to one destination and
+    /// pick one -- it is about *ambiguity*, which only the validator is in a position to refuse. That
+    /// makes it a rule the near-miss property structurally cannot police, and the gap is in the
+    /// property, not the validator. See the note in `validator_completeness`.
+    OverlapWithAnotherPeer,
 }
 
 impl Mutation {
     /// How many mutations there are, so a harness can keep a counter per mutation without a lock.
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 14;
 
     /// This mutation's position in [`Mutation::all`].
     #[must_use]
@@ -95,6 +113,7 @@ impl Mutation {
             Self::NameAStrangerInARule,
             Self::DemandFlowScope,
             Self::UsePortZero,
+            Self::OverlapWithAnotherPeer,
         ]
     }
 }
@@ -362,6 +381,91 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
                     ports.r#as = Some("0-100".to_string());
                     done = true;
                     break;
+                }
+            }
+            done
+        }
+
+        Mutation::OverlapWithAnotherPeer => {
+            // Two passes, so nothing has to be borrowed mutably while the search is still reading.
+            // A single pass with two live borrows would need `leak()` or a clone of the whole spec,
+            // and this runs millions of times.
+            //
+            // First: find a vpc that appears in two peerings, and a prefix one of its peers exposes.
+            let mut donor: Option<(String, String, String)> = None;
+            for (key, peering) in agent.spec.peerings.iter().flatten() {
+                let Some(manifests) = peering.peering.as_ref() else {
+                    continue;
+                };
+                for shared in manifests.keys() {
+                    let elsewhere = agent
+                        .spec
+                        .peerings
+                        .iter()
+                        .flatten()
+                        .any(|(other, peering)| {
+                            other != key
+                                && peering
+                                    .peering
+                                    .as_ref()
+                                    .is_some_and(|m| m.contains_key(shared))
+                        });
+                    if !elsewhere {
+                        continue;
+                    }
+                    let prefix = manifests
+                        .iter()
+                        .filter(|(name, _)| *name != shared)
+                        .flat_map(|(_, manifest)| manifest.expose.iter().flatten())
+                        .flat_map(|expose| expose.ips.iter().flatten())
+                        .find_map(|ip| ip.cidr.clone());
+                    if let Some(prefix) = prefix {
+                        donor = Some((key.clone(), shared.clone(), prefix));
+                        break;
+                    }
+                }
+                if donor.is_some() {
+                    break;
+                }
+            }
+
+            // Second: give that prefix to the shared vpc's *other* peer, in a different peering.
+            let mut done = false;
+            if let Some((donor_key, shared, prefix)) = donor {
+                for (key, peering) in agent.spec.peerings.iter_mut().flatten() {
+                    if *key == donor_key {
+                        continue;
+                    }
+                    let Some(manifests) = peering.peering.as_mut() else {
+                        continue;
+                    };
+                    if !manifests.contains_key(&shared) {
+                        continue;
+                    }
+                    let names: Vec<String> = manifests
+                        .keys()
+                        .filter(|name| **name != shared)
+                        .cloned()
+                        .collect();
+                    for name in names {
+                        let Some(manifest) = manifests.get_mut(&name) else {
+                            continue;
+                        };
+                        if let Some(ip) = manifest
+                            .expose
+                            .iter_mut()
+                            .flatten()
+                            .flat_map(|expose| expose.ips.iter_mut().flatten())
+                            .find(|ip| ip.cidr.is_some())
+                        {
+                            ip.cidr = Some(prefix.clone());
+                            done = true;
+                            break;
+                        }
+                    }
+                    if done {
+                        break;
+                    }
                 }
             }
             done

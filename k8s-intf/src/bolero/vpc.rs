@@ -29,14 +29,18 @@ fn generate_internal_id<D: Driver>(d: &mut D) -> Option<String> {
 /// [`blocks`], which is what the previous generator, drawing masks from zero, could not respect.
 #[derive(Debug, Clone)]
 pub struct VpcGenerator<'a> {
+    /// Which vpc this is, which picks the block slot its subnets come from. A subnet may be named by
+    /// an expose, so it is a prefix like any other and must not collide with another vpc's.
+    vpc: u8,
     max_subnets: u8,
     families: &'a [AddressFamily],
 }
 
 impl<'a> VpcGenerator<'a> {
     #[must_use]
-    pub fn new(max_subnets: u8, families: &'a [AddressFamily]) -> Self {
+    pub fn new(vpc: u8, max_subnets: u8, families: &'a [AddressFamily]) -> Self {
         Self {
+            vpc,
             max_subnets,
             families,
         }
@@ -78,8 +82,8 @@ impl ValueGenerator for VpcGenerator<'_> {
         )?;
 
         let subnets_cidrs = vec![
-            blocks::private_run(d, AddressFamily::V4, v4_masklen, num_v4_cidrs)?,
-            blocks::private_run(d, AddressFamily::V6, v6_masklen, num_v6_cidrs)?,
+            blocks::private_run(d, AddressFamily::V4, self.vpc, v4_masklen, num_v4_cidrs)?,
+            blocks::private_run(d, AddressFamily::V6, self.vpc, v6_masklen, num_v6_cidrs)?,
         ];
         let subnets = subnets_cidrs
             .into_iter()
@@ -102,9 +106,11 @@ impl ValueGenerator for VpcGenerator<'_> {
 }
 
 /// Delegates to [`VpcGenerator`] with default knobs, so existing users keep working.
+///
+/// Vpc zero, since a caller drawing one vpc at a time has nothing to keep it disjoint from.
 impl TypeGenerator for LegalValue<GatewayAgentVpcs> {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
         let families = AddressFamily::all();
-        Some(LegalValue(VpcGenerator::new(3, &families).generate(d)?))
+        Some(LegalValue(VpcGenerator::new(0, 3, &families).generate(d)?))
     }
 }
