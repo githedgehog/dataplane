@@ -960,6 +960,16 @@ mod validator_completeness {
 
     /// Whatever the validator accepts, the dataplane can enact.
     ///
+    /// **What this property cannot see.** It catches permissiveness that leads to a configuration the
+    /// dataplane cannot build. It does not catch permissiveness about rules with no downstream
+    /// enforcement -- `Mutation::OverlapWithAnotherPeer` is the worked example: deleting the
+    /// `OverlappingPrefixes` check from `VpcRouteTable::validate` leaves this property passing,
+    /// because two routes to one destination build perfectly well and the dataplane simply picks one.
+    /// Those rules are about *ambiguity* rather than *feasibility*, and policing them needs a
+    /// companion property -- "a mutation that breaks a rule must be refused" -- which in turn needs
+    /// each mutation to report whether the case it built is certainly illegal, since several of them
+    /// are legitimately legal some of the time.
+    ///
     /// Also: it never panics, since reaching the assertions at all means it returned. In wasm a panic
     /// is a trap, so it is a rejection with no reason attached -- worse for the user than any error.
     #[test]
@@ -984,6 +994,18 @@ mod validator_completeness {
                 if let Ok(validated) = &outcome {
                     enact(validated, mutation);
                 } else if let Err(e) = &outcome {
+                    // The control is legal by construction, so a rejection of it is a defect in the
+                    // *generator*, and asserted rather than counted so bolero shrinks it. Counting it
+                    // instead hid a real one for a long while: the tally said "6% of controls
+                    // refused", which reads as tolerable noise, and finding the cause from a tally
+                    // means reading configurations by eye. Asserted, the shrinker hands over a
+                    // two-line counterexample.
+                    assert!(
+                        mutation != Mutation::None,
+                        "an unmutated configuration was refused, so the generator is producing \
+                         illegal input and every mutated case is suspect: {e}"
+                    );
+
                     // A rejection has to say something the user can act on. An internal failure says
                     // "this is our bug", which is not something anyone can fix from the outside.
                     assert!(
@@ -1040,16 +1062,8 @@ mod validator_completeness {
             }
         }
 
-        // The control must rarely be refused: if a legal configuration is usually rejected, the
-        // mutated ones are being rejected for the wrong reasons and this checks little.
-        let control = Mutation::None.index();
-        let drawn = drawn_at[control].load(Ordering::Relaxed);
-        let refused = refused_at[control].load(Ordering::Relaxed);
-        assert!(
-            refused * 4 <= drawn,
-            "the unmutated control was refused {refused} times in {drawn}: the near-miss generator \
-             is not starting from legal configurations"
-        );
+        // Nothing here about the control's rejection rate: it is asserted to be zero above, which
+        // is both stronger and shrinkable.
 
         // And a mutation that finds a target should usually be refused. This does not have to hold
         // case by case -- `DemandFlowScope` on a peering that *is* stateful throughout is legal --
