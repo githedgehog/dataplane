@@ -226,6 +226,10 @@ let
   # on, and the reason the modular path exists at all.
   flatcar-kernel-dir = "flatcar";
 
+  # Directory for the pinned Ubuntu kernel.  A second distro, to test that
+  # the modular path generalises rather than fitting Flatcar in particular.
+  ubuntu-kernel-dir = "ubuntu";
+
   # Every guest kernel that gets installed, keyed by its artifact directory.
   #
   # Keyed by *kernel* rather than by profile because several profiles can
@@ -264,6 +268,17 @@ let
       inherit (flatcar-kernel-adapted) image configfile modules modDirVersion;
       boot = "initramfs";
       initramfs = initramfs-flatcar;
+    };
+    # Ubuntu publishes arm64 kernels too, so unlike Flatcar this is not
+    # inherently x86_64-only; it is pinned to an `amd64` .deb today and
+    # gated for the same reason -- claiming an aarch64 kernel while handing
+    # over an x86_64 one is a lie `check_arch` cannot catch.  Lifting it is
+    # a second set of pins, not new mechanism, but the arm64 `vmlinuz` is a
+    # compressed `Image` and wants checking against QEMU's `-kernel` first.
+    ${ubuntu-kernel-dir} = {
+      inherit (ubuntu-kernel-adapted) image configfile modules modDirVersion;
+      boot = "initramfs";
+      initramfs = initramfs-ubuntu;
     };
   };
 
@@ -304,6 +319,13 @@ let
     flatcar = {
       hypervisor = "qemu";
       kernel-dir = flatcar-kernel-dir;
+    };
+    # A distro kernel that is *not* the one we ship on, which is the point:
+    # Flatcar passing tells us the code works where we deploy, but only a
+    # second distro can tell us whether the harness itself generalises.
+    ubuntu = {
+      hypervisor = "qemu";
+      kernel-dir = ubuntu-kernel-dir;
     };
   };
 
@@ -530,19 +552,23 @@ let
   # it has a directory layout instead.  Mapping it here keeps the consumers
   # ignorant of which kind of kernel they were handed, which is the point of
   # the normalized output shape.
-  flatcar-kernel-adapted =
-    let
-      k = pkgs.flatcar-kernel;
-    in
-    {
-      drv = k;
-      configfile = "${k}/config";
-      # Discovered by the package rather than restated here; a version bump
-      # would otherwise leave the modules under a directory nothing reads.
-      modDirVersion = lib.removeSuffix "\n" (builtins.readFile "${k}/mod-dir-version");
-      modules = k;
-      image = "${k}/vmlinuz";
-    };
+  # Written as a function because there are two of these now: the mapping is
+  # a property of the *layout* the distro packages produce, not of any one
+  # distro, and both `pkgs/flatcar` and `pkgs/ubuntu` deliberately produce
+  # the same one.
+  adapt-distro-kernel = k: {
+    drv = k;
+    configfile = "${k}/config";
+    # Discovered by the package rather than restated here; a version bump
+    # would otherwise leave the modules under a directory nothing reads.
+    modDirVersion = lib.removeSuffix "\n" (builtins.readFile "${k}/mod-dir-version");
+    modules = k;
+    image = "${k}/vmlinuz";
+  };
+
+  flatcar-kernel-adapted = adapt-distro-kernel pkgs.flatcar-kernel;
+
+  ubuntu-kernel-adapted = adapt-distro-kernel pkgs.ubuntu-kernel;
 
   # The initramfs for Flatcar's kernel.
   #
@@ -552,6 +578,22 @@ let
   # Flatcar does not set CONFIG_MODULE_DECOMPRESS.
   initramfs-flatcar = mk-initramfs {
     kernel = flatcar-kernel-adapted;
+    pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+    boot-modules = [
+      "virtiofs"
+      "vmw_vsock_virtio_transport"
+    ];
+  };
+
+  # The initramfs for Ubuntu's kernel.
+  #
+  # Same derivation again, with two differences from Flatcar's that are
+  # handled without new mechanism: the modules are `.ko.zst` rather than
+  # `.ko.xz`, and `fuse` is built in (`CONFIG_FUSE_FS=y`) rather than
+  # modular, so virtiofs pulls in no dependency and the closure is one
+  # module shorter.
+  initramfs-ubuntu = mk-initramfs {
+    kernel = ubuntu-kernel-adapted;
     pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
     boot-modules = [
       "virtiofs"
