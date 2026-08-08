@@ -1010,23 +1010,32 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // A failure to create it is not fatal -- the test still runs, just
         // without a writable corpus -- because losing the ability to save an
         // input is far less bad than failing a test run outright.
-        let corpus_host_dir = match (workspace_root(), vm_config.corpus_rel_dir()) {
-            (Some(workspace), Some(rel)) => {
-                let dir = workspace.join(rel);
-                match std::fs::create_dir_all(&dir) {
-                    Ok(()) => Some(dir),
-                    Err(err) => {
-                        tracing::warn!(
-                            path = %dir.display(),
-                            %err,
-                            "could not create corpus directory; \
-                             the guest will have no writable corpus",
-                        );
-                        None
+        // A test that asked for a corpus and cannot be given one is a
+        // failure, not a warning.  The guest has no way to report "I had no
+        // writable corpus" -- the write just lands on the read-only root
+        // share and surfaces as a bare `ReadOnlyFilesystem` several tiers
+        // from the cause, which is exactly how the remapped-`file!()` bug
+        // hid.  Only reachable when `#[corpus]` was used, so this cannot
+        // affect a test that never asked.
+        let corpus_host_dir = match (workspace_root(), vm_config.corpus_source_file) {
+            (_, None) => None,
+            (Some(workspace), Some((file, crate_dir))) => {
+                let rel = vm_config.corpus_rel_dir().ok_or_else(|| {
+                    ContainerError::CorpusDirUnresolvable {
+                        file: file.to_owned(),
+                        crate_dir: crate_dir.to_owned(),
                     }
-                }
+                })?;
+                let dir = workspace.join(rel);
+                std::fs::create_dir_all(&dir).map_err(|source| {
+                    ContainerError::CorpusDirCreate {
+                        path: dir.clone(),
+                        source,
+                    }
+                })?;
+                Some(dir)
             }
-            _ => None,
+            (None, Some(_)) => return Err(ContainerError::CorpusWithoutWorkspace),
         };
 
         let config = params.build_config(
