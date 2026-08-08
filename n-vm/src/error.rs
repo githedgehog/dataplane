@@ -61,7 +61,7 @@ pub enum VmError {
     #[diagnostic(
         code(n_vm::invalid_config),
         help(
-            "check the #[hypervisor]/#[guest] attribute arguments on the test; \
+            "check the `const VmConfig` the test names with `config = ...`; \
               guest memory must be a multiple of the configured hugepage size"
         )
     )]

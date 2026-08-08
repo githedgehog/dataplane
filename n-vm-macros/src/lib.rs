@@ -16,16 +16,40 @@
 //! It *is* the test attribute -- it injects `#[test]` itself, so there is no
 //! companion `#[test]` or `#[tokio::test]` to write (or to get in the wrong
 //! order).  Use `#[n_vm::test]` for the default cloud-hypervisor backend or
-//! `#[n_vm::test(qemu)]` for QEMU.  Companion attributes must sit below it
-//! so this macro can consume them:
+//! `#[n_vm::test(qemu)]` for QEMU.
+//!
+//! # Configuring the VM
+//!
+//! The VM's shape comes from a `const VmConfig`, named by path:
 //!
 //! ```ignore
-//! #[n_vm::test(qemu)]
-//! #[hypervisor(iommu, host_pages = "4k")]
-//! #[guest(hugepage_size = "2m", hugepage_count = 512)]
-//! #[network(nic_model = "e1000")]
+//! const DPDK_VM: n_vm::VmConfig = n_vm::VmConfig {
+//!     iommu: true,
+//!     host_page_size: n_vm::HostPageSize::Standard,
+//!     guest_hugepages: n_vm::GuestHugePageConfig::Allocate {
+//!         size: n_vm::GuestHugePageSize::Huge2M,
+//!         count: 512,
+//!     },
+//!     nic_model: n_vm::NicModel::E1000,
+//!     ..n_vm::VmConfig::DEFAULT
+//! };
+//!
+//! #[n_vm::test(config = DPDK_VM)]
 //! fn test_dpdk() {}
 //! ```
+//!
+//! This replaces the former `#[hypervisor]`, `#[guest]`, and `#[network]`
+//! companion attributes.  The reason is not brevity -- it is that a `const`
+//! is ordinary Rust in an ordinary position, so completion, hover, and
+//! go-to-definition all work on it, and the enums in `n_vm::config` enforce
+//! what those attributes had to hand-check.  `hugepage_count` alongside
+//! `hugepage_size = "none"` needed a dedicated error only because the two
+//! were independent strings; `GuestHugePageConfig::None` has no count to set.
+//!
+//! Being `const` also lets the generated code assert the configuration is
+//! coherent at compile time, *including against the requested backend* -- so
+//! a NIC only QEMU can emulate is still rejected by the build rather than by
+//! a VM that fails to boot.
 //!
 //! An `async fn` runs on a tokio runtime in the guest.  The shape comes from
 //! this attribute's own arguments -- a current-thread runtime by default, or
@@ -45,7 +69,7 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{ReturnType, parse_macro_input};
 
 const KNOWN_BACKENDS: &[(&str, &str)] = &[
@@ -55,7 +79,20 @@ const KNOWN_BACKENDS: &[(&str, &str)] = &[
 
 const DEFAULT_BACKEND_NAME: &str = "cloud_hypervisor";
 
-const MIGRATED_OPTIONS: &[(&str, &str)] = &[("iommu", "#[hypervisor(iommu)]")];
+/// Options that used to be accepted here, and where they went.
+///
+/// Kept as errors rather than dropped: a stale option would otherwise read
+/// as an unknown one, with no hint about the const that replaced it.
+const MIGRATED_OPTIONS: &[(&str, &str)] = &[("iommu", "the `iommu` field of a `const VmConfig`")];
+
+/// Companion attributes this macro used to consume, now replaced by the
+/// `config = PATH` argument.
+///
+/// Detected explicitly because nothing consumes them any more: left alone,
+/// `#[guest(...)]` would be an inert attribute and the VM would quietly boot
+/// with the default configuration instead of the one the test appears to ask
+/// for.
+const RETIRED_ATTRS: &[&str] = &["hypervisor", "guest", "network"];
 
 #[must_use]
 fn known_backend_list() -> String {
@@ -100,6 +137,11 @@ struct BackendInfo {
 struct TestArgs {
     backend: BackendInfo,
     runtime: RuntimeConfig,
+    /// Path to the `const VmConfig` describing the VM, if the test named
+    /// one.  A path rather than an arbitrary expression on purpose: the
+    /// value is then written as a normal item, where an editor can help with
+    /// it, and the attribute holds nothing an editor has to parse.
+    config: Option<syn::Path>,
 }
 
 #[derive(Default)]
@@ -114,6 +156,7 @@ struct RuntimeConfig {
 fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
     let mut backend: Option<BackendInfo> = None;
     let mut runtime = RuntimeConfig::default();
+    let mut config: Option<syn::Path> = None;
 
     if attr.is_empty() {
         return Ok(TestArgs {
@@ -122,6 +165,7 @@ fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
                 explicit: false,
             },
             runtime,
+            config,
         });
     }
 
@@ -181,7 +225,30 @@ fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
                 }
             }
             syn::Meta::NameValue(nv) => {
-                if nv.path.is_ident("worker_threads") {
+                if nv.path.is_ident("config") {
+                    if config.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            &nv.path,
+                            "duplicate `config` in #[n_vm::test]",
+                        ));
+                    }
+                    // A path, not an arbitrary expression: the config is
+                    // meant to be a named item so that an editor can help
+                    // with it.  Rejecting an inline value here is what
+                    // steers callers towards writing one.
+                    let syn::Expr::Path(syn::ExprPath { path, .. }) = &nv.value else {
+                        return Err(syn::Error::new_spanned(
+                            &nv.value,
+                            "`config` takes the path of a `const VmConfig`, not an \
+                             inline value; declare it as an item and name it here, \
+                             e.g.\n\n\
+                             const FAST_VM: n_vm::VmConfig = \
+                             n_vm::VmConfig { iommu: true, ..n_vm::VmConfig::DEFAULT };\n\n\
+                             #[n_vm::test(config = FAST_VM)]",
+                        ));
+                    };
+                    config = Some(path.clone());
+                } else if nv.path.is_ident("worker_threads") {
                     let syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Int(int),
                         ..
@@ -236,277 +303,18 @@ fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
             explicit: false,
         }),
         runtime,
+        config,
     })
 }
 
 fn unknown_option_msg(name: &str) -> String {
     format!(
         "unknown #[n_vm::test] option `{name}`; expected a backend ({}), \
-         a runtime flavor (`current_thread`, `multi_thread`), or \
-         `worker_threads = N`.  VM options live on companion attributes \
-         (#[hypervisor(...)], #[guest(...)], #[network(...)])",
+         a runtime flavor (`current_thread`, `multi_thread`), \
+         `worker_threads = N`, or `config = PATH`.  VM options live in a \
+         `const VmConfig` named by `config = ...`",
         known_backend_list(),
     )
-}
-
-struct HypervisorArgs {
-    iommu: bool,
-    host_page_size: proc_macro2::TokenStream,
-}
-
-impl Default for HypervisorArgs {
-    fn default() -> Self {
-        Self {
-            iommu: false,
-            host_page_size: quote! { ::n_vm::HostPageSize::Huge1G },
-        }
-    }
-}
-
-fn parse_hypervisor_attr(attr: &syn::Attribute) -> syn::Result<HypervisorArgs> {
-    let mut args = HypervisorArgs::default();
-
-    if matches!(&attr.meta, syn::Meta::Path(_)) {
-        return Ok(args);
-    }
-
-    let mut iommu_seen = false;
-    let mut host_pages_seen = false;
-
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("iommu") {
-            if iommu_seen {
-                return Err(meta.error("duplicate `iommu` option in #[hypervisor]"));
-            }
-            iommu_seen = true;
-            args.iommu = true;
-            Ok(())
-        } else if meta.path.is_ident("host_pages") {
-            if host_pages_seen {
-                return Err(meta.error("duplicate `host_pages` option in #[hypervisor]"));
-            }
-            host_pages_seen = true;
-            let value: syn::LitStr = meta.value()?.parse()?;
-            args.host_page_size = match value.value().as_str() {
-                "4k" => quote! { ::n_vm::HostPageSize::Standard },
-                "2m" => quote! { ::n_vm::HostPageSize::Huge2M },
-                "1g" => quote! { ::n_vm::HostPageSize::Huge1G },
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        &value,
-                        format!(
-                            "unknown host page size `{other}` in #[hypervisor]; \
-                             valid values are: \"4k\", \"2m\", \"1g\"",
-                        ),
-                    ));
-                }
-            };
-            Ok(())
-        } else {
-            let name = meta
-                .path
-                .get_ident()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "<path>".into());
-            Err(meta.error(format!(
-                "unknown #[hypervisor] option `{name}`; \
-                 valid options are: `iommu`, `host_pages`",
-            )))
-        }
-    })?;
-
-    Ok(args)
-}
-
-struct GuestArgs {
-    guest_hugepages: proc_macro2::TokenStream,
-}
-
-impl Default for GuestArgs {
-    fn default() -> Self {
-        Self {
-            guest_hugepages: quote! {
-                ::n_vm::GuestHugePageConfig::Allocate {
-                    size: ::n_vm::GuestHugePageSize::Huge1G,
-                    count: 1u32,
-                }
-            },
-        }
-    }
-}
-
-fn parse_guest_attr(attr: &syn::Attribute) -> syn::Result<GuestArgs> {
-    if matches!(&attr.meta, syn::Meta::Path(_)) {
-        return Ok(GuestArgs::default());
-    }
-
-    let mut hugepage_size_seen = false;
-    let mut hugepage_count_seen = false;
-
-    let mut size_is_none = false;
-    let mut size_tokens: Option<proc_macro2::TokenStream> = None;
-    let mut count: u32 = 1;
-    let mut count_span: Option<proc_macro2::Span> = None;
-
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("hugepage_size") {
-            if hugepage_size_seen {
-                return Err(meta.error("duplicate `hugepage_size` option in #[guest]"));
-            }
-            hugepage_size_seen = true;
-            let value: syn::LitStr = meta.value()?.parse()?;
-            match value.value().as_str() {
-                "none" => {
-                    size_is_none = true;
-                }
-                "2m" => {
-                    size_tokens = Some(quote! { ::n_vm::GuestHugePageSize::Huge2M });
-                }
-                "1g" => {
-                    size_tokens = Some(quote! { ::n_vm::GuestHugePageSize::Huge1G });
-                }
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        &value,
-                        format!(
-                            "unknown hugepage size `{other}` in #[guest]; \
-                             valid values are: \"none\", \"2m\", \"1g\"",
-                        ),
-                    ));
-                }
-            }
-            Ok(())
-        } else if meta.path.is_ident("hugepage_count") {
-            if hugepage_count_seen {
-                return Err(meta.error("duplicate `hugepage_count` option in #[guest]"));
-            }
-            hugepage_count_seen = true;
-            let lit: syn::LitInt = meta.value()?.parse()?;
-            count_span = Some(lit.span());
-            count = lit.base10_parse()?;
-            if count == 0 {
-                return Err(syn::Error::new(
-                    lit.span(),
-                    "hugepage_count must be at least 1; \
-                     use `hugepage_size = \"none\"` to disable guest hugepages entirely",
-                ));
-            }
-            Ok(())
-        } else {
-            let name = meta
-                .path
-                .get_ident()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "<path>".into());
-            Err(meta.error(format!(
-                "unknown #[guest] option `{name}`; \
-                 valid options are: `hugepage_size`, `hugepage_count`",
-            )))
-        }
-    })?;
-
-    if size_is_none && hugepage_count_seen {
-        return Err(syn::Error::new(
-            count_span.unwrap_or_else(proc_macro2::Span::call_site),
-            "hugepage_count cannot be specified when \
-             hugepage_size = \"none\"; hugepages are disabled",
-        ));
-    }
-
-    if !hugepage_size_seen && !hugepage_count_seen {
-        return Ok(GuestArgs::default());
-    }
-    if !hugepage_size_seen {
-        return Err(syn::Error::new_spanned(
-            attr,
-            "#[guest] requires `hugepage_size`; e.g. \
-             #[guest(hugepage_size = \"2m\", hugepage_count = 512)]",
-        ));
-    }
-
-    let guest_hugepages = if size_is_none {
-        quote! { ::n_vm::GuestHugePageConfig::None }
-    } else {
-        let sz = size_tokens.expect("size_tokens set when size_is_none is false");
-        quote! {
-            ::n_vm::GuestHugePageConfig::Allocate {
-                size: #sz,
-                count: #count,
-            }
-        }
-    };
-
-    Ok(GuestArgs { guest_hugepages })
-}
-
-struct NetworkArgs {
-    nic_model: proc_macro2::TokenStream,
-    requires_qemu: bool,
-}
-
-impl Default for NetworkArgs {
-    fn default() -> Self {
-        Self {
-            nic_model: quote! { ::n_vm::NicModel::VirtioNet },
-            requires_qemu: false,
-        }
-    }
-}
-
-fn parse_network_attr(attr: &syn::Attribute) -> syn::Result<NetworkArgs> {
-    let mut args = NetworkArgs::default();
-
-    if matches!(&attr.meta, syn::Meta::Path(_)) {
-        return Ok(args);
-    }
-
-    let mut nic_model_seen = false;
-
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("nic_model") {
-            if nic_model_seen {
-                return Err(meta.error("duplicate `nic_model` option in #[network]"));
-            }
-            nic_model_seen = true;
-            let value: syn::LitStr = meta.value()?.parse()?;
-            match value.value().as_str() {
-                "virtio_net" => {
-                    args.nic_model = quote! { ::n_vm::NicModel::VirtioNet };
-                    args.requires_qemu = false;
-                }
-                "e1000" => {
-                    args.nic_model = quote! { ::n_vm::NicModel::E1000 };
-                    args.requires_qemu = true;
-                }
-                "e1000e" => {
-                    args.nic_model = quote! { ::n_vm::NicModel::E1000E };
-                    args.requires_qemu = true;
-                }
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        &value,
-                        format!(
-                            "unknown NIC model `{other}` in #[network]; \
-                             valid values are: \"virtio_net\", \"e1000\", \"e1000e\"",
-                        ),
-                    ));
-                }
-            }
-            Ok(())
-        } else {
-            let name = meta
-                .path
-                .get_ident()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "<path>".into());
-            Err(meta.error(format!(
-                "unknown #[network] option `{name}`; \
-                 valid options are: `nic_model`",
-            )))
-        }
-    })?;
-
-    Ok(args)
 }
 
 fn is_tokio_test_attr(attr: &syn::Attribute) -> bool {
@@ -568,17 +376,6 @@ fn extract_unique_attr(
     Ok(Some(attr))
 }
 
-fn extract_and_parse<T: Default>(
-    attrs: &mut Vec<syn::Attribute>,
-    name: &str,
-    parse: impl FnOnce(&syn::Attribute) -> syn::Result<T>,
-) -> syn::Result<T> {
-    match extract_unique_attr(attrs, name)? {
-        Some(attr) => parse(&attr),
-        None => Ok(T::default()),
-    }
-}
-
 /// Declares a test that runs inside an ephemeral VM.
 ///
 /// This *is* the test attribute -- it injects `#[test]` itself, so do not
@@ -590,17 +387,27 @@ fn extract_and_parse<T: Default>(
 /// #[n_vm::test]                                  // cloud-hypervisor, sync
 /// fn plain() {}
 ///
-/// #[n_vm::test(qemu, multi_thread, worker_threads = 4)]
-/// #[hypervisor(iommu, host_pages = "4k")]
+/// const FANCY_VM: n_vm::VmConfig = n_vm::VmConfig {
+///     iommu: true,
+///     host_page_size: n_vm::HostPageSize::Standard,
+///     ..n_vm::VmConfig::DEFAULT
+/// };
+///
+/// #[n_vm::test(qemu, multi_thread, worker_threads = 4, config = FANCY_VM)]
 /// async fn fancy() {}
 /// ```
 ///
-/// The decorated function must take no parameters and return `()`.
-/// Companion attributes `#[hypervisor]`, `#[guest]`, and `#[network]`
-/// configure the VM when placed below this one.
+/// The decorated function must take no parameters and return `()`.  The VM
+/// is configured by `config = PATH`, naming a `const VmConfig`; omitting it
+/// uses `VmConfig::DEFAULT`.  `#[n_vm::corpus]` may be placed below this
+/// attribute to grant the guest a writable corpus directory.
 #[proc_macro_attribute]
 pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let TestArgs { backend, runtime } = match parse_test_args(attr) {
+    let TestArgs {
+        backend,
+        runtime,
+        config,
+    } = match parse_test_args(attr) {
         Ok(args) => args,
         Err(err) => return err.to_compile_error().into(),
     };
@@ -674,21 +481,33 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         .into();
     }
 
-    let hypervisor_args =
-        match extract_and_parse(&mut func.attrs, "hypervisor", parse_hypervisor_attr) {
-            Ok(args) => args,
-            Err(err) => return err.to_compile_error().into(),
-        };
-
-    let guest_args = match extract_and_parse(&mut func.attrs, "guest", parse_guest_attr) {
-        Ok(args) => args,
-        Err(err) => return err.to_compile_error().into(),
-    };
-
-    let network_args = match extract_and_parse(&mut func.attrs, "network", parse_network_attr) {
-        Ok(args) => args,
-        Err(err) => return err.to_compile_error().into(),
-    };
+    // A leftover companion attribute is now inert rather than wrong-looking,
+    // so it has to be caught explicitly: left alone the VM would quietly boot
+    // with the default configuration instead of the one the test appears to
+    // ask for.
+    if let Some(stale) = func
+        .attrs
+        .iter()
+        .find(|a| RETIRED_ATTRS.iter().any(|name| attr_has_name(a, name)))
+    {
+        let name = stale
+            .path()
+            .segments
+            .last()
+            .map_or_else(String::new, |s| s.ident.to_string());
+        return syn::Error::new_spanned(
+            stale,
+            format!(
+                "#[{name}] has been replaced by a `const VmConfig`; declare one \
+                 and name it with `config = ...`, e.g.\n\n\
+                 const MY_VM: n_vm::VmConfig = \
+                 n_vm::VmConfig {{ iommu: true, ..n_vm::VmConfig::DEFAULT }};\n\n\
+                 #[n_vm::test(config = MY_VM)]",
+            ),
+        )
+        .to_compile_error()
+        .into();
+    }
 
     // `#[corpus]` is a bare marker: its presence grants the guest write
     // access to the `__fuzz__` directory beside this test's source file.
@@ -711,20 +530,6 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     } else {
         quote! { ::core::option::Option::None }
     };
-
-    if network_args.requires_qemu && backend.name != "qemu" {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!(
-                "the selected NIC model requires the QEMU backend, but the \
-                 current backend is `{backend}`; use #[n_vm::test(qemu)] with \
-                 emulated NIC models like e1000 or e1000e",
-                backend = backend.name,
-            ),
-        )
-        .to_compile_error()
-        .into();
-    }
 
     // Split the remaining attributes by which tier they belong to.
     //
@@ -757,10 +562,29 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     } else {
         quote! { ::n_vm::RequestedBackend::CloudHypervisor }
     };
-    let iommu = hypervisor_args.iommu;
-    let host_page_size = &hypervisor_args.host_page_size;
-    let guest_hugepages = &guest_args.guest_hugepages;
-    let nic_model = &network_args.nic_model;
+    // The base configuration: whatever the test named, or the default.  This
+    // macro never inspects it -- it is a path to a `const` whose value only
+    // rustc can know -- which is exactly why the checks that used to live
+    // here are now `const fn` assertions on the value itself.
+    let base_config = match &config {
+        Some(path) => quote! { #path },
+        None => quote! { ::n_vm::VmConfig::DEFAULT },
+    };
+
+    // The config and its assertion are emitted beside the test function
+    // rather than inside it, because `#[test]` items are stripped in a
+    // non-test build -- an assertion in the body would vanish with them, and
+    // could never be exercised by a compile-fail test.  At module scope it
+    // is checked in every build.
+    //
+    // Only `#[cfg]` carries over: a config for a test that does not exist
+    // would fail to compile if it referenced cfg'd-out items.  `#[ignore]`
+    // and doc comments are meaningless on a const.
+    let config_ident = format_ident!("__N_VM_CONFIG_{}", ident);
+    let cfg_attrs: Vec<_> = harness_attrs
+        .iter()
+        .filter(|a| a.path().is_ident("cfg"))
+        .collect();
 
     // The guest body becomes a nested function so that body-level
     // attributes (`#[wrap(...)]`, `#[traced_test]`, ...) apply to it and
@@ -823,6 +647,29 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     quote! {
+        // Built once; both tiers need it (VmConfig is Copy).  Tier 1 uses it
+        // to resolve capability/ISA skips; tier 2 to configure the VM.
+        //
+        // `corpus_source_file` is always overridden rather than taken from
+        // the base config, because it must name *this* test's file:
+        // `file!()` expands where it is written, so a shared const would name
+        // the const's own file and put the corpus directory beside the wrong
+        // source.
+        #(#cfg_attrs)*
+        #[allow(non_upper_case_globals)]
+        const #config_ident: ::n_vm::VmConfig = ::n_vm::VmConfig {
+            corpus_source_file: #corpus_source_file,
+            ..#base_config
+        };
+
+        // The backend/NIC check that used to run inside this macro runs here
+        // instead.  A macro sees tokens, so it can never evaluate a config
+        // named by path; rustc can, and a `const fn` assertion keeps the
+        // failure at build time rather than deferring it to a VM that will
+        // not boot.
+        #(#cfg_attrs)*
+        const _: () = #config_ident.assert_valid_for(#requested_backend);
+
         #[test]
         #(#harness_attrs)*
         #vis #sig {
@@ -832,75 +679,17 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
                 return;
             }
 
-            // Build once; both tiers need it (VmConfig is Copy).  Tier 1
-            // uses it to resolve capability/ISA skips; tier 2 to configure
-            // the VM.
-            let __n_vm_config = ::n_vm::VmConfig {
-                iommu: #iommu,
-                host_page_size: #host_page_size,
-                guest_hugepages: #guest_hugepages,
-                nic_model: #nic_model,
-                corpus_source_file: #corpus_source_file,
-            };
-
             // Tier 2: Docker container -> VM.  The backend and acceleration
             // mode were resolved by tier 1 and passed via the environment.
             if ::n_vm::is_in_test_container() {
-                ::n_vm::run_container_tier(#ident, __n_vm_config);
+                ::n_vm::run_container_tier(#ident, #config_ident);
                 return;
             }
 
             // Tier 1: Host -> Docker container.  Resolves the requested
             // backend + capabilities against the host arch / Docker daemon.
-            ::n_vm::run_host_tier(#ident, #requested_backend, __n_vm_config);
+            ::n_vm::run_host_tier(#ident, #requested_backend, #config_ident);
         }
-    }
-    .into()
-}
-
-/// Companion attribute for hypervisor options consumed by [`test`].
-///
-/// Supports `iommu` and `host_pages = "4k" | "2m" | "1g"`.
-#[proc_macro_attribute]
-pub fn hypervisor(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    let error = syn::Error::new(
-        proc_macro2::Span::call_site(),
-        "#[hypervisor] must be used together with #[n_vm::test] and must \
-         appear below it on the same function; e.g.\n\n\
-         #[n_vm::test]\n\
-         #[hypervisor(iommu, host_pages = \"4k\")]\n\
-         fn my_test() { ... }",
-    )
-    .to_compile_error();
-
-    let input2: proc_macro2::TokenStream = input.into();
-    quote! {
-        #error
-        #input2
-    }
-    .into()
-}
-
-/// Companion attribute for guest kernel options consumed by [`test`].
-///
-/// Supports `hugepage_size = "none" | "2m" | "1g"` and
-/// `hugepage_count = N`.
-#[proc_macro_attribute]
-pub fn guest(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    let error = syn::Error::new(
-        proc_macro2::Span::call_site(),
-        "#[guest] must be used together with #[n_vm::test] and must \
-         appear below it on the same function; e.g.\n\n\
-         #[n_vm::test]\n\
-         #[guest(hugepage_size = \"2m\", hugepage_count = 512)]\n\
-         fn my_test() { ... }",
-    )
-    .to_compile_error();
-
-    let input2: proc_macro2::TokenStream = input.into();
-    quote! {
-        #error
-        #input2
     }
     .into()
 }
@@ -929,30 +718,6 @@ pub fn corpus(_attr: TokenStream, input: TokenStream) -> TokenStream {
          #[n_vm::test]\n\
          #[corpus]\n\
          fn my_fuzz_test() { ... }",
-    )
-    .to_compile_error();
-
-    let input2: proc_macro2::TokenStream = input.into();
-    quote! {
-        #error
-        #input2
-    }
-    .into()
-}
-
-/// Companion attribute for network options consumed by [`test`].
-///
-/// Supports `nic_model = "virtio_net" | "e1000" | "e1000e"`.
-/// Emulated Intel NICs require `#[n_vm::test(qemu)]`.
-#[proc_macro_attribute]
-pub fn network(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    let error = syn::Error::new(
-        proc_macro2::Span::call_site(),
-        "#[network] must be used together with #[n_vm::test] and must \
-         appear below it on the same function; e.g.\n\n\
-         #[n_vm::test(qemu)]\n\
-         #[network(nic_model = \"e1000\")]\n\
-         fn my_test() { ... }",
     )
     .to_compile_error();
 
