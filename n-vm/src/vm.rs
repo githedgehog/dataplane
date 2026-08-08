@@ -317,6 +317,35 @@ impl<B: HypervisorBackend> TestVm<B> {
         command.arg("--shared-dir").arg(path.as_ref());
         if !writable {
             command.arg("--readonly");
+            // `--cache=always` on the read-only share, because virtiofsd's
+            // default (`auto`) corrupts the guest's file-backed pages.
+            //
+            // Every binary the guest runs -- `ld.so`, `libc`, the test
+            // binary itself -- is mmapped from this share, and there is no
+            // DAX window (CONFIG_FUSE_DAX is off), so those mappings are
+            // served out of the guest page cache over FUSE.  Under `auto`
+            // the guest re-validates and drops cached pages on a timeout,
+            // and an aarch64 guest then executes and dereferences stale or
+            // partially-filled pages: garbage relocations, pointers with
+            // their low word zeroed, jumps into `.rodata`.  It reproduced
+            // 5/5 and was independent of the guest kernel config.
+            //
+            // `always` tells the guest its page cache is authoritative and
+            // suppresses that revalidation.  Sound here because the share is
+            // read-only for the guest *and* immutable on the host: it is a
+            // /nix/store closure plus the workspace, neither of which
+            // changes while a VM is up.
+            //
+            // Only the read-only share.  The corpus share is writable and
+            // must stay coherent with the host that reads results back
+            // afterwards, so it keeps virtiofsd's default.
+            command.arg(format!(
+                "--cache={}",
+                std::env::var(n_vm_protocol::ENV_VIRTIOFS_CACHE)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| "always".into())
+            ));
         }
         command
             .arg("--tag")
