@@ -304,6 +304,52 @@ pub enum ContainerError {
     #[diagnostic(code(n_vm::container::binary_path_read))]
     BinaryPathRead(#[source] std::io::Error),
 
+    /// A `#[corpus]` test's corpus directory could not be derived from its
+    /// compile-time source path.
+    ///
+    /// Reported rather than skipped: the guest cannot say "I had no writable
+    /// corpus", so the write lands on the read-only root share and surfaces
+    /// as a bare `ReadOnlyFilesystem` far from the cause.
+    #[error("cannot derive the corpus directory for a #[corpus] test")]
+    #[diagnostic(
+        code(n_vm::container::corpus_dir_unresolvable),
+        help(
+            "`file!()` is `{file}` and the crate directory is `{crate_dir}`, \
+             which share no component to anchor on.  A crate at the workspace \
+             root cannot be anchored this way, because \
+             `--remap-path-prefix==${{src}}` does not preserve its directory \
+             name."
+        )
+    )]
+    CorpusDirUnresolvable {
+        /// The test's `file!()`, as recorded at compile time.
+        file: String,
+        /// The test crate's `CARGO_MANIFEST_DIR`.
+        crate_dir: String,
+    },
+
+    /// The corpus directory could not be created on the host.
+    #[error("failed to create the corpus directory {path}")]
+    #[diagnostic(code(n_vm::container::corpus_dir_create))]
+    CorpusDirCreate {
+        /// The directory that could not be created.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A `#[corpus]` test ran outside any cargo workspace.
+    ///
+    /// The corpus lives beside the test's source, so without a workspace
+    /// root there is nowhere to put it.
+    #[error("a #[corpus] test requires a cargo workspace, but none was found")]
+    #[diagnostic(
+        code(n_vm::container::corpus_without_workspace),
+        help("set N_VM_WORKSPACE to the workspace root")
+    )]
+    CorpusWithoutWorkspace,
+
     /// Could not canonicalize the test binary's parent directory.
     #[error("failed to canonicalize test binary directory")]
     #[diagnostic(code(n_vm::container::binary_path_canonicalize))]
