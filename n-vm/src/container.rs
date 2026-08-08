@@ -1082,6 +1082,13 @@ fn find_on_path(program: &str) -> Option<String> {
     std::env::split_paths(&path)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
+        // Canonicalized, because the result is executed *inside the
+        // container*, where only `/nix/store` and the `testroot` entries are
+        // mounted.  A `PATH` hit is typically `devroot/bin/<program>`, a
+        // symlink in the developer's working tree that does not exist in
+        // there -- so handing it over unresolved produces exit code 127 from
+        // a binary that is plainly present on the host.
+        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
         .and_then(|p| p.to_str().map(ToOwned::to_owned))
 }
 
