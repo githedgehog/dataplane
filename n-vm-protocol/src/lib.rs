@@ -674,6 +674,20 @@ pub const ENV_SKIP_LOG: &str = "N_VM_SKIP_LOG";
 /// architecture.
 pub const ENV_STRICT_SKIPS: &str = "N_VM_STRICT_SKIPS";
 
+/// Overrides virtiofsd's `--cache` mode for the guest's read-only share.
+///
+/// Unset uses `always`, which is what makes an aarch64 guest run at all --
+/// see the rationale where virtiofsd is launched.  Set to `auto` or `never`
+/// to get virtiofsd's other modes back.
+///
+/// Exists as a run-time knob rather than a build-time constant because the
+/// guest's failure modes are sensitive to the *layout* of the guest test
+/// binary: rebuilding `n-vm` to change a virtiofsd flag also changes the
+/// binary under test, which confounds the comparison it was meant to make.
+/// One build plus this variable keeps the cache mode the only difference
+/// between two runs -- which is how `auto` was identified as the cause.
+pub const ENV_VIRTIOFS_CACHE: &str = "N_VM_VIRTIOFS_CACHE";
+
 /// Directory holding per-profile kernel artifacts inside the container.
 ///
 /// Paths in the manifest are absolute and already include this prefix; the
