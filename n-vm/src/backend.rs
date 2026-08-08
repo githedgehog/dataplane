@@ -126,6 +126,19 @@ impl EffectiveBackend {
         }
     }
 
+    /// Whether this backend can run a guest of a foreign architecture.
+    ///
+    /// Mirrors [`HypervisorBackend::CAN_EMULATE`], reachable from the value
+    /// rather than only from the type, because the host tier decides this
+    /// before it has monomorphised anything.
+    #[must_use]
+    pub const fn can_emulate(self) -> bool {
+        match self {
+            Self::Qemu => true,
+            Self::CloudHypervisor => false,
+        }
+    }
+
     /// Parses an [`ENV_BACKEND`](n_vm_protocol::ENV_BACKEND) value,
     /// defaulting to cloud-hypervisor for an absent or unrecognised value
     /// (the historical default backend).
@@ -169,15 +182,75 @@ impl RequestedBackend {
     ///   skip -- cloud-hypervisor cannot emulate.
     ///
     /// `needs_qemu` reports whether the test's configuration asks for
-    /// something only QEMU provides (today: an emulated Intel NIC).  An
-    /// *unpinned* test that does so is not an error -- it is a test that
-    /// wants QEMU, so it gets QEMU.  A test that pinned cloud-hypervisor
-    /// *and* asked for one is a contradiction, but it never reaches here:
-    /// [`VmConfig::assert_valid_for`](crate::config::VmConfig::assert_valid_for)
-    /// rejects it at compile time.  The arm below exists so this stays a
-    /// total function rather than relying on that.
+    /// something only QEMU provides (today: an emulated Intel NIC).
+    ///
+    /// `profile` is the hypervisor the selected kernel profile runs on.
+    /// When the test expressed no preference -- [`Default`](Self::Default),
+    /// which is the overwhelming majority -- the profile decides.  That is
+    /// the point: an unpinned test means "anywhere", so it should run in
+    /// whichever environment is selected rather than in one particular one.
+    ///
+    /// Resolving `Default` to a *fixed* backend was the reason a Flatcar run
+    /// reported 16 passes while booting four VMs: every unpinned test landed
+    /// on cloud-hypervisor, which no QEMU profile has, and skipped.
+    ///
+    /// `None` means the profile could not be determined -- an unreadable
+    /// manifest -- in which case this falls back to the historical fixed
+    /// resolution and lets the container tier report the real problem with a
+    /// better message than a skip would give.
     #[must_use]
-    pub fn resolve(self, cross_arch: bool, needs_qemu: bool) -> BackendResolution {
+    pub fn resolve(
+        self,
+        cross_arch: bool,
+        needs_qemu: bool,
+        profile: Option<EffectiveBackend>,
+    ) -> BackendResolution {
+        use BackendResolution::{Run, Skip};
+
+        if let Some(profile) = profile {
+            // What the test actually requires, if anything at all.
+            let required = if needs_qemu {
+                Some(EffectiveBackend::Qemu)
+            } else {
+                match self {
+                    Self::Default => None,
+                    Self::CloudHypervisor => Some(EffectiveBackend::CloudHypervisor),
+                    Self::Qemu => Some(EffectiveBackend::Qemu),
+                }
+            };
+
+            if let Some(required) = required
+                && required != profile
+            {
+                return Skip {
+                    reason: format!(
+                        "test requires {required:?}, but the selected kernel profile \
+                         runs on {profile:?}",
+                    ),
+                };
+            }
+
+            if cross_arch && !profile.can_emulate() {
+                return Skip {
+                    reason: "the selected profile's hypervisor cannot emulate a \
+                             foreign-architecture guest"
+                        .to_owned(),
+                };
+            }
+
+            return Run {
+                backend: profile,
+                accel: if cross_arch { Accel::Tcg } else { Accel::Kvm },
+            };
+        }
+
+        self.resolve_without_profile(cross_arch, needs_qemu)
+    }
+
+    /// The pre-profile resolution, kept for the case where the manifest
+    /// cannot be read.
+    #[must_use]
+    fn resolve_without_profile(self, cross_arch: bool, needs_qemu: bool) -> BackendResolution {
         use BackendResolution::{Run, Skip};
         use EffectiveBackend::{CloudHypervisor, Qemu};
 
@@ -254,7 +327,7 @@ mod tests {
             RequestedBackend::CloudHypervisor,
             RequestedBackend::Qemu,
         ] {
-            match req.resolve(false, false) {
+            match req.resolve(false, false, None) {
                 BackendResolution::Run { accel, .. } => assert_eq!(accel, Accel::Kvm),
                 BackendResolution::Skip { .. } => panic!("native run must not skip: {req:?}"),
             }
@@ -264,7 +337,7 @@ mod tests {
     #[test]
     fn cross_default_falls_back_to_qemu_tcg() {
         assert_eq!(
-            RequestedBackend::Default.resolve(true, false),
+            RequestedBackend::Default.resolve(true, false, None),
             BackendResolution::Run {
                 backend: EffectiveBackend::Qemu,
                 accel: Accel::Tcg,
@@ -275,7 +348,7 @@ mod tests {
     #[test]
     fn cross_qemu_uses_tcg() {
         assert_eq!(
-            RequestedBackend::Qemu.resolve(true, false),
+            RequestedBackend::Qemu.resolve(true, false, None),
             BackendResolution::Run {
                 backend: EffectiveBackend::Qemu,
                 accel: Accel::Tcg,
@@ -286,7 +359,7 @@ mod tests {
     #[test]
     fn cross_explicit_cloud_hypervisor_skips() {
         assert!(matches!(
-            RequestedBackend::CloudHypervisor.resolve(true, false),
+            RequestedBackend::CloudHypervisor.resolve(true, false, None),
             BackendResolution::Skip { .. },
         ));
     }
@@ -299,7 +372,7 @@ mod tests {
     #[test]
     fn unpinned_qemu_only_config_selects_qemu() {
         assert_eq!(
-            RequestedBackend::Default.resolve(false, true),
+            RequestedBackend::Default.resolve(false, true, None),
             BackendResolution::Run {
                 backend: EffectiveBackend::Qemu,
                 accel: Accel::Kvm,
@@ -312,7 +385,7 @@ mod tests {
     #[test]
     fn qemu_only_config_keeps_kvm_when_not_cross_arch() {
         for req in [RequestedBackend::Default, RequestedBackend::Qemu] {
-            match req.resolve(false, true) {
+            match req.resolve(false, true, None) {
                 BackendResolution::Run { backend, accel } => {
                     assert_eq!(backend, EffectiveBackend::Qemu);
                     assert_eq!(accel, Accel::Kvm, "{req:?} should keep KVM natively");
@@ -321,10 +394,87 @@ mod tests {
             }
         }
         assert_eq!(
-            RequestedBackend::Qemu.resolve(true, true),
+            RequestedBackend::Qemu.resolve(true, true, None),
             BackendResolution::Run {
                 backend: EffectiveBackend::Qemu,
                 accel: Accel::Tcg,
+            },
+        );
+    }
+
+    // -- Profile-driven resolution -----------------------------------
+
+    /// The fix for the coverage hole: a test that named no backend must run
+    /// on whatever the selected profile provides, not on one fixed choice.
+    ///
+    /// Resolving `Default` to cloud-hypervisor regardless was why a Flatcar
+    /// run reported 16 passes while booting four VMs -- every unpinned test
+    /// landed on a hypervisor no QEMU profile has, and skipped.
+    #[test]
+    fn unpinned_test_adopts_the_profile_hypervisor() {
+        for profile in [EffectiveBackend::Qemu, EffectiveBackend::CloudHypervisor] {
+            assert_eq!(
+                RequestedBackend::Default.resolve(false, false, Some(profile)),
+                BackendResolution::Run {
+                    backend: profile,
+                    accel: Accel::Kvm,
+                },
+                "an unpinned test should run on the profile's hypervisor ({profile:?})",
+            );
+        }
+    }
+
+    /// A test that *did* name a backend still skips where it does not fit --
+    /// that is a real mismatch rather than an absence of preference.
+    #[test]
+    fn pinned_test_skips_on_a_profile_it_does_not_match() {
+        assert!(matches!(
+            RequestedBackend::CloudHypervisor.resolve(false, false, Some(EffectiveBackend::Qemu)),
+            BackendResolution::Skip { .. },
+        ));
+        assert!(matches!(
+            RequestedBackend::Qemu.resolve(false, false, Some(EffectiveBackend::CloudHypervisor)),
+            BackendResolution::Skip { .. },
+        ));
+    }
+
+    /// A config needing an emulated NIC is a requirement like any other, so
+    /// it skips a cloud-hypervisor profile even when the test named nothing.
+    #[test]
+    fn qemu_only_config_skips_a_cloud_hypervisor_profile() {
+        assert!(matches!(
+            RequestedBackend::Default.resolve(false, true, Some(EffectiveBackend::CloudHypervisor)),
+            BackendResolution::Skip { .. },
+        ));
+    }
+
+    /// A cross-arch guest needs an emulating hypervisor; a profile whose
+    /// hypervisor cannot emulate is a skip rather than a doomed boot.
+    #[test]
+    fn cross_arch_skips_a_profile_that_cannot_emulate() {
+        assert!(matches!(
+            RequestedBackend::Default.resolve(true, false, Some(EffectiveBackend::CloudHypervisor)),
+            BackendResolution::Skip { .. },
+        ));
+        assert_eq!(
+            RequestedBackend::Default.resolve(true, false, Some(EffectiveBackend::Qemu)),
+            BackendResolution::Run {
+                backend: EffectiveBackend::Qemu,
+                accel: Accel::Tcg,
+            },
+        );
+    }
+
+    /// An unreadable manifest must not masquerade as an environment
+    /// mismatch: it falls back to the historical resolution and lets the
+    /// container tier report the real problem.
+    #[test]
+    fn absent_profile_falls_back_to_the_historical_resolution() {
+        assert_eq!(
+            RequestedBackend::Default.resolve(false, false, None),
+            BackendResolution::Run {
+                backend: EffectiveBackend::CloudHypervisor,
+                accel: Accel::Kvm,
             },
         );
     }
@@ -338,7 +488,7 @@ mod tests {
         for cross in [false, true] {
             assert!(
                 matches!(
-                    RequestedBackend::CloudHypervisor.resolve(cross, true),
+                    RequestedBackend::CloudHypervisor.resolve(cross, true, None),
                     BackendResolution::Skip { .. },
                 ),
                 "cross={cross} should skip",
