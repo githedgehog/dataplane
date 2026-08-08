@@ -2659,6 +2659,9 @@ mod view_mut_properties {
     use crate::eth::Eth;
     use crate::headers::view::LookMut;
     use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::ip_auth::Ipv4Auth;
+    use crate::ipv4::Ipv4;
+    use crate::ipv6::{DestOpts, HopByHop, Ipv6, Routing};
     use crate::vlan::Vlan;
 
     /// Both walks, at every arity the oracle can express.
@@ -2755,22 +2758,14 @@ mod view_mut_properties {
         }
     }
 
-    // Every arity from one to seven, which is as far as the oracle reaches.
+    // Every arity from one to eight, which is all of them.
     //
-    // `Matcher`'s vocabulary is `eth`, `vlan`, `net`, `transport`, `vxlan` and `embedded`. The last two
-    // are unreachable in a builder chain: `Vxlan: Within<Udp>` and the embedded header sits under
-    // `Icmp4`/`Icmp6`, both *concrete* layers, and `Matcher` has no concrete-layer methods -- no
-    // `.udp()`, no `.tcp()`. So the longest chain it can express is `Eth`, four VLAN tags
-    // (`MAX_VLANS`), `Net`, `Transport`: seven.
-    //
-    // Two gaps follow, and both are about the oracle rather than the code:
-    //
-    //   * the **arity-8** arm of the macro is generated and goes unchecked here, because nothing the
-    //     oracle can say is eight elements long;
-    //   * shapes entering the **IPv6 extension region** cannot be expressed at all, and that is the
-    //     more interesting loss -- `ExtGapCheck` is the subtlest part of the contract, the part the
-    //     module documentation spends most of its words on, and it has no oracle. Closing it means
-    //     either extension-header methods on `Matcher` or a different oracle.
+    // `Matcher` names every layer the `Within` graph does -- `matcher_net!`, `matcher_ext!` and
+    // `matcher_transport!` give it `.ipv4()`, `.ipv6()`, `.hop_by_hop()`, `.dest_opts()`,
+    // `.routing()`, `.fragment()`, `.ipv4_auth()`, `.ipv6_auth()`, `.tcp()`, `.udp()`, `.icmp4()` and
+    // `.icmp6()` alongside the generic `.eth()` / `.vlan()` / `.net()` / `.transport()`. So the
+    // oracle reaches as far as the code does: `Eth` + four VLAN tags (`MAX_VLANS`) + `Ipv6` +
+    // `HopByHop` + `Transport` is eight, and the extension region is expressible.
     arity_agrees!(read_1, mutable_1, (&Eth,), eth);
     arity_agrees!(read_2, mutable_2, (&Eth, &Net), eth, net);
     arity_agrees!(
@@ -2822,6 +2817,74 @@ mod view_mut_properties {
         vlan,
         net,
         transport
+    );
+    arity_agrees!(
+        read_8,
+        mutable_8,
+        (
+            &Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv6, &HopByHop, &Transport
+        ),
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        vlan,
+        ipv6,
+        hop_by_hop,
+        transport
+    );
+
+    // Exact extension shapes exercise strict gap checks and extension-cursor threading. The mutable
+    // path also compares the `Headers` and pre-split `Fields` implementations.
+    arity_agrees!(
+        read_ext_v6_one,
+        mutable_ext_v6_one,
+        (&Eth, &Ipv6, &HopByHop, &Transport),
+        eth,
+        ipv6,
+        hop_by_hop,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_two,
+        mutable_ext_v6_two,
+        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Transport),
+        eth,
+        ipv6,
+        hop_by_hop,
+        dest_opts,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_three,
+        mutable_ext_v6_three,
+        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Routing, &Transport),
+        eth,
+        ipv6,
+        hop_by_hop,
+        dest_opts,
+        routing,
+        transport
+    );
+    // The IPv4 authentication header is the only extension that belongs on a v4 packet, and it is
+    // the only way to reach the strict branch without IPv6.
+    arity_agrees!(
+        read_ext_v4_auth,
+        mutable_ext_v4_auth,
+        (&Eth, &Ipv4, &Ipv4Auth, &Transport),
+        eth,
+        ipv4,
+        ipv4_auth,
+        transport
+    );
+    // Without a transport step, later extensions remain unvisited and no strict gap check runs.
+    arity_agrees!(
+        read_ext_v6_no_transport,
+        mutable_ext_v6_no_transport,
+        (&Eth, &Ipv6, &HopByHop),
+        eth,
+        ipv6,
+        hop_by_hop
     );
 
     /// Write through every returned `&mut` so Miri can detect aliasing in [`Fields`](super::pat::Fields).
