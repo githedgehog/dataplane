@@ -911,3 +911,111 @@ mod validator_completeness {
         );
     }
 }
+
+mod ambiguity {
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::mutate::Mutation;
+    use k8s_intf::bolero::permute::PermutedAgents;
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::setup::build_nat_configuration;
+    use routing::Render;
+
+    use crate::processor::confbuild::internal::build_internal_config;
+
+    fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
+        let external = ExternalConfig::try_from(crd)
+            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
+        external.validate()
+    }
+
+    fn artifacts(validated: &ValidatedGwConfig) -> Option<Vec<String>> {
+        let genid = validated.genid();
+        let internal = build_internal_config(validated, None).ok()?;
+        let vpc_table = validated.external().overlay().vpc_table();
+
+        let nat_tables = build_nat_configuration(vpc_table).ok()?;
+        let ruleset = build_port_forwarding_configuration(vpc_table).ok()?;
+        let mut portfw = PortFwTableWriter::new();
+        portfw.update_table(&ruleset).ok()?;
+
+        let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
+        let mut allocator = NatAllocatorWriter::new();
+        allocator.update_nat_allocator(masquerade, &FlowTable::new(16));
+
+        let mut lines: Vec<String> =
+            format!("{}\n{nat_tables}\n{ruleset:#?}", internal.render(&genid))
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .filter(|line| !line.is_empty())
+                .collect();
+        lines.sort();
+        Some(lines)
+    }
+
+    #[test]
+    fn a_configuration_has_only_one_meaning() {
+        static MOVED: AtomicUsize = AtomicUsize::new(0);
+        static COMPARED: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(PermutedAgents::default())
+            .cloned()
+            .for_each(
+                |(mutation, agent, permuted, moved): (Mutation, GatewayAgent, GatewayAgent, bool)| {
+                let Ok(first) = validator(&agent) else {
+                    return;
+                };
+
+                let second = validator(&permuted).unwrap_or_else(|e| {
+                    panic!(
+                        "{mutation:?}: reordering a configuration's sets made the validator refuse \
+                         it, so it is treating list order as meaning: {e}"
+                    )
+                });
+
+                let (Some(before), Some(after)) = (artifacts(&first), artifacts(&second)) else {
+                    return;
+                };
+
+                if moved {
+                    MOVED.fetch_add(1, Ordering::Relaxed);
+                }
+                COMPARED.fetch_add(1, Ordering::Relaxed);
+
+                if before != after {
+                    let mut differences: Vec<String> = Vec::new();
+                    for line in &before {
+                        if !after.contains(line) {
+                            differences.push(format!("  only before: {line}"));
+                        }
+                    }
+                    for line in &after {
+                        if !before.contains(line) {
+                            differences.push(format!("  only after:  {line}"));
+                        }
+                    }
+                    differences.truncate(20);
+                    panic!(
+                        "{mutation:?}: reordering a configuration's sets changed what the dataplane \
+                         installs, so the configuration had more than one meaning and the chain \
+                         picked one:\n{}",
+                        differences.join("\n")
+                    );
+                }
+                },
+            );
+
+        let compared = COMPARED.load(Ordering::Relaxed);
+        let moved = MOVED.load(Ordering::Relaxed);
+        println!("{moved} of {compared} comparisons were of a genuinely reordered configuration");
+        assert!(
+            compared > 0 && moved * 10 >= compared,
+            "only {moved} of {compared} comparisons actually reordered anything: the permutation is \
+             not doing any work"
+        );
+    }
+}
