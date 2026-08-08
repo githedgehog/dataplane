@@ -1,0 +1,24 @@
+[package]
+name = "dataplane-n-preinit"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+
+# internal
+n-vm-protocol = { workspace = true }
+
+# external
+#
+# Deliberately the only external dependency, and only for syscalls.  This
+# binary runs as PID 1 before /nix/store exists in the guest, so it has to
+# be statically linked -- every crate added here is another thing that has
+# to work in that environment, and another reason the link could fail.
+nix = { workspace = true, default-features = false, features = [
+  "fs",
+  "kmod",
+  "mount",
+  "process",
+] }
