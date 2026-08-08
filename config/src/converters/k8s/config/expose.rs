@@ -491,7 +491,7 @@ mod test {
                 "10.0.4.0/24".parse::<Prefix>().unwrap(),
             ),
         ]);
-        let expose_gen = k8s_intf::bolero::expose::AnyExposeGenerator::new(&subnets);
+        let expose_gen = k8s_intf::bolero::expose::AnyExposeGenerator::new(0, &subnets);
         bolero::check!()
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {

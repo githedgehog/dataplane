@@ -26,22 +26,32 @@ const MAX_PORTS: u16 = 1024;
 pub struct ExposeGenerator<'a> {
     flavour: NatFlavour,
     family: AddressFamily,
+    slot: u8,
+    slots: u8,
     subnets: &'a SubnetMap,
 }
 
 impl<'a> ExposeGenerator<'a> {
     #[must_use]
-    pub fn new(flavour: NatFlavour, family: AddressFamily, subnets: &'a SubnetMap) -> Self {
+    pub fn new(
+        flavour: NatFlavour,
+        family: AddressFamily,
+        slot: u8,
+        slots: u8,
+        subnets: &'a SubnetMap,
+    ) -> Self {
         Self {
             flavour,
             family,
+            slot,
+            slots: slots.max(slot.saturating_add(1)),
             subnets,
         }
     }
 
-    fn length<D: Driver>(&self, d: &mut D) -> Option<u8> {
+    fn length<D: Driver>(&self, d: &mut D, at: blocks::At) -> Option<u8> {
         d.gen_u8(
-            Bound::Included(&blocks::min_len(self.family)),
+            Bound::Included(&blocks::min_len_at(self.family, at)),
             Bound::Included(&blocks::max_len(self.family)),
         )
     }
@@ -51,10 +61,19 @@ impl<'a> ExposeGenerator<'a> {
             .iter()
             .filter(|(_, prefix)| prefix.is_ipv4() == self.family.is_v4())
             .map(|(name, _)| name)
+            .enumerate()
+            .filter(|(index, _)| index % usize::from(self.slots) == usize::from(self.slot))
+            .map(|(_, name)| name)
             .collect()
     }
 
-    fn exclusion<D: Driver>(&self, d: &mut D, parent: &str, private: bool) -> Option<String> {
+    fn exclusion<D: Driver>(
+        &self,
+        d: &mut D,
+        parent: &str,
+        at: blocks::At,
+        private: bool,
+    ) -> Option<String> {
         let (_, len) = parent.split_once('/')?;
         let len: u8 = len.parse().ok()?;
         let max = blocks::max_len(self.family);
@@ -63,9 +82,9 @@ impl<'a> ExposeGenerator<'a> {
         }
         let longer = d.gen_u8(Bound::Excluded(&len), Bound::Included(&max))?;
         if private {
-            blocks::private(d, self.family, longer)
+            blocks::private(d, self.family, at, longer)
         } else {
-            blocks::public(d, self.family, longer)
+            blocks::public(d, self.family, at, longer)
         }
     }
 
@@ -133,9 +152,10 @@ impl ValueGenerator for ExposeGenerator<'_> {
         let mut translations = Vec::new();
 
         if paired {
-            let len = self.length(d)?;
-            let private = blocks::private(d, self.family, len)?;
-            let public = blocks::public(d, self.family, len)?;
+            let at = blocks::At::whole(self.slot);
+            let len = self.length(d, at)?;
+            let private = blocks::private(d, self.family, at, len)?;
+            let public = blocks::public(d, self.family, at, len)?;
             ips.push(GatewayAgentPeeringsPeeringExposeIps {
                 cidr: Some(private),
                 not: None,
@@ -147,20 +167,22 @@ impl ValueGenerator for ExposeGenerator<'_> {
             });
         } else {
             let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_PREFIXES))?;
-            for _ in 0..count {
-                let len = self.length(d)?;
+            for sub in 0..count {
+                let at = blocks::At::nth(self.slot, sub, count);
+                let len = self.length(d, at)?;
                 ips.push(GatewayAgentPeeringsPeeringExposeIps {
-                    cidr: Some(blocks::private(d, self.family, len)?),
+                    cidr: Some(blocks::private(d, self.family, at, len)?),
                     not: None,
                     vpc_subnet: None,
                 });
             }
             if self.flavour.needs_translation() {
                 let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_PREFIXES))?;
-                for _ in 0..count {
-                    let len = self.length(d)?;
+                for sub in 0..count {
+                    let at = blocks::At::nth(self.slot, sub, count);
+                    let len = self.length(d, at)?;
                     translations.push(GatewayAgentPeeringsPeeringExposeAs {
-                        cidr: Some(blocks::public(d, self.family, len)?),
+                        cidr: Some(blocks::public(d, self.family, at, len)?),
                         not: None,
                     });
                 }
@@ -181,8 +203,9 @@ impl ValueGenerator for ExposeGenerator<'_> {
 
         if self.flavour.allows_exclusions() && d.produce::<bool>()? {
             let parents: Vec<String> = ips.iter().filter_map(|e| e.cidr.clone()).collect();
+            let first = blocks::At::nth(self.slot, 0, u8::try_from(parents.len()).unwrap_or(1));
             if let Some(parent) = parents.first()
-                && let Some(exclusion) = self.exclusion(d, parent, true)
+                && let Some(exclusion) = self.exclusion(d, parent, first, true)
             {
                 ips.push(GatewayAgentPeeringsPeeringExposeIps {
                     cidr: None,
@@ -191,8 +214,9 @@ impl ValueGenerator for ExposeGenerator<'_> {
                 });
             }
             let parents: Vec<String> = translations.iter().filter_map(|e| e.cidr.clone()).collect();
+            let first = blocks::At::nth(self.slot, 0, u8::try_from(parents.len()).unwrap_or(1));
             if let Some(parent) = parents.first()
-                && let Some(exclusion) = self.exclusion(d, parent, false)
+                && let Some(exclusion) = self.exclusion(d, parent, first, false)
             {
                 translations.push(GatewayAgentPeeringsPeeringExposeAs {
                     cidr: None,
@@ -216,13 +240,14 @@ impl ValueGenerator for ExposeGenerator<'_> {
 
 #[derive(Debug, Clone)]
 pub struct AnyExposeGenerator<'a> {
+    slot: u8,
     subnets: &'a SubnetMap,
 }
 
 impl<'a> AnyExposeGenerator<'a> {
     #[must_use]
-    pub fn new(subnets: &'a SubnetMap) -> Self {
-        Self { subnets }
+    pub fn new(slot: u8, subnets: &'a SubnetMap) -> Self {
+        Self { slot, subnets }
     }
 }
 
@@ -236,6 +261,6 @@ impl ValueGenerator for AnyExposeGenerator<'_> {
             flavours[d.gen_usize(Bound::Included(&0), Bound::Excluded(&flavours.len()))?];
         let family =
             families[d.gen_usize(Bound::Included(&0), Bound::Excluded(&families.len()))?];
-        ExposeGenerator::new(flavour, family, self.subnets).generate(d)
+        ExposeGenerator::new(flavour, family, self.slot, 1, self.subnets).generate(d)
     }
 }
