@@ -784,3 +784,120 @@ mod dataplane_tables {
         drive(NatFlavour::None);
     }
 }
+
+#[cfg(test)]
+mod validator_completeness {
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
+    use flow_entry::flow_table::FlowTable;
+    use k8s_intf::bolero::mutate::{MutatedAgents, Mutation};
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+    use nat::portfw::{PortFwTableWriter, build_port_forwarding_configuration};
+    use nat::static_nat::NatTablesWriter;
+    use nat::static_nat::setup::build_nat_configuration;
+    use routing::Render;
+
+    use crate::processor::confbuild::internal::build_internal_config;
+
+    fn validator(crd: &GatewayAgent) -> Result<ValidatedGwConfig, ConfigError> {
+        let external = ExternalConfig::try_from(crd)
+            .map_err(|e| ConfigError::Invalid(format!("conversion: {e}")))?;
+        external.validate()
+    }
+
+    fn enact(validated: &ValidatedGwConfig, mutation: Mutation) {
+        let genid = validated.genid();
+
+        let internal = build_internal_config(validated, None).unwrap_or_else(|e| {
+            panic!("{mutation:?}: validator accepted a config the builder rejects: {e}")
+        });
+        let _ = internal.render(&genid).to_string();
+
+        let vpc_table = validated.external().overlay().vpc_table();
+
+        let nat_tables = build_nat_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("{mutation:?}: validator accepted a config static NAT rejects: {e}")
+        });
+        NatTablesWriter::new().update_nat_tables(nat_tables);
+
+        let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
+        NatAllocatorWriter::new().update_nat_allocator(masquerade, &FlowTable::new(16));
+
+        let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
+            panic!("{mutation:?}: validator accepted a config port forwarding rejects: {e}")
+        });
+        PortFwTableWriter::new()
+            .update_table(&ruleset)
+            .unwrap_or_else(|e| {
+                panic!("{mutation:?}: validator accepted a ruleset the table rejects: {e}")
+            });
+    }
+
+    #[test]
+    fn whatever_the_validator_accepts_can_be_enacted() {
+        const N: usize = Mutation::COUNT;
+        #[allow(clippy::declare_interior_mutable_const)]
+        const ZERO: AtomicUsize = AtomicUsize::new(0);
+        static DRAWN: [AtomicUsize; N] = [ZERO; N];
+        static APPLIED: [AtomicUsize; N] = [ZERO; N];
+        static REFUSED: [AtomicUsize; N] = [ZERO; N];
+
+        bolero::check!()
+            .with_generator(MutatedAgents::default())
+            .cloned()
+            .for_each(|(mutation, bit, agent): (Mutation, bool, GatewayAgent)| {
+                let outcome = validator(&agent);
+                let accepted = outcome.is_ok();
+
+                if let Ok(validated) = &outcome {
+                    enact(validated, mutation);
+                } else if let Err(e) = &outcome {
+                    assert!(
+                        !matches!(e, ConfigError::InternalFailure(_)),
+                        "{mutation:?}: rejected with an internal failure, which tells the user \
+                         nothing they can act on: {e}"
+                    );
+                }
+
+                let slot = mutation.index();
+                DRAWN[slot].fetch_add(1, Ordering::Relaxed);
+                if bit {
+                    APPLIED[slot].fetch_add(1, Ordering::Relaxed);
+                }
+                if !accepted {
+                    REFUSED[slot].fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let mut total_applied = 0;
+        let mut total_refused = 0;
+        for mutation in Mutation::all() {
+            let slot = mutation.index();
+            let drawn = DRAWN[slot].load(Ordering::Relaxed);
+            let applied = APPLIED[slot].load(Ordering::Relaxed);
+            let refused = REFUSED[slot].load(Ordering::Relaxed);
+            println!("{mutation:<32?} {drawn:>7} drawn {applied:>7} applied {refused:>7} refused");
+            assert!(drawn > 0, "{mutation:?} was never drawn");
+            if mutation != Mutation::None {
+                total_applied += applied;
+                total_refused += refused;
+            }
+        }
+
+        let control = Mutation::None.index();
+        let drawn = DRAWN[control].load(Ordering::Relaxed);
+        let refused = REFUSED[control].load(Ordering::Relaxed);
+        assert!(
+            refused * 4 <= drawn,
+            "the unmutated control was refused {refused} times in {drawn}: the near-miss generator \
+             is not starting from legal configurations"
+        );
+
+        assert!(
+            total_applied > 0 && total_refused * 2 >= total_applied,
+            "only {total_refused} of {total_applied} applied mutations were refused: the near-miss \
+             generator is mostly producing legal configurations"
+        );
+    }
+}
