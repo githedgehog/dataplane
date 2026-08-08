@@ -12,6 +12,7 @@ pub mod logs;
 pub mod mutate;
 pub mod peering;
 pub mod permute;
+pub mod reduce;
 pub mod spec;
 pub mod support;
 pub mod vpc;
