@@ -3413,6 +3413,9 @@ mod opt_properties {
     /// Check `when`, `inspect`, and `otherwise` on all four matcher types.
     macro_rules! combinators_fire_exactly_once_and_only_when_due {
         ($name:ident, $gen:expr, $subject:expr, $fires:expr, $($chain:tt)*) => {
+            // The `mut` binding is what `pat_mut()` needs and what `pat()` does not, and the same
+            // macro serves both, so half the instantiations declare a `mut` they never use.
+            #[allow(unused_mut)]
             #[test]
             fn $name() {
                 bolero::check!()
@@ -3539,7 +3542,8 @@ mod opt_properties {
                      {h:?}"
                 );
                 let ran = Cell::new(false);
-                h.pat()
+                let _ = h
+                    .pat()
                     .eth()
                     .ipv4()
                     .icmp4()
