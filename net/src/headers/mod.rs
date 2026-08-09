@@ -1653,7 +1653,7 @@ mod test {
     use crate::tcp::{TcpChecksum, TcpChecksumPayload, TcpPort};
     use crate::udp::{UdpChecksum, UdpChecksumPayload, UdpPort};
 
-    fn parse_back_test(headers: &Headers) {
+    pub(crate) fn parse_back_test(headers: &Headers) {
         let mut buffer = [0_u8; 1024];
         let bytes_written =
             match headers.deparse(&mut buffer[..headers.size().into_non_zero_usize().get()]) {
