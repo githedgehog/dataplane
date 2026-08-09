@@ -62,21 +62,11 @@
 //! Returned object
 //! ```
 //!
-//! The layer worth reading twice is [`PoolSet`](alloc::PoolSet) and
-//! [`PoolRegion`](alloc::PoolRegion). Exposes may claim overlapping public ranges, and two
-//! allocators over the same address would each believe it was theirs to hand out -- which is the
-//! collision the reverse flow key cannot survive, since it carries nothing that says which VPC the
-//! traffic came from. So the space is cut at every point where the set of exposes covering it
-//! changes ([`region`]), one allocator is built per resulting region, and an expose is handed the
-//! regions its own ranges cover. Sharing a region means sharing its allocator, which is what makes
-//! the uniqueness structural rather than a promise from the configuration layer.
+//! Overlapping public ranges are divided into disjoint [`PoolRegion`](alloc::PoolRegion)s. Exposes
+//! share the allocator for each common region, ensuring a public tuple is leased only once.
 //!
-//! The [`AllocatedPort`](port_alloc::AllocatedPort) has a back-reference to
-//! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock), to deallocate the ports when the
-//! [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
-//! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock) has a back reference to
-//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`](alloc::IpAllocator), to
-//! deallocate the IP address when they are dropped.
+//! Allocation objects hold back-references to their owning block, address, and pool. Dropping the
+//! outer allocation therefore releases the tuple.
 
 #![allow(rustdoc::private_intra_doc_links)]
 
@@ -115,10 +105,7 @@ pub use port_alloc::AllocatedPort;
 
 /// Identifies the pool serving a private source address.
 ///
-/// A private address only means anything within the VPC it belongs to: two VPCs routinely use the
-/// same private space, which is much of the point of NAT. Both discriminants are therefore part of
-/// the key, and both are ordered before the address, so that the range lookup in
-/// [`PoolTable::get`] scans within a single pair of VPCs.
+/// Both VPC discriminants precede the address so range lookup stays within one VPC pair.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
@@ -160,21 +147,10 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         Self(BTreeMap::new())
     }
 
-    /// The pool serving a private address: the entry whose prefix covers it and starts nearest to
-    /// it, within the same protocol and pair of VPCs.
+    /// Find the longest matching private prefix within one protocol and VPC pair.
     ///
-    /// Keys sort by address before range end, so walking back from the address reaches the
-    /// prefixes that could cover it in turn. Taking only the first one found is not enough: a
-    /// prefix nested inside another starts nearer to an address than the prefix containing it,
-    /// while covering less of it, so a nested prefix would answer "no pool" for an address of the
-    /// wider one *above* it. The walk therefore continues past an entry that does not cover the
-    /// address, and stops once no later entry can be a better match.
-    ///
-    /// Where several prefixes cover the address the narrowest wins, which is the longest-prefix
-    /// match the rest of the system uses. Nothing in this crate rejects an overlap or reports one:
-    /// [`PoolTable::add_entry`] warns only when two entries have exactly the same bounds. Choosing
-    /// the narrowest is therefore what to do when the configuration layer's guarantee of disjoint
-    /// prefixes is absent, not support for a configuration it would accept.
+    /// Walking backwards must skip nested prefixes that start later but end before the queried
+    /// address. Once a match is found, only entries with the same start can be narrower.
     fn get(&self, key: &PoolTableKey<I>) -> Option<&alloc::PoolSet<J>> {
         let mut best: Option<(&PoolTableKey<I>, &alloc::PoolSet<J>)> = None;
         for (candidate, pool_set) in self.0.range(..=key).rev() {
@@ -593,14 +569,7 @@ mod bolero_tests {
         }
     }
 
-    /// The lookup answers what the oracle answers, on arbitrary intervals.
-    ///
-    /// Not "longest prefix", which is what this was called: the generator produces intervals of
-    /// any offset and length, and most of them are not CIDR-aligned. Longest-prefix match is only
-    /// defined on prefixes, which nest or stay disjoint; arbitrary intervals may also partially
-    /// overlap, and the oracle here is the rule [`PoolTable::get`] actually implements -- nearest
-    /// start, then narrowest -- which agrees with longest-prefix on the inputs the configuration
-    /// layer can produce and is defined on the ones it cannot.
+    /// Compare lookup with a nearest-start, then narrowest-range oracle.
     #[test]
     fn pool_table_lookup_matches_an_interval_oracle() {
         bolero::check!()
@@ -652,12 +621,7 @@ mod tests {
         alloc::PoolSet::new(std::time::Duration::from_secs(marker))
     }
 
-    // The group these tests query. Keys sort by protocol, then source VPC, then destination VPC,
-    // and the walk only ever looks *back* from the queried key -- so a group that sorts after this
-    // one is excluded by `range(..=key)` before the walk begins and proves nothing about the guard
-    // that stops it crossing between groups. This group is deliberately not the lowest, leaving
-    // room below it on each of the three components for
-    // [`test_the_walk_does_not_cross_into_another_group`] to put one there.
+    // Not the lowest group, so boundary tests can place foreign entries before it.
     fn queried_group() -> (NextHeader, VpcDiscriminant, VpcDiscriminant) {
         (NextHeader::TCP, vpcd2(), vpcd3())
     }
@@ -687,11 +651,7 @@ mod tests {
             .map(|pool_set| pool_set.idle_timeout().as_secs())
     }
 
-    // A private prefix nested inside another must not hide the addresses of the wider one. The
-    // lookup walks back to the nearest entry starting at or below the address, and a nested prefix
-    // is nearer than the prefix containing it, so stopping at the first one found answered "no
-    // pool" for an address the wider prefix plainly covers. A packet from it is then dropped, and
-    // logged as a bug in the allocator rather than as the configuration it is.
+    // A nested prefix must not hide later addresses covered by its parent.
     #[test]
     fn test_a_nested_prefix_does_not_hide_the_one_containing_it() {
         let table = table_with(&[
@@ -736,13 +696,7 @@ mod tests {
         assert_eq!(lookup(&table, "11.0.0.1"), None);
     }
 
-    // The walk stops at the edge of its own group: an entry belonging to another protocol or
-    // another pair of VPCs never serves an address, however well its prefix covers it.
-    //
-    // Each foreign group here sorts *before* the queried one, on a different component of the key.
-    // That is the whole of the test: a group sorting after is never in `range(..=key)` to begin
-    // with, so putting one there exercises the bound and not the guard. An earlier version of this
-    // test did exactly that -- the guard could be deleted outright and it still passed.
+    // Foreign groups sort before the queried group, forcing lookup to reach and reject them.
     #[test]
     fn test_the_walk_does_not_cross_into_another_group() {
         let (protocol, src, dst) = queried_group();
@@ -782,11 +736,7 @@ mod tests {
         }
     }
 
-    // Ensure that keys are sorted first by L4 protocol type, then by the source and destination
-    // VPC IDs, and only then by IP address. This is essential to make sure we can lookup for
-    // entries associated with prefixes for a given pair of IDs in the pool tables: the range scan
-    // in PoolTable::get relies on every key of a given (protocol, source, destination) group being
-    // contiguous, and on addresses of another group never falling between them.
+    // PoolTable lookup relies on protocol/VPC groups being contiguous before address ordering.
     #[allow(clippy::too_many_lines)]
     #[test]
     fn test_key_order() {

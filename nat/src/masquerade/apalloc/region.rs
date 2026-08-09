@@ -1,23 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Decomposition of the public address space into disjoint regions.
+//! Split overlapping public address ranges into disjoint regions with constant ownership.
 //!
-//! Several exposes may masquerade onto public ranges that overlap, and they may overlap partially:
-//! `10.0.0.0/24` and `10.0.0.128/25` share half their addresses. Every public `(address, port)`
-//! still has to be handed out at most once, because the reverse flow key that carries return
-//! traffic back is built from the public address and port, the remote endpoint and the peer VPC,
-//! and nothing in it identifies which VPC the traffic came from.
-//!
-//! Rather than give each expose an allocator over its own range, we cut the address space at every
-//! point where the set of exposes covering it changes. That yields maximal intervals over which the
-//! set of owners is constant, and no two of them overlap, so one allocator per interval is enough
-//! to keep allocations unique. Each expose then allocates from the intervals its own range covers,
-//! and only those.
-//!
-//! The decomposition is over addresses only. Public ranges can carry port ranges too, which the
-//! pools do not model yet (see the two `FIXME`s about port ranges in `setup.rs`); when
-//! they do, the same cutting has to happen over the port dimension.
+//! Each region has one allocator shared by its owners, preventing duplicate public tuples. Port
+//! ranges are not part of this decomposition.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,12 +39,7 @@ pub(crate) struct Region {
     pub(crate) owners: BTreeSet<usize>,
 }
 
-/// Cut the space covered by `owner_ranges` into maximal disjoint regions, each labelled with the
-/// set of owners covering it. Owners are identified by their index in `owner_ranges`.
-///
-/// The result is ordered by address, covers exactly the union of the inputs, and contains no
-/// overlapping regions. Every input range is exactly the union of some subset of the regions, which
-/// is what lets an expose allocate from whole regions and never from an address outside its range.
+/// Cut the input ranges into ordered, maximal, disjoint regions labelled by owner index.
 pub(crate) fn decompose(owner_ranges: &[Vec<AddrInterval>]) -> Vec<Region> {
     // Coverage can only change at the start of a range, or just past the end of one. Cutting at
     // every such point gives elementary intervals that each range either covers entirely or does
@@ -152,10 +134,7 @@ mod bolero_tests {
     use super::*;
     use bolero::{Driver, TypeGenerator};
 
-    // Ranges are drawn from a small window of the address space. Independently generated u128
-    // ranges would essentially never overlap, and overlap is the whole point; a narrow window
-    // makes it the common case, and makes it cheap enough to check every property against every
-    // address in the window rather than against a sampled few.
+    // A narrow window makes overlap common and permits checking every address.
     const WINDOW: u128 = 48;
     const MAX_OWNERS: u8 = 5;
     const MAX_RANGES_PER_OWNER: u8 = 3;
@@ -269,10 +248,7 @@ mod bolero_tests {
                     );
                 }
 
-                // The load-bearing property, checked at every address in the window: an address is
-                // covered by exactly the owners that claimed it, no more and no fewer. "No more"
-                // is what keeps an expose from being handed an address it never asked for; "no
-                // fewer" is what keeps two exposes that both claimed it on one allocator.
+                // Every address has exactly the owners declared by the inputs.
                 for address in scenario.addresses() {
                     let expected = Scenario::owners_covering(&owner_ranges, address);
                     match regions.iter().find(|region| region.range.contains(address)) {

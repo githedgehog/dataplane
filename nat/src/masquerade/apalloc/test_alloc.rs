@@ -157,11 +157,7 @@ mod context {
         NatAllocator::new(config, 1)
     }
 
-    // Two *different* VPCs, each peering with the same destination VPC, and each masquerading
-    // onto the same public range. A VPC may not peer twice with the same peer, but nothing checks
-    // exposes across VPCs: collisions are only checked between the exposes of a single manifest.
-    // Both peerings therefore reach the allocator with the same destination discriminant and the
-    // same public range, which is one pool described twice.
+    // Two VPCs masquerade onto one public range toward the same peer.
     #[allow(dead_code)]
     fn build_context_shared_public_range() -> ValidatedVpcTable {
         let masquerade_manifest = |name: &str, private: &str| {
