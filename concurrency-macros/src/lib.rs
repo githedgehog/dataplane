@@ -11,19 +11,10 @@ use syn::{
     parse_macro_input,
 };
 
-/// Resolve a path prefix for `dataplane-concurrency` in the consumer's
-/// `Cargo.toml`. Returns a token stream that resolves to the crate root,
-/// so callers can append `::stress` or `::with_loom` etc.
+/// Resolve the consumer's name for `dataplane-concurrency`.
 ///
-/// * Workspace consumer with `concurrency = { package = "dataplane-concurrency", ... }`
-///   in its `Cargo.toml`: returns `::concurrency`.
-/// * External consumer with `dataplane-concurrency = "..."` directly:
-///   returns `::dataplane_concurrency`.
-/// * `dataplane-concurrency`'s own integration tests: returns
-///   `::dataplane_concurrency` (which requires the test file to do
-///   `extern crate dataplane_concurrency;` -- cargo doesn't let a crate
-///   list itself as a regular dev-dep, but `extern crate` works in the
-///   integration test).
+/// Workspace crates use `concurrency`; external users and this crate's integration tests use
+/// `dataplane_concurrency`.
 fn concurrency_crate_path() -> TokenStream2 {
     match crate_name("dataplane-concurrency") {
         Ok(FoundCrate::Itself) => {
@@ -103,9 +94,8 @@ pub fn concurrency_mode(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Mark a backend-routed concurrency test.
 ///
-/// The default backend emits a flat `#[test]`; loom/shuttle emit a
-/// nested `concurrency_model::{loom,shuttle}` leaf so nextest filters
-/// can select one backend cleanly.
+/// The default backend emits a flat test. Model-checker tests get a backend-named leaf so nextest
+/// can select them safely.
 ///
 /// # Example
 ///
@@ -116,10 +106,8 @@ pub fn concurrency_mode(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// The function must take no arguments and return `()`. The body is
-/// captured as a closure, so it must be `Fn() + Send + Sync + 'static`
-/// (no borrows of locals, no `FnOnce`-only constructs). This matches
-/// what `loom::model` and `shuttle::check_*` require.
+/// The function must take no arguments, return `()`, and work as an
+/// `Fn() + Send + Sync + 'static` closure.
 ///
 /// # Limitations
 ///
@@ -155,16 +143,7 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let krate = concurrency_crate_path();
-    // Default backend: flat `#[test] fn <name>() { ... }`. No nested
-    // module wrapping -- the production code path runs the body once,
-    // and there is no second backend to disambiguate from.
-    //
-    // Model-checker backends: emit `mod <fn_name> { mod concurrency_model
-    // { #[test] fn <backend>() { ... } } }`. The leaf function name
-    // identifies the active backend, so a nextest report shows entries
-    // like `some_test::concurrency_model::loom` and a filter like
-    // `-E 'test(/concurrency_model::loom$/)'` picks them out
-    // unambiguously.
+    // Backend-named leaves let nextest isolate tests that use model-checker primitives.
     quote! {
         #[cfg(not(any(feature = "loom", feature = "shuttle")))]
         #[::core::prelude::v1::test]
@@ -200,11 +179,9 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Give a test the backend-named module shape of [`macro@test`] without touching its body.
+/// Give a test a backend-named leaf without wrapping its body in `stress`.
 ///
-/// [`macro@test`] wraps the whole body in [`stress`](../dataplane_concurrency/fn.stress.html),
-/// which is what you want when the body *is* the thing being model-checked. It is the wrong shape
-/// when a generator has to be the outer loop:
+/// Use this when a generator is the outer loop and invokes `stress` per generated case:
 ///
 /// ```ignore
 /// bolero::check!().with_type().cloned().for_each(|scenario: Scenario| {
@@ -212,23 +189,8 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// });
 /// ```
 ///
-/// Wrapping *that* in `stress` would put the whole generator campaign inside a single
-/// model-checking execution, making the generator's own choices part of the explored state space.
-/// So such tests call `stress` themselves, and until now paid for it by losing the backend-named
-/// leaf that `just features=shuttle test` filters on: the suite compiled under the model checker
-/// and was never selected to run.
-///
-/// This attribute emits the module shape and nothing else, leaving the body verbatim:
-///
-/// ```ignore
-/// #[concurrency::model_test]
-/// fn stress_it() { /* ... calls stress itself ... */ }
-/// ```
-///
-/// becomes `mod stress_it { mod concurrency_model { #[test] fn <backend>() { /* body */ } } }`,
-/// where `<backend>` is `loom`, `shuttle` or `plain`. Unlike [`macro@test`], the wrapper is emitted
-/// on every backend, so the name does not change shape between them; there is no existing flat
-/// name to keep compatible here.
+/// The leaf is named `plain`, `loom`, or `shuttle`, allowing the same nextest filters used by
+/// [`macro@test`].
 #[proc_macro_attribute]
 pub fn model_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);

@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Property tests for the pools built over the public address space.
+//! Property tests for pools built over overlapping public ranges.
 //!
-//! [`super::region`] tests the cutting on its own; these drive the real construction
-//! ([`pool_sets_for_specs`]) and then allocate through it, so they cover the step where regions
-//! become allocators and the step where a config change re-reserves what the previous config had
-//! handed out.
-//!
-//! The properties are the ones return traffic depends on. A public address and port may only be
-//! live once at a time towards a given peer, because the reverse flow key is built from it and
-//! carries nothing that says which VPC the traffic came from. And an expose may only ever be given
-//! an address its own configuration declares.
-//!
-//! Ranges are drawn from a narrow window so that overlap is the common case rather than
-//! astronomically unlikely, and so that a handful of allocations is enough to make two exposes
-//! collide if the pools let them.
+//! Generated ranges come from a narrow window so overlap is common. The properties require unique
+//! live tuples, allocations within each expose's ranges, and safe carry-over between generations.
 
 #![cfg(test)]
 
@@ -190,12 +179,7 @@ fn freed_allocations_become_available_again() {
         });
 }
 
-/// A config update: flows allocated under one config re-reserve their address and port in the
-/// allocator built for the next one, exactly as `check_masquerading_flow` does.
-///
-/// What must hold is that a re-reservation is honoured. If the new pools accept an address and
-/// port, they may not then hand the same pair to a new flow, or the surviving flow and the new one
-/// would collide on the reverse key.
+/// A tuple accepted during carry-over must not be allocated to a new flow.
 #[test]
 fn re_reservation_after_a_config_change_is_honoured() {
     bolero::check!()

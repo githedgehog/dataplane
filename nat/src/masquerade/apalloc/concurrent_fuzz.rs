@@ -1,57 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Concurrent fuzz test for the masquerade pools across a config change.
+//! Concurrent property tests for masquerade allocator replacement.
 //!
-//! One test, [`stress_test_config_change`], drives a bolero-generated [`Scenario`] through
-//! [`concurrency::stress`] on every backend, mirroring the bolero x model-checker layout used for
-//! the flow table (see `flow-entry/src/flow_table/concurrent_fuzz.rs`). bolero is the *outer* loop
-//! and picks the shape: which public ranges the exposes claim, and an op stream per thread. The
-//! backend is the *inner* loop and explores interleavings of that fixed shape:
+//! Bolero generates ranges and per-thread operations; `concurrency::stress` explores each fixed
+//! scenario. Packet threads allocate from the published generation while a writer re-reserves
+//! surviving tuples in a replacement and publishes it.
 //!
-//! * **default (std) backend** — one direct run on real OS threads. Build with
-//!   `just test sanitize=thread` to surface data races inside the allocator.
-//! * **`--features shuttle`** — the full portfolio (Random + PCT [+ DFS]).
+//! The suite checks that live and carried tuples remain unique and that contention never produces
+//! [`AllocatorError::InternalIssue`]. Some scenarios retain every allocation for an exact
+//! uniqueness oracle; others exercise release paths.
 //!
-//! # What is being raced
-//!
-//! Applying a new masquerade config is not atomic from the data plane's point of view. The writer
-//! builds a fresh allocator, carries the surviving flows over into it by re-reserving the address
-//! and port each one holds, and only then publishes it; meanwhile packet threads keep allocating
-//! from whichever allocator is currently published. Every lock and atomic the allocator uses comes
-//! from `concurrency::sync`, so a model checker sees all of it: the `compare_exchange` that claims
-//! a port block, the map of weak references to allocated blocks, the per-thread block hint, and
-//! the pool locks.
-//!
-//! Three properties are asserted:
-//!
-//! * A published allocator never hands out an address and port that was carried over into it. This
-//!   is the safety property of the update: the writer re-reserves before publishing, so a flow that
-//!   survived a config change and a flow created just after it must not collide on the reverse key.
-//! * An address and port is never handed to two live flows drawn from the same allocator. Shapes
-//!   that hold every allocation for the length of the run check this exactly; those that free as
-//!   they go trade that for exercising deallocation. See [`Live`] for why the two differ.
-//! * Neither allocation nor reservation ever reports [`AllocatorError::InternalIssue`]. That is the
-//!   allocator saying its own bookkeeping is inconsistent, and `find_block_for_port` carries a
-//!   standing `FIXME` wondering whether the block it just found non-free can be released before it
-//!   is looked up. Reserving concurrently with allocating is what would show it.
-//!
-//! # No loom
-//!
-//! Gated off under loom, for the same reason `test_alloc`'s concurrency tests are: loom's `Weak`
-//! shim never lets an allocator liveness entry die, so the pool's in-use list never drains and the
-//! run does not model what production does. Shuttle has no such limitation.
-//!
-//! # Why `#[concurrency::model_test]`
-//!
-//! `just features=shuttle test` filters the run down to test names containing `shuttle`, because
-//! under that backend `concurrency::sync` types are shuttle primitives and every other test in the
-//! workspace would fail spuriously on `ExecutionState NotSet`. `#[concurrency::test]` earns its
-//! way past that filter by appending a `concurrency_model::shuttle` leaf, but it also wraps the
-//! whole body in [`concurrency::stress`], which is the wrong shape here: bolero has to be the outer
-//! loop, so `stress` is called once per generated shape from inside it.
-//! [`macro@concurrency::model_test`] emits the same backend-named leaf and leaves the body alone,
-//! which is what lets this suite be selected at all.
+//! Loom is excluded because its `Weak` shim keeps liveness entries alive. The suite uses
+//! `model_test` because it invokes `stress` inside Bolero's outer loop.
 
 #![cfg(test)]
 #![cfg(not(feature = "loom"))]
@@ -112,22 +73,12 @@ struct Scenario {
     ranges: Vec<Vec<(u8, u8)>>,
     packet_ops: [Vec<PacketOp>; PACKET_WORKERS],
     config_ops: Vec<ConfigOp>,
-    /// Whether flows may end while the run is in progress.
-    ///
-    /// Freeing is worth exercising, because it is what returns an address to a pool, but it costs
-    /// the uniqueness oracle its certainty: see [`Live`]. Half the shapes therefore hold every
-    /// allocation for the whole run, which makes the record monotone and the oracle exact.
+    /// Whether this scenario exercises release paths instead of an exact monotone oracle.
     frees_allowed: bool,
 }
 
 impl bolero::TypeGenerator for Scenario {
-    /// Generate a shape, then normalize it so the run always exercises real concurrency.
-    ///
-    /// shuttle's PCT scheduler panics on a body in which two threads are never simultaneously
-    /// runnable. Rather than skip degenerate shapes, every packet stream is given an `Allocate` if
-    /// it has none, and the config stream a `Republish`. The splice position comes from the driver,
-    /// so the normalization stays a deterministic function of the input and a failure still
-    /// reproduces from its seed.
+    /// Ensure every generated shape has concurrent packet and configuration work.
     fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
         let expose_count = usize::from(driver.produce::<u8>()? % MAX_EXPOSES + 1);
         let mut ranges = Vec::with_capacity(expose_count);
@@ -165,10 +116,7 @@ impl bolero::TypeGenerator for Scenario {
     }
 }
 
-/// One generation of published pools, together with the flows carried into it.
-///
-/// The reservations are held for as long as the generation is published, exactly as a surviving
-/// flow holds the allocation it was re-reserved.
+/// A published generation and the reservations carried into it.
 struct Published {
     generation: u64,
     pools: Vec<PoolSet<Ipv4Addr>>,
@@ -177,8 +125,7 @@ struct Published {
 }
 
 impl Published {
-    /// Build the pools for a new config and carry the surviving flows into them before returning,
-    /// so that a generation is only ever published once its survivors hold their addresses again.
+    /// Build a generation and reserve its surviving tuples before publication.
     fn build(
         specs: &[PoolSpec],
         generation: u64,
@@ -214,20 +161,10 @@ impl Published {
     }
 }
 
-/// Every address and port currently held by a flow, with the generation it was drawn from.
+/// Live tuples, keyed by generation.
 ///
-/// Shared by all threads: a collision between two of them is the interesting one, and a per-thread
-/// record would not see it. Pairs from *different* generations may legitimately repeat; only what
-/// was carried into a generation is protected, which [`Published::carried`] covers.
-///
-/// The record is written just after the allocator hands a pair out, not as part of it, which keeps
-/// the threads racing on the allocator's locks rather than on this mutex. The cost is that a
-/// duplicate can hide: if two threads are wrongly given the same pair and the first frees it before
-/// the second records it, the insertion succeeds. That interleaving cannot be told apart from
-/// legitimate reuse from any record kept here. Shapes with [`Scenario::frees_allowed`] false --
-/// about half -- free nothing, so their record only grows and catches duplicates with certainty;
-/// the rest trade that for exercising deallocation. Closing the gap outright means recording the
-/// pair inside the allocator.
+/// Recording happens after allocation, so release scenarios cannot distinguish a hidden duplicate
+/// from legitimate reuse. Scenarios that disable releases provide the exact oracle.
 struct Live(Mutex<BTreeSet<(u64, Ipv4Addr, u16)>>);
 
 impl Live {
@@ -272,8 +209,7 @@ impl Scenario {
             .collect()
     }
 
-    /// Run the scenario: stand up a first generation with a few flows already on it, then let the
-    /// packet threads and the config thread work against the published slot concurrently.
+    /// Race packet workers against allocator publication.
     fn run(&self) {
         let specs = self.specs();
 
@@ -351,11 +287,7 @@ impl Scenario {
     }
 }
 
-/// Returns whatever the thread is still holding when its ops run out, rather than releasing it.
-///
-/// Releasing here would free addresses while other threads are still allocating, which is exactly
-/// the ambiguity [`Live`] cannot see through, and it is not needed to keep the record honest: the
-/// pairs stay held, so nothing else can legitimately be given them.
+/// Return remaining allocations so they stay live until all workers finish.
 fn packet_worker(
     slot: &SlotOption<Published>,
     live: &Live,
@@ -443,19 +375,7 @@ fn stress_test_config_change() {
         });
 }
 
-/// Printing the allocator races the last flow on an address ending.
-///
-/// The pool holds weak references to the addresses in use, and printing upgrades each one while
-/// the pool's read guard is held. An address whose last block is released at that moment leaves
-/// the upgrade taken for printing as the only strong reference, and dropping it runs
-/// `AllocatedIp::drop` on the printing thread, which takes the same lock for writing.
-///
-/// This is the same self-deadlock the allocation paths guard against, reached from the management
-/// side: `NatAllocator` is a `CliSource`, so the table is formatted on a thread of its own while
-/// packet threads keep ending flows. A wedged read guard takes the pool with it.
-///
-/// Shuttle names it directly -- "tried to acquire a `RwLock` it already holds" -- so the
-/// assertion is the run completing at all.
+/// Formatting must not drop the last address reference while holding the pool's read lock.
 #[concurrency::model_test]
 fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
     concurrency::stress(|| {

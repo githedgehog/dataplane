@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Construction of the masquerade address and port pools.
-//!
-//! Pools cannot be built one expose at a time, because exposes that masquerade towards the same
-//! peer VPC may claim overlapping public ranges and a public address may only be handed out by one
-//! allocator. Building happens in two passes instead: collect every masquerade expose, group them
-//! by peer VPC, cut the public space each group claims into disjoint regions (see [`super::region`])
-//! and build one allocator per region, then give each expose the regions its own range covers.
+//! Build masquerade pools by grouping exposes per peer VPC and splitting overlapping public ranges
+//! into disjoint, shared regions.
 
 use super::alloc::{IpAllocator, NatPool, PoolSet};
 use super::region::{AddrInterval, Region, decompose, regions_by_owner};
@@ -81,9 +76,7 @@ impl ReserveSets {
     }
 }
 
-// Collect the masquerade exposes of every peering, grouped by the VPC they masquerade towards.
-// Grouping by peer VPC is what matters, because return traffic is only told apart by the peer it
-// comes back from: exposes towards different peers can safely claim the same public range.
+// Exposes toward different peers may safely reuse the same public range.
 fn gather_exposes<'a, J, F, FIter, P, PIter>(
     config: &'a MasqueradeConfig,
     exposes_filter: &F,
@@ -198,8 +191,7 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
     }
 }
 
-/// What building a pool needs to know about one expose, independent of where it came from. Keeping
-/// this free of config types is what lets the property tests drive the real construction.
+/// The config-independent inputs for one expose's pools.
 #[derive(Clone)]
 pub(crate) struct PoolSpec {
     pub(crate) public_ranges: Vec<AddrInterval>,
