@@ -2657,55 +2657,150 @@ mod view_properties {
 #[cfg(test)]
 mod view_mut_properties {
     use crate::eth::Eth;
-    use crate::headers::view::LookMut;
-    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
-    use crate::ip_auth::Ipv4Auth;
-    use crate::ipv4::Ipv4;
-    use crate::ipv6::{DestOpts, HopByHop, Ipv6, Routing};
-    use crate::vlan::Vlan;
+    use crate::headers::view::{Look, LookMut};
+    use crate::headers::{Headers, Net, ShapedHeaders, SometimesHeadless, Transport};
 
-    /// Both walks, at every arity the oracle can express.
+    /// Map each matcher method to the layer type used to derive its view shape.
+    macro_rules! layer_ty {
+        (eth) => {
+            crate::eth::Eth
+        };
+        (vlan) => {
+            crate::vlan::Vlan
+        };
+        (net) => {
+            crate::headers::Net
+        };
+        (ipv4) => {
+            crate::ipv4::Ipv4
+        };
+        (ipv6) => {
+            crate::ipv6::Ipv6
+        };
+        (hop_by_hop) => {
+            crate::ipv6::HopByHop
+        };
+        (dest_opts) => {
+            crate::ipv6::DestOpts
+        };
+        (routing) => {
+            crate::ipv6::Routing
+        };
+        (fragment) => {
+            crate::ipv6::Fragment
+        };
+        (ipv4_auth) => {
+            crate::ip_auth::Ipv4Auth
+        };
+        (ipv6_auth) => {
+            crate::ip_auth::Ipv6Auth
+        };
+        (transport) => {
+            crate::headers::Transport
+        };
+        (tcp) => {
+            crate::tcp::Tcp
+        };
+        (udp) => {
+            crate::udp::Udp
+        };
+        (icmp4) => {
+            crate::icmp4::Icmp4
+        };
+        (icmp6) => {
+            crate::icmp6::Icmp6
+        };
+        (vxlan) => {
+            crate::vxlan::Vxlan
+        };
+    }
+
+    /// The `Shape` a chain of matcher method names denotes.
+    macro_rules! shape_of {
+        ($($layer:ident),+ $(,)?) => { ($(&'static layer_ty!($layer),)+) };
+    }
+
+    /// Return layer addresses without naming the tuple arity.
     ///
-    /// The decision is what soundness turns on: if `matches` says yes where the walk that must deliver
-    /// says no, `look`/`look_mut` reach `unreachable_unchecked`. So this compares decisions across the
-    /// whole family, for the read path and the mutable path both.
+    /// Addresses distinguish equal-valued duplicate layers and expose cursor-selection errors.
+    trait Addrs {
+        /// One address per element.
+        type Out: PartialEq + core::fmt::Debug;
+        /// Where each element of this tuple lives.
+        fn addrs(&self) -> Self::Out;
+    }
+
+    macro_rules! impl_addrs {
+        ($n:literal; $($T:ident $idx:tt),+) => {
+            impl<'a, $($T),+> Addrs for ($(&'a $T,)+) {
+                type Out = [usize; $n];
+                fn addrs(&self) -> [usize; $n] {
+                    [$(core::ptr::from_ref::<$T>(self.$idx) as usize),+]
+                }
+            }
+
+            impl<'a, $($T),+> Addrs for ($(&'a mut $T,)+) {
+                type Out = [usize; $n];
+                fn addrs(&self) -> [usize; $n] {
+                    [$(core::ptr::from_ref::<$T>(&*self.$idx) as usize),+]
+                }
+            }
+        };
+    }
+
+    impl_addrs!(1; A 0);
+    impl_addrs!(2; A 0, B 1);
+    impl_addrs!(3; A 0, B 1, C 2);
+    impl_addrs!(4; A 0, B 1, C 2, D 3);
+    impl_addrs!(5; A 0, B 1, C 2, D 3, E 4);
+    impl_addrs!(6; A 0, B 1, C 2, D 3, E 4, F 5);
+    impl_addrs!(7; A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+    impl_addrs!(8; A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
+    /// Check acceptance and selected-layer identity at every supported arity.
     ///
-    /// Arity matters because `matches`, `look` and `look_mut` are generated separately for each one, by
-    /// a macro, with the VLAN and extension cursors threaded through by hand every time. Testing two
-    /// arities tested two of eight copies.
-    ///
-    /// Pointer identity -- did the two implementations pick the *same* layer, not merely agree that one
-    /// exists -- is checked separately, at arities 3 and 4, where the tuple can be destructured
-    /// concretely. That is a correctness question rather than a soundness one, so it is checked deeply
-    /// at representative arities rather than shallowly at all of them.
+    /// Acceptance protects the unchecked extraction; address comparison checks the separately
+    /// generated cursor traversal.
     macro_rules! arity_agrees {
-        ($read:ident, $mutable:ident, $shape:ty, $($layer:ident),+) => {
+        ($read:ident, $mutable:ident, $gen:expr, $($layer:ident),+) => {
             #[test]
             fn $read() {
+                type Shape = shape_of!($($layer),+);
                 use concurrency::sync::atomic::{AtomicUsize, Ordering};
                 static SEEN: AtomicUsize = AtomicUsize::new(0);
                 static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
-                    .with_generator(ShapedHeaders)
+                    .with_generator($gen)
                     .for_each(|h: &Headers| {
                         SEEN.fetch_add(1, Ordering::Relaxed);
-                        let licensed = h.as_view::<$shape>().is_some();
+                        let licensed = h.as_view::<Shape>().is_some();
                         if licensed {
                             HIT.fetch_add(1, Ordering::Relaxed);
                         }
-                        let deliverable = h.pat()$(.$layer())+.done().is_some();
+                        let chain = h.pat()$(.$layer())+.done();
                         assert_eq!(
-                            licensed, deliverable,
+                            licensed, chain.is_some(),
                             concat!(
                                 "`matches` and the read walk disagree for ",
-                                stringify!($shape),
+                                stringify!(($($layer),+)),
                                 ", so `look` would reach `unreachable_unchecked`: {:?}"
                             ),
                             h
                         );
+                        if let (Some(view), Some(chain)) = (h.as_view::<Shape>(), chain) {
+                            assert_eq!(
+                                view.look().addrs(), chain.addrs(),
+                                concat!(
+                                    "`look` and the read walk agreed that ",
+                                    stringify!(($($layer),+)),
+                                    " is present and then handed back different layers: {:?}"
+                                ),
+                                h
+                            );
+                        }
                     });
                 agreement_is_not_vacuous(
-                    stringify!($shape),
+                    stringify!(($($layer),+)),
                     SEEN.load(Ordering::Relaxed),
                     HIT.load(Ordering::Relaxed),
                 );
@@ -2713,31 +2808,46 @@ mod view_mut_properties {
 
             #[test]
             fn $mutable() {
+                type Shape = shape_of!($($layer),+);
                 use concurrency::sync::atomic::{AtomicUsize, Ordering};
                 static SEEN: AtomicUsize = AtomicUsize::new(0);
                 static HIT: AtomicUsize = AtomicUsize::new(0);
                 bolero::check!()
-                    .with_generator(ShapedHeaders)
+                    .with_generator($gen)
                     .for_each(|h: &Headers| {
                         let mut owned = h.clone();
                         SEEN.fetch_add(1, Ordering::Relaxed);
-                        let licensed = owned.as_view_mut::<$shape>().is_some();
+                        let licensed = owned.as_view_mut::<Shape>().is_some();
                         if licensed {
                             HIT.fetch_add(1, Ordering::Relaxed);
                         }
-                        let deliverable = owned.pat_mut()$(.$layer())+.done().is_some();
+                        // The two walks each want the whole of `owned` mutably, so they take turns
+                        // and hand back addresses rather than references. Nothing is written
+                        // between the two, so the addresses stay comparable.
+                        let chain = owned.pat_mut()$(.$layer())+.done().map(|t| t.addrs());
                         assert_eq!(
-                            licensed, deliverable,
+                            licensed, chain.is_some(),
                             concat!(
                                 "`matches` and the mutable walk disagree for ",
-                                stringify!($shape),
+                                stringify!(($($layer),+)),
                                 ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
                             ),
                             h
                         );
+                        if let Some(view) = owned.as_view_mut::<Shape>() {
+                            assert_eq!(
+                                Some(view.look_mut().addrs()), chain,
+                                concat!(
+                                    "`look_mut` and the mutable walk agreed that ",
+                                    stringify!(($($layer),+)),
+                                    " is present and then handed back different layers: {:?}"
+                                ),
+                                h
+                            );
+                        }
                     });
                 agreement_is_not_vacuous(
-                    stringify!($shape),
+                    stringify!(($($layer),+)),
                     SEEN.load(Ordering::Relaxed),
                     HIT.load(Ordering::Relaxed),
                 );
@@ -2758,28 +2868,14 @@ mod view_mut_properties {
         }
     }
 
-    // Every arity from one to eight, which is all of them.
-    //
-    // `Matcher` names every layer the `Within` graph does -- `matcher_net!`, `matcher_ext!` and
-    // `matcher_transport!` give it `.ipv4()`, `.ipv6()`, `.hop_by_hop()`, `.dest_opts()`,
-    // `.routing()`, `.fragment()`, `.ipv4_auth()`, `.ipv6_auth()`, `.tcp()`, `.udp()`, `.icmp4()` and
-    // `.icmp6()` alongside the generic `.eth()` / `.vlan()` / `.net()` / `.transport()`. So the
-    // oracle reaches as far as the code does: `Eth` + four VLAN tags (`MAX_VLANS`) + `Ipv6` +
-    // `HopByHop` + `Transport` is eight, and the extension region is expressible.
-    arity_agrees!(read_1, mutable_1, (&Eth,), eth);
-    arity_agrees!(read_2, mutable_2, (&Eth, &Net), eth, net);
-    arity_agrees!(
-        read_3,
-        mutable_3,
-        (&Eth, &Net, &Transport),
-        eth,
-        net,
-        transport
-    );
+    // Cover every supported arity, including first-step rejection.
+    arity_agrees!(read_1, mutable_1, SometimesHeadless, eth);
+    arity_agrees!(read_2, mutable_2, SometimesHeadless, eth, net);
+    arity_agrees!(read_3, mutable_3, SometimesHeadless, eth, net, transport);
     arity_agrees!(
         read_4,
         mutable_4,
-        (&Eth, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         net,
@@ -2788,7 +2884,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_5,
         mutable_5,
-        (&Eth, &Vlan, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2798,7 +2894,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_6,
         mutable_6,
-        (&Eth, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2809,7 +2905,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_7,
         mutable_7,
-        (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2821,9 +2917,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_8,
         mutable_8,
-        (
-            &Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv6, &HopByHop, &Transport
-        ),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2839,7 +2933,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_one,
         mutable_ext_v6_one,
-        (&Eth, &Ipv6, &HopByHop, &Transport),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop,
@@ -2848,7 +2942,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_two,
         mutable_ext_v6_two,
-        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Transport),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop,
@@ -2858,7 +2952,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_three,
         mutable_ext_v6_three,
-        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Routing, &Transport),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop,
@@ -2871,7 +2965,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v4_auth,
         mutable_ext_v4_auth,
-        (&Eth, &Ipv4, &Ipv4Auth, &Transport),
+        SometimesHeadless,
         eth,
         ipv4,
         ipv4_auth,
@@ -2881,10 +2975,30 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_no_transport,
         mutable_ext_v6_no_transport,
-        (&Eth, &Ipv6, &HopByHop),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop
+    );
+
+    // VXLAN is outside the linear header stack and bypasses both gap checks, so cover it explicitly.
+    arity_agrees!(
+        read_vxlan_v4,
+        mutable_vxlan_v4,
+        ShapedHeaders,
+        eth,
+        ipv4,
+        udp,
+        vxlan
+    );
+    arity_agrees!(
+        read_vxlan_net,
+        mutable_vxlan_net,
+        ShapedHeaders,
+        eth,
+        net,
+        udp,
+        vxlan
     );
 
     /// Write through every returned `&mut` so Miri can detect aliasing in [`Fields`](super::pat::Fields).

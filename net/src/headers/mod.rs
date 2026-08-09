@@ -1350,6 +1350,29 @@ mod contract {
         }
     }
 
+    /// [`ShapedHeaders`] without Ethernet or VLAN headers one packet in eight.
+    ///
+    /// This exercises first-step rejection without starving deep shapes.
+    #[allow(dead_code)] // constructed through `.with_generator()`
+    #[repr(transparent)]
+    pub struct SometimesHeadless;
+
+    impl ValueGenerator for SometimesHeadless {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut headers = ShapedHeaders.generate(driver)?;
+            if driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
+                // The tags go with it. A VLAN tag is carried by the Ethernet header, so a packet
+                // holding one without the other is not a short packet, it is an impossible one, and
+                // the properties reading this generator are about short packets.
+                headers.vlan.clear();
+                headers.eth = None;
+            }
+            Some(headers)
+        }
+    }
+
     /// Draw one extension header, with fuzzed contents.
     ///
     /// `pick` indexes the IPv6 extension order RFC 8200 recommends -- 0 hop-by-hop, 1 destination
