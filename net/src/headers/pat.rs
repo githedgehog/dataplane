@@ -2955,3 +2955,643 @@ mod tests {
         };
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod opt_properties {
+    use super::*;
+    use crate::headers::{Headers, ShapedIcmpError, ThinHeaders};
+    use concurrency::sync::OnceLock;
+    use concurrency::sync::atomic::AtomicUsize;
+    use std::cell::Cell;
+
+    // `AtomicUsize::new` is not const under loom, so counters init on first use.
+    fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
+        slot.get_or_init(|| AtomicUsize::new(0))
+    }
+
+    macro_rules! opt_is_weaker {
+        ($read:ident, $mutable:ident, [$($pre:ident),*], $strict:ident, $opt:ident) => {
+            #[test]
+            fn $read() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
+                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ThinHeaders)
+                    .for_each(|h: &Headers| {
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let strict = h.pat()$(.$pre())*.$strict().done().is_some();
+                        let opt = h.pat()$(.$pre())*.$opt().done().is_some();
+                        assert!(
+                            !strict || opt,
+                            concat!(
+                                "`", stringify!($strict), "` matched where `", stringify!($opt),
+                                "` did not, so the optional form is the stricter one: {:?}"
+                            ),
+                            h
+                        );
+                        if strict {
+                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                        } else if opt {
+                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                        }
+                    });
+                both_outcomes_seen(
+                    concat!(stringify!($opt), " (read)"),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&STRICT).load(Ordering::Relaxed),
+                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                );
+            }
+
+            #[test]
+            fn $mutable() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
+                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ThinHeaders)
+                    .for_each(|h: &Headers| {
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let mut owned = h.clone();
+                        let strict = owned.pat_mut()$(.$pre())*.$strict().done().is_some();
+                        let opt = owned.pat_mut()$(.$pre())*.$opt().done().is_some();
+                        assert!(
+                            !strict || opt,
+                            concat!(
+                                "`", stringify!($strict), "` matched where `", stringify!($opt),
+                                "` did not on the mutable path: {:?}"
+                            ),
+                            h
+                        );
+                        if strict {
+                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                        } else if opt {
+                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                        }
+                    });
+                both_outcomes_seen(
+                    concat!(stringify!($opt), " (mut)"),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&STRICT).load(Ordering::Relaxed),
+                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    fn both_outcomes_seen(what: &str, seen: usize, strict: usize, opt_only: usize) {
+        println!("{what}: {strict} strict, {opt_only} optional-only, {seen} seen");
+        if seen > 10_000 {
+            assert!(
+                strict > 0,
+                "{what}: the strict form never matched in {seen} cases, so the implication held \
+                 vacuously"
+            );
+            assert!(
+                opt_only > 0,
+                "{what}: the optional form never accepted anything the strict form refused in \
+                 {seen} cases, so being optional was never tested"
+            );
+        }
+    }
+
+    opt_is_weaker!(read_opt_eth, mut_opt_eth, [], eth, opt_eth);
+    opt_is_weaker!(read_opt_vlan, mut_opt_vlan, [eth], vlan, opt_vlan);
+    opt_is_weaker!(read_opt_net, mut_opt_net, [eth], net, opt_net);
+    opt_is_weaker!(read_opt_ipv4, mut_opt_ipv4, [eth], ipv4, opt_ipv4);
+    opt_is_weaker!(read_opt_ipv6, mut_opt_ipv6, [eth], ipv6, opt_ipv6);
+    opt_is_weaker!(
+        read_opt_hop_by_hop,
+        mut_opt_hop_by_hop,
+        [eth, ipv6],
+        hop_by_hop,
+        opt_hop_by_hop
+    );
+    opt_is_weaker!(
+        read_opt_dest_opts,
+        mut_opt_dest_opts,
+        [eth, ipv6],
+        dest_opts,
+        opt_dest_opts
+    );
+    opt_is_weaker!(
+        read_opt_routing,
+        mut_opt_routing,
+        [eth, ipv6],
+        routing,
+        opt_routing
+    );
+    opt_is_weaker!(
+        read_opt_fragment,
+        mut_opt_fragment,
+        [eth, ipv6],
+        fragment,
+        opt_fragment
+    );
+    opt_is_weaker!(
+        read_opt_ipv6_auth,
+        mut_opt_ipv6_auth,
+        [eth, ipv6],
+        ipv6_auth,
+        opt_ipv6_auth
+    );
+    opt_is_weaker!(
+        read_opt_ipv4_auth,
+        mut_opt_ipv4_auth,
+        [eth, ipv4],
+        ipv4_auth,
+        opt_ipv4_auth
+    );
+    opt_is_weaker!(read_opt_tcp, mut_opt_tcp, [eth, net], tcp, opt_tcp);
+    opt_is_weaker!(read_opt_udp, mut_opt_udp, [eth, net], udp, opt_udp);
+    opt_is_weaker!(read_opt_icmp4, mut_opt_icmp4, [eth, ipv4], icmp4, opt_icmp4);
+    opt_is_weaker!(read_opt_icmp6, mut_opt_icmp6, [eth, ipv6], icmp6, opt_icmp6);
+    opt_is_weaker!(
+        read_opt_transport,
+        mut_opt_transport,
+        [eth, net],
+        transport,
+        opt_transport
+    );
+    opt_is_weaker!(
+        read_opt_vxlan,
+        mut_opt_vxlan,
+        [eth, net, udp],
+        vxlan,
+        opt_vxlan
+    );
+
+    macro_rules! embedded_opt_is_weaker {
+        (
+            $read:ident, $mutable:ident,
+            [$($o:ident),*], [$($i:ident),*],
+            $strict:ident, $opt:ident
+        ) => {
+            #[test]
+            fn $read() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
+                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ShapedIcmpError)
+                    .for_each(|h: &Headers| {
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let strict = h.pat()$(.$o())*.embedded()$(.$i())*.$strict()
+                            .done().is_some();
+                        let opt = h.pat()$(.$o())*.embedded()$(.$i())*.$opt()
+                            .done().is_some();
+                        assert!(
+                            !strict || opt,
+                            concat!(
+                                "quoted `", stringify!($strict), "` matched where `",
+                                stringify!($opt), "` did not: {:?}"
+                            ),
+                            h
+                        );
+                        if strict {
+                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                        } else if opt {
+                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                        }
+                    });
+                both_outcomes_seen(
+                    concat!("quoted ", stringify!($opt), " (read)"),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&STRICT).load(Ordering::Relaxed),
+                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                );
+            }
+
+            #[test]
+            fn $mutable() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
+                static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
+                static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
+                bolero::check!()
+                    .with_generator(ShapedIcmpError)
+                    .for_each(|h: &Headers| {
+                        counter(&SEEN).fetch_add(1, Ordering::Relaxed);
+                        let mut owned = h.clone();
+                        let strict = owned.pat_mut()$(.$o())*.embedded()$(.$i())*.$strict()
+                            .done().is_some();
+                        let opt = owned.pat_mut()$(.$o())*.embedded()$(.$i())*.$opt()
+                            .done().is_some();
+                        assert!(
+                            !strict || opt,
+                            concat!(
+                                "quoted `", stringify!($strict), "` matched where `",
+                                stringify!($opt), "` did not on the mutable path: {:?}"
+                            ),
+                            h
+                        );
+                        if strict {
+                            counter(&STRICT).fetch_add(1, Ordering::Relaxed);
+                        } else if opt {
+                            counter(&OPT_ONLY).fetch_add(1, Ordering::Relaxed);
+                        }
+                    });
+                both_outcomes_seen(
+                    concat!("quoted ", stringify!($opt), " (mut)"),
+                    counter(&SEEN).load(Ordering::Relaxed),
+                    counter(&STRICT).load(Ordering::Relaxed),
+                    counter(&OPT_ONLY).load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    embedded_opt_is_weaker!(
+        read_quoted_opt_ipv4,
+        mut_quoted_opt_ipv4,
+        [eth, ipv4, icmp4],
+        [],
+        ipv4,
+        opt_ipv4
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_ipv6,
+        mut_quoted_opt_ipv6,
+        [eth, ipv6, icmp6],
+        [],
+        ipv6,
+        opt_ipv6
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_hop_by_hop,
+        mut_quoted_opt_hop_by_hop,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        hop_by_hop,
+        opt_hop_by_hop
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_dest_opts,
+        mut_quoted_opt_dest_opts,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        dest_opts,
+        opt_dest_opts
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_routing,
+        mut_quoted_opt_routing,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        routing,
+        opt_routing
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_fragment,
+        mut_quoted_opt_fragment,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        fragment,
+        opt_fragment
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_ipv6_auth,
+        mut_quoted_opt_ipv6_auth,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        ipv6_auth,
+        opt_ipv6_auth
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_ipv4_auth,
+        mut_quoted_opt_ipv4_auth,
+        [eth, ipv4, icmp4],
+        [ipv4],
+        ipv4_auth,
+        opt_ipv4_auth
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_tcp,
+        mut_quoted_opt_tcp,
+        [eth, ipv4, icmp4],
+        [ipv4],
+        tcp,
+        opt_tcp
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_udp,
+        mut_quoted_opt_udp,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        udp,
+        opt_udp
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_icmp4,
+        mut_quoted_opt_icmp4,
+        [eth, ipv4, icmp4],
+        [ipv4],
+        icmp4,
+        opt_icmp4
+    );
+    embedded_opt_is_weaker!(
+        read_quoted_opt_icmp6,
+        mut_quoted_opt_icmp6,
+        [eth, ipv6, icmp6],
+        [ipv6],
+        icmp6,
+        opt_icmp6
+    );
+
+    #[test]
+    fn the_three_way_families_separate_an_absent_layer_from_a_wrong_one() {
+        bolero::check!()
+            .with_generator(ThinHeaders)
+            .for_each(|h: &Headers| {
+                let reached_net = h.eth().is_some() && h.vlan().is_empty();
+
+                assert_eq!(
+                    h.pat().eth().opt_net().done().is_some(),
+                    reached_net,
+                    "the network enum is never the wrong variant, so absent or present must both \
+                     match: {h:?}"
+                );
+                assert_eq!(
+                    h.pat().eth().opt_ipv4().done().is_some(),
+                    reached_net && !matches!(h.net(), Some(Net::Ipv6(_))),
+                    "opt_ipv4 must accept IPv4 and absence, and refuse IPv6: {h:?}"
+                );
+                assert_eq!(
+                    h.pat().eth().opt_ipv6().done().is_some(),
+                    reached_net && !matches!(h.net(), Some(Net::Ipv4(_))),
+                    "opt_ipv6 must accept IPv6 and absence, and refuse IPv4: {h:?}"
+                );
+
+                let reached_transport = reached_net && h.net().is_some();
+                assert_eq!(
+                    h.pat().eth().net().opt_transport().done().is_some(),
+                    reached_transport,
+                    "the transport enum is never the wrong variant either: {h:?}"
+                );
+                assert_eq!(
+                    h.pat().eth().net().opt_tcp().done().is_some(),
+                    reached_transport && matches!(h.transport(), None | Some(Transport::Tcp(_))),
+                    "opt_tcp must accept TCP and absence, and refuse every other transport: {h:?}"
+                );
+
+                let reached_vxlan =
+                    reached_transport && matches!(h.transport(), Some(Transport::Udp(_)));
+                assert_eq!(
+                    h.pat().eth().net().udp().opt_vxlan().done().is_some(),
+                    reached_vxlan,
+                    "a UDP packet with no encapsulation must match opt_vxlan: {h:?}"
+                );
+            });
+    }
+
+    #[test]
+    fn optional_vlans_absorb_one_tag_each_and_only_when_they_match() {
+        bolero::check!()
+            .with_generator(ThinHeaders)
+            .for_each(|h: &Headers| {
+                let reachable = h.eth().is_some() && h.net().is_some();
+                let tags = h.vlan().len();
+                assert_eq!(
+                    h.pat().eth().opt_vlan().net().done().is_some(),
+                    reachable && tags <= 1,
+                    "one optional tag absorbed the wrong number of tags: {h:?}"
+                );
+                assert_eq!(
+                    h.pat().eth().opt_vlan().opt_vlan().net().done().is_some(),
+                    reachable && tags <= 2,
+                    "two optional tags absorbed the wrong number of tags: {h:?}"
+                );
+                assert_eq!(
+                    h.pat()
+                        .eth()
+                        .opt_vlan()
+                        .opt_vlan()
+                        .opt_vlan()
+                        .opt_vlan()
+                        .net()
+                        .done()
+                        .is_some(),
+                    reachable,
+                    "four optional tags failed to absorb a packet with at most four: {h:?}"
+                );
+            });
+    }
+
+    #[test]
+    fn an_optional_extension_still_makes_the_transport_gap_check_strict() {
+        bolero::check!()
+            .with_generator(ThinHeaders)
+            .for_each(|h: &Headers| {
+                let consumed =
+                    usize::from(matches!(h.net_ext().first(), Some(NetExt::HopByHop(_))));
+                let want = h.eth().is_some()
+                    && h.vlan().is_empty()
+                    && matches!(h.net(), Some(Net::Ipv6(_)))
+                    && h.transport().is_some()
+                    && h.net_ext().len() == consumed;
+                assert_eq!(
+                    h.pat()
+                        .eth()
+                        .ipv6()
+                        .opt_hop_by_hop()
+                        .transport()
+                        .done()
+                        .is_some(),
+                    want,
+                    "an optional extension left the transport gap check lenient: {h:?}"
+                );
+            });
+    }
+
+    macro_rules! combinators_fire_exactly_once_and_only_when_due {
+        ($name:ident, $gen:expr, $subject:expr, $fires:expr, $($chain:tt)*) => {
+            #[test]
+            fn $name() {
+                bolero::check!()
+                    .with_generator($gen)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        let base = owned $($chain)* .done().is_some();
+                        let fires: bool = $fires(h);
+
+                        let mut owned = h.clone();
+                        assert!(
+                            owned $($chain)* .when(|_| false).done().is_none(),
+                            concat!($subject, ": a false predicate left the match standing: {:?}"),
+                            h
+                        );
+                        let mut owned = h.clone();
+                        assert_eq!(
+                            owned $($chain)* .when(|_| true).done().is_some(),
+                            base,
+                            concat!($subject, ": a true predicate was not a no-op: {:?}"),
+                            h
+                        );
+
+                        let ran = Cell::new(false);
+                        let mut owned = h.clone();
+                        let after = owned $($chain)*
+                            .inspect(|_| ran.set(true))
+                            .done()
+                            .is_some();
+                        assert_eq!(
+                            ran.get(), fires,
+                            concat!($subject, ": inspect ran on a miss or skipped a match: {:?}"),
+                            h
+                        );
+                        assert_eq!(
+                            after, base,
+                            concat!($subject, ": inspect changed the result: {:?}"),
+                            h
+                        );
+
+                        let ran = Cell::new(false);
+                        let mut owned = h.clone();
+                        let after = owned $($chain)*
+                            .otherwise(|| ran.set(true))
+                            .done()
+                            .is_some();
+                        assert_eq!(
+                            ran.get(), !fires,
+                            concat!($subject, ": otherwise ran on a match or skipped a miss: {:?}"),
+                            h
+                        );
+                        assert_eq!(
+                            after, base,
+                            concat!($subject, ": otherwise changed the result: {:?}"),
+                            h
+                        );
+                    });
+            }
+        };
+    }
+
+    fn whole_chain(h: &Headers) -> bool {
+        h.pat().eth().net().done().is_some()
+    }
+
+    fn quoted_ipv4_matched(h: &Headers) -> bool {
+        h.embedded_ip()
+            .is_some_and(|e| matches!(e.net(), Some(Net::Ipv4(_))))
+    }
+
+    combinators_fire_exactly_once_and_only_when_due!(
+        matcher_combinators, ThinHeaders, "Matcher", whole_chain,
+        .pat().eth().net()
+    );
+    combinators_fire_exactly_once_and_only_when_due!(
+        matcher_mut_combinators, ThinHeaders, "MatcherMut", whole_chain,
+        .pat_mut().eth().net()
+    );
+    combinators_fire_exactly_once_and_only_when_due!(
+        embedded_matcher_combinators, ShapedIcmpError, "EmbeddedMatcher", quoted_ipv4_matched,
+        .pat().eth().ipv4().icmp4().embedded().ipv4()
+    );
+    combinators_fire_exactly_once_and_only_when_due!(
+        embedded_matcher_mut_combinators, ShapedIcmpError, "EmbeddedMatcherMut",
+        quoted_ipv4_matched,
+        .pat_mut().eth().ipv4().icmp4().embedded().ipv4()
+    );
+
+    #[test]
+    fn the_embedded_combinators_track_the_inner_match_only() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static DIVERGED: OnceLock<AtomicUsize> = OnceLock::new();
+        bolero::check!()
+            .with_generator(ShapedIcmpError)
+            .for_each(|h: &Headers| {
+                let whole = h
+                    .pat()
+                    .eth()
+                    .ipv4()
+                    .icmp4()
+                    .embedded()
+                    .ipv4()
+                    .done()
+                    .is_some();
+                let inner = quoted_ipv4_matched(h);
+                if whole == inner {
+                    return;
+                }
+                counter(&DIVERGED).fetch_add(1, Ordering::Relaxed);
+                assert!(
+                    inner && !whole,
+                    "the whole chain matched while the inner one did not, which `done` forbids: \
+                     {h:?}"
+                );
+                let ran = Cell::new(false);
+                h.pat()
+                    .eth()
+                    .ipv4()
+                    .icmp4()
+                    .embedded()
+                    .ipv4()
+                    .otherwise(|| ran.set(true))
+                    .done();
+                assert!(
+                    !ran.get(),
+                    "`otherwise` ran on a chain whose inner match succeeded; the divergence \
+                     documented here has been fixed, so this test should be deleted: {h:?}"
+                );
+            });
+        let diverged = counter(&DIVERGED).load(Ordering::Relaxed);
+        println!("outer failed while the quote matched: {diverged} packets");
+        assert!(
+            diverged > 0,
+            "the two never diverged, so this test proved nothing about which one the combinators \
+             follow"
+        );
+    }
+
+    #[test]
+    fn the_quoted_transport_enum_refuses_an_unconsumed_extension() {
+        bolero::check!()
+            .with_generator(crate::headers::ShapedQuote { ext: 0, v4: false })
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let quoted = owned
+                    .embedded_ip_mut()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote always attaches a quote"));
+                let first = quoted
+                    .net_ext
+                    .first()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote always places one extension"))
+                    .clone();
+                quoted.net_ext.push(first);
+
+                let mut two = owned.clone();
+                assert!(
+                    two.pat_mut()
+                        .eth()
+                        .ipv6()
+                        .icmp6()
+                        .embedded()
+                        .ipv6()
+                        .hop_by_hop()
+                        .transport()
+                        .done()
+                        .is_none(),
+                    "one extension named of two, yet the transport enum matched: {h:?}"
+                );
+                let mut one = h.clone();
+                assert!(
+                    one.pat_mut()
+                        .eth()
+                        .ipv6()
+                        .icmp6()
+                        .embedded()
+                        .ipv6()
+                        .hop_by_hop()
+                        .transport()
+                        .done()
+                        .is_some(),
+                    "the sole extension was named and consumed, yet the chain missed: {h:?}"
+                );
+            });
+    }
+}

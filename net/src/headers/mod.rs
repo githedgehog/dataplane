@@ -1295,6 +1295,41 @@ mod contract {
         Some(out)
     }
 
+    #[allow(dead_code)]
+    #[repr(transparent)]
+    pub struct ThinHeaders;
+
+    impl ValueGenerator for ThinHeaders {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut headers = ShapedHeaders.generate(driver)?;
+            match driver.gen_u8(Bound::Included(&0), Bound::Included(&4))? {
+                0 => {}
+                1 => headers.udp_encap = None,
+                2 => {
+                    headers.udp_encap = None;
+                    headers.transport = None;
+                }
+                3 => {
+                    headers.udp_encap = None;
+                    headers.transport = None;
+                    headers.net_ext.clear();
+                    headers.net = None;
+                }
+                _ => {
+                    headers.udp_encap = None;
+                    headers.transport = None;
+                    headers.net_ext.clear();
+                    headers.net = None;
+                    headers.vlan.clear();
+                    headers.eth = None;
+                }
+            }
+            Some(headers)
+        }
+    }
+
     fn one_ext<D: Driver>(driver: &mut D, v4: bool, pick: u8) -> Option<NetExt> {
         if v4 {
             return Some(NetExt::Ipv4Auth(driver.produce()?));
@@ -1423,6 +1458,9 @@ mod contract {
     }
 
     fn quoted_packet<D: Driver>(driver: &mut D, outer_v4: bool) -> Option<EmbeddedHeaders> {
+        if driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
+            return Some(EmbeddedHeaders::new(None, None, ArrayVec::default(), None));
+        }
         let mismatch = driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0;
         let v4 = outer_v4 != mismatch;
 
