@@ -1330,6 +1330,23 @@ mod contract {
         }
     }
 
+    #[allow(dead_code)]
+    #[repr(transparent)]
+    pub struct SometimesHeadless;
+
+    impl ValueGenerator for SometimesHeadless {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut headers = ShapedHeaders.generate(driver)?;
+            if driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
+                headers.vlan.clear();
+                headers.eth = None;
+            }
+            Some(headers)
+        }
+    }
+
     fn one_ext<D: Driver>(driver: &mut D, v4: bool, pick: u8) -> Option<NetExt> {
         if v4 {
             return Some(NetExt::Ipv4Auth(driver.produce()?));

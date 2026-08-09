@@ -3410,6 +3410,7 @@ mod opt_properties {
 
     macro_rules! combinators_fire_exactly_once_and_only_when_due {
         ($name:ident, $gen:expr, $subject:expr, $fires:expr, $($chain:tt)*) => {
+            #[allow(unused_mut)]
             #[test]
             fn $name() {
                 bolero::check!()
@@ -3525,7 +3526,8 @@ mod opt_properties {
                      {h:?}"
                 );
                 let ran = Cell::new(false);
-                h.pat()
+                let _ = h
+                    .pat()
                     .eth()
                     .ipv4()
                     .icmp4()
