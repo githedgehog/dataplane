@@ -15,6 +15,7 @@ use crate::ip::{IpAddress, NextHeader, UnicastIpAddr};
 use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
 use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
+use crate::lldp::Lldpdu;
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
     Reader, Writer,
@@ -74,6 +75,13 @@ pub struct Headers {
     pub(crate) udp_encap: Option<UdpEncap>,
     /// Boxed to keep packets without ICMP errors small.
     pub(crate) embedded_ip: Option<Box<EmbeddedHeaders>>,
+    /// The LLDP data unit which follows the link layer headers, if this is an
+    /// LLDP frame.
+    ///
+    /// Boxed because an LLDPDU is an order of magnitude larger than the headers
+    /// it sits behind and appears on a handful of frames per port per minute;
+    /// a forwarded packet should not carry the cost of a field it never uses.
+    pub(crate) lldp: Option<Box<Lldpdu>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -665,6 +673,7 @@ pub enum Header {
     Ipv6Auth(Ipv6Auth),
     Encap(UdpEncap),
     EmbeddedIp(EmbeddedHeaders),
+    Lldp(Box<Lldpdu>),
 }
 
 impl Header {
@@ -683,7 +692,7 @@ impl Header {
             Header::Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
             Header::Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
             Header::Udp(udp) => udp.parse_payload(cursor).map(Header::from),
-            Header::Encap(_) | Header::Tcp(_) | Header::EmbeddedIp(_) => None,
+            Header::Encap(_) | Header::Tcp(_) | Header::EmbeddedIp(_) | Header::Lldp(_) => None,
         }
     }
 }
@@ -703,6 +712,7 @@ impl Parse for Headers {
             net_ext: Stack::default(),
             udp_encap: None,
             embedded_ip: None,
+            lldp: None,
         };
         // TODO: after parsing, validate RFC 8200 section 4.1 extension header
         // ordering constraints (e.g. HopByHop must be first and appear at most
@@ -777,6 +787,7 @@ impl Parse for Headers {
                     }
                 }
                 Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
+                Header::Lldp(lldp) => this.lldp = Some(lldp),
             }
             match header {
                 None => {
@@ -827,7 +838,8 @@ impl DeParse for Headers {
             .embedded_ip
             .as_deref()
             .map_or(0, |embedded_header| embedded_header.size().get());
-        NonZero::new(eth + vlan + net + net_ext + transport + encap + embedded_ip)
+        let lldp = self.lldp.as_ref().map_or(0, |pdu| pdu.size().get());
+        NonZero::new(eth + vlan + lldp + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
     }
 
@@ -850,6 +862,17 @@ impl DeParse for Headers {
         for vlan in &self.vlan {
             cursor.write(vlan)?;
         }
+
+        if let Some(ref lldp) = self.lldp {
+            // An LLDP frame is link local and carries no network header.  The
+            // parser can never produce both, so this only catches a `Headers`
+            // assembled by hand.
+            if self.net.is_some() {
+                return Err(DeParseError::Invalid(()));
+            }
+            cursor.write(lldp.as_ref())?;
+        }
+
         match self.net {
             None => {
                 debug_assert!(self.transport.is_none());
@@ -940,6 +963,27 @@ impl Headers {
     #[must_use]
     pub fn eth(&self) -> Option<&Eth> {
         self.eth.as_ref()
+    }
+
+    /// Get a reference to the LLDP data unit, if this is an LLDP frame.
+    #[must_use]
+    pub fn lldp(&self) -> Option<&Lldpdu> {
+        self.lldp.as_deref()
+    }
+
+    /// Get a mutable reference to the LLDP data unit, if this is an LLDP frame.
+    #[must_use]
+    pub fn lldp_mut(&mut self) -> Option<&mut Lldpdu> {
+        self.lldp.as_deref_mut()
+    }
+
+    /// Take the LLDP data unit out of these headers, if this is an LLDP frame.
+    ///
+    /// This is the shape the punt path wants: the LLDPDU moves to the control
+    /// plane and the headers it arrived behind stay where they are.
+    #[must_use]
+    pub fn take_lldp(&mut self) -> Option<Box<Lldpdu>> {
+        self.lldp.take()
     }
 
     /// Get a mutable reference to the Ethernet header, if present.
@@ -1329,6 +1373,7 @@ impl_from_for_enum![
     Ipv6Auth(Ipv6Auth),
     Encap(UdpEncap),
     EmbeddedIp(EmbeddedHeaders),
+    Lldp(Box<Lldpdu>),
 ];
 
 impl From<Net> for Header {
@@ -1721,6 +1766,7 @@ mod contract {
                     quoted_ext,
                     None,
                 ))),
+                lldp: None,
             })
         }
     }
@@ -1771,6 +1817,7 @@ mod contract {
                 transport: Some(transport),
                 udp_encap: None,
                 embedded_ip,
+                lldp: None,
             })
         }
     }
@@ -1841,6 +1888,7 @@ mod contract {
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                                 embedded_ip: None,
+                                lldp: None,
                             };
                             Some(headers)
                         }
@@ -1860,6 +1908,7 @@ mod contract {
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                                 embedded_ip: None,
+                                lldp: None,
                             };
                             Some(headers)
                         }
@@ -1873,6 +1922,7 @@ mod contract {
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
                                 embedded_ip: None,
+                                lldp: None,
                             };
                             Some(headers)
                         }
@@ -1893,6 +1943,7 @@ mod contract {
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                                 embedded_ip: None,
+                                lldp: None,
                             };
                             Some(headers)
                         }
@@ -1912,6 +1963,7 @@ mod contract {
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                                 embedded_ip: None,
+                                lldp: None,
                             };
                             Some(headers)
                         }
@@ -1925,6 +1977,7 @@ mod contract {
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
                                 embedded_ip: None,
+                                lldp: None,
                             };
                             Some(headers)
                         }
