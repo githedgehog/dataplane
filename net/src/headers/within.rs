@@ -554,3 +554,221 @@ impl Within<Net> for Tcp {
 impl Within<Net> for Udp {
     fn conform(_parent: &mut Net) {}
 }
+
+/// What [`Within::conform`] is for, checked against the parser.
+///
+/// `conform` writes the parent's protocol field so it names the child: `EthType::IPV6` on an
+/// Ethernet header carrying IPv6, `NextHeader::ROUTING` on an IPv6 header carrying a routing
+/// extension. It is the only reason this trait has a method at all -- the ordering half of the
+/// contract is enforced by the compiler, by the presence or absence of an impl, and needs no test.
+///
+/// Thirty-two of these bodies had never run. Every one of them was an IPv6 extension header
+/// transition or `Vlan` inside `Vlan`, which is to say: the whole extension region, plus the second
+/// tag of a double-tagged frame. The reason is that `conform` is reached only through
+/// [`HeaderStack::stack`](crate::headers::builder::HeaderStack::stack), and while the builder has had
+/// `.hop_by_hop()`, `.dest_opts()`, `.routing()`, `.fragment()`, `.ipv4_auth()` and `.ipv6_auth()`
+/// all along, no test ever called one. The generators reach the extension region constantly, but
+/// they assemble [`Headers`](crate::headers::Headers) field by field and never go through the
+/// builder, so they never conform anything.
+///
+/// # The oracle
+///
+/// A test that builds a packet and then reads back the field `conform` just wrote would be checking
+/// the implementation against itself. So the check is deparse-then-parse: the parser decides what
+/// follows an IPv6 header by reading its next-header field, which is the field `conform` sets, so a
+/// `conform` that names the wrong protocol produces bytes the parser reads as a different packet --
+/// or as no valid packet at all.
+///
+/// # Scrambling
+///
+/// Each layer's next-header field is set to a fuzzed byte *before* the next layer is stacked, so
+/// `conform` is always overwriting a wrong value rather than filling in a blank one.
+///
+/// That is not a precaution, it is load-bearing, and the case that proves it is `Ipv4` inside `Eth`.
+/// [`Blank`] for `Eth` produces `EthType::IPV4`, so on a blank Ethernet header the conform that sets
+/// `EthType::IPV4` has nothing to do: delete its body and every packet still round-trips. Scrambled,
+/// the same deletion fails two chains. `Vlan` has the same blank and the same exposure.
+///
+/// # What is left, and why it stays uncovered
+///
+/// Nineteen no-op `conform` bodies remain unrun: the enum-level impls, the `EmbeddedStart` impls and
+/// everything `impl_truncated_within!` generates. They are not merely untested, they are unreachable
+/// through the builder, and the compiler says so twice -- writing
+/// `HeaderStack::new().eth(..).stack::<Net>(..)` fails with both `Net: Blank is not satisfied` and
+/// `Headers: Install<Net> is not satisfied`. Either bound alone would be enough.
+///
+/// They exist to give the pattern matcher its `Within` edges, which need the trait but not the
+/// method. `conform` is a public trait method, so they are callable in principle by anyone holding
+/// the parent; nothing in the tree does. Whether nineteen uncallable bodies are worth keeping is a
+/// question for whoever owns the trait, not something a test can settle.
+///
+/// [`Blank`]: crate::headers::builder::Blank
+#[cfg(test)]
+mod conform_properties {
+    use crate::eth::Eth;
+    use crate::eth::ethtype::EthType;
+    use crate::headers::builder::HeaderStack;
+    use crate::headers::test::parse_back_test;
+    use crate::icmp4::Icmp4;
+    use crate::icmp6::Icmp6;
+    use crate::ip::NextHeader;
+    use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
+    use crate::ipv4::Ipv4;
+    use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
+    use crate::tcp::Tcp;
+    use crate::udp::Udp;
+    use crate::vlan::Vlan;
+
+    /// Put a wrong protocol number in the field `conform` is responsible for.
+    ///
+    /// Implemented for every layer the builder can stack. The transport types are the leaves of
+    /// every chain -- nothing is ever stacked on top of one, so nothing ever conforms one -- and
+    /// their impls are deliberately empty rather than absent, so that the chain macro does not have
+    /// to know which layers are interior.
+    trait Scramble {
+        /// Overwrite the protocol field with something derived from `seed`.
+        fn scramble(&mut self, seed: u8);
+    }
+
+    macro_rules! scramble_next_header {
+        ($($T:ty),+ $(,)?) => {$(
+            impl Scramble for $T {
+                fn scramble(&mut self, seed: u8) {
+                    self.set_next_header(NextHeader::new(seed));
+                }
+            }
+        )+};
+    }
+
+    macro_rules! scramble_leaf {
+        ($($T:ty),+ $(,)?) => {$(
+            impl Scramble for $T {
+                fn scramble(&mut self, _seed: u8) {}
+            }
+        )+};
+    }
+
+    scramble_next_header!(
+        Ipv4, Ipv6, HopByHop, DestOpts, Routing, Fragment, Ipv4Auth, Ipv6Auth
+    );
+    scramble_leaf!(Tcp, Udp, Icmp4, Icmp6);
+
+    impl Scramble for Eth {
+        fn scramble(&mut self, seed: u8) {
+            self.set_ether_type(EthType::new(u16::from(seed)));
+        }
+    }
+
+    impl Scramble for Vlan {
+        fn scramble(&mut self, seed: u8) {
+            self.set_inner_ethtype(EthType::new(u16::from(seed)));
+        }
+    }
+
+    /// Build the named chain through the builder, scrambling as it goes, and round-trip it.
+    ///
+    /// The chain is a list of `HeaderStack` method names, and the closures are written here rather
+    /// than at the call site: a closure written at the call site could not name the `seed` this
+    /// macro binds, macro hygiene being what it is, and every call site would then have to repeat
+    /// the same closure once per layer.
+    macro_rules! conform_chain {
+        ($name:ident, $($layer:ident),+ $(,)?) => {
+            #[test]
+            fn $name() {
+                bolero::check!().with_type().for_each(|seed: &u8| {
+                    let seed = *seed;
+                    let built = HeaderStack::new()
+                        $(.$layer(|l| l.scramble(seed)))+
+                        .build_headers();
+                    let headers = built.unwrap_or_else(|e| {
+                        unreachable!("a blank {} chain does not overflow: {e:?}", stringify!($name))
+                    });
+                    parse_back_test(&headers);
+                });
+            }
+        };
+    }
+
+    // Seventeen chains, chosen to cover all thirty-two unreached transitions between them. Three
+    // extension headers is the ceiling -- `MAX_NET_EXTENSIONS` -- so the deeper regions of the graph
+    // have to be reached by several chains rather than one long one.
+    conform_chain!(
+        double_tag_then_three_extensions,
+        eth,
+        vlan,
+        vlan,
+        ipv6,
+        dest_opts,
+        routing,
+        fragment,
+        tcp
+    );
+    conform_chain!(
+        hop_by_hop_routing_dest_opts,
+        eth,
+        ipv6,
+        hop_by_hop,
+        routing,
+        dest_opts,
+        udp
+    );
+    conform_chain!(
+        routing_fragment_auth,
+        eth,
+        ipv6,
+        routing,
+        fragment,
+        ipv6_auth,
+        tcp
+    );
+    conform_chain!(
+        fragment_then_dest_opts,
+        eth,
+        ipv6,
+        fragment,
+        dest_opts,
+        icmp6
+    );
+    conform_chain!(
+        hop_by_hop_then_fragment,
+        eth,
+        ipv6,
+        hop_by_hop,
+        fragment,
+        udp
+    );
+    conform_chain!(
+        dest_opts_then_fragment,
+        eth,
+        ipv6,
+        dest_opts,
+        fragment,
+        icmp6
+    );
+    conform_chain!(auth_then_dest_opts, eth, ipv6, ipv6_auth, dest_opts, udp);
+    conform_chain!(
+        hop_by_hop_then_auth,
+        eth,
+        ipv6,
+        hop_by_hop,
+        ipv6_auth,
+        icmp6
+    );
+    conform_chain!(dest_opts_then_auth, eth, ipv6, dest_opts, ipv6_auth, tcp);
+    conform_chain!(routing_then_auth, eth, ipv6, routing, ipv6_auth, udp);
+    conform_chain!(hop_by_hop_then_udp, eth, ipv6, hop_by_hop, udp);
+    conform_chain!(routing_then_udp, eth, ipv6, routing, udp);
+    conform_chain!(
+        hop_by_hop_then_routing_then_tcp,
+        eth,
+        ipv6,
+        hop_by_hop,
+        routing,
+        tcp
+    );
+    conform_chain!(hop_by_hop_then_icmp6, eth, ipv6, hop_by_hop, icmp6);
+    conform_chain!(routing_then_icmp6, eth, ipv6, routing, icmp6);
+    // The IPv4 authentication header is the only extension that belongs on a v4 packet.
+    conform_chain!(v4_auth_then_udp, eth, ipv4, ipv4_auth, udp);
+    conform_chain!(v4_auth_then_icmp4, eth, ipv4, ipv4_auth, icmp4);
+}
