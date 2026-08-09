@@ -685,6 +685,7 @@ pub mod contract {
                         transport: Some(Transport::Icmp4(icmp4)),
                         udp_encap: None,
                         embedded_ip: Some(Box::new(embedded_ip)),
+                        lldp: None,
                     }
                 }
                 CommonEthType::Ipv6 => {
@@ -703,6 +704,7 @@ pub mod contract {
                         transport: Some(Transport::Icmp6(icmp6)),
                         udp_encap: None,
                         embedded_ip: Some(Box::new(embedded_ip)),
+                        lldp: None,
                     }
                 }
             };
@@ -1020,6 +1022,7 @@ mod qos_roundtrip_tests {
             transport: None,
             udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
             embedded_ip: None,
+            lldp: None,
         };
         VxlanEncap::new(headers).unwrap()
     }
@@ -1042,6 +1045,7 @@ mod qos_roundtrip_tests {
             transport: None,
             udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
             embedded_ip: None,
+            lldp: None,
         };
         VxlanEncap::new(headers).unwrap()
     }
@@ -1309,6 +1313,7 @@ mod padding_tests {
             transport: None,
             udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(42).unwrap()))),
             embedded_ip: None,
+            lldp: None,
         };
         VxlanEncap::new(headers).unwrap_or_else(|e| unreachable!("{e:?}"))
     }
