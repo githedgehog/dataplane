@@ -568,8 +568,15 @@ mod conform_properties {
     use crate::eth::ethtype::EthType;
     use crate::headers::builder::HeaderStack;
     use crate::headers::test::parse_back_test;
-    use crate::icmp4::Icmp4;
-    use crate::icmp6::Icmp6;
+    use crate::headers::{Headers, Transport};
+    use crate::icmp4::{
+        Icmp4, Icmp4DestUnreachable, Icmp4EchoReply, Icmp4EchoRequest, Icmp4ParamProblem,
+        Icmp4Redirect, Icmp4TimeExceeded, Icmp4Type,
+    };
+    use crate::icmp6::{
+        Icmp6, Icmp6DestUnreachable, Icmp6EchoReply, Icmp6EchoRequest, Icmp6PacketTooBig,
+        Icmp6ParamProblem, Icmp6TimeExceeded, Icmp6Type,
+    };
     use crate::ip::NextHeader;
     use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
     use crate::ipv4::Ipv4;
@@ -606,7 +613,45 @@ mod conform_properties {
     scramble_next_header!(
         Ipv4, Ipv6, HopByHop, DestOpts, Routing, Fragment, Ipv4Auth, Ipv6Auth
     );
-    scramble_leaf!(Tcp, Udp, Icmp4, Icmp6);
+    scramble_leaf!(Tcp, Udp);
+    // The ICMP subtypes are the only layers that can sit on top of an ICMP header, and nothing sits
+    // on top of them.
+    scramble_leaf!(
+        Icmp4DestUnreachable,
+        Icmp4Redirect,
+        Icmp4TimeExceeded,
+        Icmp4ParamProblem,
+        Icmp4EchoRequest,
+        Icmp4EchoReply,
+        Icmp6DestUnreachable,
+        Icmp6PacketTooBig,
+        Icmp6TimeExceeded,
+        Icmp6ParamProblem,
+        Icmp6EchoRequest,
+        Icmp6EchoReply,
+    );
+
+    // Use experimental ICMP types that remain `Unknown` after deparse and parse. A fuzzed type could
+    // accidentally name a known subtype and fail independently of `conform`.
+    impl Scramble for Icmp4 {
+        fn scramble(&mut self, seed: u8) {
+            self.set_type(crate::icmp4::Icmp4Type::Unknown {
+                type_u8: 253,
+                code_u8: seed,
+                bytes5to8: [seed; 4],
+            });
+        }
+    }
+
+    impl Scramble for Icmp6 {
+        fn scramble(&mut self, seed: u8) {
+            self.set_type(crate::icmp6::Icmp6Type::Unknown {
+                type_u8: 200,
+                code_u8: seed,
+                bytes5to8: [seed; 4],
+            });
+        }
+    }
 
     impl Scramble for Eth {
         fn scramble(&mut self, seed: u8) {
@@ -623,6 +668,12 @@ mod conform_properties {
     /// Build and round-trip a named `HeaderStack` chain, scrambling each layer before stacking it.
     macro_rules! conform_chain {
         ($name:ident, $($layer:ident),+ $(,)?) => {
+            conform_chain!(@build $name, |_| {}, $($layer),+);
+        };
+        (specialized $name:ident, $($layer:ident),+ $(,)?) => {
+            conform_chain!(@build $name, icmp_type_was_specialized, $($layer),+);
+        };
+        (@build $name:ident, $check:expr, $($layer:ident),+) => {
             #[test]
             fn $name() {
                 bolero::check!().with_type().for_each(|seed: &u8| {
@@ -634,9 +685,25 @@ mod conform_properties {
                         unreachable!("a blank {} chain does not overflow: {e:?}", stringify!($name))
                     });
                     parse_back_test(&headers);
+                    $check(&headers);
                 });
             }
         };
+    }
+
+    /// Verify subtype chains replace the well-formed scrambled ICMP type during installation.
+    fn icmp_type_was_specialized(headers: &Headers) {
+        match headers.transport() {
+            Some(Transport::Icmp4(icmp)) => assert!(
+                !matches!(icmp.icmp_type(), Icmp4Type::Unknown { type_u8: 253, .. }),
+                "the scrambled ICMPv4 type survived the build, so nothing specialized it"
+            ),
+            Some(Transport::Icmp6(icmp)) => assert!(
+                !matches!(icmp.icmp_type(), Icmp6Type::Unknown { type_u8: 200, .. }),
+                "the scrambled ICMPv6 type survived the build, so nothing specialized it"
+            ),
+            other => unreachable!("a subtype chain builds an ICMP transport, got {other:?}"),
+        }
     }
 
     // Cover the conformance graph with chains no deeper than `MAX_NET_EXTENSIONS`.
@@ -719,4 +786,40 @@ mod conform_properties {
     // The IPv4 authentication header is the only extension that belongs on a v4 packet.
     conform_chain!(v4_auth_then_udp, eth, ipv4, ipv4_auth, udp);
     conform_chain!(v4_auth_then_icmp4, eth, ipv4, ipv4_auth, icmp4);
+
+    // Exercise every ICMP subtype expansion; macro-level coverage does not distinguish them.
+    conform_chain!(specialized icmp4_dest_unreachable, eth, ipv4, icmp4, dest_unreachable);
+    conform_chain!(specialized icmp4_redirect, eth, ipv4, icmp4, redirect);
+    conform_chain!(specialized icmp4_time_exceeded, eth, ipv4, icmp4, time_exceeded);
+    conform_chain!(specialized icmp4_param_problem, eth, ipv4, icmp4, param_problem);
+    conform_chain!(specialized icmp4_echo_request, eth, ipv4, icmp4, echo_request);
+    conform_chain!(specialized icmp4_echo_reply, eth, ipv4, icmp4, echo_reply);
+    conform_chain!(specialized icmp6_dest_unreachable, eth, ipv6, icmp6, dest_unreachable6);
+    conform_chain!(specialized icmp6_packet_too_big, eth, ipv6, icmp6, packet_too_big6);
+    conform_chain!(specialized icmp6_time_exceeded, eth, ipv6, icmp6, time_exceeded6);
+    conform_chain!(specialized icmp6_param_problem, eth, ipv6, icmp6, param_problem6);
+    conform_chain!(specialized icmp6_echo_request, eth, ipv6, icmp6, echo_request6);
+    conform_chain!(specialized icmp6_echo_reply, eth, ipv6, icmp6, echo_reply6);
+
+    /// Verify that installing a customized subtype wins over `conform`'s blank value.
+    #[test]
+    fn a_customized_subtype_survives_the_build() {
+        let headers = HeaderStack::new()
+            .eth(|l| l.scramble(0))
+            .ipv4(|l| l.scramble(0))
+            .icmp4(|l| l.scramble(0))
+            .dest_unreachable(|d| *d = Icmp4DestUnreachable::Port)
+            .build_headers()
+            .unwrap_or_else(|e| unreachable!("a blank chain does not overflow: {e:?}"));
+
+        let Some(Transport::Icmp4(icmp)) = headers.transport() else {
+            unreachable!("the chain builds an ICMPv4 transport")
+        };
+        assert_eq!(
+            icmp.icmp_type(),
+            Icmp4Type::DestUnreachable(Icmp4DestUnreachable::Port),
+            "the code the caller chose did not reach the built packet"
+        );
+        parse_back_test(&headers);
+    }
 }
