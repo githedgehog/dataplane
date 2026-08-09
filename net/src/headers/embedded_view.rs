@@ -1285,6 +1285,52 @@ mod tests {
         assert!(matches::<(&Ipv4, &TruncatedTcp)>(e));
     }
 
+    /// An ICMP error quoting an ICMP packet, which the builder had never been asked to assemble.
+    ///
+    /// `EmbeddedAssembler::icmp4` and `::icmp6` were the two inner-transport methods no test called,
+    /// and with them the `EmbeddedTransport::Icmp4 => NextHeader::ICMP` arm of the fixup that sets
+    /// the quoted packet's protocol field. A ping that draws a destination-unreachable is the
+    /// ordinary way to produce one, so the gap was in the tests rather than in the scenario.
+    ///
+    /// The inner protocol number is checked directly: `fixup_embedded` is what writes it, the shape
+    /// match below would pass without it, and a quoted packet whose IP header disagrees with the
+    /// transport it carries is exactly what a peer cannot parse.
+    #[test]
+    fn icmp4_quoted_inside_an_icmp4_error() {
+        use crate::headers::builder::Blank;
+        use crate::icmp4::Icmp4;
+        use crate::ip::NextHeader;
+        let h = icmp4_with_embedded(|a| a.ipv4(|_| {}).icmp4(Icmp4::blank()));
+        let e = h.embedded_ip().expect("embedded must be present");
+        assert!(matches::<(&Ipv4, &TruncatedIcmp4)>(e));
+        let Some(Net::Ipv4(ip)) = e.net() else {
+            unreachable!("the quoted packet carries an IPv4 header")
+        };
+        assert_eq!(
+            ip.next_header(),
+            NextHeader::ICMP,
+            "the quoted IP header does not name the transport it carries"
+        );
+    }
+
+    #[test]
+    fn icmp6_quoted_inside_an_icmp6_error() {
+        use crate::headers::builder::Blank;
+        use crate::icmp6::Icmp6;
+        use crate::ip::NextHeader;
+        let h = icmp6_with_embedded(|a| a.ipv6(|_| {}).icmp6(Icmp6::blank()));
+        let e = h.embedded_ip().expect("embedded must be present");
+        assert!(matches::<(&Ipv6, &TruncatedIcmp6)>(e));
+        let Some(Net::Ipv6(ip)) = e.net() else {
+            unreachable!("the quoted packet carries an IPv6 header")
+        };
+        assert_eq!(
+            ip.next_header(),
+            NextHeader::ICMP6,
+            "the quoted IP header does not name the transport it carries"
+        );
+    }
+
     #[test]
     fn ipv6_truncated_udp_matches_full_inner_packet() {
         use crate::udp::UdpPort;
