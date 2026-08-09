@@ -2055,6 +2055,7 @@ dependencies = [
  "rapidhash",
  "rkyv",
  "serde",
+ "serde_json",
  "static_assertions",
  "strum",
  "strum_macros",

@@ -46,4 +46,5 @@ tracing = { workspace = true }
 clock = { workspace = true, features = ["virtual"] }
 ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
