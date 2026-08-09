@@ -10,8 +10,6 @@ use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
-use lpm::prefix::PortRange;
-use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
@@ -258,17 +256,12 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
     fn new(
         ip: I,
         ip_allocator: IpAllocator<I>,
-        reserved_port_range: Option<PortRange>,
         randomize: bool,
         exclude_wellknown_ports: bool,
     ) -> Self {
         Self {
             ip,
-            port_allocator: port_alloc::PortAllocator::new(
-                reserved_port_range,
-                randomize,
-                exclude_wellknown_ports,
-            ),
+            port_allocator: port_alloc::PortAllocator::new(randomize, exclude_wellknown_ports),
             ip_allocator,
         }
     }
@@ -333,17 +326,12 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
-    reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
     exclude_wellknown_ports: bool,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
     /// Build a pool over one disjoint public region.
-    pub(crate) fn for_range(
-        range: AddrInterval,
-        reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
-        exclude_wellknown_ports: bool,
-    ) -> Self {
+    pub(crate) fn for_range(range: AddrInterval, exclude_wellknown_ports: bool) -> Self {
         // IPv6 uses offsets from the region start because its addresses do not fit in the bitmap.
         let bitmap_mapping = BTreeMap::from([(0u32, range.start)]);
         let reverse_bitmap_mapping = BTreeMap::from([(range.start, 0u32)]);
@@ -364,7 +352,6 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
-            reserved_prefixes_ports,
             exclude_wellknown_ports,
         }
     }
@@ -389,18 +376,6 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.in_use.iter()
     }
 
-    // Used for Display
-    pub(crate) fn reserved_prefixes_ports(
-        &self,
-    ) -> Option<impl Iterator<Item = (IpRange, PortRange)>> {
-        Some(
-            self.reserved_prefixes_ports
-                .as_ref()?
-                .iter()
-                .map(|(&r, &p)| (r, p)),
-        )
-    }
-
     fn use_new_ip(
         &mut self,
         ip_allocator: IpAllocator<I>,
@@ -411,16 +386,9 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
 
-        // Check if the IP is in a reserved prefix, retrieve the reserved port range if any
-        let reserved_port_range = self
-            .reserved_prefixes_ports
-            .as_ref()
-            .and_then(|ranges| ranges.lookup(&ip.to_ip_addr()).map(|(_, range)| *range));
-
         Ok(AllocatedIp::new(
             ip,
             ip_allocator,
-            reserved_port_range,
             randomize,
             self.exclude_wellknown_ports,
         ))
@@ -473,10 +441,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         let arc_ip = Arc::new(AllocatedIp::new(
             ip,
             ip_allocator,
-            None,
             randomize,
-            // Keep the low-port exclusion policy for explicitly reserved IPs as well, so
-            // reserve() follows the same TCP/UDP allocation rules as allocate().
             self.exclude_wellknown_ports,
         ));
         self.add_in_use(&arc_ip);

@@ -29,7 +29,6 @@ use concurrency::thread;
 // `spawn_scoped` is inherent on std's `Builder`, but supplied by `BuilderExt` under shuttle
 #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
 use concurrency::thread::BuilderExt;
-use lpm::prefix::PrefixPortsSet;
 use net::ip::NextHeader;
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
@@ -203,7 +202,6 @@ impl Scenario {
                         AddrInterval::new(BASE + start, BASE + end)
                     })
                     .collect(),
-                reserved: PrefixPortsSet::new(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect()
@@ -382,7 +380,6 @@ fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
         let specs = vec![PoolSpec {
             // One address, so the flow that ends is the last holder of the one being printed.
             public_ranges: vec![AddrInterval::new(BASE, BASE)],
-            reserved: PrefixPortsSet::new(),
             idle_timeout: IDLE_TIMEOUT,
         }];
         let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(

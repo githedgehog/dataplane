@@ -8,6 +8,7 @@
 #![cfg(all(test, not(miri)))]
 
 use super::*;
+use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::portfw::{PortForwarder, PortFwTableWriter};
 use crate::static_nat::NatTablesWriter;
@@ -105,19 +106,25 @@ fn setup_masq_pipeline(
     let static_nat = StaticNat::with_reader("static-NAT-1", static_nat_writer.get_reader());
     pipeline = pipeline.add_stage(static_nat);
 
+    let mut allocator = NatAllocatorWriter::new();
+
     // Port forwarding
     let mut portfw_writer = PortFwTableWriter::new();
     portfw_writer
         .update_from_vpc_table(overlay.vpc_table())
         .unwrap();
-    let portfw = PortForwarder::new("port-forwarder", portfw_writer.reader(), flow_table.clone());
+    let portfw = PortForwarder::new(
+        "port-forwarder",
+        portfw_writer.reader(),
+        flow_table.clone(),
+        allocator.get_reader(),
+    );
     if let Some(table) = portfw_writer.enter() {
         println!("{}", table.as_ref());
     }
     pipeline = pipeline.add_stage(portfw);
 
     // Masquerade
-    let mut allocator = NatAllocatorWriter::new();
     let masquerade = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
     let masquerade_config = MasqueradeConfig::new(overlay.vpc_table());
     allocator.update_nat_allocator(masquerade_config, 1, &flow_table);
@@ -134,6 +141,105 @@ fn setup_masq_pipeline(
         portfw_writer,
         allocator,
     )
+}
+
+fn build_overlapping_masquerade_and_port_forward() -> ValidatedOverlay {
+    let mut vpc_table = VpcTable::new();
+    vpc_table
+        .add(Vpc::new("external", "VPC01", 100).unwrap())
+        .unwrap();
+    vpc_table
+        .add(Vpc::new("internal", "VPC02", 200).unwrap())
+        .unwrap();
+
+    let masquerade = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("192.168.0.0/24".into())
+        .as_range("5.6.7.8/32".into())
+        .unwrap();
+    let port_forward = VpcExpose::empty()
+        .make_port_forwarding(None, None)
+        .unwrap()
+        .ip(pwp("192.168.0.8/32", 8000, 8000))
+        .as_range(pwp("5.6.7.8/32", 1024, 1024))
+        .unwrap();
+
+    let mut peerings = VpcPeeringTable::new();
+    peerings
+        .add(VpcPeering::new(
+            "external--internal",
+            VpcManifest::with_exposes("external", vec![VpcExpose::empty().ip("1.2.3.0/24".into())]),
+            VpcManifest::with_exposes("internal", vec![masquerade, port_forward]),
+            "default".into(),
+        ))
+        .unwrap();
+
+    Overlay::new(vpc_table, peerings).validate().unwrap()
+}
+
+#[tokio::test]
+#[dpdk::with_eal]
+async fn inactive_port_forward_does_not_reduce_masquerade_space() {
+    let overlay = build_overlapping_masquerade_and_port_forward();
+    let (mut pipeline, flow_table, _flow_filter, _static_nat, _portfw, mut allocator) =
+        setup_masq_pipeline(&overlay);
+    allocator.update_nat_allocator(
+        MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+        2,
+        &flow_table,
+    );
+
+    let packet = build_packet("192.168.0.9", "1.2.3.10", 4000, 9000, vni(200));
+    let output: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    let output = output.first().expect("masquerade should accept the flow");
+    assert_eq!(output.ip_source(), Some(addr("5.6.7.8")));
+    assert_eq!(output.transport_src_port().unwrap().get(), 1024);
+}
+
+#[tokio::test]
+#[dpdk::with_eal]
+async fn active_port_forward_reserves_its_public_tuple() {
+    let overlay = build_overlapping_masquerade_and_port_forward();
+    let (mut pipeline, flow_table, _flow_filter, _static_nat, _portfw, mut allocator) =
+        setup_masq_pipeline(&overlay);
+    allocator.update_nat_allocator(
+        MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+        2,
+        &flow_table,
+    );
+
+    for (client, port) in [("1.2.3.4", 5000), ("1.2.3.5", 5001)] {
+        let packet = build_packet(client, "5.6.7.8", port, 1024, vni(100));
+        let output: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+        let output = output
+            .first()
+            .expect("port forwarding should accept the flow");
+        assert_eq!(output.ip_destination(), Some(addr("192.168.0.8")));
+        assert_eq!(output.transport_dst_port().unwrap().get(), 8000);
+    }
+
+    let tuple_is_reserved = |allocator: &NatAllocatorWriter| {
+        matches!(
+            allocator.get_reader().get().unwrap().reserve_port(
+                NextHeader::UDP,
+                vni(200).into(),
+                vni(100).into(),
+                addr("192.168.0.9"),
+                addr("5.6.7.8"),
+                NatPort::new_port_checked(1024).unwrap(),
+            ),
+            Err(AllocatorError::PortReservationFailed(1024))
+        )
+    };
+    assert!(tuple_is_reserved(&allocator));
+
+    allocator.update_nat_allocator(
+        MasqueradeConfig::new(overlay.vpc_table()).set_randomize(true),
+        3,
+        &flow_table,
+    );
+    assert!(tuple_is_reserved(&allocator));
 }
 
 #[tokio::test]

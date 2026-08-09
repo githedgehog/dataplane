@@ -355,9 +355,13 @@ mod context {
 
 mod tests {
     use super::context::*;
+    use crate::NatPort;
+    use crate::masquerade::allocation::AllocatorError;
     use concurrency::sync::Arc;
     use concurrency::thread;
     use net::ip::NextHeader;
+    use std::net::IpAddr;
+    use std::num::NonZero;
 
     #[allow(dead_code)]
     pub(super) fn concurrent_allocations() {
@@ -403,6 +407,66 @@ mod tests {
         .get_pool_clone_for_tests();
         assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
         assert!(in_use.front().unwrap().upgrade().is_none()); // Weak references in list no longer resolve
+    }
+
+    #[test]
+    fn port_forward_flows_share_and_release_a_public_tuple() {
+        let allocator = build_allocator();
+        let public_ip = IpAddr::V4(addr_v4("10.1.0.0"));
+        let public_port = NonZero::new(1024).unwrap();
+
+        let first = allocator
+            .reserve_port_forward(NextHeader::TCP, vpcd2(), public_ip, public_port)
+            .unwrap()
+            .expect("the tuple overlaps a masquerade pool");
+        let second = allocator
+            .reserve_port_forward(NextHeader::TCP, vpcd2(), public_ip, public_port)
+            .unwrap()
+            .expect("the tuple overlaps a masquerade pool");
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let port = NatPort::new_port(public_port);
+        match allocator.reserve_port(
+            NextHeader::TCP,
+            vpcd1(),
+            vpcd2(),
+            ipaddr("1.1.0.1"),
+            public_ip,
+            port,
+        ) {
+            Err(AllocatorError::PortReservationFailed(blocked)) => {
+                assert_eq!(blocked, public_port.get());
+            }
+            other => panic!("a live port-forward lease must block the reservation, got {other:?}"),
+        }
+
+        drop((first, second));
+        assert!(
+            allocator
+                .reserve_port(
+                    NextHeader::TCP,
+                    vpcd1(),
+                    vpcd2(),
+                    ipaddr("1.1.0.1"),
+                    public_ip,
+                    port,
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn well_known_port_forwards_need_no_lease() {
+        let allocator = build_allocator();
+        let lease = allocator
+            .reserve_port_forward(
+                NextHeader::TCP,
+                vpcd2(),
+                ipaddr("10.1.0.0"),
+                NonZero::new(80).unwrap(),
+            )
+            .unwrap();
+        assert!(lease.is_none());
     }
 }
 
