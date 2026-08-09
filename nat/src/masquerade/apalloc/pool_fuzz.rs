@@ -14,7 +14,6 @@ use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
-use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -77,7 +76,6 @@ impl Config {
             .into_iter()
             .map(|public_ranges| PoolSpec {
                 public_ranges,
-                reserved: PrefixPortsSet::new(),
                 idle_timeout: IDLE_TIMEOUT,
             })
             .collect()
@@ -243,40 +241,6 @@ fn re_reservation_after_a_config_change_is_honoured() {
         });
 }
 
-/// Falling through to the next region is what makes an expose's several regions behave as one
-/// pool. Only exhaustion may do it: any other error is about the allocator rather than about how
-/// full a region is, and a later region's success would bury it.
-///
-/// Exhausting a region by allocating from it would take every port of every address it holds, so
-/// this reserves them instead, which reaches the same state in one step.
-#[test]
-fn an_exhausted_region_falls_through_to_the_next() {
-    // Not adjacent, or the two would merge into a single region.
-    let full = BASE;
-    let free = BASE + 4;
-
-    let every_port = PrefixWithOptionalPorts::new(
-        "10.1.0.0/32".into(),
-        Some(PortRange::new(1024, u16::MAX).unwrap_or_else(|_| unreachable!())),
-    );
-
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(full, full), AddrInterval::new(free, free)],
-        reserved: [every_port].into_iter().collect(),
-        idle_timeout: IDLE_TIMEOUT,
-    }];
-
-    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
-    let allocation = pool_sets[0]
-        .allocate(false)
-        .expect("the second region has room, so allocation must succeed");
-    assert_eq!(
-        allocation.ip(),
-        Ipv4Addr::from(u32::try_from(free).unwrap_or_else(|_| unreachable!())),
-        "allocation did not fall through to the region with room"
-    );
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
@@ -291,7 +255,6 @@ fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
     // Far wider than the bitmap can index.
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(start, start + (1u128 << 40))],
-        reserved: PrefixPortsSet::new(),
         idle_timeout: IDLE_TIMEOUT,
     }];
     let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
@@ -321,7 +284,6 @@ fn ipv6_pools_allocate_within_their_range() {
     let end = start + 3;
     let specs = vec![PoolSpec {
         public_ranges: vec![AddrInterval::new(start, end)],
-        reserved: PrefixPortsSet::new(),
         idle_timeout: IDLE_TIMEOUT,
     }];
     let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
@@ -344,186 +306,4 @@ fn ipv6_pools_allocate_within_their_range() {
         );
         held.push(allocation);
     }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Reserved ports
-///////////////////////////////////////////////////////////////////////////////
-
-/// A port range on one public address that port forwarding has claimed, and that masquerade must
-/// therefore not hand out.
-#[derive(Debug, Clone, Copy)]
-struct Reservation {
-    offset: u8,
-    port_lo: u16,
-    port_span: u16,
-}
-
-impl Reservation {
-    fn address(self) -> Ipv4Addr {
-        Ipv4Addr::from(
-            u32::try_from(BASE + u128::from(self.offset % 16)).unwrap_or_else(|_| unreachable!()),
-        )
-    }
-
-    fn ports(self) -> PortRange {
-        let lo = self.port_lo.max(1024);
-        let hi = lo.saturating_add(self.port_span);
-        PortRange::new(lo, hi).unwrap_or_else(|_| unreachable!())
-    }
-
-    fn covers(self, ip: Ipv4Addr, port: u16) -> bool {
-        let ports = self.ports();
-        self.address() == ip && port >= ports.start() && port <= ports.end()
-    }
-
-    fn as_prefix(self) -> PrefixWithOptionalPorts {
-        PrefixWithOptionalPorts::new(
-            format!("{}/32", self.address()).as_str().into(),
-            Some(self.ports()),
-        )
-    }
-}
-
-/// A config where exposes also carry port-forwarding claims on their public addresses.
-#[derive(Debug, Clone)]
-struct ReservedConfig {
-    config: Config,
-    reservations: Vec<Vec<Reservation>>,
-}
-
-impl TypeGenerator for ReservedConfig {
-    fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-        let config: Config = driver.produce()?;
-        let mut reservations = Vec::with_capacity(config.owner_count());
-        for _ in 0..config.owner_count() {
-            let count = usize::from(driver.produce::<u8>()? % 3);
-            let mut claims = Vec::with_capacity(count);
-            for _ in 0..count {
-                claims.push(Reservation {
-                    offset: driver.produce::<u8>()?,
-                    port_lo: driver.produce::<u16>()?,
-                    port_span: u16::from(driver.produce::<u8>()?),
-                });
-            }
-            reservations.push(claims);
-        }
-        Some(Self {
-            config,
-            reservations,
-        })
-    }
-}
-
-impl ReservedConfig {
-    fn pool_sets(&self) -> Vec<PoolSet<Ipv4Addr>> {
-        let specs: Vec<PoolSpec> = self
-            .config
-            .owner_ranges()
-            .into_iter()
-            .zip(&self.reservations)
-            .map(|(public_ranges, claims)| PoolSpec {
-                public_ranges,
-                reserved: claims.iter().map(|claim| claim.as_prefix()).collect(),
-                idle_timeout: IDLE_TIMEOUT,
-            })
-            .collect();
-        pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false)
-    }
-}
-
-/// Ports that port forwarding has claimed on a public address may not be handed out by
-/// masquerade, whichever expose is allocating.
-///
-/// A region is shared, so it has to honour the claims of every expose that owns it: a claim made
-/// through one expose still has to hold against an allocation made through another, or masquerade
-/// would hand out a port that port forwarding is statically mapping elsewhere.
-///
-/// # Ignored: this does not hold today
-///
-/// A pool keeps at most one reserved port range per public address, so several claims on one
-/// address collapse to whichever was recorded last and the rest are silently handed out. See
-/// [`several_claims_on_one_address_are_all_honoured`] for the minimal case, and the note there for
-/// the two places that need to change. Unignore both once they do.
-#[ignore = "a pool holds one reserved port range per address; see several_claims_on_one_address_are_all_honoured"]
-#[test]
-fn reserved_ports_are_never_allocated() {
-    bolero::check!()
-        .with_type()
-        .cloned()
-        .for_each(|reserved_config: ReservedConfig| {
-            let ranges = reserved_config.config.owner_ranges();
-            let pool_sets = reserved_config.pool_sets();
-
-            for (owner, allocation) in allocate_round_robin(&pool_sets, ALLOCATIONS) {
-                let ip = allocation.ip();
-                let port = allocation.port().as_u16();
-
-                // Every expose that declares this address shares the region it came from, so its
-                // claims apply to this allocation too.
-                for (claimant, claims) in reserved_config.reservations.iter().enumerate() {
-                    if !declares(&ranges[claimant], ip) {
-                        continue;
-                    }
-                    for claim in claims {
-                        assert!(
-                            !claim.covers(ip, port),
-                            "expose {owner} was allocated {ip}:{port}, which expose {claimant} \
-                             has claimed for port forwarding ({:?})",
-                            claim.ports()
-                        );
-                    }
-                }
-            }
-        });
-}
-
-/// The minimal shape behind [`reserved_ports_are_never_allocated`]: one public address carrying
-/// two port-forwarding claims.
-///
-/// # Ignored: this does not hold today
-///
-/// `build_reserved_prefixes_ports` records the claims in a `DisjointRangesBTreeMap` keyed by
-/// address range, so two claims on one address are inserted under the same key and the second
-/// replaces the first. Even with that fixed, `NatPool::use_new_ip` resolves a single
-/// `Option<PortRange>` per address and `PortAllocator` stores one `reserved_port_range`, so the
-/// data model cannot hold more than one claim per address either. Both need to take a set of
-/// ranges.
-///
-/// This is not a consequence of allocating from regions; the same collapse existed when each
-/// expose had its own pool. It stays latent in production only because the claims are currently
-/// computed from private prefixes and never match the public address they are looked up by, which
-/// is the separate defect noted on `find_masquerade_portfw_overlap`. Fixing that without fixing
-/// this would turn an inert path into a wrong one.
-#[ignore = "a pool holds one reserved port range per address, so the earlier claim is dropped"]
-#[test]
-fn several_claims_on_one_address_are_all_honoured() {
-    let address: u128 = BASE;
-    let claim = |start: u16, end: u16| {
-        PrefixWithOptionalPorts::new(
-            "10.1.0.0/32".into(),
-            Some(PortRange::new(start, end).unwrap_or_else(|_| unreachable!())),
-        )
-    };
-
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(address, address)],
-        reserved: [claim(1024, 1024), claim(2000, 2000)].into_iter().collect(),
-        idle_timeout: IDLE_TIMEOUT,
-    }];
-
-    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
-    let allocated: BTreeSet<u16> = allocate_round_robin(&pool_sets, 4)
-        .iter()
-        .map(|(_, allocation)| allocation.port().as_u16())
-        .collect();
-
-    assert!(
-        !allocated.contains(&1024),
-        "port 1024 was claimed for port forwarding but handed out: {allocated:?}"
-    );
-    assert!(
-        !allocated.contains(&2000),
-        "port 2000 was claimed for port forwarding but handed out: {allocated:?}"
-    );
 }

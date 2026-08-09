@@ -3,11 +3,17 @@
 
 #[cfg(test)]
 mod nf_test {
+    use crate::NatPort;
     use crate::common::NatFlowStatus;
+    use crate::masquerade::allocation::AllocatorError;
+    use crate::masquerade::apalloc::Allocation;
+    use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
-    use concurrency::sync::Arc;
-    use flow_entry::flow_table::{FlowLookup, FlowTable};
+    use concurrency::sync::{Arc, Weak};
+    use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+    use flow_entry::flow_table::{FlowInfo, FlowLookup, FlowTable};
     use lpm::prefix::Prefix;
     use net::buffer::TestBuffer;
     use net::flows::FlowStatus;
@@ -17,6 +23,8 @@ mod nf_test {
     use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use pipeline::{DynPipeline, NetworkFunction};
+    use std::net::IpAddr;
+    use std::num::NonZero;
     use std::str::FromStr;
     use std::time::Duration;
     use tracing_test::traced_test;
@@ -129,6 +137,51 @@ mod nf_test {
         ruleset
     }
 
+    // Overlap the forwarded address with VPC-2's masquerade pool.
+    fn build_masquerade_vpc_table() -> ValidatedVpcTable {
+        let local = VpcManifest::with_exposes(
+            "VPC-2",
+            vec![
+                VpcExpose::empty()
+                    .make_masquerade(None)
+                    .unwrap()
+                    .ip("192.168.0.0/16".into())
+                    .as_range("70.71.72.0/24".into())
+                    .unwrap(),
+            ],
+        );
+        let remote =
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("10.0.0.0/24".into())]);
+
+        let vpc1 = Vpc::new("VPC-1", "11111", 2000).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "22222", 3000).unwrap();
+        vpc2.peerings.push(Peering {
+            name: "portfw_masquerade".into(),
+            local,
+            remote,
+            remote_id: "11111".try_into().unwrap(),
+            remote_vni: vpc1.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.validate().unwrap()
+    }
+
+    const RELEASE_POLLS: usize = 64;
+
+    fn lease_of(flow: &FlowInfo) -> Option<Arc<Allocation>> {
+        flow.locked
+            .read()
+            .port_fw_state
+            .as_ref()
+            .and_then(|state| state.extract_ref::<PortFwState>())
+            .and_then(|state| state.lease().cloned())
+    }
+
     // build a UDP packet to be port forwarded according to the port-forwarding table
     fn udp_packet_to_port_forward() -> Packet<TestBuffer> {
         let mut packet: Packet<TestBuffer> =
@@ -196,15 +249,20 @@ mod nf_test {
         }
     }
 
-    /// sets up a port-forwarding pipeline
-    fn setup_pipeline(
+    fn setup_pipeline_with_allocator(
         ruleset: &[PortFwEntry],
+        allocator: &NatAllocatorWriter,
     ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, PortFwTableWriter) {
         // build a pipeline with flow lookup + port forwarder
         let mut writer = PortFwTableWriter::new();
         let flow_table = Arc::new(FlowTable::default());
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
-        let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
+        let nf = PortForwarder::new(
+            "port-forwarder",
+            writer.reader(),
+            flow_table.clone(),
+            allocator.get_reader(),
+        );
         let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
             .add_stage(flow_lookup_nf)
             .add_stage(TestFlowFilter)
@@ -216,6 +274,13 @@ mod nf_test {
             println!("{}", table.as_ref());
         }
         (flow_table, pipeline, writer)
+    }
+
+    fn setup_pipeline(
+        ruleset: &[PortFwEntry],
+    ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, PortFwTableWriter) {
+        let allocator = NatAllocatorWriter::new();
+        setup_pipeline_with_allocator(ruleset, &allocator)
     }
 
     #[cfg_attr(not(emulated), traced_test)]
@@ -316,6 +381,79 @@ mod nf_test {
             get_pfw_flow_status(&output),
             Some(NatFlowStatus::Established)
         );
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[tokio::test]
+    async fn port_forwarded_tuple_holds_a_masquerade_lease() {
+        let ruleset = build_test_port_forwarding_ruleset();
+        let mut allocator = NatAllocatorWriter::new();
+        let (flow_table, mut pipeline, _writer) =
+            setup_pipeline_with_allocator(&ruleset, &allocator);
+        allocator.update_nat_allocator(
+            MasqueradeConfig::new(&build_masquerade_vpc_table()),
+            1,
+            &flow_table,
+        );
+
+        let output = process_packet(&mut pipeline, udp_packet_to_port_forward());
+        assert!(!output.is_done());
+        let reply = process_packet(&mut pipeline, build_reply(&output));
+
+        let one = reply
+            .meta()
+            .flow_info
+            .as_ref()
+            .expect("the reply matches the flow pair")
+            .clone();
+        let other = one
+            .related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .expect("the forwarded flow has a related flow");
+
+        let lease_one = lease_of(&one).expect("the forwarded tuple overlaps a masquerade pool");
+        let lease_other = lease_of(&other).expect("the forwarded tuple overlaps a masquerade pool");
+        assert!(
+            Arc::ptr_eq(&lease_one, &lease_other),
+            "both directions must share one lease"
+        );
+        let released = Arc::downgrade(&lease_one);
+        drop((lease_one, lease_other));
+
+        let nat = allocator
+            .get_reader()
+            .get()
+            .expect("allocator is installed");
+        let port = NatPort::new_port(NonZero::new(3053).unwrap());
+        let public: IpAddr = "70.71.72.73".parse().unwrap();
+        let private: IpAddr = "192.168.1.2".parse().unwrap();
+
+        match nat.reserve_port(NextHeader::UDP, vpcd2(), vpcd1(), private, public, port) {
+            Err(AllocatorError::PortReservationFailed(blocked)) => assert_eq!(blocked, 3053),
+            other => panic!("a live lease must block the reservation, got {other:?}"),
+        }
+
+        let keys = [*one.flowkey(), *other.flowkey()];
+        drop((reply, output, one, other, pipeline));
+        for key in &keys {
+            flow_table.remove(key).expect("the flow was in the table");
+        }
+
+        // Timer tasks retain flow state until cancellation is polled.
+        for _ in 0..RELEASE_POLLS {
+            if released.upgrade().is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            released.upgrade().is_none(),
+            "retiring both flows must release the lease",
+        );
+
+        nat.reserve_port(NextHeader::UDP, vpcd2(), vpcd1(), private, public, port)
+            .expect("the tuple is free once the forwarded flows are gone");
     }
 
     #[cfg_attr(not(emulated), traced_test)]

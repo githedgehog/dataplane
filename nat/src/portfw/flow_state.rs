@@ -6,7 +6,7 @@
 #![allow(clippy::single_match_else)]
 
 use net::buffer::PacketBufferMut;
-use net::flows::{ExtractRef, FlowStatus};
+use net::flows::{ExtractMut, ExtractRef, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -19,6 +19,8 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::FlowInfo;
 
 use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
+use crate::masquerade::allocation::AllocatorError;
+use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::portfw::PortFwEntry;
 use crate::portfw::protocol::next_flow_status;
 
@@ -26,33 +28,63 @@ use crate::portfw::protocol::next_flow_status;
 use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone)]
+pub(crate) struct PublicTuple {
+    ip: UnicastIpAddr,
+    port: NonZero<u16>,
+    peer_vpcd: VpcDiscriminant,
+    lease: Option<Arc<Allocation>>,
+}
+
+impl PublicTuple {
+    pub(crate) fn new(
+        ip: UnicastIpAddr,
+        port: NonZero<u16>,
+        peer_vpcd: VpcDiscriminant,
+        lease: Option<Arc<Allocation>>,
+    ) -> Self {
+        Self {
+            ip,
+            port,
+            peer_vpcd,
+            lease,
+        }
+    }
+
+    fn set_lease(&mut self, lease: Option<Arc<Allocation>>) {
+        self.lease = lease;
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PortFwState {
     pub(crate) action: NatAction,
     pub(crate) status: AtomicNatFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
+    public: PublicTuple,
     pub(crate) rule: Weak<PortFwEntry>,
 }
 impl PortFwState {
     #[must_use]
-    pub fn new_snat(
-        use_ip: UnicastIpAddr,
-        use_port: NonZero<u16>,
+    pub(crate) fn new_snat(
+        public: PublicTuple,
         rule: Weak<PortFwEntry>,
         status: AtomicNatFlowStatus,
     ) -> Self {
         Self {
             action: NatAction::SrcNat,
             status,
-            use_ip,
-            use_port,
+            use_ip: public.ip,
+            use_port: public.port,
+            public,
             rule,
         }
     }
     #[must_use]
-    pub fn new_dnat(
+    pub(crate) fn new_dnat(
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
+        public: PublicTuple,
         rule: Weak<PortFwEntry>,
         status: AtomicNatFlowStatus,
     ) -> Self {
@@ -61,6 +93,7 @@ impl PortFwState {
             status,
             use_ip,
             use_port,
+            public,
             rule,
         }
     }
@@ -75,6 +108,22 @@ impl PortFwState {
     #[must_use]
     pub fn use_port(&self) -> NonZero<u16> {
         self.use_port
+    }
+    #[must_use]
+    pub(crate) fn public_ip(&self) -> UnicastIpAddr {
+        self.public.ip
+    }
+    #[must_use]
+    pub(crate) fn public_port(&self) -> NonZero<u16> {
+        self.public.port
+    }
+    pub(crate) fn set_lease(&mut self, lease: Option<Arc<Allocation>>) {
+        self.public.set_lease(lease);
+    }
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn lease(&self) -> Option<&Arc<Allocation>> {
+        self.public.lease.as_ref()
     }
     #[must_use]
     pub fn rule(&self) -> &Weak<PortFwEntry> {
@@ -96,6 +145,52 @@ impl Display for PortFwState {
             None => write!(f, "        rule: removed"),
         }
     }
+}
+
+/// Update the public-tuple lease of a flow with port-forwarding state.
+pub(crate) fn update_port_forward_lease(
+    flow_info: &FlowInfo,
+    allocator: Option<&NatAllocator>,
+) -> Result<(), AllocatorError> {
+    let (public_ip, public_port, peer_vpcd) = {
+        let locked = flow_info.locked.read();
+        let Some(state) = locked
+            .port_fw_state
+            .as_ref()
+            .and_then(|state| state.extract_ref::<PortFwState>())
+        else {
+            return Ok(());
+        };
+        (
+            state.public_ip(),
+            state.public_port(),
+            state.public.peer_vpcd,
+        )
+    };
+
+    let lease = allocator
+        .map(|allocator| {
+            allocator.reserve_port_forward(
+                flow_info.flowkey().proto(),
+                peer_vpcd,
+                public_ip.inner(),
+                public_port,
+            )
+        })
+        .transpose()?
+        .flatten();
+
+    let mut locked = flow_info.locked.write();
+    let Some(state) = locked
+        .port_fw_state
+        .as_mut()
+        .and_then(|state| state.extract_mut::<PortFwState>())
+    else {
+        debug!("Port-forwarding state vanished while updating its lease");
+        return Ok(());
+    };
+    state.set_lease(lease);
+    Ok(())
 }
 
 // Build the flow keys for a port-forwarding flow
@@ -136,12 +231,14 @@ pub(crate) fn setup_forward_flow(
     entry: &Arc<PortFwEntry>,
     new_dst_ip: UnicastIpAddr,
     new_dst_port: NonZero<u16>,
+    public: PublicTuple,
 ) -> AtomicNatFlowStatus {
     // build port forwarding state for the forward flow
     let status = AtomicNatFlowStatus::new();
     let port_fw_state = PortFwState::new_dnat(
         new_dst_ip,
         new_dst_port,
+        public,
         Arc::downgrade(entry),
         status.clone(),
     );
@@ -160,12 +257,11 @@ pub(crate) fn setup_reverse_flow(
     reverse_key: &FlowKey,
     reverse_flow: &Arc<FlowInfo>,
     entry: &Arc<PortFwEntry>,
-    dst_ip: UnicastIpAddr,
-    dst_port: NonZero<u16>,
+    public: PublicTuple,
     status: AtomicNatFlowStatus,
 ) {
     // build port forwarding state for the REVERSE flow
-    let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
+    let port_fw_state = PortFwState::new_snat(public, Arc::downgrade(entry), status);
 
     // set the port forwarding state in the flow
     {

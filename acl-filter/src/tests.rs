@@ -935,6 +935,10 @@ mod end_to_end {
             static_nat_writer.get_reader(),
         ));
 
+        // Share the allocator between port forwarding and masquerade.
+        let mut allocator = NatAllocatorWriter::new();
+        allocator.update_nat_allocator(MasqueradeConfig::new(overlay.vpc_table()), 1, &flow_table);
+
         // Port forwarding
         let mut portfw_writer = PortFwTableWriter::new();
         portfw_writer
@@ -944,11 +948,10 @@ mod end_to_end {
             "port-forwarder",
             portfw_writer.reader(),
             flow_table.clone(),
+            allocator.get_reader(),
         ));
 
         // Masquerade (creates the related flow pair used by 'flow'-scoped replies)
-        let mut allocator = NatAllocatorWriter::new();
-        allocator.update_nat_allocator(MasqueradeConfig::new(overlay.vpc_table()), 1, &flow_table);
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),

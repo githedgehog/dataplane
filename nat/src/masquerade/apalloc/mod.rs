@@ -75,7 +75,8 @@ use crate::NatPort;
 use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use crate::masquerade::natip::NatIp;
-use concurrency::sync::atomic::{AtomicI64, Ordering};
+use concurrency::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use concurrency::sync::{Arc, RwLock, Weak};
 use config::GenId;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -198,6 +199,20 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         }
         self.0.insert(key, pool_set);
     }
+
+    fn public_allocator(
+        &self,
+        protocol: NextHeader,
+        dst_vpcd: VpcDiscriminant,
+        addr: J,
+    ) -> Option<&alloc::IpAllocator<J>> {
+        self.0
+            .iter()
+            .filter(|(key, _)| key.protocol == protocol && key.dst_vpcd == dst_vpcd)
+            .flat_map(|(_, pools)| pools.regions())
+            .find(|region| region.range().contains(addr.to_addr_bits()))
+            .map(alloc::PoolRegion::allocator)
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -238,6 +253,14 @@ impl Display for Allocation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PortForwardLeaseKey {
+    protocol: NextHeader,
+    peer_vpcd: VpcDiscriminant,
+    ip: IpAddr,
+    port: u16,
+}
+
 /// [`NatAllocator`] is the IP addresses and ports allocator for masquerade.
 ///
 /// Internally, it contains various bitmap-based IP pools, and each IP address allocated from these
@@ -249,6 +272,8 @@ pub struct NatAllocator {
     genid: AtomicI64,
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
+    port_forward_leases: RwLock<BTreeMap<PortForwardLeaseKey, Weak<Allocation>>>,
+    port_forward_lease_uses: AtomicUsize,
     randomize: bool,
 }
 
@@ -261,6 +286,8 @@ impl NatAllocator {
             genid: AtomicI64::new(genid),
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
+            port_forward_leases: RwLock::new(BTreeMap::new()),
+            port_forward_lease_uses: AtomicUsize::new(0),
             randomize: config.randomize(),
         };
         allocator.build_pools(&config);
@@ -281,6 +308,68 @@ impl NatAllocator {
     /// therefore kept this allocator
     pub(crate) fn set_genid(&self, genid: GenId) {
         self.genid.store(genid, Ordering::Relaxed);
+    }
+
+    /// Reserve a public tuple while port-forwarded flows use it.
+    ///
+    /// Several clients may use one forwarding rule, so they share one lease. A tuple outside the
+    /// masquerade pools, or in the well-known range masquerade already excludes, needs no lease.
+    pub(crate) fn reserve_port_forward(
+        &self,
+        protocol: NextHeader,
+        peer_vpcd: VpcDiscriminant,
+        ip: IpAddr,
+        port: std::num::NonZero<u16>,
+    ) -> Result<Option<Arc<Allocation>>, AllocatorError> {
+        if !matches!(protocol, NextHeader::TCP | NextHeader::UDP) {
+            return Err(AllocatorError::UnsupportedProtocol(protocol));
+        }
+        if port.get() < port_alloc::IANA_WELLKNOWN_PORT_LIMIT {
+            return Ok(None);
+        }
+
+        let key = PortForwardLeaseKey {
+            protocol,
+            peer_vpcd,
+            ip,
+            port: port.get(),
+        };
+        let mut leases = self.port_forward_leases.write();
+        if self
+            .port_forward_lease_uses
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(256)
+        {
+            leases.retain(|_, lease| lease.upgrade().is_some());
+        }
+        if let Some(existing) = leases.get(&key) {
+            match existing.upgrade() {
+                Some(lease) => return Ok(Some(lease)),
+                // Reservations may stop before the next stale-entry sweep.
+                None => {
+                    leases.remove(&key);
+                }
+            }
+        }
+
+        let nat_port = NatPort::new_port(port);
+        let allocation = match ip {
+            IpAddr::V4(ip) => {
+                let Some(pool) = self.pools_src44.public_allocator(protocol, peer_vpcd, ip) else {
+                    return Ok(None);
+                };
+                Allocation::V4(pool.reserve(ip, nat_port)?)
+            }
+            IpAddr::V6(ip) => {
+                let Some(pool) = self.pools_src66.public_allocator(protocol, peer_vpcd, ip) else {
+                    return Ok(None);
+                };
+                Allocation::V6(pool.reserve(ip, nat_port)?)
+            }
+        };
+        let lease = Arc::new(allocation);
+        leases.insert(key, Arc::downgrade(&lease));
+        Ok(Some(lease))
     }
 
     fn allocate_v4(

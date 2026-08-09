@@ -117,13 +117,6 @@ where
     I: NatIpWithBitmap + Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        if let Some(reserved) = self.reserved_prefixes_ports() {
-            writeln!(f, "reserved ranges:")?;
-            for (ips, ports) in reserved {
-                writeln!(with_indent!(f), "{ips}:{ports}")?;
-            }
-        }
-
         writeln!(f, "IP ranges in pool:")?;
         for range in self.ips_in_bitmap().map_err(|()| Error)? {
             writeln!(with_indent!(f), "{range}")?;
@@ -164,10 +157,6 @@ where
     I: NatIpWithBitmap + Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        if let Some(reserved) = self.reserved_port_range() {
-            writeln!(f, "reserved port range: {reserved}")?;
-        }
-
         writeln!(f, "allocated ports:")?;
         if !self.has_free_ports() {
             return writeln!(with_indent!(f), "[all ports allocated]");

@@ -84,23 +84,18 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     current_alloc_index: AtomicUsize,
     thread_blocks: ThreadPortMap,
     allocated_blocks: AllocatedPortBlockMap<I>,
-    reserved_port_range: Option<PortRange>,
     exclude_wellknown_ports: bool,
 }
 
 /// Ports 0..=1023 cover the IANA system/well-known range and should not be
 /// allocated by masquerade NAT for TCP or UDP.
-const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
+pub(super) const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
 
 /// Number of 256-port blocks covering the IANA well-known port range (0-1023).
 const IANA_WELLKNOWN_BLOCKS: u16 = IANA_WELLKNOWN_PORT_LIMIT / 256;
 
 impl<I: NatIpWithBitmap> PortAllocator<I> {
-    pub(crate) fn new(
-        reserved_port_range: Option<PortRange>,
-        randomize: bool,
-        exclude_wellknown_ports: bool,
-    ) -> Self {
+    pub(crate) fn new(randomize: bool, exclude_wellknown_ports: bool) -> Self {
         let mut base_ports = (0..=255).collect::<Vec<_>>();
 
         // Shuffle the list of port blocks for the port allocator. This way, we can pick blocks in a
@@ -132,17 +127,13 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             current_alloc_index: AtomicUsize::new(0),
             thread_blocks: ThreadPortMap::new(),
             allocated_blocks: AllocatedPortBlockMap::new(),
-            reserved_port_range,
             exclude_wellknown_ports,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn new_no_randomness(
-        reserved_port_range: Option<PortRange>,
-        exclude_wellknown_ports: bool,
-    ) -> Self {
-        Self::new(reserved_port_range, false, exclude_wellknown_ports)
+    pub(crate) fn new_no_randomness(exclude_wellknown_ports: bool) -> Self {
+        Self::new(false, exclude_wellknown_ports)
     }
 
     #[concurrency_mode(std)]
@@ -212,8 +203,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         let (index, block) = self
             .cycle_blocks()
             .find(|(_, block)| {
-                // Find the first block for which the atomic compare_exchange succeeds
-                if block
+                block
                     .free
                     .compare_exchange(
                         true,
@@ -221,30 +211,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
                         concurrency::sync::atomic::Ordering::Relaxed,
                         concurrency::sync::atomic::Ordering::Relaxed,
                     )
-                    .is_err()
-                {
-                    return false;
-                }
-
-                // Check if this block is fully contained in the reserved range
-                if let Some(reserved_range) = self.reserved_port_range
-                    && reserved_range.len() >= 255
-                {
-                    // Corner case: reserved_range is 1-255+, but 0 cannot be allocated so
-                    // reserved_range effectively renders the block unusable (except maybe for ICMP
-                    // but never mind)
-                    let adjusted_reserved_range = if reserved_range.start() == 1 {
-                        PortRange::new(0, reserved_range.end()).unwrap_or_else(|_| unreachable!())
-                    } else {
-                        reserved_range
-                    };
-
-                    let block_range = PortRange::from(*block);
-                    if adjusted_reserved_range.covers(block_range) {
-                        return false;
-                    }
-                }
-                true
+                    .is_ok()
             })
             .ok_or(AllocatorError::NoPortBlock)?;
         Ok((index, block.to_port_number()))
@@ -268,20 +235,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
-        let reserved_port_range_for_block = self.reserved_port_range.and_then(|range| {
-            range.intersection(
-                PortRange::new(base_port_index, base_port_index + 255)
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-        });
-
-        AllocatedPortBlock::new(
-            ip,
-            index,
-            base_port_index,
-            reserved_port_range_for_block,
-            allow_null,
-        )
+        AllocatedPortBlock::new(ip, index, base_port_index, allow_null)
     }
 
     pub(crate) fn allocate_port(
@@ -344,7 +298,6 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             ip,
             index,
             (port.as_u16() / 256) * 256, // port block base index, discard offset within block
-            None,
             allow_null,
         )?);
         self.allocated_blocks
@@ -390,10 +343,6 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         block.reserve_port_from_block(port)
     }
 
-    pub(crate) fn reserved_port_range(&self) -> Option<PortRange> {
-        self.reserved_port_range
-    }
-
     // Used for Display
     pub(crate) fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
         self.allocated_blocks.allocated_port_ranges()
@@ -426,7 +375,6 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         ip: Arc<AllocatedIp<I>>,
         index: usize,
         base_port_idx: u16,
-        reserved_port_range: Option<PortRange>,
         allow_null: bool,
     ) -> Result<Self, AllocatorError> {
         let block = Self {
@@ -435,30 +383,11 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             index,
             usage_bitmap: Mutex::new(Bitmap256::new()),
         };
-        // Port 0 may be reserved, in which case we don't want to use it, so we mark it as not free.
-        let reserve_zero = !allow_null && block.base_port_idx == 0;
-        let reserve_range = reserved_port_range.is_some();
-        if reserve_zero || reserve_range {
+        if !allow_null && block.base_port_idx == 0 {
             let mut mutex_guard = block.usage_bitmap.lock();
-            if reserve_zero {
-                mutex_guard.reserve_port_from_bitmap(0).map_err(|()| {
-                    AllocatorError::InternalIssue(
-                        "Failed to reserve port 0 from new block".to_string(),
-                    )
-                })?;
-            }
-            if reserve_range {
-                mutex_guard
-                    .reserve_port_range_from_bitmap(
-                        // We just check that reserved_port_range.is_some()
-                        reserved_port_range.unwrap_or_else(|| unreachable!()),
-                    )
-                    .map_err(|()| {
-                        AllocatorError::InternalIssue(
-                            "Failed to reserve port range from new block".to_string(),
-                        )
-                    })?;
-            }
+            mutex_guard.reserve_port_from_bitmap(0).map_err(|()| {
+                AllocatorError::InternalIssue("Failed to reserve port 0 from new block".to_string())
+            })?;
         }
         Ok(block)
     }
@@ -874,64 +803,6 @@ impl Bitmap256 {
         self.set_bitmap_value(port_in_block, true)
     }
 
-    fn set_half_bitmap_range(
-        half: &mut u128,
-        start_offset: u8,
-        end_offset: u8,
-        value: u128,
-    ) -> Result<(), ()> {
-        if start_offset > 127 || end_offset > 127 || start_offset > end_offset {
-            return Err(());
-        }
-        let mask = if end_offset - start_offset == 127 {
-            u128::MAX
-        } else {
-            ((1u128 << (end_offset - start_offset + 1)) - 1) << start_offset
-        };
-        match value {
-            0 => {
-                *half &= !mask;
-            }
-            1 => {
-                *half |= mask;
-            }
-            _ => return Err(()),
-        }
-        Ok(())
-    }
-
-    fn set_bitmap_range(
-        &mut self,
-        start_offset: u8,
-        end_offset: u8,
-        value: u128,
-    ) -> Result<(), ()> {
-        if start_offset < 128 {
-            Self::set_half_bitmap_range(
-                &mut self.first_half,
-                start_offset,
-                end_offset.min(127),
-                value,
-            )?;
-        }
-        if end_offset >= 128 {
-            Self::set_half_bitmap_range(
-                &mut self.second_half,
-                start_offset.max(128) - 128,
-                end_offset - 128,
-                value,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn reserve_port_range_from_bitmap(&mut self, range: PortRange) -> Result<(), ()> {
-        let start = u8::try_from(range.start() % 256).unwrap_or_else(|_| unreachable!());
-        let end = u8::try_from(range.end() % 256).unwrap_or_else(|_| unreachable!());
-        self.set_bitmap_range(start, end, 1)?;
-        Ok(())
-    }
-
     // Used for Display
     fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
         let mut ranges_first_half = collect_ranges_from_u128_bitmap(self.first_half, 0);
@@ -1004,75 +875,6 @@ mod tests {
     use super::*;
     use lpm::prefix::PortRange;
     use std::net::Ipv4Addr;
-
-    // set_half_bitmap_range()
-
-    #[test]
-    fn set_half_bitmap_range_single_bit() {
-        let mut half = 0u128;
-        Bitmap256::set_half_bitmap_range(&mut half, 0, 0, 1).unwrap();
-        assert_eq!(half, 1);
-    }
-
-    #[test]
-    fn set_half_bitmap_range_first_few_bits() {
-        let mut half = 0u128;
-        Bitmap256::set_half_bitmap_range(&mut half, 0, 3, 1).unwrap();
-        assert_eq!(half, 0b1111);
-    }
-
-    #[test]
-    fn set_half_bitmap_range_middle_bits() {
-        let mut half = 0u128;
-        Bitmap256::set_half_bitmap_range(&mut half, 4, 7, 1).unwrap();
-        assert_eq!(half, 0b1111_0000);
-    }
-
-    #[test]
-    fn set_half_bitmap_range_full_range() {
-        let mut half = 0u128;
-        Bitmap256::set_half_bitmap_range(&mut half, 0, 127, 1).unwrap();
-        assert_eq!(half, u128::MAX);
-    }
-
-    #[test]
-    fn set_half_bitmap_range_clear_bits() {
-        let mut half = u128::MAX;
-        Bitmap256::set_half_bitmap_range(&mut half, 4, 7, 0).unwrap();
-        assert_eq!(half, !0b1111_0000);
-    }
-
-    #[test]
-    fn set_half_bitmap_range_invalid_start_gt_end() {
-        let mut half = 0u128;
-        assert!(Bitmap256::set_half_bitmap_range(&mut half, 5, 3, 1).is_err());
-    }
-
-    #[test]
-    fn set_half_bitmap_range_invalid_start_too_large() {
-        let mut half = 0u128;
-        assert!(Bitmap256::set_half_bitmap_range(&mut half, 128, 128, 1).is_err());
-    }
-
-    #[test]
-    fn set_half_bitmap_range_invalid_end_too_large() {
-        let mut half = 0u128;
-        assert!(Bitmap256::set_half_bitmap_range(&mut half, 0, 128, 1).is_err());
-    }
-
-    #[test]
-    fn set_half_bitmap_range_invalid_value() {
-        let mut half = 0u128;
-        assert!(Bitmap256::set_half_bitmap_range(&mut half, 0, 3, 2).is_err());
-    }
-
-    #[test]
-    fn set_half_bitmap_range_high_bits() {
-        let mut half = 0u128;
-        Bitmap256::set_half_bitmap_range(&mut half, 120, 127, 1).unwrap();
-        let expected = ((1u128 << 8) - 1) << 120;
-        assert_eq!(half, expected);
-    }
 
     // set_bitmap_value(), through the two operations built on it
 
@@ -1159,173 +961,12 @@ mod tests {
         assert!(bitmap.deallocate_port_from_bitmap(9).is_err());
     }
 
-    // set_bitmap_range()
-
     #[test]
-    fn set_bitmap_range_first_half_only() {
-        let mut bitmap = Bitmap256::new();
-        bitmap.set_bitmap_range(10, 20, 1).unwrap();
-        let expected = ((1u128 << 11) - 1) << 10;
-        assert_eq!(bitmap.first_half, expected);
-        assert_eq!(bitmap.second_half, 0);
-    }
-
-    #[test]
-    fn set_bitmap_range_second_half_only() {
-        let mut bitmap = Bitmap256::new();
-        bitmap.set_bitmap_range(130, 140, 1).unwrap();
-        let expected = ((1u128 << 11) - 1) << 2; // 130-128=2
-        assert_eq!(bitmap.first_half, 0);
-        assert_eq!(bitmap.second_half, expected);
-    }
-
-    #[test]
-    fn set_bitmap_range_spans_both_halves() {
-        let mut bitmap = Bitmap256::new();
-        bitmap.set_bitmap_range(120, 135, 1).unwrap();
-        // First half: bits 120..=127
-        let first_expected = ((1u128 << 8) - 1) << 120;
-        // Second half: bits 0..=7 (135-128=7)
-        let second_expected = (1u128 << 8) - 1;
-        assert_eq!(bitmap.first_half, first_expected);
-        assert_eq!(bitmap.second_half, second_expected);
-    }
-
-    #[test]
-    fn set_bitmap_range_full_range() {
-        let mut bitmap = Bitmap256::new();
-        bitmap.set_bitmap_range(0, 255, 1).unwrap();
-        assert_eq!(bitmap.first_half, u128::MAX);
-        assert_eq!(bitmap.second_half, u128::MAX);
-    }
-
-    #[test]
-    fn set_bitmap_range_clear_spanning() {
-        let mut bitmap = Bitmap256::new();
-        bitmap.first_half = u128::MAX;
-        bitmap.second_half = u128::MAX;
-        bitmap.set_bitmap_range(120, 135, 0).unwrap();
-        let first_expected = !(((1u128 << 8) - 1) << 120);
-        let second_expected = !((1u128 << 8) - 1);
-        assert_eq!(bitmap.first_half, first_expected);
-        assert_eq!(bitmap.second_half, second_expected);
-    }
-
-    #[test]
-    fn set_bitmap_range_at_boundary_128() {
-        let mut bitmap = Bitmap256::new();
-        bitmap.set_bitmap_range(127, 128, 1).unwrap();
-        assert_eq!(bitmap.first_half, 1u128 << 127);
-        assert_eq!(bitmap.second_half, 1u128);
-    }
-
-    // reserve_port_range_from_bitmap()
-
-    #[test]
-    fn reserve_port_range_marks_bits() {
-        let mut bitmap = Bitmap256::new();
-        let range = PortRange::new(10, 19).unwrap();
-        bitmap.reserve_port_range_from_bitmap(range).unwrap();
-        let expected = ((1u128 << 10) - 1) << 10;
-        assert_eq!(bitmap.first_half, expected);
-    }
-
-    #[test]
-    fn reserve_port_range_prevents_allocation() {
-        let mut bitmap = Bitmap256::new();
-        // Reserve ports 0..=9
-        let range = PortRange::new(0, 9).unwrap();
-        bitmap.reserve_port_range_from_bitmap(range).unwrap();
-        // First allocation should skip reserved ports and return 10
-        let port = bitmap.allocate_port_from_bitmap().unwrap();
-        assert_eq!(port, 10);
-    }
-
-    // pick_available_block()
-
-    #[test]
-    fn pick_available_block_no_reserved_range() {
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, false);
+    fn pick_available_block_starts_at_zero() {
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(false);
         let (index, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(index, 0);
         assert_eq!(base_port, 0);
-    }
-
-    #[test]
-    fn pick_available_block_reserved_range_covers_first_block() {
-        // Reserve 0..=255 (entire first block) → should skip to block 1 (ports 256-511)
-        let reserved = PortRange::new(0, 255).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        let (index, base_port) = allocator.pick_available_block().unwrap();
-        assert_eq!(index, 1);
-        assert_eq!(base_port, 256);
-    }
-
-    #[test]
-    fn pick_available_block_reserved_range_starting_at_one() {
-        // Corner case: reserved 1..=255 does not literally cover 0..=255, but port 0 cannot
-        // be allocated anyway, so the block is effectively unusable. The code adjusts the
-        // reserved range to start at 0, causing the block to be skipped.
-        let reserved = PortRange::new(1, 255).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        let (index, base_port) = allocator.pick_available_block().unwrap();
-        assert_eq!(index, 1);
-        assert_eq!(base_port, 256);
-    }
-
-    #[test]
-    fn pick_available_block_reserved_range_covers_multiple_blocks() {
-        // Reserve 0..=511 (first two blocks) → should skip to block 2 (ports 512-767)
-        let reserved = PortRange::new(0, 511).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        let (index, base_port) = allocator.pick_available_block().unwrap();
-        assert_eq!(index, 2);
-        assert_eq!(base_port, 512);
-    }
-
-    #[test]
-    fn pick_available_block_reserved_range_does_not_cover_other_blocks() {
-        // Reserve 0..=255 only covers block 0, block 1 is unaffected
-        let reserved = PortRange::new(0, 255).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        // First pick skips block 0, gets block 1
-        let (_, base_port1) = allocator.pick_available_block().unwrap();
-        assert_eq!(base_port1, 256);
-        // Second pick gets block 2
-        let (_, base_port2) = allocator.pick_available_block().unwrap();
-        assert_eq!(base_port2, 512);
-    }
-
-    #[test]
-    fn pick_available_block_partial_reserved_range_does_not_skip() {
-        // Reserve 1..=200 (len 200 < 255) → block is NOT skipped entirely, individual ports
-        // are reserved within the block instead
-        let reserved = PortRange::new(1, 200).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        let (index, base_port) = allocator.pick_available_block().unwrap();
-        assert_eq!(index, 0);
-        assert_eq!(base_port, 0);
-    }
-
-    #[test]
-    fn pick_available_block_reserved_middle_block() {
-        // Reserve 256..=511 (block 1 only) → block 0 is fine, block 1 is skipped
-        let reserved = PortRange::new(256, 511).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        // First pick: block 0
-        let (_, base_port1) = allocator.pick_available_block().unwrap();
-        assert_eq!(base_port1, 0);
-        // Second pick: block 1 is skipped, picks block 2
-        let (_, base_port2) = allocator.pick_available_block().unwrap();
-        assert_eq!(base_port2, 512);
-    }
-
-    #[test]
-    fn pick_available_block_all_blocks_reserved() {
-        // Reserve 0..=65535 (all blocks) → NoPortBlock error
-        let reserved = PortRange::new(0, 65535).unwrap();
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), false);
-        assert!(allocator.pick_available_block().is_err());
     }
 
     fn port_range(start: u16, end: u16) -> PortRange {
@@ -1455,7 +1096,7 @@ mod tests {
     fn exclude_wellknown_ports_first_available_block_is_1024() {
         // With no randomness and IANA exclusion, blocks 0-3 (ports 0-1023) are pre-marked
         // non-free, so the first block handed out should start at port 1024.
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, true);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(true);
         let (_, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port, 1024);
     }
@@ -1464,7 +1105,7 @@ mod tests {
     fn exclude_wellknown_ports_all_252_blocks_are_above_1023() {
         // Exactly 252 blocks (256 - 4 IANA blocks) should be allocatable; every one should
         // start at port >= 1024. The 253rd attempt should fail with NoPortBlock.
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, true);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(true);
         for _ in 0..252 {
             let (_, base_port) = allocator.pick_available_block().unwrap();
             assert!(
@@ -1478,29 +1119,8 @@ mod tests {
     #[test]
     fn exclude_wellknown_ports_disabled_starts_at_port_zero() {
         // Sanity check: without the flag, block 0 (port 0) is returned first.
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(None, false);
+        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(false);
         let (_, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port, 0);
-    }
-
-    #[test]
-    fn exclude_wellknown_ports_combined_with_reserved_range() {
-        let reserved = PortRange::new(2048, 2303).unwrap(); // entire block 8
-        let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved), true);
-
-        let (_, b0) = allocator.pick_available_block().unwrap();
-        assert_eq!(b0, 1024); // block 4
-
-        let (_, b1) = allocator.pick_available_block().unwrap();
-        assert_eq!(b1, 1280); // block 5
-
-        let (_, b2) = allocator.pick_available_block().unwrap();
-        assert_eq!(b2, 1536); // block 6
-
-        let (_, b3) = allocator.pick_available_block().unwrap();
-        assert_eq!(b3, 1792); // block 7
-
-        let (_, b4) = allocator.pick_available_block().unwrap();
-        assert_eq!(b4, 2304); // block 9 — block 8 (2048-2303) was skipped
     }
 }
