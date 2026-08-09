@@ -1331,6 +1331,56 @@ mod contract {
         Some(out)
     }
 
+    /// Draws a packet with layers deliberately missing, which is what the optional matchers are for.
+    ///
+    /// [`CommonHeaders`] sets every layer it knows about on every path, so `net` and `transport` are
+    /// always `Some` in anything it or [`ShapedHeaders`] produces. That makes the absent-layer arm of
+    /// every `opt_*` method in [`pat`](crate::headers::pat) -- `None => Some(a.append(None))`, the
+    /// arm that distinguishes "the layer is not there, which is fine" from "the layer is there and is
+    /// the wrong one, which is a miss" -- unreachable by any generator in the crate. The whole point
+    /// of an optional matcher is the packet that stops early, and nothing could draw one.
+    ///
+    /// Truncation here is by *suffix*, because that is the only shape a real short packet takes: a
+    /// layer sits inside the one below it, so a packet cannot carry a transport header without a
+    /// network header to carry it. Dropping a suffix also keeps `net_ext` consistent, since
+    /// extensions hang off the network layer and have to go when it does.
+    #[allow(dead_code)] // constructed through `.with_generator()`
+    #[repr(transparent)]
+    pub struct ThinHeaders;
+
+    impl ValueGenerator for ThinHeaders {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut headers = ShapedHeaders.generate(driver)?;
+            // Keep the full stack a fifth of the time, so a property reading this generator still
+            // sees the ordinary case alongside the truncated ones.
+            match driver.gen_u8(Bound::Included(&0), Bound::Included(&4))? {
+                0 => {}
+                1 => headers.udp_encap = None,
+                2 => {
+                    headers.udp_encap = None;
+                    headers.transport = None;
+                }
+                3 => {
+                    headers.udp_encap = None;
+                    headers.transport = None;
+                    headers.net_ext.clear();
+                    headers.net = None;
+                }
+                _ => {
+                    headers.udp_encap = None;
+                    headers.transport = None;
+                    headers.net_ext.clear();
+                    headers.net = None;
+                    headers.vlan.clear();
+                    headers.eth = None;
+                }
+            }
+            Some(headers)
+        }
+    }
+
     /// Draw one extension header, with fuzzed contents.
     ///
     /// `pick` indexes the IPv6 extension order RFC 8200 recommends -- 0 hop-by-hop, 1 destination
@@ -1517,6 +1567,13 @@ mod contract {
     /// Draw the packet quoted inside an ICMP error. `outer_v4` is the family of the quoting
     /// message; see [`ShapedIcmpError`] for why the quoted packet usually but not always shares it.
     fn quoted_packet<D: Driver>(driver: &mut D, outer_v4: bool) -> Option<EmbeddedHeaders> {
+        // A quoting host copies as much of the offending packet as it can, and RFC 792 asked for
+        // only the header plus eight bytes. A quote can therefore be too short to hold even the
+        // network header -- which is the one case where the optional embedded matchers' absent-layer
+        // arm is reachable, since a quote that *has* a network layer always has a version.
+        if driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
+            return Some(EmbeddedHeaders::new(None, None, ArrayVec::default(), None));
+        }
         let mismatch = driver.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0;
         let v4 = outer_v4 != mismatch;
 
