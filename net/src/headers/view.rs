@@ -2645,12 +2645,8 @@ mod view_properties {
 #[cfg(test)]
 mod view_mut_properties {
     use crate::eth::Eth;
-    use crate::headers::view::LookMut;
-    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
-    use crate::ip_auth::Ipv4Auth;
-    use crate::ipv4::Ipv4;
-    use crate::ipv6::{DestOpts, HopByHop, Ipv6, Routing};
-    use crate::vlan::Vlan;
+    use crate::headers::view::{Look, LookMut};
+    use crate::headers::{Headers, Net, ShapedHeaders, SometimesHeadless, Transport};
     use concurrency::sync::OnceLock;
     use concurrency::sync::atomic::AtomicUsize;
 
@@ -2659,34 +2655,136 @@ mod view_mut_properties {
         slot.get_or_init(|| AtomicUsize::new(0))
     }
 
+    macro_rules! layer_ty {
+        (eth) => {
+            crate::eth::Eth
+        };
+        (vlan) => {
+            crate::vlan::Vlan
+        };
+        (net) => {
+            crate::headers::Net
+        };
+        (ipv4) => {
+            crate::ipv4::Ipv4
+        };
+        (ipv6) => {
+            crate::ipv6::Ipv6
+        };
+        (hop_by_hop) => {
+            crate::ipv6::HopByHop
+        };
+        (dest_opts) => {
+            crate::ipv6::DestOpts
+        };
+        (routing) => {
+            crate::ipv6::Routing
+        };
+        (fragment) => {
+            crate::ipv6::Fragment
+        };
+        (ipv4_auth) => {
+            crate::ip_auth::Ipv4Auth
+        };
+        (ipv6_auth) => {
+            crate::ip_auth::Ipv6Auth
+        };
+        (transport) => {
+            crate::headers::Transport
+        };
+        (tcp) => {
+            crate::tcp::Tcp
+        };
+        (udp) => {
+            crate::udp::Udp
+        };
+        (icmp4) => {
+            crate::icmp4::Icmp4
+        };
+        (icmp6) => {
+            crate::icmp6::Icmp6
+        };
+        (vxlan) => {
+            crate::vxlan::Vxlan
+        };
+    }
+
+    macro_rules! shape_of {
+        ($($layer:ident),+ $(,)?) => { ($(&'static layer_ty!($layer),)+) };
+    }
+
+    trait Addrs {
+        type Out: PartialEq + core::fmt::Debug;
+        fn addrs(&self) -> Self::Out;
+    }
+
+    macro_rules! impl_addrs {
+        ($n:literal; $($T:ident $idx:tt),+) => {
+            impl<'a, $($T),+> Addrs for ($(&'a $T,)+) {
+                type Out = [usize; $n];
+                fn addrs(&self) -> [usize; $n] {
+                    [$(core::ptr::from_ref::<$T>(self.$idx) as usize),+]
+                }
+            }
+
+            impl<'a, $($T),+> Addrs for ($(&'a mut $T,)+) {
+                type Out = [usize; $n];
+                fn addrs(&self) -> [usize; $n] {
+                    [$(core::ptr::from_ref::<$T>(&*self.$idx) as usize),+]
+                }
+            }
+        };
+    }
+
+    impl_addrs!(1; A 0);
+    impl_addrs!(2; A 0, B 1);
+    impl_addrs!(3; A 0, B 1, C 2);
+    impl_addrs!(4; A 0, B 1, C 2, D 3);
+    impl_addrs!(5; A 0, B 1, C 2, D 3, E 4);
+    impl_addrs!(6; A 0, B 1, C 2, D 3, E 4, F 5);
+    impl_addrs!(7; A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+    impl_addrs!(8; A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
     macro_rules! arity_agrees {
-        ($read:ident, $mutable:ident, $shape:ty, $($layer:ident),+) => {
+        ($read:ident, $mutable:ident, $gen:expr, $($layer:ident),+) => {
             #[test]
             fn $read() {
+                type Shape = shape_of!($($layer),+);
                 use concurrency::sync::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()
-                    .with_generator(ShapedHeaders)
+                    .with_generator($gen)
                     .for_each(|h: &Headers| {
                         counter(&SEEN).fetch_add(1, Ordering::Relaxed);
-                        let licensed = h.as_view::<$shape>().is_some();
+                        let licensed = h.as_view::<Shape>().is_some();
                         if licensed {
                             counter(&HIT).fetch_add(1, Ordering::Relaxed);
                         }
-                        let deliverable = h.pat()$(.$layer())+.done().is_some();
+                        let chain = h.pat()$(.$layer())+.done();
                         assert_eq!(
-                            licensed, deliverable,
+                            licensed, chain.is_some(),
                             concat!(
                                 "`matches` and the read walk disagree for ",
-                                stringify!($shape),
+                                stringify!(($($layer),+)),
                                 ", so `look` would reach `unreachable_unchecked`: {:?}"
                             ),
                             h
                         );
+                        if let (Some(view), Some(chain)) = (h.as_view::<Shape>(), chain) {
+                            assert_eq!(
+                                view.look().addrs(), chain.addrs(),
+                                concat!(
+                                    "`look` and the read walk agreed that ",
+                                    stringify!(($($layer),+)),
+                                    " is present and then handed back different layers: {:?}"
+                                ),
+                                h
+                            );
+                        }
                     });
                 agreement_is_not_vacuous(
-                    stringify!($shape),
+                    stringify!(($($layer),+)),
                     counter(&SEEN).load(Ordering::Relaxed),
                     counter(&HIT).load(Ordering::Relaxed),
                 );
@@ -2694,31 +2792,43 @@ mod view_mut_properties {
 
             #[test]
             fn $mutable() {
+                type Shape = shape_of!($($layer),+);
                 use concurrency::sync::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()
-                    .with_generator(ShapedHeaders)
+                    .with_generator($gen)
                     .for_each(|h: &Headers| {
                         let mut owned = h.clone();
                         counter(&SEEN).fetch_add(1, Ordering::Relaxed);
-                        let licensed = owned.as_view_mut::<$shape>().is_some();
+                        let licensed = owned.as_view_mut::<Shape>().is_some();
                         if licensed {
                             counter(&HIT).fetch_add(1, Ordering::Relaxed);
                         }
-                        let deliverable = owned.pat_mut()$(.$layer())+.done().is_some();
+                        let chain = owned.pat_mut()$(.$layer())+.done().map(|t| t.addrs());
                         assert_eq!(
-                            licensed, deliverable,
+                            licensed, chain.is_some(),
                             concat!(
                                 "`matches` and the mutable walk disagree for ",
-                                stringify!($shape),
+                                stringify!(($($layer),+)),
                                 ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
                             ),
                             h
                         );
+                        if let Some(view) = owned.as_view_mut::<Shape>() {
+                            assert_eq!(
+                                Some(view.look_mut().addrs()), chain,
+                                concat!(
+                                    "`look_mut` and the mutable walk agreed that ",
+                                    stringify!(($($layer),+)),
+                                    " is present and then handed back different layers: {:?}"
+                                ),
+                                h
+                            );
+                        }
                     });
                 agreement_is_not_vacuous(
-                    stringify!($shape),
+                    stringify!(($($layer),+)),
                     counter(&SEEN).load(Ordering::Relaxed),
                     counter(&HIT).load(Ordering::Relaxed),
                 );
@@ -2737,20 +2847,13 @@ mod view_mut_properties {
         }
     }
 
-    arity_agrees!(read_1, mutable_1, (&Eth,), eth);
-    arity_agrees!(read_2, mutable_2, (&Eth, &Net), eth, net);
-    arity_agrees!(
-        read_3,
-        mutable_3,
-        (&Eth, &Net, &Transport),
-        eth,
-        net,
-        transport
-    );
+    arity_agrees!(read_1, mutable_1, SometimesHeadless, eth);
+    arity_agrees!(read_2, mutable_2, SometimesHeadless, eth, net);
+    arity_agrees!(read_3, mutable_3, SometimesHeadless, eth, net, transport);
     arity_agrees!(
         read_4,
         mutable_4,
-        (&Eth, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         net,
@@ -2759,7 +2862,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_5,
         mutable_5,
-        (&Eth, &Vlan, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2769,7 +2872,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_6,
         mutable_6,
-        (&Eth, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2780,7 +2883,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_7,
         mutable_7,
-        (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Net, &Transport),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2792,9 +2895,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_8,
         mutable_8,
-        (
-            &Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv6, &HopByHop, &Transport
-        ),
+        SometimesHeadless,
         eth,
         vlan,
         vlan,
@@ -2808,7 +2909,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_one,
         mutable_ext_v6_one,
-        (&Eth, &Ipv6, &HopByHop, &Transport),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop,
@@ -2817,7 +2918,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_two,
         mutable_ext_v6_two,
-        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Transport),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop,
@@ -2827,7 +2928,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_three,
         mutable_ext_v6_three,
-        (&Eth, &Ipv6, &HopByHop, &DestOpts, &Routing, &Transport),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop,
@@ -2838,7 +2939,7 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v4_auth,
         mutable_ext_v4_auth,
-        (&Eth, &Ipv4, &Ipv4Auth, &Transport),
+        SometimesHeadless,
         eth,
         ipv4,
         ipv4_auth,
@@ -2847,10 +2948,29 @@ mod view_mut_properties {
     arity_agrees!(
         read_ext_v6_no_transport,
         mutable_ext_v6_no_transport,
-        (&Eth, &Ipv6, &HopByHop),
+        SometimesHeadless,
         eth,
         ipv6,
         hop_by_hop
+    );
+
+    arity_agrees!(
+        read_vxlan_v4,
+        mutable_vxlan_v4,
+        ShapedHeaders,
+        eth,
+        ipv4,
+        udp,
+        vxlan
+    );
+    arity_agrees!(
+        read_vxlan_net,
+        mutable_vxlan_net,
+        ShapedHeaders,
+        eth,
+        net,
+        udp,
+        vxlan
     );
 
     fn exercise_the_mutable_split() {
