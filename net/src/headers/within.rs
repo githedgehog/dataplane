@@ -554,3 +554,169 @@ impl Within<Net> for Tcp {
 impl Within<Net> for Udp {
     fn conform(_parent: &mut Net) {}
 }
+
+/// Property tests for [`Within::conform`].
+///
+/// Each parent protocol field is scrambled before its child is stacked. Deparsing and reparsing
+/// then verifies that `conform` names the actual child rather than preserving a correct [`Blank`]
+/// default.
+///
+/// [`Blank`]: crate::headers::builder::Blank
+#[cfg(test)]
+mod conform_properties {
+    use crate::eth::Eth;
+    use crate::eth::ethtype::EthType;
+    use crate::headers::builder::HeaderStack;
+    use crate::headers::test::parse_back_test;
+    use crate::icmp4::Icmp4;
+    use crate::icmp6::Icmp6;
+    use crate::ip::NextHeader;
+    use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
+    use crate::ipv4::Ipv4;
+    use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
+    use crate::tcp::Tcp;
+    use crate::udp::Udp;
+    use crate::vlan::Vlan;
+
+    /// Put an incorrect protocol value in each field that `conform` may overwrite.
+    /// Leaf implementations are empty so the chain macro need not distinguish them.
+    trait Scramble {
+        /// Overwrite the protocol field with something derived from `seed`.
+        fn scramble(&mut self, seed: u8);
+    }
+
+    macro_rules! scramble_next_header {
+        ($($T:ty),+ $(,)?) => {$(
+            impl Scramble for $T {
+                fn scramble(&mut self, seed: u8) {
+                    self.set_next_header(NextHeader::new(seed));
+                }
+            }
+        )+};
+    }
+
+    macro_rules! scramble_leaf {
+        ($($T:ty),+ $(,)?) => {$(
+            impl Scramble for $T {
+                fn scramble(&mut self, _seed: u8) {}
+            }
+        )+};
+    }
+
+    scramble_next_header!(
+        Ipv4, Ipv6, HopByHop, DestOpts, Routing, Fragment, Ipv4Auth, Ipv6Auth
+    );
+    scramble_leaf!(Tcp, Udp, Icmp4, Icmp6);
+
+    impl Scramble for Eth {
+        fn scramble(&mut self, seed: u8) {
+            self.set_ether_type(EthType::new(u16::from(seed)));
+        }
+    }
+
+    impl Scramble for Vlan {
+        fn scramble(&mut self, seed: u8) {
+            self.set_inner_ethtype(EthType::new(u16::from(seed)));
+        }
+    }
+
+    /// Build and round-trip a named `HeaderStack` chain, scrambling each layer before stacking it.
+    macro_rules! conform_chain {
+        ($name:ident, $($layer:ident),+ $(,)?) => {
+            #[test]
+            fn $name() {
+                bolero::check!().with_type().for_each(|seed: &u8| {
+                    let seed = *seed;
+                    let built = HeaderStack::new()
+                        $(.$layer(|l| l.scramble(seed)))+
+                        .build_headers();
+                    let headers = built.unwrap_or_else(|e| {
+                        unreachable!("a blank {} chain does not overflow: {e:?}", stringify!($name))
+                    });
+                    parse_back_test(&headers);
+                });
+            }
+        };
+    }
+
+    // Cover the conformance graph with chains no deeper than `MAX_NET_EXTENSIONS`.
+    conform_chain!(
+        double_tag_then_three_extensions,
+        eth,
+        vlan,
+        vlan,
+        ipv6,
+        dest_opts,
+        routing,
+        fragment,
+        tcp
+    );
+    conform_chain!(
+        hop_by_hop_routing_dest_opts,
+        eth,
+        ipv6,
+        hop_by_hop,
+        routing,
+        dest_opts,
+        udp
+    );
+    conform_chain!(
+        routing_fragment_auth,
+        eth,
+        ipv6,
+        routing,
+        fragment,
+        ipv6_auth,
+        tcp
+    );
+    conform_chain!(
+        fragment_then_dest_opts,
+        eth,
+        ipv6,
+        fragment,
+        dest_opts,
+        icmp6
+    );
+    conform_chain!(
+        hop_by_hop_then_fragment,
+        eth,
+        ipv6,
+        hop_by_hop,
+        fragment,
+        udp
+    );
+    conform_chain!(
+        dest_opts_then_fragment,
+        eth,
+        ipv6,
+        dest_opts,
+        fragment,
+        icmp6
+    );
+    conform_chain!(auth_then_dest_opts, eth, ipv6, ipv6_auth, dest_opts, udp);
+    conform_chain!(
+        hop_by_hop_then_auth,
+        eth,
+        ipv6,
+        hop_by_hop,
+        ipv6_auth,
+        icmp6
+    );
+    conform_chain!(dest_opts_then_auth, eth, ipv6, dest_opts, ipv6_auth, tcp);
+    conform_chain!(routing_then_auth, eth, ipv6, routing, ipv6_auth, udp);
+    conform_chain!(hop_by_hop_then_udp, eth, ipv6, hop_by_hop, udp);
+    conform_chain!(routing_then_udp, eth, ipv6, routing, udp);
+    conform_chain!(
+        hop_by_hop_then_routing_then_tcp,
+        eth,
+        ipv6,
+        hop_by_hop,
+        routing,
+        tcp
+    );
+    conform_chain!(hop_by_hop_then_icmp6, eth, ipv6, hop_by_hop, icmp6);
+    conform_chain!(routing_then_icmp6, eth, ipv6, routing, icmp6);
+    // The IPv4 authentication header is the only extension that belongs on a v4 packet.
+    conform_chain!(v4_auth_then_udp, eth, ipv4, ipv4_auth, udp);
+    conform_chain!(v4_auth_then_icmp4, eth, ipv4, ipv4_auth, icmp4);
+}
