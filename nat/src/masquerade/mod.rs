@@ -15,7 +15,6 @@ mod test;
 
 // re exports
 pub use allocator_writer::MasqueradeConfig;
-pub(crate) use allocator_writer::NatAllocatorReader;
 pub use allocator_writer::NatAllocatorWriter;
 pub use nf::Masquerade;
 

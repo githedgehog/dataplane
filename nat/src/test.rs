@@ -113,12 +113,7 @@ fn setup_masq_pipeline(
     portfw_writer
         .update_from_vpc_table(overlay.vpc_table())
         .unwrap();
-    let portfw = PortForwarder::new(
-        "port-forwarder",
-        portfw_writer.reader(),
-        flow_table.clone(),
-        allocator.get_reader(),
-    );
+    let portfw = PortForwarder::new("port-forwarder", portfw_writer.reader(), flow_table.clone());
     if let Some(table) = portfw_writer.enter() {
         println!("{}", table.as_ref());
     }
@@ -178,9 +173,11 @@ fn build_overlapping_masquerade_and_port_forward() -> ValidatedOverlay {
     Overlay::new(vpc_table, peerings).validate().unwrap()
 }
 
+// The port-forwarding rule of that overlay claims 5.6.7.8:1024, the lowest port masquerade would
+// otherwise hand out of the very same address.
 #[tokio::test]
 #[dpdk::with_eal]
-async fn inactive_port_forward_does_not_reduce_masquerade_space() {
+async fn a_port_forwarded_tuple_is_never_masqueraded() {
     let overlay = build_overlapping_masquerade_and_port_forward();
     let (mut pipeline, flow_table, _flow_filter, _static_nat, _portfw, mut allocator) =
         setup_masq_pipeline(&overlay);
@@ -194,12 +191,16 @@ async fn inactive_port_forward_does_not_reduce_masquerade_space() {
     let output: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
     let output = output.first().expect("masquerade should accept the flow");
     assert_eq!(output.ip_source(), Some(addr("5.6.7.8")));
-    assert_eq!(output.transport_src_port().unwrap().get(), 1024);
+    assert_ne!(
+        output.transport_src_port().unwrap().get(),
+        1024,
+        "masquerade handed out the port a forwarding rule claims"
+    );
 }
 
 #[tokio::test]
 #[dpdk::with_eal]
-async fn active_port_forward_reserves_its_public_tuple() {
+async fn a_claimed_tuple_cannot_be_reserved_for_masquerade() {
     let overlay = build_overlapping_masquerade_and_port_forward();
     let (mut pipeline, flow_table, _flow_filter, _static_nat, _portfw, mut allocator) =
         setup_masq_pipeline(&overlay);
@@ -209,6 +210,7 @@ async fn active_port_forward_reserves_its_public_tuple() {
         &flow_table,
     );
 
+    // Several clients reach the forwarded service through the one claimed tuple.
     for (client, port) in [("1.2.3.4", 5000), ("1.2.3.5", 5001)] {
         let packet = build_packet(client, "5.6.7.8", port, 1024, vni(100));
         let output: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
@@ -219,7 +221,9 @@ async fn active_port_forward_reserves_its_public_tuple() {
         assert_eq!(output.transport_dst_port().unwrap().get(), 8000);
     }
 
-    let tuple_is_reserved = |allocator: &NatAllocatorWriter| {
+    // The claim holds whether or not a forwarded flow is using the tuple, and it survives allocator
+    // replacement because the replacement withholds it too.
+    let tuple_is_withheld = |allocator: &NatAllocatorWriter| {
         matches!(
             allocator.get_reader().get().unwrap().reserve_port(
                 NextHeader::UDP,
@@ -229,17 +233,17 @@ async fn active_port_forward_reserves_its_public_tuple() {
                 addr("5.6.7.8"),
                 NatPort::new_port_checked(1024).unwrap(),
             ),
-            Err(AllocatorError::PortReservationFailed(1024))
+            Err(AllocatorError::Denied)
         )
     };
-    assert!(tuple_is_reserved(&allocator));
+    assert!(tuple_is_withheld(&allocator));
 
     allocator.update_nat_allocator(
         MasqueradeConfig::new(overlay.vpc_table()).set_randomize(true),
         3,
         &flow_table,
     );
-    assert!(tuple_is_reserved(&allocator));
+    assert!(tuple_is_withheld(&allocator));
 }
 
 #[tokio::test]

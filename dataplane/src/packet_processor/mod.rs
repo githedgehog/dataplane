@@ -122,7 +122,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             "port-forwarder",
             portfw_factory.handle(),
             flow_table_clone.clone(),
-            natallocator_factory.handle(),
         );
         let pkt_stats_nf = PacketStatsNF::new(pkt_stats.clone());
 

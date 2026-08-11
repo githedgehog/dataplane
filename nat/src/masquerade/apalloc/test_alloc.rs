@@ -13,6 +13,7 @@ mod context {
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+    use lpm::prefix::{L4Protocol, PortRange, PrefixWithOptionalPorts};
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
     use net::udp::UdpPort;
@@ -155,6 +156,55 @@ mod context {
         let vpc_table = build_context();
         let config = MasqueradeConfig::new(&vpc_table);
         NatAllocator::new(config, 1)
+    }
+
+    #[allow(dead_code)]
+    fn prefix_with_ports(prefix: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(prefix.into(), Some(PortRange::new(start, end).unwrap()))
+    }
+
+    // Masquerade onto one public address, with a forwarding rule on port 8080 of it for one protocol
+    // only. VPC-1 masquerades towards VPC-2.
+    #[allow(dead_code)]
+    fn build_context_port_forward_for(protocol: L4Protocol) -> ValidatedVpcTable {
+        let masquerade = VpcExpose::empty()
+            .make_masquerade(None)
+            .unwrap()
+            .ip("1.1.0.0/16".into())
+            .as_range("10.1.0.0/32".into())
+            .unwrap();
+        let forward = VpcExpose::empty()
+            .make_port_forwarding(None, Some(protocol))
+            .unwrap()
+            .ip(prefix_with_ports("1.1.0.5/32", 8080, 8080))
+            .as_range(prefix_with_ports("10.1.0.0/32", 8080, 8080))
+            .unwrap();
+        let local = VpcManifest::with_exposes("VPC-1", vec![masquerade, forward]);
+        let remote =
+            VpcManifest::with_exposes("VPC-2", vec![VpcExpose::empty().ip("3.0.0.0/24".into())]);
+
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+        vpc1.peerings.push(Peering {
+            name: "port_forward_peering".into(),
+            local,
+            remote,
+            remote_id: "12345".try_into().unwrap(),
+            remote_vni: vpc2.vni,
+            gwgroup: "default".into(),
+            acl: None,
+        });
+
+        let mut vpctable = VpcTable::new();
+        vpctable.add(vpc1).unwrap();
+        vpctable.add(vpc2).unwrap();
+        vpctable.validate().unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn build_allocator_port_forward_for(protocol: L4Protocol) -> NatAllocator {
+        let vpc_table = build_context_port_forward_for(protocol);
+        NatAllocator::new(MasqueradeConfig::new(&vpc_table).set_randomize(false), 1)
     }
 
     // Two VPCs masquerade onto one public range toward the same peer.
@@ -397,13 +447,9 @@ mod context {
 
 mod tests {
     use super::context::*;
-    use crate::NatPort;
-    use crate::masquerade::allocation::AllocatorError;
     use concurrency::sync::Arc;
     use concurrency::thread;
     use net::ip::NextHeader;
-    use std::net::IpAddr;
-    use std::num::NonZero;
 
     #[allow(dead_code)]
     pub(super) fn concurrent_allocations() {
@@ -450,75 +496,21 @@ mod tests {
         assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
         assert!(in_use.front().unwrap().upgrade().is_none()); // Weak references in list no longer resolve
     }
-
-    #[test]
-    fn port_forward_flows_share_and_release_a_public_tuple() {
-        let allocator = build_allocator();
-        let public_ip = IpAddr::V4(addr_v4("10.1.0.0"));
-        let public_port = NonZero::new(1024).unwrap();
-
-        let first = allocator
-            .reserve_port_forward(NextHeader::TCP, vpcd2(), public_ip, public_port)
-            .unwrap()
-            .expect("the tuple overlaps a masquerade pool");
-        let second = allocator
-            .reserve_port_forward(NextHeader::TCP, vpcd2(), public_ip, public_port)
-            .unwrap()
-            .expect("the tuple overlaps a masquerade pool");
-        assert!(Arc::ptr_eq(&first, &second));
-
-        let port = NatPort::new_port(public_port);
-        match allocator.reserve_port(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd2(),
-            ipaddr("1.1.0.1"),
-            public_ip,
-            port,
-        ) {
-            Err(AllocatorError::PortReservationFailed(blocked)) => {
-                assert_eq!(blocked, public_port.get());
-            }
-            other => panic!("a live port-forward lease must block the reservation, got {other:?}"),
-        }
-
-        drop((first, second));
-        assert!(
-            allocator
-                .reserve_port(
-                    NextHeader::TCP,
-                    vpcd1(),
-                    vpcd2(),
-                    ipaddr("1.1.0.1"),
-                    public_ip,
-                    port,
-                )
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn well_known_port_forwards_need_no_lease() {
-        let allocator = build_allocator();
-        let lease = allocator
-            .reserve_port_forward(
-                NextHeader::TCP,
-                vpcd2(),
-                ipaddr("10.1.0.0"),
-                NonZero::new(80).unwrap(),
-            )
-            .unwrap();
-        assert!(lease.is_none());
-    }
 }
 
 #[concurrency_mode(std)]
 mod std_tests {
     use super::context::*;
+    use crate::NatPort;
+    use crate::masquerade::allocation::AllocatorError;
     use crate::masquerade::apalloc::PoolTableKey;
-    use crate::masquerade::apalloc::alloc::PoolRegion;
+    use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool, PoolRegion};
+    use crate::masquerade::apalloc::region::AddrInterval;
+    use crate::masquerade::apalloc::reserved::ReservedPorts;
+    use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
     use net::ip::NextHeader;
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::num::NonZero;
 
     #[test]
     fn test_build_allocator() {
@@ -1007,6 +999,105 @@ mod std_tests {
             .filter(|k| k.protocol == NextHeader::TCP && k.dst_vpcd == vpcd3())
             .count();
         assert_eq!(tcp_entries, 2);
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Ports claimed by port forwarding
+    ///////////////////////////////////////////////////////////////////////////
+
+    // A pool over one public address, claiming the whole 1024-1279 block and the single port 1400,
+    // built the way `build_region_allocators` builds one.
+    fn allocator_with_claims() -> (IpAllocator<Ipv4Addr>, Ipv4Addr) {
+        let address = addr_v4("10.1.0.0");
+        let bits = u128::from(addr_v4_bits("10.1.0.0"));
+        let claims = PrefixPortsSet::from([
+            PrefixWithOptionalPorts::new(
+                "10.1.0.0/32".into(),
+                Some(PortRange::new(1024, 1279).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "10.1.0.0/32".into(),
+                Some(PortRange::new(1400, 1400).unwrap()),
+            ),
+        ]);
+        let pool = NatPool::for_range(
+            AddrInterval::new(bits, bits),
+            ReservedPorts::from_set(&claims),
+            true,
+        );
+        (IpAllocator::new(pool, false), address)
+    }
+
+    #[test]
+    fn claimed_ports_are_never_allocated() {
+        let (allocator, _) = allocator_with_claims();
+
+        // Enough to walk past the claimed block and all the way through the next one, which holds
+        // the single claimed port.
+        let held: Vec<_> = (0..512)
+            .map(|_| allocator.allocate(false).expect("the pool has room"))
+            .collect();
+        let ports: Vec<u16> = held.iter().map(|port| port.port().as_u16()).collect();
+
+        assert!(
+            ports.iter().all(|&port| !(1024..=1279).contains(&port)),
+            "a fully claimed block was handed out"
+        );
+        assert!(!ports.contains(&1400), "a claimed port was handed out");
+        // The claimed block is skipped rather than partially used: allocation starts after it.
+        assert_eq!(ports[0], 1280);
+        // Its neighbour is used, minus the one port claimed inside it.
+        assert!(ports.contains(&1399) && ports.contains(&1401));
+    }
+
+    /// A forwarding rule claims tuples of the protocol it forwards. The address's other protocols
+    /// have their own port space, which no flow of the forwarded protocol can collide with.
+    #[test]
+    fn a_claim_is_confined_to_the_protocol_it_forwards() {
+        let port = NatPort::new_port(NonZero::new(8080).unwrap());
+        let public = ipaddr("10.1.0.0");
+        let private = ipaddr("1.1.0.1");
+
+        for (forwarded, claimed, untouched) in [
+            (L4Protocol::Tcp, NextHeader::TCP, NextHeader::UDP),
+            (L4Protocol::Udp, NextHeader::UDP, NextHeader::TCP),
+        ] {
+            let allocator = build_allocator_port_forward_for(forwarded);
+            assert!(
+                matches!(
+                    allocator.reserve_port(claimed, vpcd1(), vpcd2(), private, public, port),
+                    Err(AllocatorError::Denied)
+                ),
+                "a {forwarded:?} rule must claim the {claimed} tuple"
+            );
+            allocator
+                .reserve_port(untouched, vpcd1(), vpcd2(), private, public, port)
+                .unwrap_or_else(|e| {
+                    panic!("a {forwarded:?} rule must claim nothing from {untouched}: {e}")
+                });
+        }
+    }
+
+    #[test]
+    fn claimed_ports_cannot_be_reserved() {
+        let (allocator, address) = allocator_with_claims();
+
+        for claimed in [1024, 1279, 1400] {
+            let port = NatPort::new_port(NonZero::new(claimed).unwrap());
+            assert!(
+                matches!(
+                    allocator.reserve(address, port),
+                    Err(AllocatorError::Denied)
+                ),
+                "reserving claimed port {claimed} must be denied"
+            );
+        }
+
+        // A port outside every claim is still reservable on the same address.
+        let free = NatPort::new_port(NonZero::new(5000).unwrap());
+        allocator
+            .reserve(address, free)
+            .expect("an unclaimed port is reservable");
     }
 }
 

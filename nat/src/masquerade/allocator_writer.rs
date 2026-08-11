@@ -11,8 +11,8 @@ use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
 use tracing::debug;
 
-use crate::masquerade::flows::reconcile_nat_flows;
-use crate::masquerade::flows::remove_allocator_from_flows;
+use crate::masquerade::flows::check_masquerading_flows;
+use crate::masquerade::flows::invalidate_masquerade_flows;
 use crate::masquerade::flows::upgrade_all_masquerading_flows;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -102,8 +102,11 @@ impl NatAllocatorWriter {
 
     /// Install the allocator for a new NAT configuration.
     ///
-    /// Removing masquerade invalidates NAT flows and clears port-forward leases. Replacement
-    /// carries compatible allocations forward.
+    /// An unchanged NAT configuration keeps the current allocator, and only advances the generation
+    /// id (and that of the flows). A configuration that no longer masquerades drops the allocator and
+    /// invalidates the flows that were using it. Any other change installs a replacement, which
+    /// carries over the allocations it can still honour and invalidates the flows whose tuples it
+    /// cannot serve.
     pub fn update_nat_allocator(
         &mut self,
         nat_config: MasqueradeConfig,
@@ -112,7 +115,7 @@ impl NatAllocatorWriter {
     ) {
         let curr_allocator = self.0.load_full();
 
-        // keep state as-is if config did not change, and just upgrade flows
+        // keep state as-is if config did not change, and just upgrade flows' gen id
         if let Some(current) = curr_allocator.as_ref()
             && current.config() == &nat_config
         {
@@ -122,19 +125,20 @@ impl NatAllocatorWriter {
             return;
         }
 
-        // if we transition to a config without masquerading, flush allocator and remove all flows
+        // if we transition to a config without masquerading, remove allocator and masquerading flows
         if !nat_config.has_masquerading_peerings() {
             if curr_allocator.is_some() {
-                debug!("Removing masquerade allocator and its flow state");
+                debug!("Removing NAT allocator");
                 self.0.store(None);
-                remove_allocator_from_flows(flow_table);
+                invalidate_masquerade_flows(flow_table);
             }
             return;
         }
 
         let allocator = NatAllocator::new(nat_config, genid);
-        let guard = reconcile_nat_flows(flow_table, &allocator);
-        debug!("Installing masquerade NAT allocator...");
+        let guard = check_masquerading_flows(flow_table, &allocator);
+
+        debug!("Installing NAT allocator (genid {}).", allocator.genid());
         self.0.store(Some(Arc::new(allocator)));
         drop(guard);
     }
