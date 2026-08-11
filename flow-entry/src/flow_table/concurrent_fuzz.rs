@@ -45,14 +45,14 @@
 #![cfg(not(feature = "loom"))]
 
 use crate::flow_table::FlowTable;
-use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicU8, Ordering};
+use concurrency::sync::{Arc, Weak};
 use concurrency::thread;
 // `spawn_scoped` is inherent on std's `Builder`, but supplied by `BuilderExt` under shuttle
 #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
 use concurrency::thread::BuilderExt;
 use net::FlowKey;
-use net::flows::{ExtractRef, FlowInfo};
+use net::flows::{ExtractRef, FlowInfo, FlowInfoFlags};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -115,7 +115,7 @@ impl bolero::TypeGenerator for Scenario {
     /// runnable at some scheduling point. Rather than skip degenerate
     /// shapes, we guarantee at least two of the three op streams contain
     /// an `Insert` — an `Insert` does model-visible work (writes
-    /// `FlowInfoLocked` + the atomic status) *and* creates a flow for any
+    /// `FlowInfoLocked` + the atomic status) *and* creates flows for any
     /// `Read`/`Flip` ops to land on. Missing inserts are spliced in at a
     /// driver-chosen offset, so the normalization stays a deterministic
     /// function of the input and a failure still reproduces from its seed.
@@ -154,27 +154,49 @@ fn key_set(base: FlowKey) -> Vec<FlowKey> {
     }
 }
 
+/// Insert one flow per key. Insert two flows as a pair if possible, with only the "base" key marked
+/// as the initiator. Insert the single key otherwise.
+fn insert_flows(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>) {
+    // Far-future expiry so the per-flow timer never fires inside the test
+    // window — we race the insert path, not the expiry path. (The timer task
+    // is also cfg'd out entirely under shuttle.)
+    let expires_at = Instant::now() + Duration::from_hours(1);
+    let flows: Vec<Arc<FlowInfo>> = match keys {
+        [fwd_key, rev_key] => {
+            let (fwd, rev) = FlowInfo::related_pair(
+                expires_at,
+                *fwd_key,
+                FlowInfoFlags::INITIATOR,
+                *rev_key,
+                FlowInfoFlags::default(),
+            )
+            .expect("related_pair should succeed for distinct keys");
+            vec![fwd, rev]
+        }
+        [key] => vec![Arc::new(FlowInfo::new(*key, expires_at))],
+        _ => panic!("key set should be 1 or 2 keys"),
+    };
+    for fi in flows {
+        // Stuff a stub item into the locked state so readers and
+        // flippers have something to race on.
+        {
+            let mut guard = fi.locked.write();
+            guard.nat_state = Some(Box::new(StubItem {
+                status: stub_status.clone(),
+            }));
+        }
+        let _ = table.insert_from_arc(&fi);
+    }
+}
+
 /// Apply one [`Op`] across the whole key set.
 fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op: Op) {
-    for k in keys {
-        match op {
-            Op::Insert => {
-                // Far-future expiry so the per-flow timer never fires
-                // inside the test window — we race the insert path, not
-                // the expiry path. (The timer task is also cfg'd out
-                // entirely under shuttle.)
-                let fi = Arc::new(FlowInfo::new(*k, Instant::now() + Duration::from_hours(1)));
-                // Stuff a stub item into the locked state so readers and
-                // flippers have something to race on.
-                {
-                    let mut guard = fi.locked.write();
-                    guard.nat_state = Some(Box::new(StubItem {
-                        status: stub_status.clone(),
-                    }));
-                }
-                let _ = table.insert_from_arc(&fi);
-            }
-            Op::Lookup => {
+    match op {
+        Op::Insert => {
+            insert_flows(table, keys, stub_status);
+        }
+        Op::Lookup => {
+            for k in keys {
                 // A returned entry must always carry a legal status;
                 // AtomicFlowStatus::load panics on a corrupt u8, so the
                 // load itself is the assertion against torn writes /
@@ -183,17 +205,23 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                     let _ = fi.status();
                 }
             }
-            Op::Invalidate => {
+        }
+        Op::Invalidate => {
+            for k in keys {
                 if let Some(fi) = table.lookup(k) {
                     fi.invalidate();
                 }
             }
-            Op::ExtendExpiry => {
+        }
+        Op::ExtendExpiry => {
+            for k in keys {
                 if let Some(fi) = table.lookup(k) {
                     let _ = fi.extend_expiry(Duration::from_mins(1));
                 }
             }
-            Op::ReadStubStatus => {
+        }
+        Op::ReadStubStatus => {
+            for k in keys {
                 if let Some(fi) = table.lookup(k)
                     && let Some(stub) = fi
                         .locked
@@ -209,7 +237,9 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                     assert!(v < STATE_COUNT, "stub status out of range: {v}");
                 }
             }
-            Op::AdvanceStatus => {
+        }
+        Op::AdvanceStatus => {
+            for k in keys {
                 if let Some(fi) = table.lookup(k)
                     && let Some(stub) = fi
                         .locked
@@ -284,6 +314,15 @@ impl Scenario {
         // to make sure the locked state isn't corrupted.
         table.for_each_flow(|_k, v| {
             let _ = v.status();
+            // We don't always have a related flow, it may have been dropped already, or we might
+            // have a key that is identical in both directions.
+            if let Some(related_flow) = v.related.as_ref().and_then(Weak::upgrade) {
+                assert_ne!(
+                    v.get_flags().is_initiator(),
+                    related_flow.get_flags().is_initiator(),
+                    "exactly one flow of a pair must be the initiator"
+                );
+            }
             let guard = v.locked.read();
             if let Some(stub) = guard.nat_state.as_ref().extract_ref::<StubItem>() {
                 let s = stub.status.load(Ordering::Relaxed);
