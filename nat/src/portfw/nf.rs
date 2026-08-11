@@ -118,9 +118,7 @@ impl PortForwarder {
         let Ok((fw_key, rev_key)) =
             build_portfw_flow_keys(packet, new_dst_ip, new_dst_port, entry.dst_vpcd)
         else {
-            warn!(
-                "Failed to build flow keys for port forwarding: {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port}"
-            );
+            warn!("Failed to build flow keys: {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port}");
             packet.done(DoneReason::InternalFailure);
             return;
         };
@@ -144,13 +142,17 @@ impl PortForwarder {
 
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
         let timeout = Instant::now() + entry.init_timeout();
-        let (fw_flow, rev_flow) = FlowInfo::related_pair(
+        let Ok((fw_flow, rev_flow)) = FlowInfo::related_pair(
             timeout,
             fw_key,
             packet.meta().compute_flow_flags_forward(),
             rev_key,
             packet.meta().compute_flow_flags_reverse(),
-        );
+        ) else {
+            debug!("Failed to build flow pair for port forwarded flow");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
 
         // set the generation id for the flow
         fw_flow.set_genid_pair(self.pipeline_data.genid());

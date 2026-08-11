@@ -203,7 +203,9 @@ mod test {
                 FlowInfoFlags::default() | FlowInfoFlags::INITIATOR,
                 key_2,
                 FlowInfoFlags::default(),
-            );
+            )
+            .unwrap();
+
             assert_eq!(Arc::weak_count(&flow_1), 1);
             assert_eq!(Arc::weak_count(&flow_2), 1);
             assert_eq!(Arc::strong_count(&flow_1), 1);
