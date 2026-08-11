@@ -20,5 +20,13 @@ A type may implement [`ValueGenerator`] to provide a more restricted set of valu
 This is useful if you wish to focus fuzzing efforts more narrowly than a correct implementation of [`TypeGenerator`]
 allows.
 
+## Generating large structured inputs
+
+Reaching for a narrower [`ValueGenerator`] each time the fuzzer cannot get somewhere stops scaling once
+the input is as large as a whole configuration: the generators do not compose, and each one encodes a
+little more knowledge of the implementation. For those cases, build the input from an algebra of valid
+operations instead, and derive the oracles from the same algebra -- see
+[testing a config-driven dataplane with an operation algebra](./config-algebra-testing.md).
+
 [`TypeGenerator`]: https://docs.rs/bolero/latest/bolero/generator/trait.TypeGenerator.html
 [`ValueGenerator`]: https://docs.rs/bolero/latest/bolero/generator/trait.ValueGenerator.html
