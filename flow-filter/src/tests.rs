@@ -18,7 +18,7 @@ use concurrency::sync::Arc;
 use lpm::prefix::L4Protocol;
 use net::FlowKey;
 use net::buffer::TestBuffer;
-use net::flows::{FlowInfo, FlowStatus};
+use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::Headers;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::parse::DeParse;
@@ -39,6 +39,45 @@ fn packet(src_vpcd: Option<VpcDiscriminant>, headers: Headers) -> Packet<TestBuf
     packet
 }
 
+#[allow(clippy::too_many_arguments)]
+fn create_flow_pair(
+    src_vpcd: Option<VpcDiscriminant>,
+    dst_vpcd: Option<VpcDiscriminant>,
+    flow_key: FlowKey,
+    flags: FlowInfoFlags,
+    reply_flow_key: FlowKey,
+    reply_flags: FlowInfoFlags,
+    active: bool,
+    nat_state: bool,
+    port_fw_state: bool,
+) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
+    let expires_at = Instant::now() + Duration::from_secs(60);
+    let (flow_info_fwd, flow_info_reply) =
+        FlowInfo::related_pair(expires_at, flow_key, flags, reply_flow_key, reply_flags).unwrap();
+
+    if active {
+        flow_info_fwd.update_status(FlowStatus::Active);
+        flow_info_reply.update_status(FlowStatus::Active);
+    }
+    {
+        let mut locked_fwd = flow_info_fwd.locked.write();
+        let mut locked_reply = flow_info_reply.locked.write();
+        locked_fwd.dst_vpcd = dst_vpcd;
+        locked_reply.dst_vpcd = src_vpcd;
+        if nat_state {
+            // The concrete type would be a NatState; a bool is enough here since the flow filter
+            // only checks for presence, never downcasts it.
+            locked_fwd.nat_state = Some(Box::new(true));
+            locked_reply.nat_state = Some(Box::new(true));
+        }
+        if port_fw_state {
+            locked_fwd.port_fw_state = Some(Box::new(true));
+            locked_reply.port_fw_state = Some(Box::new(true));
+        }
+    }
+    (flow_info_fwd, flow_info_reply)
+}
+
 // Attach a flow session, the way a downstream stateful NF would. `active` controls the flow status
 // (only active flows can be used to bypass the filter); `dst_vpcd` is the flow's recorded
 // destination (`None` models a buggy flow with no destination); `nat_state` / `port_fw_state` model
@@ -51,33 +90,59 @@ fn attach_flow(
     nat_state: bool,
     port_fw_state: bool,
 ) -> Arc<FlowInfo> {
+    let src_vpcd = packet.meta().src_vpcd;
     let flow_key = FlowKey::try_from(&*packet).unwrap();
+    let flags = packet.meta().compute_flow_flags_forward();
+    let reply_flow_key = flow_key.reverse(dst_vpcd);
+    let reply_flags = packet.meta().compute_flow_flags_reverse();
 
-    let expires_at = Instant::now() + Duration::from_secs(60);
-    let (flow_info, _) = FlowInfo::related_pair(
-        expires_at,
+    let (flow_info, _) = create_flow_pair(
+        src_vpcd,
+        dst_vpcd,
         flow_key,
-        packet.meta().compute_flow_flags_forward(),
-        flow_key.reverse(dst_vpcd),
-        packet.meta().compute_flow_flags_reverse(),
-    )
-    .unwrap();
+        flags,
+        reply_flow_key,
+        reply_flags,
+        active,
+        nat_state,
+        port_fw_state,
+    );
+    packet.meta_mut().flow_info = Some(flow_info.clone());
+    flow_info
+}
 
-    if active {
-        flow_info.update_status(FlowStatus::Active);
-    }
-    {
-        let mut locked = flow_info.locked.write();
-        locked.dst_vpcd = dst_vpcd;
-        if nat_state {
-            // The concrete type would be a NatState; a bool is enough here since the flow filter
-            // only checks for presence, never downcasts it.
-            locked.nat_state = Some(Box::new(true));
-        }
-        if port_fw_state {
-            locked.port_fw_state = Some(Box::new(true));
-        }
-    }
+// Same as `attach_flow`, but do not mark the provided flow as the initiator flow (mark the reverse
+// flow instead).
+fn attach_flow_reply(
+    packet: &mut Packet<TestBuffer>,
+    reply_dst_vpcd: Option<VpcDiscriminant>,
+    active: bool,
+    nat_state: bool,
+    port_fw_state: bool,
+) -> Arc<FlowInfo> {
+    let reply_src_vpcd = packet.meta().src_vpcd;
+    let reply_flow_key = FlowKey::try_from(&*packet).unwrap();
+    let initiator_flow_key = reply_flow_key.reverse(reply_dst_vpcd);
+
+    // We need .compute_flow_flags_forward() here to get the correct NAT flags from the metadata,
+    // but we need to remove the INITIATOR flag
+    let mut reply_flags = packet.meta().compute_flow_flags_forward();
+    reply_flags.remove(FlowInfoFlags::INITIATOR);
+    // Conversely, we need to manually set the INITIATOR flag
+    let mut initiator_flags = packet.meta().compute_flow_flags_reverse();
+    initiator_flags.insert(FlowInfoFlags::INITIATOR);
+
+    let (_, flow_info) = create_flow_pair(
+        reply_dst_vpcd,
+        reply_src_vpcd,
+        initiator_flow_key,
+        initiator_flags,
+        reply_flow_key,
+        reply_flags,
+        active,
+        nat_state,
+        port_fw_state,
+    );
     packet.meta_mut().flow_info = Some(flow_info.clone());
     flow_info
 }
@@ -581,7 +646,7 @@ fn masquerade_reply_on_established_flow_survives_config_change() {
         Some(vpcd(200)),
         build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(100)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
@@ -611,7 +676,7 @@ fn masquerade_reply_with_inactive_flow_is_filtered() {
         Some(vpcd(200)),
         build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    attach_flow(&mut p, Some(vpcd(100)), false, true, false);
+    attach_flow_reply(&mut p, Some(vpcd(100)), false, true, false);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
 }
@@ -624,7 +689,7 @@ fn masquerade_reply_with_mismatched_flow_destination_is_filtered() {
         Some(vpcd(200)),
         build_tcp_packet(v4("5.0.0.10"), v4("30.0.0.5"), 5678, 1234),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(300)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(300)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
     assert_eq!(flow.status(), FlowStatus::Cancelled);
@@ -639,7 +704,7 @@ fn port_forwarding_reply_on_established_flow_survives_config_change() {
         Some(vpcd(200)),
         build_tcp_packet(v4("192.168.80.5"), v4("10.0.0.5"), 22, 1234),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, false, true);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(100)), true, false, true);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
@@ -715,7 +780,7 @@ fn revalidation_works_in_case_of_remote_masquerade_overlap() {
         Some(vpcd(100)),
         build_tcp_packet(v4("1.0.0.1"), v4("10.0.0.1"), 1111, 2222),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(200)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
@@ -742,7 +807,7 @@ fn revalidation_works_in_case_of_remote_masquerade_overlap() {
         Some(vpcd(100)),
         build_tcp_packet(v4("1.0.0.1"), v4("10.0.0.1"), 1111, 2222),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(200)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
@@ -770,7 +835,7 @@ fn revalidation_works_in_case_of_remote_masquerade_overlap() {
         Some(vpcd(100)),
         build_tcp_packet(v4("1.0.0.1"), v4("10.0.0.1"), 1111, 2222),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(200)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(200)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
     assert_eq!(flow.status(), FlowStatus::Cancelled);
@@ -816,7 +881,7 @@ fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
         Some(vpcd(100)),
         build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(200)), true, false, true);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
@@ -852,7 +917,7 @@ fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
         Some(vpcd(200)),
         build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(100)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
@@ -883,7 +948,7 @@ fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
         Some(vpcd(100)),
         build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(200)), true, false, true);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
@@ -909,7 +974,7 @@ fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
         Some(vpcd(200)),
         build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(100)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert!(!out.is_done(), "{:?}", out.get_done());
     assert_eq!(out.meta().dst_vpcd, Some(vpcd(100)));
@@ -937,7 +1002,7 @@ fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
         Some(vpcd(100)),
         build_tcp_packet(v4("1.0.0.1"), v4("2.0.0.1"), 2000, 8000),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(200)), true, false, true);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(200)), true, false, true);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
     assert_eq!(flow.status(), FlowStatus::Cancelled);
@@ -947,7 +1012,7 @@ fn revalidation_works_in_case_of_local_masquerade_portforwarding_overlap() {
         Some(vpcd(200)),
         build_tcp_packet(v4("2.0.0.1"), v4("10.0.0.1"), 8000, 5000),
     );
-    let flow = attach_flow(&mut p, Some(vpcd(100)), true, true, false);
+    let flow = attach_flow_reply(&mut p, Some(vpcd(100)), true, true, false);
     let out = run(&mut flow_filter, p);
     assert_eq!(out.get_done(), Some(DoneReason::Filtered));
     assert_eq!(flow.status(), FlowStatus::Cancelled);
