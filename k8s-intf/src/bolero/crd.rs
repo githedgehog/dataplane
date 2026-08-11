@@ -24,6 +24,7 @@ fn simple_hostname<D: Driver>(d: &mut D) -> Option<String> {
     )
 }
 
+///
 fn join_own_groups<D: Driver>(d: &mut D, name: &str, spec: &mut GatewayAgentSpec) -> Option<()> {
     for group in spec.groups.iter_mut().flatten().map(|(_, group)| group) {
         if !d.produce::<bool>()? {
@@ -99,7 +100,6 @@ impl GatewayAgentBuilder {
 }
 
 /// Generate a random legal `GatewayAgent` value
-///
 /// Is not exhaustive due to hostname generation
 /// Coverage of values is subject to limitations of the `GatewayAgentSpec` `TypeGenerator` as well
 impl TypeGenerator for LegalValue<GatewayAgent> {
