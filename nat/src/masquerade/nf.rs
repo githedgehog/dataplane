@@ -18,7 +18,7 @@ use config::GenId;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
 use net::flow_key::IcmpProtoKey;
-use net::flows::{ExtractRef, FlowInfo};
+use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
 use net::headers::{TryIp, TryTcp};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -59,6 +59,8 @@ pub(crate) enum MasqueradeError {
     IntendedDrop(&'static str),
     #[error("Failed to NAT packet: {0}")]
     NatError(#[from] NatPacketError),
+    #[error("Failed to create flow state: {0}")]
+    FlowError(#[from] FlowInfoError),
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`Masquerade`] processes
@@ -292,7 +294,7 @@ impl Masquerade {
             packet.meta().compute_flow_flags_forward(),
             reverse_key,
             packet.meta().compute_flow_flags_reverse(),
-        );
+        )?;
 
         // set up their NAT state
         Self::setup_flow_masquerade_state(&forward, forward_state, dst_vpc_id);
@@ -537,6 +539,7 @@ impl From<&MasqueradeError> for DoneReason {
             | MasqueradeError::NatError(_) => DoneReason::NatFailure,
             MasqueradeError::Bug(_) | MasqueradeError::IntendedDrop(_) => DoneReason::Filtered,
             MasqueradeError::AllocationFailure(inner) => inner.into(),
+            MasqueradeError::FlowError(_) => DoneReason::InternalFailure,
         }
     }
 }

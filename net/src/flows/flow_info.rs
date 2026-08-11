@@ -30,6 +30,8 @@ pub enum FlowInfoError {
     NoSuchStatus(u8),
     #[error("Timeout unchanged: would go backwards")]
     TimeoutUnchanged,
+    #[error("Invalid flow pair: {0}")]
+    InvalidPair(String),
 }
 
 #[repr(u8)]
@@ -280,10 +282,10 @@ impl FlowInfo {
     /// to call this function when a couple of related flow entries are needed and later insert them in the
     /// flow-table.
     ///
-    /// # Panics
-    ///   This function panics if two equal keys are provided
+    /// # Errors
+    ///   This function fails if two identical keys are provided or if one (and only one) of the flows
+    ///   is not flagged as initiator
     #[allow(clippy::missing_panics_doc)]
-    #[must_use]
     #[allow(clippy::unwrap_used)]
     pub fn related_pair(
         expires_at: Instant,
@@ -291,16 +293,17 @@ impl FlowInfo {
         flags1: FlowInfoFlags,
         key2: FlowKey,
         flags2: FlowInfoFlags,
-    ) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
-        // keys MUST differ
-        debug_assert!(
-            key1 != key2,
-            "Attempted to build two flows with identical key {key1}"
-        );
-        debug_assert!(
-            flags1.is_initiator() != flags2.is_initiator(),
-            "Exactly one of the two flows must be the initiator"
-        );
+    ) -> Result<(Arc<FlowInfo>, Arc<FlowInfo>), FlowInfoError> {
+        if key1 == key2 {
+            return Err(FlowInfoError::InvalidPair(format!(
+                "Attempted to build a flow pair with identical keys {key1}"
+            )));
+        }
+        if flags1.is_initiator() == flags2.is_initiator() {
+            return Err(FlowInfoError::InvalidPair(
+                "One of the flows must be the initiator".to_string(),
+            ));
+        }
 
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
@@ -331,7 +334,7 @@ impl FlowInfo {
                     .set_related(one_weak),
             );
             // turn back into Arc's
-            (one.assume_init(), two.assume_init())
+            Ok((one.assume_init(), two.assume_init()))
         }
     }
 

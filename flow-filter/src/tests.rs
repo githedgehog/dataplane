@@ -60,7 +60,8 @@ fn attach_flow(
         packet.meta().compute_flow_flags_forward(),
         flow_key.reverse(dst_vpcd),
         packet.meta().compute_flow_flags_reverse(),
-    );
+    )
+    .unwrap();
 
     if active {
         flow_info.update_status(FlowStatus::Active);

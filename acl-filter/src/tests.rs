@@ -677,7 +677,8 @@ fn attach_related_flow(reply: &mut Packet<TestBuffer>, fwd_key: FlowKey) -> Arc<
         FlowInfoFlags::default() | FlowInfoFlags::INITIATOR,
         reply_key,
         FlowInfoFlags::default(),
-    );
+    )
+    .unwrap();
     reply_flow.update_status(FlowStatus::Active);
     reply.meta_mut().flow_info = Some(reply_flow);
     fwd_flow
