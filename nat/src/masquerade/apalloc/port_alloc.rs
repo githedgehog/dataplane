@@ -10,6 +10,7 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
+use super::reserved::ReservedForAddr;
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use concurrency::concurrency_mode;
@@ -87,6 +88,7 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     current_alloc_index: AtomicUsize,
     thread_blocks: ThreadPortMap,
     allocated_blocks: AllocatedPortBlockMap<I>,
+    reserved: ReservedForAddr,
     exclude_wellknown_ports: bool,
 }
 
@@ -94,11 +96,12 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
 /// allocated by masquerade NAT for TCP or UDP.
 pub(super) const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
 
-/// Number of 256-port blocks covering the IANA well-known port range (0-1023).
-const IANA_WELLKNOWN_BLOCKS: u16 = IANA_WELLKNOWN_PORT_LIMIT / 256;
-
 impl<I: NatIpWithBitmap> PortAllocator<I> {
-    pub(crate) fn new(randomize: bool, exclude_wellknown_ports: bool) -> Self {
+    pub(crate) fn new(
+        reserved: ReservedForAddr,
+        randomize: bool,
+        exclude_wellknown_ports: bool,
+    ) -> Self {
         let mut base_ports = (0..=255).collect::<Vec<_>>();
 
         // Shuffle the list of port blocks for the port allocator. This way, we can pick blocks in a
@@ -108,35 +111,47 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         if randomize {
             Self::shuffle_slice(&mut base_ports);
         }
+        // Count the blocks left usable rather than deriving the count, so a block excluded by both
+        // policies below is not subtracted twice.
+        let mut usable_blocks = 0u16;
         let blocks = std::array::from_fn(|i| {
             let block = AllocatorPortBlock::new(base_ports[i]);
+            let base_port = block.to_port_number();
             // Pre-mark IANA well-known port blocks (0-1023) as permanently non-free so they are
-            // never handed out by masquerade NAT for TCP or UDP.
-            if exclude_wellknown_ports && block.to_port_number() < IANA_WELLKNOWN_PORT_LIMIT {
+            // never handed out by masquerade NAT for TCP or UDP. A block whose every port is claimed
+            // by port forwarding is likewise never handed out; a partially claimed one stays usable
+            // and has the claimed ports pre-set when it is allocated.
+            let wellknown = exclude_wellknown_ports && base_port < IANA_WELLKNOWN_PORT_LIMIT;
+            let claimed_whole_block =
+                Bitmap256::for_block(base_port, reserved.ranges(), false).bitmap_full();
+            if wellknown || claimed_whole_block {
                 block
                     .free
                     .store(false, concurrency::sync::atomic::Ordering::Relaxed);
+            } else {
+                usable_blocks += 1;
             }
             block
         });
-        let usable_blocks = if exclude_wellknown_ports {
-            256 - IANA_WELLKNOWN_BLOCKS
-        } else {
-            256
-        };
         Self {
             blocks,
             usable_blocks: AtomicU16::new(usable_blocks),
             current_alloc_index: AtomicUsize::new(0),
             thread_blocks: ThreadPortMap::new(),
             allocated_blocks: AllocatedPortBlockMap::new(),
+            reserved,
             exclude_wellknown_ports,
         }
     }
 
+    /// The ports of this address that must never be handed out.
+    pub(crate) fn reserved_ports(&self) -> &ReservedForAddr {
+        &self.reserved
+    }
+
     #[cfg(test)]
     pub(crate) fn new_no_randomness(exclude_wellknown_ports: bool) -> Self {
-        Self::new(false, exclude_wellknown_ports)
+        Self::new(ReservedForAddr::default(), false, exclude_wellknown_ports)
     }
 
     #[concurrency_mode(std)]
@@ -238,7 +253,12 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
-        AllocatedPortBlock::new(ip, index, base_port_index, allow_null)
+        Ok(AllocatedPortBlock::new(
+            ip,
+            index,
+            base_port_index,
+            allow_null,
+        ))
     }
 
     pub(crate) fn allocate_port(
@@ -294,7 +314,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         index: usize,
         port: NatPort,
         allow_null: bool,
-    ) -> Result<Arc<AllocatedPortBlock<I>>, AllocatorError> {
+    ) -> Arc<AllocatedPortBlock<I>> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
         let block = Arc::new(AllocatedPortBlock::new(
@@ -302,10 +322,10 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             index,
             (port.as_u16() / 256) * 256, // port block base index, discard offset within block
             allow_null,
-        )?);
+        ));
         self.allocated_blocks
             .insert(block.index, Arc::downgrade(&block));
-        Ok(block)
+        block
     }
 
     fn find_block_for_port(
@@ -317,7 +337,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         for _ in 0..BLOCK_LOOKUP_ATTEMPTS {
             let (block_was_free, index) = self.try_to_reserve_block(port)?;
             if block_was_free {
-                return self.allocate_block_for_reservation(ip, index, port, allow_null);
+                return Ok(self.allocate_block_for_reservation(ip, index, port, allow_null));
             }
             if let Some(block) = self.allocated_blocks.search_for_block(port) {
                 return Ok(block);
@@ -340,6 +360,13 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         // pre-excluded low-port blocks.
         if self.exclude_wellknown_ports && port.as_u16() < IANA_WELLKNOWN_PORT_LIMIT {
             debug!("Explicit reservation for well-known port {port} denied by allocator policy");
+            return Err(AllocatorError::Denied);
+        }
+        // Same reason, for the ports port forwarding claims. Answering here matters beyond the error
+        // being clearer: a block claimed in full is never allocated, so `find_block_for_port` would
+        // find it neither free nor in the allocated map, and spend every retry before giving up.
+        if self.reserved.contains(port.as_u16()) {
+            debug!("Explicit reservation for port-forwarding port {port} denied");
             return Err(AllocatorError::Denied);
         }
         let block = self.find_block_for_port(ip, port)?;
@@ -374,25 +401,17 @@ pub(crate) struct AllocatedPortBlock<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
-    fn new(
-        ip: Arc<AllocatedIp<I>>,
-        index: usize,
-        base_port_idx: u16,
-        allow_null: bool,
-    ) -> Result<Self, AllocatorError> {
-        let block = Self {
+    fn new(ip: Arc<AllocatedIp<I>>, index: usize, base_port_idx: u16, allow_null: bool) -> Self {
+        // The claims are taken from the address rather than passed in, so that every path creating a
+        // block honours the ports port forwarding may use, whether it allocates or reserves.
+        let usage_bitmap =
+            Bitmap256::for_block(base_port_idx, ip.reserved_ports().ranges(), !allow_null);
+        Self {
             ip,
             base_port_idx,
             index,
-            usage_bitmap: Mutex::new(Bitmap256::new()),
-        };
-        if !allow_null && block.base_port_idx == 0 {
-            let mut mutex_guard = block.usage_bitmap.lock();
-            mutex_guard.reserve_port_from_bitmap(0).map_err(|()| {
-                AllocatorError::InternalIssue("Failed to reserve port 0 from new block".to_string())
-            })?;
+            usage_bitmap: Mutex::new(usage_bitmap),
         }
-        Ok(block)
     }
 
     fn ip(&self) -> I {
@@ -740,6 +759,57 @@ impl Bitmap256 {
         }
     }
 
+    /// The starting state of the block based at `base_port`: every port `claimed` covers is marked
+    /// used before the block is handed out, so it can never be allocated. Port 0 is treated the same
+    /// way when it may not be given out.
+    ///
+    /// A claim is clipped to this block, so one spanning several blocks marks the right ports in each
+    /// of them. [`Self::bitmap_full`] then says whether the block has anything left to allocate.
+    fn for_block(base_port: u16, claimed: &[PortRange], reserve_null: bool) -> Self {
+        debug_assert_eq!(base_port % 256, 0, "not a port block base: {base_port}");
+        let mut bitmap = Self::new();
+        if reserve_null && base_port == 0 {
+            bitmap.first_half |= 1;
+        }
+        for range in claimed {
+            let start = range.start().max(base_port);
+            let end = range.end().min(base_port | 0xff);
+            if start > end {
+                continue;
+            }
+            // Both offsets fall inside the block, so they fit in a u8.
+            let offset = |port: u16| {
+                u8::try_from(port - base_port).unwrap_or_else(|_| unreachable!("{port}"))
+            };
+            bitmap.reserve_offset_range(offset(start), offset(end));
+        }
+        bitmap
+    }
+
+    /// Mark the inclusive offset range `start..=end` of the block used.
+    fn reserve_offset_range(&mut self, start: u8, end: u8) {
+        debug_assert!(start <= end, "start: {start}, end: {end}");
+        if start < 128 {
+            self.first_half |= Self::contiguous_bits(start, end.min(127));
+        }
+        if end >= 128 {
+            self.second_half |= Self::contiguous_bits(start.max(128) - 128, end - 128);
+        }
+    }
+
+    /// Ones in `start..=end`, both offsets within one half.
+    fn contiguous_bits(start: u8, end: u8) -> u128 {
+        debug_assert!(start <= end && end < 128, "start: {start}, end: {end}");
+        let width = u32::from(end - start) + 1;
+        // A full half cannot be built by shifting: `1 << 128` overflows.
+        let ones = if width >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+        ones << start
+    }
+
     fn bitmap_full(&self) -> bool {
         self.first_half == u128::MAX && self.second_half == u128::MAX
     }
@@ -881,6 +951,7 @@ fn collect_ranges_from_u128_bitmap(bitmap: u128, base: u16) -> BTreeSet<PortRang
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bolero::{Driver, TypeGenerator};
     use lpm::prefix::PortRange;
     use std::net::Ipv4Addr;
 
@@ -1130,5 +1201,136 @@ mod tests {
         let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(false);
         let (_, base_port) = allocator.pick_available_block().unwrap();
         assert_eq!(base_port, 0);
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // for_block(): ports claimed by port forwarding
+    ///////////////////////////////////////////////////////////////////////////
+
+    fn claimed(pairs: &[(u16, u16)]) -> Vec<PortRange> {
+        pairs
+            .iter()
+            .map(|&(start, end)| PortRange::new(start, end).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_claim_outside_the_block_marks_nothing() {
+        let bitmap = Bitmap256::for_block(1024, &claimed(&[(300, 400)]), false);
+        assert!((0..=255u8).all(|port| !port_is_used(&bitmap, port)));
+    }
+
+    #[test]
+    fn a_claim_is_clipped_to_the_block() {
+        let bitmap = Bitmap256::for_block(1024, &claimed(&[(1000, 1100)]), false);
+        assert!(!bitmap.bitmap_full());
+        assert!(port_is_used(&bitmap, 0), "port 1024 must be reserved");
+        assert!(port_is_used(&bitmap, 76), "port 1100 must be reserved");
+        assert!(!port_is_used(&bitmap, 77), "port 1101 must be free");
+    }
+
+    #[test]
+    fn a_claim_spanning_both_halves_marks_both() {
+        // Ports 1100-1200 are offsets 76-176 of the block based at 1024, crossing the boundary
+        // between the two halves the bitmap is stored in.
+        let bitmap = Bitmap256::for_block(1024, &claimed(&[(1100, 1200)]), false);
+        assert!(port_is_used(&bitmap, 127), "port 1151 must be reserved");
+        assert!(port_is_used(&bitmap, 128), "port 1152 must be reserved");
+        assert!(!port_is_used(&bitmap, 177), "port 1201 must be free");
+        assert!(!port_is_used(&bitmap, 255), "port 1279 must be free");
+    }
+
+    #[test]
+    fn a_claim_running_past_the_block_marks_its_tail() {
+        let bitmap = Bitmap256::for_block(1024, &claimed(&[(1100, 1300)]), false);
+        assert!(port_is_used(&bitmap, 76), "port 1100 must be reserved");
+        assert!(port_is_used(&bitmap, 255), "port 1279 must be reserved");
+        assert!(!port_is_used(&bitmap, 75), "port 1099 must be free");
+    }
+
+    // A block with nothing left to allocate, which is how `PortAllocator::new` recognises the blocks
+    // it must never hand out.
+    #[test]
+    fn a_claim_over_a_whole_block_fills_it() {
+        assert!(
+            Bitmap256::for_block(1024, &claimed(&[(1024, 1279)]), false).bitmap_full(),
+            "an exact claim must fill the block"
+        );
+        // And so must a claim spanning it, without leaking into its neighbours.
+        let wide = claimed(&[(1000, 2000)]);
+        assert!(Bitmap256::for_block(1024, &wide, false).bitmap_full());
+        assert!(Bitmap256::for_block(1280, &wide, false).bitmap_full());
+        assert!(!Bitmap256::for_block(2048, &wide, false).bitmap_full());
+    }
+
+    #[test]
+    fn disjoint_claims_accumulate_in_one_block() {
+        let bitmap = Bitmap256::for_block(1024, &claimed(&[(1024, 1024), (1279, 1279)]), false);
+        assert!(port_is_used(&bitmap, 0));
+        assert!(port_is_used(&bitmap, 255));
+        assert!(!port_is_used(&bitmap, 128));
+    }
+
+    #[test]
+    fn port_zero_is_reserved_in_the_first_block_alone() {
+        assert!(port_is_used(&Bitmap256::for_block(0, &[], true), 0));
+        assert!(!port_is_used(&Bitmap256::for_block(0, &[], false), 0));
+        // Offset 0 of any other block is a legitimate port.
+        assert!(!port_is_used(&Bitmap256::for_block(256, &[], true), 0));
+    }
+
+    /// A block base and a handful of claims around it.
+    #[derive(Debug, Clone)]
+    struct Claims {
+        base_port: u16,
+        ranges: Vec<(u16, u16)>,
+    }
+
+    impl TypeGenerator for Claims {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let base_port = u16::from(driver.produce::<u8>()?) * 256;
+            let count = usize::from(driver.produce::<u8>()? % 4);
+            let mut ranges = Vec::with_capacity(count);
+            for _ in 0..count {
+                // Draw around the block so claims land inside it, across its edges, and outside.
+                let start = base_port.saturating_sub(300).saturating_add(
+                    u16::from(driver.produce::<u8>()?) * 4 + u16::from(driver.produce::<u8>()? % 4),
+                );
+                let end = start.saturating_add(u16::from(driver.produce::<u8>()?) * 3);
+                ranges.push((start, end));
+            }
+            Some(Self { base_port, ranges })
+        }
+    }
+
+    #[test]
+    fn a_block_holds_exactly_the_claimed_ports_of_its_block() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|claims: Claims| {
+                let ranges = claimed(&claims.ranges);
+                let bitmap = Bitmap256::for_block(claims.base_port, &ranges, false);
+                // The claimed set, restricted to this block, port by port.
+                let is_claimed = |port: u16| {
+                    ranges
+                        .iter()
+                        .any(|range| range.start() <= port && port <= range.end())
+                };
+
+                for offset in 0..=255u8 {
+                    let port = claims.base_port + u16::from(offset);
+                    assert_eq!(
+                        port_is_used(&bitmap, offset),
+                        is_claimed(port),
+                        "port {port} (offset {offset} of block {})",
+                        claims.base_port
+                    );
+                }
+                assert_eq!(
+                    bitmap.bitmap_full(),
+                    (0..=255u8).all(|offset| is_claimed(claims.base_port + u16::from(offset)))
+                );
+            });
     }
 }

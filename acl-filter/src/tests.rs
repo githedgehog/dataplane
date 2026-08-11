@@ -949,7 +949,6 @@ mod end_to_end {
             "port-forwarder",
             portfw_writer.reader(),
             flow_table.clone(),
-            allocator.get_reader(),
         ));
 
         // Masquerade (creates the related flow pair used by 'flow'-scoped replies)

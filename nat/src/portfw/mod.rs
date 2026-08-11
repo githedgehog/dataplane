@@ -13,7 +13,6 @@ mod test;
 
 // re-exports
 pub use flow_state::PortFwState;
-pub(crate) use flow_state::update_port_forward_lease;
 pub use nf::PortForwarder;
 pub use portfwtable::PortFwTableError;
 pub use portfwtable::access::{PortFwTableReader, PortFwTableReaderFactory, PortFwTableWriter};

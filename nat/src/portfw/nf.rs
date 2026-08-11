@@ -3,7 +3,6 @@
 
 //! Port forwarding stage
 
-use crate::masquerade::NatAllocatorReader;
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
 use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::FlowTable;
@@ -18,13 +17,11 @@ use std::num::NonZero;
 use std::time::Instant;
 
 use crate::common::NatAction;
-use crate::portfw::flow_state::PublicTuple;
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
 use crate::portfw::flow_state::refresh_port_fw_entry;
 use crate::portfw::flow_state::setup_forward_flow;
 use crate::portfw::flow_state::setup_reverse_flow;
-use crate::portfw::flow_state::update_port_forward_lease;
 use crate::portfw::packet::nat_packet;
 
 #[allow(unused)]
@@ -35,24 +32,17 @@ pub struct PortForwarder {
     name: String,
     flow_table: Arc<FlowTable>,
     fwtable: PortFwTableReader,
-    allocator: NatAllocatorReader,
     pipeline_data: Arc<PipelineData>,
 }
 
 impl PortForwarder {
     /// Creates a new [`PortForwarder`]
     #[must_use]
-    pub fn new(
-        name: &str,
-        fwtable: PortFwTableReader,
-        flow_table: Arc<FlowTable>,
-        allocator: NatAllocatorReader,
-    ) -> Self {
+    pub fn new(name: &str, fwtable: PortFwTableReader, flow_table: Arc<FlowTable>) -> Self {
         Self {
             name: name.to_string(),
             flow_table,
             fwtable,
-            allocator,
             pipeline_data: Arc::from(PipelineData::default()),
         }
     }
@@ -123,23 +113,6 @@ impl PortForwarder {
             return;
         };
 
-        let lease = match self.allocator.get().map(|allocator| {
-            allocator.reserve_port_forward(
-                fw_key.proto(),
-                entry.key.src_vpcd(),
-                dst_ip.inner(),
-                dst_port,
-            )
-        }) {
-            Some(Ok(lease)) => lease,
-            Some(Err(error)) => {
-                debug!("Unable to reserve {dst_ip}:{dst_port} for port forwarding: {error}");
-                packet.done((&error).into());
-                return;
-            }
-            None => None,
-        };
-
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
         let timeout = Instant::now() + entry.init_timeout();
         let Ok((fw_flow, rev_flow)) = FlowInfo::related_pair(
@@ -158,16 +131,8 @@ impl PortForwarder {
         fw_flow.set_genid_pair(self.pipeline_data.genid());
 
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
-        let public = PublicTuple::new(dst_ip, dst_port, entry.key.src_vpcd(), lease);
-        let status = setup_forward_flow(
-            &fw_key,
-            &fw_flow,
-            entry,
-            new_dst_ip,
-            new_dst_port,
-            public.clone(),
-        );
-        setup_reverse_flow(&rev_key, &rev_flow, entry, public, status);
+        let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
+        setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
         // get the state we just created for the FORWARD direction
         let locked = fw_flow.locked.read();
@@ -203,14 +168,6 @@ impl PortForwarder {
             return;
         }
 
-        let allocator = self.allocator.get();
-        for flow in [&fw_flow, &rev_flow] {
-            if let Err(error) = update_port_forward_lease(flow, allocator.as_deref()) {
-                flow.invalidate_pair();
-                packet.done((&error).into());
-                return;
-            }
-        }
         debug!("Inserted forward and reverse port-forwarding flow entries");
     }
 

@@ -14,6 +14,7 @@ use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
+use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -74,10 +75,7 @@ impl Config {
     fn specs(&self) -> Vec<PoolSpec> {
         self.owner_ranges()
             .into_iter()
-            .map(|public_ranges| PoolSpec {
-                public_ranges,
-                idle_timeout: IDLE_TIMEOUT,
-            })
+            .map(|public_ranges| PoolSpec::new(public_ranges, IDLE_TIMEOUT))
             .collect()
     }
 
@@ -179,10 +177,10 @@ fn freed_allocations_become_available_again() {
 
 #[test]
 fn a_port_freed_while_neighbours_are_held_is_reused() {
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(BASE, BASE)],
-        idle_timeout: IDLE_TIMEOUT,
-    }];
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE)],
+        IDLE_TIMEOUT,
+    )];
     let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
 
     let mut held: Vec<_> = (0..5)
@@ -267,10 +265,10 @@ fn a_region_can_be_allocated_dry() {
     const PORTS_PER_ADDRESS: usize = 65536 - 1024;
     const ADDRESSES: usize = 2;
 
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(BASE, BASE + ADDRESSES as u128 - 1)],
-        idle_timeout: IDLE_TIMEOUT,
-    }];
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE + ADDRESSES as u128 - 1)],
+        IDLE_TIMEOUT,
+    )];
     let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
 
     let first = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
@@ -307,10 +305,10 @@ fn a_freed_port_block_is_reused_while_its_address_is_held() {
     const PORTS_PER_BLOCK: usize = 256;
     const PORTS_PER_ADDRESS: usize = 65536 - 1024;
 
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(BASE, BASE)],
-        idle_timeout: IDLE_TIMEOUT,
-    }];
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE)],
+        IDLE_TIMEOUT,
+    )];
     let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
 
     let mut held = Vec::with_capacity(PORTS_PER_ADDRESS);
@@ -365,10 +363,10 @@ fn the_offset_mapping_refuses_an_address_it_cannot_index() {
 fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
     let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
     // Far wider than the bitmap can index.
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(start, start + (1u128 << 40))],
-        idle_timeout: IDLE_TIMEOUT,
-    }];
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(start, start + (1u128 << 40))],
+        IDLE_TIMEOUT,
+    )];
     let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
     let port = NatPort::new_port_checked(4096).unwrap_or_else(|_| unreachable!());
 
@@ -394,10 +392,10 @@ fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
 fn ipv6_pools_allocate_within_their_range() {
     let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
     let end = start + 3;
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(start, end)],
-        idle_timeout: IDLE_TIMEOUT,
-    }];
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(start, end)],
+        IDLE_TIMEOUT,
+    )];
     let pool_sets = pool_sets_for_specs::<Ipv6Addr>(&specs, NextHeader::TCP, false);
 
     let mut held = Vec::new();
@@ -425,10 +423,10 @@ fn ipv6_pools_allocate_within_their_range() {
 
 #[test]
 fn a_live_tuple_cannot_be_reserved_again() {
-    let specs = vec![PoolSpec {
-        public_ranges: vec![AddrInterval::new(BASE, BASE)],
-        idle_timeout: IDLE_TIMEOUT,
-    }];
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE)],
+        IDLE_TIMEOUT,
+    )];
     let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
 
     let held = pool_sets[0].allocate(false).expect("pool has room");
@@ -437,4 +435,40 @@ fn a_live_tuple_cannot_be_reserved_again() {
 
     drop(held);
     assert!(pool_sets[0].reserve(tuple.0, tuple.1).is_ok());
+}
+
+/// What port forwarding may serve over a shared region is off limits to every owner of it, not only
+/// to the expose the rule was written on: they allocate from one allocator, so a tuple one of them
+/// hands out is a tuple the other cannot serve either.
+#[test]
+fn a_shared_region_honours_the_claims_of_every_owner() {
+    let address = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
+    let claimed = PrefixPortsSet::from([PrefixWithOptionalPorts::new(
+        format!("{address}/32").as_str().into(),
+        Some(PortRange::new(8080, 8080).unwrap_or_else(|_| unreachable!())),
+    )]);
+    // Both exposes masquerade onto the one address, so they share its region; only the first carries
+    // the forwarding rule.
+    let specs = vec![
+        PoolSpec::new(vec![AddrInterval::new(BASE, BASE)], IDLE_TIMEOUT).claiming(claimed),
+        PoolSpec::new(vec![AddrInterval::new(BASE, BASE)], IDLE_TIMEOUT),
+    ];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let claimed_port = NatPort::new_port_checked(8080).unwrap_or_else(|_| unreachable!());
+    for (owner, pool_set) in pool_sets.iter().enumerate() {
+        assert!(
+            matches!(
+                pool_set.reserve(address, claimed_port),
+                Err(AllocatorError::Denied)
+            ),
+            "owner {owner} was offered a claimed tuple"
+        );
+    }
+
+    // Every other port of the shared address is still theirs to hand out.
+    let free_port = NatPort::new_port_checked(8081).unwrap_or_else(|_| unreachable!());
+    pool_sets[1]
+        .reserve(address, free_port)
+        .expect("an unclaimed port of a shared region is still available");
 }

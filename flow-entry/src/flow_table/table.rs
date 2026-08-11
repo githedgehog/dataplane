@@ -40,10 +40,15 @@ fn hasher_state() -> &'static RandomState {
     HASHER_STATE.get_or_init(|| RandomState::with_seeds(0, 0, 0, 0))
 }
 
-/// A read guard to the `FlowTable`. While a guard like this one exists, other threads
-/// attempting insertions in the corresponding `FlowTable` will wait. This guard is
-/// returned by some methods that iterate over the `FlowTable` as a knob to allow callers
-/// to block the table from insertions, without exposing the internal types
+/// A read guard to the `FlowTable`, returned by the methods that iterate over it so a caller can
+/// keep holding what the iteration held, without exposing the internal types.
+///
+/// It excludes only the operations that take the table for writing, which today means
+/// [`FlowTable::reshard`]. It does **not** hold off insertion or removal: those take the same read
+/// lock and mutate the map through it, so they proceed alongside this guard. A caller that must not
+/// miss a flow inserted while it works cannot get that from this guard; it needs the inserting side
+/// to re-check its own work afterwards, the way masquerade re-checks the allocator a flow was built
+/// from once the flow is in the table.
 pub struct FlowTableReadGuard<'a>(
     #[allow(unused)] RwLockReadGuard<'a, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
 );

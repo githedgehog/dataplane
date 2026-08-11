@@ -5,7 +5,6 @@ use crate::NatPort;
 use crate::common::NatAction;
 use crate::masquerade::apalloc::NatAllocator;
 use crate::masquerade::state::MasqueradeState;
-use crate::portfw::update_port_forward_lease;
 
 use config::GenId;
 use flow_entry::flow_table::{FlowTable, FlowTableReadGuard};
@@ -16,17 +15,18 @@ use net::flows::FlowInfo;
 use std::net::IpAddr;
 use tracing::{debug, error};
 
-/// Detach flows from an allocator before it is removed.
-pub(crate) fn remove_allocator_from_flows(flow_table: &FlowTable) {
+/// Invalidate all masquerading flows
+pub(crate) fn invalidate_masquerade_flows(flow_table: &FlowTable) {
+    debug!("INVALIDATING all masquerading flows...");
     flow_table.for_each_flow(|_key, flow_info| {
         if flow_info.locked.read().nat_state.as_ref().is_some() {
             flow_info.invalidate_pair();
         }
-        let _ = update_port_forward_lease(flow_info, None);
     });
+    debug!("INVALIDATING all masquerading flows COMPLETED");
 }
 
-/// Upgrade to genid `GenId` all of the flows in the flow table
+/// Upgrade to genid `GenId` all of the active masquerading flows
 pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenId) {
     debug!("UPGRADING all masquerading flows to gen {genid}...");
     let mut count = 0;
@@ -166,8 +166,9 @@ pub(crate) fn check_masquerading_flow(
     }
 }
 
-/// Move live NAT flows to a replacement allocator while blocking flow insertion.
-pub(crate) fn reconcile_nat_flows<'a>(
+/// Migrate active masquerading flows to a new allocator while blocking flow insertion.
+/// Flows that are kept should get the ip/port allocated in the new allocator
+pub(crate) fn check_masquerading_flows<'a>(
     flow_table: &'a FlowTable,
     new_allocator: &NatAllocator,
 ) -> FlowTableReadGuard<'a> {
@@ -175,17 +176,7 @@ pub(crate) fn reconcile_nat_flows<'a>(
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     let guard = flow_table.for_each_flow_filtered(
         |_, f| f.is_active(),
-        |flow_key, flow_info| {
-            check_masquerading_flow(flow_key, flow_info, new_allocator);
-            // The check may invalidate a flow selected while it was still active.
-            if !flow_info.is_active() {
-                return;
-            }
-            if let Err(error) = update_port_forward_lease(flow_info, Some(new_allocator)) {
-                error!("Failed to reserve a live port-forward tuple: {error}");
-                flow_info.invalidate_pair();
-            }
-        },
+        |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");
     guard

@@ -3,19 +3,23 @@
 
 //! Build masquerade pools by grouping exposes per peer VPC and splitting overlapping public ranges
 //! into disjoint, shared regions.
+//!
+//! This is also where the public tuples port forwarding may claim are withheld from the pools, so
+//! that the two translations of a peering cannot end up claiming one public tuple.
 
 use super::alloc::{IpAllocator, NatPool, PoolSet};
 use super::region::{AddrInterval, Region, decompose, regions_by_owner};
+use super::reserved::ReservedPorts;
 use super::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use crate::masquerade::allocator_writer::MasqueradeConfig;
 use crate::masquerade::natip::NatIp;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
-use lpm::prefix::{PrefixPortsSet, PrefixWithOptionalPorts};
+use lpm::prefix::{L4Protocol, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, error};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
@@ -24,6 +28,7 @@ impl NatAllocator {
         build_pools_generic(
             config,
             ValidatedManifest::masquerade_exposes_44,
+            ValidatedManifest::port_forwarding_exposes_44,
             &mut self.pools_src44,
             NextHeader::ICMP,
             self.randomize,
@@ -32,6 +37,7 @@ impl NatAllocator {
         build_pools_generic(
             config,
             ValidatedManifest::masquerade_exposes_66,
+            ValidatedManifest::port_forwarding_exposes_66,
             &mut self.pools_src66,
             NextHeader::ICMP6,
             self.randomize,
@@ -51,22 +57,62 @@ struct GatheredExpose<'a> {
     // The public range this expose allocates from, as raw address intervals.
     public_ranges: Vec<AddrInterval>,
     idle_timeout: Duration,
+    // The port-forwarding exposes of the same peering, whose public tuples this expose's pools must
+    // leave alone.
+    port_forwarding: Vec<&'a ValidatedExpose>,
+}
+
+/// The public tuples the given port-forwarding exposes may claim for one protocol.
+///
+/// A claim bears only on the protocol its rule forwards, so a TCP rule leaves the UDP pools alone.
+/// ICMP pools are never claimed from: port forwarding is validated to carry port ranges, which
+/// identifiers are not.
+///
+/// The claims are deliberately not intersected with the masquerade ranges: a claim on an address no
+/// masquerade pool holds costs nothing, because the pools only ever consult the claims covering the
+/// addresses they own. That leaves one description of which tuples port forwarding may use, rather
+/// than a second one here that has to keep agreeing with the port forwarder.
+fn claims_for(protocol: NextHeader, exposes: &[&ValidatedExpose]) -> PrefixPortsSet {
+    let wanted = match protocol {
+        NextHeader::TCP => L4Protocol::Tcp,
+        NextHeader::UDP => L4Protocol::Udp,
+        _ => return PrefixPortsSet::new(),
+    };
+
+    let mut claimed = PrefixPortsSet::new();
+    for expose in exposes {
+        // A port-forwarding expose is validated to carry NAT configuration.
+        let Some(nat) = expose.nat() else {
+            error!("Port-forwarding expose without NAT configuration. This is a bug");
+            continue;
+        };
+        if nat.proto.intersection(&wanted).is_some() {
+            claimed.extend(expose.as_range_or_empty().clone());
+        }
+    }
+    claimed
 }
 
 // Exposes toward different peers may safely reuse the same public range.
-fn gather_exposes<'a, J, F, FIter>(
+fn gather_exposes<'a, J, F, FIter, P, PIter>(
     config: &'a MasqueradeConfig,
     exposes_filter: &F,
+    port_forwarding_filter: &P,
 ) -> BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>>
 where
     J: NatIp,
     F: Fn(&'a ValidatedManifest) -> FIter,
     FIter: Iterator<Item = &'a ValidatedExpose>,
+    P: Fn(&'a ValidatedManifest) -> PIter,
+    PIter: Iterator<Item = &'a ValidatedExpose>,
 {
     let mut groups: BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>> = BTreeMap::new();
 
     for nat_peering in config.iter() {
         let manifest = nat_peering.peering.local();
+        // Port forwarding and masquerade of one peering share a public space, so the exposes of this
+        // manifest are the ones whose claims the pools built from it must honour.
+        let port_forwarding: Vec<&'a ValidatedExpose> = port_forwarding_filter(manifest).collect();
         for expose in exposes_filter(manifest) {
             let public_ranges = public_intervals::<J>(expose.as_range_or_empty());
             if public_ranges.is_empty() {
@@ -84,6 +130,7 @@ where
                     idle_timeout: expose
                         .idle_timeout()
                         .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT),
+                    port_forwarding: port_forwarding.clone(),
                 });
         }
     }
@@ -110,9 +157,10 @@ fn public_intervals<J: NatIp>(ranges: &PrefixPortsSet) -> Vec<AddrInterval> {
 // Building
 ///////////////////////////////////////////////////////////////////////////////
 
-fn build_pools_generic<'a, I, J, F, FIter>(
+fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
     config: &'a MasqueradeConfig,
     exposes_filter: F,
+    port_forwarding_filter: P,
     table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
     randomize: bool,
@@ -121,8 +169,10 @@ fn build_pools_generic<'a, I, J, F, FIter>(
     J: NatIpWithBitmap,
     F: Fn(&'a ValidatedManifest) -> FIter,
     FIter: Iterator<Item = &'a ValidatedExpose>,
+    P: Fn(&'a ValidatedManifest) -> PIter,
+    PIter: Iterator<Item = &'a ValidatedExpose>,
 {
-    let groups = gather_exposes::<J, _, _>(config, &exposes_filter);
+    let groups = gather_exposes::<J, _, _, _, _>(config, &exposes_filter, &port_forwarding_filter);
 
     for (dst_vpc_id, exposes) in groups {
         // Allocations for TCP, for example, do not affect allocations for UDP or for ICMP: the
@@ -133,6 +183,7 @@ fn build_pools_generic<'a, I, J, F, FIter>(
                 .iter()
                 .map(|expose| PoolSpec {
                     public_ranges: expose.public_ranges.clone(),
+                    claimed: claims_for(protocol, &expose.port_forwarding),
                     idle_timeout: expose.idle_timeout,
                 })
                 .collect();
@@ -153,10 +204,33 @@ fn build_pools_generic<'a, I, J, F, FIter>(
 }
 
 /// The config-independent inputs for one expose's pools.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct PoolSpec {
     pub(crate) public_ranges: Vec<AddrInterval>,
+    /// The public tuples port forwarding may claim over this expose's ranges, for the protocol the
+    /// pools are being built for.
+    pub(crate) claimed: PrefixPortsSet,
     pub(crate) idle_timeout: Duration,
+}
+
+impl PoolSpec {
+    /// A spec with nothing claimed by port forwarding.
+    #[cfg(test)]
+    pub(crate) fn new(public_ranges: Vec<AddrInterval>, idle_timeout: Duration) -> Self {
+        Self {
+            public_ranges,
+            idle_timeout,
+            ..Self::default()
+        }
+    }
+
+    /// The same spec, with public tuples a forwarding rule may serve.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn claiming(mut self, claimed: PrefixPortsSet) -> Self {
+        self.claimed = claimed;
+        self
+    }
 }
 
 /// Cut the space the given exposes claim into disjoint regions, build one allocator per region,
@@ -181,7 +255,7 @@ pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
         specs.len()
     );
 
-    let allocators = build_region_allocators::<J>(&regions, protocol, randomize);
+    let allocators = build_region_allocators::<J>(&regions, specs, protocol, randomize);
     let by_owner = regions_by_owner(&regions);
 
     specs
@@ -204,6 +278,7 @@ pub(crate) fn pool_sets_for_specs<J: NatIpWithBitmap>(
 // keeps a public address and port from being handed out twice.
 fn build_region_allocators<J: NatIpWithBitmap>(
     regions: &[Region],
+    specs: &[PoolSpec],
     protocol: NextHeader,
     randomize: bool,
 ) -> Vec<IpAllocator<J>> {
@@ -214,7 +289,20 @@ fn build_region_allocators<J: NatIpWithBitmap>(
     regions
         .iter()
         .map(|region| {
-            let pool = NatPool::for_range(region.range, exclude_wellknown_ports);
+            // A region is shared, so it must honour every claim on it: what port forwarding may take
+            // from any of its owners is off limits to all of them.
+            let claimed = region
+                .owners
+                .iter()
+                .fold(PrefixPortsSet::new(), |accumulated, &owner| {
+                    accumulated.union_prefixes_and_ports(&specs[owner].claimed)
+                });
+
+            let pool = NatPool::for_range(
+                region.range,
+                ReservedPorts::from_set(&claimed),
+                exclude_wellknown_ports,
+            );
             IpAllocator::new(pool, randomize)
         })
         .collect()

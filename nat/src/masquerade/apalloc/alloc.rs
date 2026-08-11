@@ -4,12 +4,14 @@
 //! Masquerade IP allocation. See the architecture diagram in `mod.rs`.
 
 use super::region::AddrInterval;
+use super::reserved::{ReservedForAddr, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
 use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
@@ -256,18 +258,28 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
     fn new(
         ip: I,
         ip_allocator: IpAllocator<I>,
+        reserved: ReservedForAddr,
         randomize: bool,
         exclude_wellknown_ports: bool,
     ) -> Self {
+        let port_allocator = PortAllocator::new(reserved, randomize, exclude_wellknown_ports);
         Self {
             ip,
-            port_allocator: port_alloc::PortAllocator::new(randomize, exclude_wellknown_ports),
+            port_allocator,
             ip_allocator,
         }
     }
 
     pub(crate) fn ip(&self) -> I {
         self.ip
+    }
+
+    /// The ports of this address that masquerade may not hand out.
+    ///
+    /// A port block reads this off the address it belongs to when it is created, so every path that
+    /// creates one honours the reservations without having to be told about them.
+    pub(crate) fn reserved_ports(&self) -> &ReservedForAddr {
+        self.port_allocator.reserved_ports()
     }
 
     // Used for Display; should probably not be accessed directly anywhere else
@@ -326,12 +338,19 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
+    /// The public tuples of this region that port forwarding may claim. Applied to every address as
+    /// it is put to use, so masquerade never hands one of them out.
+    reserved: ReservedPorts,
     exclude_wellknown_ports: bool,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
     /// Build a pool over one disjoint public region.
-    pub(crate) fn for_range(range: AddrInterval, exclude_wellknown_ports: bool) -> Self {
+    pub(crate) fn for_range(
+        range: AddrInterval,
+        reserved: ReservedPorts,
+        exclude_wellknown_ports: bool,
+    ) -> Self {
         // IPv6 uses offsets from the region start because its addresses do not fit in the bitmap.
         let bitmap_mapping = BTreeMap::from([(0u32, range.start)]);
         let reverse_bitmap_mapping = BTreeMap::from([(range.start, 0u32)]);
@@ -352,6 +371,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
+            reserved,
             exclude_wellknown_ports,
         }
     }
@@ -389,6 +409,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         Ok(AllocatedIp::new(
             ip,
             ip_allocator,
+            self.reserved.for_addr(ip.to_ip_addr()),
             randomize,
             self.exclude_wellknown_ports,
         ))
@@ -438,9 +459,12 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
         // function to remove the IP from the bitmap in that other thread yet).
         let _ = self.bitmap.set_ip_allocated(offset);
+        // Reservations apply here as well: an address put to use by carrying a live masquerade flow
+        // over to a new allocator must not be able to re-take a port that port forwarding claims.
         let arc_ip = Arc::new(AllocatedIp::new(
             ip,
             ip_allocator,
+            self.reserved.for_addr(ip.to_ip_addr()),
             randomize,
             self.exclude_wellknown_ports,
         ));

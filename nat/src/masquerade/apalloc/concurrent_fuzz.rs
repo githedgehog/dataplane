@@ -192,16 +192,18 @@ impl Scenario {
     fn specs(&self) -> Vec<PoolSpec> {
         self.ranges
             .iter()
-            .map(|ranges| PoolSpec {
-                public_ranges: ranges
-                    .iter()
-                    .map(|&(offset, length)| {
-                        let start = u128::from(offset);
-                        let end = (start + u128::from(length) - 1).min(WINDOW - 1);
-                        AddrInterval::new(BASE + start, BASE + end)
-                    })
-                    .collect(),
-                idle_timeout: IDLE_TIMEOUT,
+            .map(|ranges| {
+                PoolSpec::new(
+                    ranges
+                        .iter()
+                        .map(|&(offset, length)| {
+                            let start = u128::from(offset);
+                            let end = (start + u128::from(length) - 1).min(WINDOW - 1);
+                            AddrInterval::new(BASE + start, BASE + end)
+                        })
+                        .collect(),
+                    IDLE_TIMEOUT,
+                )
             })
             .collect()
     }
@@ -389,11 +391,11 @@ fn stress_test_config_change() {
 #[concurrency::model_test]
 fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
     concurrency::stress(|| {
-        let specs = vec![PoolSpec {
-            // One address, so the flow that ends is the last holder of the one being printed.
-            public_ranges: vec![AddrInterval::new(BASE, BASE)],
-            idle_timeout: IDLE_TIMEOUT,
-        }];
+        // One address, so the flow that ends is the last holder of the one being printed.
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            IDLE_TIMEOUT,
+        )];
         let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
             &specs,
             NextHeader::TCP,
@@ -419,10 +421,10 @@ fn printing_the_pool_does_not_wedge_it_against_a_flow_ending() {
 #[concurrency::model_test]
 fn reservation_racing_block_release_is_not_an_internal_error() {
     concurrency::stress(|| {
-        let specs = vec![PoolSpec {
-            public_ranges: vec![AddrInterval::new(BASE, BASE)],
-            idle_timeout: IDLE_TIMEOUT,
-        }];
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            IDLE_TIMEOUT,
+        )];
         let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
             &specs,
             NextHeader::TCP,
@@ -452,10 +454,10 @@ fn reservation_racing_block_release_is_not_an_internal_error() {
 fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
     concurrency::stress(|| {
         let address = Ipv4Addr::from(u32::try_from(BASE).unwrap_or_else(|_| unreachable!()));
-        let specs = vec![PoolSpec {
-            public_ranges: vec![AddrInterval::new(BASE, BASE)],
-            idle_timeout: IDLE_TIMEOUT,
-        }];
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            IDLE_TIMEOUT,
+        )];
         let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
             &specs,
             NextHeader::TCP,
