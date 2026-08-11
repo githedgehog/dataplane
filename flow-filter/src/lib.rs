@@ -305,15 +305,19 @@ impl FlowFilter {
         {
             return (None, SourceGate::Ungated);
         }
+        // We only need to pass this information when re-validating a flow in the return direction.
+        // For the forward direction, we use the regular entries in the flow-filter tables, just as
+        // if we were checking for a new flow.
+        if flow_summary.is_initiator {
+            return (None, SourceGate::Ungated);
+        }
         if flow_summary.needs_masquerade {
-            // If we need revalidation and the flow is masqueraded, we may need the destination VPC
-            // id from the flow to look up for reverse traffic's entry in the "remote" table.
+            // We need return traffic revalidation and the flow is masqueraded. Pass the destination
+            // VPC id from the flow to look up for the related entry in the "remote"-side table.
             (Some(flow_summary.dst_vpcd), SourceGate::Ungated)
         } else if flow_summary.needs_port_forwarding {
-            // We need revalidation and the flow is with port-forwarding, although we don't know if
-            // it's on the source (reply traffic) or destination side (forward traffic). In doubt,
-            // turn on the gate to enable looking up for entries for reply port-forwarding traffic
-            // in the "local"-side context table.
+            // We need return traffic revalidation and the flow is with port-forwarding. Turn on the
+            // gate to enable looking up for entries for related traffic in the "local"-side table.
             (None, SourceGate::PortFwdReply)
         } else {
             (None, SourceGate::Ungated)
@@ -369,6 +373,7 @@ struct FlowSummary {
     dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
+    is_initiator: bool,
     flow_info: Arc<FlowInfo>,
 }
 
@@ -386,6 +391,7 @@ impl FlowSummary {
             dst_vpcd,
             needs_masquerade: locked_info.nat_state.is_some(),
             needs_port_forwarding: locked_info.port_fw_state.is_some(),
+            is_initiator: flow_info.get_flags().is_initiator(),
             flow_info: flow_info.clone(),
         })
     }

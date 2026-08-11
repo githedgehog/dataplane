@@ -135,10 +135,6 @@ pub(super) struct GateVni(pub(crate) Option<Vni>);
 
 impl GateVni {
     const UNGATED: Self = Self(None);
-
-    fn is_gated(self) -> bool {
-        self.0.is_some()
-    }
 }
 
 impl From<Option<Vni>> for GateVni {
@@ -166,6 +162,7 @@ pub(crate) enum SourceGate {
 }
 
 impl SourceGate {
+    #[cfg(test)] // Currently only used in tests
     pub(crate) fn is_gated(self) -> bool {
         self != Self::Ungated
     }
@@ -739,34 +736,19 @@ impl FlowFilterContext {
 
         match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                let verdict = if let Some(v) = self.remote_v4.lookup(&RemoteKey {
+                let Some(verdict) = self.remote_v4.lookup(&RemoteKey {
                     proto,
                     src_vni,
                     dst_vni,
                     dst_ip,
                     dst_port,
-                }) {
-                    v
-                } else {
-                    if dst_vni.is_gated()
-                        && let Some(v) = self.remote_v4.lookup(&RemoteKey {
-                            proto,
-                            src_vni,
-                            dst_vni: GateVni::UNGATED,
-                            dst_ip,
-                            dst_port,
-                        })
-                    {
-                        v
-                    } else {
-                        return LookupResult::DestinationMiss;
-                    }
+                }) else {
+                    return LookupResult::DestinationMiss;
                 };
-                let dst_vni = key_vni(verdict.dst_vpcd);
                 match self.local_v4.lookup(&LocalKey {
                     proto,
                     src_vni,
-                    dst_vni,
+                    dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip,
                     src_port,
                     gate,
@@ -774,53 +756,23 @@ impl FlowFilterContext {
                     Some(src_nat_mode) => {
                         LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
                     }
-                    None => {
-                        if gate.is_gated()
-                            && let Some(src_nat_mode) = self.local_v4.lookup(&LocalKey {
-                                proto,
-                                src_vni,
-                                dst_vni,
-                                src_ip,
-                                src_port,
-                                gate: SourceGate::Ungated,
-                            })
-                        {
-                            LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
-                        } else {
-                            LookupResult::SourceMiss(verdict.dst_vpcd)
-                        }
-                    }
+                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
                 }
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                let verdict = if let Some(v) = self.remote_v6.lookup(&RemoteKey {
+                let Some(verdict) = self.remote_v6.lookup(&RemoteKey {
                     proto,
                     src_vni,
                     dst_vni,
                     dst_ip,
                     dst_port,
-                }) {
-                    v
-                } else {
-                    if dst_vni.is_gated()
-                        && let Some(v) = self.remote_v6.lookup(&RemoteKey {
-                            proto,
-                            src_vni,
-                            dst_vni: GateVni::UNGATED,
-                            dst_ip,
-                            dst_port,
-                        })
-                    {
-                        v
-                    } else {
-                        return LookupResult::DestinationMiss;
-                    }
+                }) else {
+                    return LookupResult::DestinationMiss;
                 };
-                let dst_vni = key_vni(verdict.dst_vpcd);
                 match self.local_v6.lookup(&LocalKey {
                     proto,
                     src_vni,
-                    dst_vni,
+                    dst_vni: key_vni(verdict.dst_vpcd),
                     src_ip,
                     src_port,
                     gate,
@@ -828,22 +780,7 @@ impl FlowFilterContext {
                     Some(src_nat_mode) => {
                         LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
                     }
-                    None => {
-                        if gate.is_gated()
-                            && let Some(src_nat_mode) = self.local_v6.lookup(&LocalKey {
-                                proto,
-                                src_vni,
-                                dst_vni,
-                                src_ip,
-                                src_port,
-                                gate: SourceGate::Ungated,
-                            })
-                        {
-                            LookupResult::Route((verdict.dst_vpcd, verdict.nat_mode, *src_nat_mode))
-                        } else {
-                            LookupResult::SourceMiss(verdict.dst_vpcd)
-                        }
-                    }
+                    None => LookupResult::SourceMiss(verdict.dst_vpcd),
                 }
             }
             _ => {
@@ -939,31 +876,6 @@ fn lookup_versioned<I: FixedSize + Copy>(
         let mut verdicts: Vec<Option<&Verdict>> = vec![None; q_chunk.len()];
         remote.lookup_batch(&remote_keys, &mut verdicts);
 
-        // Reply traffic for masqueraded flows use the destination VNI as part of the key; this is
-        // to avoid conflicting entries if there are several VPCs exposing overlapping, masqueraded
-        // prefixes to a given VPC. If we have a destination VNI set here, we may be trying to
-        // re-validate a reply packet for a masqueraded flow (we're not sure of the direction, hence
-        // the first attempt with the destination VNI). Try again, without the destination VNI.
-        let mut reval_positions = Vec::new();
-        let mut reval_keys = Vec::new();
-        for (pos, (query, verdict)) in q_chunk.iter().zip(verdicts.iter_mut()).enumerate() {
-            if verdict.is_none() && query.dst_vni.is_gated() {
-                reval_positions.push(pos);
-                reval_keys.push(RemoteKey {
-                    proto: query.proto,
-                    src_vni: query.src_vni,
-                    dst_vni: GateVni::UNGATED,
-                    dst_ip: query.dst_ip,
-                    dst_port: query.dst_port,
-                });
-            }
-        }
-        let mut reval_verdicts = vec![None; reval_keys.len()];
-        remote.lookup_batch(&reval_keys, &mut reval_verdicts);
-        for (pos, verdict) in reval_positions.into_iter().zip(reval_verdicts) {
-            verdicts[pos] = verdict;
-        }
-
         // Stage 2: for the hits only, source -> source NAT.
         // Port-forwarding rules use the NAT mode as part of the key, to dissociate keys from any
         // keys associated to overlapping forward masquerade prefixes.
@@ -985,27 +897,6 @@ fn lookup_versioned<I: FixedSize + Copy>(
         }
         let mut nat_modes: Vec<Option<&NatMode>> = vec![None; local_keys.len()];
         local.lookup_batch(&local_keys, &mut nat_modes);
-
-        // Second pass: if nat_mode was set and we didn't find an entry for reply traffic associated
-        // with a port-forwarding flow, drop the gate to see if we have an entry for forward traffic
-        // for port-forwarding (forward traffic entries do not have flow-info nat mode attached, or
-        // we couldn't use it to initiate new flows).
-        let mut reval_positions = Vec::new();
-        let mut reval_keys = Vec::new();
-        for (pos, (nat_mode, &q_pos)) in nat_modes.iter().zip(hit_pos.iter()).enumerate() {
-            if nat_mode.is_none() && q_chunk[q_pos].gate.is_gated() {
-                reval_positions.push(pos);
-                reval_keys.push(LocalKey {
-                    gate: SourceGate::Ungated,
-                    ..local_keys[pos].clone()
-                });
-            }
-        }
-        let mut reval_nat_modes = vec![None; reval_keys.len()];
-        local.lookup_batch(&reval_keys, &mut reval_nat_modes);
-        for (pos, nat_mode) in reval_positions.into_iter().zip(reval_nat_modes) {
-            nat_modes[pos] = nat_mode;
-        }
 
         // Scatter results back to the caller's output positions. A stage-1 miss stays
         // DestinationMiss; a stage-1 hit whose source matched nothing becomes SourceMiss.

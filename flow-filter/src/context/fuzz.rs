@@ -157,10 +157,10 @@ fn oracle_stage2(
 /// Answer a route lookup directly from the validated overlay.
 /// Shared by the context and NF metadata property tests.
 ///
-/// Both stages ask what the flow vouches for first, and only then the plain question. A packet on
-/// an established flow keeps the peering and the NAT mode that flow was built on, even where an
-/// expose covers the same address ungated; the plain question is the fallback, for the forward
-/// traffic that carries no flow information of its own.
+/// Each stage asks exactly one question, chosen from the flow information the caller resolved up
+/// front (see `is_initiator`): a revalidating reply either names the peering it was built on
+/// (stage 1, via `dst_vpcd`) or opens the port-forwarding gate (stage 2, via `gate`); forward
+/// traffic, which carries no flow information, asks the plain question with neither set.
 pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> LookupResult {
     let Some(src_vpc) = overlay
         .vpc_table()
@@ -174,10 +174,7 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
     }
     let (sport, dport) = probe.ports.unwrap_or((0, 0));
 
-    let verdict = probe
-        .dst_vpcd
-        .and_then(|vpcd| oracle_stage1(src_vpc, probe, dport, Some(vpcd)))
-        .or_else(|| oracle_stage1(src_vpc, probe, dport, None));
+    let verdict = oracle_stage1(src_vpc, probe, dport, probe.dst_vpcd);
     let Some((dst_vpcd, dst_nat)) = verdict else {
         return LookupResult::DestinationMiss;
     };
@@ -187,8 +184,7 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
         .iter()
         .find(|p| VpcDiscriminant::from_vni(p.remote_vni()) == dst_vpcd)
         .unwrap_or_else(|| unreachable!("stage 1 hit implies a peering to the verdict VPC"));
-    let src_nat = oracle_stage2(peering, probe, sport, probe.gate)
-        .or_else(|| oracle_stage2(peering, probe, sport, SourceGate::Ungated));
+    let src_nat = oracle_stage2(peering, probe, sport, probe.gate);
     match src_nat {
         Some(src_nat) => LookupResult::Route((dst_vpcd, dst_nat, src_nat)),
         None => LookupResult::SourceMiss(dst_vpcd),
