@@ -12,6 +12,8 @@
   wrong thing.
 
 If you need to write a test, prefer [property-based tests] over simple unit tests.
+For inputs too large to generate directly -- a whole configuration, say -- build them from an algebra of
+valid operations and derive the oracles from that same algebra; see the [config algebra note][config-algebra].
 If you need to handle errors, prefer `Result` types over panics in general, but see the
 [error handling guide][error] for details.
 
@@ -21,6 +23,7 @@ If you need to [handle an error][error], follow the guidelines.
 
 [avoid-global-reasoning]: ./avoid-global-reasoning.md
 [property-based tests]: ./property-testing.md
+[config-algebra]: ./config-algebra-testing.md
 [error]: ./error-handling.md
 
 ## Testing instructions
