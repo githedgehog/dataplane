@@ -404,12 +404,16 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // Retrieve the first available offset
         let offset = self.bitmap.pop_ip()?;
 
+        // the ip being allocated
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
+
+        // determine the set of reserved ports that cannot be allocated for this ip
+        let reserved = self.reserved.for_addr(ip.to_ip_addr());
 
         Ok(AllocatedIp::new(
             ip,
             ip_allocator,
-            self.reserved.for_addr(ip.to_ip_addr()),
+            reserved,
             randomize,
             self.exclude_wellknown_ports,
         ))
@@ -459,6 +463,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
         // function to remove the IP from the bitmap in that other thread yet).
         let _ = self.bitmap.set_ip_allocated(offset);
+
         // Reservations apply here as well: an address put to use by carrying a live masquerade flow
         // over to a new allocator must not be able to re-take a port that port forwarding claims.
         let arc_ip = Arc::new(AllocatedIp::new(
