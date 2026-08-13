@@ -49,6 +49,8 @@ fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, Nat
         .nat_state
         .extract_ref::<MasqueradeState>()?
         .allocation()?;
+
+    debug_assert!(flow_info.get_flags().is_initiator());
     Some((alloc.ip(), alloc.port()))
 }
 
@@ -94,17 +96,19 @@ pub(crate) fn check_masquerading_flow(
     flow_info: &FlowInfo,
     allocator: &NatAllocator,
 ) {
+    // Skip flows that are up-to-date (this could be done by iterator)
     let config = allocator.config();
     let genid = allocator.genid();
     if flow_info.genid() == genid {
         return;
     }
 
-    // ip and port allocated to masquerade a flow. If masquerading flow did not have allocated port
-    // we skip it since we will invalidate it (or upgrade it) with the related flow that has an allocation.
+    // get ip + port allocated to flow. If flow does not have allocated port, skip it since we will
+    // invalidate (or upgrade it) from the related flow that has an allocation.
     let Some((ip, port)) = get_flow_masquerading_allocation(flow_info) else {
         return;
     };
+
     // Flows without VPC identity cannot be validated against the replacement config.
     let (Some(dst_vpcd), Some(src_vpcd)) = (flow_info.get_dst_vpcd(), flow_key.src_vpcd()) else {
         error!("Flow {flow_key} has no VPC discriminant, so it cannot be checked. This is a bug");
@@ -112,13 +116,15 @@ pub(crate) fn check_masquerading_flow(
         return;
     };
 
+    // Check if there exists a peering with masquerading between the two VPCs of the flow
     debug!("Checking flow {}", flow_info.logfmt());
-    let Some(nat_peering) = config.get_peering(src_vpcd, dst_vpcd) else {
-        debug!("Invalidating flow: there is no longer a peering for {src_vpcd} -- {dst_vpcd}");
+    let Some(masq_peering) = config.find_masquerade_peering(src_vpcd, dst_vpcd) else {
+        debug!("Invalidating flow: there is no masquerading peering for {src_vpcd} -- {dst_vpcd}");
         flow_info.invalidate_pair();
         return;
     };
-    debug!("Found peering between {src_vpcd} and {dst_vpcd}...");
+    let pname = masq_peering.peering.name();
+    debug!("Found peering between {src_vpcd} and {dst_vpcd}: {pname}");
 
     // We've found a peering with masquerade between the VPCs that this flow is exchanged.
     // Check if such a peering has ANY expose with masquerading that includes the address currently
@@ -127,19 +133,20 @@ pub(crate) fn check_masquerading_flow(
     let src_ip = flow_key.src_ip(); // source of flow
     let mut compatible_expose_found = false;
     let mut alloced_ip_valid = false;
-    for expose in nat_peering.peering.local().valexp() {
+    for expose in masq_peering.peering.local().valexp() {
         if let Some(nat) = expose.nat()
             && nat.is_masquerade()
             && nat.as_range.iter().any(|pfx| pfx.prefix().covers_addr(&ip))
         {
-            debug!("Masquerading ip {ip} is allowed over peering {src_vpcd} -- {dst_vpcd}");
             alloced_ip_valid = true;
+            debug!("Masquerade address {ip} is allowed over peering {pname}");
+
             if expose
                 .ips()
                 .iter()
                 .any(|pfx| pfx.prefix().covers_addr(src_ip))
             {
-                debug!("Flow source {src_ip} is still included in expose");
+                debug!("Flow source {src_ip} is still allowed over peering {pname}");
                 compatible_expose_found = true;
                 break;
             }
@@ -147,12 +154,12 @@ pub(crate) fn check_masquerading_flow(
     }
 
     if !alloced_ip_valid {
-        debug!("Masquerade ip {ip} is no longer allowed over peering {src_vpcd} -- {dst_vpcd}");
+        debug!("Masquerade ip {ip} is no longer allowed over peering {pname}");
         flow_info.invalidate_pair();
         return;
     }
     if !compatible_expose_found {
-        debug!("Flow is no longer valid for masquerading between {src_vpcd} -- {dst_vpcd}");
+        debug!("Flow is no longer valid for masquerading over peering {pname}");
         flow_info.invalidate_pair();
         return;
     }
@@ -166,8 +173,8 @@ pub(crate) fn check_masquerading_flow(
     }
 }
 
-/// Migrate active masquerading flows to a new allocator while blocking flow insertion.
-/// Flows that are kept should get the ip/port allocated in the new allocator
+/// Migrate active masquerading flows. Flows that get checked and retained, get their
+/// ip/port reserved in the new allocator.
 pub(crate) fn check_masquerading_flows<'a>(
     flow_table: &'a FlowTable,
     new_allocator: &NatAllocator,
@@ -175,7 +182,7 @@ pub(crate) fn check_masquerading_flows<'a>(
     let genid = new_allocator.genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     let guard = flow_table.for_each_flow_filtered(
-        |_, f| f.is_active(),
+        |_, f| f.is_active() && f.locked.read().nat_state.is_some(),
         |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");
