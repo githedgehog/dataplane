@@ -24,7 +24,7 @@ impl Display for NatAllocator {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Heading("Masquerade NAT allocator table").fmt(f)?;
 
-        writeln!(f, "randomize: {}", self.randomize)?;
+        writeln!(f, "randomize: {}", self.config.randomize())?;
 
         writeln!(f, "source pools (IPv4):")?;
         writeln!(with_indent!(f), "{}", self.pools_src44)?;

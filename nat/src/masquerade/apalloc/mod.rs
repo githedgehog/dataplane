@@ -250,7 +250,6 @@ pub struct NatAllocator {
     genid: AtomicI64,
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
-    randomize: bool,
 }
 
 impl NatAllocator {
@@ -259,13 +258,11 @@ impl NatAllocator {
         debug!("Building NAT allocator for genid {genid}");
         let pools_src44 = NatAllocator::build_pool44(&config);
         let pools_src66 = NatAllocator::build_pool66(&config);
-        let randomize = config.randomize();
         Self {
             config,
             genid: AtomicI64::new(genid),
             pools_src44,
             pools_src66,
-            randomize,
         }
     }
 
