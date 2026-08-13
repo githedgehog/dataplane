@@ -1109,6 +1109,10 @@ let
   # - glibc and libgcc shared libraries (so dynamically linked test
   #   binaries can run inside the VM).
   #
+  # The forwarded-environment directory (test-env, see VM_ENV_DIR) is
+  # pre-created for the same reason: container.rs bind-mounts a host
+  # directory holding the NUL-separated KEY=VALUE file there.
+  #
   # The test binary directory is bind-mounted by container.rs at
   # /vm.root/test-bin (see VM_TEST_BIN_DIR in n-vm-protocol), so it
   # appears at /test-bin in the VM guest.  The /test-bin directory is
@@ -1117,7 +1121,7 @@ let
   #
   # See development/ideam.md for the design rationale.
   vmroot = pkgs.runCommand "dataplane-vm-root" { } ''
-    mkdir -p $out/bin $out/lib $out/test-bin
+    mkdir -p $out/bin $out/lib $out/test-bin $out/test-env
 
     # Essential guest directories.
     #
