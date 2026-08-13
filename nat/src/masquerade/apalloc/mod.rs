@@ -427,12 +427,7 @@ impl NatAllocator {
                 }),
         }
     }
-    fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
-        match next_header {
-            NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6 => Ok(()),
-            _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
-        }
-    }
+
     fn allocate_from_tables<I: NatIpWithBitmap>(
         src_ip: IpAddr,
         src_vpcd: VpcDiscriminant,
@@ -440,7 +435,8 @@ impl NatAllocator {
         next_header: NextHeader,
         pools_src: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedPort<I>>, AllocatorError> {
-        Self::check_proto(next_header)?;
+        // TODO: here we should only allow next-header to be TCP/UDP/ICMP/ICMP6 as a SANITY.
+        // This can be done by a transparent wrapper of NextHeader that can only exist for that set
 
         // If we could not find an address pool for the source address, the user has not exposed
         // and configured NAT for that source address. Drop the packet instead of creating a session.

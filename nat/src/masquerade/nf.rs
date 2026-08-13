@@ -20,7 +20,7 @@ use net::buffer::PacketBufferMut;
 use net::flow_key::IcmpProtoKey;
 use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
 use net::headers::{TryIp, TryTcp};
-use net::ip::UnicastIpAddr;
+use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
@@ -61,6 +61,8 @@ pub(crate) enum MasqueradeError {
     NatError(#[from] NatPacketError),
     #[error("Failed to create flow state: {0}")]
     FlowError(#[from] FlowInfoError),
+    #[error("unsupported protocol: {0:?}")]
+    UnsupportedProtocol(NextHeader),
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`Masquerade`] processes
@@ -370,6 +372,14 @@ impl Masquerade {
         ))
     }
 
+    /// Tell if a protocol can be masqueraded
+    fn can_be_masqueraded(next_header: NextHeader) -> bool {
+        matches!(
+            next_header,
+            NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+        )
+    }
+
     /// Main entry point for masquerading logic
     fn masquerade_packet<Buf: PacketBufferMut>(
         &self,
@@ -410,16 +420,20 @@ impl Masquerade {
             .copied()
             .unwrap_or(current_flow_key);
 
+        // check if the flow can be masqueraded
+        let proto = initial_flow_key.proto();
+        if !Self::can_be_masqueraded(proto) {
+            return Err(MasqueradeError::UnsupportedProtocol(proto));
+        }
+
         // allocate an ip and port for this flow
         let src_ip = *initial_flow_key.src_ip();
-        let alloc = match allocator.allocate(src_vpcd, dst_vpcd, src_ip, initial_flow_key.proto()) {
+        let alloc = match allocator.allocate(src_vpcd, dst_vpcd, src_ip, proto) {
             Ok(alloc) => alloc,
             Err(e) => {
-                if !matches!(e, AllocatorError::UnsupportedProtocol(_)) {
-                    warn!(
-                        "{nfi}: Ip/port allocation failed for flow {initial_flow_key} towards VPC {dst_vpcd}: {e}"
-                    );
-                }
+                warn!(
+                    "{nfi}: Ip/port allocation failed for flow {initial_flow_key} towards VPC {dst_vpcd}: {e}"
+                );
                 return Err(MasqueradeError::AllocationFailure(e));
             }
         };
@@ -533,7 +547,9 @@ impl Masquerade {
 impl From<&MasqueradeError> for DoneReason {
     fn from(error: &MasqueradeError) -> Self {
         match error {
-            MasqueradeError::BadTransportHeader => DoneReason::NatUnsupportedProto,
+            MasqueradeError::BadTransportHeader | MasqueradeError::UnsupportedProtocol(_) => {
+                DoneReason::NatUnsupportedProto
+            }
             MasqueradeError::FlowKeyError | MasqueradeError::InvalidPort(_) => {
                 DoneReason::Malformed
             }
