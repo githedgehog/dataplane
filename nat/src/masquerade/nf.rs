@@ -410,14 +410,20 @@ impl Masquerade {
             .copied()
             .unwrap_or(current_flow_key);
 
-        // Create a new session and translate the address
+        // allocate an ip and port for this flow
         let src_ip = *initial_flow_key.src_ip();
-        let alloc = allocator
-            .allocate(src_vpcd, dst_vpcd, src_ip, initial_flow_key.proto())
-            .map_err(MasqueradeError::AllocationFailure)?;
-
-        // The generation the installed allocator serves
-        let genid = allocator.genid();
+        let alloc = match allocator.allocate(src_vpcd, dst_vpcd, src_ip, initial_flow_key.proto()) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                if !matches!(e, AllocatorError::UnsupportedProtocol(_)) {
+                    warn!(
+                        "{nfi}: Ip/port allocation failed for flow {initial_flow_key} towards VPC {dst_vpcd}: {e}"
+                    );
+                }
+                return Err(MasqueradeError::AllocationFailure(e));
+            }
+        };
+        debug!("{nfi}: Allocated: {alloc}");
 
         // Forbid addresses we won't know how to translate. This is a work around of a larger change
         if let Err(addr) = UnicastIpAddr::try_from(alloc.allocation.ip()) {
@@ -425,7 +431,8 @@ impl Masquerade {
             return Err(MasqueradeError::Bug("allocated unusable ip"));
         }
 
-        debug!("{nfi}: Allocated: {alloc}");
+        // The generation the installed allocator serves
+        let genid = allocator.genid();
 
         // create flow pair
         let installed =
