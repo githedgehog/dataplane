@@ -41,6 +41,66 @@ fn vsock_stream_to_stdio(stream: vsock::VsockStream) -> Stdio {
     unsafe { Stdio::from_raw_fd(stream.into_raw_fd()) }
 }
 
+/// Applies the environment the host tier forwarded, if any.
+///
+/// The guest builds its child's environment from nothing, so anything the
+/// test needs has to arrive explicitly.  [`GUEST_ENV_FILE`] is that channel:
+/// a NUL-separated `KEY=VALUE` file on the read-only root share, written by
+/// the host tier before the container was created.
+///
+/// An absent file is the ordinary case and means "nothing to forward".  A
+/// file that exists but cannot be read is an error: it was put there on
+/// purpose, and a test that runs without the variables it was given usually
+/// does not fail -- a bolero test simply stops fuzzing and passes.
+///
+/// # Errors
+///
+/// Returns [`SpawnError::ForwardedEnvRead`] if the file exists but cannot be
+/// read.
+fn apply_forwarded_env(command: &mut Command) -> Result<(), SpawnError> {
+    let path = Path::new(n_vm_protocol::GUEST_ENV_FILE);
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            trace!("no {} in the guest; forwarding nothing", path.display());
+            return Ok(());
+        }
+        Err(source) => {
+            return Err(SpawnError::ForwardedEnvRead {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    let vars = n_vm_protocol::decode_environ(&raw);
+    if vars.is_empty() {
+        warn!(
+            "{} exists but yielded no variables; the host tier wrote {} byte(s)",
+            path.display(),
+            raw.len(),
+        );
+        return Ok(());
+    }
+
+    for (key, value) in &vars {
+        command.env(key, value);
+    }
+    // Names only: a forwarded value can carry a corpus path or engine flags
+    // that are noisy at this level, and the test's own output reports what
+    // it acted on.
+    debug!(
+        "applied {} forwarded variable(s): {}",
+        vars.len(),
+        vars.iter()
+            .map(|(k, _)| k.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
+    Ok(())
+}
+
 /// Spawns the test binary as the main child process.
 ///
 /// Reads the binary path and test name from the kernel command line
@@ -106,6 +166,8 @@ pub async fn spawn_main_process() -> Result<Child, SpawnError> {
         .env("PATH", "/bin")
         .env("LD_LIBRARY_PATH", "/lib")
         .env("RUST_BACKTRACE", "1");
+
+    apply_forwarded_env(&mut command)?;
 
     // Run from the shared cargo workspace when the container tier mounted
     // one.  PID 1 starts at `/`, which resolves nothing: tooling that

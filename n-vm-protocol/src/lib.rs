@@ -610,6 +610,154 @@ pub const VM_WORKSPACE_DIR: &str = "workspace";
 /// *package* root, not the workspace root, so the walk is necessary.
 pub const ENV_WORKSPACE: &str = "N_VM_WORKSPACE";
 
+// == Forwarded environment ==
+
+/// Well-known guest directory holding the forwarded environment file.
+///
+/// The host tier writes [`ENV_FILE_NAME`] into a directory it owns and
+/// bind-mounts that directory here, read-only, alongside
+/// [`VM_TEST_BIN_DIR`].  Like `test-bin`, the mount point is pre-created by
+/// the `vmroot` derivation, because Docker cannot `mkdir` inside a
+/// read-only nix store path.
+///
+/// A file rather than the kernel command line: the values are arbitrary
+/// (`BOLERO_LIBFUZZER_ARGS` is a space-separated list), and the cmdline has
+/// both a length cap and no escaping convention that the guest and the host
+/// could be relied on to agree about.
+pub const VM_ENV_DIR: &str = "test-env";
+
+/// Name of the forwarded environment file within [`VM_ENV_DIR`].
+pub const ENV_FILE_NAME: &str = "environ";
+
+/// Absolute path of the forwarded environment file inside the guest.
+pub const GUEST_ENV_FILE: &str = "/test-env/environ";
+
+/// Environment variable prefixes forwarded from the host tier to the guest.
+///
+/// `BOLERO_*` is the motivating case: a fuzz supervisor configures the
+/// engine entirely through the environment (`BOLERO_LIBFUZZER_ARGS`,
+/// `BOLERO_TEST_NAME`, `BOLERO_LIBTEST_HARNESS`), and bolero falls back to
+/// its brief random driver when it does not see them.  In a guest that
+/// received no environment at all, that fallback is indistinguishable from
+/// a successful fuzzing run -- it passes, quickly, having fuzzed nothing.
+pub const FORWARDED_ENV_PREFIXES: &[&str] = &["BOLERO_"];
+
+/// Comma-separated extra variable names to forward, beyond
+/// [`FORWARDED_ENV_PREFIXES`].
+pub const ENV_FORWARD: &str = "N_VM_FORWARD_ENV";
+
+/// Whether a variable name should be carried into the guest.
+///
+/// `extra` is the raw value of [`ENV_FORWARD`], if set.
+#[must_use]
+pub fn is_forwarded(name: &str, extra: Option<&str>) -> bool {
+    if FORWARDED_ENV_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return true;
+    }
+    extra.is_some_and(|list| {
+        list.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(|s| s == name)
+    })
+}
+
+/// Encode variables as NUL-separated `KEY=VALUE` records.
+///
+/// The same shape as `/proc/self/environ`, and for the same reason: NUL is
+/// the one byte that cannot appear in an environment variable, so this
+/// needs no escaping and cannot be confused by a value containing spaces,
+/// newlines, or quotes.
+#[must_use]
+pub fn encode_environ<'a, I>(vars: I) -> Vec<u8>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let mut out = Vec::new();
+    for (key, value) in vars {
+        out.extend_from_slice(key.as_bytes());
+        out.push(b'=');
+        out.extend_from_slice(value.as_bytes());
+        out.push(0);
+    }
+    out
+}
+
+/// Decode what [`encode_environ`] wrote.
+///
+/// Records that are empty, non-UTF-8, or missing a `=` are skipped rather
+/// than aborting the boot: the caller logs what did arrive, which is more
+/// useful than failing a VM over one malformed record.
+#[must_use]
+pub fn decode_environ(bytes: &[u8]) -> Vec<(String, String)> {
+    bytes
+        .split(|b| *b == 0)
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let text = core::str::from_utf8(record).ok()?;
+            let (key, value) = text.split_once('=')?;
+            if key.is_empty() {
+                return None;
+            }
+            Some((key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod environ_test {
+    use super::{decode_environ, encode_environ, is_forwarded};
+
+    /// `BOLERO_LIBFUZZER_ARGS` is a space-separated list of libfuzzer flags,
+    /// which is precisely why this is a file and not the kernel cmdline.
+    #[test]
+    fn round_trips_values_with_spaces() {
+        let args = "/corpus /crashes -max_total_time=60 -jobs=4";
+        let decoded = decode_environ(&encode_environ([("BOLERO_LIBFUZZER_ARGS", args)]));
+        assert_eq!(
+            decoded,
+            vec![("BOLERO_LIBFUZZER_ARGS".to_owned(), args.to_owned())]
+        );
+    }
+
+    #[test]
+    fn round_trips_awkward_values() {
+        let vars = [
+            ("A", "has\nnewline"),
+            ("B", "has \"quotes\" and 'ticks'"),
+            ("C", ""),
+            ("D", "trailing="),
+        ];
+        let decoded = decode_environ(&encode_environ(vars));
+        assert_eq!(decoded.len(), 4);
+        assert_eq!(decoded[0].1, "has\nnewline");
+        assert_eq!(decoded[1].1, "has \"quotes\" and 'ticks'");
+        assert_eq!(decoded[2].1, "");
+        assert_eq!(decoded[3].1, "trailing=");
+    }
+
+    #[test]
+    fn skips_malformed_records() {
+        assert!(decode_environ(b"NOEQUALS\0").is_empty());
+        assert!(decode_environ(b"=value\0").is_empty());
+        assert!(decode_environ(b"\0\0\0").is_empty());
+    }
+
+    #[test]
+    fn forwards_by_prefix_and_explicit_name() {
+        assert!(is_forwarded("BOLERO_LIBFUZZER_ARGS", None));
+        assert!(is_forwarded("BOLERO_TEST_NAME", None));
+        assert!(!is_forwarded("PATH", None));
+        assert!(!is_forwarded("HOME", None));
+        assert!(is_forwarded("RUST_LOG", Some("RUST_LOG, MY_VAR")));
+        assert!(is_forwarded("MY_VAR", Some("RUST_LOG, MY_VAR")));
+        assert!(!is_forwarded("OTHER", Some("RUST_LOG, MY_VAR")));
+        // An empty or degenerate list must not become "forward everything".
+        assert!(!is_forwarded("PATH", Some("")));
+        assert!(!is_forwarded("PATH", Some(",,")));
+    }
+}
+
 // == Binary paths (inside the container) ==
 
 // NOTE: the `qemu-system-<arch>` binary path is architecture-specific and
