@@ -18,30 +18,28 @@ use lpm::prefix::{L4Protocol, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use tracing::{debug, error};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
 impl NatAllocator {
-    pub(crate) fn build_pools(&mut self, config: &MasqueradeConfig) {
+    pub(crate) fn build_pool44(config: &MasqueradeConfig) -> PoolTable<Ipv4Addr, Ipv4Addr> {
         build_pools_generic(
             config,
             ValidatedManifest::masquerade_exposes_44,
             ValidatedManifest::port_forwarding_exposes_44,
-            &mut self.pools_src44,
             NextHeader::ICMP,
-            self.randomize,
-        );
-
+        )
+    }
+    pub(crate) fn build_pool66(config: &MasqueradeConfig) -> PoolTable<Ipv6Addr, Ipv6Addr> {
         build_pools_generic(
             config,
             ValidatedManifest::masquerade_exposes_66,
             ValidatedManifest::port_forwarding_exposes_66,
-            &mut self.pools_src66,
             NextHeader::ICMP6,
-            self.randomize,
-        );
+        )
     }
 }
 
@@ -161,10 +159,9 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
     config: &'a MasqueradeConfig,
     exposes_filter: F,
     port_forwarding_filter: P,
-    table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
-    randomize: bool,
-) where
+) -> PoolTable<I, J>
+where
     I: NatIpWithBitmap,
     J: NatIpWithBitmap,
     F: Fn(&'a ValidatedManifest) -> FIter,
@@ -172,6 +169,8 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
     P: Fn(&'a ValidatedManifest) -> PIter,
     PIter: Iterator<Item = &'a ValidatedExpose>,
 {
+    let mut table = PoolTable::new();
+    let randomize = config.randomize();
     let groups = gather_exposes::<J, _, _, _, _>(config, &exposes_filter, &port_forwarding_filter);
 
     for (dst_vpc_id, exposes) in groups {
@@ -191,7 +190,7 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
             let pool_sets = pool_sets_for_specs::<J>(&specs, protocol, randomize);
             for (expose, pool_set) in exposes.iter().zip(pool_sets) {
                 add_pool_entries(
-                    table,
+                    &mut table,
                     expose.private_prefixes,
                     expose.src_vpc_id,
                     dst_vpc_id,
@@ -201,6 +200,7 @@ fn build_pools_generic<'a, I, J, F, FIter, P, PIter>(
             }
         }
     }
+    table
 }
 
 /// The config-independent inputs for one expose's pools.
