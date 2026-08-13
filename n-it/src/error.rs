@@ -86,6 +86,19 @@ pub enum SpawnError {
     #[error("no main process specified to init process (expected argv[1])")]
     NoMainProcess,
 
+    /// The forwarded environment file exists but could not be read.
+    ///
+    /// Not treated as "nothing to forward": the host tier only writes this
+    /// file when it has something to pass, and a test started without it
+    /// generally still passes -- a bolero test just stops fuzzing.
+    #[error("failed to read the forwarded environment file {path}: {source}")]
+    ForwardedEnvRead {
+        /// The file that could not be read.
+        path: std::path::PathBuf,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
+
     /// Failed to connect a vsock stream for child I/O redirection.
     #[error("failed to connect {channel} vsock: {source}")]
     VsockConnect {
