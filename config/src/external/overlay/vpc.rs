@@ -310,7 +310,7 @@ impl Vpc {
             .map(Peering::validate)
             .collect::<Result<_, _>>()?;
 
-        let route_table = VpcRouteTable::build(&validated_peerings).validate()?;
+        let route_table = VpcRouteTable::build(&validated_peerings)?;
 
         let validated_vpc = ValidatedVpc {
             name: self.name.clone(),
