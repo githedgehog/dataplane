@@ -328,6 +328,22 @@ pub enum ContainerError {
         crate_dir: String,
     },
 
+    /// The forwarded environment file could not be written on the host.
+    ///
+    /// Fatal rather than best-effort: the guest cannot report that it was
+    /// started without the environment it needed, and the failure is
+    /// otherwise silent -- a bolero test that loses `BOLERO_LIBFUZZER_ARGS`
+    /// still passes, having quietly stopped fuzzing.
+    #[error("failed to write the forwarded environment file {path}")]
+    #[diagnostic(code(n_vm::container::env_file_write))]
+    EnvFileWrite {
+        /// The file that could not be written.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// The corpus directory could not be created on the host.
     #[error("failed to create the corpus directory {path}")]
     #[diagnostic(code(n_vm::container::corpus_dir_create))]
