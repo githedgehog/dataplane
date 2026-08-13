@@ -22,7 +22,7 @@ pub enum AllocatorError {
     #[error("failed to reserve port: {0}")]
     PortReservationFailed(u16),
     #[error("unsupported protocol: {0:?}")]
-    UnsupportedProtocol(NextHeader),
+    UnsupportedProtocol(NextHeader), // FIXME: remove this when possible
     #[error("missing VPC discriminant")]
     MissingDiscriminant,
     // Something has gone wrong, but user input or packet input are not responsible.
