@@ -139,7 +139,7 @@ impl<I: NatIp> PoolTableKey<I> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-struct PoolTable<I: NatIpWithBitmap, J: NatIpWithBitmap>(
+pub(crate) struct PoolTable<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     BTreeMap<PoolTableKey<I>, alloc::PoolSet<J>>,
 );
 
@@ -257,16 +257,16 @@ impl NatAllocator {
     #[must_use]
     pub(crate) fn new(config: MasqueradeConfig, genid: GenId) -> Self {
         debug!("Building NAT allocator for genid {genid}");
-        let mut allocator = Self {
-            config: MasqueradeConfig::default(),
+        let pools_src44 = NatAllocator::build_pool44(&config);
+        let pools_src66 = NatAllocator::build_pool66(&config);
+        let randomize = config.randomize();
+        Self {
+            config,
             genid: AtomicI64::new(genid),
-            pools_src44: PoolTable::new(),
-            pools_src66: PoolTable::new(),
-            randomize: config.randomize(),
-        };
-        allocator.build_pools(&config);
-        allocator.config = config;
-        allocator
+            pools_src44,
+            pools_src66,
+            randomize,
+        }
     }
 
     pub(crate) fn config(&self) -> &MasqueradeConfig {
