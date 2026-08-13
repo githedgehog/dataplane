@@ -37,23 +37,43 @@ impl ReservedPorts {
         )
     }
 
-    /// The claims that apply to one public address.
+    /// The port ranges reserved for a given IP address, computed as the union of the
+    /// ports reserved across all prefixes that contain this address. Since the ports
+    /// reserved for several prefixes may overlap, the ports reserved for an address
+    /// are merged here, leaving the smallest set of disjoint, non-adjancent ranges.
     #[must_use]
     pub(crate) fn for_addr(&self, addr: IpAddr) -> ReservedForAddr {
-        ReservedForAddr(
-            self.0
-                .iter()
-                .filter(|(prefix, _)| prefix.covers_addr(&addr))
-                .map(|(_, ports)| *ports)
-                .collect(),
-        )
+        // collect all the (prefix, port-range) that include (cover) the given address
+        let mut covering_ranges: Vec<PortRange> = self
+            .0
+            .iter()
+            .filter(|(prefix, _)| prefix.covers_addr(&addr))
+            .map(|(_, ports)| *ports)
+            .collect();
+
+        // Sort so that we can merge and accumulate in one pass
+        covering_ranges.sort_unstable();
+
+        let mut merged: Vec<PortRange> = Vec::with_capacity(covering_ranges.len());
+        for range in covering_ranges {
+            match merged.pop() {
+                Some(last) => match last.merge(range) {
+                    Some(union) => merged.push(union),
+                    None => merged.extend([last, range]),
+                },
+                None => merged.push(range),
+            }
+        }
+
+        // build
+        ReservedForAddr(merged)
     }
 }
 
 /// The reserved port ranges that apply to one (public) address.
 ///
-/// Empty for most addresses, and never large: it holds one range per configured claim covering that
-/// address.
+/// Empty for most addresses, and never large: it holds the disjoint ranges that the claims covering
+/// that address merge into, so at most one range per configured claim.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ReservedForAddr(Vec<PortRange>);
 
@@ -76,6 +96,14 @@ impl ReservedForAddr {
         self.0
             .iter()
             .any(|range| range.start() <= port && port <= range.end())
+    }
+
+    /// Tell the number of ports reserved. We can sum the ports of each range since
+    /// all of the ranges are disjoint by construction.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn reserved(&self) -> usize {
+        self.0.iter().map(PortRange::len).sum()
     }
 }
 
@@ -118,6 +146,24 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_and_adjacent_claims_merge() {
+        let reserved = ReservedPorts::from_set(&PrefixPortsSet::from([
+            claim("5.6.7.8/32", 100, 200), // overlaps the claim below
+            claim("5.6.7.8/32", 150, 300),
+            claim("5.6.7.8/32", 301, 400), // abuts the claim above: no port between the two
+            claim("5.6.7.8/32", 500, 600),
+            claim("5.6.7.8/32", 520, 540), // contained in the claim above
+        ]));
+
+        // The first three claims describe one uninterrupted run of ports, and the last two another.
+        let for_addr = reserved.for_addr(addr("5.6.7.8"));
+        assert_eq!(ports(&for_addr), [(100, 400), (500, 600)]);
+        assert!(for_addr.contains(400));
+        assert!(!for_addr.contains(401), "the gap between the runs was lost");
+        assert!(for_addr.contains(540));
+    }
+
+    #[test]
     fn claims_apply_only_to_the_addresses_they_cover() {
         let reserved =
             ReservedPorts::from_set(&PrefixPortsSet::from([claim("5.6.7.0/30", 4000, 4001)]));
@@ -132,5 +178,43 @@ mod tests {
     fn a_prefix_without_ports_claims_nothing() {
         let set = PrefixPortsSet::from([PrefixWithOptionalPorts::new("5.6.7.8/32".into(), None)]);
         assert!(ReservedPorts::from_set(&set).0.is_empty());
+    }
+
+    #[test]
+    fn test_combined_reservations() {
+        let claim1 = claim("100.64.1.0/25", 15, 100);
+        let claim2 = claim("100.64.1.128/25", 20, 60);
+        let claim3 = claim("100.64.1.192/26", 10, 180);
+
+        let all_claims = PrefixPortsSet::from([claim1, claim2, claim3]);
+        let reserved = ReservedPorts::from_set(&all_claims);
+
+        let address = addr("100.64.1.1");
+        let res = reserved.for_addr(address);
+        assert_eq!(res.reserved(), 100 - 15 + 1);
+
+        assert!(!res.contains(14));
+        assert!(res.contains(15));
+        assert!(res.contains(100));
+        assert!(!res.contains(101));
+
+        let address = addr("100.64.1.129");
+        let res = reserved.for_addr(address);
+        assert_eq!(res.reserved(), 60 - 20 + 1);
+
+        assert!(!res.contains(19));
+        assert!(res.contains(20));
+        assert!(res.contains(60));
+        assert!(!res.contains(61));
+
+        let address = addr("100.64.1.193");
+        let res = reserved.for_addr(address);
+        assert_eq!(res.reserved(), 180 - 10 + 1);
+
+        assert_eq!(ports(&res), [(10, 180)]);
+        assert!(!res.contains(9));
+        assert!(res.contains(10));
+        assert!(res.contains(180));
+        assert!(!res.contains(181));
     }
 }
