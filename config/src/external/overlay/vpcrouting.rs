@@ -125,9 +125,13 @@ impl VpcRouteTable {
         self.table.values().flat_map(VpcRouteSet::iter)
     }
 
-    #[must_use]
     /// Build a `VpcRouteTable` from the set of `ValidatedPeering` of a VPC
-    pub fn build(peerings: &Vec<ValidatedPeering>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// This function returns `ConfigError` if the `VpcRouteTable` does not
+    /// pass validation successfully
+    pub fn build(peerings: &Vec<ValidatedPeering>) -> Result<Self, ConfigError> {
         let mut rt = VpcRouteTable::new();
         for peering in peerings {
             for expose in peering.remote().valexp() {
@@ -150,7 +154,7 @@ impl VpcRouteTable {
                 }
             }
         }
-        rt
+        rt.validate()
     }
 
     /// Consume and validate a `VpcRouteTable`
@@ -162,7 +166,7 @@ impl VpcRouteTable {
     ///   2) destinations cannot overlap except if they are masqueraded or a default
     ///   3) overlapping destinations, when allowed, must use the same gateway group
     ///
-    pub fn validate(self) -> Result<Self, ConfigError> {
+    fn validate(self) -> Result<Self, ConfigError> {
         let all_routes: Vec<&VpcRoute> = self.table.values().flat_map(VpcRouteSet::iter).collect();
         for (i, &route) in all_routes.iter().enumerate() {
             for &other in &all_routes[i + 1..] {
