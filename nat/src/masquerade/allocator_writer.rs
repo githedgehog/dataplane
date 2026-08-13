@@ -21,6 +21,19 @@ pub(crate) struct MasqueradePeering {
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: ValidatedPeering,
 }
+
+impl MasqueradePeering {
+    /// Tells if this peering masquerades locally, i.e. it has at least one local expose configured
+    /// with masquerading. N.B. `MasqueradeConfig` also holds peerings that only port-forward.
+    pub(crate) fn has_masquerade(&self) -> bool {
+        self.peering
+            .local()
+            .valexp()
+            .iter()
+            .any(ValidatedExpose::has_masquerade)
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct MasqueradeConfig {
     peerings: Vec<MasqueradePeering>,
@@ -62,22 +75,19 @@ impl MasqueradeConfig {
     }
 
     pub(crate) fn has_masquerading_peerings(&self) -> bool {
-        self.peerings.iter().map(|p| &p.peering).any(|p| {
-            p.local()
-                .valexp()
-                .iter()
-                .any(ValidatedExpose::has_masquerade)
-        })
+        self.peerings.iter().any(MasqueradePeering::has_masquerade)
     }
 
-    pub(crate) fn get_peering(
+    /// Find a peering between two VPCs identified by their `VpcDiscriminant`s and
+    /// that has a local masqueraded expose
+    pub(crate) fn find_masquerade_peering(
         &self,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
     ) -> Option<&MasqueradePeering> {
         self.peerings
             .iter()
-            .find(|p| p.src_vpcd == src_vpcd && p.dst_vpcd == dst_vpcd)
+            .find(|p| p.src_vpcd == src_vpcd && p.dst_vpcd == dst_vpcd && p.has_masquerade())
     }
 }
 
