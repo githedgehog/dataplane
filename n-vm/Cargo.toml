@@ -8,6 +8,13 @@ version.workspace = true
 [lib]
 name = "n_vm"
 
+# Cleans up containers a SIGKILL left behind; see the binary's own docs.
+# Named with dashes to match how it is invoked, and pointed at explicitly
+# because the file name is not a valid Rust identifier.
+[[bin]]
+name = "n-vm-reap"
+path = "src/bin/n-vm-reap.rs"
+
 [dependencies]
 # internal
 n-vm-macros = { workspace = true }
