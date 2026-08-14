@@ -247,6 +247,19 @@ test-each *args: (build "tests.pkg" args)
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
     {{ _just_debuggable_ }}
 
+# Remove test containers n-vm left behind. Args go to n-vm-reap (--force, --list, --all)
+[script]
+reap *args:
+    {{ _just_debuggable_ }}
+    # The host tier cleans up after itself on every route it can reach,
+    # including SIGTERM and SIGINT, so this is only needed after a SIGKILL, an
+    # OOM kill, or a reboot -- none of which give a process the chance to tidy
+    # up. Containers whose creating process is still alive are left alone
+    # unless `--all` is passed, so this is safe to run while other tests are
+    # going. Without a tty it refuses to remove anything; CI should pass
+    # `--force`.
+    cargo run --quiet -p dataplane-n-vm --features reap --bin n-vm-reap -- {{ args }}
+
 # Create devroot, sysroot, testroot, and vmroot symlinks for local development
 [script]
 setup-roots *args:
