@@ -52,11 +52,11 @@
         "owner": "githedgehog",
         "repo": "dplane-plugin"
       },
-      "branch": "hh-master-10.6",
+      "branch": "hh-master-10.5",
       "submodules": false,
-      "revision": "19d17cdba14bfca79fa6797e8459f217232f906c",
-      "url": "https://github.com/githedgehog/dplane-plugin/archive/19d17cdba14bfca79fa6797e8459f217232f906c.tar.gz",
-      "hash": "sha256-WDddiCEB2m0bhVH1pVAbRuVb9Ke3VxsGGLsOXcAx7uQ="
+      "revision": "f3517e68ef53955f107993b45c64222576e2e42d",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/f3517e68ef53955f107993b45c64222576e2e42d.tar.gz",
+      "hash": "sha256-C5Hn5L7TVwmh4q4EGKHs5fxx6DX9lTqSGHfQTz6lVuM="
     },
     "dplane-rpc": {
       "type": "Git",
@@ -95,11 +95,11 @@
         "owner": "FRRouting",
         "repo": "frr"
       },
-      "branch": "stable/10.6",
+      "branch": "stable/10.5",
       "submodules": false,
-      "revision": "4a2c602d195fcfd060318480a8ea39c093054eee",
-      "url": "https://github.com/FRRouting/frr/archive/4a2c602d195fcfd060318480a8ea39c093054eee.tar.gz",
-      "hash": "sha256-rGTkZNlvNzFL7RIuguaMz2rfvO4J8N+T9ke5YG9MhdQ="
+      "revision": "5ece2d67618a0d1ea9c49342b8fb522960f7facc",
+      "url": "https://github.com/FRRouting/frr/archive/5ece2d67618a0d1ea9c49342b8fb522960f7facc.tar.gz",
+      "hash": "sha256-85/Uss3VWI2q8TUKIo/lgOkrzsGvBgWrjyCJBTqf/nM="
     },
     "frr-agent": {
       "type": "Git",
@@ -121,11 +121,11 @@
         "owner": "githedgehog",
         "repo": "frr"
       },
-      "branch": "hh-master-10.6",
+      "branch": "hh-master-10.5",
       "submodules": false,
-      "revision": "b2ca1eb04c8746d17f11fe49181d1e2287be1470",
-      "url": "https://github.com/githedgehog/frr/archive/b2ca1eb04c8746d17f11fe49181d1e2287be1470.tar.gz",
-      "hash": "sha256-BsFh/T7VlIravMLA5m/mKjUy8bT9rnmLYzI0g/RX6J8="
+      "revision": "d6cbff16e2261a7e1a88c6369de9e5c1d1bdb4f7",
+      "url": "https://github.com/githedgehog/frr/archive/d6cbff16e2261a7e1a88c6369de9e5c1d1bdb4f7.tar.gz",
+      "hash": "sha256-dUjnWQFcP+iUcYl1vetWbawL9HZt8FmMzC0cJdUJrxI="
     },
     "kopium": {
       "type": "GitRelease",
