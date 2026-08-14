@@ -489,6 +489,17 @@ pub enum ContainerError {
     #[diagnostic(code(n_vm::container::container_remove))]
     ContainerRemove(#[source] bollard::errors::Error),
 
+    /// A termination-signal handler could not be registered.
+    ///
+    /// Not fatal on its own: the run continues without the signal race, and
+    /// only loses the ability to clean up when killed.
+    #[error("failed to install termination signal handler")]
+    #[diagnostic(
+        code(n_vm::container::signal_handler),
+        help("the container will leak if this process is signalled")
+    )]
+    SignalHandler(#[source] std::io::Error),
+
     /// A scratch-mode root directory environment variable is set but the
     /// path it references cannot be resolved.
     #[error("failed to resolve scratch root directory")]
