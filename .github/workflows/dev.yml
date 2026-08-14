@@ -952,3 +952,6 @@ jobs:
           body: |
             This is an automated Pull Request created by GitHub Actions workflow,
             in the dataplane repository.
+          labels: |
+            ci:+release
+            ci:+hlab
