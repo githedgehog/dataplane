@@ -54,9 +54,9 @@
       },
       "branch": "hh-master-10.6",
       "submodules": false,
-      "revision": "19d17cdba14bfca79fa6797e8459f217232f906c",
-      "url": "https://github.com/githedgehog/dplane-plugin/archive/19d17cdba14bfca79fa6797e8459f217232f906c.tar.gz",
-      "hash": "sha256-WDddiCEB2m0bhVH1pVAbRuVb9Ke3VxsGGLsOXcAx7uQ="
+      "revision": "18a1d3a248e2280697d797fd5905d8b472f83e12",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/18a1d3a248e2280697d797fd5905d8b472f83e12.tar.gz",
+      "hash": "sha256-U+n3Bmm5liqhov08P7rx+8YB6UlzE3/26UA7dMnfbyU="
     },
     "dplane-rpc": {
       "type": "Git",
