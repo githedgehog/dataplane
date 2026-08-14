@@ -945,6 +945,116 @@ impl<'a> ContainerGuard<'a> {
             exit_code: state.exit_code,
         })
     }
+
+    /// Force-removes the container in response to a termination signal, then
+    /// ends this process.  Never returns.
+    ///
+    /// Every other cleanup route here runs from [`Drop`] -- the guard's own
+    /// impl, and the [`CleanupThread`] it dispatches to.  That covers panics
+    /// and early returns, because both unwind.  A signal does not: the
+    /// default disposition for `SIGTERM` terminates the process outright, so
+    /// no destructor runs and neither safety net fires.
+    ///
+    /// Two things leak without this, and the smaller one is the one that
+    /// looks worse.  The container *record* survives, because
+    /// `auto_remove` is deliberately `false`, and accumulates one entry per
+    /// killed run.  More importantly the container keeps *running*: it is
+    /// owned by the daemon, not by this process, so it plays the test out to
+    /// the end with nothing left to collect the result.  For a test that is
+    /// a few seconds; for a fuzz target it is the whole `-max_total_time`
+    /// budget, which means a runner's own timeout would not actually stop
+    /// the work it just gave up waiting for.
+    ///
+    /// Removal is forced, since the container is by definition still running.
+    /// Reports through `eprintln!` rather than `tracing` because this tier
+    /// has no subscriber: [`init_tracing`](crate::dispatch) runs in the
+    /// container, not on the host, which is why the surrounding host-tier
+    /// code prints directly too.  A cleanup notice that goes nowhere is
+    /// worse than none, since it is the only record that the container was
+    /// dealt with.
+    async fn abort_on_signal(&mut self, signal: &str) -> ! {
+        eprintln!(
+            "n-vm: {signal} received; force-removing container {}",
+            self.container_id,
+        );
+
+        match self
+            .client
+            .remove_container(
+                &self.container_id,
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+            )
+            .await
+        {
+            Ok(()) => {
+                // Disarm both nets: there is nothing left to remove, and the
+                // process is about to end anyway.
+                self.defused = true;
+                self.cleanup.defuse();
+            }
+            Err(e) => eprintln!(
+                "n-vm: force-removal of container {} after {signal} failed: {e}; \
+                 manual removal may be needed (e.g. `docker rm -f {}`)",
+                self.container_id, self.container_id,
+            ),
+        }
+
+        // `128 + signo`, the shell's convention for a signal death.  Chosen
+        // over resetting the disposition and re-raising because that needs
+        // `unsafe`, and nothing downstream distinguishes the two: a runner
+        // sees a non-zero status either way.
+        std::process::exit(128 + signal_number(signal));
+    }
+}
+
+/// The signal number behind one of the names [`await_termination`] reports.
+///
+/// Only those two names are ever passed; an unrecognised one still yields a
+/// failing status rather than pretending the run succeeded.
+fn signal_number(signal: &str) -> i32 {
+    match signal {
+        "SIGINT" => nix::sys::signal::Signal::SIGINT as i32,
+        "SIGTERM" => nix::sys::signal::Signal::SIGTERM as i32,
+        _ => nix::sys::signal::Signal::SIGTERM as i32,
+    }
+}
+
+/// Handlers for the signals that should end a run early.
+///
+/// `SIGINT` is watched alongside `SIGTERM` because an interactive Ctrl-C
+/// leaks exactly the same way a runner's timeout does.
+struct TerminationSignals {
+    sigterm: tokio::signal::unix::Signal,
+    sigint: tokio::signal::unix::Signal,
+}
+
+impl TerminationSignals {
+    /// Registers both handlers.
+    ///
+    /// Separated from [`recv`](Self::recv) so that registration -- the only
+    /// fallible part -- happens before the race it feeds, rather than inside
+    /// it where a failure would have to unwind a log stream already underway.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContainerError::SignalHandler`] if either handler cannot be
+    /// registered.
+    fn install() -> Result<Self, ContainerError> {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        Ok(Self {
+            sigterm: signal(SignalKind::terminate()).map_err(ContainerError::SignalHandler)?,
+            sigint: signal(SignalKind::interrupt()).map_err(ContainerError::SignalHandler)?,
+        })
+    }
+
+    /// Resolves when either signal arrives, naming it.
+    async fn recv(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.sigterm.recv() => "SIGTERM",
+            _ = self.sigint.recv() => "SIGINT",
+        }
+    }
 }
 
 impl Drop for ContainerGuard<'_> {
@@ -1133,9 +1243,27 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // The guard is armed at creation -- if anything between here and
         // the explicit cleanup panics or returns early, the CleanupThread
         // will force-remove the container.
-        let guard = ContainerGuard::create_and_start(&client, config).await?;
+        let mut guard = ContainerGuard::create_and_start(&client, config).await?;
 
-        let log_result = guard.stream_logs().await;
+        // Streaming the logs is where this tier spends the test's whole
+        // lifetime, so it is also where a termination signal arrives.  Racing
+        // the two is what gives a signal any path to cleanup at all; see
+        // [`ContainerGuard::abort_on_signal`].
+        let log_result = match TerminationSignals::install() {
+            Ok(mut signals) => tokio::select! {
+                result = guard.stream_logs() => result,
+                signal = signals.recv() => guard.abort_on_signal(signal).await,
+            },
+            // Losing the handlers costs cleanup on a kill, which is worth a
+            // warning and not worth failing a run over.
+            Err(e) => {
+                eprintln!(
+                    "n-vm: could not install termination handlers ({e}); \
+                     a signal will leak the container",
+                );
+                guard.stream_logs().await
+            }
+        };
 
         // Explicit cleanup -- inspects the exit status and removes the
         // container.  This defuses the guard so its Drop is a no-op.
