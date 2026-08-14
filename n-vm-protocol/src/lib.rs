@@ -151,6 +151,37 @@ pub const ENV_BACKEND: &str = "N_VM_BACKEND";
 /// guest.  Set by the host tier, read by the QEMU backend.
 pub const ENV_ACCEL: &str = "N_VM_ACCEL";
 
+/// Docker label marking a container as one this crate created.
+///
+/// Set on every test container so that a container can be recognised as
+/// ours without matching on image or name, neither of which is reliable:
+/// the scratch image is shared, and names are assigned by the daemon.
+///
+/// The reaper (`n-vm-reap`) selects on this label alone, which is what
+/// makes bulk removal safe to offer at all -- it can never match a
+/// container some other tool on the machine created.
+pub const LABEL_OWNER: &str = "dev.githedgehog.n-vm";
+
+/// Value of [`LABEL_OWNER`].  Presence is what matters; the value is fixed
+/// so the label can be matched as `key=value` rather than by existence.
+pub const LABEL_OWNER_VALUE: &str = "1";
+
+/// Docker label carrying the fully-qualified name of the test the container
+/// was launched for.
+///
+/// Purely diagnostic: a leaked container is far easier to act on when it
+/// says which test produced it.
+pub const LABEL_TEST: &str = "dev.githedgehog.n-vm.test";
+
+/// Docker label carrying the PID of the host-tier process that created the
+/// container.
+///
+/// This is what lets the reaper distinguish a genuine orphan from a
+/// container belonging to a run that is still going: if the recorded PID is
+/// gone, nothing is left to collect the container's result.  Treated as a
+/// hint rather than proof, since PIDs are reused.
+pub const LABEL_HOST_PID: &str = "dev.githedgehog.n-vm.host-pid";
+
 /// A vsock port number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VsockPort(u32);
