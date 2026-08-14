@@ -15,7 +15,8 @@ use bollard::query_parameters::{
 };
 use n_vm_protocol::{
     CONTAINER_PLATFORM, CORPUS_SHARE_PATH, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER,
-    ENV_MARKER_VALUE, ENV_WORKSPACE, ScratchRoots, VM_ENV_DIR, VM_ROOT_SHARE_PATH, VM_RUN_DIR,
+    ENV_MARKER_VALUE, ENV_WORKSPACE, LABEL_HOST_PID, LABEL_OWNER, LABEL_OWNER_VALUE, LABEL_TEST,
+    ScratchRoots, VM_ENV_DIR, VM_ROOT_SHARE_PATH, VM_RUN_DIR,
     VM_TEST_BIN_DIR,
     VM_WORKSPACE_DIR,
 };
@@ -255,6 +256,23 @@ impl ContainerParams {
             cmd: Some(self.build_test_command(qemu_user)),
             image: Some(self.container_image().to_owned()),
             network_disabled: Some(true),
+            // Marks the container as ours so `n-vm-reap` can find it later.
+            // A SIGKILL leaves no chance to clean up in-process, so something
+            // has to be able to identify the remains after the fact; matching
+            // on image or name would not do, since the scratch image is
+            // shared and names come from the daemon.
+            labels: Some(
+                [
+                    (LABEL_OWNER.to_owned(), LABEL_OWNER_VALUE.to_owned()),
+                    (LABEL_TEST.to_owned(), self.test_name.clone()),
+                    (
+                        LABEL_HOST_PID.to_owned(),
+                        std::process::id().to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
             env: Some(
                 vec![
                     format!("{ENV_IN_TEST_CONTAINER}={ENV_MARKER_VALUE}"),
