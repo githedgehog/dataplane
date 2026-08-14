@@ -705,10 +705,13 @@ impl CleanupThread {
                     Err(_) => return,
                 };
 
-                tracing::warn!(
-                    %container_id,
-                    "performing emergency container cleanup",
-                );
+                // `eprintln!` rather than `tracing` throughout: this thread
+                // belongs to the host tier, and `init_tracing` runs in the
+                // container tier only, so a `tracing` event here reaches
+                // nobody.  These lines are the sole record that a container
+                // was left behind and dealt with -- the one place where
+                // going unread is worse than being ugly.
+                eprintln!("n-vm: performing emergency cleanup of container {container_id}");
 
                 let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -716,10 +719,8 @@ impl CleanupThread {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        tracing::error!(
-                            %container_id,
-                            error = %e,
-                            "failed to build emergency cleanup runtime; \
+                        eprintln!(
+                            "n-vm: failed to build emergency cleanup runtime ({e}); \
                              manual removal needed (e.g. `docker rm -f {container_id}`)",
                         );
                         return;
@@ -729,14 +730,11 @@ impl CleanupThread {
                 rt.block_on(async {
                     let opts = RemoveContainerOptionsBuilder::default().force(true).build();
                     match client.remove_container(&container_id, Some(opts)).await {
-                        Ok(()) => tracing::warn!(
-                            %container_id,
-                            "emergency container cleanup succeeded",
+                        Ok(()) => eprintln!(
+                            "n-vm: emergency cleanup of container {container_id} succeeded",
                         ),
-                        Err(e) => tracing::error!(
-                            %container_id,
-                            error = %e,
-                            "emergency container cleanup failed; \
+                        Err(e) => eprintln!(
+                            "n-vm: emergency cleanup of container {container_id} failed ({e}); \
                              manual removal may be needed \
                              (e.g. `docker rm -f {container_id}`)",
                         ),
