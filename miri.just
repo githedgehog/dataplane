@@ -43,7 +43,7 @@ test *args="":
       declare -rx CARGO_INCREMENTAL=0
       declare MIRIFLAGS=""
       # Environment RUSTFLAGS replace the cargo-configured flags.
-      declare RUSTFLAGS="--cfg=tokio_unstable --check-cfg=cfg(emulated) "
+      declare RUSTFLAGS="--cfg=tokio_unstable --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented) "
       MIRIFLAGS+="-Zmiri-compare-exchange-weak-failure-rate=${weak_failure_rate} "
       MIRIFLAGS+="-Zmiri-disable-isolation "
       MIRIFLAGS+="-Zmiri-many-seeds=${START_SEED}..${END_SEED} "
