@@ -219,6 +219,15 @@ jobs:
       max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
+        exclude:
+          # The fuzz profile is release plus the safety checks, so checking it
+          # here mostly re-verifies what `check/release` already covered, at
+          # the price of compiling the workspace optimised a second time --
+          # 944s in the differential run, the most expensive job in it.  The
+          # fuzz build is exercised where it matters: `coverage/fuzz`, both
+          # sanitizers, and the fuzzing campaign these worker-minutes are being
+          # freed up for.
+          - profile: "fuzz"
     steps:
       - *checkout
 
