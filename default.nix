@@ -1037,6 +1037,54 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # Exposes bugstalker's DAP server for live debugging.
+  containers.dataplane-dev-debugger =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/dev-debugger";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-dev-debugger-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [ pkgs.pkgsBuildHost.bugstalker ] ++ debug-image-paths;
+        }).overrideAttrs
+          source-volatile;
+      # bugstalker needs a writable HOME for its keymap and history.
+      extraCommands = ''
+        # Point `src-prefix` at the sources this image ships.  Referencing ${src}
+        # here is also what keeps it in the image closure: with the remap no
+        # longer naming a store path, nothing else retains it.
+        mkdir -p ".$(dirname "${src-prefix}")"
+        ln -s "${src}" ".${src-prefix}"
+        mkdir -p tmp
+        chmod 1777 tmp
+      '';
+      config = {
+        Entrypoint = [
+          "/bin/bs"
+          # Bind the published interface rather than container-local loopback.
+          "--dap-remote=0.0.0.0:4711"
+          # rustc is absent, so bugstalker cannot infer this path.
+          "--std-lib-path=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
+          # No debuggee here on purpose.  In `--dap-remote` mode bugstalker
+          # ignores the CLI debuggee and waits for the client's `launch` request
+          # to name one, so a path here would be silently dead and would imply
+          # that connecting alone starts the dataplane.  The editor supplies
+          # `program` instead; see .github/workflows/README.md.
+        ];
+        Env = [ "HOME=/tmp" ];
+        ExposedPorts = {
+          "4711/tcp" = { };
+        };
+      };
+    }).overrideAttrs
+      source-volatile;
+
   debug-tools =
     pkgs:
     [
