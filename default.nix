@@ -259,6 +259,9 @@ let
         "sha256-XwEKLdc2Y7fteSKKOERgjKTdxELy7K/wOVuB/SSj3ng=";
     };
   };
+  # Rename per-revision images so the CI push filter keeps them out of Cachix;
+  # each is built once and shipped through GHCR. Not applied to workspace
+  # builds, which are worth substituting.
   source-volatile = orig: {
     name = "dataplane-volatile-${orig.name or "${orig.pname}-${orig.version}"}";
     allowSubstitutes = false;
@@ -415,48 +418,44 @@ let
       }
       // args
     )).overrideAttrs
-      (
-        orig:
-        source-volatile orig
-        // {
-          separateDebugInfo = true;
+      (orig: {
+        separateDebugInfo = true;
 
-          # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
-          # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
-          # intended for the runtime dependencies.
-          # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
-          # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
-          # We don't need to set any optimization flags for postBuild tooling anyway.
-          postBuild = (orig.postBuild or "") + ''
-            unset RUSTFLAGS;
-          '';
-          postInstall =
-            (orig.postInstall or "")
-            + (
-              if rustc-target != "wasm32-wasip1" then
-                ''
-                  mkdir -p $debug/bin
-                  for f in $out/bin/*; do
-                    mv "$f" "$debug/bin/$(basename "$f")"
-                    ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
-                    ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
-                  done
-                ''
-              else
-                ''
-                  mkdir -p $debug/bin
-                  for f in $out/bin/*; do
-                    mv "$f" "$debug/bin/$(basename "$f")"
-                    ${pkgs.pkgsBuildHost.binaryen}/bin/wasm-opt "$debug/bin/$(basename "$f")" --strip-debug -O4 -o "$f"
-                    # sadly there is no equivalent of gnu-debuglink in wasm world yet
-                  done
-                ''
-            );
-          postFixup = (orig.postFixup or "") + ''
-            rm -f $out/target.tar.zst
-          '';
-        }
-      );
+        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
+        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
+        # intended for the runtime dependencies.
+        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
+        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
+        # We don't need to set any optimization flags for postBuild tooling anyway.
+        postBuild = (orig.postBuild or "") + ''
+          unset RUSTFLAGS;
+        '';
+        postInstall =
+          (orig.postInstall or "")
+          + (
+            if rustc-target != "wasm32-wasip1" then
+              ''
+                mkdir -p $debug/bin
+                for f in $out/bin/*; do
+                  mv "$f" "$debug/bin/$(basename "$f")"
+                  ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+                  ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+                done
+              ''
+            else
+              ''
+                mkdir -p $debug/bin
+                for f in $out/bin/*; do
+                  mv "$f" "$debug/bin/$(basename "$f")"
+                  ${pkgs.pkgsBuildHost.binaryen}/bin/wasm-opt "$debug/bin/$(basename "$f")" --strip-debug -O4 -o "$f"
+                  # sadly there is no equivalent of gnu-debuglink in wasm world yet
+                done
+              ''
+          );
+        postFixup = (orig.postFixup or "") + ''
+          rm -f $out/target.tar.zst
+        '';
+      });
   workspace-builder =
     {
       pname ? null,
