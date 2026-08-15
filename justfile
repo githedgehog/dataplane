@@ -450,34 +450,82 @@ build-container-quick:
 push-container target="dataplane" *args: (build-container target args) && version
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
+
+    # ghcr.io fails a push every so often, most often with a 403 or a blob
+    # transfer error, and a lost push costs the whole job.  We have no
+    # visibility into why, so retrying is the best available answer.
+    #
+    # Two layers, because they cover different things.  `--retry-times` is
+    # skopeo's own, and retries a *blob* rather than restarting a copy that may
+    # already have moved most of an image.  It treats `denied`/403 as an auth
+    # failure and a blob-upload error as a 404, neither of which it will retry
+    # -- which is exactly what we keep seeing -- so an outer loop restarts the
+    # whole copy for those.  That is safe: skopeo skips blobs the registry
+    # already has, and a partial upload is discarded server side, so a push is
+    # idempotent.
+    #
+    # Every retry is announced so the flake rate stays visible.  A silent
+    # wrapper would turn "ghcr is degrading" into "CI got slower".
+    retry() {
+        declare -r what="$1"
+        shift
+        declare -ri attempts=4
+        declare -i attempt=1
+        declare -i delay
+        declare out
+        while true; do
+            if out="$("$@" 2>&1)"; then
+                printf '%s\n' "${out}"
+                return 0
+            fi
+            printf '%s\n' "${out}" >&2
+            if [ "${attempt}" -ge "${attempts}" ]; then
+                >&2 echo "::error::${what} failed after ${attempts} attempts"
+                return 1
+            fi
+            # Retry only what we have seen recover.  Anything else is reported
+            # now rather than buried under a minute of backoff.
+            if ! grep -qiE 'blob upload (unknown|invalid)|blob transfer|403|forbidden|denied|too many requests|unexpected EOF|connection reset|i/o timeout|TLS handshake' <<<"${out}"; then
+                >&2 echo "::error::${what} failed with a non-retryable error"
+                return 1
+            fi
+            delay=$(( 5 * 2 ** (attempt - 1) + RANDOM % 5 ))
+            >&2 echo "::warning::${what} failed (attempt ${attempt}/${attempts}), retrying in ${delay}s"
+            sleep "${delay}"
+            attempt=$(( attempt + 1 ))
+        done
+    }
+
+    push_image() {
+        declare -r image="$1"
+        retry "push of ${image}" \
+            skopeo copy --retry-times=3 --src-daemon-host="${DOCKER_HOST}" \
+                {{ _skopeo_dest_insecure }} "docker-daemon:${image}" "docker://${image}"
+        echo "Pushed ${image}"
+    }
+
     case "{{target}}" in
         "dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane }}" "docker://{{ oci_image_dataplane }}"
-            echo "Pushed {{ oci_image_dataplane }}"
+            push_image "{{ oci_image_dataplane }}"
             ;;
         "dataplane-core-viewer")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_core_viewer }}" "docker://{{ oci_image_dataplane_core_viewer }}"
-            echo "Pushed {{ oci_image_dataplane_core_viewer }}"
+            push_image "{{ oci_image_dataplane_core_viewer }}"
             ;;
         "dataplane-dev-debugger")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_dev_debugger }}" "docker://{{ oci_image_dataplane_dev_debugger }}"
-            echo "Pushed {{ oci_image_dataplane_dev_debugger }}"
+            push_image "{{ oci_image_dataplane_dev_debugger }}"
             ;;
         "dataplane-syscall-tracer")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_syscall_tracer }}" "docker://{{ oci_image_dataplane_syscall_tracer }}"
-            echo "Pushed {{ oci_image_dataplane_syscall_tracer }}"
+            push_image "{{ oci_image_dataplane_syscall_tracer }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"
             exit 1
             ;;
         "frr.dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_dataplane}}" "docker://{{oci_image_frr_dataplane}}"
-            echo "Pushed {{ oci_image_frr_dataplane }}"
+            push_image "{{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_host}}" "docker://{{oci_image_frr_host}}"
-            echo "Pushed {{ oci_image_frr_host }}"
+            push_image "{{oci_image_frr_host}}"
             ;;
         "validator")
             if [ "{{platform}}" != "wasm32-wasip1" ]; then
@@ -485,7 +533,8 @@ push-container target="dataplane" *args: (build-container target args) && versio
               exit 1
             fi
             pushd ./results/workspace.validator/bin
-            oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
+            retry "push of {{ oci_image_dataplane_validator }}" \
+                oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
             popd
             echo "Pushed {{ oci_image_dataplane_validator }}"
             ;;
@@ -493,7 +542,6 @@ push-container target="dataplane" *args: (build-container target args) && versio
             >&2 echo "{{target}} is not a valid container"
             exit 99
     esac
-
 [script]
 push:
     {{ _just_debuggable_ }}
