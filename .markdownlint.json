@@ -6,12 +6,11 @@
     "style": "backtick"
   },
   "emphasis-style": {
-    "allow_asterisk": true,
-    "allow_underscore": true
+    "style": "underscore"
   },
   "line-length": {
     "strict": false,
-    "line_length": 120,
+    "line_length": 160,
     "code_blocks": false
   },
   "link-image-style": {
