@@ -5,6 +5,7 @@ set unstable := true
 set shell := ["/usr/bin/env", "bash", "-euo", "pipefail", "-c"]
 set script-interpreter := ["/usr/bin/env", "bash", "-euo", "pipefail"]
 
+mod ci
 mod miri
 
 # enable to debug just recipes
