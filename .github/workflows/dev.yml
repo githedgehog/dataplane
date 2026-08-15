@@ -201,6 +201,10 @@ jobs:
       max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
+        exclude:
+          # Fuzz repeats the release compile here; coverage, sanitizers, and
+          # fuzzing jobs already exercise that profile.
+          - profile: "fuzz"
     steps:
       - *checkout
 
