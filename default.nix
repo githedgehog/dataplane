@@ -216,7 +216,11 @@ let
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
   jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
-  outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
+  # `cleanSource` does not read gitignore, so `results` needs excluding by hand
+  # or every developer who has built carries a private `src` hash.
+  outputsFilter =
+    p: _type:
+    (p != "target") && (p != "sysroot") && (p != "devroot") && (p != "results") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
       full-path: t:
