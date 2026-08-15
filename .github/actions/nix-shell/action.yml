@@ -32,6 +32,8 @@ runs:
         signingKey: '${{ inputs.cachix_signing_key }}'
         # prettier-ignore
         authToken: '${{ inputs.cachix_auth_token }}'
+        # Exclude source-volatile builds and image paths that can reintroduce them through a closure.
+        pushFilter: '(-dataplane-volatile-|-dataplane-(customisation-layer|conf\.json)$|-stream-(dataplane|frr)$|-(frr-conf\.json|layers\.json|excludePaths)$)'
 
     - name: "use nix shell"
       uses: "rrbutani/use-nix-shell-action@59a52b2b9bbfe3cc0e7deb8f9059abe37a439edf" # v1.1.0

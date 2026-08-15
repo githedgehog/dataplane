@@ -237,6 +237,10 @@ let
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
+  source-volatile = orig: {
+    name = "dataplane-volatile-${orig.name or "${orig.pname}-${orig.version}"}";
+    allowSubstitutes = false;
+  };
   # For wasm32, pkgs is the host nixpkgs (no pkgsCross), so ctarget resolves to the
   # host platform (e.g. x86_64-unknown-linux-gnu).  That means is-cross-compile is
   # false for wasm, which is intentional: we don't want native cross-compilation
@@ -255,7 +259,7 @@ let
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
     builtins.readFile (
-      pkgs.runCommandLocal "package-list"
+      (pkgs.runCommandLocal "package-list"
         {
           TOMLQ = "${pkgs.pkgsBuildHost.yq}/bin/tomlq";
           JQ = "${pkgs.pkgsBuildHost.jq}/bin/jq";
@@ -271,7 +275,7 @@ let
                   $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
               done | $JQ --sort-keys --slurp 'add' > $out
             ''
-        )
+        )).overrideAttrs source-volatile
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
@@ -387,7 +391,7 @@ let
       }
       // args
     )).overrideAttrs
-      (orig: {
+      (orig: source-volatile orig // {
         separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
@@ -646,7 +650,7 @@ let
     ) package-list;
   };
 
-  dataplane.tar = pkgs.stdenv'.mkDerivation {
+  dataplane.tar = (pkgs.stdenv'.mkDerivation {
     pname = "dataplane.tar";
     inherit version;
     dontUnpack = true;
@@ -766,12 +770,12 @@ let
           ${workspace.cli} \
           ${pkgs.pkgsHostHost.busybox}
       '';
-  };
+  }).overrideAttrs source-volatile;
 
-  containers.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane";
     inherit tag;
-    contents = pkgs.buildEnv {
+    contents = (pkgs.buildEnv {
       name = "dataplane-env";
       pathsToLink = [
         "/bin"
@@ -787,9 +791,9 @@ let
         workspace.dataplane
         workspace.init
       ];
-    };
+    }).overrideAttrs source-volatile;
     config.Entrypoint = [ "/bin/dataplane" ];
-  };
+  }).overrideAttrs source-volatile;
 
   containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/debugger";
@@ -899,7 +903,7 @@ let
 
   };
 
-  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.frr.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -953,7 +957,7 @@ let
       "--"
     ];
     config.Cmd = [ "/libexec/frr/docker-start" ];
-  };
+  }).overrideAttrs source-volatile;
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr-host";
