@@ -351,6 +351,10 @@ let
         pname = null;
         cargoArtifacts = null;
       },
+      # A deps-only build produces cargo artifacts rather than binaries, so it
+      # skips the debug-info split and keeps the `target.tar.zst` that the
+      # package path strips.
+      for-deps ? false,
       profile,
       cargo-nextest,
       hwloc,
@@ -422,48 +426,112 @@ let
       }
       // args
     )).overrideAttrs
-      (orig: {
-        separateDebugInfo = true;
+      (
+        orig:
+        if for-deps then
+          {
+            postBuild = (orig.postBuild or "") + ''
+              unset RUSTFLAGS;
+            '';
+          }
+        else
+          {
+            separateDebugInfo = true;
 
-        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
-        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
-        # intended for the runtime dependencies.
-        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
-        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
-        # We don't need to set any optimization flags for postBuild tooling anyway.
-        postBuild = (orig.postBuild or "") + ''
-          unset RUSTFLAGS;
-        '';
-        postInstall =
-          (orig.postInstall or "")
-          + (
-            if rustc-target != "wasm32-wasip1" then
-              ''
-                mkdir -p $debug/bin
-                for f in $out/bin/*; do
-                  mv "$f" "$debug/bin/$(basename "$f")"
-                  ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
-                  ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
-                done
-              ''
+            # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
+            # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
+            # intended for the runtime dependencies.
+            # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
+            # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
+            # We don't need to set any optimization flags for postBuild tooling anyway.
+            postBuild = (orig.postBuild or "") + ''
+              unset RUSTFLAGS;
+            '';
+            postInstall =
+              (orig.postInstall or "")
+              + (
+                if rustc-target != "wasm32-wasip1" then
+                  ''
+                    mkdir -p $debug/bin
+                    for f in $out/bin/*; do
+                      mv "$f" "$debug/bin/$(basename "$f")"
+                      ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+                      ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+                    done
+                  ''
+                else
+                  ''
+                    mkdir -p $debug/bin
+                    for f in $out/bin/*; do
+                      mv "$f" "$debug/bin/$(basename "$f")"
+                      ${pkgs.pkgsBuildHost.binaryen}/bin/wasm-opt "$debug/bin/$(basename "$f")" --strip-debug -O4 -o "$f"
+                      # sadly there is no equivalent of gnu-debuglink in wasm world yet
+                    done
+                  ''
+              );
+            postFixup = (orig.postFixup or "") + ''
+              rm -f $out/target.tar.zst
+            '';
+          }
+      );
+
+  # Share one manifest-based dependency build per flag set across workspace
+  # packages and revisions. Production and tests remain separate because their
+  # unwind and development-dependency fingerprints differ.
+  mk-cargo-artifacts =
+    {
+      for-tests,
+      cmd-prefix,
+      deps-profile,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.buildDepsOnly;
+      profile = deps-profile;
+      for-deps = true;
+      args = {
+        pname = if for-tests then "dataplane-tests" else "dataplane";
+        cargoArtifacts = null;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          # Include dev-dependencies required by nextest archives.
+          (
+            if for-tests then
+              [
+                "cargo"
+                "test"
+                "--no-run"
+                "--profile=${cargo-profile}"
+              ]
             else
-              ''
-                mkdir -p $debug/bin
-                for f in $out/bin/*; do
-                  mv "$f" "$debug/bin/$(basename "$f")"
-                  ${pkgs.pkgsBuildHost.binaryen}/bin/wasm-opt "$debug/bin/$(basename "$f")" --strip-debug -O4 -o "$f"
-                  # sadly there is no equivalent of gnu-debuglink in wasm world yet
-                done
-              ''
-          );
-        postFixup = (orig.postFixup or "") + ''
-          rm -f $out/target.tar.zst
-        '';
-      });
+              [
+                "cargo"
+                "build"
+                "--profile=${cargo-profile}"
+              ]
+          )
+          # Use the consumer package set so excluded members cannot pull native
+          # dependencies that fail to compile for wasm32-wasip1.
+          ++ (map (pname: "--package=${pname}") (builtins.attrValues package-list))
+          ++ cmd-prefix
+        );
+      };
+    };
+
+  cargo-artifacts = mk-cargo-artifacts {
+    for-tests = false;
+    cmd-prefix = cargo-cmd-prefix;
+    deps-profile = profile';
+  };
+
+  cargo-artifacts-tests = mk-cargo-artifacts {
+    for-tests = true;
+    cmd-prefix = cargo-cmd-prefix-tests;
+    deps-profile = profile-tests';
+  };
+
   workspace-builder =
     {
       pname ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts,
     }:
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
@@ -496,7 +564,7 @@ let
   workspace-check =
     {
       pname ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts,
     }:
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
@@ -529,7 +597,7 @@ let
   test-builder =
     {
       package ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts-tests,
     }:
     let
       pname = if package != null then package else "all";
@@ -572,7 +640,7 @@ let
   bench-builder =
     {
       package ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts-tests,
     }:
     let
       pname = if package != null then package else "all";
@@ -615,7 +683,7 @@ let
       profile = profile';
       args = {
         inherit pname;
-        cargoArtifacts = null;
+        cargoArtifacts = cargo-artifacts;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
@@ -651,7 +719,7 @@ let
       profile = profile';
       args = {
         inherit pname;
-        cargoArtifacts = null;
+        cargoArtifacts = cargo-artifacts;
         RUSTDOCFLAGS = "-D warnings";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
