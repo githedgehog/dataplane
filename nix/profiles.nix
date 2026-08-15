@@ -240,6 +240,7 @@ let
   instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE;
   instrument.coverage.RUSTFLAGS = [
     "-Cinstrument-coverage"
+    "-Zcoverage-options=branch"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
   combine-profiles =

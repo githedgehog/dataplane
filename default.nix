@@ -504,19 +504,27 @@ let
       profile = profile-tests';
       args = {
         inherit pname cargoArtifacts;
-        buildPhaseCargoCommand = builtins.concatStringsSep " " (
-          [
-            "mkdir -p $out;"
-            "cargo"
-            "nextest"
-            "archive"
-            "--archive-file"
-            "$out/${pname}.tar.zst"
-            "--cargo-profile=${cargo-profile}"
-          ]
-          ++ (if package != null then [ "--package=${pname}" ] else [ ])
-          ++ cargo-cmd-prefix-tests
-        );
+        buildPhaseCargoCommand =
+          (builtins.concatStringsSep " " (
+            [
+              "mkdir -p $out;"
+              "cargo"
+              "nextest"
+              "archive"
+              "--archive-file"
+              "$out/${pname}.tar.zst"
+              "--cargo-profile=${cargo-profile}"
+            ]
+            ++ (if package != null then [ "--package=${pname}" ] else [ ])
+            ++ cargo-cmd-prefix-tests
+          ))
+          # Record the remapped source root without changing normal archives.
+          + (
+            if instrumentation == "coverage" then
+              "; echo -n '${src}' > $out/source-prefix"
+            else
+              ""
+          );
       };
     };
 
