@@ -538,6 +538,20 @@ coverage-archive package="tests.all" *args:
     declare src_prefix
     src_prefix="$(cat "${prefix_file}")"
     declare -r src_prefix
+    # llvm-cov resolves relative remaps against the vanished build sandbox.
+    # Reject absolute prefixes and redirect relative ones to this worktree.
+    case "${src_prefix}" in
+        /*)
+            >&2 echo "::error::source prefix ${src_prefix} is absolute; coverage expects a relative remap"
+            exit 1
+            ;;
+    esac
+
+    # llvm-cov emits the resolved absolute paths and Codecov wants them relative
+    # to the repository root, so the root goes into a BRE below.  Escape it.
+    declare root_re
+    root_re="$(sed -e 's#[].[^$*\\/]#\\&#g' <<<"${root}")"
+    declare -r root_re
 
     # Nextest changes cwd; `%m` also pools compatible profiles across tests.
     export LLVM_PROFILE_FILE="${profraw}/cov-%m.profraw"
@@ -579,17 +593,28 @@ coverage-archive package="tests.all" *args:
             "${extract}/target/nextest/binaries-metadata.json"
     )
 
+    # Resolve remapped paths against this worktree and filter out the standard
+    # library and native dependencies. llvm-cov ignores nonexistent filters,
+    # so the trailing path must name the real tree.
+    declare -ra scope=( --compilation-dir="${root}" "${objects[@]}" "${root}" )
+
     llvm-cov export \
         --format=lcov \
         --instr-profile="${out}/coverage.profdata" \
-        "${objects[@]}" \
-        "${src_prefix}" \
-        | sed -e "s#^SF:${src_prefix}/#SF:#" > "${out}/lcov.info"
+        "${scope[@]}" \
+        | sed -e "s#^SF:${root_re}/#SF:#" > "${out}/lcov.info"
 
     # Codecov needs repository-relative paths; reject failed rewrites.
     if grep -q '^SF:/' "${out}/lcov.info"; then
-        >&2 echo "::error::absolute paths survived the ${src_prefix} rewrite:"
+        >&2 echo "::error::absolute paths survived the ${root} rewrite:"
         >&2 grep -m5 '^SF:/' "${out}/lcov.info"
+        exit 1
+    fi
+
+    # A filter that matches nothing reports full coverage of an empty set, which
+    # reads as success everywhere downstream.  Insist on some workspace source.
+    if ! grep -q '^SF:' "${out}/lcov.info"; then
+        >&2 echo "::error::no workspace sources in the report; the ${root} filter matched nothing"
         exit 1
     fi
 
@@ -598,13 +623,11 @@ coverage-archive package="tests.all" *args:
         --output-dir="${out}/html" \
         --show-branches=count \
         --instr-profile="${out}/coverage.profdata" \
-        "${objects[@]}" \
-        "${src_prefix}"
+        "${scope[@]}"
 
     llvm-cov report \
         --instr-profile="${out}/coverage.profdata" \
-        "${objects[@]}" \
-        "${src_prefix}"
+        "${scope[@]}"
 
     echo "lcov report: ${out}/lcov.info"
     echo "html report: ${out}/html/index.html"
