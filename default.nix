@@ -677,17 +677,15 @@ let
 
   benches = bench-builder { };
 
-  # `--all-targets` so tests, benches, and examples are linted too.  That code
-  # is as load bearing as the rest and deserves the same static analysis, and
-  # the bare `cargo clippy` this replaces already covered it.
-  #
-  # Linting test targets means compiling them, so this takes the unwind flavour
-  # of `-Zbuild-std` and the test profile, matching how the tests themselves
-  # are built.  It shares `cargo-artifacts-tests` for the same reason.
+  # Preserve all-target linting, using the test profile and dependency artifacts
+  # required by test and benchmark targets.
   clippy-builder =
     {
-      pname ? null,
+      package ? null,
     }:
+    let
+      pname = if package != null then package else "all";
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       profile = profile-tests';
@@ -700,8 +698,14 @@ let
             "clippy"
             "--all-targets"
             "--profile=${cargo-profile}"
-            "--package=${pname}"
           ]
+          # The platform-aware list excludes members that cannot build for WASI.
+          ++ (
+            if package != null then
+              [ "--package=${pname}" ]
+            else
+              map (p: "--package=${p}") (builtins.attrValues package-list)
+          )
           ++ cargo-cmd-prefix-tests
           ++ [
             "--"
@@ -711,12 +715,12 @@ let
       };
     };
 
-  clippy = builtins.mapAttrs (
-    dir: pname:
-    clippy-builder {
-      inherit pname;
-    }
-  ) package-list;
+  # Workspace source invalidates every package together, so share one artifact
+  # unpack instead of paying the fixed cost per package.
+  clippy = {
+    all = clippy-builder { };
+    pkg = builtins.mapAttrs (dir: package: clippy-builder { inherit package; }) package-list;
+  };
 
   # Cargo cannot build doctests without running them, so execute them in the
   # sandbox instead of trying to archive them for the host.
