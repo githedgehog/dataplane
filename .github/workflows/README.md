@@ -103,8 +103,8 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 - Checks: `debug` by default; `release` and `fuzz` on deep runs
 - Coverage: `debug` by default; `fuzz` on deep runs
 - Miri: required on deep runs; opt-in on pull requests with `ci:+miri`
-- Containers: debug/release for dataplane, its debugger, and FRR; release for
-  validator
+- Containers: debug/release for dataplane, its two debug images, and FRR;
+  release for validator
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled
 
@@ -122,6 +122,51 @@ If those queue failures stop being rare, the phasing is worth revisiting.
   ```console
   docker run --rm -it -v /path/to/cores:/cores \
     ghcr.io/githedgehog/dataplane/core-viewer:TAG /cores/core.1234
+  ```
+
+- `ghcr.io/githedgehog/dataplane/dev-debugger` debugs a live dataplane from an
+  editor. It carries bugstalker, which understands Rust's std collections and
+  enum layouts, and listens for a Debug Adapter Protocol client on port 4711.
+  Publish the port and point the editor's DAP client at it:
+
+  ```console
+  docker run --rm -p 127.0.0.1:4711:4711 ghcr.io/githedgehog/dataplane/dev-debugger:TAG
+  ```
+
+  Connecting does not by itself start anything. In remote-DAP mode bugstalker
+  waits for the client's `launch` request to name the program, so the editor
+  has to send `program`, and any dataplane arguments as `args`. A request
+  without `program` is rejected with `launch: missing arguments.program`.
+  For VS Code, in `.vscode/launch.json`. `type` has to match whatever debug
+  type the BugStalker extension you installed registers -- it is not a name we
+  choose, and it differs between extensions, so check the one you have rather
+  than copying this field blind:
+
+  ```json
+  {
+    "type": "bs",
+    "request": "launch",
+    "name": "dataplane (container)",
+    "debugServer": 4711,
+    "program": "/bin/dataplane",
+    "args": []
+  }
+  ```
+
+  For `nvim-dap`, where the first line names the adapter itself, so `type = "bs"`
+  below is our own label rather than an extension's:
+
+  ```lua
+  dap.adapters.bs = { type = "server", host = "127.0.0.1", port = 4711 }
+  dap.configurations.rust = {
+    {
+      type = "bs",
+      request = "launch",
+      name = "dataplane (container)",
+      program = "/bin/dataplane",
+      args = {},
+    },
+  }
   ```
 
 - Coverage reports from each `coverage/<profile>` job, kept for 7 days:
