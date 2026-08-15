@@ -62,15 +62,15 @@ Rules are protocol-aware by encoding the packet's L4 protocol as the first ACL k
 - TCP/UDP rules match exactly (`mask 0xff`).
 - `L4Protocol::Any` wildcards the proto (`mask 0x00`), so non-TCP/UDP packets only match `Any` rules.
 
-Stateful-NAT exposes get special treatment while building, because only the *forward*
+Stateful-NAT exposes get special treatment while building, because only the _forward_
 direction of their sessions can be answered from config alone:
 
 - **local end** excludes port-forwarding exposes (`can_init_connection()`): a
   port-forwarding source cannot initiate, and a covering expose (e.g. masquerade) must
-  answer for connection initiation from that range. Reply traffic *from* a
+  answer for connection initiation from that range. Reply traffic _from_ a
   port-forwarding-only source surfaces as a distinct stage-2 miss (`SourceMiss`), which
   the NF resolves against the packet's established flow.
-- **remote end** keeps masquerade exposes, but only as *markers*: a masquerade
+- **remote end** keeps masquerade exposes, but only as _markers_: a masquerade
   destination cannot accept new connections, so the NF lets a masquerade verdict through
   only when the packet rides an established masquerade flow (reply traffic); otherwise it
   drops. The marker is what distinguishes that reply traffic from a destination no

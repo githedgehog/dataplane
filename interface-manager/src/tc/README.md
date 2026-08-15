@@ -22,10 +22,12 @@ erDiagram
 ### qdisc
 
 **A `qdisc` is short for queuing discipline**.
-There are many different algorithms for queueing packets, but the non-trivial case pretty much exclusively focuses on _the order in which packets **egress**_ a network card.
+There are many different algorithms for queueing packets,
+but the non-trivial case pretty much exclusively focuses on _the order in which packets **egress**_ a network card.
 
 `qdisc` also applies to ingress traffic, but in a much more trivial sense.
-You can't really control the order or timing in which packets arrive, so the ingress `qdisc` is mostly just a place to attach [filters], [chains], and (optionally) [block]s.
+You can't really control the order or timing in which packets arrive,
+so the ingress `qdisc` is mostly just a place to attach [filters], [chains], and (optionally) [block]s.
 
 In general, `qdisc`s are quite complex and powerful, but we only need the "trivial" case (ingress) for our current design.
 Our ingress qdisc of choice is called clsact; basically FIFO but with the ability to attach (potentially offloaded) [filter]s rules.
@@ -48,22 +50,34 @@ In such cases, a packet must match all listed criteria to trigger the [action]s.
 
 An action is some type of manipulation or event that may occur when a packet matches on a [filter] criteria.
 
-Examples of action include 
+Examples of action include
 
-* dropping packets, 
-* editing source or destination ip addresses, 
-* pushing or popping VLAN headers, 
-* redirecting the packet to the ingress or egress pipeline of another network device,
-* encapsulating the packet in a VXLAN packet,
-* or mirroring (copying) the packet to another network device.
+- dropping packets,
+- editing source or destination ip addresses,
+- pushing or popping VLAN headers,
+- redirecting the packet to the ingress or egress pipeline of another network device,
+- encapsulating the packet in a VXLAN packet,
+- or mirroring (copying) the packet to another network device.
 
 Actions are reference counted and **may be attached to more than one filter.**
 More specifically, each action has four important variables associated with it
 
-1. The action `kind`.  `kind` is a static string which identifies the family of the action.  Examples include `mirred`, which covers packet redirect and mirroring; `gact`, which includes actions like `drop` or `jump`; and `tunnel_key`, which includes encapsulation and decapsulation actions.  Many other families of actions exist in the linux `tc` subsystem.
-2. The action `index`.  `index`, is a unique (_per `kind`_) identifier to track the specific incidence of a given action.  For example, if you might create a `gact` dro action with index 17.  You may then attach that drop command to several different filters by referencing that index on filter creation.  If you recycle an action in this way then all the filters associated with that action will update the hit counters for that action.  Reuse of actions in this way may also save resources in the network card (assuming the matches and action can be offloaded).
-3. The action `bindcnt`.  This is the number of active filters which reference this action.
-4. The action `refcnt`.  This is the reference count of the action.  This number is either equal to the `bindcnt` or is equal to the `bindcnt` plus one.
+1. The action `kind`.
+   `kind` is a static string which identifies the family of the action.
+   Examples include `mirred`, which covers packet redirect and mirroring; `gact`, which includes actions like `drop` or `jump`;
+   and `tunnel_key`, which includes encapsulation and decapsulation actions.
+   Many other families of actions exist in the linux `tc` subsystem.
+2. The action `index`.
+   `index`, is a unique (_per `kind`_) identifier to track the specific incidence of a given action.
+   For example, if you might create a `gact` dro action with index 17.
+   You may then attach that drop command to several different filters by referencing that index on filter creation.
+   If you recycle an action in this way then all the filters associated with that action will update the hit counters for that action.
+   Reuse of actions in this way may also save resources in the network card (assuming the matches and action can be offloaded).
+3. The action `bindcnt`.
+   This is the number of active filters which reference this action.
+4. The action `refcnt`.
+   This is the reference count of the action.
+   This number is either equal to the `bindcnt` or is equal to the `bindcnt` plus one.
 
 If you create an action as part of a filter creation command, then you the `refcnt` and the `bindcnt` numbers will be equal.
 If you create an action without attaching it to a filter, you need to set the `refcnt` to one (in which case the `bindcnt` will be zero automatically).
@@ -93,9 +107,13 @@ If you configure `tc` [filter]s in the most basic way, you may need to install t
 
 This is bad for a few major reasons:
 
-1. It is pointlessly complex.  You would need to keep track of all 10 rules.  You need to create it 10 times, delete it 10 times, update it 10 times, track the counters 10 times, and so on.
-2. It is wasteful of resources in the ASIC.  Installing the rule into the hardware once saves TCAM or SRAM in the ASIC (both of which are in limited supply).
-3. It is more prone to race conditions.  Updating the rule in one place is usually much easier to sequence when transitioning between rule sets.
+1. It is pointlessly complex.
+   You would need to keep track of all 10 rules.
+   You need to create it 10 times, delete it 10 times, update it 10 times, track the counters 10 times, and so on.
+2. It is wasteful of resources in the ASIC.
+   Installing the rule into the hardware once saves TCAM or SRAM in the ASIC (both of which are in limited supply).
+3. It is more prone to race conditions.
+   Updating the rule in one place is usually much easier to sequence when transitioning between rule sets.
 
 [action]: #action
 [block]: #block
