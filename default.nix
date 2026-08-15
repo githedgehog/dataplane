@@ -346,6 +346,10 @@ let
         pname = null;
         cargoArtifacts = null;
       },
+      # A deps-only build produces cargo artifacts rather than binaries, so it
+      # skips the debug-info split and keeps the `target.tar.zst` that the
+      # package path strips.
+      for-deps ? false,
       profile,
       cargo-nextest,
       hwloc,
@@ -419,7 +423,16 @@ let
       }
       // args
     )).overrideAttrs
-      (orig: {
+      (
+        orig:
+        if for-deps then
+          {
+            postBuild = (orig.postBuild or "") + ''
+              unset RUSTFLAGS;
+            '';
+          }
+        else
+          {
         separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
@@ -458,11 +471,76 @@ let
         postFixup = (orig.postFixup or "") + ''
           rm -f $out/target.tar.zst
         '';
-      });
+          }
+      );
+
+  # One dependency build per flag-set, shared by every package derivation at
+  # that configuration.  Crane dummifies the workspace sources, so this hashes
+  # on the manifests and survives changes to our own code -- which is the
+  # substitution the per-package derivations can never get, since they embed
+  # `src`.
+  #
+  # Two variants, because `mk-needs-unwind` gives tests a different
+  # `-Zbuild-std`: mixing them would fingerprint-miss and rebuild anyway.
+  mk-cargo-artifacts =
+    {
+      for-tests,
+      cmd-prefix,
+      deps-profile,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.buildDepsOnly;
+      profile = deps-profile;
+      for-deps = true;
+      args = {
+        pname = if for-tests then "dataplane-tests" else "dataplane";
+        cargoArtifacts = null;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          # `--no-run` for the test variant so dev-dependencies land in the
+          # artifacts too; the nextest archives need them.
+          (
+            if for-tests then
+              [
+                "cargo"
+                "test"
+                "--no-run"
+                "--profile=${cargo-profile}"
+              ]
+            else
+              [
+                "cargo"
+                "build"
+                "--profile=${cargo-profile}"
+              ]
+          )
+          # Scope to the same packages the consumers build.  `package-list` is
+          # platform-aware -- for wasm it honours the `wasm = false` opt-out in
+          # `workspace.metadata.package` -- and building the whole workspace
+          # instead drags excluded members' dependencies in.  That is not just
+          # wasted work: `k8s-intf` pulls `rustls -> aws-lc-rs -> aws-lc-sys`,
+          # whose C sources cannot compile for wasm32-wasip1.
+          ++ (map (pname: "--package=${pname}") (builtins.attrValues package-list))
+          ++ cmd-prefix
+        );
+      };
+    };
+
+  cargo-artifacts = mk-cargo-artifacts {
+    for-tests = false;
+    cmd-prefix = cargo-cmd-prefix;
+    deps-profile = profile';
+  };
+
+  cargo-artifacts-tests = mk-cargo-artifacts {
+    for-tests = true;
+    cmd-prefix = cargo-cmd-prefix-tests;
+    deps-profile = profile-tests';
+  };
+
   workspace-builder =
     {
       pname ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts,
     }:
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
@@ -495,7 +573,7 @@ let
   workspace-check =
     {
       pname ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts,
     }:
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
@@ -528,7 +606,7 @@ let
   test-builder =
     {
       package ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts-tests,
     }:
     let
       pname = if package != null then package else "all";
@@ -576,7 +654,7 @@ let
   bench-builder =
     {
       package ? null,
-      cargoArtifacts ? null,
+      cargoArtifacts ? cargo-artifacts-tests,
     }:
     let
       pname = if package != null then package else "all";
@@ -619,7 +697,7 @@ let
       profile = profile';
       args = {
         inherit pname;
-        cargoArtifacts = null;
+        cargoArtifacts = cargo-artifacts;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
@@ -655,7 +733,7 @@ let
       profile = profile';
       args = {
         inherit pname;
-        cargoArtifacts = null;
+        cargoArtifacts = cargo-artifacts;
         RUSTDOCFLAGS = "-D warnings";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
