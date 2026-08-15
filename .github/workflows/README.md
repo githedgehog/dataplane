@@ -92,6 +92,7 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 
 - Checks: `debug` by default; `release` and `fuzz` on deep runs
 - Coverage: `debug` by default; `fuzz` on deep runs
+- Miri: required on deep runs; opt-in on pull requests with `ci:+miri`
 - Containers: debug/release for dataplane and FRR; release for validator
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled

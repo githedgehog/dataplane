@@ -804,8 +804,6 @@ jobs:
       - name: "Flag any job failures"
         env:
           NEEDS: "${{ toJSON(needs) }}"
-          # Miri remains advisory.
-          ADVISORY: "miri"
         run: |
           set -euo pipefail
           failed="$(jq -r 'to_entries[]
@@ -813,12 +811,8 @@ jobs:
             | .key' <<<"${NEEDS}")"
           status=0
           for job in ${failed}; do
-            if grep -qw -- "${job}" <<<"${ADVISORY}"; then
-              echo "::warning::${job} did not succeed (advisory)"
-            else
-              echo "::error::${job} did not succeed"
-              status=1
-            fi
+            echo "::error::${job} did not succeed"
+            status=1
           done
           exit "${status}"
 
