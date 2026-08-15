@@ -19,7 +19,58 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # Realizing the dev shell costs every job ~45s on a cold store: ~22s
+    # re-fetching the npins tarballs and ~20s substituting ~340 store paths.
+    # The lab runner image can carry both already warm (see the `nix.sh` change
+    # drafted for githedgehog/gha-runner), which reduces that to near zero.
+    #
+    # `install-nix-action` aborts as soon as it finds nix on PATH, and that
+    # early exit also skips the nix.conf and NIX_PATH setup it would otherwise
+    # do.  Supply the parts that matter here so a job is configured the same
+    # way whether or not the image was prewarmed.  Nothing below assumes a
+    # prewarmed image: on one without nix this step is a no-op and the install
+    # proceeds exactly as before.
+    - name: "Configure a prewarmed nix"
+      id: "prewarmed"
+      shell: "bash"
+      env:
+        # Indirect through the environment rather than interpolating into the
+        # script body.
+        github_token: "${{ github.token }}"
+      # The only values written to the environment file below are two
+      # literals and `RUNNER_TEMP`, all runner controlled; none of them can
+      # carry anything from the event payload.
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+        if ! command -v nix >/dev/null 2>&1; then
+          printf 'prewarmed=false\n' >>"${GITHUB_OUTPUT}"
+          exit 0
+        fi
+        printf 'prewarmed=true\n' >>"${GITHUB_OUTPUT}"
+        # `access-tokens` is per-run, so it is the one setting the image cannot
+        # bake in.  Without it a pin that misses the image's tarball cache is
+        # fetched anonymously and shares github.com's unauthenticated rate
+        # limit with every other runner behind the lab's address.  A
+        # single-user nix honors this file without a `trusted-users` entry.
+        install -d -m "0700" "${HOME}/.config/nix"
+        umask "0077"
+        cat >"${HOME}/.config/nix/nix.conf" <<EOF
+        experimental-features = nix-command flakes
+        always-allow-substitutes = true
+        access-tokens = github.com=${github_token}
+        EOF
+        # Nothing in this repository resolves <nixpkgs> today -- npins pins
+        # every source -- but the installed path sets this, so match it.
+        printf 'NIX_PATH=nixpkgs=channel:nixpkgs-unstable\n' >>"${GITHUB_ENV}"
+        # Also match where the installed path puts nix's scratch space: the
+        # job's temp directory on the work volume, not the container's own
+        # writable layer.  The image cannot set this; it is per-run.
+        if [ -z "${TMPDIR:-}" ]; then
+          printf 'TMPDIR=%s\n' "${RUNNER_TEMP}" >>"${GITHUB_ENV}"
+        fi
+
     - name: "Install nix"
+      if: "${{ steps.prewarmed.outputs.prewarmed != 'true' }}"
       uses: "cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3" # v31.10.6
       with:
         github_access_token: "${{ github.token }}"
