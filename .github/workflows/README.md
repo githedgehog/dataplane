@@ -103,7 +103,8 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 - Checks: `debug` by default; `release` and `fuzz` on deep runs
 - Coverage: `debug` by default; `fuzz` on deep runs
 - Miri: required on deep runs; opt-in on pull requests with `ci:+miri`
-- Containers: debug/release for dataplane and FRR; release for validator
+- Containers: debug/release for dataplane, its debugger, and FRR; release for
+  validator
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled
 
@@ -111,6 +112,18 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 
 - Container images pushed to GitHub Container Registry (GHCR)
 - Release containers published on tag pushes via `just push`
+- `ghcr.io/githedgehog/dataplane/core-viewer` opens a core file from the lab.
+  It carries gdb plus the unstripped binaries and sources for the matching
+  `ghcr.io/githedgehog/dataplane` build.
+  Pull the tag matching the build the core came from; symbols only line up with
+  the exact version and profile that produced it.
+  The entrypoint takes the core as its only argument:
+
+  ```console
+  docker run --rm -it -v /path/to/cores:/cores \
+    ghcr.io/githedgehog/dataplane/core-viewer:TAG /cores/core.1234
+  ```
+
 - Coverage reports from each `coverage/<profile>` job, kept for 7 days:
   - `coverage-html-<profile>.tar.gz` - `llvm-cov` HTML report, including the
     per-branch counts that Codecov does not render. Unpack and open
