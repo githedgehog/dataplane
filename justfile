@@ -559,10 +559,11 @@ zizmor *args="":
     {{ _just_debuggable_ }}
     zizmor --persona=pedantic {{args}} .
 
-[script]
-clippy *args:
+# Through nix, like `check` and `test`, so a developer and CI run the same
+# thing and the result is cached.  `cargo clippy --all-targets` direct from the
+# dev shell is still there when you want a fast inner loop.
+clippy package="" *args: (build (if package == "" { "clippy" } else { "clippy." + package }) args)
     {{ _just_debuggable_ }}
-    cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings
 
 [script]
 actionlint:
@@ -626,10 +627,11 @@ lint: \
     {{ _just_debuggable_ }}
 
 # Run doctests
-[script]
-doctest *args:
+# Doctests run inside the sandbox: cargo refuses `--doc --no-run`, so they
+# cannot be archived and handed to the host the way the other tests are.
+doctest package="" *args: (build (if package == "" { "doctests.all" } else { "doctests.pkg." + package }) args)
     {{ _just_debuggable_ }}
-    cargo test --doc {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }}
+
 
 # Run instrumented tests and report coverage. Args are forwarded to nextest; for example,
 # `just coverage -p dataplane-nat` scopes the run to this crate.

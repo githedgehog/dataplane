@@ -220,6 +220,11 @@ let
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
   jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
+  # `.cargo/config.toml` is in `src` and names `scripts/test-runner.sh`, so the
+  # script has to be there too.  It did not matter while every test ran from an
+  # archive on the host; doctests run in the sandbox, where cargo could not find
+  # the runner and reported "No such file or directory".
+  shellFilter = p: _type: builtins.match ".*\.sh$" p != null;
   # `results` holds the out-links `just build` creates.  It is gitignored, but
   # `cleanSource` does not read gitignore, so without it here every developer
   # who has run a build carries their own `src` hash and stops matching the
@@ -237,6 +242,7 @@ let
       || (markdownFilter p t)
       || (jsonFilter p t)
       || (cHeaderFilter p t)
+      || (shellFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources full-path t));
     src = lib.cleanSource ./.;
     name = "source";
@@ -372,6 +378,8 @@ let
       # skips the debug-info split and keeps the `target.tar.zst` that the
       # package path strips.
       for-deps ? false,
+      # Skip the binary strip/split step for derivations that produce none.
+      no-bins ? false,
       profile,
       cargo-nextest,
       hwloc,
@@ -452,7 +460,7 @@ let
     )).overrideAttrs
       (
         orig:
-        if for-deps then
+        if for-deps || no-bins then
           {
             postBuild = (orig.postBuild or "") + ''
               unset RUSTFLAGS;
@@ -732,24 +740,32 @@ let
 
   benches = bench-builder { };
 
+  # `--all-targets` so tests, benches, and examples are linted too.  That code
+  # is as load bearing as the rest and deserves the same static analysis, and
+  # the bare `cargo clippy` this replaces already covered it.
+  #
+  # Linting test targets means compiling them, so this takes the unwind flavour
+  # of `-Zbuild-std` and the test profile, matching how the tests themselves
+  # are built.  It shares `cargo-artifacts-tests` for the same reason.
   clippy-builder =
     {
       pname ? null,
     }:
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
-      profile = profile';
+      profile = profile-tests';
       args = {
         inherit pname;
-        cargoArtifacts = cargo-artifacts;
+        cargoArtifacts = cargo-artifacts-tests;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
             "clippy"
+            "--all-targets"
             "--profile=${cargo-profile}"
             "--package=${pname}"
           ]
-          ++ cargo-cmd-prefix
+          ++ cargo-cmd-prefix-tests
           ++ timings-args
           ++ [
             "--"
@@ -766,6 +782,50 @@ let
     }
   ) package-list;
 
+  # Doctests cannot be built and run separately: cargo rejects
+  # `--doc --no-run`, and nextest does not run them at all.  So run them in the
+  # sandbox rather than on the runner.  They are ordinary library examples --
+  # unlike the integration fixtures, which need netns and caps and therefore
+  # run from an archive on the host.
+  doctest-builder =
+    {
+      package ? null,
+    }:
+    let
+      pname = if package != null then package else "all";
+    in
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      profile = profile-tests';
+      no-bins = true;
+      args = {
+        inherit pname;
+        cargoArtifacts = cargo-artifacts-tests;
+        # `.cargo/config.toml` runs tests through `scripts/test-runner.sh`,
+        # whose `#!/usr/bin/env bash` has nothing to resolve in the sandbox --
+        # cargo reports that as "No such file or directory" against the test
+        # rather than the interpreter.  Archived tests never hit this because
+        # they run on the host.
+        preBuild = "patchShebangs scripts/test-runner.sh";
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargo"
+            "test"
+            "--doc"
+            "--profile=${cargo-profile}"
+          ]
+          ++ (if package != null then [ "--package=${pname}" ] else [ ])
+          ++ cargo-cmd-prefix-tests
+          ++ timings-args
+        );
+      };
+    };
+
+  doctests = {
+    all = doctest-builder { };
+    pkg = builtins.mapAttrs (dir: package: doctest-builder { inherit package; }) package-list;
+  };
+
   docs-builder =
     {
       package ? null,
@@ -779,7 +839,10 @@ let
       args = {
         inherit pname;
         cargoArtifacts = cargo-artifacts;
-        RUSTDOCFLAGS = "-D warnings";
+        # `emulated` is registered for rustc through profiles.nix, but rustdoc
+        # reads RUSTDOCFLAGS rather than RUSTFLAGS, so it needs its own copy or
+        # every `cfg_attr(emulated, ...)` site trips `unexpected_cfgs`.
+        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated)";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
@@ -1178,6 +1241,7 @@ in
     dataplane
     devenv
     devroot
+    doctests
     docs
     package-list
     pkgs

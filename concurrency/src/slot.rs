@@ -26,7 +26,7 @@
 //! the miri job (which runs against the real `ArcSwap` in
 //! permissive-provenance mode) is where it lives.
 //!
-//! [`Subscriber::snapshot`]: crate::Subscriber::snapshot
+//! [`Subscriber::snapshot`]: crate::quiescent::Subscriber::snapshot
 
 // Strict provenance checks fail with arc-swap since it uses hazard pointers and does not (yet) use the new
 // std features to expose provenance information in their mechanics.

@@ -3,7 +3,7 @@
 
 //! IPv4-context IP Authentication Header.
 //!
-//! This is a [`repr(transparent)`] newtype over [`IpAuth`] that marks the
+//! This is a `repr(transparent)` newtype over [`IpAuth`] that marks the
 //! header as appearing in an IPv4 extension chain.  The builder uses this
 //! type to restrict `Within` impls so that `Ipv4Auth` can only follow
 //! IPv4-legal parents (e.g. `Ipv4`), preventing it from being stacked

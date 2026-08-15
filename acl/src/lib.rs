@@ -18,8 +18,8 @@
 //! - `dpdk` module (`dpdk` feature): production `rte_acl` backend --
 //!   layout planner, rule lowering, install, and the single-shot /
 //!   batched classify path.
-//! - [`reference`](mod@reference): linear-scan software classifier;
-//!   differential oracle for the `dpdk` backend.  Always built.
+//! - `reference` (behind the `reference` feature): linear-scan software
+//!   classifier; differential oracle for the `dpdk` backend.
 //!
 //! [`lookup::Lookup`]: lookup::Lookup
 //! [`match_action::MatchKey`]: match_action::MatchKey

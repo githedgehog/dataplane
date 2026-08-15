@@ -241,6 +241,15 @@ jobs:
           recipe: "ci::check-doctest"
           recipe_args: "${{ matrix.profile }}"
 
+      # Nothing built the API docs, so they rotted: thirty broken intra-doc
+      # links across five crates, plus a missing `--check-cfg` in RUSTDOCFLAGS
+      # that no amount of link fixing would have gotten past.
+      - name: "docs"
+        uses: *just
+        with:
+          recipe: "ci::check-docs"
+          recipe_args: "${{ matrix.profile }}"
+
       - &verify-clean-tree
         name: "verify-clean-tree"
         run: |

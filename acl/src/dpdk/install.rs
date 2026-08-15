@@ -14,7 +14,7 @@ use crate::dpdk::rule::RuleSpec;
 ///
 /// The `rte_acl` field count is computed from `K`'s layout at runtime and
 /// dispatched to the const-`N` builder shared with the dynamic install path
-/// (see [`dispatch_build_classifier`]). The resulting `DpdkAclLookup<K, A>`
+/// (see `dispatch_build_classifier`, crate-private). The resulting `DpdkAclLookup<K, A>`
 /// carries no field-count or stride const generics, so one type covers every
 /// monomorphization of a generic key.
 pub fn install_table<K, A>(
