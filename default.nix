@@ -400,7 +400,14 @@ let
         ];
 
         env = {
-          VERSION = tag;
+          # `tag` comes from `git describe`, so it changes on every commit.  A
+          # dependency build compiles third-party crates and the standard
+          # library, none of which read VERSION, so threading it in would give
+          # the shared artifacts a new hash per commit -- precisely what the
+          # split exists to avoid.  Consumers still get the real value, and
+          # cargo only fingerprints an env var for crates that actually read
+          # it, so the artifacts stay valid for them.
+          VERSION = if for-deps then "dependencies" else tag;
           CARGO_PROFILE = cargo-profile;
           DATAPLANE_SYSROOT = "${sysroot}";
           LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
