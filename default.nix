@@ -749,8 +749,11 @@ let
   # are built.  It shares `cargo-artifacts-tests` for the same reason.
   clippy-builder =
     {
-      pname ? null,
+      package ? null,
     }:
+    let
+      pname = if package != null then package else "all";
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       profile = profile-tests';
@@ -763,8 +766,16 @@ let
             "clippy"
             "--all-targets"
             "--profile=${cargo-profile}"
-            "--package=${pname}"
           ]
+          # Name the packages rather than passing `--workspace`: `package-list`
+          # is platform-aware, and on wasm32-wasip1 the excluded members pull in
+          # dependencies that cannot build for it.
+          ++ (
+            if package != null then
+              [ "--package=${pname}" ]
+            else
+              map (p: "--package=${p}") (builtins.attrValues package-list)
+          )
           ++ cargo-cmd-prefix-tests
           ++ timings-args
           ++ [
@@ -775,12 +786,14 @@ let
       };
     };
 
-  clippy = builtins.mapAttrs (
-    dir: pname:
-    clippy-builder {
-      inherit pname;
-    }
-  ) package-list;
+  # One derivation over the whole workspace by default.  Per-package linting
+  # bought no cache granularity -- `src` is workspace wide, so an edit anywhere
+  # invalidates every one of them together -- while each paid its own unpack of
+  # the shared artifacts, about 17s of fixed cost times forty-one packages.
+  clippy = {
+    all = clippy-builder { };
+    pkg = builtins.mapAttrs (dir: package: clippy-builder { inherit package; }) package-list;
+  };
 
   # Doctests cannot be built and run separately: cargo rejects
   # `--doc --no-run`, and nextest does not run them at all.  So run them in the

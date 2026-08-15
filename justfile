@@ -562,7 +562,7 @@ zizmor *args="":
 # Through nix, like `check` and `test`, so a developer and CI run the same
 # thing and the result is cached.  `cargo clippy --all-targets` direct from the
 # dev shell is still there when you want a fast inner loop.
-clippy package="" *args: (build (if package == "" { "clippy" } else { "clippy." + package }) args)
+clippy package="" *args: (build (if package == "" { "clippy.all" } else { "clippy.pkg." + package }) args)
     {{ _just_debuggable_ }}
 
 [script]
