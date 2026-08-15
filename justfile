@@ -441,6 +441,94 @@ check-dependencies *args:
     {{ _just_debuggable_ }}
     cargo deny {{ _cargo_feature_flags }} check {{ args }}
 
+# Ensure the shared dependency derivations stay reusable across revisions.
+#
+# Two things break that, and they are different kinds of thing, so they take
+# different questions.
+#
+# The workspace source is a store path, so "the dependency build must not
+# depend on it" is a statement about the derivation graph and nix can answer it
+# outright: instantiate once and read the inputs. That is exact, it names the
+# offending path, and it needs no edit to the working tree.
+#
+# The git version is a string. It reaches a derivation as an environment
+# variable and never as an input path, so no graph walk can see it; the only
+# way to ask is to instantiate under two tags and compare.
+#
+# Both have regressed before, and both surface as a slow cache miss rather than
+# a failure, which is why they are checked at all.
+[script]
+check-deps-reuse:
+    {{ _just_debuggable_ }}
+    # Keep Nix stderr; it is the only diagnostic when instantiation fails.
+    declare src
+    src="$(nix eval --raw --impure --expr '(import ./default.nix { }).src.outPath')"
+    declare -r src
+    if [ -z "${src}" ]; then
+        >&2 echo "::error::could not resolve the workspace source path"
+        exit 1
+    fi
+
+    deps_drv() {
+        declare drv
+        drv="$(nix-instantiate default.nix -A "$1" --argstr tag "$3" | tail -1)"
+        grep -ao "/nix/store/[a-z0-9]\{32\}-$2[^\"]*\.drv" "${drv}" | sort -u
+    }
+
+    # Report through the status; command substitution would run this in a
+    # subshell and discard failure-count updates.
+    check_reuse() {
+        declare -r attr="$1" name="$2"
+
+        declare baseline
+        if ! baseline="$(deps_drv "${attr}" "${name}" dev)" || [ -z "${baseline}" ]; then
+            >&2 echo "::error::could not resolve ${name} from ${attr}"
+            return 1
+        fi
+
+        # The source question, put to the graph.
+        declare drv
+        while IFS= read -r drv; do
+            [ -z "${drv}" ] && continue
+            if nix-store -q --requisites "${drv}" | grep -qxF "${src}"; then
+                >&2 echo "::error::${name} depends on the workspace source"
+                >&2 echo "  ${src}"
+                >&2 echo "  is a build input of ${drv}"
+                return 1
+            fi
+        done <<<"${baseline}"
+
+        # The version question, put to two instantiations.
+        declare tagged
+        if ! tagged="$(deps_drv "${attr}" "${name}" v0.25.2-15-gdeadbee-dirty)"; then
+            >&2 echo "::error::could not resolve ${name} from ${attr} with a release tag"
+            return 1
+        fi
+        if [ "${tagged}" != "${baseline}" ]; then
+            >&2 echo "::error::${name} depends on the git version"
+            >&2 echo "  tag=dev  -> ${baseline}"
+            >&2 echo "  tag=v0.. -> ${tagged}"
+            return 1
+        fi
+
+        printf '%s is reusable: %s\n' "${name}" "${baseline}"
+    }
+
+    # Check production and test flag sets independently: a regression in a
+    # production-only flag would sail past a test-only guard.
+    declare -r -A targets=(
+        [workspace.dataplane]="dataplane-deps"
+        [tests.all]="dataplane-tests-deps"
+    )
+    declare -i failures=0
+    for attr in "${!targets[@]}"; do
+        check_reuse "${attr}" "${targets[${attr}]}" || failures=$(( failures + 1 ))
+    done
+
+    if [ "${failures}" -ne 0 ]; then
+        exit 1
+    fi
+
 [script]
 opengrep:
     {{ _just_debuggable_ }}
