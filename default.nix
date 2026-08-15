@@ -1085,6 +1085,53 @@ let
     }).overrideAttrs
       source-volatile;
 
+  # Traces the release binaries' syscalls as JSON with lurk.
+  containers.dataplane-syscall-tracer =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/syscall-tracer";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-syscall-tracer-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [
+            pkgs.pkgsBuildHost.lurk
+            pkgs.pkgsHostHost.dockerTools.fakeNss
+            pkgs.pkgsHostHost.busybox
+            pkgs.pkgsHostHost.dockerTools.usrBinEnv
+            workspace.cli
+            workspace.dataplane
+            workspace.init
+          ];
+        }).overrideAttrs
+          source-volatile;
+      extraCommands = ''
+        # Point `src-prefix` at the sources this image ships.  Referencing ${src}
+        # here is also what keeps it in the image closure: with the remap no
+        # longer naming a store path, nothing else retains it.
+        mkdir -p ".$(dirname "${src-prefix}")"
+        ln -s "${src}" ".${src-prefix}"
+        mkdir -p tmp
+        chmod 1777 tmp
+      '';
+      config = {
+        Entrypoint = [
+          "/bin/lurk"
+          "--json"
+          # Include the worker threads where the dataplane does its work.
+          "--follow-forks"
+          "/bin/dataplane"
+        ];
+        Env = [ "HOME=/tmp" ];
+      };
+    }).overrideAttrs
+      source-volatile;
+
   debug-tools =
     pkgs:
     [
