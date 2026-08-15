@@ -71,6 +71,7 @@ jobs:
     runs-on: "ubuntu-latest"
     outputs:
       container_profiles: "${{ steps.container-profiles.outputs.value }}"
+      parallel: "${{ steps.parallel.outputs.value }}"
       container_targets: "${{ steps.container-targets.outputs.value }}"
       profiles: "${{ steps.profiles.outputs.value }}"
       concurrency: "${{ steps.concurrency.outputs.value }}"
@@ -85,6 +86,27 @@ jobs:
         uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
         with:
           persist-credentials: "false"
+
+      # Deep runs get a wider slice of the lab pool.  A queued merge blocks
+      # everything behind it and its result is what actually gates the merge,
+      # so it is worth finishing sooner even though the extra runners come out
+      # of the pool the pull requests are waiting in.  Pull requests stay at
+      # one so they cannot crowd the queue out.
+      #
+      # `strategy` cannot read `env`, only `github`/`inputs`/`needs`/`vars`, so
+      # this travels as a `plan` output.  Jobs pick it up through
+      # `strategy.max-parallel`, which is also what feeds `ci::parallel` into
+      # `JUST_VARS` -- the per-job core budget follows without a second switch.
+      - id: "parallel"
+        env:
+          EVENT: "${{ github.event_name }}"
+        run: |
+          set -euo pipefail
+          case "${EVENT}" in
+            merge_group | push) value="4" ;;
+            *) value="1" ;;
+          esac
+          printf 'value=%s\n' "${value}" >>"${GITHUB_OUTPUT}"
 
       - id: "miri"
         uses: &gate "./.github/actions/ci-gate"
@@ -194,7 +216,7 @@ jobs:
       JUST_VARS: "ci::parallel=${{ strategy.max-parallel }}"
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
     steps:
@@ -376,7 +398,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         nix-target: "${{ fromJSON(needs.plan.outputs.container_targets) }}"
         # TODO: enable cfi and safe-stack on release when possible
@@ -430,7 +452,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         sanitizer:
           - thread
@@ -474,7 +496,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       # Fuzz provides optimized coverage while retaining safety checks.
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
@@ -664,6 +686,10 @@ jobs:
       JUST_VARS: "ci::parallel=${{ strategy.max-parallel }}"
     strategy:
       fail-fast: false
+      # Deliberately not widened.  `ci.just` turns `ci::parallel` into
+      # `share = 1/N`, and only `ci::cross`/`ci::cross-test` consume it, so
+      # raising this divides each job's core budget rather than adding
+      # throughput unless the runner pods are genuinely core-isolated.
       max-parallel: 1
       matrix:
         platform:
