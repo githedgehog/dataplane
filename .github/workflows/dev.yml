@@ -71,6 +71,7 @@ jobs:
     runs-on: "ubuntu-latest"
     outputs:
       container_profiles: "${{ steps.container-profiles.outputs.value }}"
+      container_targets: "${{ steps.container-targets.outputs.value }}"
       profiles: "${{ steps.profiles.outputs.value }}"
       concurrency: "${{ steps.concurrency.outputs.value }}"
       cross: "${{ steps.cross.outputs.value }}"
@@ -121,6 +122,16 @@ jobs:
           labels: "test/all-profiles"
           on-value: '["debug", "release", "fuzz"]'
           off-value: '["debug"]'
+
+      # Debug images are opt-in on pull requests because of their size.
+      - id: "container-targets"
+        uses: *gate
+        with:
+          labels: "debug-images"
+          # Keep this on one line: `ci-gate` writes the value to GITHUB_OUTPUT
+          # with a plain printf, which a multi-line value would corrupt.
+          on-value: '["frr.dataplane", "dataplane", "dataplane-core-viewer", "dataplane-dev-debugger", "dataplane-syscall-tracer", "validator"]'
+          off-value: '["frr.dataplane", "dataplane", "validator"]'
 
       # Lab jobs require release images but not other release/fuzz checks.
       - id: "container-profiles"
@@ -367,16 +378,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        nix-target:
-          - frr.dataplane
-          - dataplane
-          # Must match the build that produced the core.
-          - dataplane-core-viewer
-          # Live debugging of the same build, driven from an editor over DAP.
-          - dataplane-dev-debugger
-          # Syscall trace of the same build, as JSON.
-          - dataplane-syscall-tracer
-          - validator
+        nix-target: "${{ fromJSON(needs.plan.outputs.container_targets) }}"
         # TODO: enable cfi and safe-stack on release when possible
         profile: "${{ fromJSON(needs.plan.outputs.container_profiles) }}"
         exclude:
