@@ -237,6 +237,10 @@ let
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
+  source-volatile = orig: {
+    name = "dataplane-volatile-${orig.name or "${orig.pname}-${orig.version}"}";
+    allowSubstitutes = false;
+  };
   # For wasm32, pkgs is the host nixpkgs (no pkgsCross), so ctarget resolves to the
   # host platform (e.g. x86_64-unknown-linux-gnu).  That means is-cross-compile is
   # false for wasm, which is intentional: we don't want native cross-compilation
@@ -255,7 +259,7 @@ let
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
     builtins.readFile (
-      pkgs.runCommandLocal "package-list"
+      (pkgs.runCommandLocal "package-list"
         {
           TOMLQ = "${pkgs.pkgsBuildHost.yq}/bin/tomlq";
           JQ = "${pkgs.pkgsBuildHost.jq}/bin/jq";
@@ -271,7 +275,7 @@ let
                   $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
               done | $JQ --sort-keys --slurp 'add' > $out
             ''
-        )
+        )).overrideAttrs source-volatile
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
@@ -389,7 +393,7 @@ let
       }
       // args
     )).overrideAttrs
-      (orig: {
+      (orig: source-volatile orig // {
         separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
@@ -650,7 +654,7 @@ let
     ) package-list;
   };
 
-  dataplane.tar = pkgs.stdenv'.mkDerivation {
+  dataplane.tar = (pkgs.stdenv'.mkDerivation {
     pname = "dataplane.tar";
     inherit version;
     dontUnpack = true;
@@ -770,12 +774,12 @@ let
           ${workspace.cli} \
           ${pkgs.pkgsHostHost.busybox}
       '';
-  };
+  }).overrideAttrs source-volatile;
 
-  containers.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane";
     inherit tag;
-    contents = pkgs.buildEnv {
+    contents = (pkgs.buildEnv {
       name = "dataplane-env";
       pathsToLink = [
         "/bin"
@@ -791,9 +795,9 @@ let
         workspace.dataplane
         workspace.init
       ];
-    };
+    }).overrideAttrs source-volatile;
     config.Entrypoint = [ "/bin/dataplane" ];
-  };
+  }).overrideAttrs source-volatile;
 
   # Shared runtime and unstripped binaries for the debugger images.
   debug-image-paths = [
@@ -816,10 +820,10 @@ let
   '';
 
   # Opens dataplane core files with matching symbols and sources.
-  containers.dataplane-core-viewer = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane-core-viewer = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/core-viewer";
     inherit tag;
-    contents = pkgs.buildEnv {
+    contents = (pkgs.buildEnv {
       name = "dataplane-core-viewer-env";
       pathsToLink = [
         "/bin"
@@ -832,7 +836,7 @@ let
         rust-gdb-printers
       ]
       ++ debug-image-paths;
-    };
+    }).overrideAttrs source-volatile;
     # gdb needs a writable HOME for logs and its index cache.
     extraCommands = ''
       mkdir -p tmp
@@ -850,13 +854,13 @@ let
       ];
       Env = [ "HOME=/tmp" ];
     };
-  };
+  }).overrideAttrs source-volatile;
 
   # Exposes bugstalker's DAP server for live debugging.
-  containers.dataplane-dev-debugger = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane-dev-debugger = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/dev-debugger";
     inherit tag;
-    contents = pkgs.buildEnv {
+    contents = (pkgs.buildEnv {
       name = "dataplane-dev-debugger-env";
       pathsToLink = [
         "/bin"
@@ -865,7 +869,7 @@ let
         "/lib"
       ];
       paths = [ pkgs.pkgsBuildHost.bugstalker ] ++ debug-image-paths;
-    };
+    }).overrideAttrs source-volatile;
     # bugstalker needs a writable HOME for its keymap and history.
     extraCommands = ''
       mkdir -p tmp
@@ -889,13 +893,13 @@ let
         "4711/tcp" = { };
       };
     };
-  };
+  }).overrideAttrs source-volatile;
 
   # Traces the release binaries' syscalls as JSON with lurk.
-  containers.dataplane-syscall-tracer = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane-syscall-tracer = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/syscall-tracer";
     inherit tag;
-    contents = pkgs.buildEnv {
+    contents = (pkgs.buildEnv {
       name = "dataplane-syscall-tracer-env";
       pathsToLink = [
         "/bin"
@@ -912,7 +916,7 @@ let
         workspace.dataplane
         workspace.init
       ];
-    };
+    }).overrideAttrs source-volatile;
     extraCommands = ''
       mkdir -p tmp
       chmod 1777 tmp
@@ -927,7 +931,7 @@ let
       ];
       Env = [ "HOME=/tmp" ];
     };
-  };
+  }).overrideAttrs source-volatile;
 
   debug-tools =
     pkgs:
@@ -1009,7 +1013,7 @@ let
 
   };
 
-  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.frr.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -1063,7 +1067,7 @@ let
       "--"
     ];
     config.Cmd = [ "/libexec/frr/docker-start" ];
-  };
+  }).overrideAttrs source-volatile;
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr-host";
