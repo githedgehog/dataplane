@@ -63,6 +63,11 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 - `ci:+miri` - Run Miri checks
 - `ci:+wasm` - Run the WASM build check
 - `ci:+concurrency` - Run Shuttle and Loom tests
+- `ci:+debug-images` - Also build and push the core viewer, DAP debugger, and
+  syscall tracer images. They are built on main, in the merge queue, and on
+  dispatch regardless, and `ci:+merge-ready` turns them on too, since
+  `ci-gate` treats that label as enabling every gate; this is for when the
+  build itself needs debugging
 - `ci:+cross` - Build all cross-platform containers
 - `ci:+cross/full` - Also run the workspace test suite under qemu-user, on the
   two aarch64 musl legs. Gated like every other job, so the merge queue and
@@ -103,8 +108,9 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 - Checks: `debug` by default; `release` and `fuzz` on deep runs
 - Coverage: `debug` by default; `fuzz` on deep runs
 - Miri: required on deep runs; opt-in on pull requests with `ci:+miri`
-- Containers: debug/release for dataplane, its three debug images, and FRR;
-  release for validator
+- Containers: debug/release for dataplane and FRR; release for validator
+- Debug images (core viewer, DAP debugger, syscall tracer): deep runs only,
+  or on a pull request with `ci:+debug-images`
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled
 
