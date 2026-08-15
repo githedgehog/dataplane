@@ -55,8 +55,12 @@ just coverage-archive          # the whole workspace
 just coverage-archive nat      # one package, as with `just test`
 ```
 
-Additional arguments are forwarded to nextest. To reproduce CI's build profile,
-run `just profile=fuzz coverage-archive`.
+Additional arguments are forwarded to nextest. CI collects `debug` on every pull
+request and adds `fuzz` on a deep run or behind the `ci:+test/all-profiles`
+label; pick one with, for example, `just profile=fuzz coverage-archive`.
+`release` is deliberately excluded from the coverage matrix: it strips the
+debug assertions and overflow checks that make a coverage run worth reading,
+and `fuzz` gives the same optimization while keeping them.
 
 Reports are written to `./target/coverage`:
 

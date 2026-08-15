@@ -10,7 +10,9 @@
 name: "dev.yml"
 
 on:
-  pull_request: {}
+  pull_request:
+    # Removing a label must recompute the plan just as adding one does.
+    types: ["opened", "synchronize", "reopened", "labeled", "unlabeled"]
   push:
     branches:
       - "main"
@@ -54,31 +56,86 @@ concurrency:
 permissions:
   contents: "read"
 
+env:
+  CI_DEBUG_JUSTFILE: "${{ github.event_name == 'workflow_dispatch' && inputs.debug_justfile || false }}"
+
 jobs:
-  check_changes:
-    name: "Deduce required tests from code changes"
+  plan:
+    name: "Plan which jobs to run"
     permissions:
       contents: "read"
-      pull-requests: "read" # dorny/paths-filter reads the PR's changed-file list via the API
     runs-on: "ubuntu-latest"
     outputs:
-      devfiles: "${{ steps.changes.outputs.devfiles }}"
+      container_profiles: "${{ steps.container-profiles.outputs.value }}"
+      profiles: "${{ steps.profiles.outputs.value }}"
+      concurrency: "${{ steps.concurrency.outputs.value }}"
+      cross: "${{ steps.cross.outputs.value }}"
+      miri: "${{ steps.miri.outputs.value }}"
+      sanitize: "${{ steps.sanitize.outputs.value }}"
+      test_each: "${{ steps.test-each.outputs.value }}"
+      wasm: "${{ steps.wasm.outputs.value }}"
     steps:
       - name: "Checkout"
-        if: "${{ !github.event.pull_request }}"
         uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
         with:
           persist-credentials: "false"
-          fetch-depth: "0"
-      - name: "Check code changes"
-        uses: "dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706" # v4.0.2
-        id: "changes"
+
+      - id: "miri"
+        uses: &gate "./.github/actions/ci-gate"
         with:
-          filters: |
-            devfiles:
-              - '!(README.md|LICENSE|NOTICE|.zed/**|.vscode/**|CLAUDE.md|.rules|development/**|testing.md|workspace-deps.svg|codebook.toml|.markdownlint.json|.gitattributes|.gitignore|.github/**)'
-              - '.github/workflows/dev.yml'
-              - '.github/actions/**'
+          labels: "miri"
+
+      - id: "sanitize"
+        uses: *gate
+        with:
+          labels: "sanitize"
+
+      - id: "cross"
+        uses: *gate
+        with:
+          labels: "cross cross/full"
+
+      - id: "concurrency"
+        uses: *gate
+        with:
+          labels: "concurrency"
+
+      - id: "test-each"
+        uses: *gate
+        with:
+          labels: "test-each"
+
+      - id: "profiles"
+        uses: *gate
+        with:
+          labels: "test/all-profiles"
+          on-value: '["debug", "release", "fuzz"]'
+          off-value: '["debug"]'
+
+      # Lab jobs require release images but not other release/fuzz checks.
+      - id: "container-profiles"
+        uses: *gate
+        with:
+          labels: "test/all-profiles"
+          # The build matrix has no fuzz container targets.
+          on-value: '["debug", "release"]'
+          # Pull-request lab labels require both debug and release images.
+          off-value: >-
+            ${{
+              github.event_name == 'pull_request'
+              && (
+                contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
+                || contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+              )
+              && '["debug", "release"]'
+              || '["debug"]'
+            }}
+
+      - id: "wasm"
+        uses: *gate
+        with:
+          # Cross waits for WASM to limit runner load.
+          labels: "wasm cross cross/full"
 
   version:
     name: "Generate temp artifact version"
@@ -108,53 +165,22 @@ jobs:
           echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
 
   check:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
-    name: "check/${{ matrix.build.name }}/${{ matrix.features || 'default' }}"
+    name: "check/${{ matrix.profile }}"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
     permissions: &check-perms
       contents: "read"
-    # The lab runners have 10 cores. `jobs` is nix's --max-jobs (concurrent
-    # derivations) and `cores` is nix's --cores (NIX_BUILD_CORES, which crane
-    # turns into CARGO_BUILD_JOBS and enableParallelBuilding turns into
-    # `make -j`), so the cap on a job is their product. Every job below that
-    # reaches `nix build` sets `jobs=1 cores=8`: one derivation at a time,
-    # eight compile threads inside it, two cores left for everything else.
-    # A single cargo build of the workspace dominates these jobs, so
-    # serializing derivations costs us little and that build gets the 8.
-    # The exception is `cross`, which runs two matrix entries at once and
-    # so halves its `cores` to stay inside the same budget.
-    env: &check-env
+    env: &ci-env
       USER: "runner"
-      JUST_VARS: >-
-        jobs=1
-        cores=8
-        docker_sock=/run/docker/docker.sock
-        debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
-        profile=${{ matrix.build.profile }}
-        sanitize=${{ matrix.build.sanitize }}
-        instrument=${{ matrix.build.instrument }}
-        features=${{ matrix.features }}
-        oci_repo=ghcr.io
+      # The `just` action runs under `set -u`, so this stays defined.
+      JUST_VARS: ""
     strategy:
       fail-fast: false
+      # Keep one pull request from occupying the shared lab pool.
+      max-parallel: 1
       matrix:
-        build: &default-build
-          - &debug-build
-            name: "debug"
-            profile: "debug"
-            sanitize: ""
-            instrument: "none"
-          - name: "release"
-            profile: "release"
-            sanitize: "" # TODO: enable cfi and safe-stack when possible
-            instrument: "none"
+        profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
     steps:
       - *checkout
 
@@ -167,23 +193,25 @@ jobs:
       - name: "fmt"
         uses: &just "./.github/actions/just"
         with:
-          recipe: "fmt"
-          recipe_args: "--check"
-
-      - name: "test"
-        uses: *just
-        with:
-          recipe: "test"
+          recipe: "ci::check-fmt"
 
       - name: "clippy"
         uses: *just
         with:
-          recipe: "clippy"
+          recipe: "ci::check-clippy"
+          recipe_args: "${{ matrix.profile }}"
+
+      - name: "test"
+        uses: *just
+        with:
+          recipe: "ci::check-test"
+          recipe_args: "${{ matrix.profile }}"
 
       - name: "doctest"
         uses: *just
         with:
-          recipe: "doctest"
+          recipe: "ci::check-doctest"
+          recipe_args: "${{ matrix.profile }}"
 
       - &verify-clean-tree
         name: "verify-clean-tree"
@@ -209,18 +237,8 @@ jobs:
           limit-access-to-actor: true
 
   lint:
-    if: >-
-      ${{
-        github.event_name == 'pull_request'
-        || github.event_name == 'merge_group'
-        || needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
     name: "lint"
     runs-on: "lab"
-    needs:
-      - check_changes
     permissions:
       contents: "read"
     env:
@@ -329,161 +347,103 @@ jobs:
       - *tmate
 
   build:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
-    name: "${{matrix.nix-target}}/${{matrix.build.name}}"
+    name: "${{ matrix.nix-target }}/${{ matrix.profile }}"
     runs-on: lab
     needs:
-      - check_changes
+      - plan
       - version
       - lint
     permissions:
       contents: "read"
       packages: "write" # nix-setup logs into ghcr.io; this job pushes images via `just push-container`
-    env:
-      USER: "runner"
-      JUST_VARS: >-
-        debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
+    env: *ci-env
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         nix-target:
           - frr.dataplane
           - dataplane
           - validator
-        build: *default-build
+        # TODO: enable cfi and safe-stack on release when possible
+        profile: "${{ fromJSON(needs.plan.outputs.container_profiles) }}"
         exclude:
           - nix-target: validator
-            build:
-              name: "debug"
+            profile: debug
     steps:
       - *checkout
       - *nix-setup
 
       - name: "push container"
-        env:
-          VERSION: "${{ needs.version.outputs.version }}"
-          PROFILE: "${{ matrix.build.profile }}"
-          NIX_TARGET: "${{ matrix.nix-target }}"
-          SANITIZE: "${{ matrix.build.sanitize }}"
-          INSTRUMENT: "${{ matrix.build.instrument }}"
-          DEBUG_JUSTFILE: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}"
-        run: |
-          set -euo pipefail
-          if [ "${NIX_TARGET}" = "validator" ]; then
-            platform="wasm32-wasip1"
-          else
-            platform="x86-64-v3"
-          fi
-          base_args=(
-            jobs=1
-            cores=8
-            docker_sock=/run/docker/docker.sock
-            debug_justfile="${DEBUG_JUSTFILE}"
-            profile="${PROFILE}"
-            platform="${platform}"
-            sanitize="${SANITIZE}"
-            instrument="${INSTRUMENT}"
-            oci_repo=ghcr.io
-          )
-          just "${base_args[@]}" push-container "${NIX_TARGET}"
-          just "${base_args[@]}" "version=${VERSION}-${PROFILE}" push-container "${NIX_TARGET}"
+        uses: *just
+        with:
+          recipe: "ci::push-container"
+          recipe_args: "${{ matrix.nix-target }} ${{ matrix.profile }} ${{ needs.version.outputs.version }}"
       - *verify-clean-tree
       - *tmate
 
   sanitize:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
-    name: "sanitize/${{ matrix.build.profile }}/${{ matrix.build.sanitize }}"
+    if: "${{ needs.plan.outputs.sanitize == 'true' }}"
+    name: "sanitize/${{ matrix.sanitizer }}"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
       - check
     permissions: *check-perms
-    env: *check-env
+    env: *ci-env
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        build:
-          - name: "thread"
-            profile: "fuzz"
-            sanitize: "thread"
-            instrument: "none"
-          - name: "address"
-            profile: "fuzz"
-            sanitize: "address"
-            instrument: "none"
+        sanitizer:
+          - thread
+          - address
     steps:
       - *checkout
       - *nix-setup
       - name: "test"
         uses: *just
         with:
-          recipe: "test"
+          recipe: "ci::sanitize"
+          recipe_args: "${{ matrix.sanitizer }}"
       - *tmate
 
   test_each:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
+    if: "${{ needs.plan.outputs.test_each == 'true' }}"
     name: "test_each"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
       - check
     permissions: *check-perms
-    env: *check-env
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        build:
-          - *debug-build
+    env: *ci-env
     steps:
       - *checkout
       - *nix-setup
       - name: "test-each"
         uses: *just
         with:
-          recipe: "test-each"
+          recipe: "ci::test-each"
       - *tmate
 
   coverage:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
-    name: "coverage"
+    name: "coverage/${{ matrix.profile }}"
     runs-on: "lab"
+    # Start baseline coverage immediately; deep jobs wait for cheap checks first.
     needs:
-      - check_changes
-      - check
+      - plan
     permissions:
       contents: "read"
       id-token: "write" # codecov-action authenticates by OIDC, not a stored token
-    env: *check-env
+    env: *ci-env
     strategy:
       fail-fast: false
+      max-parallel: 1
+      # Fuzz provides optimized coverage while retaining safety checks.
       matrix:
-        build:
-          - name: "coverage"
-            profile: "fuzz"
-            sanitize: ""
-            instrument: "coverage"
+        profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
+        exclude:
+          - profile: release
     steps:
       - *checkout
       - *nix-setup
@@ -491,16 +451,17 @@ jobs:
       - name: "coverage-archive"
         uses: *just
         with:
-          recipe: "coverage-archive"
+          recipe: "ci::coverage"
+          recipe_args: "${{ matrix.profile }}"
 
-      # Upload reports even when tests fail; Codecov failures remain advisory.
+      # Preserve partial results and keep profiles separate in Codecov.
       - name: "upload coverage to codecov"
         if: "${{ always() }}"
         uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
         with:
           files: "./target/coverage/lcov.info"
           report_type: "coverage"
-          flags: "nextest_archive"
+          flags: "${{ matrix.profile }}"
           disable_search: "true"
           fail_ci_if_error: "false"
           use_oidc: "true"
@@ -512,13 +473,12 @@ jobs:
         with:
           files: "./target/nextest/default/junit.xml"
           report_type: "test_results"
-          flags: "nextest_archive"
+          flags: "${{ matrix.profile }}"
           disable_search: "true"
           fail_ci_if_error: "false"
           use_oidc: "true"
           verbose: "true"
 
-      # Persistent lab runners should not retain ~3 GiB of intermediates.
       - name: "discard coverage intermediates"
         if: "${{ always() }}"
         run: |
@@ -528,16 +488,12 @@ jobs:
       - *tmate
 
   miri:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
+    if: "${{ needs.plan.outputs.miri == 'true' }}"
     name: "check/miri/${{ matrix.cpu }}"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
+      - check
     permissions: *check-perms
     env:
       USER: "runner"
@@ -561,9 +517,7 @@ jobs:
       - name: "all packages"
         uses: *just
         env:
-          # miri never reaches `nix build`, so the root justfile's `jobs` and
-          # `cores` can't cap it; the module takes its own `cores` and hands
-          # it to cargo and to nextest. See the comment on `check-env`.
+          # Miri bypasses `nix build`, so cap it through its own module.
           JUST_VARS: >-
             miri::cores=8
             miri::cpu=${{ matrix.cpu }}
@@ -601,70 +555,38 @@ jobs:
       - *tmate
 
   wasm:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
-    name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
+    if: "${{ needs.plan.outputs.wasm == 'true' }}"
+    name: "wasm32-wasip1"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
+      - check
     permissions: *check-perms
-    env:
-      USER: "runner"
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - platform: "wasm32-wasip1"
-            profile: "release"
-            libc: "none"
-            recipe:
-              name: "check"
-              args: ""
+    env: *ci-env
     steps:
       - *checkout
       - *nix-setup
-      - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
+      - name: "check"
         uses: *just
-        env:
-          JUST_VARS: >-
-            jobs=1
-            cores=8
-            platform=${{ matrix.platform }}
-            profile=${{ matrix.profile }}
-            libc=${{ matrix.libc }}
         with:
-          recipe: "${{ matrix.recipe.name }}"
-          recipe_args: "${{ matrix.recipe.args }}"
+          recipe: "ci::wasm"
       - *tmate
 
   cross:
-    if: >-
-      ${{
-        github.event_name == 'pull_request'
-        && (
-          contains(github.event.pull_request.labels.*.name, 'ci:+cross')
-          || contains(github.event.pull_request.labels.*.name, 'ci:+cross/full')
-        )
-        || (github.event_name == 'push' || github.event_name == 'merge_group')
-      }}
-    name: "${{ matrix.recipe.name }}/${{ matrix.recipe.args }}/${{ matrix.platform }}/${{ matrix.libc }}"
+    if: "${{ needs.plan.outputs.cross == 'true' }}"
+    name: "cross/${{ matrix.target }}/${{ matrix.platform }}/${{ matrix.libc }}"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
       - check
-      - miri
       - wasm
     permissions: *check-perms
     env:
       USER: "runner"
+      JUST_VARS: ""
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix:
         platform:
           - "aarch64"
@@ -672,108 +594,57 @@ jobs:
         libc:
           - "gnu"
           - "musl"
-        profile:
-          - "debug"
-        recipe:
-          - name: "build-container"
-            args: "dataplane"
-          - name: "build-container"
-            args: "frr.dataplane"
+        target:
+          - "dataplane"
+          - "frr.dataplane"
     steps:
       - *checkout
       - *nix-setup
       - name: "test"
         if: >-
           ${{
-            matrix.recipe.args == 'dataplane'
+            matrix.target == 'dataplane'
             && matrix.libc == 'musl'
-            && github.event_name == 'pull_request'
             && contains(github.event.pull_request.labels.*.name, 'ci:+cross/full')
           }}
         uses: *just
-        env:
-          # cores=4, not the 8 the rest of CI uses: this is the one job with
-          # `max-parallel: 2`, so two matrix entries that land on the same
-          # lab runner still fit inside its 10 cores.
-          JUST_VARS: >-
-            jobs=1
-            cores=4
-            platform=${{ matrix.platform }}
-            profile=${{ matrix.profile }}
-            libc=${{ matrix.libc }}
         with:
-          recipe: "test"
-      - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}/${{ matrix.recipe.args }}"
+          recipe: "ci::cross"
+          recipe_args: "${{ matrix.platform }} ${{ matrix.libc }} test"
+      - name: "build-container"
         uses: *just
-        env:
-          JUST_VARS: >-
-            jobs=1
-            cores=4
-            platform=${{ matrix.platform }}
-            profile=${{ matrix.profile }}
-            libc=${{ matrix.libc }}
         with:
-          recipe: "${{ matrix.recipe.name }}"
-          recipe_args: "${{ matrix.recipe.args }}"
+          recipe: "ci::cross"
+          recipe_args: "${{ matrix.platform }} ${{ matrix.libc }} build-container ${{ matrix.target }}"
       - *tmate
 
   concurrency:
-    if: >-
-      ${{
-        needs.check_changes.outputs.devfiles == 'true'
-        || startsWith(github.event.ref, 'refs/tags/v')
-        || github.event_name == 'workflow_dispatch'
-      }}
+    if: "${{ needs.plan.outputs.concurrency == 'true' }}"
     name: "concurrency"
     runs-on: "lab"
     needs:
-      - check_changes
+      - plan
       - check
     permissions: *check-perms
-    # This job doesn't use the `*check-env` anchor: that anchor's
-    # `JUST_VARS` references `matrix.build.*`, and this job has no
-    # matrix. Each step below sets `JUST_VARS` itself, inlining the
-    # jobs / cores / docker_sock / debug_justfile / oci_repo settings
-    # that the anchor would have provided.
-    env:
-      USER: "runner"
+    env: *ci-env
     steps:
       - *checkout
       - *nix-setup
       - name: "shuttle"
-        env:
-          JUST_VARS: >-
-            jobs=1
-            cores=8
-            docker_sock=/run/docker/docker.sock
-            debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
-            profile=fuzz
-            features=shuttle
-            oci_repo=ghcr.io
         uses: *just
         with:
-          recipe: "test"
+          recipe: "ci::shuttle"
       - name: "loom"
-        env:
-          JUST_VARS: >-
-            jobs=1
-            cores=8
-            docker_sock=/run/docker/docker.sock
-            debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
-            profile=fuzz
-            features=loom
-            oci_repo=ghcr.io
         uses: *just
         with:
-          recipe: "test"
+          recipe: "ci::loom"
       - *tmate
 
   vlab:
-    if: "${{ needs.check_changes.outputs.devfiles == 'true' || (startsWith(github.event.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/v')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}"
     needs:
       - version
       - build
-      - check_changes
+      - plan
 
     name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
 
@@ -783,13 +654,18 @@ jobs:
       # ci:+vlab is required to enable virtual lab tests on PR
       # ci:-upgrade disables upgrade tests on PR
       # hlab is disabled for main and merge_queue till we have gateway tests for it
+      # ci:+merge-ready mirrors the merge queue, which skips HLAB.
       skip: >-
         ${{
           github.event_name == 'pull_request'
           && (
             matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
-            || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
-            || matrix.upgradefrom != '' && contains(github.event.pull_request.labels.*.name, 'ci:-upgrade')
+            || !matrix.hybrid
+               && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
+               && !contains(github.event.pull_request.labels.*.name, 'ci:+merge-ready')
+            || matrix.upgradefrom != ''
+               && contains(github.event.pull_request.labels.*.name, 'ci:-upgrade')
+               && !contains(github.event.pull_request.labels.*.name, 'ci:+merge-ready')
           )
 
           || github.event_name == 'workflow_dispatch'
@@ -855,78 +731,43 @@ jobs:
     name: "Summary"
     runs-on: "ubuntu-latest"
     needs:
-      - check
-      - lint
-      - sanitize
-      - concurrency
       - build
-      - vlab
-      - test_each
+      - check
+      - concurrency
       - coverage
+      - cross
+      - lint
       - miri
+      # Include prerequisites so dependent skips cannot hide their failures.
+      - plan
+      - sanitize
+      - test_each
+      - version
+      - vlab
       - wasm
-    # Run always so this job can aggregate results even when one of its
-    # dependencies failed or was skipped.
-    #
-    # Skipped dependency jobs are handled explicitly by the step-level
-    # conditions below, so a skipped "build" or "check" job does not cause
-    # "summary" itself to be skipped.
+    # Aggregate failures while allowing phased jobs to be skipped.
     if: ${{ always() }}
     steps:
-      - name: "Flag any check matrix failures"
-        if: ${{ needs.check.result != 'success' && needs.check.result != 'skipped' }}
+      - name: "Flag any job failures"
+        env:
+          NEEDS: "${{ toJSON(needs) }}"
+          # Miri remains advisory.
+          ADVISORY: "miri"
         run: |
-          echo '::error:: Some check job(s) failed'
-          exit 1
-      - name: "Flag any lint failures"
-        if: ${{ needs.lint.result != 'success' && needs.lint.result != 'skipped' }}
-        run: |
-          echo '::error:: lint job failed'
-          exit 1
-      - name: "Flag any concurrency job failures"
-        if: ${{ needs.concurrency.result != 'success' && needs.concurrency.result != 'skipped' }}
-        run: |
-          echo '::error:: concurrency job failed'
-          exit 1
-      - name: "Flag any test_each matrix failures"
-        if: ${{ needs.test_each.result != 'success' && needs.test_each.result != 'skipped' }}
-        run: |
-          echo '::error:: Some test_each job(s) failed'
-          exit 1
-      - name: "Flag any coverage failures"
-        if: ${{ needs.coverage.result != 'success' && needs.coverage.result != 'skipped' }}
-        run: |
-          echo '::error:: coverage job failed'
-          exit 1
-      - name: "Flag any sanitize matrix failures"
-        if: ${{ needs.sanitize.result != 'success' && needs.sanitize.result != 'skipped' }}
-        run: |
-          echo '::error:: Some sanitize job(s) failed'
-          exit 1
-      ## FIXME: Make Miri's only job (powerpc64) not "required" for the summary
-      ## to pass, because we face an issue (caching?), and it's blocking CI.
-      ## See https://github.com/githedgehog/dataplane/actions/runs/28030274103/job/82968910470?pr=1603
-      ## Revert this once the issue is solved.
-      #- name: "Flag any miri matrix failures"
-      #  if: ${{ needs.miri.result != 'success' && needs.miri.result != 'skipped' }}
-      #  run: |
-      #    echo '::error:: Some miri job(s) failed'
-      #    exit 1
-      - name: "Flag any build matrix failures"
-        if: ${{ needs.build.result != 'success' && needs.build.result != 'skipped' }}
-        run: |
-          echo '::error:: Some build job(s) failed'
-          exit 1
-      - name: "Flag any wasm failures"
-        if: ${{ needs.wasm.result != 'success' && needs.wasm.result != 'skipped' }}
-        run: |
-          echo '::error:: Some wasm job(s) failed'
-          exit 1
-      - name: "Flag any vlab matrix failures"
-        if: ${{ needs.vlab.result != 'success' && needs.vlab.result != 'skipped' }}
-        run: |
-          echo '::error:: Some vlab job(s) failed'
-          exit 1
+          set -euo pipefail
+          failed="$(jq -r 'to_entries[]
+            | select(.value.result != "success" and .value.result != "skipped")
+            | .key' <<<"${NEEDS}")"
+          status=0
+          for job in ${failed}; do
+            if grep -qw -- "${job}" <<<"${ADVISORY}"; then
+              echo "::warning::${job} did not succeed (advisory)"
+            else
+              echo "::error::${job} did not succeed"
+              status=1
+            fi
+          done
+          exit "${status}"
 
   publish:
     name: "Publish release artifacts"
