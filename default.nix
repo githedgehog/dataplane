@@ -237,6 +237,26 @@ let
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
+  # Per-revision image assembly: renamed under a common prefix so the CI
+  # `pushFilter` can keep it out of Cachix, and never substituted.  A given
+  # revision's image is built by exactly one job and reaches the lab through
+  # ghcr, so a copy in the binary cache buys nothing and costs a lot.
+  #
+  # Deliberately not applied to the workspace Rust builds below.  Those are
+  # volatile with respect to `src`, but `src` admits only cargo sources plus
+  # `.md`, `.json`, `.h`, and `.justfile`, so a revision touching only CI or
+  # nix hashes identically to its parent -- as does any re-run of a tree we
+  # have already built, which is what a label-triggered run, the merge queue,
+  # and the post-merge push to main all are.  Excluding those outputs cost
+  # ~125 minutes of lab time per run (31853726018 -> 31865573803).  On
+  # 760a9c2cb `sanitize/address` compiled nothing: it fetched one 1.4 GiB
+  # `all-0.25.2` nextest archive built by the v0.25.2 tag run on main.  After
+  # the exclusion the same job compiles the workspace, 1007s in CI and 1051s
+  # re-running that revision on an idle pool.
+  #
+  # None of this shares between differently configured jobs.  The asan and
+  # bluefield3-musl builds carry different RUSTFLAGS and sysroots, so they
+  # hash to different store paths, as they must.
   source-volatile = orig: {
     name = "dataplane-volatile-${orig.name or "${orig.pname}-${orig.version}"}";
     allowSubstitutes = false;
@@ -393,7 +413,7 @@ let
       }
       // args
     )).overrideAttrs
-      (orig: source-volatile orig // {
+      (orig: {
         separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
