@@ -329,26 +329,75 @@ build-container-quick:
 push-container target="dataplane" *args: (build-container target args) && version
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
+
+    # Preserve completed builds across transient registry failures. Skopeo
+    # retries blobs; this outer loop retries known-safe, idempotent whole pushes
+    # and announces them so registry degradation remains visible.
+    retry() {
+        declare -r what="$1"
+        shift
+        declare -ri attempts=4
+        declare -i attempt=1
+        declare -i delay
+        declare log
+        log="$(mktemp)"
+        declare -r log
+        while true; do
+            # Stream multi-gigabyte pushes so they do not appear hung.
+            if "$@" 2>&1 | tee "${log}"; then
+                rm -f -- "${log}"
+                return 0
+            fi
+            if [ "${attempt}" -ge "${attempts}" ]; then
+                >&2 echo "::error::${what} failed after ${attempts} attempts"
+                rm -f -- "${log}"
+                return 1
+            fi
+            # Match registry status and transport vocabulary shared by skopeo
+            # and oras. Bound 403 so it cannot match inside a digest.
+            if ! grep -qiE \
+                    -e 'blob upload (unknown|invalid)|blob transfer' \
+                    -e '\b(403|429|500|502|503|504)\b' \
+                    -e 'forbidden|denied|too many requests|rate limit' \
+                    -e 'internal server error|bad gateway|service unavailable|gateway time-?out' \
+                    -e 'temporarily unavailable|try again' \
+                    -e 'unexpected EOF|connection reset|broken pipe|i/o timeout|TLS handshake' \
+                    "${log}"; then
+                >&2 echo "::error::${what} failed with a non-retryable error"
+                rm -f -- "${log}"
+                return 1
+            fi
+            delay=$(( 5 * 2 ** (attempt - 1) + RANDOM % 5 ))
+            >&2 echo "::warning::${what} failed (attempt ${attempt}/${attempts}), retrying in ${delay}s"
+            sleep "${delay}"
+            attempt=$(( attempt + 1 ))
+        done
+    }
+
+    push_image() {
+        declare -r image="$1"
+        retry "push of ${image}" \
+            skopeo copy --retry-times=3 --src-daemon-host="${DOCKER_HOST}" \
+                {{ _skopeo_dest_insecure }} "docker-daemon:${image}" "docker://${image}"
+        echo "Pushed ${image}"
+    }
+
     case "{{target}}" in
         "dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane }}" "docker://{{ oci_image_dataplane }}"
-            echo "Pushed {{ oci_image_dataplane }}"
+            push_image "{{ oci_image_dataplane }}"
             ;;
         "dataplane-debugger")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_debugger }}" "docker://{{ oci_image_dataplane_debugger }}"
-            echo "Pushed {{ oci_image_dataplane_debugger }}"
+            push_image "{{ oci_image_dataplane_debugger }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"
             exit 1
             ;;
         "frr.dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_dataplane}}" "docker://{{oci_image_frr_dataplane}}"
-            echo "Pushed {{ oci_image_frr_dataplane }}"
+            push_image "{{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_host}}" "docker://{{oci_image_frr_host}}"
-            echo "Pushed {{ oci_image_frr_host }}"
+            push_image "{{oci_image_frr_host}}"
             ;;
         "validator")
             if [ "{{platform}}" != "wasm32-wasip1" ]; then
@@ -356,7 +405,8 @@ push-container target="dataplane" *args: (build-container target args) && versio
               exit 1
             fi
             pushd ./results/workspace.validator/bin
-            oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
+            retry "push of {{ oci_image_dataplane_validator }}" \
+                oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
             popd
             echo "Pushed {{ oci_image_dataplane_validator }}"
             ;;
