@@ -140,7 +140,7 @@ oci_insecure := ""
 oci_name := "githedgehog/dataplane"
 oci_frr_prefix := "githedgehog/dataplane/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
-oci_image_dataplane_debugger := oci_repo + "/" + oci_name + "/debugger:" + version
+oci_image_dataplane_core_viewer := oci_repo + "/" + oci_name + "/core-viewer:" + version
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
@@ -305,10 +305,10 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             docker tag "${img}" "{{oci_image_dataplane}}"
             echo "imported {{ oci_image_dataplane }} (${docker_platform})"
             ;;
-        "dataplane-debugger")
-            docker load < ./results/containers.dataplane-debugger
-            docker tag "ghcr.io/githedgehog/dataplane/debugger:{{version}}" "{{oci_image_dataplane_debugger}}"
-            echo "imported {{ oci_image_dataplane_debugger }}"
+        "dataplane-core-viewer")
+            docker load < ./results/containers.dataplane-core-viewer
+            docker tag "ghcr.io/githedgehog/dataplane/core-viewer:{{version}}" "{{oci_image_dataplane_core_viewer}}"
+            echo "imported {{ oci_image_dataplane_core_viewer }}"
             ;;
         "debug-tools")
             # Uses nix only to produce a base image with the runtime closure (glibc, bash, etc.)
@@ -360,9 +360,9 @@ push-container target="dataplane" *args: (build-container target args) && versio
             skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane }}" "docker://{{ oci_image_dataplane }}"
             echo "Pushed {{ oci_image_dataplane }}"
             ;;
-        "dataplane-debugger")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_debugger }}" "docker://{{ oci_image_dataplane_debugger }}"
-            echo "Pushed {{ oci_image_dataplane_debugger }}"
+        "dataplane-core-viewer")
+            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_core_viewer }}" "docker://{{ oci_image_dataplane_core_viewer }}"
+            echo "Pushed {{ oci_image_dataplane_core_viewer }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"
@@ -395,7 +395,8 @@ push-container target="dataplane" *args: (build-container target args) && versio
 [script]
 push:
     {{ _just_debuggable_ }}
-    for container in dataplane frr.dataplane validator; do
+    # The core viewer must match the release it inspects.
+    for container in dataplane dataplane-core-viewer frr.dataplane validator; do
         if [ "${container}" = "validator" ]; then
           platform="wasm32-wasip1"
         else

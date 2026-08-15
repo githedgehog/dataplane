@@ -370,6 +370,8 @@ jobs:
         nix-target:
           - frr.dataplane
           - dataplane
+          # Must match the build that produced the core.
+          - dataplane-core-viewer
           - validator
         # TODO: enable cfi and safe-stack on release when possible
         profile: "${{ fromJSON(needs.plan.outputs.container_profiles) }}"
@@ -377,6 +379,8 @@ jobs:
           - nix-target: frr.dataplane
             profile: fuzz
           - nix-target: dataplane
+            profile: fuzz
+          - nix-target: dataplane-core-viewer
             profile: fuzz
           - nix-target: validator
             profile: debug
