@@ -10,13 +10,25 @@ set script-interpreter := ["/usr/bin/env", "bash", "-euo", "pipefail"]
 
 debug_justfile := env("CI_DEBUG_JUSTFILE", "false")
 
-# Nix build budget for a 10-core lab runner.
+# The container cannot discover its ten-core cgroup limit. Keep `jobs * cores`
+# within that budget and give single large derivations all of it.
 jobs := "1"
 
-cores := "8"
+cores := "10"
+
+# Small per-package derivations use the budget better when split two ways.
+test_each_jobs := "2"
+
+test_each_cores := "5"
 
 [private]
-_lab := "jobs=" + jobs + " cores=" + cores + " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " debug_justfile=" + debug_justfile
+_lab-common := " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " debug_justfile=" + debug_justfile
+
+[private]
+_lab := "jobs=" + jobs + " cores=" + cores + _lab-common
+
+[private]
+_lab-test-each := "jobs=" + test_each_jobs + " cores=" + test_each_cores + _lab-common
 
 [default]
 [private]
@@ -44,7 +56,7 @@ sanitize san profile="fuzz":
     just {{ _lab }} profile={{ profile }} sanitize={{ san }} test
 
 test-each profile="debug":
-    just {{ _lab }} profile={{ profile }} test-each
+    just {{ _lab-test-each }} profile={{ profile }} test-each
 
 coverage profile="debug":
     just {{ _lab }} profile={{ profile }} instrument=coverage coverage-archive
