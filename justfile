@@ -141,6 +141,7 @@ oci_name := "githedgehog/dataplane"
 oci_frr_prefix := "githedgehog/dataplane/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
 oci_image_dataplane_core_viewer := oci_repo + "/" + oci_name + "/core-viewer:" + version
+oci_image_dataplane_dev_debugger := oci_repo + "/" + oci_name + "/dev-debugger:" + version
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
@@ -310,6 +311,11 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             docker tag "ghcr.io/githedgehog/dataplane/core-viewer:{{version}}" "{{oci_image_dataplane_core_viewer}}"
             echo "imported {{ oci_image_dataplane_core_viewer }}"
             ;;
+        "dataplane-dev-debugger")
+            docker load < ./results/containers.dataplane-dev-debugger
+            docker tag "ghcr.io/githedgehog/dataplane/dev-debugger:{{version}}" "{{oci_image_dataplane_dev_debugger}}"
+            echo "imported {{ oci_image_dataplane_dev_debugger }}"
+            ;;
         "debug-tools")
             # Uses nix only to produce a base image with the runtime closure (glibc, bash, etc.)
             # then layers locally-compiled cargo binaries on top via Dockerfile.
@@ -363,6 +369,10 @@ push-container target="dataplane" *args: (build-container target args) && versio
         "dataplane-core-viewer")
             skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_core_viewer }}" "docker://{{ oci_image_dataplane_core_viewer }}"
             echo "Pushed {{ oci_image_dataplane_core_viewer }}"
+            ;;
+        "dataplane-dev-debugger")
+            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_dev_debugger }}" "docker://{{ oci_image_dataplane_dev_debugger }}"
+            echo "Pushed {{ oci_image_dataplane_dev_debugger }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"

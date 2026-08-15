@@ -852,6 +852,45 @@ let
     };
   };
 
+  # Exposes bugstalker's DAP server for live debugging.
+  containers.dataplane-dev-debugger = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dataplane/dev-debugger";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "dataplane-dev-debugger-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [ pkgs.pkgsBuildHost.bugstalker ] ++ debug-image-paths;
+    };
+    # bugstalker needs a writable HOME for its keymap and history.
+    extraCommands = ''
+      mkdir -p tmp
+      chmod 1777 tmp
+    '';
+    config = {
+      Entrypoint = [
+        "/bin/bs"
+        # Bind the published interface rather than container-local loopback.
+        "--dap-remote=0.0.0.0:4711"
+        # rustc is absent, so bugstalker cannot infer this path.
+        "--std-lib-path=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
+        # No debuggee here on purpose.  In `--dap-remote` mode bugstalker
+        # ignores the CLI debuggee and waits for the client's `launch` request
+        # to name one, so a path here would be silently dead and would imply
+        # that connecting alone starts the dataplane.  The editor supplies
+        # `program` instead; see .github/workflows/README.md.
+      ];
+      Env = [ "HOME=/tmp" ];
+      ExposedPorts = {
+        "4711/tcp" = { };
+      };
+    };
+  };
+
   debug-tools =
     pkgs:
     [
