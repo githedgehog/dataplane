@@ -714,6 +714,7 @@ jobs:
     with:
       # ci:+hlab is required to enable hybrid lab tests on PR
       # ci:+vlab is required to enable virtual lab tests on PR
+      # ci:-vlab opts back out, including for ci:+merge-ready
       # ci:-upgrade disables upgrade tests on PR
       # hlab is disabled for main and merge_queue till we have gateway tests for it
       # ci:+merge-ready mirrors the merge queue, which skips HLAB.
@@ -721,7 +722,8 @@ jobs:
         ${{
           github.event_name == 'pull_request'
           && (
-            matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+            contains(github.event.pull_request.labels.*.name, 'ci:-vlab')
+            || matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
             || !matrix.hybrid
                && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
                && !contains(github.event.pull_request.labels.*.name, 'ci:+merge-ready')
