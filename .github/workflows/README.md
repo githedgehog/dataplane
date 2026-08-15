@@ -53,7 +53,8 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 ### Pull Request label options
 
 - `ci:+merge-ready` - Run everything the merge queue will run, so a failure
-  is found before queueing; HLAB remains excluded
+  is found before queueing; HLAB remains excluded, because the merge queue does
+  not run it either
 - `ci:+test/all-profiles` - Add release and fuzz checks plus fuzz coverage
 - `ci:+sanitize` - Run address and thread sanitizer tests
 - `ci:+test-each` - Test each workspace package independently
@@ -61,7 +62,9 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 - `ci:+wasm` - Run the WASM build check
 - `ci:+concurrency` - Run Shuttle and Loom tests
 - `ci:+cross` - Build all cross-platform containers
-- `ci:+cross/full` - Also run cross-platform tests
+- `ci:+cross/full` - Also run the workspace test suite under qemu-user, on the
+  two aarch64 musl legs. Gated like every other job, so the merge queue and
+  `ci:+merge-ready` include it
 - `ci:+vlab` - Run VLAB tests on this PR
 - `ci:+hlab` - Run HLAB tests on this PR
 - `ci:+release` - Enable release tests for VLAB/HLAB on this PR

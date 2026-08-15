@@ -74,6 +74,7 @@ jobs:
       profiles: "${{ steps.profiles.outputs.value }}"
       concurrency: "${{ steps.concurrency.outputs.value }}"
       cross: "${{ steps.cross.outputs.value }}"
+      cross_full: "${{ steps.cross-full.outputs.value }}"
       miri: "${{ steps.miri.outputs.value }}"
       sanitize: "${{ steps.sanitize.outputs.value }}"
       test_each: "${{ steps.test-each.outputs.value }}"
@@ -98,6 +99,11 @@ jobs:
         uses: *gate
         with:
           labels: "cross cross/full"
+
+      - id: "cross-full"
+        uses: *gate
+        with:
+          labels: "cross/full"
 
       - id: "concurrency"
         uses: *gate
@@ -639,17 +645,18 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
+      # Emulate the two aarch64 musl dataplane builds before merge.
       - name: "test"
         if: >-
           ${{
-            matrix.target == 'dataplane'
+            needs.plan.outputs.cross_full == 'true'
+            && matrix.target == 'dataplane'
             && matrix.libc == 'musl'
-            && contains(github.event.pull_request.labels.*.name, 'ci:+cross/full')
           }}
         uses: *just
         with:
-          recipe: "ci::cross"
-          recipe_args: "${{ matrix.platform }} ${{ matrix.libc }} test"
+          recipe: "ci::cross-test"
+          recipe_args: "${{ matrix.platform }} ${{ matrix.libc }}"
       - name: "build-container"
         uses: *just
         with:

@@ -72,6 +72,10 @@ wasm:
 cross platform libc +args:
     just {{ _lab }} share={{ _share }} platform={{ platform }} libc={{ libc }} profile=debug {{ args }}
 
+# Bound individual tests when running them under qemu-user.
+cross-test platform libc:
+    NEXTEST_PROFILE=cross-qemu just {{ _lab }} share={{ _share }} platform={{ platform }} libc={{ libc }} profile=debug test
+
 # Push both the derived and temporary per-commit tags.
 [script]
 push-container target profile version:
