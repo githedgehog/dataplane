@@ -545,7 +545,7 @@ zizmor *args="":
     zizmor --persona=pedantic {{args}} .
 
 # Run the CI-equivalent cached lint; direct Cargo remains the fast inner loop.
-clippy package="" *args: (build (if package == "" { "clippy" } else { "clippy." + package }) args)
+clippy package="" *args: (build (if package == "" { "clippy.all" } else { "clippy.pkg." + package }) args)
     {{ _just_debuggable_ }}
 
 [script]
