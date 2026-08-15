@@ -312,6 +312,13 @@ jobs:
         with:
           recipe: "actionlint"
 
+      - name: "markdownlint"
+        id: "markdownlint"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "markdownlint"
+
       - name: "license-headers"
         id: "license-headers"
         continue-on-error: true
@@ -329,6 +336,7 @@ jobs:
             zizmor=${{ steps.zizmor.outcome }}
             pinact=${{ steps.pinact.outcome }}
             actionlint=${{ steps.actionlint.outcome }}
+            markdownlint=${{ steps.markdownlint.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
         run: |
           set -euo pipefail
