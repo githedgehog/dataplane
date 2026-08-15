@@ -36,7 +36,7 @@ let
       "clippy"
       "llvm-tools"
       "rust-analyzer"
-      "rust-docs"
+      # Avoid retaining 680M of unused prebuilt documentation.
       "rust-src"
       "rust-std"
       "rustc"
