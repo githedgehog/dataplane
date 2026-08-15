@@ -1006,32 +1006,68 @@ let
     }).overrideAttrs
       source-volatile;
 
-  containers.dataplane-debugger =
-    (pkgs.dockerTools.buildLayeredImage {
-      name = "ghcr.io/githedgehog/dataplane/debugger";
-      inherit tag;
-      contents = pkgs.buildEnv {
-        name = "dataplane-debugger-env";
-        pathsToLink = [
-          "/bin"
-          "/etc"
-          "/var"
-          "/lib"
-        ];
-        paths = [
-          pkgs.pkgsBuildHost.gdb
-          pkgs.pkgsBuildHost.rr
-          pkgs.pkgsBuildHost.coreutils
-          pkgs.pkgsBuildHost.bashInteractive
-          pkgs.pkgsBuildHost.iproute2
-          pkgs.pkgsBuildHost.ethtool
-          pkgs.pkgsHostHost.dockerTools.usrBinEnv
+  # Shared runtime and unstripped binaries for the debugger images.
+  debug-image-paths = [
+    pkgs.pkgsBuildHost.coreutils
+    pkgs.pkgsBuildHost.bashInteractive
+    pkgs.pkgsHostHost.dockerTools.usrBinEnv
 
-          pkgs.pkgsHostHost.libc.debug
-          workspace.cli.debug
-          workspace.dataplane.debug
-          workspace.init.debug
+    pkgs.pkgsHostHost.libc.debug
+    workspace.cli.debug
+    workspace.dataplane.debug
+    workspace.init.debug
+  ];
+
+  # Copy Rust's gdb helpers without retaining rustc as a runtime dependency.
+  rust-gdb-printers = pkgs.runCommand "rust-gdb-printers" { } ''
+    mkdir -p "$out/lib/rustlib/etc"
+    for f in gdb_load_rust_pretty_printers.py gdb_lookup.py gdb_providers.py rust_types.py; do
+      cp -L "${pkgs.rust-toolchain}/lib/rustlib/etc/$f" "$out/lib/rustlib/etc/$f"
+    done
+  '';
+
+  # Opens dataplane core files with matching symbols and sources.
+  containers.dataplane-core-viewer =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/core-viewer";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-core-viewer-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [
+            pkgs.pkgsBuildHost.gdb
+            rust-gdb-printers
+          ]
+          ++ debug-image-paths;
+        }).overrideAttrs
+          source-volatile;
+      # gdb needs a writable HOME for logs and its index cache.
+      extraCommands = ''
+        # Point `src-prefix` at the sources this image ships.  Referencing ${src}
+        # here is also what keeps it in the image closure: with the remap no
+        # longer naming a store path, nothing else retains it.
+        mkdir -p ".$(dirname "${src-prefix}")"
+        ln -s "${src}" ".${src-prefix}"
+        mkdir -p tmp
+        chmod 1777 tmp
+      '';
+      config = {
+        Entrypoint = [
+          "/bin/gdb"
+          "--directory=/lib/rustlib/etc"
+          "-iex"
+          "add-auto-load-safe-path /lib/rustlib/etc"
+          "-iex"
+          "source /lib/rustlib/etc/gdb_load_rust_pretty_printers.py"
+          "/bin/dataplane"
         ];
+        Env = [ "HOME=/tmp" ];
       };
     }).overrideAttrs
       source-volatile;
