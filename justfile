@@ -485,6 +485,123 @@ coverage *args:
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
 
+# Report coverage from a Nix-built nextest archive. The optional package
+# matches `just test`; remaining arguments are forwarded to nextest.
+[script]
+coverage-archive package="tests.all" *args:
+    {{ _just_debuggable_ }}
+    declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
+    just \
+        jobs="{{jobs}}" \
+        cores="{{cores}}" \
+        debug_justfile="{{debug_justfile}}" \
+        profile="{{profile}}" \
+        sanitize="{{sanitize}}" \
+        features="{{features}}" \
+        default_features="{{default_features}}" \
+        platform="{{platform}}" \
+        nightly="{{nightly}}" \
+        instrument=coverage \
+        build "${target}"
+
+    declare -r root="$(pwd)"
+    declare -r out="${root}/target/coverage"
+    declare -r profraw="${out}/profraw"
+    declare -r extract="${out}/extract"
+
+    rm -rf -- "${out}"
+    mkdir -p -- "${profraw}" "${extract}"
+
+    # Make the count below see zero instead of a literal unmatched glob.
+    shopt -s nullglob
+    declare -ra archives=( "results/${target}"/*.tar.zst )
+    shopt -u nullglob
+    if [ "${#archives[@]}" -ne 1 ]; then
+        >&2 echo "::error::expected exactly one archive in results/${target}, found ${#archives[@]}"
+        exit 1
+    fi
+    declare -r archive="${archives[0]}"
+
+    declare -r prefix_file="results/${target}/source-prefix"
+    if [ ! -r "${prefix_file}" ]; then
+        >&2 echo "::error::${prefix_file} is missing; the archive predates it, rebuild it"
+        exit 1
+    fi
+    declare src_prefix
+    src_prefix="$(cat "${prefix_file}")"
+    declare -r src_prefix
+
+    # Nextest changes cwd; `%m` also pools compatible profiles across tests.
+    export LLVM_PROFILE_FILE="${profraw}/cov-%m.profraw"
+
+    # Report partial coverage before propagating a test failure.
+    declare -i test_status=0
+    cargo nextest run \
+        --archive-file "${archive}" \
+        --extract-to "${extract}" \
+        --workspace-remap "${root}" \
+        {{ filter }} {{ args }} || test_status="$?"
+
+    declare -r profraw_list="${out}/profraw.list"
+    find "${profraw}" -type f -name '*.profraw' > "${profraw_list}"
+    if [ ! -s "${profraw_list}" ]; then
+        >&2 echo "::error::no raw profiles were written; was ${archive} built with instrument=coverage?"
+        exit 1
+    fi
+    llvm-profdata merge -sparse --input-files="${profraw_list}" -o "${out}/coverage.profdata"
+
+    # Pass one primary object and filter reports to workspace sources.
+    declare target_dir
+    target_dir="$(jq -er '."rust-build-meta"."target-directory"' "${extract}/target/nextest/binaries-metadata.json")"
+    declare -r target_dir
+    declare -a objects=()
+    while IFS= read -r binary; do
+        if [ ! -x "${binary}" ]; then
+            >&2 echo "::error::${binary} is listed in the archive metadata but is not present"
+            exit 1
+        fi
+        if [ "${#objects[@]}" -eq 0 ]; then
+            objects+=( "${binary}" )
+        else
+            objects+=( -object "${binary}" )
+        fi
+    done < <(
+        jq -er --arg prefix "${target_dir}/" --arg extract "${extract}/target/" \
+            '."rust-binaries"[]."binary-path" | $extract + ltrimstr($prefix)' \
+            "${extract}/target/nextest/binaries-metadata.json"
+    )
+
+    llvm-cov export \
+        --format=lcov \
+        --instr-profile="${out}/coverage.profdata" \
+        "${objects[@]}" \
+        "${src_prefix}" \
+        | sed -e "s#^SF:${src_prefix}/#SF:#" > "${out}/lcov.info"
+
+    # Codecov needs repository-relative paths; reject failed rewrites.
+    if grep -q '^SF:/' "${out}/lcov.info"; then
+        >&2 echo "::error::absolute paths survived the ${src_prefix} rewrite:"
+        >&2 grep -m5 '^SF:/' "${out}/lcov.info"
+        exit 1
+    fi
+
+    llvm-cov show \
+        --format=html \
+        --output-dir="${out}/html" \
+        --show-branches=count \
+        --instr-profile="${out}/coverage.profdata" \
+        "${objects[@]}" \
+        "${src_prefix}"
+
+    llvm-cov report \
+        --instr-profile="${out}/coverage.profdata" \
+        "${objects[@]}" \
+        "${src_prefix}"
+
+    echo "lcov report: ${out}/lcov.info"
+    echo "html report: ${out}/html/index.html"
+    exit "${test_status}"
+
 # Regenerate the dependency graph for the project
 [script]
 depgraph:

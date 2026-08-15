@@ -45,6 +45,29 @@ python3 -m http.server
 
 And then open a web-browser to [http://localhost:8000](http://localhost:8000) to view coverage data.
 
+### Coverage from a nextest archive
+
+Use `just coverage` for incremental local coverage. To report on the Nix-built
+[nextest archive] used by CI, run:
+
+```shell
+just coverage-archive          # the whole workspace
+just coverage-archive nat      # one package, as with `just test`
+```
+
+Additional arguments are forwarded to nextest. To reproduce CI's build profile,
+run `just profile=fuzz coverage-archive`.
+
+Reports are written to `./target/coverage`:
+
+- `lcov.info` — repository-relative LCOV report
+- `html/index.html` — browsable report with branch counts
+- `coverage.profdata` — merged LLVM profile
+
+The first run requires a full instrumented build. Reports include workspace
+sources only; host proc-macro crates and crates that produce no standalone code
+may be absent rather than shown at 0%.
+
 ## Fuzz testing (bolero)
 
 The dataplane project makes fairly extensive use of [fuzz testing](https://en.wikipedia.org/wiki/Fuzzing).
@@ -137,5 +160,6 @@ than a real campaign. The two are complementary.
 [bolero]: https://github.com/camshaft/bolero
 [cargo llvm-cov]: https://github.com/taiki-e/cargo-llvm-cov?tab=readme-ov-file#cargo-llvm-cov
 [cargo profiles]: https://doc.rust-lang.org/cargo/reference/profiles.html
+[nextest archive]: https://nexte.st/docs/ci-features/archiving/
 [nextest profiles]: https://nexte.st/docs/configuration/#profiles
 [nextest]: https://nexte.st/
