@@ -24,6 +24,21 @@ cores := "0"
 # Fraction of `cores` available to this invocation, as a decimal or fraction.
 share := "1"
 
+# Where the build tells rustc our sources live; keep in step with `src-prefix`
+# in default.nix.  The build bakes it into debug info, and `file!()` reports it
+# at runtime, so it has to exist when tests run: bolero canonicalises `file!()`
+# to locate its corpus and takes down every property test if it cannot.
+src_prefix := "/tmp/dataplane/src"
+
+# Point `src_prefix` at this checkout.  Idempotent, and deliberately root-free
+# so a developer running `just test` needs no special setup.
+[private]
+[script]
+_link-sources:
+    {{ _just_debuggable_ }}
+    mkdir -p "$(dirname '{{ src_prefix }}')"
+    ln -sfn "$(pwd)" '{{ src_prefix }}'
+
 # Resolve zero before scaling and never return less than one. The epsilon
 # prevents floating-point results just below an integer from rounding down.
 [private]
@@ -194,7 +209,7 @@ pre-flight: (check-dependencies) (fmt "--check") (test) (lint) (doctest)
     echo "pre flight checks pass"
 
 [script]
-test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
+test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args) _link-sources
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
@@ -247,7 +262,7 @@ check-each *args: (build "check" args)
     {{ _just_debuggable_ }}
 
 [script]
-test-each *args: (build "tests.pkg" args)
+test-each *args: (build "tests.pkg" args) _link-sources
     {{ _just_debuggable_ }}
     declare -a fail=()
     for test_archive in results/tests.pkg*/*.tar.zst; do
@@ -614,7 +629,7 @@ coverage *args:
 # Report coverage from a Nix-built nextest archive. The optional package
 # matches `just test`; remaining arguments are forwarded to nextest.
 [script]
-coverage-archive package="tests.all" *args:
+coverage-archive package="tests.all" *args: _link-sources
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     just \
@@ -711,15 +726,20 @@ coverage-archive package="tests.all" *args:
         exit 1
     fi
 
+    # The archive's debug info names a fixed prefix that does not exist here, so
+    # point llvm-cov at the tree the build actually used.  `export` needs no
+    # equivalence: it only emits paths, which the rewrite above already handles.
     llvm-cov show \
         --format=html \
         --output-dir="${out}/html" \
         --show-branches=count \
+        --path-equivalence="${src_prefix},${root}" \
         --instr-profile="${out}/coverage.profdata" \
         "${objects[@]}" \
         "${src_prefix}"
 
     llvm-cov report \
+        --path-equivalence="${src_prefix},${root}" \
         --instr-profile="${out}/coverage.profdata" \
         "${objects[@]}" \
         "${src_prefix}"

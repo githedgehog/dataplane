@@ -237,6 +237,22 @@ let
     src = lib.cleanSource ./.;
     name = "source";
   };
+  # Where debug info claims our sources live.  Deliberately a fixed path rather
+  # than `${src}`: the remap below lands in RUSTFLAGS, which is part of both the
+  # derivation and cargo's per-unit fingerprint, so a store path there gives
+  # every crate -- including the ~475 third-party ones and std -- a new identity
+  # on any revision that touches Rust.  A stable prefix lets the dependency
+  # build be reused across revisions.
+  #
+  # Consumers put the real tree there: the debug images symlink it (see
+  # `source-tree`), and `coverage-archive` passes `-path-equivalence`.
+  # Keep in step with `src_prefix` in the justfile, which creates it before
+  # running tests.  It has to be both stable (so the dependency build is not
+  # revision-specific) and creatable without root (so `file!()` resolves at test
+  # time -- bolero canonicalises it to find its corpus, and a path that does not
+  # exist takes down every property test).
+  src-prefix = "/tmp/dataplane/src";
+
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
       ./Cargo.lock
@@ -405,14 +421,14 @@ let
                   # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
                   # This is intended to map source code paths to generic, relative, or redacted paths.
                   # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
-                  # source code in the debug info from the current working directory to ${src} (the nix store path where we
-                  # have copied our source code).
+                  # source code in the debug info from the current working directory to `src-prefix`, a fixed
+                  # path that the debug images point at the matching source tree.
                   #
                   # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
                   # we strip out of the final binaries we cook and include a gdbserver binary in some
                   # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
                   # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-                  "--remap-path-prefix==${src}"
+                  "--remap-path-prefix==${src-prefix}"
                   # Keep debug outputs from retaining the complete Rust toolchain.
                   "--remap-path-prefix=${pkgs.rust-toolchain}/lib/rustlib/src/rust=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
                 ]
@@ -633,7 +649,7 @@ let
           # Record the remapped source root without changing normal archives.
           + (
             if instrumentation == "coverage" then
-              "; echo -n '${src}' > $out/source-prefix"
+              "; echo -n '${src-prefix}' > $out/source-prefix"
             else
               ""
           );
@@ -943,6 +959,11 @@ let
     }).overrideAttrs source-volatile;
     # gdb needs a writable HOME for logs and its index cache.
     extraCommands = ''
+      # Point `src-prefix` at the sources this image ships.  Referencing ${src}
+      # here is also what keeps it in the image closure: with the remap no
+      # longer naming a store path, nothing else retains it.
+      mkdir -p ".$(dirname "${src-prefix}")"
+      ln -s "${src}" ".${src-prefix}"
       mkdir -p tmp
       chmod 1777 tmp
     '';
@@ -976,6 +997,11 @@ let
     }).overrideAttrs source-volatile;
     # bugstalker needs a writable HOME for its keymap and history.
     extraCommands = ''
+      # Point `src-prefix` at the sources this image ships.  Referencing ${src}
+      # here is also what keeps it in the image closure: with the remap no
+      # longer naming a store path, nothing else retains it.
+      mkdir -p ".$(dirname "${src-prefix}")"
+      ln -s "${src}" ".${src-prefix}"
       mkdir -p tmp
       chmod 1777 tmp
     '';
@@ -1022,6 +1048,11 @@ let
       ];
     }).overrideAttrs source-volatile;
     extraCommands = ''
+      # Point `src-prefix` at the sources this image ships.  Referencing ${src}
+      # here is also what keeps it in the image closure: with the remap no
+      # longer naming a store path, nothing else retains it.
+      mkdir -p ".$(dirname "${src-prefix}")"
+      ln -s "${src}" ".${src-prefix}"
       mkdir -p tmp
       chmod 1777 tmp
     '';
