@@ -415,6 +415,12 @@ actionlint:
     {{ _just_debuggable_ }}
     actionlint
 
+# Limit linting to tracked Markdown so generated files cannot affect CI.
+[script]
+markdownlint *args:
+    {{ _just_debuggable_ }}
+    git ls-files -z '*.md' | xargs -0 markdownlint-cli2 {{ args }}
+
 [script]
 license-headers:
     {{ _just_debuggable_ }}
@@ -461,6 +467,7 @@ lint: \
     (zizmor) \
     (pinact "--fix=false" "--no-api") \
     (actionlint) \
+    (markdownlint) \
     (license-headers)
     {{ _just_debuggable_ }}
 

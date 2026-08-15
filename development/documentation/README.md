@@ -11,14 +11,18 @@ Design your documentation to be maintainable.
   If your code is incomprehensible then documentation won't fix it.
 - **Line breaks in between sentences** - This makes diffs easier to understand and discuss.
 - **Try to satisfy linting rules** - Ensure documentation is free of linting errors.
+  - Run `just markdownlint` to check, or `just markdownlint --fix` to repair the mechanical violations.
+    CI runs the same recipe.
   - The `.markdownlint.json` file may be adjusted if the rules proves overly restrictive, but try to avoid
     deactivating too many lints.
+  - The line length limit is deliberately loose (160) because it is a backstop, not the primary rule:
+    break lines between sentences first and let the limit catch only the rare over-long one.
 - **Prefer markdown shortcut links to inline links** - Use markdown shortcut syntax for links and images to make the
   documentation more readable and maintainable for humans.
   Inline links are disruptive to humans reading or editing the documentation as raw text.
   It is also easier to maintain the links when external resources change.
 
-  *Example*:
+  _Example_:
 
   ```markdown
   - This is an [inline markdown link example](https://www.markdownguide.org/basic-syntax/#links)
