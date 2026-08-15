@@ -30,6 +30,15 @@ in
     inherit (override-packages) rustPlatform;
     version = "0.16.1";
   };
+  # cargoDeps must be fetched from the overridden source too.
+  bugstalker = prev.bugstalker.overrideAttrs (orig: {
+    version = final.lib.removePrefix "v" sources.bugstalker.version;
+    src = sources.bugstalker;
+    cargoDeps = prev.rustPlatform.fetchCargoVendor {
+      src = sources.bugstalker;
+      hash = "sha256-GGi5hnrK5WpvnXHNckpsBch/SJ4lDvH7peSlrCdk218=";
+    };
+  });
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };

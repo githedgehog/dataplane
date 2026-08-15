@@ -16,6 +16,22 @@
       "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.18.4",
       "hash": "sha256-Z458Crgd7o68C1pKE9qf5nJhMAs5D+uyK4nbbtJO/lg="
     },
+    "bugstalker": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "godzie44",
+        "repo": "BugStalker"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.4.7",
+      "revision": "9c18e546eca6a1d68ef69da340a6fb0f2bc1bab7",
+      "url": "https://api.github.com/repos/godzie44/BugStalker/tarball/refs/tags/v0.4.7",
+      "hash": "sha256-AAeSvy/rvyylPH2jTVBGN95QIc6gumREQYuruhRo2ZI="
+    },
     "crane": {
       "type": "GitRelease",
       "repository": {
