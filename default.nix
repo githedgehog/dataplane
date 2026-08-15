@@ -379,6 +379,8 @@ let
                   # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
                   # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
                   "--remap-path-prefix==${src}"
+                  # Keep debug outputs from retaining the complete Rust toolchain.
+                  "--remap-path-prefix=${pkgs.rust-toolchain}/lib/rustlib/src/rust=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
                 ]
               )
             else
@@ -407,6 +409,8 @@ let
                 mkdir -p $debug/bin
                 for f in $out/bin/*; do
                   mv "$f" "$debug/bin/$(basename "$f")"
+                  # Neither packaged debugger reads `.debug_names`.
+                  ${objcopy} --remove-section=.debug_names "$debug/bin/$(basename "$f")"
                   ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
                   ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                 done
