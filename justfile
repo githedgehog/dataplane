@@ -481,6 +481,61 @@ check-dependencies *args:
     {{ _just_debuggable_ }}
     cargo deny {{ _cargo_feature_flags }} check {{ args }}
 
+# Assert that the shared dependency build is reusable.
+#
+# It exists so that a revision touching Rust code still substitutes its
+# third-party crates and standard library, which only works while the
+# derivation depends on the manifests and nothing that moves per commit.  Two
+# things have already broken that: the source path, via `--remap-path-prefix`
+# in RUSTFLAGS, and the git version, via `VERSION = tag`.  Both were invisible
+# until a CI run rebuilt what it should have fetched, several runs after the
+# fact.
+#
+# So vary each per-commit input and require the derivation to hold still.
+[script]
+check-deps-reuse:
+    {{ _just_debuggable_ }}
+    deps_drv() {
+        declare drv
+        drv="$(nix-instantiate default.nix -A tests.all --argstr tag "$1" 2>/dev/null | tail -1)"
+        grep -ao '/nix/store/[a-z0-9]\{32\}-dataplane-tests-deps[^"]*\.drv' "${drv}" | sort -u
+    }
+
+    declare -r baseline="$(deps_drv dev)"
+    if [ -z "${baseline}" ]; then
+        >&2 echo "::error::could not resolve the dependency derivation"
+        exit 1
+    fi
+
+    # A git-describe style tag, which is what CI actually passes.
+    declare -r tagged="$(deps_drv v0.25.2-15-gdeadbee-dirty)"
+    if [ "${tagged}" != "${baseline}" ]; then
+        >&2 echo "::error::the dependency build depends on the git version"
+        >&2 echo "  tag=dev  -> ${baseline}"
+        >&2 echo "  tag=v0.. -> ${tagged}"
+        exit 1
+    fi
+
+    # A workspace source edit, which every real pull request makes.  Restore
+    # from a copy rather than `git checkout`, which would discard whatever the
+    # caller already had uncommitted in this file.
+    declare -r probe="args/src/lib.rs"
+    declare -r saved="$(mktemp)"
+    cp -- "${probe}" "${saved}"
+    trap 'cp -- "${saved}" "${probe}"; rm -f -- "${saved}"' EXIT
+    printf '\n// check-deps-reuse\n' >>"${probe}"
+    declare edited
+    edited="$(deps_drv dev)"
+    cp -- "${saved}" "${probe}"
+    if [ "${edited}" != "${baseline}" ]; then
+        >&2 echo "::error::the dependency build depends on the workspace source"
+        >&2 echo "  before -> ${baseline}"
+        >&2 echo "  after  -> ${edited}"
+        exit 1
+    fi
+
+    echo "dependency build is reusable: ${baseline}"
+
 [script]
 opengrep:
     {{ _just_debuggable_ }}

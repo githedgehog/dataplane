@@ -341,6 +341,16 @@ jobs:
         with:
           recipe: "markdownlint"
 
+      # Guards the property the dependency split rests on.  Two per-commit
+      # inputs have already leaked into it and each cost several CI runs to
+      # notice, because the symptom is a cache miss rather than a failure.
+      - name: "check-deps-reuse"
+        id: "check-deps-reuse"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-deps-reuse"
+
       - name: "license-headers"
         id: "license-headers"
         continue-on-error: true
@@ -359,6 +369,7 @@ jobs:
             pinact=${{ steps.pinact.outcome }}
             actionlint=${{ steps.actionlint.outcome }}
             markdownlint=${{ steps.markdownlint.outcome }}
+            check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
         run: |
           set -euo pipefail
