@@ -333,6 +333,14 @@ jobs:
         with:
           recipe: "markdownlint"
 
+      # Cache misses still pass, so guard dependency reuse explicitly.
+      - name: "check-deps-reuse"
+        id: "check-deps-reuse"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-deps-reuse"
+
       - name: "license-headers"
         id: "license-headers"
         continue-on-error: true
@@ -351,6 +359,7 @@ jobs:
             pinact=${{ steps.pinact.outcome }}
             actionlint=${{ steps.actionlint.outcome }}
             markdownlint=${{ steps.markdownlint.outcome }}
+            check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
         run: |
           set -euo pipefail

@@ -1133,6 +1133,7 @@ in
     package-list
     pkgs
     sources
+    src
     sysroot
     tests
     workspace
