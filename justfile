@@ -439,8 +439,14 @@ push-container target="dataplane" *args: (build-container target args) && versio
 [script]
 push:
     {{ _just_debuggable_ }}
-    # The core viewer must match the release it inspects.
-    for container in dataplane dataplane-core-viewer frr.dataplane validator; do
+    # Debug images must match the release they inspect.
+    for container in \
+        dataplane \
+        dataplane-core-viewer \
+        dataplane-dev-debugger \
+        dataplane-syscall-tracer \
+        frr.dataplane \
+        validator; do
         if [ "${container}" = "validator" ]; then
           platform="wasm32-wasip1"
         else
