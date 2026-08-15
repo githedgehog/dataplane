@@ -97,6 +97,15 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 
 - Container images pushed to GitHub Container Registry (GHCR)
 - Release containers published on tag pushes via `just push`
+- Coverage reports from each `coverage/<profile>` job, kept for 7 days:
+  - `coverage-html-<profile>.tar.gz` - `llvm-cov` HTML report, including the
+    per-branch counts that Codecov does not render. Unpack and open
+    `html/index.html`
+  - `lcov-<profile>.info` - LCOV report with repository-relative paths, for
+    feeding to other coverage tooling
+
+  Both upload unarchived, so they download as the named file rather than
+  wrapped in a zip.
 
 ---
 
