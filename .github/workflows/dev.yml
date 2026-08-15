@@ -67,6 +67,7 @@ jobs:
     runs-on: "ubuntu-latest"
     outputs:
       container_profiles: "${{ steps.container-profiles.outputs.value }}"
+      parallel: "${{ steps.parallel.outputs.value }}"
       profiles: "${{ steps.profiles.outputs.value }}"
       concurrency: "${{ steps.concurrency.outputs.value }}"
       cross: "${{ steps.cross.outputs.value }}"
@@ -80,6 +81,19 @@ jobs:
         uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
         with:
           persist-credentials: "false"
+
+      # Let merge-gating runs finish quickly without allowing pull requests to
+      # crowd them out. `strategy` cannot read `env`, so expose this via `plan`.
+      - id: "parallel"
+        env:
+          EVENT: "${{ github.event_name }}"
+        run: |
+          set -euo pipefail
+          case "${EVENT}" in
+            merge_group | push) value="4" ;;
+            *) value="1" ;;
+          esac
+          printf 'value=%s\n' "${value}" >>"${GITHUB_OUTPUT}"
 
       - id: "miri"
         uses: &gate "./.github/actions/ci-gate"
@@ -183,8 +197,8 @@ jobs:
       JUST_VARS: ""
     strategy:
       fail-fast: false
-      # Keep one pull request from occupying the shared lab pool.
-      max-parallel: 1
+      # Each entry gets its own runner; this limits shared-pool occupancy.
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
     steps:
@@ -365,7 +379,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         nix-target:
           - frr.dataplane
@@ -399,7 +413,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         sanitizer:
           - thread
@@ -444,7 +458,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       # Fuzz provides optimized coverage while retaining safety checks.
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
@@ -632,6 +646,7 @@ jobs:
       JUST_VARS: ""
     strategy:
       fail-fast: false
+      # Keep cross serial so one pull request cannot occupy the lab.
       max-parallel: 1
       matrix:
         platform:
