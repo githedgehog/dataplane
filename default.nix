@@ -461,6 +461,8 @@ let
                   # Keep debug paths stable across revisions. Source readers
                   # must resolve this relative prefix from the workspace root.
                   "--remap-path-prefix==${src-prefix}"
+                  # Keep debug outputs from retaining the complete Rust toolchain.
+                  "--remap-path-prefix=${pkgs.rust-toolchain}/lib/rustlib/src/rust=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
                 ]
               )
             else
@@ -500,6 +502,13 @@ let
                     mkdir -p $debug/bin
                     for f in $out/bin/*; do
                       mv "$f" "$debug/bin/$(basename "$f")"
+                      # Trade index for size.  gdb has consumed `.debug_names`
+                      # as a real DWARF-5 index since 14, and this ships 17.2,
+                      # so dropping it is not free -- gdb rebuilds an index on
+                      # each start instead.  The section is large enough on
+                      # these binaries that the image is worth more than the
+                      # startup, and bugstalker does not read it at all.
+                      ${objcopy} --remove-section=.debug_names "$debug/bin/$(basename "$f")"
                       ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                     done
