@@ -1,13 +1,20 @@
 comment:
-  layout: "condensed_header, condensed_files, condensed_footer"
+  # Show each cargo profile separately.
+  layout: "condensed_header, flags, condensed_files, condensed_footer"
   behavior: default
   require_changes: false
+
+# Fuzz runs only on deep or explicitly labeled runs.
+flags:
+  debug:
+    carryforward: false
+  fuzz:
+    carryforward: true
 coverage:
   status:
     project:
       default:
-        # Our usage is intended for discussion and analysis in PRs
-        # we have no explicit coverage target at the moment.
+        # Coverage is informational until the project defines a target.
         informational: true
     patch:
       default:

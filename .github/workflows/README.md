@@ -35,20 +35,12 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 
 ### Main steps
 
-1. Check code changes to determine which tests are required
-2. Build and test across a matrix of nix targets and profiles:
-   - Nix targets: `tests.all`, `frr.dataplane`, `dataplane`
-   - Profiles: `debug`, `release`
-3. Run `cargo deny` checks for license and security issues
-4. Execute tests:
-   - Regular tests using `cargo nextest` (via `just test`)
-   - Shuttle tests (concurrent execution testing with `features=shuttle`)
-5. Run `cargo clippy` for linting (via `just clippy`)
-6. Build documentation with `rustdoc` (via `just docs`)
-7. Run doctests (via `just doctest`)
-8. Push container images to GHCR (for non-test targets)
-9. Run VLAB/HLAB integration tests (virtual/hybrid lab environments)
-10. Publish release artifacts and bump fabricator on tag pushes
+1. Plan jobs from the event and `ci:+` labels
+2. Run lint, debug checks, and debug coverage on pull requests
+3. Run expensive profiles and specialized jobs on labeled or deep runs
+4. Build and push containers required by VLAB/HLAB
+5. Aggregate required results in the `Summary` job
+6. Publish release artifacts and bump fabricator on tag pushes
 
 ### Manual dispatch options
 
@@ -60,16 +52,44 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 
 ### Pull Request label options
 
+- `ci:+merge-ready` - Run everything the merge queue will run, so a failure
+  is found before queueing; HLAB remains excluded
+- `ci:+test/all-profiles` - Add release and fuzz checks plus fuzz coverage
+- `ci:+sanitize` - Run address and thread sanitizer tests
+- `ci:+test-each` - Test each workspace package independently
+- `ci:+miri` - Run Miri checks
+- `ci:+wasm` - Run the WASM build check
+- `ci:+concurrency` - Run Shuttle and Loom tests
+- `ci:+cross` - Build all cross-platform containers
+- `ci:+cross/full` - Also run cross-platform tests
 - `ci:+vlab` - Run VLAB tests on this PR
 - `ci:+hlab` - Run HLAB tests on this PR
 - `ci:+release` - Enable release tests for VLAB/HLAB on this PR
 - `ci:-upgrade` - Disable upgrade tests on this PR
 
+Labels are additive, and optional: a pull request needs none of them.
+`ci:-upgrade` is the sole exception, subtracting a job that would otherwise run.
+
+Adding a label starts a **new** workflow run, and that run repeats the default
+jobs as well as the ones the label enabled.
+GitHub cannot add a job to a run that already exists, so this is unavoidable
+without teaching jobs to skip work an earlier run finished for the same commit.
+Set the labels you expect to need when opening the pull request and the repeat
+does not arise.
+
+Not labelling is also a reasonable choice.
+The gated jobs are the ones judged unlikely to fail, and the merge queue runs
+the full suite regardless, so a bad assumption costs a re-queue rather than a
+bad merge.
+When the merge queue does catch one of these, add the matching label and push
+the fix, which keeps the check on the pull request from then on.
+If those queue failures stop being rare, the phasing is worth revisiting.
+
 ### Job matrix
 
-- Nix targets: `tests.all` (runs tests, lints, docs), `frr.dataplane`
-  and `dataplane` (build and push containers)
-- Profiles: `debug`, `release`
+- Checks: `debug` by default; `release` and `fuzz` on deep runs
+- Coverage: `debug` by default; `fuzz` on deep runs
+- Containers: debug/release for dataplane and FRR; release for validator
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled
 

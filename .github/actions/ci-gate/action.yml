@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+# Enable a job on a deep run (push, merge queue, or dispatch) or when a pull
+# request has a requested label.
+
+name: "CI gate"
+description: "Decide whether a phased job runs on this event"
+
+inputs:
+  labels:
+    description: >-
+      Space-separated label suffixes; `ci:+` is implied.
+    required: true
+  always-labels:
+    description: >-
+      Label suffixes that enable every gate.
+    required: false
+    default: "merge-ready"
+  on-value:
+    description: "What to emit when the gate is on."
+    required: false
+    default: "true"
+  off-value:
+    description: "What to emit when the gate is off."
+    required: false
+    default: "false"
+
+outputs:
+  value:
+    description: "`on-value` if the gate is on, `off-value` if it is not."
+    value: "${{ steps.gate.outputs.value }}"
+
+runs:
+  using: "composite"
+  steps:
+    - id: "gate"
+      shell: "bash"
+      # Avoid expression interpolation in the script body.
+      env:
+        EVENT: "${{ github.event_name }}"
+        LABELS: "${{ toJSON(github.event.pull_request.labels.*.name) }}"
+        WANTED: "${{ inputs.labels }} ${{ inputs.always-labels }}"
+        ON_VALUE: "${{ inputs.on-value }}"
+        OFF_VALUE: "${{ inputs.off-value }}"
+      run: |
+        set -euo pipefail
+
+        on=false
+        case "${EVENT}" in
+          push | merge_group | workflow_dispatch)
+            on=true
+            ;;
+          *)
+            for suffix in ${WANTED}; do
+              if jq -e --arg l "ci:+${suffix}" \
+                   'if type == "array" then index($l) != null else false end' \
+                   <<<"${LABELS:-[]}" >/dev/null; then
+                on=true
+                break
+              fi
+            done
+            ;;
+        esac
+
+        if "${on}"; then value="${ON_VALUE}"; else value="${OFF_VALUE}"; fi
+        printf '%s -> %s\n' "${WANTED}" "${value}"
+        printf 'value=%s\n' "${value}" >>"${GITHUB_OUTPUT}"
