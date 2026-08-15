@@ -5,6 +5,7 @@ set unstable := true
 set shell := ["/usr/bin/env", "bash", "-euo", "pipefail", "-c"]
 set script-interpreter := ["/usr/bin/env", "bash", "-euo", "pipefail"]
 
+mod ci
 mod miri
 
 # enable to debug just recipes
@@ -16,14 +17,40 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 # number of nix derivations to build concurrently
 jobs := "8"
 
-# threads each nix derivation may use ("0" means every core on the machine).
-#
-# nix hands this to the builder as NIX_BUILD_CORES, which crane turns into
-# CARGO_BUILD_JOBS and nixpkgs' enableParallelBuilding turns into make -j, so
-# it is the cap on concurrent compile/link jobs *within* one derivation. The
-# cap on the whole build is therefore `jobs` x `cores`; a runner with fewer
-# cores than that will oversubscribe itself.
+# Nix build cores per derivation; `jobs * cores` is the total budget. Zero
+# means every available core. Recipes pass `_cores`, which applies `share`.
 cores := "0"
+
+# Fraction of `cores` available to this invocation, as a decimal or fraction.
+share := "1"
+
+# Resolve zero before scaling and never return less than one. The epsilon
+# prevents floating-point results just below an integer from rounding down.
+[private]
+_cores := if share == "1" { cores } else { shell('''
+    cores="$1"
+    if [ "${cores}" = "0" ]; then cores="$(nproc)"; fi
+    awk -v cores="${cores}" -v share="$2" '
+      BEGIN {
+        count = split(share, part, "/")
+        number = "^[0-9]+([.][0-9]+)?$"
+        if (count == 1 && share ~ number) {
+          factor = share
+        } else if (count == 2 && part[1] ~ number && part[2] ~ number && part[2] != 0) {
+          factor = part[1] / part[2]
+        } else {
+          print "invalid share: " share > "/dev/stderr"
+          exit 1
+        }
+        if (factor <= 0) {
+          print "share must be positive" > "/dev/stderr"
+          exit 1
+        }
+        result = int(cores * factor + 1e-9)
+        print (result < 1 ? 1 : result)
+      }
+    '
+  ''', cores, share) }
 
 # libc
 libc := if platform == "wasm32-wasip1" { "none" } else { "gnu" }
@@ -148,7 +175,7 @@ build target="dataplane.tar" *args:
       --show-trace \
       --out-link "results/${target}" \
       --max-jobs "{{jobs}}" \
-      --cores "{{cores}}" \
+      --cores "{{ _cores }}" \
       --keep-failed \
       {{ args }}
 
@@ -364,9 +391,7 @@ push-container target="dataplane" *args: (build-container target args) && versio
             exit 99
     esac
 
-# Note: deliberately ignores all recipe parameters save version, debug_justfile,
-# oci_repo, and the jobs/cores build-parallelism caps.
-# Pushes all release container images.
+# Push release images with the resolved core budget.
 [script]
 push:
     {{ _just_debuggable_ }}
@@ -376,7 +401,7 @@ push:
         else
           platform="x86-64-v3"
         fi
-        just jobs="{{jobs}}" cores="{{cores}}" debug_justfile="{{debug_justfile}}" oci_repo="{{oci_repo}}" version="{{version}}" profile=release platform="${platform}" sanitize= instrument=none push-container "${container}"
+        just jobs="{{jobs}}" cores="{{ _cores }}" debug_justfile="{{debug_justfile}}" oci_repo="{{oci_repo}}" version="{{version}}" profile=release platform="${platform}" sanitize= instrument=none push-container "${container}"
     done
 
 # Print names of container images to build or push
@@ -493,7 +518,7 @@ coverage-archive package="tests.all" *args:
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     just \
         jobs="{{jobs}}" \
-        cores="{{cores}}" \
+        cores="{{ _cores }}" \
         debug_justfile="{{debug_justfile}}" \
         profile="{{profile}}" \
         sanitize="{{sanitize}}" \
