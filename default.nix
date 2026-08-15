@@ -393,7 +393,9 @@ let
         ];
 
         env = {
-          VERSION = tag;
+          # Dependencies do not read VERSION, so keep their derivation stable
+          # while workspace consumers receive the per-commit tag.
+          VERSION = if for-deps then "dependencies" else tag;
           CARGO_PROFILE = cargo-profile;
           DATAPLANE_SYSROOT = "${sysroot}";
           LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
