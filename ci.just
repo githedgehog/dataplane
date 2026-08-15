@@ -21,13 +21,37 @@ _parallel := if parallel == "" { "1" } else { parallel }
 [private]
 _share := if _parallel == "1" { "1" } else { "1/" + _parallel }
 
-# Nix build budget for a 10-core lab runner.
+# Nix build budget for a lab runner.
+#
+# The cgroup allows ten cores.  Nothing inside the container can see that:
+# `nproc` reports the node's 32 and the cgroup files are not readable from the
+# pod.  Measuring throughput from inside cannot recover it either, since a load
+# that fits within ten cores shows no contention.  Treat the ten as given.
+#
+# `jobs * cores` is the request, so it has to come to ten.  One derivation at a
+# time with the whole budget suits the heavy jobs, which each build a single
+# large derivation -- `check`, the sanitizers, and the container builds all do.
 jobs := "1"
 
-cores := "8"
+cores := "10"
+
+# `test_each` is the exception.  It builds one derivation per package, so a
+# single job leaves most of the budget idle whenever a package is too small to
+# saturate ten cores: it cost 887s at `jobs=1 cores=10` against 613s at
+# `jobs=4 cores=8`, and the latter is faster only because it overcommits the
+# cgroup.  Split the ten two ways instead.
+test_each_jobs := "2"
+
+test_each_cores := "5"
 
 [private]
-_lab := "jobs=" + jobs + " cores=" + cores + " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " debug_justfile=" + debug_justfile
+_lab-common := " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " debug_justfile=" + debug_justfile
+
+[private]
+_lab := "jobs=" + jobs + " cores=" + cores + _lab-common
+
+[private]
+_lab-test-each := "jobs=" + test_each_jobs + " cores=" + test_each_cores + _lab-common
 
 [default]
 [private]
@@ -54,7 +78,7 @@ sanitize san profile="fuzz":
     just {{ _lab }} profile={{ profile }} sanitize={{ san }} test
 
 test-each profile="debug":
-    just {{ _lab }} profile={{ profile }} test-each
+    just {{ _lab-test-each }} profile={{ profile }} test-each
 
 coverage profile="debug":
     just {{ _lab }} profile={{ profile }} instrument=coverage coverage-archive
