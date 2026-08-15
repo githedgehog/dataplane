@@ -235,6 +235,10 @@ let
     src = lib.cleanSource ./.;
     name = "source";
   };
+  # Keep dependency fingerprints independent of the source store path.
+  # Consumers resolve this relative prefix from the workspace root.
+  src-prefix = ".";
+
   # Hash every git dependency so crane uses cacheable fixed-output derivations
   # instead of cloning whole repositories during evaluation. Keys must match
   # Cargo.lock sources after percent-decoding branch names: a wrong hash fails
@@ -406,18 +410,9 @@ let
                   "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
                   "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
                   "-Clink-arg=-L${sysroot}/lib"
-                  # NOTE: this is basically a trick to make our source code available to debuggers.
-                  # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
-                  # This is intended to map source code paths to generic, relative, or redacted paths.
-                  # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
-                  # source code in the debug info from the current working directory to ${src} (the nix store path where we
-                  # have copied our source code).
-                  #
-                  # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
-                  # we strip out of the final binaries we cook and include a gdbserver binary in some
-                  # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
-                  # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-                  "--remap-path-prefix==${src}"
+                  # Keep debug paths stable across revisions. Source readers
+                  # must resolve this relative prefix from the workspace root.
+                  "--remap-path-prefix==${src-prefix}"
                 ]
               )
             else
@@ -622,7 +617,7 @@ let
             ++ cargo-cmd-prefix-tests
           ))
           # Record the remapped source root without changing normal archives.
-          + (if instrumentation == "coverage" then "; echo -n '${src}' > $out/source-prefix" else "");
+          + (if instrumentation == "coverage" then "; echo -n '${src-prefix}' > $out/source-prefix" else "");
       };
     };
 
