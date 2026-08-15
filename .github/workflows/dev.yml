@@ -479,6 +479,46 @@ jobs:
           use_oidc: "true"
           verbose: "true"
 
+      # Publish branch coverage, which Codecov does not render.
+      - name: "pack coverage reports"
+        if: "${{ always() }}"
+        env:
+          PROFILE: "${{ matrix.profile }}"
+        run: |
+          set -euo pipefail
+          declare -r out="./target/coverage"
+          # gzip, not zstd: this step runs outside the nix shell.
+          if [ -d "${out}/html" ]; then
+            tar -C "${out}" -czf "${out}/coverage-html-${PROFILE}.tar.gz" html
+          else
+            echo "::warning::no HTML report to pack"
+          fi
+          # The artifact name is the file name, so qualify it by profile.
+          if [ -r "${out}/lcov.info" ]; then
+            cp -- "${out}/lcov.info" "${out}/lcov-${PROFILE}.info"
+          else
+            echo "::warning::no LCOV report to publish"
+          fi
+
+      # Avoid wrapping the reports in another archive.
+      - name: "upload html coverage report"
+        if: "${{ always() }}"
+        uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" # v7.0.1
+        with:
+          path: "./target/coverage/coverage-html-${{ matrix.profile }}.tar.gz"
+          archive: "false"
+          if-no-files-found: "warn"
+          retention-days: "7"
+
+      - name: "upload lcov coverage report"
+        if: "${{ always() }}"
+        uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" # v7.0.1
+        with:
+          path: "./target/coverage/lcov-${{ matrix.profile }}.info"
+          archive: "false"
+          if-no-files-found: "warn"
+          retention-days: "7"
+
       - name: "discard coverage intermediates"
         if: "${{ always() }}"
         run: |
