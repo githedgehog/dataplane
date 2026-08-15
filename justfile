@@ -24,6 +24,12 @@ cores := "0"
 # Fraction of `cores` available to this invocation, as a decimal or fraction.
 share := "1"
 
+# Ask cargo for a per-crate build timing report.  Off by default: enabling it
+# changes every cargo command and so rebuilds everything.  Turn it on for one
+# build when you want to know where the time went, e.g.
+# `just timings=true build tests.all`, then read $out/cargo-timings.
+timings := "false"
+
 # Where the build tells rustc our sources live; keep in step with `src-prefix`
 # in default.nix.  The build bakes it into debug info, and `file!()` reports it
 # at runtime, so it has to exist when tests run: bolero canonicalises `file!()`
@@ -188,6 +194,7 @@ build target="dataplane.tar" *args:
       --argstr platform '{{ platform }}' \
       --argstr tag '{{version}}' \
       --argstr nightly '{{nightly}}' \
+      --argstr timings '{{timings}}' \
       --print-build-logs \
       --show-trace \
       --out-link "results/${target}" \
@@ -291,6 +298,7 @@ setup-roots *args:
         --argstr kernel '{{ kernel }}' \
         --argstr libc '{{ libc }}' \
         --argstr nightly '{{nightly}}' \
+      --argstr timings '{{timings}}' \
         --argstr platform '{{ platform }}' \
         --argstr profile '{{ profile }}' \
         --argstr sanitize '{{ sanitize }}' \
@@ -976,6 +984,7 @@ shell:
       --argstr kernel '{{ kernel }}' \
       --argstr libc '{{ libc }}' \
       --argstr nightly '{{nightly}}' \
+      --argstr timings '{{timings}}' \
       --argstr platform '{{ platform }}' \
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \

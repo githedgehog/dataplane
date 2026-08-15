@@ -11,6 +11,10 @@
   kernel ? "linux",
   tag ? "dev",
   nightly ? "false",
+  # Opt-in: `cargo`'s own per-crate build timing report.  Off by default so the
+  # ordinary derivations are untouched -- turning it on changes every build
+  # command and so rehashes the world.
+  timings ? "false",
 }:
 let
   sources = import ./npins;
@@ -353,6 +357,7 @@ let
       else
         [ ]
     );
+  timings-args = if timings == "true" then [ "--timings" ] else [ ];
   cargo-cmd-prefix = mk-cargo-cmd-prefix needs-unwind;
   cargo-cmd-prefix-tests = mk-cargo-cmd-prefix needs-unwind-tests;
   invoke =
@@ -491,9 +496,23 @@ let
                 done
               ''
           );
-        postFixup = (orig.postFixup or "") + ''
-          rm -f $out/target.tar.zst
-        '';
+        postFixup =
+          (orig.postFixup or "")
+          + ''
+            rm -f $out/target.tar.zst
+          ''
+          + (
+            if timings != "true" then
+              ""
+            else
+              ''
+                if [ -d target/cargo-timings ]; then
+                  mkdir -p "$out/cargo-timings"
+                  cp -r target/cargo-timings/. "$out/cargo-timings/"
+                fi
+              ''
+          );
+
           }
       );
 
@@ -544,6 +563,7 @@ let
           # whose C sources cannot compile for wasm32-wasip1.
           ++ (map (pname: "--package=${pname}") (builtins.attrValues package-list))
           ++ cmd-prefix
+          ++ timings-args
         );
       };
     };
@@ -579,6 +599,7 @@ let
             "--profile=${cargo-profile}"
           ]
           ++ cargo-cmd-prefix
+          ++ timings-args
           ++ [
             "--message-format json-render-diagnostics > $cargoBuildLog"
           ]
@@ -612,6 +633,7 @@ let
             "--profile=${cargo-profile}"
           ]
           ++ cargo-cmd-prefix
+          ++ timings-args
           ++ [
             "--message-format json-render-diagnostics > $cargoBuildLog"
           ]
@@ -652,6 +674,7 @@ let
             ]
             ++ (if package != null then [ "--package=${pname}" ] else [ ])
             ++ cargo-cmd-prefix-tests
+            ++ timings-args
           ))
           # Record the remapped source root without changing normal archives.
           + (
@@ -699,6 +722,7 @@ let
             ]
             ++ (if package != null then [ "--package=${pname}" ] else [ ])
             ++ cargo-cmd-prefix-tests
+            ++ timings-args
             ++ [ "--message-format=json-render-diagnostics > $cargoBenchLog;" ]
           ))
           + ''
@@ -729,6 +753,7 @@ let
             "--package=${pname}"
           ]
           ++ cargo-cmd-prefix
+          ++ timings-args
           ++ [
             "--"
             "-D warnings"
@@ -767,6 +792,7 @@ let
           ]
           ++ (if package != null then [ "--package=${pname}" ] else [ ])
           ++ cargo-cmd-prefix
+          ++ timings-args
         );
       };
     };
