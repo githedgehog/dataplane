@@ -93,7 +93,7 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 - Checks: `debug` by default; `release` and `fuzz` on deep runs
 - Coverage: `debug` by default; `fuzz` on deep runs
 - Miri: required on deep runs; opt-in on pull requests with `ci:+miri`
-- Containers: debug/release for dataplane, its two debug images, and FRR;
+- Containers: debug/release for dataplane, its three debug images, and FRR;
   release for validator
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled
@@ -153,6 +153,23 @@ If those queue failures stop being rare, the phasing is worth revisiting.
       args = {},
     },
   }
+  ```
+
+- `ghcr.io/githedgehog/dataplane/syscall-tracer` records what the dataplane
+  asks the kernel for, as JSON, using lurk.
+  It carries the same stripped binaries the release image ships, since nothing
+  here symbolizes, which is why it is a fraction of the size of the other two:
+
+  ```console
+  docker run --rm ghcr.io/githedgehog/dataplane/syscall-tracer:TAG > trace.jsonl
+  ```
+
+  The stream is one JSON object per line, except that tracing child threads
+  makes lurk announce each one with a bare `Attaching to child <pid>` line.
+  Filter those out if the consumer needs strict JSONL:
+
+  ```console
+  jq -R 'fromjson? // empty' < trace.jsonl
   ```
 
 - Coverage reports from each `coverage/<profile>` job, kept for 7 days:

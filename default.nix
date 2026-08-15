@@ -891,6 +891,44 @@ let
     };
   };
 
+  # Traces the release binaries' syscalls as JSON with lurk.
+  containers.dataplane-syscall-tracer = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dataplane/syscall-tracer";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "dataplane-syscall-tracer-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsBuildHost.lurk
+        pkgs.pkgsHostHost.dockerTools.fakeNss
+        pkgs.pkgsHostHost.busybox
+        pkgs.pkgsHostHost.dockerTools.usrBinEnv
+        workspace.cli
+        workspace.dataplane
+        workspace.init
+      ];
+    };
+    extraCommands = ''
+      mkdir -p tmp
+      chmod 1777 tmp
+    '';
+    config = {
+      Entrypoint = [
+        "/bin/lurk"
+        "--json"
+        # Include the worker threads where the dataplane does its work.
+        "--follow-forks"
+        "/bin/dataplane"
+      ];
+      Env = [ "HOME=/tmp" ];
+    };
+  };
+
   debug-tools =
     pkgs:
     [
