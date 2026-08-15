@@ -216,7 +216,13 @@ let
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
   jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
-  outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
+  # `results` holds the out-links `just build` creates.  It is gitignored, but
+  # `cleanSource` does not read gitignore, so without it here every developer
+  # who has run a build carries their own `src` hash and stops matching the
+  # binary cache.
+  outputsFilter =
+    p: _type:
+    (p != "target") && (p != "sysroot") && (p != "devroot") && (p != "results") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
       full-path: t:
