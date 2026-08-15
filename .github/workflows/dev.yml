@@ -461,6 +461,8 @@ jobs:
           - dataplane-core-viewer
           # Live debugging of the same build, driven from an editor over DAP.
           - dataplane-dev-debugger
+          # Syscall trace of the same build, as JSON.
+          - dataplane-syscall-tracer
           - validator
         # TODO: enable cfi and safe-stack on release when possible
         profile: "${{ fromJSON(needs.plan.outputs.container_profiles) }}"

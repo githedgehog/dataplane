@@ -39,6 +39,33 @@ in
       hash = "sha256-GGi5hnrK5WpvnXHNckpsBch/SJ4lDvH7peSlrCdk218=";
     };
   });
+  # lurk disables ASLR in the tracee before exec, and treats failure as fatal.
+  # Docker's default seccomp profile answers personality(ADDR_NO_RANDOMIZE) with
+  # EPERM, so under a plain `docker run` the traced program never starts -- and
+  # lurk still exits 0 after emitting a well-formed JSON trace of its own child
+  # failing, which the `jq -R 'fromjson? // empty'` filter we document accepts
+  # without complaint.
+  #
+  # Nothing in the tracer image symbolizes an address, so a fixed layout buys us
+  # nothing.  Make it advisory rather than telling users to pass
+  # `--security-opt seccomp=unconfined`, which drops confinement on a container
+  # whose whole job is ptracing a process.
+  #
+  # Two single-line substitutions rather than one spanning both: nix strips the
+  # common indentation from an indented string, so a multi-line search pattern
+  # would not match the source's own indentation.
+  lurk = prev.lurk.overrideAttrs (orig: {
+    postPatch = (orig.postPatch or "") + ''
+      substituteInPlace src/lib.rs \
+        --replace-fail \
+          'personality::set(Persona::ADDR_NO_RANDOMIZE)' \
+          'let _ = personality::set(Persona::ADDR_NO_RANDOMIZE);' \
+        --replace-fail \
+          '.map_err(|_| anyhow!("Unable to set ADDR_NO_RANDOMIZE"))?;' \
+          ""
+    '';
+  });
+
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };

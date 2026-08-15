@@ -184,6 +184,7 @@ oci_frr_prefix := "githedgehog/dataplane/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
 oci_image_dataplane_core_viewer := oci_repo + "/" + oci_name + "/core-viewer:" + version
 oci_image_dataplane_dev_debugger := oci_repo + "/" + oci_name + "/dev-debugger:" + version
+oci_image_dataplane_syscall_tracer := oci_repo + "/" + oci_name + "/syscall-tracer:" + version
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
@@ -561,6 +562,11 @@ build-container target="dataplane" *args: _refuse-instrumented-artifact (build (
             docker tag "ghcr.io/githedgehog/dataplane/dev-debugger:{{version}}" "{{oci_image_dataplane_dev_debugger}}"
             echo "imported {{ oci_image_dataplane_dev_debugger }}"
             ;;
+        "dataplane-syscall-tracer")
+            docker load < ./results/containers.dataplane-syscall-tracer
+            docker tag "ghcr.io/githedgehog/dataplane/syscall-tracer:{{version}}" "{{oci_image_dataplane_syscall_tracer}}"
+            echo "imported {{ oci_image_dataplane_syscall_tracer }}"
+            ;;
         "debug-tools")
             # Uses nix only to produce a base image with the runtime closure (glibc, bash, etc.)
             # then layers locally-compiled cargo binaries on top via Dockerfile.
@@ -668,6 +674,9 @@ push-container target="dataplane" *args: (build-container target args) && versio
             ;;
         "dataplane-dev-debugger")
             push_image "{{ oci_image_dataplane_dev_debugger }}"
+            ;;
+        "dataplane-syscall-tracer")
+            push_image "{{ oci_image_dataplane_syscall_tracer }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"
