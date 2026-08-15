@@ -212,10 +212,13 @@ let
       PKG_CONFIG_ALLOW_CROSS = "1";
     };
   };
-  justfileFilter = p: _type: builtins.match ".*\.justfile$" p != null;
-  markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
-  jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
-  cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
+  # Nix escaping made the old regexes match unrelated .sh and .patch files.
+  justfileFilter = p: _type: lib.hasSuffix ".justfile" p;
+  markdownFilter = p: _type: lib.hasSuffix ".md" p;
+  jsonFilter = p: _type: lib.hasSuffix ".json" p;
+  cHeaderFilter = p: _type: lib.hasSuffix ".h" p;
+  # `.cargo/config.toml` names this script, so include it deliberately.
+  shellFilter = p: _type: lib.hasSuffix ".sh" p;
   # `cleanSource` does not read gitignore, so `results` needs excluding by hand
   # or every developer who has built carries a private `src` hash.
   outputsFilter =
@@ -231,6 +234,7 @@ let
       || (markdownFilter p t)
       || (jsonFilter p t)
       || (cHeaderFilter p t)
+      || (shellFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources full-path t));
     src = lib.cleanSource ./.;
     name = "source";
@@ -355,10 +359,10 @@ let
         pname = null;
         cargoArtifacts = null;
       },
-      # A deps-only build produces cargo artifacts rather than binaries, so it
-      # skips the debug-info split and keeps the `target.tar.zst` that the
-      # package path strips.
+      # Dependency builds retain reusable Cargo artifacts rather than binaries.
       for-deps ? false,
+      # Skip the binary strip/split step for derivations that produce none.
+      no-bins ? false,
       profile,
       cargo-nextest,
       hwloc,
@@ -425,8 +429,10 @@ let
     )).overrideAttrs
       (
         orig:
-        if for-deps then
+        if for-deps || no-bins then
           {
+            # Only dependency builds should retain crane's target archive.
+            doInstallCargoArtifacts = for-deps;
             postBuild = (orig.postBuild or "") + ''
               unset RUSTFLAGS;
             '';
@@ -671,24 +677,32 @@ let
 
   benches = bench-builder { };
 
+  # `--all-targets` so tests, benches, and examples are linted too.  That code
+  # is as load bearing as the rest and deserves the same static analysis, and
+  # the bare `cargo clippy` this replaces already covered it.
+  #
+  # Linting test targets means compiling them, so this takes the unwind flavour
+  # of `-Zbuild-std` and the test profile, matching how the tests themselves
+  # are built.  It shares `cargo-artifacts-tests` for the same reason.
   clippy-builder =
     {
       pname ? null,
     }:
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
-      profile = profile';
+      profile = profile-tests';
       args = {
         inherit pname;
-        cargoArtifacts = cargo-artifacts;
+        cargoArtifacts = cargo-artifacts-tests;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
             "clippy"
+            "--all-targets"
             "--profile=${cargo-profile}"
             "--package=${pname}"
           ]
-          ++ cargo-cmd-prefix
+          ++ cargo-cmd-prefix-tests
           ++ [
             "--"
             "-D warnings"
@@ -704,6 +718,45 @@ let
     }
   ) package-list;
 
+  # Cargo cannot build doctests without running them, so execute them in the
+  # sandbox instead of trying to archive them for the host.
+  doctest-builder =
+    {
+      package ? null,
+    }:
+    let
+      pname = if package != null then package else "all";
+    in
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      profile = profile-tests';
+      no-bins = true;
+      args = {
+        inherit pname;
+        cargoArtifacts = cargo-artifacts-tests;
+        # `cargo test --doc` runs rustdoc, which does not inherit rustc's
+        # registered cfg declarations either.
+        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented)";
+        # The sandbox cannot resolve the runner's `/usr/bin/env bash` shebang.
+        preBuild = "patchShebangs scripts/test-runner.sh";
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargo"
+            "test"
+            "--doc"
+            "--profile=${cargo-profile}"
+          ]
+          ++ (if package != null then [ "--package=${pname}" ] else [ ])
+          ++ cargo-cmd-prefix-tests
+        );
+      };
+    };
+
+  doctests = {
+    all = doctest-builder { };
+    pkg = builtins.mapAttrs (dir: package: doctest-builder { inherit package; }) package-list;
+  };
+
   docs-builder =
     {
       package ? null,
@@ -717,7 +770,8 @@ let
       args = {
         inherit pname;
         cargoArtifacts = cargo-artifacts;
-        RUSTDOCFLAGS = "-D warnings";
+        # Rustdoc does not inherit rustc's registered cfg declarations.
+        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented)";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
@@ -1129,6 +1183,7 @@ in
     dataplane
     devenv
     devroot
+    doctests
     docs
     package-list
     pkgs

@@ -233,6 +233,13 @@ jobs:
           recipe: "ci::check-doctest"
           recipe_args: "${{ matrix.profile }}"
 
+      # Build API docs so links and cfg declarations cannot rot unnoticed.
+      - name: "docs"
+        uses: *just
+        with:
+          recipe: "ci::check-docs"
+          recipe_args: "${{ matrix.profile }}"
+
       - &verify-clean-tree
         name: "verify-clean-tree"
         run: |

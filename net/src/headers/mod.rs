@@ -844,7 +844,7 @@ impl Headers {
     ///
     /// # Errors
     ///
-    /// Returns [`PushVlanError::TooManyVlans`] if there are already [`MAX_VLANS`] VLANs on the
+    /// Returns [`PushVlanError::TooManyVlans`] if there are already `MAX_VLANS` VLANs on the
     /// stack.
     /// Returns [`PushVlanError::NoEthernetHeader`] if no Ethernet header is present.
     pub fn push_vlan(&mut self, vid: Vid) -> Result<(), PushVlanError> {

@@ -19,7 +19,7 @@
 //!   [`EmbeddedTransport`] enum, because the inner packet may have been
 //!   truncated by the ICMP source.
 //! * IPv6 extension-header gap-check semantics carry over unchanged via
-//!   the embedded variants on [`ExtGapCheck`](super::pat::ExtGapCheck)
+//!   the embedded variants on [`ExtGapCheck`]
 //!   (`ext_gap_ok_embedded`).
 //!
 //! [`EmbeddedHeadersView<W, U>`] is the type-level qualifier that closes
@@ -63,9 +63,9 @@ use super::{EmbeddedHeaders, EmbeddedStart, EmbeddedTransport, Headers, Net, Net
 /// Declared, checkable shapes for embedded ICMP-error payloads.
 ///
 /// Any tuple whose layers chain through the [`Within<T>`] adjacency
-/// graph and the [`EmbeddedStep<Pos>`] trait is a valid embedded shape.
+/// graph and the `EmbeddedStep<Pos>` trait is a valid embedded shape.
 /// External crates cannot add new shapes (they cannot implement
-/// [`EmbeddedStep`]), but they can write any existing shape at the type
+/// `EmbeddedStep`), but they can write any existing shape at the type
 /// level and let the trait bounds do the filtering.
 pub trait EmbeddedShape: embedded_sealed::Sealed {}
 
@@ -525,7 +525,7 @@ pub trait EmbeddedLook<U> {
     /// Extract typed references to the matched inner layers.
     ///
     /// Compiles to the same sequence of variant reads as
-    /// [`embedded_sealed::Sealed::matches`], plus `unwrap_unchecked`
+    /// `embedded_sealed::Sealed::matches`, plus `unwrap_unchecked`
     /// at each step; the `EmbeddedHeadersView<W, U>` type invariant
     /// guarantees success so the `None` branches are pruned by the
     /// optimizer.

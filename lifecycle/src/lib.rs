@@ -162,7 +162,7 @@ impl Subsystem {
 }
 
 /// Default drain deadlines. Per-subsystem deadlines bound only the
-/// tokio tasks tracked by each [`Subsystem`]; [`TOTAL`] is the absolute
+/// tokio tasks tracked by each [`Subsystem`]; [`default_deadlines::TOTAL`] is the absolute
 /// process-level ceiling enforced by [`spawn_shutdown_watchdog`].
 pub mod default_deadlines {
     use std::time::Duration;
