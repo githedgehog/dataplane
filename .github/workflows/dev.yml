@@ -452,6 +452,73 @@ jobs:
           recipe: "test-each"
       - *tmate
 
+  coverage:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "coverage"
+    runs-on: "lab"
+    needs:
+      - check_changes
+      - check
+    permissions:
+      contents: "read"
+      id-token: "write" # codecov-action authenticates by OIDC, not a stored token
+    env: *check-env
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - name: "coverage"
+            profile: "fuzz"
+            sanitize: ""
+            instrument: "coverage"
+    steps:
+      - *checkout
+      - *nix-setup
+
+      - name: "coverage-archive"
+        uses: *just
+        with:
+          recipe: "coverage-archive"
+
+      # Upload reports even when tests fail; Codecov failures remain advisory.
+      - name: "upload coverage to codecov"
+        if: "${{ always() }}"
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
+        with:
+          files: "./target/coverage/lcov.info"
+          report_type: "coverage"
+          flags: "nextest_archive"
+          disable_search: "true"
+          fail_ci_if_error: "false"
+          use_oidc: "true"
+          verbose: "true"
+
+      - name: "upload test results to codecov"
+        if: "${{ always() }}"
+        uses: "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f" # v7.0.0
+        with:
+          files: "./target/nextest/default/junit.xml"
+          report_type: "test_results"
+          flags: "nextest_archive"
+          disable_search: "true"
+          fail_ci_if_error: "false"
+          use_oidc: "true"
+          verbose: "true"
+
+      # Persistent lab runners should not retain ~3 GiB of intermediates.
+      - name: "discard coverage intermediates"
+        if: "${{ always() }}"
+        run: |
+          set -euo pipefail
+          rm -rf ./target/coverage/extract ./target/coverage/profraw
+
+      - *tmate
+
   miri:
     if: >-
       ${{
@@ -788,6 +855,7 @@ jobs:
       - build
       - vlab
       - test_each
+      - coverage
       - miri
       - wasm
     # Run always so this job can aggregate results even when one of its
@@ -817,6 +885,11 @@ jobs:
         if: ${{ needs.test_each.result != 'success' && needs.test_each.result != 'skipped' }}
         run: |
           echo '::error:: Some test_each job(s) failed'
+          exit 1
+      - name: "Flag any coverage failures"
+        if: ${{ needs.coverage.result != 'success' && needs.coverage.result != 'skipped' }}
+        run: |
+          echo '::error:: coverage job failed'
           exit 1
       - name: "Flag any sanitize matrix failures"
         if: ${{ needs.sanitize.result != 'success' && needs.sanitize.result != 'skipped' }}
