@@ -6,7 +6,7 @@
 //! The Hop-by-Hop Options header carries optional information that **must** be
 //! examined by every node along a packet's delivery path.  Per [RFC 8200 section 4.1],
 //! it **must** immediately follow the IPv6 header when present -- the builder
-//! enforces this via [`Within`] bounds.
+//! enforces this via `Within` bounds.
 //!
 //! [RFC 8200 section 4.1]: https://datatracker.ietf.org/doc/html/rfc8200#section-4.1
 //! [RFC 8200 section 4.3]: https://datatracker.ietf.org/doc/html/rfc8200#section-4.3

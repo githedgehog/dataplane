@@ -215,7 +215,7 @@ impl_strict_ext!(HopByHop, DestOpts, Routing, Fragment, Ipv4Auth, Ipv6Auth);
 ///
 /// `Acc` is the tuple of references accumulated so far.
 ///
-/// Runtime cursors track progress into the `vlan` and `net_ext` [`ArrayVec`]
+/// Runtime cursors track progress into the `vlan` and `net_ext` `ArrayVec`
 /// fields so that skipped intermediate layers are detected.
 #[must_use = "a Matcher does nothing until .done() is called"]
 pub struct Matcher<'a, Pos, Acc> {

@@ -3,7 +3,7 @@
 
 //! IPv6-context IP Authentication Header.
 //!
-//! This is a [`repr(transparent)`] newtype over [`IpAuth`] that marks the
+//! This is a `repr(transparent)` newtype over [`IpAuth`] that marks the
 //! header as appearing in an IPv6 extension chain.  The builder uses this
 //! type to restrict `Within` impls so that `Ipv6Auth` can only follow
 //! IPv6-legal parents (e.g. `Ipv6`, `Fragment`, `Routing`).

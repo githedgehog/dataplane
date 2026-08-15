@@ -50,7 +50,7 @@ pub struct AclPattern {
     /// Port ranges for match entries that specified neither `cidr` nor `vpcSubnet`, meaning "any
     /// address within the peering, restricted to these ports". These can't be resolved into
     /// concrete prefixes until the peering's manifests are known, so they're materialized into
-    /// `src`/`dst` during [`AclRule::validate_patterns_coverage`] rather than at conversion time.
+    /// `src`/`dst` during `AclRule::validate_patterns_coverage` rather than at conversion time.
     pub src_any_ports: Vec<PortRange>,
     pub dst_any_ports: Vec<PortRange>,
     pub proto: AclProtoMatch,

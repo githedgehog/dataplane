@@ -23,7 +23,7 @@
 //! references to the matched layers via the [`Look`] trait without
 //! re-validating at each access site.  For mutable access, a
 //! `&mut HeadersView<T>` yields `&mut` references via [`LookMut::look_mut`],
-//! which delegates to [`MatcherMut`](super::pat::MatcherMut) so the
+//! which delegates to [`MatcherMut`] so the
 //! multi-`&mut` tuple is built from the same pre-split
 //! [`Fields`](super::pat::Fields) helper used by the rest of the
 //! matcher.
@@ -32,26 +32,26 @@
 //!
 //! Zero-cost extraction is achieved by informing the optimizer, via
 //! `Option::unwrap_unchecked`, that the `HeadersView` type invariant rules
-//! out the `None` arms of each [`ViewStep::step`] call.  The
+//! out the `None` arms of each `ViewStep::step` call.  The
 //! `unsafe` required for this is fully contained:
 //!
 //! * [`Headers::as_view`] / [`Headers::as_view_mut`] are the only
 //!   ways to obtain a `&HeadersView<T>` / `&mut HeadersView<T>`, and they run
-//!   the [`sealed::Sealed::matches`] check -- which threads the same
-//!   cursors and gap checks as [`ViewStep::step`] would -- before
+//!   the `sealed::Sealed::matches` check -- which threads the same
+//!   cursors and gap checks as `ViewStep::step` would -- before
 //!   the `#[repr(transparent)]` reference cast.
-//! * [`ViewStep`] is crate-private.  Its `step` method is a safe
+//! * `ViewStep` is crate-private.  Its `step` method is a safe
 //!   `Option`-returning function; [`Look::look`] simply invokes it
 //!   and unwraps unchecked, relying on the `HeadersView<T>` newtype
 //!   invariant.
-//! * [`ViewStepMut`] is crate-private and mirrors `ViewStep` for
+//! * `ViewStepMut` is crate-private and mirrors `ViewStep` for
 //!   the mutable path, dispatching to
-//!   [`MatcherMut`](super::pat::MatcherMut) so aliasing of the
+//!   [`MatcherMut`] so aliasing of the
 //!   returned `&mut` tuple is handled by the existing `Fields`
 //!   pre-split.  [`LookMut::look_mut`] unwraps the chain's
 //!   `Option<tuple>` unchecked under the same `HeadersView<T>` invariant.
 //! * External callers see only [`HeadersView`], [`Look`], and [`LookMut`].
-//!   They cannot implement [`ViewStep`] or [`ViewStepMut`] or call
+//!   They cannot implement `ViewStep` or `ViewStepMut` or call
 //!   them directly, so they cannot forge a `HeadersView<T>` that sidesteps
 //!   `matches`.
 //! * `HeadersView<T>` has private fields and no owning constructor;
@@ -210,7 +210,7 @@ pub struct HeadersView<T>(Headers, PhantomData<T>);
 /// Declared, checkable shapes for [`HeadersView<T>`].
 ///
 /// Any tuple whose layers chain through the [`Within<T>`] adjacency
-/// graph and the [`ViewStep<Pos>`] trait is a [`Shape`].  External
+/// graph and the `ViewStep<Pos>` trait is a [`Shape`].  External
 /// crates cannot add new shapes (they cannot implement `ViewStep`),
 /// but they can write any existing shape at the type level and let the
 /// trait bounds do the filtering.
@@ -355,7 +355,7 @@ pub trait Look<T> {
     /// Extract typed references to the matched layers.
     ///
     /// Compiles to the same sequence of field/variant reads as
-    /// [`sealed::Sealed::matches`], plus `unwrap_unchecked` at each
+    /// `sealed::Sealed::matches`, plus `unwrap_unchecked` at each
     /// step; the `HeadersView` type invariant guarantees success so the
     /// `None` branches are pruned by the optimizer.
     fn look<'a>(&'a self) -> Self::Refs<'a>
@@ -367,7 +367,7 @@ pub trait Look<T> {
 ///
 /// Yields a tuple of `&mut` references to the matched layers.  Aliasing
 /// between the returned references is handled by
-/// [`MatcherMut`](super::pat::MatcherMut)'s pre-split
+/// [`MatcherMut`]'s pre-split
 /// [`Fields`](super::pat::Fields) -- `look_mut` delegates to a
 /// `MatcherMut` chain and unwraps the result unchecked, relying on the
 /// `HeadersView<T>` shape invariant.
@@ -379,7 +379,7 @@ pub trait LookMut<T> {
 
     /// Extract typed `&mut` references to the matched layers.
     ///
-    /// Compiles to the same [`MatcherMut`](super::pat::MatcherMut) chain
+    /// Compiles to the same [`MatcherMut`] chain
     /// as the corresponding `Matcher` chain used by [`Look::look`], but
     /// mutable.  The `HeadersView<T>` type invariant guarantees the chain
     /// matches, so the final `.done()` is unwrapped unchecked and the

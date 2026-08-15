@@ -7,7 +7,7 @@
 //!
 //! `std::thread::scope` (stable since 1.63) and `shuttle::thread::scope`
 //! are re-exported directly. `loom` 0.7 does not provide `scope`, so we
-//! ship a local shim in [`loom_scope`] that matches the std API on top
+//! ship a local shim in `loom_scope` that matches the std API on top
 //! of loom's `spawn` + `park`/`unpark` + atomic primitives, with a
 //! narrow `unsafe` lifetime launder (same trick std uses internally).
 //!
