@@ -37,6 +37,9 @@ check-clippy profile:
 check-doctest profile:
     just {{ _lab }} profile={{ profile }} doctest
 
+check-docs profile:
+    just {{ _lab }} profile={{ profile }} docs
+
 sanitize san profile="fuzz":
     just {{ _lab }} profile={{ profile }} sanitize={{ san }} test
 
