@@ -206,6 +206,7 @@ let
       qemu-user
       rust-toolchain
       shellcheck
+      skim # the `just debug` picker
       skopeo
       # Serves the html that `just coverage` and `just bench criterion` produce. Opening those
       # from file:// works for the index but breaks the sub-pages' relative fetches.
@@ -1049,15 +1050,17 @@ let
           source-volatile;
       # gdb needs a writable HOME for logs and its index cache.
       extraCommands = ''
-        # Point `src-prefix` at the sources this image ships.  Referencing ${src}
-        # here is also what keeps it in the image closure: with the remap no
-        # longer naming a store path, nothing else retains it.
-        mkdir -p ".$(dirname "${src-prefix}")"
-        ln -s "${src}" ".${src-prefix}"
+        # The remapped prefix is relative, so a debugger resolves source against
+        # its working directory rather than an absolute path.  Ship the tree at
+        # /src and start there.  Referencing ${src} is also what keeps it in the
+        # image closure: with the remap no longer naming a store path, nothing
+        # else retains it.
+        ln -s "${src}" src
         mkdir -p tmp
         chmod 1777 tmp
       '';
       config = {
+        WorkingDir = "/src";
         Entrypoint = [
           "/bin/gdb"
           "--directory=/lib/rustlib/etc"
@@ -1091,15 +1094,17 @@ let
           source-volatile;
       # bugstalker needs a writable HOME for its keymap and history.
       extraCommands = ''
-        # Point `src-prefix` at the sources this image ships.  Referencing ${src}
-        # here is also what keeps it in the image closure: with the remap no
-        # longer naming a store path, nothing else retains it.
-        mkdir -p ".$(dirname "${src-prefix}")"
-        ln -s "${src}" ".${src-prefix}"
+        # The remapped prefix is relative, so a debugger resolves source against
+        # its working directory rather than an absolute path.  Ship the tree at
+        # /src and start there.  Referencing ${src} is also what keeps it in the
+        # image closure: with the remap no longer naming a store path, nothing
+        # else retains it.
+        ln -s "${src}" src
         mkdir -p tmp
         chmod 1777 tmp
       '';
       config = {
+        WorkingDir = "/src";
         Entrypoint = [
           "/bin/bs"
           # Bind the published interface rather than container-local loopback.
@@ -1146,15 +1151,17 @@ let
         }).overrideAttrs
           source-volatile;
       extraCommands = ''
-        # Point `src-prefix` at the sources this image ships.  Referencing ${src}
-        # here is also what keeps it in the image closure: with the remap no
-        # longer naming a store path, nothing else retains it.
-        mkdir -p ".$(dirname "${src-prefix}")"
-        ln -s "${src}" ".${src-prefix}"
+        # The remapped prefix is relative, so a debugger resolves source against
+        # its working directory rather than an absolute path.  Ship the tree at
+        # /src and start there.  Referencing ${src} is also what keeps it in the
+        # image closure: with the remap no longer naming a store path, nothing
+        # else retains it.
+        ln -s "${src}" src
         mkdir -p tmp
         chmod 1777 tmp
       '';
       config = {
+        WorkingDir = "/src";
         Entrypoint = [
           "/bin/lurk"
           "--json"
@@ -1181,6 +1188,7 @@ let
       # pkgs.wireshark-cli
 
       pkgs.bashInteractive
+      pkgs.bugstalker
       pkgs.coreutils
       pkgs.curl
       pkgs.debianutils

@@ -205,6 +205,53 @@ If those queue failures stop being rare, the phasing is worth revisiting.
   Both upload unarchived, so they download as the named file rather than
   wrapped in a zip.
 
+### Debugging locally
+
+The published images debug what CI built. To debug what you are building, `just
+debug` builds the matching image and runs a workspace binary or a single test
+inside it, at whatever `profile`, `platform`, `instrument`, and `sanitize` you
+pass. Symbols only line up when those match the build the problem appeared in,
+which is the whole reason to go through the image rather than a system gdb.
+
+```console
+just debug                             # pick from a list
+just debug bugstalker                  # pick, then wait for an editor
+just debug lurk dataplane              # trace syscalls, streams JSON, runs to exit
+just debug gdb dataplane               # gdbserver on 2345, waits for a client
+just profile=checked debug gdb test_parse_interface args
+just debug-list                        # print the same list without running anything
+```
+
+Name nothing and everything is offered through `skim`, which the dev shell
+provides. Name a filter matching one test and it runs without asking; name one
+matching several and those are offered. A filter matching nothing is an error
+rather than a guess, and so is an ambiguous one when there is no terminal to
+ask at, which is what makes this safe to call from a script.
+
+The third argument narrows which archive is searched, so
+`just debug gdb some_test args` builds only `args`' tests. It is worth passing:
+the default builds every test in the workspace, which is a long wait if all you
+wanted was to pick from a short list.
+
+`gdb` and `bugstalker` block until you disconnect and interrupt them; that is
+the point. `gdb` prints the `target remote` line to use. `bugstalker` prints a
+`.zed/debug.json` entry ready to paste, because in remote-DAP mode it takes the
+program from the client's launch request rather than from its own command line,
+so connecting an editor is only half of it. The `tcp_connection` field in that
+entry is what stops the editor spawning a second debugger of its own.
+
+A test runs with its package directory as the working directory, the way
+nextest runs it, so relative paths behave the same as under `just test`.
+
+To open a core file:
+
+```console
+just inspect-core /path/to/core.1234
+```
+
+Pass the same build settings that produced the binary that dumped
+(`just profile=release inspect-core ...`), for the same reason.
+
 ---
 
 ## Linting and Validation Workflows for Pull Requests
