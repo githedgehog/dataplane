@@ -258,6 +258,111 @@ setup-roots *args:
         {{ args }}
     done
 
+# Check that the debug images actually do what the README says they do.
+#
+# Building an image proves it links; it does not prove the entrypoint runs.
+# Both of these shipped broken: the tracer's documented `docker run` produced a
+# well-formed JSON trace of its own child failing to start, and still exited 0.
+[script]
+smoke-container target: (build-container (if target == "dataplane-core-viewer" { target } else if target == "dataplane-dev-debugger" { target } else if target == "dataplane-syscall-tracer" { target } else { error("smoke-container: no smoke test for '" + target + "'; expected dataplane-core-viewer, dataplane-dev-debugger, or dataplane-syscall-tracer") }))
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+    case "{{ target }}" in
+        "dataplane-syscall-tracer")
+            # A trace runs to megabytes, so keep it in a file rather than a
+            # variable: `declare -x` would put it in the environment, and every
+            # child process then fails to exec with E2BIG, which reads exactly
+            # like a failed trace.  Here-strings are fine at this size -- bash
+            # backs them with a pipe or temp file -- and the checks below use
+            # them on captured output.
+            declare trace
+            trace="$(mktemp)"
+            declare -r trace
+            # Name the container and remove it by name.  `timeout` signals the
+            # docker CLI, and the daemon -- not the CLI -- owns the container's
+            # lifetime, so on the timeout path `--rm` alone can leave a `lurk`
+            # tracing something for as long as the runner lives.
+            declare cid
+            cid="smoke-syscall-tracer-$$"
+            declare -r cid
+            trap 'rm -f -- "${trace}"; docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
+            # No seccomp relaxation on purpose: this is the documented command.
+            timeout 60 docker run --rm --name "${cid}" \
+                "{{ oci_image_dataplane_syscall_tracer }}" \
+                >"${trace}" 2>&1 || true
+            if grep -q "Unable to set ADDR_NO_RANDOMIZE" "${trace}"; then
+                >&2 echo "::error::lurk could not disable ASLR, so the tracee never ran"
+                exit 1
+            fi
+            # The tracee has to actually execute, not merely be attached to.
+            if ! grep -q '"syscall":"execve"' "${trace}"; then
+                >&2 echo "::error::no execve in the trace: the traced program never started"
+                >&2 head -20 "${trace}"
+                exit 1
+            fi
+            printf 'syscall-tracer: traced %s syscalls\n' "$(grep -c '"type":"SYSCALL"' "${trace}")"
+            ;;
+        "dataplane-dev-debugger")
+            # Only that it comes up and listens.  Driving a DAP session from
+            # CI means carrying a protocol client for a contract better
+            # exercised by pointing a real editor at `just debug bugstalker`.
+            declare cid
+            # Let docker pick the host port and read it back.  A fixed one
+            # collides: these run on a shared daemon, and `container_profiles`
+            # can put two of these jobs on the same node at once, where the
+            # second bind fails and reads as "the listener never came up".
+            cid="$(docker run -d --rm -p 127.0.0.1::4711 "{{ oci_image_dataplane_dev_debugger }}")"
+            declare -r cid
+            trap 'docker kill "${cid}" >/dev/null 2>&1 || true' EXIT
+            declare -i waited=0
+            declare port
+            port="$(docker port "${cid}" 4711/tcp | head -1)"
+            port="${port##*:}"
+            declare -r port
+            if [ -z "${port}" ]; then
+                >&2 echo "::error::docker published no host port for 4711/tcp"
+                exit 1
+            fi
+            until timeout 1 bash -c "</dev/tcp/127.0.0.1/${port}" 2>/dev/null; do
+                if [ "${waited}" -ge 60 ]; then
+                    >&2 echo "::error::dev-debugger never listened on 4711"
+                    >&2 docker logs "${cid}" 2>&1 | tail -20
+                    exit 1
+                fi
+                sleep 1
+                waited=$(( waited + 1 ))
+            done
+            echo "dev-debugger: DAP listener up"
+            ;;
+        "dataplane-core-viewer")
+            # The Rust pretty-printers are the reason this image exists, and
+            # what registers them is the entrypoint's own `source` flag -- so
+            # drive the real entrypoint rather than invoking gdb directly,
+            # which would only test a copy of it.
+            declare out
+            out="$(printf 'info pretty-printer\nquit\n' \
+                | timeout 120 docker run --rm -i "{{ oci_image_dataplane_core_viewer }}" 2>&1)"
+            if grep -qiE "traceback|no module named" <<<"${out}"; then
+                >&2 echo "::error::gdb could not load the rust pretty-printers"
+                >&2 printf '%s\n' "${out}"
+                exit 1
+            fi
+            # A registered printer set, not merely a clean start.
+            for want in StdString StdVec StdHashMap; do
+                if ! grep -q "${want}" <<<"${out}"; then
+                    >&2 echo "::error::rust pretty-printer ${want} is not registered"
+                    exit 1
+                fi
+            done
+            echo "core-viewer: rust pretty-printers registered"
+            ;;
+        *)
+            # Unreachable: the dependency above rejects anything else first.
+            >&2 echo "::error::no smoke test defined for {{ target }}"
+            exit 1
+            ;;
+    esac
+
 # Build the dataplane container image
 [script]
 build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
