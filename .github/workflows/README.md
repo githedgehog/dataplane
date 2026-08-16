@@ -71,10 +71,12 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 - `ci:+vlab` - Run VLAB tests on this PR
 - `ci:+hlab` - Run HLAB tests on this PR
 - `ci:+release` - Enable release tests for VLAB/HLAB on this PR
+- `ci:-vlab` - Skip VLAB and HLAB tests on this PR, even with `ci:+merge-ready`
 - `ci:-upgrade` - Disable upgrade tests on this PR
 
 Labels are additive, and optional: a pull request needs none of them.
-`ci:-upgrade` is the sole exception, subtracting a job that would otherwise run.
+`ci:-vlab` and `ci:-upgrade` are the exceptions, subtracting jobs that would
+otherwise run.
 
 Adding a label starts a **new** workflow run, and that run repeats the default
 jobs as well as the ones the label enabled.
