@@ -78,6 +78,10 @@ cross platform libc +args:
 cross-test platform libc:
     NEXTEST_PROFILE=cross-qemu just {{ _lab }} platform={{ platform }} libc={{ libc }} profile=debug test
 
+# Verify a debug image's entrypoint actually does its job.
+smoke-container target profile:
+    just {{ _lab }} profile={{ profile }} platform=x86-64-v3 smoke-container {{ target }}
+
 # Publish both content-derived and discoverable per-commit tags.
 [script]
 push-container target profile version:
