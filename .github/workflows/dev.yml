@@ -405,6 +405,17 @@ jobs:
         with:
           recipe: "ci::push-container"
           recipe_args: "${{ matrix.nix-target }} ${{ matrix.profile }} ${{ needs.version.outputs.version }}"
+
+      # A debug image that builds is not a debug image that works.  Two of
+      # these shipped with entrypoints that could not do what the README
+      # documents, and building them said nothing about it.
+      - name: "smoke"
+        if: "${{ startsWith(matrix.nix-target, 'dataplane-') }}"
+        uses: *just
+        with:
+          recipe: "ci::smoke-container"
+          recipe_args: "${{ matrix.nix-target }} ${{ matrix.profile }}"
+
       - *verify-clean-tree
       - *tmate
 

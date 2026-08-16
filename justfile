@@ -284,6 +284,74 @@ setup-roots *args:
         {{ args }}
     done
 
+# Check that the debug images actually do what the README says they do.
+#
+# Building an image proves it links; it does not prove the entrypoint runs.
+# Both of these shipped broken: the tracer's documented `docker run` produced a
+# well-formed JSON trace of its own child failing to start, and still exited 0.
+[script]
+smoke-container target: (build-container target)
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+    case "{{ target }}" in
+        "dataplane-syscall-tracer")
+            # A trace runs to megabytes, so keep it in a file: a shell variable
+            # that size overruns the here-string limit and every grep against
+            # it fails with E2BIG, which reads exactly like a failed trace.
+            declare trace
+            trace="$(mktemp)"
+            declare -r trace
+            trap 'rm -f -- "${trace}"' EXIT
+            # No seccomp relaxation on purpose: this is the documented command.
+            timeout 60 docker run --rm "{{ oci_image_dataplane_syscall_tracer }}" \
+                >"${trace}" 2>&1 || true
+            if grep -q "Unable to set ADDR_NO_RANDOMIZE" "${trace}"; then
+                >&2 echo "::error::lurk could not disable ASLR, so the tracee never ran"
+                exit 1
+            fi
+            # The tracee has to actually execute, not merely be attached to.
+            if ! grep -q '"syscall":"execve"' "${trace}"; then
+                >&2 echo "::error::no execve in the trace: the traced program never started"
+                >&2 head -20 "${trace}"
+                exit 1
+            fi
+            printf 'syscall-tracer: traced %s syscalls\n' "$(grep -c '"type":"SYSCALL"' "${trace}")"
+            ;;
+        "dataplane-dev-debugger")
+            declare cid
+            cid="$(docker run -d --rm -p 47110:4711 "{{ oci_image_dataplane_dev_debugger }}")"
+            declare -r cid
+            trap 'docker kill "${cid}" >/dev/null 2>&1 || true' EXIT
+            ./scripts/dap-smoke.py 47110 /bin/dataplane
+            ;;
+        "dataplane-core-viewer")
+            # The Rust pretty-printers are the reason this image exists, and
+            # what registers them is the entrypoint's own `--directory` and
+            # `source` flags -- so drive the real entrypoint rather than
+            # invoking gdb directly, which would only test a copy of them.
+            declare out
+            out="$(printf 'info pretty-printer\nquit\n' \
+                | timeout 120 docker run --rm -i "{{ oci_image_dataplane_core_viewer }}" 2>&1)"
+            if grep -qiE "traceback|no module named" <<<"${out}"; then
+                >&2 echo "::error::gdb could not load the rust pretty-printers"
+                >&2 printf '%s\n' "${out}"
+                exit 1
+            fi
+            # A registered printer set, not merely a clean start.
+            for want in StdString StdVec StdHashMap; do
+                if ! grep -q "${want}" <<<"${out}"; then
+                    >&2 echo "::error::rust pretty-printer ${want} is not registered"
+                    exit 1
+                fi
+            done
+            echo "core-viewer: rust pretty-printers registered"
+            ;;
+        *)
+            >&2 echo "::error::no smoke test defined for {{ target }}"
+            exit 1
+            ;;
+    esac
+
 # Build the dataplane container image
 [script]
 build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
