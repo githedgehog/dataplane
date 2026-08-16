@@ -74,9 +74,11 @@ Production artifacts are produced via nix builds in a separate CI workflow.
   overrides it, because the merge queue has no labels to read and would
   run the upgrade legs anyway; a `merge-ready` run that skipped them would
   not be the preview it claims to be
+- `ci:-vlab` - Skip VLAB and HLAB tests on this PR, even with `ci:+merge-ready`
 
 Labels are additive, and optional: a pull request needs none of them.
-`ci:-upgrade` is the sole exception, subtracting a job that would otherwise run.
+`ci:-vlab` and `ci:-upgrade` are the exceptions, subtracting jobs that would
+otherwise run.
 
 Adding a label starts a **new** workflow run, and that run repeats the default
 jobs as well as the ones the label enabled.  This applies to _every_ label, not
