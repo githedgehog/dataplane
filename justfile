@@ -258,6 +258,234 @@ setup-roots *args:
         {{ args }}
     done
 
+# Ports the debug helpers listen on.  Override for a second session.
+gdb_port := "2345"
+
+bs_port := "4711"
+
+# Workspace binaries the debug images already carry, spelled as the images
+# spell them.  The nix attribute is keyed by directory (`workspace.init`) but
+# the binary it installs is `dataplane-init`, and it is the binary name that has
+# to appear here -- `debug` passes it straight through as `/bin/<name>`.
+[private]
+_debug_binaries := "dataplane cli dataplane-init"
+
+# Build settings to forward when a recipe has to re-enter `just` rather than
+# depend on it.  A debug session is only useful against the same build the
+# problem showed up in.
+[private]
+_forward := "jobs=" + jobs + " cores=" + cores + " debug_justfile=" + debug_justfile \
+    + " profile=" + profile + " platform=" + platform + " libc=" + libc \
+    + " features=" + features + " default_features=" + default_features \
+    + " instrument=" + instrument + " sanitize=" + sanitize + " nightly=" + nightly
+
+# List what `just debug` can run at the current profile: the workspace binaries
+# the images carry, and every test in a nextest archive.
+[script]
+debug-list package="tests.all": (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }))
+    {{ _just_debuggable_ }}
+    declare -r suite="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
+    echo "binaries:"
+    for b in {{ _debug_binaries }}; do printf '  %s\n' "${b}"; done
+    echo "tests:"
+    cargo nextest list --archive-file results/"${suite}"/*.tar.zst --workspace-remap "$(pwd)"
+
+# Run a workspace binary or a single test under a debug helper, in the image
+# that carries it, built at the current profile and instrumentation.
+#
+#   just debug                                   # pick from a list
+#   just debug bugstalker                        # pick, then wait for an editor
+#   just debug lurk dataplane                    # trace syscalls, streams JSON
+#   just debug gdb dataplane                     # gdbserver, waits for gdb
+#   just profile=fuzz debug gdb test_parse_interface args
+#
+# `target` is one of the workspace binaries, or a nextest filter.  Leave it out
+# and everything is offered; give a filter matching one test and it is used
+# without asking; give one matching several and those are offered.  `package`
+# narrows which archive is built to find them, so naming one is much quicker
+# than the default of building every test in the workspace.  gdb and bugstalker
+# wait for a client instead of running to completion.
+#
+# The remapped source prefix is relative, so a client shows source only if its
+# working directory is the root of the tree the binary was built from.  This
+# passes `-w` for that in every case; a local `gdb` needs you to be standing in
+# the right place yourself.
+[script]
+debug tool="gdb" target="" package="tests.all" *args: (build-container (if tool == "gdb" { "dataplane-core-viewer" } else if tool == "bugstalker" { "dataplane-dev-debugger" } else if tool == "lurk" { "dataplane-syscall-tracer" } else { error("debug: unknown tool '" + tool + "'; expected gdb, bugstalker, or lurk") }))
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+
+    declare image
+    case "{{ tool }}" in
+        gdb)        image="{{ oci_image_dataplane_core_viewer }}" ;;
+        bugstalker) image="{{ oci_image_dataplane_dev_debugger }}" ;;
+        lurk)       image="{{ oci_image_dataplane_syscall_tracer }}" ;;
+        *)
+            # Unreachable: the dependency above rejects anything else before
+            # this body runs.  Kept so `set -u` cannot meet an unset `image`.
+            >&2 echo "debug: unknown tool '{{ tool }}'"
+            exit 1
+            ;;
+    esac
+    declare -r image
+
+    # Resolve the target to a program, its arguments, and a working directory.
+    declare program workdir
+    declare -a program_args=() mounts=()
+    if [[ -n '{{ target }}' && " {{ _debug_binaries }} " == *" {{ target }} "* ]]; then
+        # The images carry these already, so nothing needs mounting.  `/src` is
+        # where they ship the sources, and the remapped prefix is relative, so
+        # the debugger only resolves source if it starts there.
+        program="/bin/{{ target }}"
+        workdir="/src"
+    else
+        # A test, or nothing yet.  Either way the archive has to exist before
+        # there is anything to name or to choose between.
+        declare -r suite="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
+        just {{ _forward }} build "${suite}"
+        declare -r extract="${PWD}/results/debug-extract"
+        rm -rf -- "${extract}"
+        mkdir -p -- "${extract}"
+        declare errors candidates
+        errors="$(mktemp)"
+        candidates="$(mktemp)"
+        declare -r errors candidates
+        trap 'rm -f -- "${errors}" "${candidates}"' EXIT
+        # Keep nextest's diagnostics: it writes progress to stderr and JSON to
+        # stdout, and discarding the former turns "cargo is not on PATH" into
+        # an empty result that looks like "no such test".
+        declare listing
+        if ! listing="$(cargo nextest list --archive-file results/"${suite}"/*.tar.zst \
+                --workspace-remap "$(pwd)" --extract-to "${extract}" --extract-overwrite \
+                --message-format json \
+                {{ if target == "" { "" } else { "-E 'test(/" + target + "/)'" } }} \
+                2>"${errors}")"; then
+            >&2 echo "::error::could not list the tests in ${suite}"
+            >&2 cat -- "${errors}"
+            exit 1
+        fi
+        declare -r listing
+
+        # label \t binary \t workdir \t test, so a picker can show the label
+        # and the caller can read the rest back off the same line.
+        if [ -z '{{ target }}' ]; then
+            for b in {{ _debug_binaries }}; do
+                printf '%s (binary)\t/bin/%s\t/\t\n' "${b}" "${b}"
+            done >>"${candidates}"
+        fi
+        jq -r '
+            ."rust-suites" | to_entries[] | .value as $s
+            | ($s.testcases // {} | to_entries[]
+               | select(."value"."filter-match"."status" == "matches") | .key) as $t
+            | "\($s."binary-id") \($t)\t\($s."binary-path")\t\($s.cwd)\t\($t)"
+        ' <<<"${listing}" >>"${candidates}"
+
+        declare -i found
+        found="$(wc -l <"${candidates}")"
+        declare chosen
+        if [ "${found}" -eq 0 ]; then
+            >&2 echo "::error::nothing in ${suite} matches '{{ target }}'"
+            exit 1
+        elif [ "${found}" -eq 1 ]; then
+            chosen="$(cat -- "${candidates}")"
+        elif [ -t 0 ]; then
+            # Several matches and someone to ask.  Showing only the label keeps
+            # the store paths out of the list without losing them.
+            if ! command -v sk >/dev/null 2>&1; then
+                >&2 echo "::error::sk (skim) is not on PATH; use the dev shell, or name a target exactly"
+                exit 1
+            fi
+            chosen="$(sk --delimiter '\t' --with-nth 1 \
+                --prompt "{{ tool }} > " --height 40% --reverse <"${candidates}")"
+            if [ -z "${chosen}" ]; then
+                >&2 echo "debug: nothing picked"
+                exit 1
+            fi
+        else
+            if [ -n '{{ target }}' ]; then
+                >&2 echo "::error::'{{ target }}' matches ${found} in ${suite}; name one exactly, or pick from a terminal:"
+            else
+                >&2 echo "::error::not a terminal, so nothing to ask; name one of:"
+            fi
+            >&2 cut -f1 -- "${candidates}"
+            exit 1
+        fi
+        declare -r chosen
+
+        program="$(cut -f2 <<<"${chosen}")"
+        # nextest gives a test its package root as the working directory, and
+        # anything reading a relative path depends on that.
+        workdir="$(cut -f3 <<<"${chosen}")"
+        declare test_name
+        test_name="$(cut -f4 <<<"${chosen}")"
+        declare -r test_name
+        if [ -n "${test_name}" ]; then
+            program_args=(--exact "${test_name}" --nocapture)
+            # Built outside the image, so it still resolves its loader and its
+            # libraries through the store; the store has to come along.
+            mounts=(-v /nix/store:/nix/store:ro -v "${extract}":"${extract}":ro -v "${PWD}":"${PWD}":ro)
+        fi
+    fi
+    declare -r program workdir
+
+    case "{{ tool }}" in
+        lurk)
+            docker run --rm -i "${mounts[@]}" -w "${workdir}" --entrypoint /bin/lurk \
+                "${image}" --json --follow-forks "${program}" "${program_args[@]}" {{ args }}
+            ;;
+        gdb)
+            >&2 echo "gdbserver on {{ gdb_port }}.  Connect with:"
+            >&2 echo "    gdb -ex 'target remote 127.0.0.1:{{ gdb_port }}' '${program}'"
+            # Randomization stays on: docker's default seccomp answers
+            # personality(ADDR_NO_RANDOMIZE) with EPERM, and gdbserver would
+            # otherwise open with an alarming warning about a benign failure.
+            # Loopback, not `0.0.0.0`: gdbserver runs whatever a client asks
+            # it to, with no authentication, and a bare `-p` would offer that
+            # to anything that can reach this machine.
+            docker run --rm -i -p "127.0.0.1:{{ gdb_port }}:{{ gdb_port }}" "${mounts[@]}" -w "${workdir}" \
+                --entrypoint /bin/gdbserver "${image}" --no-disable-randomization \
+                ":{{ gdb_port }}" "${program}" "${program_args[@]}" {{ args }}
+            ;;
+        bugstalker)
+            # It takes the program from the client's launch request, not from
+            # here, so connecting an editor to this is only half of it.  Print
+            # the other half ready to paste into .zed/debug.json: `tcp_connection`
+            # is what stops the editor spawning a `bs` of its own.
+            >&2 echo "bugstalker DAP on {{ bs_port }}.  Give the editor:"
+            >&2 jq -n --arg l "container: {{ tool }} {{ target }}" --arg p "${program}" \
+                --arg w "${workdir}" --argjson port "{{ bs_port }}" \
+                '{label: $l, adapter: "bugstalker-dap", request: "launch",
+                  program: $p, args: $ARGS.positional, cwd: $w,
+                  tcp_connection: {host: "127.0.0.1", port: $port}}' \
+                --args "${program_args[@]}" {{ args }}
+            # The container end is 4711 whatever `bs_port` says: the image's
+            # entrypoint hardcodes `--dap-remote=0.0.0.0:4711`, so publishing
+            # `bs_port:bs_port` only worked while `bs_port` was 4711.  Loopback
+            # for the same reason as gdbserver -- a DAP `launch` request runs
+            # an arbitrary program.
+            docker run --rm -i -p "127.0.0.1:{{ bs_port }}:4711" "${mounts[@]}" -w "${workdir}" "${image}"
+            ;;
+    esac
+
+# Open a core file in a gdb matched to the build that produced it.
+#
+# Symbols only line up with the exact version and profile that dumped, so pass
+# the same build settings that produced the binary.
+[script]
+inspect-core core *args: (build-container "dataplane-core-viewer")
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+    if [ ! -r '{{ core }}' ]; then
+        >&2 echo "inspect-core: cannot read '{{ core }}'"
+        exit 1
+    fi
+    declare core_dir core_file
+    core_dir="$(cd "$(dirname -- '{{ core }}')" && pwd)"
+    core_file="$(basename -- '{{ core }}')"
+    declare -r core_dir core_file
+    docker run --rm -it -v "${core_dir}":/cores:ro \
+        "{{ oci_image_dataplane_core_viewer }}" "/cores/${core_file}" {{ args }}
+
 # Check that the debug images actually do what the README says they do.
 #
 # Building an image proves it links; it does not prove the entrypoint runs.
