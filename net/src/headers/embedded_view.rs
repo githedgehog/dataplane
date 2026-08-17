@@ -1935,7 +1935,7 @@ mod embedded_view_properties {
     fn agreement_is_not_vacuous(shape: &str, seen: usize, hit: usize) {
         println!("{shape}: matched {hit} of {seen}");
         // Deliberately short runs skip the vacuity guard.
-        if seen > 20_000 {
+        if seen > 10_000 {
             assert!(
                 hit > 0,
                 "{shape} never matched in {seen} packets: the two walks agree only because the \
