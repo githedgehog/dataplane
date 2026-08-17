@@ -559,6 +559,37 @@ nixfmt *args="--check":
     {{ _just_debuggable_ }}
     nixfmt {{ args }} default.nix
 
+# Keep the lint recipe, workflow steps, and outcome aggregation aligned; drift
+# in any of the three silently disables a check.
+[script]
+check-lint-wiring:
+    {{ _just_debuggable_ }}
+    declare -r wf=".github/workflows/dev.yml"
+    declare -i failures=0
+
+    # Nix-backed checks run under a `ci::check-` prefix; accept either spelling
+    # so a recipe stays covered when it moves between workflow jobs.
+    declare recipe
+    while read -r recipe; do
+        grep -qE "recipe: \"(ci::check-)?${recipe}\"" "${wf}" && continue
+        >&2 echo "::error::\`just lint\` runs ${recipe}, but ${wf} never does"
+        failures=$(( failures + 1 ))
+    done < <(just --dump --dump-format json | jq -r '.recipes.lint.dependencies[].recipe')
+
+    # Every lint step is `continue-on-error`, so a step the aggregator does not
+    # read cannot fail the run.
+    declare id
+    while read -r id; do
+        grep -qF "steps.${id}.outcome" "${wf}" && continue
+        >&2 echo "::error::${wf} runs ${id} but never reads its outcome"
+        failures=$(( failures + 1 ))
+    done < <(yq -r '.jobs.lint.steps[] | select(.id) | .id' "${wf}")
+
+    if [ "${failures}" -ne 0 ]; then
+        exit 1
+    fi
+    echo "lint wiring agrees"
+
 # Limit linting to tracked Markdown so generated files cannot affect CI.
 [script]
 markdownlint *args:
@@ -613,6 +644,7 @@ lint: \
     (actionlint) \
     (markdownlint) \
     (nixfmt) \
+    (check-lint-wiring) \
     (license-headers)
     {{ _just_debuggable_ }}
 

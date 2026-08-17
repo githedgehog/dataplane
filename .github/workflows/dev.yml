@@ -344,6 +344,20 @@ jobs:
         with:
           recipe: "markdownlint"
 
+      - name: "nixfmt"
+        id: "nixfmt"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "nixfmt"
+
+      - name: "check-lint-wiring"
+        id: "check-lint-wiring"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-lint-wiring"
+
       # Cache misses still pass, so guard dependency reuse explicitly.
       - name: "check-deps-reuse"
         id: "check-deps-reuse"
@@ -370,6 +384,8 @@ jobs:
             pinact=${{ steps.pinact.outcome }}
             actionlint=${{ steps.actionlint.outcome }}
             markdownlint=${{ steps.markdownlint.outcome }}
+            nixfmt=${{ steps.nixfmt.outcome }}
+            check-lint-wiring=${{ steps.check-lint-wiring.outcome }}
             check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
         run: |
