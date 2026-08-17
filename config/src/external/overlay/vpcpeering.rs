@@ -1213,30 +1213,78 @@ pub mod contract {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct StaticNatExpose;
 
+    /// Several static NAT exposes for one manifest, which a manifest will accept together.
+    ///
+    /// [`StaticNatExpose`] draws one expose, and one expose builds a table with one rule in it.
+    /// Several are what give a longest-prefix match anything to choose between, so anything testing
+    /// a lookup wants this rather than a repeated draw of the single-expose generator.
+    ///
+    /// Two independent draws are refused by a manifest almost every time, for two reasons that both
+    /// have to be handled here rather than by the caller:
+    ///
+    /// * **Overlap.** Every expose is laid out from the same two bases, so two of them cover the
+    ///   same addresses. Each is placed in a block of its own instead, [`BLOCK_STRIDE`] apart, which
+    ///   is wider than the widest span one expose can occupy.
+    /// * **Address family.** A peering's manifests must agree on one family, so a v4 expose beside a
+    ///   v6 one is refused. The family is drawn once here and shared.
+    ///
+    /// The field is the largest number of exposes to draw; the generator draws between one and that.
+    #[derive(Debug, Clone, Copy)]
+    pub struct StaticNatExposes(pub u8);
+
+    impl Default for StaticNatExposes {
+        fn default() -> Self {
+            Self(3)
+        }
+    }
+
     /// The largest total either side covers, as a power of two. Small enough to enumerate.
     const MAX_TOTAL_LOG: u8 = 6;
+
+    /// The distance between two blocks.
+    ///
+    /// A side lays out at most `2^MAX_TOTAL_LOG` addresses, each part followed by a gap of its own
+    /// size, so it spans at most twice that. Double it again for room to grow.
+    const BLOCK_STRIDE: u128 = 4 << MAX_TOTAL_LOG;
 
     impl ValueGenerator for StaticNatExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = driver.produce::<bool>()?;
-            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
-
-            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
-            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
-
-            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
-            for prefix in privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
-            }
-            for prefix in publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
-                    .ok()?;
-            }
-            Some(expose)
+            static_nat_expose(driver, v4, 0)
         }
+    }
+
+    impl ValueGenerator for StaticNatExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            (0..count)
+                .map(|block| static_nat_expose(driver, v4, block))
+                .collect()
+        }
+    }
+
+    /// One static NAT expose of the given family, laid out in the given block.
+    fn static_nat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let privates = place(v4, Side::Private, block, &split(driver, total_log)?)?;
+        let publics = place(v4, Side::Public, block, &split(driver, total_log)?)?;
+
+        let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+        for prefix in privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+        }
+        for prefix in publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                .ok()?;
+        }
+        Some(expose)
     }
 
     // Split 2^total_log into powers of two, largest first. Halving a part keeps the total the
@@ -1271,19 +1319,21 @@ pub mod contract {
     // Each part is followed by a gap of its own size. Placed end to end they would be aligned
     // siblings, and validation normalizes those back into one prefix -- so the shape the generator
     // worked out to differ between the sides would be collapsed away before anything saw it.
-    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
-        let mut cursor = if v4 {
-            u128::from(match side {
-                Side::Private => 0x0A00_0000u32,
-                Side::Public => 0xAC10_0000,
-            })
-        } else {
-            let selector = match side {
-                Side::Private => 0u128,
-                Side::Public => 1,
+    fn place(v4: bool, side: Side, block: u8, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let offset = u128::from(block) * BLOCK_STRIDE;
+        let mut cursor = offset
+            + if v4 {
+                u128::from(match side {
+                    Side::Private => 0x0A00_0000u32,
+                    Side::Public => 0xAC10_0000,
+                })
+            } else {
+                let selector = match side {
+                    Side::Private => 0u128,
+                    Side::Public => 1,
+                };
+                (0x2001_0db8u128 << 96) | (selector << 80)
             };
-            (0x2001_0db8u128 << 96) | (selector << 80)
-        };
 
         let mut out = Vec::with_capacity(parts.len());
         for &log in parts {
