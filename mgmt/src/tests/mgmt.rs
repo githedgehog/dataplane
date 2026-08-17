@@ -806,10 +806,10 @@ mod dataplane_tables {
         let mut nattablesw = NatTablesWriter::new();
         nattablesw.update_nat_tables(nat_tables);
 
-        let masquerade = MasqueradeConfig::new(vpc_table, validated.genid()).set_randomize(false);
+        let masquerade = MasqueradeConfig::new(vpc_table).set_randomize(false);
         let mut natallocatorw = NatAllocatorWriter::new();
         let flow_table = FlowTable::new(16);
-        natallocatorw.update_nat_allocator(masquerade, &flow_table);
+        natallocatorw.update_nat_allocator(masquerade, validated.genid(), &flow_table);
 
         let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
             panic!("a validated {flavour:?} configuration would not build port forwarding: {e}")
@@ -973,9 +973,9 @@ mod enacted {
             let mut portfw = PortFwTableWriter::new();
             portfw.update_table(&ruleset).ok()?;
 
-            let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
+            let masquerade = MasqueradeConfig::new(vpc_table).set_randomize(false);
             let mut writer = NatAllocatorWriter::new();
-            writer.update_nat_allocator(masquerade, &FlowTable::new(16));
+            writer.update_nat_allocator(masquerade, genid, &FlowTable::new(16));
             let allocator = writer.get_reader().get();
 
             Some(Self {
@@ -1043,8 +1043,8 @@ mod validator_completeness {
         });
         NatTablesWriter::new().update_nat_tables(nat_tables);
 
-        let masquerade = MasqueradeConfig::new(vpc_table, genid).set_randomize(false);
-        NatAllocatorWriter::new().update_nat_allocator(masquerade, &FlowTable::new(16));
+        let masquerade = MasqueradeConfig::new(vpc_table).set_randomize(false);
+        NatAllocatorWriter::new().update_nat_allocator(masquerade, genid, &FlowTable::new(16));
 
         let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
             panic!("{mutation:?}: validator accepted a config port forwarding rejects: {e}")
