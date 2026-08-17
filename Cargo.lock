@@ -471,8 +471,7 @@ checksum = "b1b08cb4ecbb540b940016b0a0f35b7e48ab0cc372ab88150c351de4cc469959"
 [[package]]
 name = "bolero"
 version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ff44d278fc0062c95327087ed96b3d256906d1d8f579e534a3de8d6b386913a"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "bolero-afl",
  "bolero-engine",
@@ -487,8 +486,7 @@ dependencies = [
 [[package]]
 name = "bolero-afl"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9bf4cbd0bacf9356d3c7e5d9d088480f2076ba3c595c15ee9a6a378cdd7b297"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "bolero-engine",
  "cc",
@@ -497,8 +495,7 @@ dependencies = [
 [[package]]
 name = "bolero-engine"
 version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dca199170a7c92c669c1019f9219a316b66bcdcfa4b36cac5a460a4c1a851aba"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "anyhow",
  "bolero-generator",
@@ -511,8 +508,7 @@ dependencies = [
 [[package]]
 name = "bolero-generator"
 version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98a5782f2650f80d533f58ec339c6dce4cc5428f9c2755894f98156f52af81f2"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "bolero-generator-derive",
  "either",
@@ -524,8 +520,7 @@ dependencies = [
 [[package]]
 name = "bolero-generator-derive"
 version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a21a3b022507b9edd2050caf370d945e398c1a7c8455531220fa3968c45d29e"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "proc-macro-crate 2.0.2",
  "proc-macro2",
@@ -536,8 +531,7 @@ dependencies = [
 [[package]]
 name = "bolero-honggfuzz"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a118ef27295eddefadc6a99728ee698d1b18d2e80dc4777d21bee3385096ffd"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "bolero-engine",
 ]
@@ -545,8 +539,7 @@ dependencies = [
 [[package]]
 name = "bolero-kani"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "852ea5784a9f3e68bfd302ca80b8b863bce140593eb5770fee6ab110899c28fc"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "bolero-engine",
 ]
@@ -554,8 +547,7 @@ dependencies = [
 [[package]]
 name = "bolero-libfuzzer"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "858dc57c11725c52662501fa79fdbc6f7050339a05ca1bf1e587add0fed40d62"
+source = "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4"
 dependencies = [
  "bolero-engine",
  "cc",
@@ -5621,7 +5613,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.5.0",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.59.0",
