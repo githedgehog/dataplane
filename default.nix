@@ -231,11 +231,33 @@ let
     src = lib.cleanSource ./.;
     name = "source";
   };
+  # Hash every git dependency so crane uses cacheable fixed-output derivations
+  # instead of cloning whole repositories during evaluation. Keys must match
+  # Cargo.lock sources after percent-decoding branch names: a wrong hash fails
+  # when `vendor-cargo-deps` is realised, but a key that stops matching -- which
+  # a branch rename does -- only warns and silently falls back to the
+  # evaluation-time clone this is meant to avoid.
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
       ./Cargo.lock
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
+    outputHashes = {
+      "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4" =
+        "sha256-ipue/XsDxOeO4lThRcIdpQsztC5AbAkgwUHDYWTH9qY=";
+      "git+https://github.com/githedgehog/dplane-rpc.git?branch=pr/daniel-noland/bumps#6c84b7aff35abb4e94fbb0d09870a0b4a2322913" =
+        "sha256-YOCcWOynWN49KKY17KfP31QBK1ZM6x6Xl4/tdfNwgIs=";
+      "git+https://github.com/githedgehog/fixin?branch=main#5e0de31606466b17372f8a2cff090cc0461d572c" =
+        "sha256-GfBnaL6ke3ekm+HbV34yXdF4ArYHismxbPHF5/M94yk=";
+      "git+https://github.com/githedgehog/left-right.git?branch=fredi/fix-writehandle-drop#765813aa25c8328746e93a7a5ccc75deb57b1d80" =
+        "sha256-GVP11hLRmHip5+MH9U1bD4bANxDpdnkN9cvMo6RDFfY=";
+      "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr/daniel-noland/swing6#9a257c60e25bc5db50a1cd14aa493d6ec294c23d" =
+        "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=";
+      "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4" =
+        "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=";
+      "git+https://github.com/githedgehog/testn.git?tag=v0.0.10#e49aba8400beb2cb117a3f542b114080cf572283" =
+        "sha256-XwEKLdc2Y7fteSKKOERgjKTdxELy7K/wOVuB/SSj3ng=";
+    };
   };
   # For wasm32, pkgs is the host nixpkgs (no pkgsCross), so ctarget resolves to the
   # host platform (e.g. x86_64-unknown-linux-gnu).  That means is-cross-compile is
@@ -519,12 +541,7 @@ let
             ++ cargo-cmd-prefix-tests
           ))
           # Record the remapped source root without changing normal archives.
-          + (
-            if instrumentation == "coverage" then
-              "; echo -n '${src}' > $out/source-prefix"
-            else
-              ""
-          );
+          + (if instrumentation == "coverage" then "; echo -n '${src}' > $out/source-prefix" else "");
       };
     };
 
