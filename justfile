@@ -553,6 +553,12 @@ actionlint:
     {{ _just_debuggable_ }}
     actionlint
 
+# Keep default.nix formatted without adopting legacy files under nix/.
+[script]
+nixfmt *args="--check":
+    {{ _just_debuggable_ }}
+    nixfmt {{ args }} default.nix
+
 # Limit linting to tracked Markdown so generated files cannot affect CI.
 [script]
 markdownlint *args:
@@ -606,6 +612,7 @@ lint: \
     (pinact "--fix=false" "--no-api") \
     (actionlint) \
     (markdownlint) \
+    (nixfmt) \
     (license-headers)
     {{ _just_debuggable_ }}
 
