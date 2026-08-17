@@ -590,6 +590,87 @@ check-lint-wiring:
     fi
     echo "lint wiring agrees"
 
+# Images are per-revision, so verify that each realized image and its
+# dockerTools assembly paths are rejected by the actual Cachix push filter.
+[script]
+check-push-filter:
+    {{ _just_debuggable_ }}
+    declare -r action=".github/actions/nix-shell/action.yml"
+    declare push_filter
+    push_filter="$(yq -r '.runs.steps[] | select(.with.pushFilter) | .with.pushFilter' "${action}")"
+    declare -r push_filter
+    if [ -z "${push_filter}" ] || [ "${push_filter}" = "null" ]; then
+        >&2 echo "::error::no pushFilter found in ${action}; nothing is keeping images out of the cache"
+        exit 1
+    fi
+
+    # Walk `containers` and `dataplane` both: the latter holds `dataplane.tar`,
+    # which the release build selects directly and which is per-revision for the
+    # same reasons. Both nest, so recurse rather than assume one level.  Each line is "attr outPath drvPath".
+    declare -a images=()
+    mapfile -t images < <(
+        nix eval --impure --raw --expr '
+          let
+            d = import ./default.nix { };
+            lib = d.pkgs.lib;
+            flatten = prefix: set:
+              lib.concatLists (lib.mapAttrsToList (n: v:
+                let nm = if prefix == "" then n else "${prefix}.${n}"; in
+                if lib.isDerivation v then [ "${nm} ${v.outPath} ${v.drvPath}" ]
+                else if builtins.isAttrs v then flatten nm v
+                else [ ]
+              ) set);
+          in lib.concatStringsSep "\n" (flatten "" { inherit (d) containers dataplane; }) + "\n"
+        '
+    )
+    if [ "${#images[@]}" -eq 0 ]; then
+        >&2 echo "::error::found no container images to check; did the attribute move?"
+        exit 1
+    fi
+
+    declare -i failures=0
+    declare -i checked=0
+    for entry in "${images[@]}"; do
+        [ -z "${entry}" ] && continue
+        declare name out drv base
+        read -r name out drv <<<"${entry}"
+        # Recover the base name after `source-volatile` has renamed the output.
+        base="${out##*/}"
+        base="${base#*-dataplane-volatile-}"
+        base="${base%.tar.gz}"
+
+        declare -a candidates=( "${out}" )
+        # Test dockerTools artifacts; ordinary closure dependencies stay cached.
+        mapfile -t -O "${#candidates[@]}" candidates < <(
+            nix-store -q --requisites "${drv}" 2>/dev/null \
+                | grep '\.drv$' \
+                | xargs -r nix-store -q --outputs 2>/dev/null \
+                | sort -u \
+                | while IFS= read -r path; do
+                    declare stem="${path##*/}"
+                    case "${stem#*-}" in
+                        "${base}-base.json" | "${base}-conf.json" \
+                        | "${base}-customisation-layer" | "${base}-env" \
+                        | "stream-${base}") printf '%s\n' "${path}" ;;
+                    esac
+                done
+        )
+
+        for path in "${candidates[@]}"; do
+            checked=$(( checked + 1 ))
+            if ! printf '%s\n' "${path}" | grep -qE "${push_filter}"; then
+                >&2 echo "::error::${name} would push ${path##*/} to Cachix"
+                failures=$(( failures + 1 ))
+            fi
+        done
+    done
+
+    if [ "${failures}" -ne 0 ]; then
+        >&2 echo "::error::extend the pushFilter in ${action}, or mark the image with \`source-volatile\`"
+        exit 1
+    fi
+    printf 'no cache leak: %d paths across %d artifacts\n' "${checked}" "${#images[@]}"
+
 # Limit linting to tracked Markdown so generated files cannot affect CI.
 [script]
 markdownlint *args:
@@ -645,6 +726,7 @@ lint: \
     (markdownlint) \
     (nixfmt) \
     (check-lint-wiring) \
+    (check-push-filter) \
     (license-headers)
     {{ _just_debuggable_ }}
 

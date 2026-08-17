@@ -358,6 +358,13 @@ jobs:
         with:
           recipe: "check-lint-wiring"
 
+      - name: "check-push-filter"
+        id: "check-push-filter"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-push-filter"
+
       # Cache misses still pass, so guard dependency reuse explicitly.
       - name: "check-deps-reuse"
         id: "check-deps-reuse"
@@ -386,6 +393,7 @@ jobs:
             markdownlint=${{ steps.markdownlint.outcome }}
             nixfmt=${{ steps.nixfmt.outcome }}
             check-lint-wiring=${{ steps.check-lint-wiring.outcome }}
+            check-push-filter=${{ steps.check-push-filter.outcome }}
             check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
         run: |
