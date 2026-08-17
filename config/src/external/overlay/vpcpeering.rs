@@ -1171,29 +1171,56 @@ pub mod contract {
         pub family: Family,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct StaticNatExposes(pub u8);
+
+    impl Default for StaticNatExposes {
+        fn default() -> Self {
+            Self(3)
+        }
+    }
+
     const MAX_TOTAL_LOG: u8 = 6;
+
+    const BLOCK_STRIDE: u128 = 4 << MAX_TOTAL_LOG;
 
     impl ValueGenerator for StaticNatExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = self.family.is_v4(driver)?;
-            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
-
-            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
-            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
-
-            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
-            for prefix in privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
-            }
-            for prefix in publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
-                    .ok()?;
-            }
-            Some(expose)
+            static_nat_expose(driver, v4, 0)
         }
+    }
+
+    impl ValueGenerator for StaticNatExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            (0..count)
+                .map(|block| static_nat_expose(driver, v4, block))
+                .collect()
+        }
+    }
+
+    fn static_nat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let privates = place(v4, Side::Private, block, &split(driver, total_log)?)?;
+        let publics = place(v4, Side::Public, block, &split(driver, total_log)?)?;
+
+        let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+        for prefix in privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+        }
+        for prefix in publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                .ok()?;
+        }
+        Some(expose)
     }
 
     fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
@@ -1220,19 +1247,21 @@ pub mod contract {
         Some(parts)
     }
 
-    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
-        let mut cursor = if v4 {
-            u128::from(match side {
-                Side::Private => 0x0A00_0000u32,
-                Side::Public => 0xAC10_0000,
-            })
-        } else {
-            let selector = match side {
-                Side::Private => 0u128,
-                Side::Public => 1,
+    fn place(v4: bool, side: Side, block: u8, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let offset = u128::from(block) * BLOCK_STRIDE;
+        let mut cursor = offset
+            + if v4 {
+                u128::from(match side {
+                    Side::Private => 0x0A00_0000u32,
+                    Side::Public => 0xAC10_0000,
+                })
+            } else {
+                let selector = match side {
+                    Side::Private => 0u128,
+                    Side::Public => 1,
+                };
+                (0x2001_0db8u128 << 96) | (selector << 80)
             };
-            (0x2001_0db8u128 << 96) | (selector << 80)
-        };
 
         let mut out = Vec::with_capacity(parts.len());
         for &log in parts {
