@@ -1207,9 +1207,8 @@ pub mod contract {
     /// sampling. Parts are placed largest first from an aligned base, which keeps every prefix
     /// aligned to its own size and keeps them from overlapping.
     ///
-    /// No port ranges yet: static NAT permits them, and they take the mapping down a second path
-    /// (`PortAddrTranslationValue` rather than `AddrTranslationValue`) that carries its own
-    /// unfinished work. That path wants a generator of its own.
+    /// Addresses only. For the port-range form, which takes the mapping down a different path, see
+    /// [`StaticNatExposes::with_ports`].
     #[derive(Debug, Clone, Copy, Default)]
     pub struct StaticNatExpose;
 
@@ -1228,13 +1227,44 @@ pub mod contract {
     /// * **Address family.** A peering's manifests must agree on one family, so a v4 expose beside a
     ///   v6 one is refused. The family is drawn once here and shared.
     ///
-    /// The field is the largest number of exposes to draw; the generator draws between one and that.
+    /// # Ports
+    ///
+    /// Static NAT permits a port range on each prefix, and that takes the mapping down a second
+    /// path: `NatTableValue::Pat` and `PortAddrTranslationValue` rather than
+    /// `NatTableValue::Nat` and `AddrTranslationValue`. The rule validation applies is that the two
+    /// sides cover the same **total**, counting addresses times ports -- so a `/32` carrying 64
+    /// ports is a legal answer to a `/30` carrying 16, and the mapping has to run across both
+    /// dimensions at once.
+    ///
+    /// That asymmetry is the whole reason the path exists, so [`StaticNatExposes::with_ports`]
+    /// draws it deliberately: one total per expose, split into addresses and ports **independently
+    /// per side**. Note that this is legal for static NAT and *illegal* for port forwarding, which
+    /// requires the two lengths and the two port counts to match individually.
     #[derive(Debug, Clone, Copy)]
-    pub struct StaticNatExposes(pub u8);
+    pub struct StaticNatExposes {
+        /// The most exposes to draw. The generator draws between one and this.
+        pub max: u8,
+        /// Whether each prefix carries a port range.
+        pub ports: bool,
+    }
 
     impl Default for StaticNatExposes {
         fn default() -> Self {
-            Self(3)
+            Self::addresses_only(3)
+        }
+    }
+
+    impl StaticNatExposes {
+        /// Exposes whose prefixes carry no port range, mapping address to address.
+        #[must_use]
+        pub fn addresses_only(max: u8) -> Self {
+            Self { max, ports: false }
+        }
+
+        /// Exposes whose prefixes carry port ranges, mapping address and port together.
+        #[must_use]
+        pub fn with_ports(max: u8) -> Self {
+            Self { max, ports: true }
         }
     }
 
@@ -1261,9 +1291,15 @@ pub mod contract {
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
             let v4 = driver.produce::<bool>()?;
-            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            let count = driver.gen_u8(Included(&1), Included(&self.max.max(1)))?;
             (0..count)
-                .map(|block| static_nat_expose(driver, v4, block))
+                .map(|block| {
+                    if self.ports {
+                        static_nat_pat_expose(driver, v4, block)
+                    } else {
+                        static_nat_expose(driver, v4, block)
+                    }
+                })
                 .collect()
         }
     }
@@ -1285,6 +1321,38 @@ pub mod contract {
                 .ok()?;
         }
         Some(expose)
+    }
+
+    /// One static NAT expose whose two sides carry port ranges.
+    ///
+    /// One prefix per side rather than a split, because the interesting asymmetry here is between
+    /// the two *dimensions* -- how a total is divided between addresses and ports -- and adding a
+    /// prefix split on top only makes the case harder to read for no new coverage.
+    ///
+    /// Each side draws its own division of the same total, so a `/32` carrying 64 ports opposite a
+    /// `/30` carrying 16 is a shape this produces on purpose. Both sides' port ranges start at a
+    /// drawn offset, so a mapping that quietly assumes the two ranges begin at the same port fails
+    /// here rather than in the field.
+    fn static_nat_pat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let mut side = |which| -> Option<PrefixWithOptionalPorts> {
+            let port_log = driver.gen_u8(Included(&0), Included(&total_log))?;
+            let addr_log = total_log - port_log;
+            let prefix = *place(v4, which, block, &[addr_log])?.first()?;
+            let ports = port_range(driver, 1u16 << port_log)?;
+            Some(PrefixWithOptionalPorts::new(prefix, Some(ports)))
+        };
+
+        let private = side(Side::Private)?;
+        let public = side(Side::Public)?;
+
+        VpcExpose::empty()
+            .make_static_nat()
+            .ok()?
+            .ip(private)
+            .as_range(public)
+            .ok()
     }
 
     // Split 2^total_log into powers of two, largest first. Halving a part keeps the total the
