@@ -1110,37 +1110,80 @@ pub mod contract {
         pub family: Family,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct MasqueradeExposes(pub u8);
+
+    impl Default for MasqueradeExposes {
+        fn default() -> Self {
+            Self(3)
+        }
+    }
+
+    const MASQUERADE_SLOT: u8 = 4;
+
+    /// The most exposes one manifest can be given distinct address blocks.
+    ///
+    /// Each expose is placed at `slot * MASQUERADE_SLOT` in a `u8`, so there are
+    /// exactly `256 / MASQUERADE_SLOT` of them. Asking for more used to wrap: slot
+    /// 64 landed back on block 0, duplicating the first expose's prefixes, and the
+    /// manifest was then rejected for overlapping. A generator of *legal* values
+    /// that quietly starts emitting illegal ones is the worst way to fail, because
+    /// the property does not break -- it just stops testing anything.
+    ///
+    /// `+ 1` because the domain has 256 values and `u8::MAX` is 255: slots run
+    /// `0..64`, and the last of them starts at `63 * 4 == 252`, which still fits.
+    /// Without it the cap is 63 and the last legal request is unreachable -- a
+    /// quieter version of the same fault this constant exists to prevent.
+    const MAX_MASQUERADE_EXPOSES: u8 = u8::MAX / MASQUERADE_SLOT + 1;
+
+    impl ValueGenerator for MasqueradeExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let most = self.0.clamp(1, MAX_MASQUERADE_EXPOSES);
+            let count = driver.gen_u8(Included(&1), Included(&most))?;
+            (0..count)
+                .map(|slot| masquerade_expose(driver, v4, slot * MASQUERADE_SLOT))
+                .collect()
+        }
+    }
+
     impl ValueGenerator for MasqueradeExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = self.family.is_v4(driver)?;
-            let privates = driver.gen_u8(Included(&1), Included(&3))?;
-            let publics = driver.gen_u8(Included(&1), Included(&2))?;
             let base = driver.produce::<u8>()?;
-            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
-                0 => None,
-                1 => Some(Duration::from_secs(30)),
-                _ => Some(Duration::from_mins(2)),
-            };
-
-            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
-            for index in 0..privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(
-                    block(v4, Side::Private, base.wrapping_add(index))?,
-                    None,
-                ));
-            }
-            for index in 0..publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(
-                        block(v4, Side::Public, base.wrapping_add(index))?,
-                        None,
-                    ))
-                    .ok()?;
-            }
-            Some(expose)
+            masquerade_expose(driver, v4, base)
         }
+    }
+
+    fn masquerade_expose<D: Driver>(driver: &mut D, v4: bool, base: u8) -> Option<VpcExpose> {
+        let privates = driver.gen_u8(Included(&1), Included(&3))?;
+        let publics = driver.gen_u8(Included(&1), Included(&2))?;
+        let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+            0 => None,
+            1 => Some(Duration::from_secs(30)),
+            _ => Some(Duration::from_mins(2)),
+        };
+
+        let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+        for index in 0..privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(
+                block(v4, Side::Private, base.wrapping_add(index))?,
+                None,
+            ));
+        }
+        for index in 0..publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Public, base.wrapping_add(index))?,
+                    None,
+                ))
+                .ok()?;
+        }
+        Some(expose)
     }
 
     #[derive(Clone, Copy)]
