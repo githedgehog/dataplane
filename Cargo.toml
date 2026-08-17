@@ -121,7 +121,9 @@ axum-server = { version = "0.8.0", default-features = false, features = [] }
 bindgen = { version = "0.72.1", default-features = false, features = [] }
 bitflags = { version = "2.13.1", default-features = false, features = [] }
 bnum = { version = "0.14.4", default-features = false, features = [] }
-bolero = { version = "0.13.4", default-features = false, features = [] }
+# The fork treats an unresolvable optional corpus as absent, allowing remapped
+# and archived tests to run. Pin the revision so branch changes cannot alter it.
+bolero = { git = "https://github.com/githedgehog/bolero.git", rev = "2fa595633a72e9b30721f9d37f0014a6ae8f77d4", default-features = false, features = [] }
 bytecheck = { version = "0.8.3", default-features = false, features = [] }
 bytes = { version = "1.12.1", default-features = false, features = [] }
 caps = { version = "0.5.6", default-features = false, features = [] }
