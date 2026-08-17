@@ -15,6 +15,7 @@ use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::num::NonZero;
 
 const MAX_EXPOSES: u8 = 3;
 
@@ -25,13 +26,30 @@ const PROBES: usize = 8;
 #[derive(Debug, Clone, Copy)]
 struct Scenario {
     strays: bool,
+    exposes: StaticNatExposes,
+}
+
+impl Scenario {
+    fn addresses(strays: bool) -> Self {
+        Self {
+            strays,
+            exposes: StaticNatExposes::addresses_only(MAX_EXPOSES),
+        }
+    }
+
+    fn ports(strays: bool) -> Self {
+        Self {
+            strays,
+            exposes: StaticNatExposes::with_ports(MAX_EXPOSES),
+        }
+    }
 }
 
 impl ValueGenerator for Scenario {
     type Output = (Vec<VpcExpose>, Vec<ProbeSpec>);
 
     fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-        let exposes = StaticNatExposes(MAX_EXPOSES).generate(driver)?;
+        let exposes = self.exposes.generate(driver)?;
 
         let mut probes = Vec::with_capacity(PROBES);
         for _ in 0..PROBES {
@@ -52,6 +70,24 @@ fn run(nf: &mut StaticNat, packets: Vec<Packet<TestBuffer>>) -> Vec<Packet<TestB
 fn fabric(exposes: &[VpcExpose]) -> Option<Fabric> {
     let fabric = Fabric::build(exposes)?;
     fabric.is_probeable().then_some(fabric)
+}
+
+fn five_tuple_source(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
+    (
+        packet
+            .ip_source()
+            .unwrap_or_else(|| unreachable!("a probe is always an ip packet")),
+        packet.transport_src_port().map_or(0, NonZero::get),
+    )
+}
+
+fn five_tuple_destination(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
+    (
+        packet
+            .ip_destination()
+            .unwrap_or_else(|| unreachable!("a probe is always an ip packet")),
+        packet.transport_dst_port().map_or(0, NonZero::get),
+    )
 }
 
 #[derive(Default)]
@@ -82,14 +118,11 @@ impl Tally {
     }
 }
 
-#[test]
-fn a_translated_source_comes_back() {
+fn drive_round_trip(scenario: Scenario) {
     let tally = Tally::default();
 
-    bolero::check!()
-        .with_generator(Scenario { strays: false })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!().with_generator(scenario).cloned().for_each(
+        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -99,41 +132,46 @@ fn a_translated_source_comes_back() {
 
             for spec in &probes {
                 let mut probe = (*spec).resolve(&fabric);
-                let source = probe.source;
+                let (source, sport) = (probe.source, probe.sport);
                 let out = run(&mut nf, vec![probe.take()]);
-                let translated = out[0]
-                    .ip_source()
-                    .unwrap_or_else(|| unreachable!("a probe is always an ip packet"));
+                let (translated, translated_port) = five_tuple_source(&out[0]);
 
-                if translated == source {
+                if (translated, translated_port) == (source, sport) {
                     continue;
                 }
 
-                let back = run(&mut nf, vec![probe.reply(translated)]);
-                let returned = back[0]
-                    .ip_destination()
-                    .unwrap_or_else(|| unreachable!("a reply is always an ip packet"));
+                let back = run(&mut nf, vec![probe.reply(translated, translated_port)]);
+                let (returned, returned_port) = five_tuple_destination(&back[0]);
 
                 assert_eq!(
-                    returned, source,
-                    "{source} translated to {translated} on the way out, and the reply to \
-                     {translated} came back to {returned} instead of {source}"
+                    (returned, returned_port),
+                    (source, sport),
+                    "{source}:{sport} translated to {translated}:{translated_port} on the way out, \
+                     and the reply came back to {returned}:{returned_port}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
+        },
+    );
 
     tally.report("round trip");
 }
 
 #[test]
-fn distinct_sources_stay_distinct() {
+fn a_translated_source_comes_back() {
+    drive_round_trip(Scenario::addresses(false));
+}
+
+#[test]
+fn a_translated_source_and_port_come_back() {
+    drive_round_trip(Scenario::ports(false));
+}
+
+fn drive_injectivity(scenario: Scenario) {
     let tally = Tally::default();
 
-    bolero::check!()
-        .with_generator(Scenario { strays: false })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!().with_generator(scenario).cloned().for_each(
+        |(exposes, _probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -141,44 +179,52 @@ fn distinct_sources_stay_distinct() {
             tally.built.fetch_add(1, Ordering::Relaxed);
             let mut nf = fabric.nf();
 
-            let sources = fabric.private.clone();
-            let _ = probes;
-
+            let sources = fabric.every_source();
             let batch: Vec<Packet<TestBuffer>> = sources
                 .iter()
-                .map(|source| fabric.outbound_to_peer(*source))
+                .map(|(endpoint, port)| fabric.outbound_to_peer(*endpoint, *port))
                 .collect();
             let out = run(&mut nf, batch);
 
-            let mut taken: BTreeMap<IpAddr, IpAddr> = BTreeMap::new();
-            for (source, packet) in sources.iter().zip(out.iter()) {
-                let translated = packet
-                    .ip_source()
-                    .unwrap_or_else(|| unreachable!("a probe is always an ip packet"));
-                if translated == *source {
+            let mut taken: BTreeMap<(IpAddr, u16), (IpAddr, u16)> = BTreeMap::new();
+            for ((endpoint, port), packet) in sources.iter().zip(out.iter()) {
+                let before = (endpoint.addr, *port);
+                let after = five_tuple_source(packet);
+                if after == before {
                     continue;
                 }
-                if let Some(previous) = taken.insert(translated, *source) {
+                if let Some(previous) = taken.insert(after, before) {
+                    let (addr, port) = after;
+                    let (pa, pp) = previous;
+                    let (ba, bp) = before;
                     panic!(
-                        "{source} and {previous} both translated to {translated}, so static NAT is \
-                         not one to one for {exposes:#?}"
+                        "{ba}:{bp} and {pa}:{pp} both translated to {addr}:{port}, so static NAT \
+                         is not one to one for {exposes:#?}"
                     );
                 }
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
+        },
+    );
 
     tally.report("injectivity");
 }
 
 #[test]
-fn translation_touches_only_the_source() {
+fn distinct_sources_stay_distinct() {
+    drive_injectivity(Scenario::addresses(false));
+}
+
+#[test]
+fn distinct_sources_and_ports_stay_distinct() {
+    drive_injectivity(Scenario::ports(false));
+}
+
+fn drive_frame(scenario: Scenario) {
     let tally = Tally::default();
 
-    bolero::check!()
-        .with_generator(Scenario { strays: false })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!().with_generator(scenario).cloned().for_each(
+        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -203,12 +249,7 @@ fn translation_touches_only_the_source() {
                     "source translation rewrote the destination"
                 );
                 assert_eq!(
-                    packet.transport_src_port().map(std::num::NonZero::get),
-                    Some(sport),
-                    "source translation rewrote the source port, which no expose asked for"
-                );
-                assert_eq!(
-                    packet.transport_dst_port().map(std::num::NonZero::get),
+                    packet.transport_dst_port().map(NonZero::get),
                     Some(dport),
                     "source translation rewrote the destination port"
                 );
@@ -217,21 +258,36 @@ fn translation_touches_only_the_source() {
                     Some(proto),
                     "source translation changed the transport protocol"
                 );
+                if !fabric.uses_ports {
+                    assert_eq!(
+                        packet.transport_src_port().map(NonZero::get),
+                        Some(sport),
+                        "source translation rewrote the source port, which no expose asked for"
+                    );
+                }
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
+        },
+    );
 
     tally.report("frame");
 }
 
 #[test]
-fn nothing_is_translated_without_permission() {
+fn translation_touches_only_the_source() {
+    drive_frame(Scenario::addresses(false));
+}
+
+#[test]
+fn port_translation_touches_only_the_source() {
+    drive_frame(Scenario::ports(false));
+}
+
+fn drive_permission(scenario: Scenario) {
     let tally = Tally::default();
 
-    bolero::check!()
-        .with_generator(Scenario { strays: true })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!().with_generator(scenario).cloned().for_each(
+        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -245,31 +301,39 @@ fn nothing_is_translated_without_permission() {
                     continue;
                 }
 
-                let (source, stray, arrival) = (probe.source, probe.stray, probe.arrival);
+                let (source, sport) = (probe.source, probe.sport);
+                let (stray, arrival) = (probe.stray, probe.arrival);
                 let out = run(&mut nf, vec![probe.take()]);
-                let packet = &out[0];
 
                 assert_eq!(
-                    packet.ip_source(),
-                    Some(source),
-                    "static NAT translated {source} although {stray:?} forbade it; the packet \
-                     arrived as {arrival:?}"
+                    five_tuple_source(&out[0]),
+                    (source, sport),
+                    "static NAT translated {source}:{sport} although {stray:?} forbade it; the \
+                     packet arrived as {arrival:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
+        },
+    );
 
     tally.report("permission");
 }
 
 #[test]
-fn a_packet_that_cannot_be_looked_up_says_so() {
+fn nothing_is_translated_without_permission() {
+    drive_permission(Scenario::addresses(true));
+}
+
+#[test]
+fn no_port_is_translated_without_permission() {
+    drive_permission(Scenario::ports(true));
+}
+
+fn drive_attribution(scenario: Scenario) {
     let tally = Tally::default();
 
-    bolero::check!()
-        .with_generator(Scenario { strays: true })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!().with_generator(scenario).cloned().for_each(
+        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -289,9 +353,8 @@ fn a_packet_that_cannot_be_looked_up_says_so() {
 
                 let (source, stray) = (probe.source, probe.stray);
                 let out = run(&mut nf, vec![probe.take()]);
-                let packet = &out[0];
 
-                let reason = packet.get_done().unwrap_or_else(|| {
+                let reason = out[0].get_done().unwrap_or_else(|| {
                     panic!(
                         "a packet with {stray:?} passed static NAT with no verdict at all, so \
                          {source} would be forwarded untranslated"
@@ -305,19 +368,22 @@ fn a_packet_that_cannot_be_looked_up_says_so() {
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
+        },
+    );
 
     tally.report("attribution");
 }
 
 #[test]
-fn a_modified_packet_is_always_marked() {
+fn a_packet_that_cannot_be_looked_up_says_so() {
+    drive_attribution(Scenario::addresses(true));
+}
+
+fn drive_marking(scenario: Scenario) {
     let tally = Tally::default();
 
-    bolero::check!()
-        .with_generator(Scenario { strays: true })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!().with_generator(scenario).cloned().for_each(
+        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -327,31 +393,39 @@ fn a_modified_packet_is_always_marked() {
 
             for spec in &probes {
                 let mut probe = (*spec).resolve(&fabric);
-                let source = probe.source;
+                let before = (probe.source, probe.sport);
                 let out = run(&mut nf, vec![probe.take()]);
                 let packet = &out[0];
 
-                let translated = packet
-                    .ip_source()
-                    .unwrap_or_else(|| unreachable!("a probe is always an ip packet"))
-                    != source;
-                if !translated {
+                if five_tuple_source(packet) == before {
                     continue;
                 }
+                let (source, sport) = before;
 
                 assert!(
                     packet.meta().is_src_natted(),
-                    "{source} was translated without the source-natted mark, so a later stage \
-                     would translate it again"
+                    "{source}:{sport} was translated without the source-natted mark, so a later \
+                     stage would translate it again"
                 );
                 assert!(
                     packet.meta().checksum_refresh(),
-                    "{source} was translated without asking for a checksum refresh, so the packet \
-                     goes out with a checksum for an address it no longer carries"
+                    "{source}:{sport} was translated without asking for a checksum refresh, so the \
+                     packet goes out with a checksum for headers it no longer carries"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
+        },
+    );
 
     tally.report("marking");
+}
+
+#[test]
+fn a_modified_packet_is_always_marked() {
+    drive_marking(Scenario::addresses(true));
+}
+
+#[test]
+fn a_port_modified_packet_is_always_marked() {
+    drive_marking(Scenario::ports(true));
 }
