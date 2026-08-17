@@ -127,6 +127,16 @@ fn resolved_action(rule: Option<OracleVerdict>, default: Option<AclAction>) -> A
     rule.map_or_else(|| default.unwrap_or(AclAction::Allow), |v| v.action)
 }
 
+pub(crate) fn oracle_resolved_action(
+    overlay: &ValidatedOverlay,
+    packet: &PacketSummary,
+) -> AclAction {
+    resolved_action(
+        oracle_lookup(overlay, packet),
+        oracle_default_action(overlay, packet.src_vni, packet.dst_vni),
+    )
+}
+
 // -------------------------------------------------------------------------------------------------
 // Properties.
 

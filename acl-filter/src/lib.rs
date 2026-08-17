@@ -26,6 +26,8 @@ mod fuzz;
 #[cfg(test)]
 mod fuzz_gen;
 #[cfg(test)]
+mod nf_fuzz;
+#[cfg(test)]
 mod tests;
 
 pub use access::{
