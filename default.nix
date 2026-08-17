@@ -214,10 +214,19 @@ let
     };
   };
   # Nix escaping made the old regexes match unrelated .sh and .patch files.
-  justfileFilter = p: _type: lib.hasSuffix ".justfile" p;
-  markdownFilter = p: _type: lib.hasSuffix ".md" p;
-  jsonFilter = p: _type: lib.hasSuffix ".json" p;
   cHeaderFilter = p: _type: lib.hasSuffix ".h" p;
+  # Prose lives at the repository root, under `development/`, and under
+  # `.github/`; Markdown anywhere else is either compiled into a crate's docs by
+  # `include_str!` or sits beside code that is. Excluding by location rather
+  # than listing the `include_str!` targets keeps a new one from having to be
+  # registered here -- the worst case becomes an unnecessary rebuild instead of
+  # a build that cannot find its README.
+  markdownFilter =
+    rel: _type:
+    lib.hasSuffix ".md" rel
+    && lib.hasInfix "/" rel
+    && !(lib.hasPrefix "development/" rel)
+    && !(lib.hasPrefix ".github/" rel);
   # `.cargo/config.toml` names this script, so include it deliberately.
   shellFilter = p: _type: lib.hasSuffix ".sh" p;
   # `cleanSource` does not read gitignore, so `results` needs excluding by hand
@@ -225,15 +234,17 @@ let
   outputsFilter =
     p: _type:
     (p != "target") && (p != "sysroot") && (p != "devroot") && (p != "results") && (p != ".git");
+  # `builtins.path` and friends hand the filter an absolute path; the markdown
+  # allowlist is written relative to the repository, so strip the root off.
+  src-root = toString ./.;
   src = pkgs.lib.cleanSourceWith {
     filter =
       full-path: t:
       let
         p = baseNameOf full-path;
+        rel = lib.removePrefix (src-root + "/") (toString full-path);
       in
-      (justfileFilter p t)
-      || (markdownFilter p t)
-      || (jsonFilter p t)
+      (markdownFilter rel t)
       || (cHeaderFilter p t)
       || (shellFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources full-path t));
