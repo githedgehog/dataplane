@@ -127,6 +127,22 @@ fn resolved_action(rule: Option<OracleVerdict>, default: Option<AclAction>) -> A
     rule.map_or_else(|| default.unwrap_or(AclAction::Allow), |v| v.action)
 }
 
+/// The action the configuration alone says applies to a packet.
+///
+/// The three steps above composed: first matching rule, else the peering's default, else allow.
+/// Exported for `nf_fuzz`, which asks the same oracle the same question about a real packet -- so
+/// that the network function is compared against this oracle rather than against a second copy of
+/// it.
+pub(crate) fn oracle_resolved_action(
+    overlay: &ValidatedOverlay,
+    packet: &PacketSummary,
+) -> AclAction {
+    resolved_action(
+        oracle_lookup(overlay, packet),
+        oracle_default_action(overlay, packet.src_vni, packet.dst_vni),
+    )
+}
+
 // -------------------------------------------------------------------------------------------------
 // Properties.
 
