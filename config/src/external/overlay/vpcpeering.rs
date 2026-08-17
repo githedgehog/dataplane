@@ -1141,11 +1141,26 @@ pub mod contract {
     pub struct StaticNatExpose;
 
     #[derive(Debug, Clone, Copy)]
-    pub struct StaticNatExposes(pub u8);
+    pub struct StaticNatExposes {
+        pub max: u8,
+        pub ports: bool,
+    }
 
     impl Default for StaticNatExposes {
         fn default() -> Self {
-            Self(3)
+            Self::addresses_only(3)
+        }
+    }
+
+    impl StaticNatExposes {
+        #[must_use]
+        pub fn addresses_only(max: u8) -> Self {
+            Self { max, ports: false }
+        }
+
+        #[must_use]
+        pub fn with_ports(max: u8) -> Self {
+            Self { max, ports: true }
         }
     }
 
@@ -1167,9 +1182,15 @@ pub mod contract {
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
             let v4 = driver.produce::<bool>()?;
-            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            let count = driver.gen_u8(Included(&1), Included(&self.max.max(1)))?;
             (0..count)
-                .map(|block| static_nat_expose(driver, v4, block))
+                .map(|block| {
+                    if self.ports {
+                        static_nat_pat_expose(driver, v4, block)
+                    } else {
+                        static_nat_expose(driver, v4, block)
+                    }
+                })
                 .collect()
         }
     }
@@ -1190,6 +1211,28 @@ pub mod contract {
                 .ok()?;
         }
         Some(expose)
+    }
+
+    fn static_nat_pat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let mut side = |which| -> Option<PrefixWithOptionalPorts> {
+            let port_log = driver.gen_u8(Included(&0), Included(&total_log))?;
+            let addr_log = total_log - port_log;
+            let prefix = *place(v4, which, block, &[addr_log])?.first()?;
+            let ports = port_range(driver, 1u16 << port_log)?;
+            Some(PrefixWithOptionalPorts::new(prefix, Some(ports)))
+        };
+
+        let private = side(Side::Private)?;
+        let public = side(Side::Public)?;
+
+        VpcExpose::empty()
+            .make_static_nat()
+            .ok()?
+            .ip(private)
+            .as_range(public)
+            .ok()
     }
 
     fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
