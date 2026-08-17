@@ -39,7 +39,7 @@ use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes,
 };
-use lpm::prefix::PrefixWithOptionalPorts;
+use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::test_utils::{
@@ -64,14 +64,46 @@ pub(crate) fn vni(raw: u32) -> Vni {
     Vni::new_checked(raw).unwrap_or_else(|_| unreachable!("{raw} is a legal vni"))
 }
 
-/// Every address a set of prefixes covers.
+/// One address the configuration names, and the ports it names alongside it.
+///
+/// Static NAT permits a port range on a prefix, and a prefix that carries one is mapped address and
+/// port *together*: the private side's total, counted as addresses times ports, has to equal the
+/// public side's, but the two may divide that total differently. So an address on its own is not a
+/// thing the configuration maps -- the pair is -- and a probe has to carry the range it may draw a
+/// port from or it will miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Endpoint {
+    pub(crate) addr: IpAddr,
+    /// The ports the prefix this address came from carries, if any.
+    pub(crate) ports: Option<PortRange>,
+}
+
+impl Endpoint {
+    /// A port this endpoint is mapped on, chosen by an arbitrary index.
+    ///
+    /// Total, so a draw always lands on a port the configuration covers rather than near one. Port
+    /// 0 is not a legal port on either transport and no expose may name it.
+    pub(crate) fn port(&self, index: u16) -> u16 {
+        match self.ports {
+            None => index.max(1),
+            Some(range) => {
+                let len = u32::try_from(range.len()).unwrap_or(u32::from(u16::MAX));
+                let offset = u32::from(index) % len.max(1);
+                u16::try_from(u32::from(range.start()) + offset).unwrap_or(range.end())
+            }
+        }
+    }
+}
+
+/// Every address-and-ports pair a set of prefixes covers.
 ///
 /// The static NAT generator keeps both sides of an expose small enough that this is a handful of
-/// addresses, which is what lets a property enumerate rather than sample.
-pub(crate) fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpAddr> {
+/// endpoints, which is what lets a property enumerate rather than sample.
+pub(crate) fn endpoints(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<Endpoint> {
     let mut out = Vec::new();
-    for prefix in prefixes {
-        let prefix = prefix.prefix();
+    for prefix_with_ports in prefixes {
+        let ports = prefix_with_ports.ports();
+        let prefix = prefix_with_ports.prefix();
         let (start, end) = (prefix.as_address(), prefix.last_address());
         let (mut bits, last) = match (start, end) {
             (IpAddr::V4(a), IpAddr::V4(b)) => (u128::from(a.to_bits()), u128::from(b.to_bits())),
@@ -79,13 +111,16 @@ pub(crate) fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpA
             _ => unreachable!("a prefix does not change address family"),
         };
         while bits <= last {
-            out.push(match start {
-                IpAddr::V4(_) => IpAddr::V4(
-                    u32::try_from(bits)
-                        .unwrap_or_else(|_| unreachable!())
-                        .into(),
-                ),
-                IpAddr::V6(_) => IpAddr::V6(bits.into()),
+            out.push(Endpoint {
+                addr: match start {
+                    IpAddr::V4(_) => IpAddr::V4(
+                        u32::try_from(bits)
+                            .unwrap_or_else(|_| unreachable!())
+                            .into(),
+                    ),
+                    IpAddr::V6(_) => IpAddr::V6(bits.into()),
+                },
+                ports,
             });
             bits += 1;
         }
@@ -108,12 +143,18 @@ pub(crate) fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpA
 /// from opposite ends of the same expose, and the two must agree.
 pub(crate) struct Fabric {
     writer: crate::static_nat::natrw::NatTablesWriter,
-    /// Every address the local exposes offer, before translation.
-    pub(crate) private: Vec<IpAddr>,
-    /// Every address the local exposes translate to.
-    pub(crate) public: Vec<IpAddr>,
+    /// Every endpoint the local exposes offer, before translation.
+    pub(crate) private: Vec<Endpoint>,
+    /// Every endpoint the local exposes translate to.
+    pub(crate) public: Vec<Endpoint>,
     /// Addresses in the peer vpc, which no expose translates.
     pub(crate) peer: Vec<IpAddr>,
+    /// Whether the exposes carry port ranges, so the mapping moves ports as well as addresses.
+    ///
+    /// The two paths differ in what a property may assert: with no port range the transport ports
+    /// are part of the frame and must survive untouched, and with one they are part of what is
+    /// being translated.
+    pub(crate) uses_ports: bool,
 }
 
 impl Fabric {
@@ -123,19 +164,20 @@ impl Fabric {
     /// a time and two of them may overlap, which a manifest refuses. The properties count how often
     /// it happens so that a generator change that starts rejecting everything cannot pass quietly.
     pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
-        let private: Vec<IpAddr> = exposes.iter().flat_map(|e| addresses(&e.ips)).collect();
-        let public: Vec<IpAddr> = exposes
+        let private: Vec<Endpoint> = exposes.iter().flat_map(|e| endpoints(&e.ips)).collect();
+        let public: Vec<Endpoint> = exposes
             .iter()
             .filter_map(|e| e.nat.as_ref())
-            .flat_map(|nat| addresses(&nat.as_range))
+            .flat_map(|nat| endpoints(&nat.as_range))
             .collect();
+        let uses_ports = private.iter().chain(&public).any(|e| e.ports.is_some());
 
         let overlay = overlay_with_exposes(exposes.to_vec()).ok()?;
         let validated = overlay.validate().ok()?;
         let tables = build_nat_configuration(validated.vpc_table()).ok()?;
 
         // The peer prefix `overlay_with_exposes` fixes, in whichever family the exposes chose.
-        let peer = match private.first() {
+        let peer = match private.first().map(|e| e.addr) {
             Some(IpAddr::V6(_)) => vec![
                 "2001:db8:ffff::1"
                     .parse()
@@ -157,6 +199,7 @@ impl Fabric {
             private,
             public,
             peer,
+            uses_ports,
         })
     }
 
@@ -168,15 +211,32 @@ impl Fabric {
         StaticNat::with_reader("probe", self.writer.get_reader())
     }
 
-    /// An outbound packet from `source` to the peer, with fixed ports.
+    /// An outbound packet from `source` on `port` to the peer.
     ///
-    /// For a property that wants to sweep every address the configuration offers rather than the
-    /// drawn ones -- injectivity, which is only visible across distinct inputs and so cannot be
-    /// left to a draw that may repeat.
-    pub(crate) fn outbound_to_peer(&self, source: IpAddr) -> Packet<TestBuffer> {
-        let mut packet = build(source, self.peer[0], false, 1024, 80);
+    /// For a property that wants to sweep everything the configuration offers rather than the drawn
+    /// ones -- injectivity, which is only visible across distinct inputs and so cannot be left to a
+    /// draw that may repeat.
+    pub(crate) fn outbound_to_peer(&self, source: Endpoint, port: u16) -> Packet<TestBuffer> {
+        let mut packet = build(source.addr, self.peer[0], false, port, 80);
         Arrival::outbound().stamp(&mut packet);
         packet
+    }
+
+    /// Every distinct thing the configuration maps, as a source and a port to send it from.
+    ///
+    /// With no port range that is one entry per address. With one it is every address-and-port pair,
+    /// since the pair is what the mapping is one to one over -- sweeping addresses alone would check
+    /// a diagonal of the space and call it injective.
+    pub(crate) fn every_source(&self) -> Vec<(Endpoint, u16)> {
+        self.private
+            .iter()
+            .flat_map(|endpoint| match endpoint.ports {
+                None => vec![(*endpoint, 1024)],
+                Some(range) => (range.start()..=range.end())
+                    .map(|port| (*endpoint, port))
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Whether this fabric can be probed at all.
@@ -333,16 +393,20 @@ impl Probe {
     /// The packet that answers this one, addressed to `translated`.
     ///
     /// The reply is what the peer would send back: the two ends swapped, and the local end named by
-    /// whatever the outbound translation produced rather than by the address the sender used. It
-    /// arrives at the peer's vpc, so it is looked up in the peer's table -- the other half of the
-    /// same expose, built independently.
-    pub(crate) fn reply(&self, translated: IpAddr) -> Packet<TestBuffer> {
+    /// whatever the outbound translation produced rather than by what the sender used. It arrives at
+    /// the peer's vpc, so it is looked up in the peer's table -- the other half of the same expose,
+    /// built independently.
+    ///
+    /// The port matters as much as the address once the expose carries port ranges: the peer
+    /// answers the port it was contacted *from*, which is the translated one, and a reply sent to
+    /// the original port would miss the mapping and prove nothing.
+    pub(crate) fn reply(&self, translated: IpAddr, translated_port: u16) -> Packet<TestBuffer> {
         let mut packet = build(
             self.destination,
             translated,
             self.tcp,
             self.dport,
-            self.sport,
+            translated_port,
         );
         Arrival::inbound().stamp(&mut packet);
         packet
@@ -364,14 +428,21 @@ impl ProbeSpec {
     /// that fails to become a packet and no rejection loop to bias the distribution.
     pub(crate) fn resolve(self, fabric: &Fabric) -> Probe {
         let mut arrival = Arrival::outbound();
-        let mut source = fabric.private[self.source as usize % fabric.private.len()];
+        let endpoint = fabric.private[self.source as usize % fabric.private.len()];
+
         let destination = fabric.peer[self.peer as usize % fabric.peer.len()];
+        let mut source = endpoint.addr;
+        // Drawn from the range the endpoint's prefix carries, so a probe against a configuration
+        // that maps ports lands on one it maps rather than beside it.
+        let mut sport = endpoint.port(self.sport);
         let mut exposed = true;
 
         match self.stray {
             None => {}
             Some(Stray::SourceNotExposed) => {
                 source = destination;
+                // The peer's prefix carries no port range, so no port is the right one either.
+                sport = self.sport.max(1);
                 exposed = false;
             }
             Some(Stray::NoSourceVni) => arrival.src_vpcd = None,
@@ -384,8 +455,8 @@ impl ProbeSpec {
             }
         }
 
-        // Port 0 is not a legal port on either transport, and the mapping is not about ports here.
-        let sport = self.sport.max(1);
+        // Port 0 is not a legal port on either transport. The destination is in the peer vpc, which
+        // no expose translates, so its port is free.
         let dport = self.dport.max(1);
         let mut packet = build(source, destination, self.tcp, sport, dport);
         arrival.stamp(&mut packet);
