@@ -1,7 +1,13 @@
 # Testing a config-driven dataplane with an operation algebra
 
-Status: **design note**. Nothing here is implemented yet. It records a strategy and, more importantly,
-the reasoning that rejected the alternatives, so that the next attempt does not rediscover them.
+Status: **design note, partly implemented**. It records a strategy and, more importantly, the
+reasoning that rejected the alternatives, so that the next attempt does not rediscover them.
+
+The per-packet half of the decomposition has a first worked example in `nat/src/static_nat/probe.rs`
+and `nat/src/static_nat/fuzz.rs`: packets drawn relative to a generated configuration, put through a
+real network function, and judged by metamorphic relations rather than by an oracle. The operation
+algebra itself -- sequences, undo, commutation from read and write sets -- is still unbuilt, and the
+enactment path refactor it implies is still deferred.
 
 ## The problem
 
