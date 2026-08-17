@@ -1136,37 +1136,73 @@ pub mod contract {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct MasqueradeExpose;
 
+    /// Several masquerade exposes for one manifest, which a manifest will accept together.
+    ///
+    /// The same two problems [`StaticNatExposes`] solves, for the same reasons. [`MasqueradeExpose`]
+    /// draws its base index freely, so two of them collide whenever their index ranges intersect --
+    /// which is often, since each covers up to three consecutive indices. Here each expose gets a
+    /// slot of [`MASQUERADE_SLOT`] indices, wider than the widest one can occupy, and the address
+    /// family is drawn once and shared.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MasqueradeExposes(pub u8);
+
+    impl Default for MasqueradeExposes {
+        fn default() -> Self {
+            Self(3)
+        }
+    }
+
+    /// Indices reserved per expose. [`MasqueradeExpose`] uses at most three consecutive ones.
+    const MASQUERADE_SLOT: u8 = 4;
+
+    impl ValueGenerator for MasqueradeExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            (0..count)
+                .map(|slot| masquerade_expose(driver, v4, slot.wrapping_mul(MASQUERADE_SLOT)))
+                .collect()
+        }
+    }
+
     impl ValueGenerator for MasqueradeExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = driver.produce::<bool>()?;
-            let privates = driver.gen_u8(Included(&1), Included(&3))?;
-            let publics = driver.gen_u8(Included(&1), Included(&2))?;
             let base = driver.produce::<u8>()?;
-            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
-                0 => None,
-                1 => Some(Duration::from_secs(30)),
-                _ => Some(Duration::from_mins(2)),
-            };
-
-            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
-            for index in 0..privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(
-                    block(v4, Side::Private, base.wrapping_add(index))?,
-                    None,
-                ));
-            }
-            for index in 0..publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(
-                        block(v4, Side::Public, base.wrapping_add(index))?,
-                        None,
-                    ))
-                    .ok()?;
-            }
-            Some(expose)
+            masquerade_expose(driver, v4, base)
         }
+    }
+
+    /// One masquerade expose of the given family, from the given base index.
+    fn masquerade_expose<D: Driver>(driver: &mut D, v4: bool, base: u8) -> Option<VpcExpose> {
+        let privates = driver.gen_u8(Included(&1), Included(&3))?;
+        let publics = driver.gen_u8(Included(&1), Included(&2))?;
+        let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+            0 => None,
+            1 => Some(Duration::from_secs(30)),
+            _ => Some(Duration::from_mins(2)),
+        };
+
+        let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+        for index in 0..privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(
+                block(v4, Side::Private, base.wrapping_add(index))?,
+                None,
+            ));
+        }
+        for index in 0..publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Public, base.wrapping_add(index))?,
+                    None,
+                ))
+                .ok()?;
+        }
+        Some(expose)
     }
 
     #[derive(Clone, Copy)]
