@@ -1966,9 +1966,15 @@ mod embedded_view_properties {
         // compounding costs an order of magnitude: the widest pair here matches about one packet in
         // twenty, and `(&Ipv6, &HopByHop, &TruncatedTcp)` inside an ICMPv6 error matches about one
         // in a thousand. Five hundred cases at that rate would fail this check outright half the
-        // time it ran. A default one-second run manages twenty-five thousand, so the guard still
-        // bites in CI; a deliberately short run should say nothing rather than say something false.
-        if seen > 20_000 {
+        // time it ran. A deliberately short run should say nothing rather than say something false.
+        //
+        // Ten thousand, not the twenty-five thousand a default run manages here. The thinnest shape
+        // in this module draws about eight hits per ten thousand, and coverage instrumentation costs
+        // about a fifth of the throughput -- measured at 17 hits in 20,206 cases against 21 in
+        // 25,857 without. A threshold set at the observed count would therefore switch itself off on
+        // any busier runner, silently. At ten thousand draws a shape that really is drawable misses
+        // entirely about three times in ten thousand runs, which is the trade this wants.
+        if seen > 10_000 {
             assert!(
                 hit > 0,
                 "{shape} never matched in {seen} packets: the two walks agree only because the \
