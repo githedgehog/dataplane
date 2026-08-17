@@ -10,7 +10,7 @@ use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes,
 };
-use lpm::prefix::PrefixWithOptionalPorts;
+use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::test_utils::{
@@ -31,10 +31,30 @@ pub(crate) fn vni(raw: u32) -> Vni {
     Vni::new_checked(raw).unwrap_or_else(|_| unreachable!("{raw} is a legal vni"))
 }
 
-pub(crate) fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpAddr> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Endpoint {
+    pub(crate) addr: IpAddr,
+    pub(crate) ports: Option<PortRange>,
+}
+
+impl Endpoint {
+    pub(crate) fn port(&self, index: u16) -> u16 {
+        match self.ports {
+            None => index.max(1),
+            Some(range) => {
+                let len = u32::try_from(range.len()).unwrap_or(u32::from(u16::MAX));
+                let offset = u32::from(index) % len.max(1);
+                u16::try_from(u32::from(range.start()) + offset).unwrap_or(range.end())
+            }
+        }
+    }
+}
+
+pub(crate) fn endpoints(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<Endpoint> {
     let mut out = Vec::new();
-    for prefix in prefixes {
-        let prefix = prefix.prefix();
+    for prefix_with_ports in prefixes {
+        let ports = prefix_with_ports.ports();
+        let prefix = prefix_with_ports.prefix();
         let (start, end) = (prefix.as_address(), prefix.last_address());
         let (mut bits, last) = match (start, end) {
             (IpAddr::V4(a), IpAddr::V4(b)) => (u128::from(a.to_bits()), u128::from(b.to_bits())),
@@ -42,13 +62,16 @@ pub(crate) fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpA
             _ => unreachable!("a prefix does not change address family"),
         };
         while bits <= last {
-            out.push(match start {
-                IpAddr::V4(_) => IpAddr::V4(
-                    u32::try_from(bits)
-                        .unwrap_or_else(|_| unreachable!())
-                        .into(),
-                ),
-                IpAddr::V6(_) => IpAddr::V6(bits.into()),
+            out.push(Endpoint {
+                addr: match start {
+                    IpAddr::V4(_) => IpAddr::V4(
+                        u32::try_from(bits)
+                            .unwrap_or_else(|_| unreachable!())
+                            .into(),
+                    ),
+                    IpAddr::V6(_) => IpAddr::V6(bits.into()),
+                },
+                ports,
             });
             bits += 1;
         }
@@ -58,25 +81,27 @@ pub(crate) fn addresses(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<IpA
 
 pub(crate) struct Fabric {
     writer: crate::static_nat::natrw::NatTablesWriter,
-    pub(crate) private: Vec<IpAddr>,
-    pub(crate) public: Vec<IpAddr>,
+    pub(crate) private: Vec<Endpoint>,
+    pub(crate) public: Vec<Endpoint>,
     pub(crate) peer: Vec<IpAddr>,
+    pub(crate) uses_ports: bool,
 }
 
 impl Fabric {
     pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
-        let private: Vec<IpAddr> = exposes.iter().flat_map(|e| addresses(&e.ips)).collect();
-        let public: Vec<IpAddr> = exposes
+        let private: Vec<Endpoint> = exposes.iter().flat_map(|e| endpoints(&e.ips)).collect();
+        let public: Vec<Endpoint> = exposes
             .iter()
             .filter_map(|e| e.nat.as_ref())
-            .flat_map(|nat| addresses(&nat.as_range))
+            .flat_map(|nat| endpoints(&nat.as_range))
             .collect();
+        let uses_ports = private.iter().chain(&public).any(|e| e.ports.is_some());
 
         let overlay = overlay_with_exposes(exposes.to_vec()).ok()?;
         let validated = overlay.validate().ok()?;
         let tables = build_nat_configuration(validated.vpc_table()).ok()?;
 
-        let peer = match private.first() {
+        let peer = match private.first().map(|e| e.addr) {
             Some(IpAddr::V6(_)) => vec![
                 "2001:db8:ffff::1"
                     .parse()
@@ -98,6 +123,7 @@ impl Fabric {
             private,
             public,
             peer,
+            uses_ports,
         })
     }
 
@@ -105,10 +131,22 @@ impl Fabric {
         StaticNat::with_reader("probe", self.writer.get_reader())
     }
 
-    pub(crate) fn outbound_to_peer(&self, source: IpAddr) -> Packet<TestBuffer> {
-        let mut packet = build(source, self.peer[0], false, 1024, 80);
+    pub(crate) fn outbound_to_peer(&self, source: Endpoint, port: u16) -> Packet<TestBuffer> {
+        let mut packet = build(source.addr, self.peer[0], false, port, 80);
         Arrival::outbound().stamp(&mut packet);
         packet
+    }
+
+    pub(crate) fn every_source(&self) -> Vec<(Endpoint, u16)> {
+        self.private
+            .iter()
+            .flat_map(|endpoint| match endpoint.ports {
+                None => vec![(*endpoint, 1024)],
+                Some(range) => (range.start()..=range.end())
+                    .map(|port| (*endpoint, port))
+                    .collect(),
+            })
+            .collect()
     }
 
     pub(crate) fn is_probeable(&self) -> bool {
@@ -204,13 +242,13 @@ impl Probe {
             && self.arrival.dst_vpcd == Some(vni(REMOTE_VNI))
     }
 
-    pub(crate) fn reply(&self, translated: IpAddr) -> Packet<TestBuffer> {
+    pub(crate) fn reply(&self, translated: IpAddr, translated_port: u16) -> Packet<TestBuffer> {
         let mut packet = build(
             self.destination,
             translated,
             self.tcp,
             self.dport,
-            self.sport,
+            translated_port,
         );
         Arrival::inbound().stamp(&mut packet);
         packet
@@ -224,14 +262,18 @@ impl ProbeSpec {
 
     pub(crate) fn resolve(self, fabric: &Fabric) -> Probe {
         let mut arrival = Arrival::outbound();
-        let mut source = fabric.private[self.source as usize % fabric.private.len()];
+        let endpoint = fabric.private[self.source as usize % fabric.private.len()];
+
         let destination = fabric.peer[self.peer as usize % fabric.peer.len()];
+        let mut source = endpoint.addr;
+        let mut sport = endpoint.port(self.sport);
         let mut exposed = true;
 
         match self.stray {
             None => {}
             Some(Stray::SourceNotExposed) => {
                 source = destination;
+                sport = self.sport.max(1);
                 exposed = false;
             }
             Some(Stray::NoSourceVni) => arrival.src_vpcd = None,
@@ -244,7 +286,6 @@ impl ProbeSpec {
             }
         }
 
-        let sport = self.sport.max(1);
         let dport = self.dport.max(1);
         let mut packet = build(source, destination, self.tcp, sport, dport);
         arrival.stamp(&mut packet);
