@@ -573,11 +573,19 @@ mod tests {
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::rib::vrf::{RouterVrfConfig, VrfStatus};
     use crate::router::cpi::CpiStatus;
-    use crate::router::rio::{Rio, RioConf, start_rio};
+    use crate::router::rio::{Rio, RioConf, RioHandle, start_rio};
     use crate::routingdb::RoutingDb;
+    use cli::cliproto::{CliAction, CliRequest, CliResponse, RequestArgs};
     use concurrency::sync::atomic::{AtomicUsize, Ordering};
     use concurrency::thread;
+    use dplane_rpc::msg::{
+        ConnectInfo, IpRoute, RouteType, RpcMsg, RpcObject, RpcOp, RpcRequest, RpcResultCode,
+        VerInfo,
+    };
+    use dplane_rpc::wire::Wire;
     use lifecycle::{CancellationToken, Subsystem};
+    use std::os::unix::net::UnixDatagram;
+    use std::path::Path;
     use std::time::Duration;
 
     fn test_router_subsystem() -> Subsystem {
@@ -587,18 +595,13 @@ mod tests {
     #[test]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets at /tmp/hh_*.sock")]
     fn test_rio_ctl() {
-        let cpi_bind_addr = "/tmp/hh_dataplane.sock".to_string();
-        let cli_bind_addr = "/tmp/hh_cli.sock".to_string();
-        let frra_path = "/tmp/frr-agent.sock".to_string();
-        let _ = std::fs::remove_file(&cpi_bind_addr);
-
-        /* Build cpi configuration */
-        let conf = RioConf {
-            name: "test-routter".to_string(),
-            cpi_sock_path: Some(cpi_bind_addr),
-            cli_sock_path: Some(cli_bind_addr),
-            frrmi_sock_path: Some(frra_path),
-        };
+        // Paths unique to this test. The fixed `/tmp/hh_dataplane.sock` this
+        // used to bind is the path a *running* dataplane uses, and
+        // `open_unix_sock` unlinks before it binds -- so under nextest, which
+        // runs test binaries concurrently, this test could pull the socket out
+        // from under a real dataplane or another copy of itself.
+        let dir = SockDir::new();
+        let conf = dir.conf();
 
         /* create interface table */
         let (iftw, _iftr) = IfTableWriter::new();
@@ -656,23 +659,62 @@ mod tests {
     // pinned exactly rather than approached from a safe distance.
     // ---------------------------------------------------------------------
 
+    /// A directory of socket paths that belong to exactly one test, removed
+    /// when the test ends.
+    ///
+    /// The paths have to be unique rather than fixed, and they have to be
+    /// unique under two different execution models: `cargo test` runs every
+    /// test in one process on many threads, and `nextest` runs each test in a
+    /// process of its own. A process-global counter covers the first and the
+    /// pid covers the second, so the pair covers both without any coordination
+    /// between tests.
+    ///
+    /// The CPI socket could avoid the filesystem altogether -- Linux abstract
+    /// sockets have no directory entry and disappear when closed -- but the CLI
+    /// socket cannot: `setup_clipath_watcher` watches the *parent directory*
+    /// precisely because unlinking the path leaves the inode alive while the
+    /// socket is open, so no `DELETE_SELF` is ever emitted. An abstract name
+    /// has no parent, and `Rio::new` would refuse it.
+    struct SockDir(std::path::PathBuf);
+    impl SockDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "hh-rio-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).expect("temp dir for test sockets");
+            Self(dir)
+        }
+        fn path(&self, name: &str) -> String {
+            self.0.join(name).to_string_lossy().into_owned()
+        }
+        fn conf(&self) -> RioConf {
+            RioConf {
+                name: "rio-under-test".to_string(),
+                cpi_sock_path: Some(self.path("cpi.sock")),
+                cli_sock_path: Some(self.path("cli.sock")),
+                frrmi_sock_path: Some(self.path("frr-agent.sock")),
+            }
+        }
+    }
+    impl Drop for SockDir {
+        fn drop(&mut self) {
+            // Best effort: a leaked directory is untidy, not a failure, and a
+            // panicking test should report its own failure rather than this.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// Build a `Rio` whose sockets cannot collide with another test's.
-    fn rio_for_test() -> Rio {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "hh-rio-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir for test sockets");
-        let path = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
-        let conf = RioConf {
-            name: "rio-under-test".to_string(),
-            cpi_sock_path: path("cpi.sock"),
-            cli_sock_path: path("cli.sock"),
-            frrmi_sock_path: path("frr-agent.sock"),
-        };
-        Rio::new(&conf).expect("rio should build on fresh socket paths")
+    ///
+    /// The returned `SockDir` must outlive the `Rio`: dropping it removes the
+    /// paths the sockets are bound to.
+    fn rio_for_test() -> (Rio, SockDir) {
+        let dir = SockDir::new();
+        let rio = Rio::new(&dir.conf()).expect("rio should build on fresh socket paths");
+        (rio, dir)
     }
 
     /// A routing database, plus the handles that must outlive it.
@@ -711,7 +753,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn arming_the_stale_timeout_sweeps_nothing() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         assert!(rio.stale_timeout.is_none(), "starts unarmed");
@@ -735,7 +777,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn the_stale_timeout_survives_its_own_deadline() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         rio.set_stale_timeout();
@@ -764,7 +806,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn the_stale_timeout_fires_once_and_then_disarms() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         rio.set_stale_timeout();
@@ -785,7 +827,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn an_unarmed_stale_timeout_never_fires() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         for _ in 0..4 {
@@ -804,7 +846,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn a_deleted_vrf_outlives_the_window_and_no_longer() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         let cfg = RouterVrfConfig::new(909, "doomed");
@@ -845,7 +887,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn an_frr_restart_opens_the_stale_window() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         let cfg = RouterVrfConfig::new(910, "half-deleted");
@@ -883,7 +925,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     async fn a_refresh_with_no_peer_to_ask_is_not_marked_done() {
-        let mut rio = rio_for_test();
+        let (mut rio, _dir) = rio_for_test();
         let mut t = db_for_test();
 
         assert!(rio.cpistats.peer.is_none(), "no peer has connected");
@@ -913,7 +955,7 @@ mod tests {
             CpiStatus::Connected,
             CpiStatus::Incompatible,
         ] {
-            let mut rio = rio_for_test();
+            let (mut rio, _dir) = rio_for_test();
             let mut t = db_for_test();
             let cfg = RouterVrfConfig::new(911, "bystander");
             t.db.vrftable.add_vrf(&cfg).expect("vrf should be created");
@@ -930,5 +972,381 @@ mod tests {
             assert!(rio.cpistats.status == status, "nor change the status");
             assert_eq!(t.db.vrftable.len(), 2, "nor touch the vrf table");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The CPI socket, end to end.
+    //
+    // These drive the real IO loop through a real unix datagram socket: the
+    // test binds the other end and speaks dplane-rpc at it, exactly as FRR's
+    // plugin does. Nothing is stubbed, so the poller, the readiness handling
+    // and the reply path are under test rather than around it.
+    // -----------------------------------------------------------------------
+
+    /// The peer side of the CPI socket -- what FRR's dplane plugin would be.
+    struct CpiPeer {
+        sock: UnixDatagram,
+        rio: std::os::unix::net::SocketAddr,
+    }
+    impl CpiPeer {
+        fn attach(dir: &SockDir) -> Self {
+            let sock = UnixDatagram::bind(dir.path("peer.sock")).expect("peer sock should bind");
+            sock.set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("read timeout should be settable");
+            let _ = &sock;
+            let rio = std::os::unix::net::SocketAddr::from_pathname(dir.path("cpi.sock"))
+                .expect("rio's cpi path should be addressable");
+            Self { sock, rio }
+        }
+        fn send(&self, msg: &RpcMsg) {
+            dplane_rpc::socks::send_msg(&self.sock, msg, &self.rio).expect("send to rio");
+        }
+        fn send_raw(&self, bytes: &[u8]) {
+            self.sock
+                .send_to_addr(bytes, &self.rio)
+                .expect("raw send to rio");
+        }
+        /// Assert that nothing comes back within `patience`.
+        fn expect_silence(&self, patience: Duration) {
+            self.sock
+                .set_read_timeout(Some(patience))
+                .expect("read timeout should be settable");
+            let mut buf = [0u8; 4096];
+            let outcome = self.sock.recv_from(&mut buf);
+            self.sock
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("read timeout should be settable");
+            assert!(
+                outcome.is_err(),
+                "expected no answer at all, got {} bytes",
+                outcome.map_or(0, |(len, _)| len)
+            );
+        }
+        /// Wait for one message back, failing rather than hanging.
+        fn recv(&self) -> RpcMsg {
+            let mut buf = [0u8; 4096];
+            let (len, _) = self
+                .sock
+                .recv_from(&mut buf)
+                .expect("rio should answer within the read timeout");
+            let mut data = bytes::Bytes::copy_from_slice(&buf[..len]);
+            RpcMsg::decode(&mut data).expect("rio should answer with a well-formed message")
+        }
+        fn connect_request(seqn: u64, pid: u32) -> RpcMsg {
+            RpcMsg::Request(RpcRequest::new(RpcOp::Connect, seqn).set_object(
+                RpcObject::ConnectInfo(ConnectInfo {
+                    pid,
+                    name: "test-plugin".to_string(),
+                    verinfo: VerInfo::default(),
+                    synt: 0,
+                }),
+            ))
+        }
+        fn route_request(op: RpcOp, seqn: u64) -> RpcMsg {
+            RpcMsg::Request(
+                RpcRequest::new(op, seqn).set_object(RpcObject::IpRoute(IpRoute {
+                    prefix: "10.0.0.0".parse().expect("literal"),
+                    prefix_len: 24,
+                    vrfid: 0,
+                    tableid: 254,
+                    rtype: RouteType::Bgp,
+                    distance: 20,
+                    metric: 100,
+                    nhops: vec![],
+                })),
+            )
+        }
+    }
+
+    /// A running IO loop, stopped when the test ends.
+    struct RunningRio {
+        handle: RioHandle,
+        dir: SockDir,
+        /// Held, not dropped: see `TestDb::held`.
+        #[allow(dead_code)]
+        held: (
+            crate::interfaces::iftablerw::IfTableReader,
+            crate::fib::fibtable::FibTableReader,
+            crate::atable::atablerw::AtableWriter,
+        ),
+    }
+    impl RunningRio {
+        fn start() -> Self {
+            let dir = SockDir::new();
+            let (iftw, iftr) = IfTableWriter::new();
+            let (fibtw, fibtr) = FibTableWriter::new();
+            let (atablew, atabler) = AtableWriter::new();
+            let handle = start_rio(
+                &test_router_subsystem(),
+                &dir.conf(),
+                fibtw,
+                iftw,
+                atabler,
+                None,
+            )
+            .expect("rio should start on fresh socket paths");
+            Self {
+                handle,
+                dir,
+                held: (iftr, fibtr, atablew),
+            }
+        }
+    }
+    impl RunningRio {
+        /// Start attending the CPI, as applying a configuration does.
+        ///
+        /// Until this happens the CPI socket is registered `Interest::PRIORITY`
+        /// -- out-of-band data only, which a unix datagram socket never carries
+        /// -- so the loop is deaf to it by construction rather than by a flag it
+        /// has to remember to check.
+        fn attend_cpi(&self) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime to drive the ctl channel")
+                .block_on(self.handle.get_ctl_tx().unlock())
+                .expect("the cpi should unlock");
+        }
+    }
+    impl Drop for RunningRio {
+        fn drop(&mut self) {
+            let _ = self.handle.finish();
+        }
+    }
+
+    /// The CPI is deaf until a configuration says otherwise.
+    ///
+    /// A dataplane that restarts keeps receiving updates over the CPI until
+    /// FRR notices and re-syncs. Acting on them would build a routing table out
+    /// of a fragment; ignoring them politely would tell the plugin they were
+    /// delivered. So the loop does not answer at all, and the plugin caches and
+    /// retries.
+    ///
+    /// The mechanism is worth knowing about before touching this registration:
+    /// the socket is registered `Interest::PRIORITY`, which mio maps to
+    /// `EPOLLPRI` alone. A unix datagram socket never carries out-of-band data,
+    /// so no readable event is ever raised -- deafness by construction rather
+    /// than by a flag somewhere in the dispatch. Registering it `READABLE`
+    /// "to fix a bug" would silently undo the feature, and every assertion
+    /// below would still pass.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn the_cpi_is_not_attended_until_it_is_unlocked() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+
+        peer.send(&CpiPeer::connect_request(1, 4242));
+        peer.expect_silence(Duration::from_secs(2));
+
+        // Deafness defers rather than drops: the datagram sat in the socket's
+        // receive queue the whole time, and unlocking serves it. Worth knowing,
+        // because it means unlocking replays whatever arrived while we were not
+        // listening -- bounded by SO_RCVBUF, not by anything this code decides.
+        // The `last_pid` guard in `handle_request` is what keeps that safe:
+        // anything but a connect is refused until a connect has been seen.
+        rio.attend_cpi();
+        let RpcMsg::Response(deferred) = peer.recv() else {
+            panic!("an attended cpi should answer what it deferred");
+        };
+        assert_eq!(
+            deferred.seqn, 1,
+            "the request sent while deaf is served, not discarded"
+        );
+        assert_eq!(deferred.rescode, RpcResultCode::Ok);
+
+        // And it keeps answering from then on.
+        peer.send(&CpiPeer::connect_request(2, 4242));
+        let RpcMsg::Response(resp) = peer.recv() else {
+            panic!("an attended cpi should keep answering");
+        };
+        assert_eq!(resp.seqn, 2);
+        assert_eq!(resp.rescode, RpcResultCode::Ok);
+    }
+
+    /// A connect is answered, which is the whole CPI round trip.
+    ///
+    /// Readiness on the socket, the read, the decode, the dispatch and the
+    /// addressed reply all have to work for this to return: the reply comes
+    /// back to the peer address the datagram arrived from, so nothing here is
+    /// satisfied by the loop merely running.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_connect_over_the_cpi_socket_is_answered() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+
+        peer.send(&CpiPeer::connect_request(1, 4242));
+
+        let RpcMsg::Response(resp) = peer.recv() else {
+            panic!("a request should draw a response");
+        };
+        assert_eq!(resp.op, RpcOp::Connect);
+        assert_eq!(resp.seqn, 1, "the response is matched to the request");
+        assert_eq!(resp.rescode, RpcResultCode::Ok);
+        assert!(
+            matches!(resp.objs.first(), Some(RpcObject::ConnectInfo(_))),
+            "a connect is answered with the sync token, not bare"
+        );
+    }
+
+    /// A request that arrives before any connect is refused, not applied.
+    ///
+    /// The plugin always connects first, so a request without one means *we*
+    /// restarted and lost the state. Applying it would build a routing table
+    /// out of whatever fragment happened to be in flight; the plugin has to
+    /// push the whole state again instead.
+    ///
+    /// This deliberately sends a **deletion**. An addition is refused twice
+    /// over -- once here and once by the no-configuration guard below it --
+    /// and both refusals are spelled `Ignored`, so an addition cannot tell the
+    /// two apart. Removing this guard entirely leaves an `Add` test passing.
+    /// A deletion is allowed through the no-configuration guard, so it reaches
+    /// this one and nothing else.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_request_before_any_connect_is_ignored() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+
+        peer.send(&CpiPeer::route_request(RpcOp::Del, 7));
+
+        let RpcMsg::Response(resp) = peer.recv() else {
+            panic!("a request should draw a response");
+        };
+        assert_eq!(resp.seqn, 7);
+        assert_eq!(
+            resp.rescode,
+            RpcResultCode::Ignored,
+            "a route withdrawal offered before a connect must not be acted on"
+        );
+    }
+
+    /// With no configuration, additions are refused but deletions are not.
+    ///
+    /// A deletion can only ever remove state we should not be holding, so it
+    /// is safe without a config; an addition would install a route into a
+    /// table nobody has described yet.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn without_a_config_additions_are_refused_and_deletions_are_not() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+
+        peer.send(&CpiPeer::connect_request(1, 4242));
+        let RpcMsg::Response(connected) = peer.recv() else {
+            panic!("connect should be answered");
+        };
+        assert_eq!(connected.rescode, RpcResultCode::Ok);
+
+        peer.send(&CpiPeer::route_request(RpcOp::Add, 2));
+        let RpcMsg::Response(added) = peer.recv() else {
+            panic!("add should be answered");
+        };
+        assert_eq!(
+            added.rescode,
+            RpcResultCode::Ignored,
+            "an addition with no config is refused"
+        );
+
+        peer.send(&CpiPeer::route_request(RpcOp::Del, 3));
+        let RpcMsg::Response(deleted) = peer.recv() else {
+            panic!("del should be answered");
+        };
+        assert_ne!(
+            deleted.rescode,
+            RpcResultCode::Ignored,
+            "a deletion with no config is allowed through, to wipe stale state"
+        );
+    }
+
+    /// A datagram that is not a message at all draws a notification.
+    ///
+    /// The loop must not treat a decode failure as a reason to stop reading
+    /// the socket: the peer is told, the failure is counted, and the next
+    /// datagram is still served.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_malformed_datagram_draws_a_notification_and_does_not_wedge_the_loop() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+
+        peer.send_raw(&[0xff; 32]);
+        assert!(
+            matches!(peer.recv(), RpcMsg::Notification(_)),
+            "garbage should be answered with a notification"
+        );
+
+        // The socket is still being served afterwards.
+        peer.send(&CpiPeer::connect_request(9, 4242));
+        let RpcMsg::Response(resp) = peer.recv() else {
+            panic!("the loop should still answer after a decode failure");
+        };
+        assert_eq!(resp.seqn, 9);
+        assert_eq!(resp.rescode, RpcResultCode::Ok);
+    }
+
+    /// A CLI client: connects to rio's cli socket and asks it something.
+    fn ask_the_cli(dir: &SockDir, tag: &str) -> CliResponse {
+        let sock = UnixDatagram::bind(dir.path(&format!("cli-client-{tag}.sock")))
+            .expect("cli client sock should bind");
+        sock.connect(dir.path("cli.sock"))
+            .expect("rio's cli socket should be connectable");
+        sock.set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("read timeout should be settable");
+        CliRequest::new(CliAction::ShowCpiStats, RequestArgs::default())
+            .send(&sock)
+            .expect("cli request should send");
+        CliResponse::recv_sync(&sock).expect("rio should answer the cli within the timeout")
+    }
+
+    /// The CLI keeps working when its socket path is removed underneath it.
+    ///
+    /// Unlinking the path only removes the directory entry -- the socket stays
+    /// open and keeps serving anyone already holding it, while every new client
+    /// finds nothing there. That is why the watcher is on the parent directory
+    /// rather than the file: no `DELETE_SELF` is ever emitted for an open
+    /// socket.
+    ///
+    /// The assertion is that a *new client is served*, not that a path exists.
+    /// Rebinding without re-registering the new socket with the poller would
+    /// put a file back and answer nobody, and a test that only stats the path
+    /// cannot tell those apart.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn the_cli_survives_having_its_socket_path_removed() {
+        let rio = RunningRio::start();
+        let cli = rio.dir.path("cli.sock");
+
+        let before = ask_the_cli(&rio.dir, "before");
+        assert_eq!(
+            before.request.action,
+            CliAction::ShowCpiStats,
+            "the cli answers before the path is disturbed"
+        );
+
+        std::fs::remove_file(&cli).expect("the path should be removable");
+
+        // The watcher is edge-triggered through the poller, so this is prompt
+        // rather than a poll interval; the deadline is generous only so that a
+        // loaded machine does not fail the run.
+        let deadline = clock::now() + Duration::from_secs(10);
+        while clock::now() < deadline && !Path::new(&cli).exists() {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            Path::new(&cli).exists(),
+            "the loop should notice the unlink and rebind"
+        );
+
+        let after = ask_the_cli(&rio.dir, "after");
+        assert_eq!(
+            after.request.action,
+            CliAction::ShowCpiStats,
+            "and the rebound socket must actually be served, not merely exist"
+        );
     }
 }
