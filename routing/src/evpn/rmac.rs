@@ -84,7 +84,10 @@ impl RmacStore {
                 debug!("Refreshed rmac for vni:{vni} ip:{address} as {mac}");
             }
             if let Some(stale_t) = &old.stale_t {
-                debug!("The rmac was stale for {}s", stale_t.elapsed().as_secs());
+                debug!(
+                    "The rmac was stale for {}s",
+                    clock::elapsed(*stale_t).as_secs()
+                );
                 self.stale = self.stale.saturating_sub(1);
             }
             was_updated
@@ -133,7 +136,7 @@ impl RmacStore {
                     entry.mac, entry.vni, entry.address,
                 );
                 // recall time when it became stale
-                current.stale_t = Some(Instant::now());
+                current.stale_t = Some(clock::now());
                 self.stale = self.stale.saturating_add(1);
             }
         }
@@ -186,7 +189,7 @@ impl RmacStore {
             .values()
             .filter_map(|e| {
                 if let Some(instant) = e.stale_t
-                    && instant.elapsed() > Self::MAX_STALE_TIME
+                    && clock::elapsed(instant) > Self::MAX_STALE_TIME
                 {
                     Some((e.address, e.vni))
                 } else {
