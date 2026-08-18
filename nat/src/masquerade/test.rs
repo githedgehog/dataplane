@@ -44,7 +44,7 @@ use pipeline::DynPipeline;
 use pipeline::NetworkFunction;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracectl::get_trace_ctl;
 use tracing::debug;
 use tracing_test::traced_test;
@@ -1679,7 +1679,7 @@ fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
     // check that flow timeouts "match" the ones configured, allowing for 5 second error (for the test)
     let flow_info_ack = output.meta().flow_info.as_ref().unwrap();
     let related = flow_info_ack.related.as_ref().unwrap().upgrade().unwrap();
-    let valid_until = (Instant::now() + timeout)
+    let valid_until = (clock::now() + timeout)
         .checked_sub(Duration::from_secs(5))
         .unwrap();
     assert!(flow_info_ack.expires_at() >= valid_until);
