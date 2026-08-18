@@ -14,6 +14,7 @@ shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 ahash = { workspace = true, features = ["std"] }
 arc-swap = { workspace = true }
 bnum = { workspace = true }
+clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
@@ -35,13 +36,14 @@ tracing = { workspace = true }
 shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 # internal
 config = { workspace = true, features = ["bolero"] }
 fixin = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tracectl = { workspace = true }
 
 # external

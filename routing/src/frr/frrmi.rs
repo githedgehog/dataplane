@@ -154,7 +154,7 @@ impl Frrmi {
         revent!(RouterEvent::FrrmiDisconnected);
     }
     pub(crate) fn timeout(&mut self) {
-        if self.timeout.take_if(|t| *t < Instant::now()).is_some() {
+        if self.timeout.take_if(|t| *t < clock::now()).is_some() {
             warn!("Request sent to frr-agent timed out! Will reconnect...");
             self.disconnect();
         }
@@ -272,7 +272,7 @@ impl Frrmi {
         debug!("Sending config request to frr-agent for gen {genid}...");
         Self::send(sock, &mut self.writeb)?;
         debug!("FRR config request for gen {genid} successfully sent");
-        self.timeout = Instant::now().checked_add(Self::TIMEOUT);
+        self.timeout = clock::now().checked_add(Self::TIMEOUT);
         Ok(())
     }
 
