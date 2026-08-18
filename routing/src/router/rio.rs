@@ -1290,6 +1290,31 @@ mod tests {
         assert_eq!(resp.rescode, RpcResultCode::Ok);
     }
 
+    // `cli_wake_on_writeable` is the one function in this file that stays
+    // uncovered, and it is not for want of trying. It runs only when a
+    // response cannot be sent in one go: the send fails with `WouldBlock`, the
+    // remaining chunks are cached, and the socket is re-armed for writability
+    // so the cache drains when the client catches up.
+    //
+    // Reaching it needs a response larger than the client's receive queue. The
+    // queue floor is the kernel's `SOCK_MIN_RCVBUF`, measured at 2304 octets
+    // here, and the chunk size is 2048. But with no configuration applied, the
+    // largest response the dataplane can produce is `ShowTracingTargets` at
+    // 1694 octets -- every route, vrf, fib and nat table is empty, so their
+    // listings are headers and nothing else. One chunk, comfortably inside one
+    // queue.
+    //
+    // Filling the queue with many small answers instead does not work either:
+    // a client that is blocked reading consumes each answer as fast as the
+    // loop produces it, so the depth stays at one. Making it fill would take a
+    // sleep between asking and reading, which buys reachability with a timing
+    // assumption -- and a sleep that is too short fails silently, by making the
+    // test vacuous rather than by failing.
+    //
+    // So this waits on the `ValidatedGwConfig` harness. With a real
+    // configuration the route and fib listings are large enough that the
+    // question answers itself.
+
     /// A CLI client: connects to rio's cli socket and asks it something.
     fn ask_the_cli(dir: &SockDir, tag: &str) -> CliResponse {
         let sock = UnixDatagram::bind(dir.path(&format!("cli-client-{tag}.sock")))
