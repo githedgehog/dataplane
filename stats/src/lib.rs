@@ -4,6 +4,7 @@
 // SCRATCH
 
 mod dpstats;
+mod dpstats_fuzz;
 mod rate;
 mod rate_fuzz;
 mod register;
