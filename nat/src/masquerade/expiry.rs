@@ -194,8 +194,40 @@ fn an_expired_flow_is_never_resurrected() {
 }
 
 #[test]
-#[ignore = "reproduces an unfixed defect: a live flow's tuple is reissued after its original deadline"]
-fn a_live_flows_tuple_is_reissued_after_its_original_deadline() {
+fn both_halves_of_a_pair_outlive_one_sided_traffic() {
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let source: IpAddr = "10.0.0.7".parse().unwrap_or_else(|_| unreachable!());
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        assert_eq!(
+            fabric.live_flows(),
+            2,
+            "a masqueraded flow should install a forward and a reverse entry"
+        );
+
+        for elapsed in 1..=8 {
+            advance(WITHIN_LIFETIME).await;
+            assert_eq!(
+                reply_to(&mut lookup, &mut masq, peer, translated),
+                Some(source),
+                "the flow stopped answering at t={elapsed}s"
+            );
+            assert_eq!(
+                fabric.live_flows(),
+                2,
+                "at t={elapsed}s one half of the pair had expired under a live connection; the \
+                 forward half owns the allocation, so its tuple is now free to be reissued"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_live_flows_tuple_is_never_reissued() {
     with_paused_clock(|| async {
         let (fabric, _) = fabric();
         let (mut lookup, mut masq) = fabric.stages();
@@ -203,25 +235,24 @@ fn a_live_flows_tuple_is_reissued_after_its_original_deadline() {
         let first: IpAddr = "10.0.0.10".parse().unwrap_or_else(|_| unreachable!());
         let second: IpAddr = "10.0.0.99".parse().unwrap_or_else(|_| unreachable!());
 
-        let translated = open_flow(&mut lookup, &mut masq, first, peer, 2000)
+        let held = open_flow(&mut lookup, &mut masq, first, peer, 2000)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
-        for second_elapsed in 1..=6 {
+        for _ in 0..6 {
             advance(WITHIN_LIFETIME).await;
             assert_eq!(
-                reply_to(&mut lookup, &mut masq, peer, translated),
+                reply_to(&mut lookup, &mut masq, peer, held),
                 Some(first),
-                "the flow stopped answering at t={second_elapsed}s despite being refreshed"
+                "the flow being held open stopped answering"
             );
         }
 
         let other = open_flow(&mut lookup, &mut masq, second, peer, 3000)
             .unwrap_or_else(|| unreachable!("a second private source is masqueraded"));
-
         assert_ne!(
-            other, translated,
-            "a live flow's public tuple {translated:?} was reissued to {second}, so replies for \
-             {first} will be delivered to {second}"
+            other, held,
+            "{held:?} is held by a live flow from {first} and was reissued to {second}; replies \
+             for {first} will be delivered to {second}"
         );
     });
 }

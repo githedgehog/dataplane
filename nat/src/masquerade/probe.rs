@@ -92,6 +92,14 @@ impl Fabric {
         )
     }
 
+    pub(crate) fn live_flows(&self) -> usize {
+        let count = concurrency::sync::atomic::AtomicUsize::new(0);
+        self.flow_table.for_each_flow_sharded(|_, _| {
+            count.fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
+        });
+        count.load(concurrency::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(crate) fn is_probeable(&self) -> bool {
         !self.private.is_empty() && !self.public.is_empty()
     }
