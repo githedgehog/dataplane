@@ -10,6 +10,7 @@ mod register;
 mod spec;
 mod vpc;
 mod vpc_stats;
+mod vpc_stats_fuzz;
 
 pub use dpstats::*;
 pub use rate::*;
