@@ -334,7 +334,10 @@ Three prerequisites, all of which have already bitten this codebase once:
    two pipelines will allocate different ports for the same flow and a naive comparison fails
    immediately. Either seed it identically per pipeline or keep it out of the compared projection.
 2. **Advance timers in lockstep.** Flow timers are already known to leak between fuzz inputs; across
-   concurrent pipelines they must be driven explicitly rather than by wall clock.
+   concurrent pipelines they must be driven explicitly rather than by wall clock. The `clock` facade
+   now supplies that: every deadline in the workspace is read through `clock::now()`, which follows
+   tokio's pausable clock under test, so `tokio::time::advance` moves deadlines and timers together.
+   See `nat/src/masquerade/expiry.rs` for what that makes writable.
 3. **Compare projections, not state.** Counters and port allocations legitimately differ between two
    pipelines that agree on every verdict. Compare what an operator can observe.
 
