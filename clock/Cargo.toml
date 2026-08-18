@@ -1,0 +1,13 @@
+[package]
+name = "dataplane-clock"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+virtual = ["dep:tokio"]
+
+[dependencies]
+tokio = { workspace = true, optional = true, features = ["test-util", "time"] }

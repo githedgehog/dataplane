@@ -36,7 +36,7 @@ use concurrency::sync::Arc;
 use pipeline::NetworkFunction;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // VNIs and IP ranges used by the standard two-VPC peering (vpc1 <-> vpc2). The manifest names
 // ("vpc1"/"vpc2") double as the ACL rule `from`/`to` endpoints.
@@ -670,7 +670,7 @@ fn ipv6_allow_and_default_deny() {
 // reply's weak `related` reference can still be upgraded.
 fn attach_related_flow(reply: &mut Packet<TestBuffer>, fwd_key: FlowKey) -> Arc<FlowInfo> {
     let reply_key = FlowKey::try_from(&*reply).unwrap();
-    let expiry = Instant::now() + Duration::from_secs(60);
+    let expiry = clock::now() + Duration::from_secs(60);
     let (fwd_flow, reply_flow) = FlowInfo::related_pair(
         expiry,
         fwd_key,
