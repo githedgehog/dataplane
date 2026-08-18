@@ -30,7 +30,6 @@ mod tests {
     use rand::RngExt;
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
-    use std::time::Instant;
     use std::{collections::HashMap, collections::HashSet, sync::atomic::Ordering};
 
     use crate::fib::fibgroupstore::tests::build_fib_entry_egress;
@@ -348,7 +347,7 @@ mod tests {
             fibw.register_fibgroup(&nhkey, fibgroup, true);
             fibw.add_fibroute(prefix, vec![nhkey.clone()], true);
         }
-        let start = Instant::now();
+        let start = clock::now();
         loop {
             if fibw.is_none() {
                 fibw = Some(fibtw.add_fib(vrfid, None));

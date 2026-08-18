@@ -133,7 +133,7 @@ impl RmacStore {
                     entry.mac, entry.vni, entry.address,
                 );
                 // recall time when it became stale
-                current.stale_t = Some(Instant::now());
+                current.stale_t = Some(clock::now());
                 self.stale = self.stale.saturating_add(1);
             }
         }
