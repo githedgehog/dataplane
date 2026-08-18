@@ -263,46 +263,68 @@ fn an_expired_flow_is_never_resurrected() {
     });
 }
 
-/// A live flow's public tuple is reissued to another flow once its *original* deadline passes.
+/// A pair's two halves outlive traffic that only runs one way.
 ///
-/// **A reproduction of a defect, not a passing property.** Ignored so the branch stays green; run it
-/// with `cargo test -p dataplane-nat -- --ignored reissued` to see it fail.
+/// **This is a regression test for a real defect, fixed in the commit that added it.**
 ///
-/// # What happens
+/// A masqueraded connection is two flow entries -- forward and reverse -- and `refresh_masquerade_state`
+/// used to refresh only the one a packet happened to hit. The partner was refreshed exactly once,
+/// on the transition into `Established`. So a connection whose traffic ran mostly one way let the
+/// other half expire while it was still in use, and that is the common case rather than a corner:
+/// a download, a DNS response, any session that mostly receives.
 ///
-/// A flow is opened and then refreshed every second, so it is unambiguously alive -- its replies are
-/// delivered correctly throughout. Once `MASQUERADE_ONEWAY_TIMEOUT` of *virtual* time has passed
-/// since it was opened, a newly opened flow is handed the same public address and port, and the
-/// replies that were reaching the first tenant start reaching the second.
+/// What made it serious is *which* half. `MasqueradeState` carries the `Allocation` in the forward
+/// entry alone, so the forward half expiring released the address and port while the reverse half
+/// went on translating to them. The allocator then handed that tuple to another tenant, whose
+/// replies arrived at the first tenant's still-live reverse entry -- two tenants sharing one public
+/// tuple, which is a tenant isolation failure rather than a dropped connection.
 ///
-/// The threshold is exactly the one-way timeout, measured by bisection:
-///
-/// | advance | flow alive | tuple reissued |
-/// | --- | --- | --- |
-/// | 4s | yes | no |
-/// | 5s | yes | **yes** |
-///
-/// So the allocation is being reclaimed on the deadline the flow was *created* with, and the refreshes
-/// that keep the flow itself alive do not carry it. `MasqueradeState` holds the `Allocation` in the
-/// forward entry only, which is consistent with the forward entry being reclaimed while the reverse
-/// entry survives and keeps translating -- but that is where the investigation should start rather
-/// than what it has concluded.
-///
-/// # Why it matters in production
-///
-/// Production sets `randomize(true)`, and with randomization the same sequence picks a different
-/// port, so the collision is unlikely rather than impossible -- it needs the reclaimed port to be
-/// drawn again while the old flow still lives, which is a matter of load and range size rather than
-/// of correctness. What is wrong in both modes is the underlying state: a flow that is still
-/// translating no longer owns the tuple it is translating to. Two tenants sharing a public tuple is
-/// a tenant isolation failure, not a performance one.
-///
-/// This is the class of defect a controllable clock exists to find. Reaching it on the wall clock
-/// needs six seconds of real time per attempt and the right allocation pattern; here it is
-/// deterministic and costs nothing.
+/// It was invisible from the packet path, which is why it needed the flow count: every reply kept
+/// being delivered correctly the whole time. Only a *new* flow stealing the tuple showed it, and
+/// only after `MASQUERADE_ONEWAY_TIMEOUT` of virtual time -- five seconds of real time and the right
+/// allocation pattern, which is why no test had found it.
 #[test]
-#[ignore = "reproduces an unfixed defect: a live flow's tuple is reissued after its original deadline"]
-fn a_live_flows_tuple_is_reissued_after_its_original_deadline() {
+fn both_halves_of_a_pair_outlive_one_sided_traffic() {
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let source: IpAddr = "10.0.0.7".parse().unwrap_or_else(|_| unreachable!());
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        assert_eq!(
+            fabric.live_flows(),
+            2,
+            "a masqueraded flow should install a forward and a reverse entry"
+        );
+
+        // Traffic in one direction only, well past the one-way timeout.
+        for elapsed in 1..=8 {
+            advance(WITHIN_LIFETIME).await;
+            assert_eq!(
+                reply_to(&mut lookup, &mut masq, peer, translated),
+                Some(source),
+                "the flow stopped answering at t={elapsed}s"
+            );
+            assert_eq!(
+                fabric.live_flows(),
+                2,
+                "at t={elapsed}s one half of the pair had expired under a live connection; the \
+                 forward half owns the allocation, so its tuple is now free to be reissued"
+            );
+        }
+    });
+}
+
+/// A live flow's public tuple is never reissued to another flow.
+///
+/// The consequence of the defect above, stated where an operator would feel it. Kept as its own
+/// property because it is the claim that matters -- the flow count is the mechanism, this is the
+/// outcome -- and because it would also catch a *different* allocator bug that released a tuple for
+/// some other reason.
+#[test]
+fn a_live_flows_tuple_is_never_reissued() {
     with_paused_clock(|| async {
         let (fabric, _) = fabric();
         let (mut lookup, mut masq) = fabric.stages();
@@ -310,26 +332,25 @@ fn a_live_flows_tuple_is_reissued_after_its_original_deadline() {
         let first: IpAddr = "10.0.0.10".parse().unwrap_or_else(|_| unreachable!());
         let second: IpAddr = "10.0.0.99".parse().unwrap_or_else(|_| unreachable!());
 
-        let translated = open_flow(&mut lookup, &mut masq, first, peer, 2000)
+        let held = open_flow(&mut lookup, &mut masq, first, peer, 2000)
             .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
 
-        // Refresh once a second, past the one-way timeout. The flow is alive the whole way.
-        for second_elapsed in 1..=6 {
+        // Keep it alive with one-sided traffic, past the one-way timeout.
+        for _ in 0..6 {
             advance(WITHIN_LIFETIME).await;
             assert_eq!(
-                reply_to(&mut lookup, &mut masq, peer, translated),
+                reply_to(&mut lookup, &mut masq, peer, held),
                 Some(first),
-                "the flow stopped answering at t={second_elapsed}s despite being refreshed"
+                "the flow being held open stopped answering"
             );
         }
 
         let other = open_flow(&mut lookup, &mut masq, second, peer, 3000)
             .unwrap_or_else(|| unreachable!("a second private source is masqueraded"));
-
         assert_ne!(
-            other, translated,
-            "a live flow's public tuple {translated:?} was reissued to {second}, so replies for \
-             {first} will be delivered to {second}"
+            other, held,
+            "{held:?} is held by a live flow from {first} and was reissued to {second}; replies \
+             for {first} will be delivered to {second}"
         );
     });
 }
