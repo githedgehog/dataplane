@@ -1078,6 +1078,95 @@ pub mod contract {
         }
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct PortForwardingExposes(pub u8);
+
+    impl Default for PortForwardingExposes {
+        fn default() -> Self {
+            Self(2)
+        }
+    }
+
+    pub const MAX_PORT_FORWARDING_EXPOSES: u8 = 2;
+
+    impl ValueGenerator for PortForwardingExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(
+                Included(&1),
+                Included(&self.0.clamp(1, MAX_PORT_FORWARDING_EXPOSES)),
+            )?;
+            (0..count)
+                .map(|slot| {
+                    let proto = if slot == 0 {
+                        L4Protocol::Tcp
+                    } else {
+                        L4Protocol::Udp
+                    };
+                    port_forwarding_expose(driver, v4, slot, proto)
+                })
+                .collect()
+        }
+    }
+
+    fn port_forwarding_expose<D: Driver>(
+        driver: &mut D,
+        v4: bool,
+        block: u8,
+        proto: L4Protocol,
+    ) -> Option<VpcExpose> {
+        let host_bits = driver.gen_u8(Included(&0), Included(&MAX_HOST_BITS))?;
+        let (internal, external) = if v4 {
+            v4_pair_in_block(driver, host_bits, block)?
+        } else {
+            v6_pair_in_block(driver, host_bits, block)?
+        };
+
+        let count = driver.gen_u16(Included(&1), Included(&MAX_PORTS))?;
+        let internal_ports = port_range(driver, count)?;
+        let external_ports = port_range(driver, count)?;
+        let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+            0 => None,
+            1 => Some(Duration::from_secs(5)),
+            _ => Some(Duration::from_mins(5)),
+        };
+
+        VpcExpose::empty()
+            .make_port_forwarding(idle_timeout, Some(proto))
+            .ok()?
+            .ip(PrefixWithOptionalPorts::new(internal, Some(internal_ports)))
+            .as_range(PrefixWithOptionalPorts::new(external, Some(external_ports)))
+            .ok()
+    }
+
+    fn v4_pair_in_block<D: Driver>(
+        driver: &mut D,
+        host_bits: u8,
+        block: u8,
+    ) -> Option<(Prefix, Prefix)> {
+        let len = 32 - host_bits;
+        let mask = u32::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let slot = u32::from(block) << 16;
+        let internal = (0x0A00_0000 | slot | (driver.produce::<u32>()? & 0x0000_FFFF)) & mask;
+        let external = (0xAC10_0000 | slot | (driver.produce::<u32>()? & 0x0000_FFFF)) & mask;
+        Some((prefix_v4(internal, len)?, prefix_v4(external, len)?))
+    }
+
+    fn v6_pair_in_block<D: Driver>(
+        driver: &mut D,
+        host_bits: u8,
+        block: u8,
+    ) -> Option<(Prefix, Prefix)> {
+        let len = 128 - host_bits;
+        let mask = u128::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let slot = u128::from(block) << 64;
+        let internal = (INTERNAL_BASE | slot | u128::from(driver.produce::<u32>()?)) & mask;
+        let external = (EXTERNAL_BASE | slot | u128::from(driver.produce::<u32>()?)) & mask;
+        Some((prefix_v6(internal, len)?, prefix_v6(external, len)?))
+    }
+
     #[derive(Debug, Clone, Copy, Default)]
     pub struct MasqueradeExpose;
 
