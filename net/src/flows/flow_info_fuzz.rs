@@ -404,3 +404,235 @@ fn every_status_survives_its_byte() {
         );
     });
 }
+
+/// The unchecked refreshes move the deadline by exactly what they were told.
+///
+/// The checked wrappers are covered above, by whether they refuse. These are the ones the
+/// masquerade path calls directly on both halves of a flow pair, so what they *do* when they
+/// accept, and what they do at the boundary, is not academic: an extension that added the wrong
+/// amount would expire a live connection early, and a reset refused at the boundary would leave
+/// the partner half of a pair to die while the flow it belongs to is still carrying traffic.
+///
+/// The boundary is the reason this exists as its own property. `reset_expiry_unchecked` refuses
+/// when the new deadline is `<` the one held; `<=` differs from `<` only when the two are exactly
+/// equal, which on a wall clock essentially never happens and on a driven clock is trivial to
+/// arrange.
+#[test]
+fn the_unchecked_refreshes_move_the_deadline_exactly() {
+    with_paused_clock(|| async {
+        bolero::check!()
+            .with_type::<(Millis, Millis)>()
+            .for_each(|(a, b): &(Millis, Millis)| {
+                let (extend, reset) = (a.duration(), b.duration());
+
+                // An extension adds to what is stored, whatever that was.
+                let subject = flow();
+                let before = subject.expires_at();
+                subject.extend_expiry_unchecked(extend);
+                assert_eq!(
+                    subject.expires_at(),
+                    before + extend,
+                    "an unchecked extension must add exactly its duration"
+                );
+
+                // A reset replaces the deadline with `now + duration`, and refuses only when that
+                // would move it earlier.
+                let subject = flow();
+                let target = clock::now() + reset;
+                if target < subject.expires_at() {
+                    assert!(
+                        matches!(
+                            subject.reset_expiry_unchecked(reset),
+                            Err(FlowInfoError::TimeoutUnchanged)
+                        ),
+                        "a reset that moves the deadline earlier must be refused"
+                    );
+                } else {
+                    assert!(subject.reset_expiry_unchecked(reset).is_ok());
+                    assert_eq!(
+                        subject.expires_at(),
+                        target,
+                        "an accepted reset must land on now + duration, exactly"
+                    );
+                }
+
+                // The boundary: resetting to precisely the deadline already held is accepted.
+                // The clock is paused, so the second call computes the same instant as the first.
+                let subject = flow();
+                let long = reset + Duration::from_secs(1);
+                assert!(subject.reset_expiry_unchecked(long).is_ok());
+                let held = subject.expires_at();
+                assert!(
+                    subject.reset_expiry_unchecked(long).is_ok(),
+                    "resetting to the deadline already held must be accepted, not refused"
+                );
+                assert_eq!(subject.expires_at(), held, "and must leave it where it was");
+            });
+    });
+}
+
+/// A flow is active exactly when its status says so.
+///
+/// `is_active` is what the datapath asks before using a flow, and the flow table asks before
+/// letting a new flow displace one holding the same key. Reading `true` for a cancelled flow would
+/// route packets through NAT state that has already been released.
+#[test]
+fn a_flow_is_active_exactly_when_its_status_says_so() {
+    with_paused_clock(|| async {
+        bolero::check!()
+            .with_type::<Status>()
+            .for_each(|status: &Status| {
+                let want = FlowStatus::from(*status);
+                let flow = flow();
+                flow.update_status(want);
+                assert_eq!(
+                    flow.is_active(),
+                    want == FlowStatus::Active,
+                    "is_active disagreed with the status it was asked about"
+                );
+            });
+    });
+}
+
+/// A flow built with a status has that status.
+///
+/// `new_with_status` exists so a test can seed a flow in any of the four legal states. One that
+/// quietly ignored the argument would make every such test start from `Detached` and pass for the
+/// wrong reason -- the tests it serves would stop covering what they claim.
+#[test]
+fn a_flow_built_with_a_status_has_it() {
+    with_paused_clock(|| async {
+        bolero::check!()
+            .with_type::<(u16, Status)>()
+            .for_each(|(port, status): &(u16, Status)| {
+                let want = FlowStatus::from(*status);
+                let flow = FlowInfo::new_with_status(
+                    key(*port),
+                    clock::now() + Duration::from_secs(1),
+                    want,
+                );
+                assert_eq!(
+                    flow.status(),
+                    want,
+                    "the status asked for was not the one built"
+                );
+            });
+    });
+}
+
+/// A generation id is remembered, and `set_genid_pair` reaches the partner.
+///
+/// The genid is how the dataplane tells flows belonging to the current configuration from flows
+/// left over by the previous one. A pair whose halves disagreed about their generation would be
+/// swept apart -- one half retired, the other left translating to an allocation nobody owns, which
+/// is the shape of the defect this branch already fixed once in the masquerade expiry path.
+#[test]
+fn a_genid_is_remembered_and_reaches_the_partner() {
+    with_paused_clock(|| async {
+        bolero::check!().with_type::<(u16, u16, i64)>().for_each(
+            |(a, b, genid): &(u16, u16, i64)| {
+                let (one, two) = (key(*a), key(b.wrapping_add(1)));
+                let Ok((first, second)) = FlowInfo::related_pair(
+                    clock::now() + Duration::from_secs(1),
+                    one,
+                    FlowInfoFlags::INITIATOR,
+                    two,
+                    FlowInfoFlags::default(),
+                ) else {
+                    return; // identical keys; covered elsewhere
+                };
+
+                first.set_genid(*genid);
+                assert_eq!(
+                    first.genid(),
+                    *genid,
+                    "a genid must read back as it was set"
+                );
+                assert_ne!(
+                    second.genid(),
+                    *genid,
+                    "setting one half's genid must not reach the other"
+                );
+
+                let paired = genid.wrapping_add(1);
+                first.set_genid_pair(paired);
+                assert_eq!(first.genid(), paired);
+                assert_eq!(
+                    second.genid(),
+                    paired,
+                    "set_genid_pair must reach the partner, or the halves disagree about which \
+                     configuration they belong to"
+                );
+            },
+        );
+    });
+}
+
+/// Each flag predicate answers for its own bit and no other.
+///
+/// `requires_static_nat_src` and `requires_static_nat_dst` decide whether a packet is translated at
+/// all. One that answered for the wrong bit would translate the wrong end of the flow; one that
+/// answered a constant would translate everything or nothing.
+#[test]
+fn each_flag_predicate_answers_for_its_own_bit() {
+    with_paused_clock(|| async {
+        bolero::check!()
+            .with_type::<(u16, u16, u8)>()
+            .for_each(|(a, b, bits): &(u16, u16, u8)| {
+                let flags = FlowInfoFlags::from_bits_truncate(*bits);
+                let (one, two) = (key(*a), key(b.wrapping_add(1)));
+                let Ok((first, _second)) = FlowInfo::related_pair(
+                    clock::now() + Duration::from_secs(1),
+                    one,
+                    flags,
+                    two,
+                    FlowInfoFlags::default(),
+                ) else {
+                    return; // identical keys; covered elsewhere
+                };
+
+                let got = first.get_flags();
+                assert_eq!(got, flags, "the flags read back must be the ones set");
+                assert_eq!(
+                    got.requires_static_nat_src(),
+                    flags.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC),
+                    "the source predicate answered for the wrong bit"
+                );
+                assert_eq!(
+                    got.requires_static_nat_dst(),
+                    flags.contains(FlowInfoFlags::REQ_STATIC_NAT_DST),
+                    "the destination predicate answered for the wrong bit"
+                );
+                assert_eq!(
+                    got.is_initiator(),
+                    flags.contains(FlowInfoFlags::INITIATOR),
+                    "the initiator predicate answered for the wrong bit"
+                );
+            });
+    });
+}
+
+/// The destination vpc a flow was stamped with is the one it reports.
+///
+/// Masquerade will not translate a flow whose destination vpc is absent, and port forwarding keys
+/// its claims on it. A reader that always answered `None` would look, from the packet path, exactly
+/// like a flow that had not been through the lookup stage yet.
+#[test]
+fn the_destination_vpc_is_remembered() {
+    with_paused_clock(|| async {
+        bolero::check!()
+            .with_type::<Option<u32>>()
+            .for_each(|vni: &Option<u32>| {
+                let want = vni
+                    .and_then(|v| crate::vxlan::Vni::new_checked(v % 0x00FF_FFFF).ok())
+                    .map(crate::packet::VpcDiscriminant::from_vni);
+                let flow = flow();
+                flow.locked.write().dst_vpcd = want;
+                assert_eq!(
+                    flow.get_dst_vpcd(),
+                    want,
+                    "the destination vpc read back must be the one stamped"
+                );
+            });
+    });
+}
