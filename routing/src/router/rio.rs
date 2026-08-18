@@ -584,7 +584,8 @@ mod tests {
     };
     use dplane_rpc::wire::Wire;
     use lifecycle::{CancellationToken, Subsystem};
-    use std::os::unix::net::UnixDatagram;
+    use std::io::Write;
+    use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
     use std::path::Path;
     use std::time::Duration;
 
@@ -1165,5 +1166,67 @@ mod tests {
             CliAction::ShowCpiStats,
             "and the rebound socket must actually be served, not merely exist"
         );
+    }
+
+    struct FakeAgent {
+        listener: UnixListener,
+    }
+    impl FakeAgent {
+        fn listening_at(dir: &SockDir) -> Self {
+            let listener =
+                UnixListener::bind(dir.path("frr-agent.sock")).expect("the agent should bind");
+            listener
+                .set_nonblocking(true)
+                .expect("the agent should be pollable");
+            Self { listener }
+        }
+        fn accept(&self, expectation: &str) -> UnixStream {
+            let deadline = clock::now() + Duration::from_secs(10);
+            loop {
+                match self.listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(clock::now() < deadline, "rio never {expectation}");
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => panic!("the agent could not accept: {e}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn the_loop_connects_to_the_agent_whenever_it_appears() {
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+        let _conn = agent.accept("connected to an agent that appeared after it started");
+    }
+
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn the_loop_reconnects_when_the_agent_goes_away() {
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+
+        let first = agent.accept("connected to the agent");
+        drop(first);
+
+        let _second = agent.accept("reconnected after the agent left");
+    }
+
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn nonsense_from_the_agent_restarts_the_link() {
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+
+        let mut first = agent.accept("connected to the agent");
+        first
+            .write_all(&[0xff; 64])
+            .expect("the agent should be able to write nonsense");
+
+        let _second = agent.accept("rebuilt the link after a message it could not read");
+        drop(first);
     }
 }
