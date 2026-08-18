@@ -25,7 +25,7 @@ use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
 use std::os::unix::net::SocketAddr;
 use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
@@ -104,7 +104,7 @@ pub(crate) struct CpiStats {
 impl CpiStats {
     pub(crate) fn new() -> CpiStats {
         Self {
-            synt: SystemTime::now()
+            synt: clock::system_now()
                 .duration_since(UNIX_EPOCH)
                 .expect("System time is wrong!")
                 .as_secs(),

@@ -494,7 +494,6 @@ mod tests {
     use lookup::Lookup;
     use match_action::{Erased, ExactSpec, MaskSpec, MatchKey, PrefixSpec, RangeSpec};
     use std::hint::black_box;
-    use std::time::Instant;
 
     #[derive(MatchKey, Debug, Clone, Copy)]
     struct FiveTuple {
@@ -969,7 +968,7 @@ mod tests {
                 let rules = make(n);
                 let max = NonZero::new(u32::try_from(n).unwrap()).unwrap();
                 let rss_before = rss_kb();
-                let t = Instant::now();
+                let t = clock::now();
                 let res: Result<DpdkAclLookup<RemoteKey<Ipv4Addr>, u32>, _> =
                     install_table(&unique_name("cap"), max, rules);
                 let dt = t.elapsed().as_secs_f64() * 1e3;

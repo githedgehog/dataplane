@@ -17,6 +17,10 @@ valid operations and derive the oracles from that same algebra; see the [config 
 If you need to handle errors, prefer `Result` types over panics in general, but see the
 [error handling guide][error] for details.
 
+Never read a clock directly. `Instant::now()` and `SystemTime::now()` are refused by
+`.semgrep/rules/no-std-time-direct.yaml`; use [`clock::now()`][clock] instead, so that a test can pause
+and advance time. `Duration` is exempt -- it is a plain value with no clock in it.
+
 ## Error handling
 
 If you need to [handle an error][error], follow the guidelines.
@@ -24,6 +28,7 @@ If you need to [handle an error][error], follow the guidelines.
 [avoid-global-reasoning]: ./avoid-global-reasoning.md
 [property-based tests]: ./property-testing.md
 [config-algebra]: ./config-algebra-testing.md
+[clock]: ../../clock/src/lib.rs
 [error]: ./error-handling.md
 
 ## Testing instructions
