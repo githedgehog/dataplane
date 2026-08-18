@@ -11,6 +11,7 @@ bolero = ["dep:bolero", "vpcmap/bolero", "net/bolero"]
 
 [dependencies]
 # internal
+clock = { workspace = true }
 concurrency = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
@@ -34,6 +35,7 @@ tokio = { workspace = true, features = ["macros", "time", "sync"] }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 bolero = { workspace = true }
 net = { workspace = true, features = ["bolero"] }
 vpcmap = { workspace = true, features = ["bolero"] }

@@ -5,6 +5,7 @@ members = [
     "acl-filter",
     "args",
     "cli",
+    "clock",
     "common",
     "concurrency",
     "concurrency-macros",
@@ -71,6 +72,7 @@ acl-filter = { path = "./acl-filter", package = "dataplane-acl-filter", features
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
+clock = { path = "./clock", package = "dataplane-clock", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency", features = [] }
 concurrency-macros = { path = "./concurrency-macros", package = "dataplane-concurrency-macros", features = [] }
 config = { path = "./config", package = "dataplane-config", features = [] }

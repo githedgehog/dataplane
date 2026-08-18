@@ -244,7 +244,7 @@ impl StatsCollector {
         let updates = PacketStatsReader(r);
         let outstanding: VecDeque<_> = (0..10)
             .scan(
-                BatchSummary::<u64>::new(Instant::now() + Self::TIME_TICK),
+                BatchSummary::<u64>::new(clock::now() + Self::TIME_TICK),
                 |prior, _| Some(BatchSummary::new(prior.planned_end + Self::TIME_TICK)),
             )
             .collect();
@@ -522,7 +522,7 @@ impl StatsCollector {
             });
         }
 
-        let current_time = Instant::now();
+        let current_time = clock::now();
         let mut expired = self
             .outstanding
             .iter()
@@ -833,7 +833,7 @@ impl<T> BatchSummary<T> {
     #[inline]
     pub fn with_capacity(planned_end: Instant, capacity: usize) -> Self {
         Self {
-            start: Instant::now(),
+            start: clock::now(),
             planned_end,
             vpc: hashbrown::HashMap::with_capacity(capacity),
         }
@@ -900,7 +900,7 @@ impl Stats {
         stats: PacketStatsWriter,
         delivery_schedule: Duration,
     ) -> Self {
-        let planned_end = Instant::now() + delivery_schedule;
+        let planned_end = clock::now() + delivery_schedule;
         Self {
             name: name.to_string(),
             update: Box::new(BatchSummary::new(planned_end)),
@@ -920,7 +920,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
         // amount of spare room in hash table.  Padding a little bit will hopefully save us some
         // reallocations
         const CAPACITY_PAD: usize = 16;
-        let time = Instant::now();
+        let time = clock::now();
         if time > self.update.planned_end {
             trace!("sending stats update");
             let batch = Box::new(BatchSummary::with_capacity(
@@ -1088,8 +1088,8 @@ pub struct SplitCount {
 mod contract {
     use crate::{BatchSummary, PacketAndByte, TransmitSummary};
     use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use clock::Duration;
     use small_map::SmallMap;
-    use std::time::{Duration, Instant};
     use vpcmap::VpcDiscriminant;
 
     impl<T> TypeGenerator for PacketAndByte<T>
@@ -1153,7 +1153,7 @@ mod contract {
         T: TypeGenerator,
     {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let start = Instant::now() + Duration::from_millis(driver.produce()?);
+            let start = clock::now() + Duration::from_millis(driver.produce()?);
             let duration: Duration = driver.produce()?;
             let vpc_gen = VpcDiscMap::<TransmitSummary<T>> {
                 _marker: std::marker::PhantomData,
@@ -1328,7 +1328,7 @@ mod drop_stats_tests {
     }
 
     fn batch(offset_secs: u64) -> BatchSummary<u64> {
-        BatchSummary::<u64>::new(Instant::now() + Duration::from_secs(offset_secs))
+        BatchSummary::<u64>::new(clock::now() + Duration::from_secs(offset_secs))
     }
 
     #[test]
