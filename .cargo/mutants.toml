@@ -1,0 +1,35 @@
+# Configuration for cargo-mutants (https://mutants.rs).
+#
+# Mutation testing is a flashlight, not a gate: it is run by hand over a crate
+# or a diff, and the product is the list of survivors rather than the score.
+# Nothing in CI depends on this file.
+#
+# Two categories are excluded because a survivor there is noise rather than a
+# finding. Both are excluded here rather than with `#[mutants::skip]` so that
+# production crates take no dependency on the tool and the reasoning stays in
+# one place.
+
+exclude_re = [
+    # Printers. The standing rule is "don't test printers": asserting on
+    # rendered output is sisyphean, produces low signal, and breaks whenever
+    # anyone adjusts a column. A mutated `fmt` that no test notices is telling
+    # us the rule is being followed.
+    "<impl Display for",
+    "<impl Debug for",
+    "<impl std::fmt::Display for",
+    "<impl std::fmt::Debug for",
+
+    # Test-support code inside the crate under test. The workspace convention
+    # puts bolero generators in a `contract` module next to the type they
+    # generate, so cargo-mutants finds them and mutates the test harness at
+    # itself. A generator that draws a different distribution is not a defect
+    # in the code under test; the properties are what judge it.
+    "contract::",
+]
+
+exclude_globs = [
+    # Privileged sysfs manipulation. Exercising the write path needs root and a
+    # real sysfs, and the read path is thin enough that a property would assert
+    # little beyond what the type system already does.
+    "sysfs/**",
+]
