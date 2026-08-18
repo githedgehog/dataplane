@@ -599,8 +599,17 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     // The guest body becomes a nested function so that body-level
     // attributes (`#[wrap(...)]`, `#[traced_test]`, ...) apply to it and
-    // nowhere else.  `async` is preserved on the inner function and driven
-    // by an explicit runtime, since the outer dispatch function is `fn`.
+    // nowhere else.
+    //
+    // The wrapper is deliberately a plain `fn` even for an `async` test: the
+    // runtime is driven *inside* it, so a routed attribute sees a function
+    // that returns `()`.  Routing them onto an `async fn` instead would hand
+    // every such attribute a future, which is not what any of them expect --
+    // `fixin::wrap` expands to `with_caps(..)(__n_vm_guest_body)` in the
+    // wrapper's own tail position, so an async inner function fails to
+    // compile with "expected `()`, found future".  This also matches what
+    // these attributes saw before this macro existed, where `#[tokio::test]`
+    // expanded first and left them a synchronous function.
     //
     // Only wrap when there is something to route, because the wrapper is
     // observable: anything deriving a name from its own call site sees the
@@ -609,50 +618,40 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     // unconditional wrapper would bake `__n_vm_guest_body` into that path
     // and make it churn whenever this macro's internals are renamed.
     let wrap_body = !body_attrs.is_empty();
-    let asyncness = if is_async {
-        quote! { async }
-    } else {
-        quote! {}
-    };
-    let invoke_guest_body = if is_async {
-        if runtime.multi_thread {
-            let workers = match runtime.worker_threads {
-                Some(n) => quote! { ::core::option::Option::Some(#n) },
-                None => quote! { ::core::option::Option::None },
-            };
-            quote! {
-                ::n_vm::block_on_in_guest_multi_thread(
-                    #workers,
-                    __n_vm_guest_body(),
-                );
-            }
-        } else {
-            quote! { ::n_vm::block_on_in_guest(__n_vm_guest_body()); }
-        }
-    } else {
-        quote! { __n_vm_guest_body(); }
-    };
-
-    let tier3_body = if wrap_body {
-        quote! {
-            #(#body_attrs)*
-            #asyncness fn __n_vm_guest_body() #block
-            #invoke_guest_body
-        }
-    } else if is_async {
-        // No attributes to route, so drive the body directly and leave the
-        // call site's apparent path unchanged.
-        if runtime.multi_thread {
-            let workers = match runtime.worker_threads {
+    let drive_async_block = |workers: Option<Option<usize>>| match workers {
+        Some(workers) => {
+            let workers = match workers {
                 Some(n) => quote! { ::core::option::Option::Some(#n) },
                 None => quote! { ::core::option::Option::None },
             };
             quote! {
                 ::n_vm::block_on_in_guest_multi_thread(#workers, async #block);
             }
-        } else {
-            quote! { ::n_vm::block_on_in_guest(async #block); }
         }
+        None => quote! { ::n_vm::block_on_in_guest(async #block); },
+    };
+    let async_workers = if runtime.multi_thread {
+        Some(runtime.worker_threads)
+    } else {
+        None
+    };
+
+    let tier3_body = if wrap_body {
+        let wrapped_block = if is_async {
+            let drive = drive_async_block(async_workers);
+            quote! { { #drive } }
+        } else {
+            quote! { #block }
+        };
+        quote! {
+            #(#body_attrs)*
+            fn __n_vm_guest_body() #wrapped_block
+            __n_vm_guest_body();
+        }
+    } else if is_async {
+        // No attributes to route, so drive the body directly and leave the
+        // call site's apparent path unchanged.
+        drive_async_block(async_workers)
     } else {
         quote! { #block }
     };
