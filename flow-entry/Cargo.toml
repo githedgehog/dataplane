@@ -16,6 +16,7 @@ bolero = ["dep:bolero", "net/bolero"]
 [dependencies]
 ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, optional = true }
+clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
@@ -29,6 +30,7 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 bolero = { workspace = true, default-features = false }
 net = { workspace = true, features = ["bolero"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }

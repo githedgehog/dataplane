@@ -308,7 +308,7 @@ fn on_peer_down(
                 if prev_state == BgpNeighborSessionState::Established {
                     neigh.connections_dropped = neigh.connections_dropped.saturating_add(1);
                     neigh.last_reset_reason = Some(pretty(pd.reason().get_type()));
-                    neigh.last_reset_time = Some(std::time::Instant::now());
+                    neigh.last_reset_time = Some(clock::now());
                 } else {
                     // we should not get to see this message with current FRR and RFC 7854
                     // Peer down events are only produced when leaving Established state

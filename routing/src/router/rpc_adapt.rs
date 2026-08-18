@@ -23,7 +23,6 @@ use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr};
-use std::time::Instant;
 use tracing::{error, warn};
 
 impl From<RouteType> for RouteOrigin {
@@ -161,7 +160,7 @@ impl Route {
             distance: iproute.distance,
             metric: iproute.metric,
             s_nhops: vec![], /* shim nhops are empty here */
-            tstamp: Instant::now(),
+            tstamp: clock::now(),
         }
     }
 }
