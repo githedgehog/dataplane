@@ -271,7 +271,7 @@ impl Display for PrettyDuration {
 struct Age(Instant);
 impl Display for Age {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let duration = self.0.elapsed();
+        let duration = clock::elapsed(self.0);
         PrettyDuration(duration).fmt(f)
     }
 }
