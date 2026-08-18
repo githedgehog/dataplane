@@ -181,9 +181,8 @@ mod test {
         handle.link().add(msg).execute().await.unwrap();
     }
 
-    #[tokio::test]
+    #[n_vm::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-    #[n_vm::in_vm]
     #[cfg_attr(not(emulated), traced_test)]
     #[ignore = "disabled until nv_m support is re-enabled"]
     async fn test_interface_monitor() {
