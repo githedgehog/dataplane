@@ -1,0 +1,13 @@
+
+exclude_re = [
+    "<impl Display for",
+    "<impl Debug for",
+    "<impl std::fmt::Display for",
+    "<impl std::fmt::Debug for",
+
+    "contract::",
+]
+
+exclude_globs = [
+    "sysfs/**",
+]
