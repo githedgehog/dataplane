@@ -379,14 +379,10 @@ impl Rio {
         let duration = 60;
         debug!("Set stale timeout ({duration} seconds)");
         let duration = Duration::from_secs(duration);
-        self.stale_timeout = Instant::now().checked_add(duration);
+        self.stale_timeout = clock::now().checked_add(duration);
     }
     fn check_stale_timeout(&mut self, db: &mut RoutingDb) {
-        if self
-            .stale_timeout
-            .take_if(|t| *t < Instant::now())
-            .is_some()
-        {
+        if self.stale_timeout.take_if(|t| *t < clock::now()).is_some() {
             info!("Stale timeout expired");
             db.vrftable.remove_stale_routes(&db.rmac_store);
             db.vrftable.remove_deleted_vrfs(&mut db.iftw);
