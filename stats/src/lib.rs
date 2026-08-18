@@ -5,6 +5,7 @@
 
 mod dpstats;
 mod rate;
+mod rate_fuzz;
 mod register;
 mod spec;
 mod vpc;
