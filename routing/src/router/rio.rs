@@ -571,7 +571,11 @@ mod tests {
     use crate::errors::RouterError;
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
-    use crate::router::rio::{RioConf, start_rio};
+    use crate::rib::vrf::{RouterVrfConfig, VrfStatus};
+    use crate::router::cpi::CpiStatus;
+    use crate::router::rio::{Rio, RioConf, start_rio};
+    use crate::routingdb::RoutingDb;
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
     use concurrency::thread;
     use lifecycle::{CancellationToken, Subsystem};
     use std::time::Duration;
@@ -636,5 +640,295 @@ mod tests {
         let router = test_router_subsystem();
         let rio = start_rio(&router, &conf, fibtw, iftw, atabler, None);
         assert!(rio.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
+    }
+
+    // ---------------------------------------------------------------------
+    // The stale timeout.
+    //
+    // When FRR restarts, every route we hold becomes suspect: FRR will re-send
+    // what it still believes, and whatever it does not re-send within the
+    // window was withdrawn while we were not listening. `set_stale_timeout`
+    // opens that window and `check_stale_timeout` closes it, sweeping what did
+    // not come back.
+    //
+    // Sixty seconds of wall clock per attempt is why none of this was covered.
+    // On a paused clock the window costs nothing, so the boundary can be
+    // pinned exactly rather than approached from a safe distance.
+    // ---------------------------------------------------------------------
+
+    /// Build a `Rio` whose sockets cannot collide with another test's.
+    fn rio_for_test() -> Rio {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hh-rio-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir for test sockets");
+        let path = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
+        let conf = RioConf {
+            name: "rio-under-test".to_string(),
+            cpi_sock_path: path("cpi.sock"),
+            cli_sock_path: path("cli.sock"),
+            frrmi_sock_path: path("frr-agent.sock"),
+        };
+        Rio::new(&conf).expect("rio should build on fresh socket paths")
+    }
+
+    /// A routing database, plus the handles that must outlive it.
+    ///
+    /// The readers are held rather than dropped: the tables are left-right
+    /// structures, and dropping the far side while the database still refers
+    /// to it is not what production does.
+    struct TestDb {
+        db: RoutingDb,
+        #[allow(dead_code)]
+        held: (
+            crate::interfaces::iftablerw::IfTableReader,
+            crate::fib::fibtable::FibTableReader,
+            crate::atable::atablerw::AtableWriter,
+        ),
+    }
+    fn db_for_test() -> TestDb {
+        let (iftw, iftr) = IfTableWriter::new();
+        let (fibtw, fibtr) = FibTableWriter::new();
+        let (atablew, atabler) = AtableWriter::new();
+        TestDb {
+            db: RoutingDb::new(fibtw, iftw, atabler),
+            held: (iftr, fibtr, atablew),
+        }
+    }
+
+    /// The window `set_stale_timeout` opens: sixty seconds. Restated here so
+    /// the tests below fail loudly if production ever changes it silently.
+    const STALE_WINDOW: Duration = Duration::from_mins(1);
+
+    /// Arming the timeout does not itself sweep anything.
+    ///
+    /// The sweep is what makes a route disappear, so an implementation that
+    /// swept on arm rather than on expiry would drop every route FRR was about
+    /// to re-send -- a blackhole for the length of the window.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn arming_the_stale_timeout_sweeps_nothing() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        assert!(rio.stale_timeout.is_none(), "starts unarmed");
+        rio.set_stale_timeout();
+        assert!(rio.stale_timeout.is_some(), "arming records a deadline");
+
+        rio.check_stale_timeout(&mut t.db);
+        assert!(
+            rio.stale_timeout.is_some(),
+            "a check at arm time must not consume the deadline"
+        );
+    }
+
+    /// The deadline is not inclusive.
+    ///
+    /// `check_stale_timeout` asks `deadline < now`, so arriving exactly on the
+    /// deadline leaves the window open for one more check. That is a real
+    /// boundary rather than an accident of rounding, and it is only observable
+    /// on a clock the test drives: on the wall clock no caller can land on the
+    /// instant exactly.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn the_stale_timeout_survives_its_own_deadline() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        rio.set_stale_timeout();
+        tokio::time::advance(STALE_WINDOW).await;
+
+        rio.check_stale_timeout(&mut t.db);
+        assert!(
+            rio.stale_timeout.is_some(),
+            "at exactly the deadline the window is still open"
+        );
+
+        tokio::time::advance(Duration::from_nanos(1)).await;
+        rio.check_stale_timeout(&mut t.db);
+        assert!(
+            rio.stale_timeout.is_none(),
+            "one nanosecond later it must close"
+        );
+    }
+
+    /// The timeout fires once and disarms itself.
+    ///
+    /// `take_if` is what makes this true. Were it a plain comparison, every
+    /// later poll would sweep again -- harmless for routes that are already
+    /// gone, but it would keep re-deleting vrfs the control plane had since
+    /// re-created.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn the_stale_timeout_fires_once_and_then_disarms() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        rio.set_stale_timeout();
+        tokio::time::advance(STALE_WINDOW + Duration::from_secs(1)).await;
+
+        rio.check_stale_timeout(&mut t.db);
+        assert!(rio.stale_timeout.is_none(), "expiry consumes the deadline");
+
+        // Any number of further polls are no-ops, at any distance past it.
+        for _ in 0..3 {
+            tokio::time::advance(STALE_WINDOW).await;
+            rio.check_stale_timeout(&mut t.db);
+            assert!(rio.stale_timeout.is_none(), "it must not re-arm itself");
+        }
+    }
+
+    /// A timeout that was never armed never fires, however long we wait.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn an_unarmed_stale_timeout_never_fires() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        for _ in 0..4 {
+            tokio::time::advance(STALE_WINDOW * 10).await;
+            rio.check_stale_timeout(&mut t.db);
+            assert!(rio.stale_timeout.is_none());
+        }
+    }
+
+    /// A vrf the control plane finished deleting outlives the window, and only
+    /// the window.
+    ///
+    /// This is the sweep the timeout exists to schedule, seen from the table
+    /// rather than from the deadline: `Deleted` vrfs are held for the whole
+    /// window and removed on expiry.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn a_deleted_vrf_outlives_the_window_and_no_longer() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        let cfg = RouterVrfConfig::new(909, "doomed");
+        t.db.vrftable.add_vrf(&cfg).expect("vrf should be created");
+        assert_eq!(t.db.vrftable.len(), 2, "the default vrf plus ours");
+        t.db.vrftable
+            .get_vrf_mut(909)
+            .expect("just created")
+            .set_status(VrfStatus::Deleted);
+
+        rio.set_stale_timeout();
+        tokio::time::advance(STALE_WINDOW).await;
+        rio.check_stale_timeout(&mut t.db);
+        assert_eq!(
+            t.db.vrftable.len(),
+            2,
+            "a deleted vrf is held for the whole window"
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        rio.check_stale_timeout(&mut t.db);
+        assert_eq!(
+            t.db.vrftable.len(),
+            1,
+            "and is swept when the window closes"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // The CPI status machine.
+    // ---------------------------------------------------------------------
+
+    /// An FRR restart opens the stale window and returns the link to healthy.
+    ///
+    /// It also drops vrfs that were mid-deletion outright: nobody is going to
+    /// finish deleting them now, and holding them would make the restarted FRR
+    /// disagree with us about which vrfs exist.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn an_frr_restart_opens_the_stale_window() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        let cfg = RouterVrfConfig::new(910, "half-deleted");
+        t.db.vrftable.add_vrf(&cfg).expect("vrf should be created");
+        t.db.vrftable
+            .get_vrf_mut(910)
+            .expect("just created")
+            .set_status(VrfStatus::Deleting);
+
+        rio.cpistats.status = CpiStatus::FrrRestarted;
+        rio.cpi_status_check(&mut t.db);
+
+        assert!(
+            rio.stale_timeout.is_some(),
+            "the restart must open the stale window"
+        );
+        assert!(
+            rio.cpistats.status == CpiStatus::Connected,
+            "and leave the link healthy again"
+        );
+        assert_eq!(
+            t.db.vrftable.len(),
+            1,
+            "a vrf that was mid-deletion goes immediately, not on the timeout"
+        );
+    }
+
+    /// A refresh we cannot send is not a refresh we performed.
+    ///
+    /// `NeedRefresh` means *we* restarted and must ask FRR to re-send. Without
+    /// a peer address there is nobody to ask, so the status deliberately stays
+    /// put and the request is retried once a peer appears. Transitioning to
+    /// `Connected` here would silently accept a database that was never
+    /// refilled.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn a_refresh_with_no_peer_to_ask_is_not_marked_done() {
+        let mut rio = rio_for_test();
+        let mut t = db_for_test();
+
+        assert!(rio.cpistats.peer.is_none(), "no peer has connected");
+        rio.cpistats.status = CpiStatus::NeedRefresh;
+        rio.cpi_status_check(&mut t.db);
+
+        assert!(
+            rio.cpistats.status == CpiStatus::NeedRefresh,
+            "with no peer to ask, the refresh stays outstanding"
+        );
+        assert!(
+            rio.stale_timeout.is_none(),
+            "and no stale window is opened: our own restart leaves nothing stale"
+        );
+    }
+
+    /// The settled states do nothing at all.
+    ///
+    /// `cpi_status_check` runs on every pass of the IO loop, so the states it
+    /// is not interested in must be free of side effects -- otherwise the loop
+    /// would re-arm the stale window continuously and never sweep.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    async fn the_settled_cpi_states_do_nothing() {
+        for status in [
+            CpiStatus::NotConnected,
+            CpiStatus::Connected,
+            CpiStatus::Incompatible,
+        ] {
+            let mut rio = rio_for_test();
+            let mut t = db_for_test();
+            let cfg = RouterVrfConfig::new(911, "bystander");
+            t.db.vrftable.add_vrf(&cfg).expect("vrf should be created");
+
+            rio.cpistats.status = status;
+            for _ in 0..3 {
+                rio.cpi_status_check(&mut t.db);
+            }
+
+            assert!(
+                rio.stale_timeout.is_none(),
+                "a settled state must not open the stale window"
+            );
+            assert!(rio.cpistats.status == status, "nor change the status");
+            assert_eq!(t.db.vrftable.len(), 2, "nor touch the vrf table");
+        }
     }
 }
