@@ -568,8 +568,10 @@ pub(crate) fn start_rio(
 #[cfg(test)]
 mod tests {
     use crate::atable::atablerw::AtableWriter;
+    use crate::config::{FrrConfig, RouterConfig};
     use crate::errors::RouterError;
     use crate::fib::fibtable::FibTableWriter;
+    use crate::fib::fibtype::FibKey;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::rib::vrf::{RouterVrfConfig, VrfStatus};
     use crate::router::cpi::CpiStatus;
@@ -578,16 +580,30 @@ mod tests {
     use cli::cliproto::{CliAction, CliRequest, CliResponse, RequestArgs};
     use concurrency::sync::atomic::{AtomicUsize, Ordering};
     use concurrency::thread;
+    use config::GenId;
     use dplane_rpc::msg::{
         ConnectInfo, IpRoute, RouteType, RpcMsg, RpcObject, RpcOp, RpcRequest, RpcResultCode,
         VerInfo,
     };
     use dplane_rpc::wire::Wire;
     use lifecycle::{CancellationToken, Subsystem};
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
     use std::path::Path;
     use std::time::Duration;
+
+    /// How long a test waits on rio before deciding it is never going to answer.
+    ///
+    /// These are wall-clock waits on a real socket, not virtual ones, and every stage between the
+    /// datagram and the fib gets much more expensive under coverage instrumentation -- a run that
+    /// answers in well under a second clean can miss ten seconds instrumented, on a runner already
+    /// carrying the rest of the matrix. Scaled with the build rather than raised outright, so an
+    /// uninstrumented hang is still reported in ten seconds instead of two minutes.
+    const PATIENCE: Duration = Duration::from_secs(cfg_select! {
+        instrumented => 120,
+        _ => 10,
+    });
+
 
     fn test_router_subsystem() -> Subsystem {
         Subsystem::new("router", CancellationToken::new())
@@ -992,7 +1008,7 @@ mod tests {
     impl CpiPeer {
         fn attach(dir: &SockDir) -> Self {
             let sock = UnixDatagram::bind(dir.path("peer.sock")).expect("peer sock should bind");
-            sock.set_read_timeout(Some(Duration::from_secs(10)))
+            sock.set_read_timeout(Some(PATIENCE))
                 .expect("read timeout should be settable");
             let _ = &sock;
             let rio = std::os::unix::net::SocketAddr::from_pathname(dir.path("cpi.sock"))
@@ -1015,7 +1031,7 @@ mod tests {
             let mut buf = [0u8; 4096];
             let outcome = self.sock.recv_from(&mut buf);
             self.sock
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(PATIENCE))
                 .expect("read timeout should be settable");
             assert!(
                 outcome.is_err(),
@@ -1290,13 +1306,37 @@ mod tests {
         assert_eq!(resp.rescode, RpcResultCode::Ok);
     }
 
+    // `cli_wake_on_writeable` is the one function in this file that stays
+    // uncovered, and the reason is not the one recorded when this note was
+    // first written.
+    //
+    // It runs only when a response cannot be sent in one go: the send fails
+    // with `WouldBlock`, the remaining chunks are cached, and the socket is
+    // re-armed for writability so the cache drains when the client catches up.
+    // The first guess was that a configuration was needed to make answers big
+    // enough. It was necessary but nowhere near sufficient -- with 8192 routes
+    // a fib listing is 850KiB in some four hundred chunks, sent to a client
+    // that is provably not reading, and the send still never blocks.
+    //
+    // What actually bounds it: on a unix datagram socket the *sender's*
+    // `SO_SNDBUF` is what limits outstanding unread traffic, and
+    // `open_cli_sock` sets the loop's to `CLI_RX_BUFF_SIZE` -- 2048 * 8192, or
+    // 16MiB. So reaching the cache path needs roughly 16MiB of answer the
+    // client has not read, which is on the order of 150,000 routes. `RcvBuf` on
+    // the client does not help: set to the kernel floor of 2304 it still
+    // accepts about 100KiB, because that limit is the sender's too.
+    //
+    // A test that announces 150,000 routes to exercise one function is not a
+    // trade worth making, so this stays uncovered deliberately. The numbers are
+    // here so the next reader does not have to measure them again.
+
     /// A CLI client: connects to rio's cli socket and asks it something.
     fn ask_the_cli(dir: &SockDir, tag: &str) -> CliResponse {
         let sock = UnixDatagram::bind(dir.path(&format!("cli-client-{tag}.sock")))
             .expect("cli client sock should bind");
         sock.connect(dir.path("cli.sock"))
             .expect("rio's cli socket should be connectable");
-        sock.set_read_timeout(Some(Duration::from_secs(10)))
+        sock.set_read_timeout(Some(PATIENCE))
             .expect("read timeout should be settable");
         CliRequest::new(CliAction::ShowCpiStats, RequestArgs::default())
             .send(&sock)
@@ -1334,7 +1374,7 @@ mod tests {
         // The watcher is edge-triggered through the poller, so this is prompt
         // rather than a poll interval; the deadline is generous only so that a
         // loaded machine does not fail the run.
-        let deadline = clock::now() + Duration::from_secs(10);
+        let deadline = clock::now() + PATIENCE;
         while clock::now() < deadline && !Path::new(&cli).exists() {
             thread::sleep(Duration::from_millis(20));
         }
@@ -1380,7 +1420,7 @@ mod tests {
         }
         /// Wait for the loop to connect, failing rather than hanging.
         fn accept(&self, expectation: &str) -> UnixStream {
-            let deadline = clock::now() + Duration::from_secs(10);
+            let deadline = clock::now() + PATIENCE;
             loop {
                 match self.listener.accept() {
                     Ok((stream, _)) => return stream,
@@ -1449,5 +1489,367 @@ mod tests {
 
         let _second = agent.accept("rebuilt the link after a message it could not read");
         drop(first);
+    }
+
+    // -----------------------------------------------------------------------
+    // Routes, end to end.
+    //
+    // With a configuration applied the CPI accepts additions, so a route can be
+    // followed from a datagram on the socket all the way to the published fib
+    // -- across the rib, the reconciliation and the left-right publish -- which
+    // is the path the dataplane exists to serve.
+    // -----------------------------------------------------------------------
+
+    impl RunningRio {
+        /// Apply a minimal router configuration.
+        ///
+        /// Until this happens the CPI refuses additions: `have_config` is false
+        /// and there is no table for a route to go into. One vrf and a non-zero
+        /// genid is the whole requirement -- `RouterConfig::validate` only
+        /// objects to duplicate vnis and to a vtep that is not set up.
+        fn configure(&self, genid: GenId, frr: Option<FrrConfig>) {
+            let mut cfg = RouterConfig::new(genid);
+            cfg.add_vrf(RouterVrfConfig::new(0, "default"));
+            if let Some(frr) = frr {
+                cfg.set_frr_config(frr);
+            }
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime to drive the ctl channel")
+                .block_on(self.handle.get_ctl_tx().configure(cfg))
+                .expect("the router should accept a minimal config");
+        }
+
+        /// The v4 prefixes currently published in the default vrf's fib, less
+        /// the one the vrf was born with.
+        ///
+        /// A fresh vrf carries a `0.0.0.0/0` drop route so that traffic with
+        /// nowhere to go is discarded rather than leaked. It is not something
+        /// the control plane announced, so counting it here would make every
+        /// assertion below off by one and would hide a withdrawal that removed
+        /// the wrong route.
+        fn fib_v4(&self) -> Vec<String> {
+            let Some(table) = self.held.1.enter() else {
+                return vec![];
+            };
+            let Some(fibr) = table.get_fib(FibKey::from_vrfid(0)) else {
+                return vec![];
+            };
+            let Some(fib) = fibr.enter() else {
+                return vec![];
+            };
+            let mut out: Vec<String> = fib
+                .iter_v4()
+                .map(|(p, _)| p.to_string())
+                .filter(|p| p != "0.0.0.0/0")
+                .collect();
+            out.sort();
+            out
+        }
+
+        /// Wait for the published fib to hold exactly `want` v4 prefixes.
+        ///
+        /// The fib is published by the loop thread through a left-right, so a
+        /// reader does not see a write the instant the socket carried it. The
+        /// deadline is generous because it is only there so a stuck loop fails
+        /// the test instead of hanging it.
+        fn await_fib_v4(&self, want: usize) -> Vec<String> {
+            let deadline = clock::now() + PATIENCE;
+            loop {
+                let got = self.fib_v4();
+                if got.len() == want {
+                    return got;
+                }
+                assert!(
+                    clock::now() < deadline,
+                    "the fib settled on {got:?}, wanted {want} v4 route(s)"
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    impl CpiPeer {
+        /// A request carrying one route, for a prefix of the caller's choosing.
+        fn route_for(op: RpcOp, seqn: u64, prefix: &str, metric: u32) -> RpcMsg {
+            RpcMsg::Request(
+                RpcRequest::new(op, seqn).set_object(RpcObject::IpRoute(IpRoute {
+                    prefix: prefix.parse().expect("a literal prefix"),
+                    prefix_len: 24,
+                    vrfid: 0,
+                    tableid: 254,
+                    rtype: RouteType::Bgp,
+                    distance: 20,
+                    metric,
+                    nhops: vec![],
+                })),
+            )
+        }
+        /// Send a request and insist it was accepted.
+        fn send_accepted(&self, msg: &RpcMsg, what: &str) {
+            self.send(msg);
+            let RpcMsg::Response(resp) = self.recv() else {
+                panic!("{what} drew no response");
+            };
+            assert_eq!(resp.rescode, RpcResultCode::Ok, "{what} was refused");
+        }
+        /// Announce many routes, in batches, without waiting on each answer.
+        ///
+        /// One round trip per route would be slower than it needs to be, and
+        /// the batches keep the loop's own receive queue from filling while it
+        /// works through them.
+        fn announce_routes(&self, count: usize) {
+            const BATCH: usize = 64;
+            let mut seqn = 100u64;
+            for chunk in (0..count).collect::<Vec<_>>().chunks(BATCH) {
+                for i in chunk {
+                    self.send(&Self::route_for(
+                        RpcOp::Add,
+                        seqn,
+                        &format!("10.{}.{}.0", i / 256, i % 256),
+                        100,
+                    ));
+                    seqn += 1;
+                }
+                for _ in chunk {
+                    let RpcMsg::Response(resp) = self.recv() else {
+                        panic!("a route drew no response");
+                    };
+                    assert_eq!(resp.rescode, RpcResultCode::Ok, "a route was refused");
+                }
+            }
+        }
+        /// Connect, as the plugin does before anything else.
+        fn say_hello(&self) {
+            self.send_accepted(&Self::connect_request(1, 4242), "the connect");
+        }
+    }
+
+    /// A route the control plane announces reaches the published fib.
+    ///
+    /// This is the whole point of the CPI: a datagram on a socket becomes a
+    /// forwarding entry. Every stage between the two -- decode, dispatch, rib
+    /// insertion, reconciliation, publish -- is in the path of this assertion.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_route_the_control_plane_announces_reaches_the_fib() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+        rio.configure(1, None);
+        peer.say_hello();
+
+        peer.send_accepted(
+            &CpiPeer::route_for(RpcOp::Add, 2, "10.0.0.0", 100),
+            "the route",
+        );
+
+        assert_eq!(rio.await_fib_v4(1), vec!["10.0.0.0/24".to_string()]);
+    }
+
+    /// A route the control plane withdraws leaves the published fib.
+    ///
+    /// A withdrawal that did not take would forward traffic at a next hop the
+    /// control plane has stopped believing in -- a blackhole that no amount of
+    /// reconvergence elsewhere can clear.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_route_the_control_plane_withdraws_leaves_the_fib() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+        rio.configure(1, None);
+        peer.say_hello();
+
+        peer.send_accepted(
+            &CpiPeer::route_for(RpcOp::Add, 2, "10.0.0.0", 100),
+            "the route",
+        );
+        assert_eq!(rio.await_fib_v4(1), vec!["10.0.0.0/24".to_string()]);
+
+        peer.send_accepted(
+            &CpiPeer::route_for(RpcOp::Del, 3, "10.0.0.0", 100),
+            "the withdrawal",
+        );
+        assert_eq!(rio.await_fib_v4(0), Vec::<String>::new());
+    }
+
+    /// Announcing a prefix twice leaves one route, not two.
+    ///
+    /// FRR re-sends its whole table after a restart, so every prefix arrives
+    /// again for a prefix already held. A fib that grew on each pass would
+    /// double in size every time FRR bounced.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn announcing_a_prefix_twice_leaves_one_route() {
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+        rio.configure(1, None);
+        peer.say_hello();
+
+        peer.send_accepted(
+            &CpiPeer::route_for(RpcOp::Add, 2, "10.0.0.0", 100),
+            "the route",
+        );
+        assert_eq!(rio.await_fib_v4(1), vec!["10.0.0.0/24".to_string()]);
+
+        // The same prefix again, as an add and then as an update, with a
+        // different metric each time so they are not literally the same route.
+        peer.send_accepted(
+            &CpiPeer::route_for(RpcOp::Add, 3, "10.0.0.0", 200),
+            "the re-announcement",
+        );
+        peer.send_accepted(
+            &CpiPeer::route_for(RpcOp::Update, 4, "10.0.0.0", 300),
+            "the update",
+        );
+
+        assert_eq!(rio.await_fib_v4(1), vec!["10.0.0.0/24".to_string()]);
+    }
+
+    impl FakeAgent {
+        /// Read one request off the wire: `|length|genid|body|`, native-endian.
+        fn read_request(stream: &mut UnixStream) -> (GenId, String) {
+            stream
+                .set_read_timeout(Some(PATIENCE))
+                .expect("read timeout should be settable");
+            let mut header = [0u8; 16];
+            stream
+                .read_exact(&mut header)
+                .expect("the agent should receive a header");
+            let len = u64::from_ne_bytes(header[0..8].try_into().expect("8 octets"));
+            let genid = GenId::from_ne_bytes(header[8..16].try_into().expect("8 octets"));
+            let mut body = vec![0u8; usize::try_from(len).expect("a sane length")];
+            stream
+                .read_exact(&mut body)
+                .expect("the agent should receive the announced body");
+            (
+                genid,
+                String::from_utf8(body).expect("the config should be text"),
+            )
+        }
+        /// Answer a request, in the same frame the request came in.
+        fn answer(stream: &mut UnixStream, genid: GenId, data: &str) {
+            let body = data.as_bytes();
+            let mut msg = Vec::with_capacity(16 + body.len());
+            msg.extend_from_slice(&(body.len() as u64).to_ne_bytes());
+            msg.extend_from_slice(&genid.to_ne_bytes());
+            msg.extend_from_slice(body);
+            stream.write_all(&msg).expect("the agent should answer");
+        }
+    }
+
+    /// A configuration reaches the agent, and its acknowledgement comes back.
+    ///
+    /// This is the other half of the dataplane's job. The router half installs
+    /// routes; this half hands FRR the configuration it should be routing
+    /// under, and remembers which generation was actually applied. A dataplane
+    /// that forgot the acknowledgement would have no way to tell a
+    /// configuration FRR accepted from one still in flight, which is exactly
+    /// what `reapply_frr_config` consults after a restart.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_configuration_reaches_the_agent_and_its_answer_comes_back() {
+        const GENID: GenId = 7;
+        const CONFIG: &str = "router bgp 65000\n neighbor 10.0.0.1 remote-as 65001\n";
+
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+        let mut link = agent.accept("connected to the agent");
+
+        rio.configure(GENID, Some(CONFIG.to_string()));
+
+        let (genid, body) = FakeAgent::read_request(&mut link);
+        assert_eq!(genid, GENID, "the request carries the generation it is for");
+        assert_eq!(body, CONFIG, "and the configuration verbatim");
+
+        FakeAgent::answer(&mut link, GENID, "Ok");
+
+        // The applied generation is what an operator, and `reapply_frr_config`,
+        // read back.
+        let deadline = clock::now() + PATIENCE;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime to drive the ctl channel");
+        loop {
+            let applied = runtime
+                .block_on(rio.handle.get_ctl_tx().get_frr_applied_config())
+                .expect("the router should answer");
+            if let Some(applied) = applied {
+                assert_eq!(applied.genid, GENID);
+                assert_eq!(applied.cfg, CONFIG);
+                return;
+            }
+            assert!(
+                clock::now() < deadline,
+                "the acknowledged configuration was never recorded as applied"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A large answer arrives whole, across hundreds of chunks.
+    ///
+    /// The CLI protocol cuts a response into 2048-octet datagrams, each with a
+    /// trailing octet saying whether more follow, and the client reassembles
+    /// until that octet says stop. Eight thousand routes make a fib listing of
+    /// roughly 850KiB -- some four hundred chunks -- so a reassembly that lost
+    /// its place, or a "more" flag set from the wrong end of the loop, shows up
+    /// here as a short read rather than as a subtly truncated table.
+    ///
+    /// This does *not* reach `cli_wake_on_writeable`, and that is not for want
+    /// of size. `open_cli_sock` sets the loop's `SndBuf` to `CLI_RX_BUFF_SIZE`,
+    /// which is 16MiB, and on a unix datagram socket it is the sender's buffer
+    /// that bounds how much unread traffic may be outstanding. Reaching the
+    /// cache path therefore needs about 16MiB of answer the client has not
+    /// read -- on the order of a hundred and fifty thousand routes. That is a
+    /// disproportionate test for one function, and it is measured here so the
+    /// next reader does not have to rediscover it.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn a_large_answer_arrives_whole() {
+        const ROUTES: usize = 8192;
+
+        let rio = RunningRio::start();
+        let peer = CpiPeer::attach(&rio.dir);
+        rio.attend_cpi();
+        rio.configure(1, None);
+        peer.say_hello();
+        peer.announce_routes(ROUTES);
+        assert_eq!(rio.await_fib_v4(ROUTES).len(), ROUTES);
+
+        let sock = UnixDatagram::bind(rio.dir.path("cli-big.sock")).expect("client should bind");
+        sock.connect(rio.dir.path("cli.sock"))
+            .expect("rio's cli socket should be connectable");
+        sock.set_read_timeout(Some(PATIENCE))
+            .expect("read timeout should be settable");
+
+        CliRequest::new(CliAction::ShowRouterIpv4FibEntries, RequestArgs::default())
+            .send(&sock)
+            .expect("cli request should send");
+
+        let answer = CliResponse::recv_sync(&sock)
+            .expect("the whole answer should arrive, across as many chunks as it takes");
+        let body = answer.result.expect("the listing should succeed");
+
+        assert!(
+            body.len() > 100 * 2048,
+            "the answer must span many chunks for this to test reassembly, got {} octets",
+            body.len()
+        );
+        // The first and last routes announced: a reassembly that stopped early
+        // would keep the first and lose the last.
+        assert!(body.contains("10.0.0.0/24"), "the first route is missing");
+        assert!(
+            body.contains(&format!(
+                "10.{}.{}.0/24",
+                (ROUTES - 1) / 256,
+                (ROUTES - 1) % 256
+            )),
+            "the last route is missing, so the answer was cut short"
+        );
     }
 }
