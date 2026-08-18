@@ -398,7 +398,7 @@ impl FlowInfo {
     ///
     pub fn reset_expiry_unchecked(&self, duration: Duration) -> Result<(), FlowInfoError> {
         let current = self.expires_at();
-        let new = Instant::now() + duration;
+        let new = clock::now() + duration;
         if new < current {
             return Err(FlowInfoError::TimeoutUnchanged);
         }

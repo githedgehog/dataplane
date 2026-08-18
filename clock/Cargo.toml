@@ -1,0 +1,18 @@
+[package]
+name = "dataplane-clock"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+# Route the monotonic clock through tokio's, which a test can pause and advance.
+#
+# Off in production, so tokio is not a dependency at all there. Enabled by the
+# dev-dependency declaration in every crate that reads the clock, so that a test
+# build gets the routed clock across the whole graph rather than in one crate.
+virtual = ["dep:tokio"]
+
+[dependencies]
+tokio = { workspace = true, optional = true, features = ["test-util", "time"] }

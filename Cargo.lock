@@ -1177,6 +1177,7 @@ dependencies = [
  "axum-server",
  "dataplane-acl-filter",
  "dataplane-args",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
@@ -1223,6 +1224,7 @@ dependencies = [
  "bolero",
  "criterion",
  "dataplane-acl",
+ "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-lookup",
@@ -1237,6 +1239,7 @@ version = "0.25.2"
 dependencies = [
  "bolero",
  "dataplane-acl",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
@@ -1297,6 +1300,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-clock"
+version = "0.25.2"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "dataplane-common"
 version = "0.25.2"
 dependencies = [
@@ -1336,6 +1346,7 @@ dependencies = [
  "bolero",
  "caps",
  "chrono",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-k8s-intf",
@@ -1414,6 +1425,7 @@ dependencies = [
  "ahash",
  "bolero",
  "dashmap",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-net",
@@ -1434,6 +1446,7 @@ version = "0.25.2"
 dependencies = [
  "bolero",
  "dataplane-acl",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
@@ -1686,6 +1699,7 @@ dependencies = [
  "arc-swap",
  "bnum",
  "bolero",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
@@ -1722,6 +1736,7 @@ dependencies = [
  "bitflags 2.13.1",
  "bolero",
  "bytecheck",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-fixed-size",
@@ -1774,6 +1789,7 @@ dependencies = [
  "chrono",
  "dataplane-args",
  "dataplane-cli",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
@@ -1812,6 +1828,7 @@ version = "0.25.2"
 dependencies = [
  "arrayvec",
  "bolero",
+ "dataplane-clock",
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1859,6 +1876,7 @@ name = "dataplane-tracectl"
 version = "0.25.2"
 dependencies = [
  "color-eyre",
+ "dataplane-clock",
  "dataplane-common",
  "dataplane-concurrency",
  "linkme",

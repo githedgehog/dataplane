@@ -521,14 +521,13 @@ mod tests {
     #[concurrency_mode(std)]
     mod std_tests {
         use net::flows::FlowInfoFlags;
-        use std::time::Instant;
         use tracing_test::traced_test;
 
         use super::*;
 
         #[tokio::test]
         async fn test_flow_table_insert_and_remove() {
-            let now = Instant::now();
+            let now = clock::now();
             let five_seconds = Duration::new(5, 0);
             let five_seconds_from_now = now + five_seconds;
 
@@ -552,13 +551,13 @@ mod tests {
 
         // start_paused so the timer task's sleep_until and the test's sleeps share tokio's
         // virtual clock; otherwise miri's slow interpretation can drift the wall clock far
-        // enough between Instant::now() and the first sleep that the deadline elapses early.
-        // Anchor `now` on the virtual clock too -- a std::Instant::now() here would be many
+        // enough between clock::now() and the first sleep that the deadline elapses early.
+        // Anchor `now` on the virtual clock too -- an unpaused clock read here would be many
         // real-time seconds past the paused baseline under miri, putting the deadline beyond
         // any virtual-time advance the test performs.
         #[tokio::test(start_paused = true)]
         async fn test_flow_table_timeout() {
-            let now = tokio::time::Instant::now().into_std();
+            let now = clock::now();
             let two_seconds = Duration::from_secs(2);
             let one_second = Duration::from_secs(1);
 
@@ -590,7 +589,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_flow_table_entry_replaced_on_insert() {
-            let now = Instant::now();
+            let now = clock::now();
             let first_expiry_time = now + Duration::from_secs(5);
             let second_expiry_time = now + Duration::from_secs(10);
 
@@ -645,7 +644,7 @@ mod tests {
                     flow_table
                         .insert(FlowInfo::new(
                             flow_key,
-                            Instant::now() + Duration::from_mins(1),
+                            clock::now() + Duration::from_mins(1),
                         ))
                         .unwrap();
                     let flow_info = flow_table.lookup(&flow_key).unwrap();
@@ -675,7 +674,7 @@ mod tests {
         async fn test_flow_table_flow_invalidation() {
             const NUM_FLOWS: u16 = 10;
             let flow_table = FlowTable::default();
-            let now = Instant::now();
+            let now = clock::now();
             let deadline = now + Duration::from_secs(3);
 
             let mut flow_keys = vec![];
@@ -718,7 +717,7 @@ mod tests {
         /// Test that invalidating flows causes timer to expire and flows to be removed
         async fn test_flow_table_flow_reinsertion() {
             let flow_table = FlowTable::default();
-            let now = Instant::now();
+            let now = clock::now();
             let deadline = now + Duration::from_secs(2);
 
             let flow_key = FlowKey::new(
@@ -765,7 +764,7 @@ mod tests {
         async fn an_active_flow_holds_its_key_against_a_second_insertion() {
             let flow_table = FlowTable::default();
             let key = key_for(1025);
-            let far_future = Instant::now() + Duration::from_hours(1);
+            let far_future = clock::now() + Duration::from_hours(1);
 
             let first = Arc::new(FlowInfo::new(key, far_future));
             assert!(matches!(
@@ -794,7 +793,7 @@ mod tests {
         async fn a_flow_that_is_not_live_is_displaced() {
             let flow_table = FlowTable::default();
             let key = key_for(1026);
-            let far_future = Instant::now() + Duration::from_hours(1);
+            let far_future = clock::now() + Duration::from_hours(1);
 
             let first = Arc::new(FlowInfo::new(key, far_future));
             flow_table.insert_if_absent(&first).unwrap();
@@ -821,7 +820,7 @@ mod tests {
         async fn displacing_a_flow_invalidates_its_partner() {
             let flow_table = FlowTable::default();
             let (forward_key, reverse_key) = (key_for(1027), key_for(1028));
-            let far_future = Instant::now() + Duration::from_hours(1);
+            let far_future = clock::now() + Duration::from_hours(1);
 
             let (forward, reverse) = FlowInfo::related_pair(
                 far_future,
@@ -853,7 +852,7 @@ mod tests {
             let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
             let src_ip: IpAddr = "1.2.3.4".parse().unwrap();
             let dst_ip: IpAddr = "5.6.7.8".parse().unwrap();
-            let far_future = Instant::now() + Duration::from_hours(1);
+            let far_future = clock::now() + Duration::from_hours(1);
 
             // Insert up to the capacity limit — both should succeed.
             for i in 1u16..=2 {
@@ -894,7 +893,6 @@ mod tests {
         use crate::flow_table::FlowInfo;
         use concurrency::sync::Arc;
         use concurrency::thread;
-        use std::time::Instant;
 
         #[allow(clippy::too_many_lines)]
         #[concurrency::test]
@@ -921,7 +919,7 @@ mod tests {
 
             let flow_table = Arc::new(FlowTable::default());
 
-            let now = Instant::now();
+            let now = clock::now();
 
             // Insert the first flow
             let orig_flow_info = FlowInfo::new(flow_keys[0], now + two_seconds);
@@ -1020,7 +1018,7 @@ mod tests {
         fn test_flow_table_reshard() {
             let flow_table = Arc::new(FlowTable::default());
 
-            let five_seconds_from_now = Instant::now() + Duration::from_secs(5);
+            let five_seconds_from_now = clock::now() + Duration::from_secs(5);
             let flow_key1 = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
