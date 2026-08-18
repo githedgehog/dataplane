@@ -3,11 +3,14 @@
 
 //! Port forwarding
 
+mod expiry;
 mod flow_state;
+mod fuzz;
 pub(crate) mod icmp_handling;
 mod nf;
 mod packet;
 mod portfwtable;
+mod probe;
 mod protocol;
 mod test;
 
