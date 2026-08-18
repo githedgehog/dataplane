@@ -584,7 +584,8 @@ mod tests {
     };
     use dplane_rpc::wire::Wire;
     use lifecycle::{CancellationToken, Subsystem};
-    use std::os::unix::net::UnixDatagram;
+    use std::io::Write;
+    use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
     use std::path::Path;
     use std::time::Duration;
 
@@ -1348,5 +1349,105 @@ mod tests {
             CliAction::ShowCpiStats,
             "and the rebound socket must actually be served, not merely exist"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The frrmi lifecycle.
+    //
+    // The frrmi does not talk to FRR. It talks to `frr-agent`, a Hedgehog
+    // component that sits beside FRR and applies configuration to it, over a
+    // Hedgehog wire format. So the stand-in below impersonates our own agent
+    // and nothing else: no FRR, no bgpd, no zebra, and nothing that would need
+    // one to run.
+    //
+    // The wire format itself is already covered in `frr::frrmi` against a
+    // `UnixStream::pair()`. What is not covered, and what these reach, is the
+    // loop's lifecycle around it -- connect, disconnect, restart.
+    // -----------------------------------------------------------------------
+
+    /// A stand-in for `frr-agent`: something listening at the frrmi path.
+    struct FakeAgent {
+        listener: UnixListener,
+    }
+    impl FakeAgent {
+        fn listening_at(dir: &SockDir) -> Self {
+            let listener =
+                UnixListener::bind(dir.path("frr-agent.sock")).expect("the agent should bind");
+            listener
+                .set_nonblocking(true)
+                .expect("the agent should be pollable");
+            Self { listener }
+        }
+        /// Wait for the loop to connect, failing rather than hanging.
+        fn accept(&self, expectation: &str) -> UnixStream {
+            let deadline = clock::now() + Duration::from_secs(10);
+            loop {
+                match self.listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(clock::now() < deadline, "rio never {expectation}");
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => panic!("the agent could not accept: {e}"),
+                }
+            }
+        }
+    }
+
+    /// The loop keeps trying until the agent turns up.
+    ///
+    /// Rio starts here with nothing listening, so its first connect fails.
+    /// That is the normal case rather than an edge one -- the dataplane and
+    /// the FRR container come up in whatever order they come up in -- and a
+    /// loop that gave up after the first refusal would need a restart to
+    /// recover.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn the_loop_connects_to_the_agent_whenever_it_appears() {
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+        let _conn = agent.accept("connected to an agent that appeared after it started");
+    }
+
+    /// The loop reconnects when the agent goes away.
+    ///
+    /// `frr-agent` restarts whenever FRR does, which is the very moment the
+    /// dataplane most needs to push configuration back. A loop that held the
+    /// dead socket would go on believing it had a link and quietly stop
+    /// applying anything.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn the_loop_reconnects_when_the_agent_goes_away() {
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+
+        let first = agent.accept("connected to the agent");
+        drop(first); // the agent restarts
+
+        let _second = agent.accept("reconnected after the agent left");
+    }
+
+    /// A response the agent could not have meant restarts the link.
+    ///
+    /// The first four octets are an announced length, so a burst of `0xff`
+    /// announces a message of absurd size. `frr::frrmi` refuses it; this
+    /// asserts what the loop does *with* that refusal, which is to rebuild the
+    /// link rather than to keep reading a stream it has lost its place in.
+    ///
+    /// The connection is deliberately held open, so the restart can only have
+    /// come from the refusal and not from an end-of-file.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
+    fn nonsense_from_the_agent_restarts_the_link() {
+        let rio = RunningRio::start();
+        let agent = FakeAgent::listening_at(&rio.dir);
+
+        let mut first = agent.accept("connected to the agent");
+        first
+            .write_all(&[0xff; 64])
+            .expect("the agent should be able to write nonsense");
+
+        let _second = agent.accept("rebuilt the link after a message it could not read");
+        drop(first);
     }
 }
