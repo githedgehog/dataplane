@@ -180,14 +180,24 @@ impl Masquerade {
             }
         };
 
-        // extend the duration of the flow according to the new status
+        // Extend the duration of the flow according to the new status -- and of its partner.
+        //
+        // Both halves, on every refresh, not just on the transition into Established. A pair is one
+        // connection: a packet in either direction is evidence that the whole thing is alive, and
+        // conntrack has always treated it that way.
+        //
+        // Refreshing only the half a packet happened to hit made the other half expire under a live
+        // connection whenever traffic ran mostly one way -- a download, a DNS response, any session
+        // that mostly receives. The forward half is the one that owns the `Allocation`, so its
+        // expiry released the address and port while the reverse half went on translating to them.
+        // The allocator would then hand that same tuple to another tenant, whose replies arrive at
+        // the first tenant's still-live reverse entry.
+        //
+        // `reset_expiry_unchecked` refuses to move a deadline earlier, so extending the partner can
+        // only ever lengthen its life.
         if let Some(extend_by) = extend_by {
             let _ = flow_info.reset_expiry_unchecked(extend_by);
-            // if we transition to established, let the related flow get the configured timeout too
-            if current != new_status
-                && new_status == NatFlowStatus::Established
-                && let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade)
-            {
+            if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
                 let _ = related.reset_expiry_unchecked(extend_by);
             }
         }

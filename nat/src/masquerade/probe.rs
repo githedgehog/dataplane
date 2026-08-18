@@ -155,6 +155,20 @@ impl Fabric {
         )
     }
 
+    /// How many flow entries the table currently holds.
+    ///
+    /// A projection rather than state inspection: a property may not care *which* entries exist, but
+    /// a pair that has silently become a single entry is exactly the defect
+    /// `both_halves_of_a_pair_outlive_one_sided_traffic` exists to catch, and no amount of looking
+    /// at packets shows it -- the surviving half keeps answering.
+    pub(crate) fn live_flows(&self) -> usize {
+        let count = concurrency::sync::atomic::AtomicUsize::new(0);
+        self.flow_table.for_each_flow_sharded(|_, _| {
+            count.fetch_add(1, concurrency::sync::atomic::Ordering::Relaxed);
+        });
+        count.load(concurrency::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Whether this fabric can be probed at all.
     pub(crate) fn is_probeable(&self) -> bool {
         !self.private.is_empty() && !self.public.is_empty()
