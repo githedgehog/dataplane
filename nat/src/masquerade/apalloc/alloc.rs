@@ -117,6 +117,10 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
 
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+        //= reason=held: reuse before draw is what makes the pooling behaviour "Paired"
+        //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+        //# behavior of "Paired".
         // Draw a fresh address only when the addresses already in use are exhausted. Other errors
         // describe allocator failure and must be preserved.
         match self.reuse_allocated_ip(allow_null) {

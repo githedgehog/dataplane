@@ -200,6 +200,71 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
     out[0].is_done() || source_of(&out[0]) == before
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+//= type=test
+//# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+//# behavior of "Paired".
+#[test]
+fn an_internal_endpoint_keeps_one_public_address() {
+    let tally = Tally::default();
+
+    with_runtime(|| {
+        bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            tally.seen.fetch_add(1, Ordering::Relaxed);
+            let Some(fabric) = fabric(&exposes) else {
+                return;
+            };
+            tally.built.fetch_add(1, Ordering::Relaxed);
+            let (mut lookup, mut masq) = fabric.stages();
+
+            for spec in &probes {
+                let probe = (*spec).resolve(&fabric);
+                let before = (probe.source, probe.sport);
+                let first = run(&mut lookup, &mut masq, vec![probe.packet()], probe.arrival.dst_vpcd);
+                if out_unchanged(&first, before) {
+                    continue;
+                }
+
+                let mut elsewhere = (*spec).resolve(&fabric);
+                elsewhere.dport = elsewhere.dport.wrapping_add(1).max(1);
+                if let Some(other) = fabric.peer.iter().find(|a| **a != probe.destination) {
+                    elsewhere.destination = *other;
+                }
+                if (elsewhere.destination, elsewhere.dport) == (probe.destination, probe.dport) {
+                    continue;
+                }
+
+                let second = run(
+                    &mut lookup,
+                    &mut masq,
+                    vec![elsewhere.packet()],
+                    elsewhere.arrival.dst_vpcd,
+                );
+                if out_unchanged(&second, before) {
+                    continue;
+                }
+
+                assert_eq!(
+                    source_of(&second[0]).0,
+                    source_of(&first[0]).0,
+                    "{before:?} was given {:?} talking to {:?} and {:?} talking to {:?}, so the \
+                     public address it is given depends on who it is addressing",
+                    source_of(&first[0]),
+                    (probe.destination, probe.dport),
+                    source_of(&second[0]),
+                    (elsewhere.destination, elsewhere.dport)
+                );
+                tally.reached.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    });
+
+    tally.report("address pairing");
+}
+
 //= https://www.rfc-editor.org/rfc/rfc5382#section-8
 //= type=test
 //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
