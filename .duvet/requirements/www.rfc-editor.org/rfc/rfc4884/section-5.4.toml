@@ -1,0 +1,10 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-5.4"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the length attribute is zero, the compliant application
+MUST determine that the message contains no extensions.
+'''
+

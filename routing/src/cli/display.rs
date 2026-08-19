@@ -46,7 +46,6 @@ use std::time::Duration;
 
 use tracing::{error, warn};
 
-//================================= Common ==========================//
 fn fmt_opt_value<T: Display>(
     f: &mut std::fmt::Formatter<'_>,
     name: &str,
@@ -60,7 +59,6 @@ fn fmt_opt_value<T: Display>(
     if nl { writeln!(f) } else { Ok(()) }
 }
 
-//========================= Encapsulations ==========================//
 impl Display for VxlanEncapsulation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -83,7 +81,6 @@ impl Display for Encapsulation {
     }
 }
 
-//=================== VRFs, routes and next-hops ====================//
 impl Display for RouteOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -491,8 +488,6 @@ impl Display for VrfTable {
     }
 }
 
-//========================= Interfaces ================================//
-
 impl Display for Attachment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -594,7 +589,6 @@ impl Display for IfTable {
         Ok(())
     }
 }
-//========================= Interface addresses ================================//
 #[repr(transparent)]
 pub struct IfTableAddress<'a>(pub &'a IfTable);
 
@@ -632,7 +626,6 @@ impl Display for IfTableAddress<'_> {
     }
 }
 
-//========================= Rmac Store ================================//
 macro_rules! RMAC_TBL_FMT {
     () => {
         " {:<5} {:<20} {:<18} {:<8}"
@@ -679,7 +672,6 @@ impl Display for RmacStore {
     }
 }
 
-//========================= Rmac Store ================================//
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("Local VTEP configuration").fmt(f)?;
@@ -688,7 +680,6 @@ impl Display for Vtep {
     }
 }
 
-//========================= Adjacencies ================================//
 macro_rules! ADJ_TBL_FMT {
     () => {
         " {:<10} {:<20} {:<18}"
@@ -727,7 +718,6 @@ impl Display for AdjacencyTable {
     }
 }
 
-//========================= Fib ================================//
 impl Display for FibKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
@@ -922,7 +912,6 @@ impl Display for FibGroups<'_> {
     }
 }
 
-//========================= Time utils =========================//
 use chrono::Local;
 pub(crate) fn fmt_time(time: &DateTime<Local>) -> String {
     //let fmt_iso8 = "%Y-%m-%dT%H:%M:%S%.3f%:z";
@@ -954,7 +943,6 @@ pub(crate) fn fmt_time(time: &DateTime<Local>) -> String {
     out
 }
 
-//========================= CPI ================================//
 macro_rules! STATS_ROW_FMT {
     () => {
         " {:<16} {:<12} {:<12} {:<12} {:<12} {:<12}"
@@ -1038,7 +1026,6 @@ impl Display for CpiStats {
     }
 }
 
-//========================= Frrmi ================================//
 impl Display for FrrmiStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let last_conn_time = &self

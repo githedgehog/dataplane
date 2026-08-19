@@ -1,0 +1,17 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-4.6"
+
+
+[[spec]]
+level = "MAY"
+quote = '''
+The ICMP Extension Structure MAY be appended to messages of the
+following types:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The ICMP Extension Structure MUST NOT be appended to any of the other
+ICMP messages mentioned in Section 4.
+'''
+
