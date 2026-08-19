@@ -1,8 +1,8 @@
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
   SECTION: [Address and Port Mapping](#section-4.1)
     TEXT[!MUST,todo]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
-    TEXT[!SHOULD]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
-    TEXT[!SHOULD]:       behavior of "Paired".
+    TEXT[!SHOULD,implementation,test]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    TEXT[!SHOULD,implementation,test]:       behavior of "Paired".
 
   SECTION: [Port Assignment Behavior](#section-4.2.1)
     TEXT[!MUST,implementation,test]:    REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
