@@ -202,6 +202,10 @@ impl Masquerade {
             | NatFlowStatus::CHalfClose
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
+            //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+            //= type=todo
+            //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+            //# refresh behavior" of "True".
             NatFlowStatus::OneWay => {
                 // this could happen if a burst of packets are sent before any state is there (snat),
                 // or if we got a TCP segment back without expected flags. This should never happen for
