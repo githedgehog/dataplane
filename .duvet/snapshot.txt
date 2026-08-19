@@ -1,8 +1,8 @@
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
   SECTION: [Address and Port Mapping](#section-4.1)
     TEXT[!MUST,todo]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
-    TEXT[!SHOULD]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
-    TEXT[!SHOULD]:       behavior of "Paired".
+    TEXT[!SHOULD,test,exception]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    TEXT[!SHOULD,test,exception]:       behavior of "Paired".
 
   SECTION: [Port Assignment Behavior](#section-4.2.1)
     TEXT[!MUST,implementation,test]:    REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
@@ -289,8 +289,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
     TEXT[!SHOULD]:       default.
 
   SECTION: [Port Assignment](#section-7.1)
-    TEXT[!MUST]:    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
-    TEXT[!MUST]:       overloading" for TCP.
+    TEXT[!MUST,test]:    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    TEXT[!MUST,test]:       overloading" for TCP.
 
   SECTION: [Hairpinning Behavior](#section-7.2)
     TEXT[!MUST]:    REQ-8:  A NAT MUST support "hairpinning" for TCP.
@@ -345,8 +345,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
     TEXT[!SHOULD]:    REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
     TEXT[!SHOULD]:       that all of those ALGs (except for FTP [RFC0959]) be disabled by
     TEXT[!SHOULD]:       default.
-    TEXT[!MUST,implementation,test]:    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
-    TEXT[!MUST,implementation,test]:       overloading" for TCP.
+    TEXT[!MUST,implementation]:    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    TEXT[!MUST,implementation]:       overloading" for TCP.
     TEXT[!MUST]:    REQ-8:  A NAT MUST support "hairpinning" for TCP.
     TEXT[!MUST]:       a) A NAT's hairpinning behavior MUST be of type "External source
     TEXT[!MUST]:          IP address and port".
