@@ -34,3 +34,13 @@ enabled = true
 # is reformatted.
 [report.snapshot]
 enabled = true
+
+# RFC 4787 is the UDP counterpart of RFC 5382 and states 14 numbered requirements. Tracked third
+# because masquerade translates UDP on the same path it translates TCP, so its mapping and timeout
+# requirements land on code that already carries RFC 5382 citations.
+#
+# Cited as the individual RFC, never as BCP 127. That composite concatenates RFC 4787, RFC 6888 and
+# RFC 7857, whose section numbers collide, and duvet silently keeps only the last -- 42 requirements
+# where the three separately yield 129. See development/code/spec-compliance.md.
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4787"

@@ -1,0 +1,114 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.3"
+
+# Mapping Refresh
+#
+#    NAT mapping timeout implementations vary, but include the timer's
+#    value and the way the mapping timer is refreshed to keep the mapping
+#    alive.
+# 
+#    The mapping timer is defined as the time a mapping will stay active
+#    without packets traversing the NAT.  There is great variation in the
+#    values used by different NATs.
+# 
+#    REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+#       minutes, unless REQ-5a applies.
+# 
+#       a) For specific destination ports in the well-known port range
+#          (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+#          are specific to the IANA-registered application running over
+#          that specific destination port.
+# 
+#       b) The value of the NAT UDP mapping timer MAY be configurable.
+# 
+#       c) A default value of five minutes or more for the NAT UDP mapping
+#          timer is RECOMMENDED.
+# 
+#    Justification:  This requirement is to ensure that the timeout is
+#       long enough to avoid too-frequent timer refresh packets.
+# 
+#       a) Some UDP protocols using UDP use very short-lived connections.
+#          There can be very many such connections; keeping them all in a
+#          connections table could cause considerable load on the NAT.
+#          Having shorter timers for these specific applications is,
+#          therefore, an optimization technique.  It is important that the
+#          shorter timers applied to specific protocols be used sparingly,
+#          and only for protocols using well-known destination ports that
+#          are known to have a shorter timer, and that are known not to be
+#          used by any applications for other purposes.
+# 
+#       b) Configuration is desirable for adapting to specific networks
+#          and troubleshooting.
+# 
+#       c) This default is to avoid too-frequent timer refresh packets.
+# 
+#    Some NATs keep the mapping active (i.e., refresh the timer value)
+#    when a packet goes from the internal side of the NAT to the external
+#    side of the NAT.  This is referred to as having a NAT Outbound
+#    refresh behavior of "True".
+# 
+#    Some NATs keep the mapping active when a packet goes from the
+#    external side of the NAT to the internal side of the NAT.  This is
+#    referred to as having a NAT Inbound Refresh Behavior of "True".
+# 
+#    Some NATs keep the mapping active on both, in which case, both
+#    properties are "True".
+# 
+#    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+#       refresh behavior" of "True".
+# 
+#       a) The NAT mapping Refresh Direction MAY have a "NAT Inbound
+#          refresh behavior" of "True".
+# 
+#    Justification:  Outbound refresh is necessary for allowing the client
+#       to keep the mapping alive.
+# 
+#       a) Inbound refresh may be useful for applications with no outgoing
+#          UDP traffic.  However, allowing inbound refresh may allow an
+#          external attacker or misbehaving application to keep a mapping
+#          alive indefinitely.  This may be a security risk.  Also, if the
+#          process is repeated with different ports, over time, it could
+#          use up all the ports on the NAT.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+minutes, unless REQ-5a applies.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) For specific destination ports in the well-known port range
+(ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+are specific to the IANA-registered application running over
+that specific destination port.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+b) The value of the NAT UDP mapping timer MAY be configurable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+c) A default value of five minutes or more for the NAT UDP mapping
+timer is RECOMMENDED.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+refresh behavior" of "True".
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The NAT mapping Refresh Direction MAY have a "NAT Inbound
+refresh behavior" of "True".
+'''
+

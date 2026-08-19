@@ -1,0 +1,115 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1"
+
+# Port Assignment Behavior
+#
+#    This section uses the following diagram for reference.
+# 
+#                                       E
+#    +-------+               +-------+  x
+#    |  Y1   |               |  Y2   |  t
+#    +---+---+               +---+---+  e
+#        | Y1:y1          Y2:y2  |      r
+#        +---------+   +---------+      n
+#                  |   |                a
+#          X1':x1' |   | X2':x2'        l
+#               +--+---+--+
+#    ...........|   NAT   |...............
+#               +--+---+--+             I
+#                  |   |                n
+#        +---------+   +---------+      t
+#        | X1:x1           X2:x2 |      e
+#    +---+---+               +---+---+  r
+#    |  X1   |               |  X2   |  n
+#    +-------+               +-------+  a
+#                                       l
+# 
+#                               Port Assignment
+# 
+#    Some NATs attempt to preserve the port number used internally when
+#    assigning a mapping to an external IP address and port (e.g., x1=x1',
+#    x2=x2').  This port assignment behavior is referred to as "port
+#    preservation".  In case of port collision, these NATs attempt a
+#    variety of techniques for coping.  For example, some NATs will
+#    overridden the previous mapping to preserve the same port.  Other
+#    NATs will assign a different IP address from a pool of external IP
+#    addresses; this is only possible as long as the NAT has enough
+#    external IP addresses; if the port is already in use on all available
+#    external IP addresses, then these NATs will pick a different port
+#    (i.e., they don't do port preservation anymore).
+# 
+#    Some NATs use "Port overloading", i.e., they always use port
+#    preservation even in the case of collision (i.e., X1'=X2' and
+#    x1=x2=x1'=x2').  Most applications will fail if the NAT uses "Port
+#    overloading".
+# 
+#    A NAT that does not attempt to make the external port numbers match
+#    the internal port numbers in any case is referred to as "no port
+#    preservation".
+# 
+#    When NATs do allocate a new source port, there is the issue of which
+#    IANA-defined range of port to choose.  The ranges are "well-known"
+#    from 0 to 1023, "registered" from 1024 to 49151, and "dynamic/
+#    private" from 49152 through 65535.  For most protocols, these are
+#    destination ports and not source ports, so mapping a source port to a
+#    source port that is already registered is unlikely to have any bad
+#    effects.  Some NATs may choose to use only the ports in the dynamic
+#    range; the only downside of this practice is that it limits the
+#    number of ports available.  Other NAT devices may use everything but
+#    the well-known range and may prefer to use the dynamic range first,
+#    or possibly avoid the actual registered ports in the registered
+#    range.  Other NATs preserve the port range if it is in the well-known
+#    range.  [RFC0768] specifies that the source port is set to zero if no
+#    reply packets are expected.  In this case, it does not matter what
+#    the NAT maps it to, as the source port will not be used.  However,
+#    many common OS APIs do not allow a user to send from port zero,
+#    applications do not use port zero, and the behavior of various
+#    existing NATs with regards to a packet with a source of port zero is
+#    unknown.  This document does not specify any normative behavior for a
+#    NAT when handling a packet with a source port of zero which means
+#    that applications cannot count on any sort of deterministic behavior
+#    for these packets.
+# 
+#    REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+#       overloading".
+# 
+#       a) If the host's source port was in the range 0-1023, it is
+#          RECOMMENDED the NAT's source port be in the same range.  If the
+#          host's source port was in the range 1024-65535, it is
+#          RECOMMENDED that the NAT's source port be in that range.
+# 
+#    Justification:  This requirement must be met in order to enable two
+#       applications on the internal side of the NAT both to use the same
+#       port to try to communicate with the same destination.  NATs that
+#       implement port preservation have to deal with conflicts on ports,
+#       and the multiple code paths this introduces often result in
+#       nondeterministic behavior.  However, it should be understood that
+#       when a port is randomly assigned, it may just randomly happen to
+#       be assigned the same port.  Applications must, therefore, be able
+#       to deal with both port preservation and no port preservation.
+# 
+#       a) Certain applications expect the source UDP port to be in the
+#          well-known range.  See the discussion of Network File System
+#          port expectations in [RFC2623] for an example.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+overloading".
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) If the host's source port was in the range 0-1023, it is
+RECOMMENDED the NAT's source port be in the same range.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the
+host's source port was in the range 1024-65535, it is
+RECOMMENDED that the NAT's source port be in that range.
+'''
+
