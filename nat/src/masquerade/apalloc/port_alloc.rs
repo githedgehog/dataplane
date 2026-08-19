@@ -92,6 +92,10 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     exclude_wellknown_ports: bool,
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+//= type=exception
+//# a) If the host's source port was in the range 0-1023, it is
+//# RECOMMENDED the NAT's source port be in the same range.
 /// Ports 0..=1023 cover the IANA system/well-known range and should not be
 /// allocated by masquerade NAT for TCP or UDP.
 pub(super) const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;

@@ -1,0 +1,14 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.4"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7:  A NAT device whose external IP interface can be configured
+dynamically MUST either (1) automatically ensure that its internal
+network uses IP addresses that do not conflict with its external
+network, or (2) be able to translate and forward traffic between
+all internal nodes and all external nodes whose IP addresses
+numerically conflict with the internal network.
+'''
+

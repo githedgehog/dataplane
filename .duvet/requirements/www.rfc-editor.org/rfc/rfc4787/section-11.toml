@@ -1,0 +1,20 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-11"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-14:  A NAT MUST support receiving in-order and out-of-order
+fragments, so it MUST have "Received Fragment Out of Order"
+behavior.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT's out-of-order fragment processing mechanism MUST be
+designed so that fragmentation-based DoS attacks do not
+compromise the NAT's ability to process in-order and
+unfragmented IP packets.
+'''
+

@@ -1,0 +1,25 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+overloading".
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) If the host's source port was in the range 0-1023, it is
+RECOMMENDED the NAT's source port be in the same range.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the
+host's source port was in the range 1024-65535, it is
+RECOMMENDED that the NAT's source port be in that range.
+'''
+
