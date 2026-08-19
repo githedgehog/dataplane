@@ -1,0 +1,10 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-4.1"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+for TCP.
+'''
+

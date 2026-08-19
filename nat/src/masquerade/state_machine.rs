@@ -195,6 +195,10 @@ fn ordinary_udp_opens_and_settles() {
     }
 }
 
+//= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=test
+//# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping or TCP connection for which the ICMP was generated.
 #[test]
 fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     let packet = build_test_icmp4_echo(
