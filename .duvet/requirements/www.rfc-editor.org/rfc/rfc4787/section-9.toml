@@ -1,0 +1,47 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-9"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+The NAT's default configuration SHOULD NOT filter
+ICMP messages based on their source IP address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Such ICMP messages
+SHOULD be rewritten by the NAT (specifically, the IP headers and the
+ICMP payload) and forwarded to the appropriate internal or external
+host.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Receipt of any sort of ICMP message MUST NOT
+destroy the NAT mapping.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+NAT mapping.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) The NAT's default configuration SHOULD NOT filter ICMP messages
+based on their source IP address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+b) It is RECOMMENDED that a NAT support ICMP Destination
+Unreachable messages.
+'''
+
