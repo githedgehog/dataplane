@@ -64,6 +64,8 @@ npins add github githedgehog frr-agent --branch master # floats with branch on p
 npins add github githedgehog dplane-rpc --branch master # floats with branch on pin bump
 npins add github githedgehog dplane-plugin --branch hh-master-10.6 # floats with branch on pin bump
 
+npins add github githedgehog duvet --branch v0.4.3-hh # floats with branch on pin bump
+
 npins add github opengrep opengrep
 npins add github mermaid-js mermaid --release-prefix "mermaid@"
 npins add github KaTeX KaTeX

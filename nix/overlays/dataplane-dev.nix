@@ -12,6 +12,10 @@ let
   };
 in
 {
+  duvet = final.callPackage ../pkgs/duvet {
+    src = sources.duvet;
+    inherit (override-packages) rustPlatform;
+  };
   kopium = import ../pkgs/kopium (
     override-packages
     // {
