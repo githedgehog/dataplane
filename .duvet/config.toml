@@ -6,6 +6,9 @@ pattern = "*/src/**/*.rs"
 [[specification]]
 source = "https://www.rfc-editor.org/rfc/rfc4884"
 
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc5382"
+
 [report.html]
 enabled = true
 
