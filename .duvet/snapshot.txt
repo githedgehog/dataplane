@@ -57,3 +57,127 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
     TEXT[!MAY]:    while ignoring others.
     TEXT[!MUST]:    As stated above, the total length of the ICMP message, including
     TEXT[!MUST]:    extensions, MUST NOT exceed the minimum reassembly buffer size.
+
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
+  SECTION: [Address and Port Mapping Behavior](#section-4.1)
+    TEXT[!MUST]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+    TEXT[!MUST]:       for TCP.
+
+  SECTION: [Internally Initiated Connections](#section-4.2)
+    TEXT[!MUST]:    REQ-2:  A NAT MUST support all valid sequences of TCP packets
+    TEXT[!MUST]:       (defined in [RFC0793]) for connections initiated both internally
+    TEXT[!MUST]:       as well as externally when the connection is permitted by the NAT.
+    TEXT[!MUST]:       In particular:
+    TEXT[!MUST]:       a) In addition to handling the TCP 3-way handshake mode of
+    TEXT[!MUST]:          connection initiation, A NAT MUST handle the TCP simultaneous-
+    TEXT[!MUST]:          open mode of connection initiation.
+
+  SECTION: [Externally Initiated Connections](#section-4.3)
+    TEXT[!SHOULD]:    REQ-3:  If application transparency is most important, it is
+    TEXT[!SHOULD]:       RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+    TEXT[!SHOULD]:       behavior for TCP.
+    TEXT[!SHOULD]: If a more stringent filtering behavior is most
+    TEXT[!SHOULD]:       important, it is RECOMMENDED that a NAT have an "Address-Dependent
+    TEXT[!SHOULD]:       Filtering" behavior.
+    TEXT[!MAY]:       a) The filtering behavior MAY be an option configurable by the
+    TEXT[!MAY]:          administrator of the NAT.
+    TEXT[!MAY]:       b) The filtering behavior for TCP MAY be independent of the
+    TEXT[!MAY]:          filtering behavior for UDP.
+    TEXT[!MUST]:    REQ-4:  A NAT MUST NOT respond to an unsolicited inbound SYN packet
+    TEXT[!MUST]:       for at least 6 seconds after the packet is received.
+    TEXT[!MUST]: If during
+    TEXT[!MUST]:       this interval the NAT receives and translates an outbound SYN for
+    TEXT[!MUST]:       the connection the NAT MUST silently drop the original unsolicited
+    TEXT[!MUST]:       inbound SYN packet.
+    TEXT[!SHOULD]: Otherwise, the NAT SHOULD send an ICMP Port
+    TEXT[!SHOULD]:       Unreachable error (Type 3, Code 3) for the original SYN, unless
+    TEXT[!SHOULD]:       REQ-4a applies.
+    TEXT[!MUST]:       a) The NAT MUST silently drop the original SYN packet if sending a
+    TEXT[!MUST]:          response violates the security policy of the NAT.
+
+  SECTION: [NAT Session Refresh](#section-5)
+    TEXT[!MAY]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    TEXT[!MAY]:       connection are active, it MAY abandon the session if it has been
+    TEXT[!MAY]:       idle for some time.
+    TEXT[!MUST]: In such cases, the value of the "established
+    TEXT[!MUST]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    TEXT[!MUST]:       The value of the "transitory connection idle-timeout" MUST NOT be
+    TEXT[!MUST]:       less than 4 minutes.
+    TEXT[!MAY]:       a) The value of the NAT idle-timeouts MAY be configurable.
+    TEXT[!MAY]: A NAT MAY hold state for a connection in
+    TEXT[!MAY]:    TIME_WAIT state to accommodate retransmissions of the last ACK.
+    TEXT[!MAY]: When a NAT abandons a live connection, for
+    TEXT[!MAY]:    example due to a timeout expiring, the NAT MAY either send TCP RST
+    TEXT[!MAY]:    packets to the endpoints or MAY silently abandon the connection.
+
+  SECTION: [Application Level Gateways](#section-6)
+    TEXT[!SHOULD]:    REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
+    TEXT[!SHOULD]:       that all of those ALGs (except for FTP [RFC0959]) be disabled by
+    TEXT[!SHOULD]:       default.
+
+  SECTION: [Port Assignment](#section-7.1)
+    TEXT[!MUST]:    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    TEXT[!MUST]:       overloading" for TCP.
+
+  SECTION: [Hairpinning Behavior](#section-7.2)
+    TEXT[!MUST]:    REQ-8:  A NAT MUST support "hairpinning" for TCP.
+    TEXT[!MUST]:       a) A NAT's hairpinning behavior MUST be of type "External source
+    TEXT[!MUST]:          IP address and port".
+
+  SECTION: [ICMP Responses to TCP Packets](#section-7.3)
+    TEXT[!SHOULD]:    REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
+    TEXT[!SHOULD]:       Unreachable (Type 3) messages.
+    TEXT[!MUST]:    REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST]:       NAT mapping or TCP connection for which the ICMP was generated.
+
+  SECTION: [Requirements](#section-8)
+    TEXT[!MUST,todo]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+    TEXT[!MUST,todo]:       for TCP.
+    TEXT[!MUST]:    REQ-2:  A NAT MUST support all valid sequences of TCP packets
+    TEXT[!MUST]:       (defined in [RFC0793]) for connections initiated both internally
+    TEXT[!MUST]:       as well as externally when the connection is permitted by the NAT.
+    TEXT[!MUST]:       In particular:
+    TEXT[!MUST]:       a) In addition to handling the TCP 3-way handshake mode of
+    TEXT[!MUST]:          connection initiation, A NAT MUST handle the TCP simultaneous-
+    TEXT[!MUST]:          open mode of connection initiation.
+    TEXT[!SHOULD]:    REQ-3:  If application transparency is most important, it is
+    TEXT[!SHOULD]:       RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+    TEXT[!SHOULD]:       behavior for TCP.
+    TEXT[!SHOULD]: If a more stringent filtering behavior is most
+    TEXT[!SHOULD]:       important, it is RECOMMENDED that a NAT have an "Address-Dependent
+    TEXT[!SHOULD]:       Filtering" behavior.
+    TEXT[!MAY]:       a) The filtering behavior MAY be an option configurable by the
+    TEXT[!MAY]:          administrator of the NAT.
+    TEXT[!MAY]:       b) The filtering behavior for TCP MAY be independent of the
+    TEXT[!MAY]:          filtering behavior for UDP.
+    TEXT[!MUST]:    REQ-4:  A NAT MUST NOT respond to an unsolicited inbound SYN packet
+    TEXT[!MUST]:       for at least 6 seconds after the packet is received.
+    TEXT[!MUST]: If during
+    TEXT[!MUST]:       this interval the NAT receives and translates an outbound SYN for
+    TEXT[!MUST]:       the connection the NAT MUST silently drop the original unsolicited
+    TEXT[!MUST]:       inbound SYN packet.
+    TEXT[!SHOULD]: Otherwise, the NAT SHOULD send an ICMP Port
+    TEXT[!SHOULD]:       Unreachable error (Type 3, Code 3) for the original SYN, unless
+    TEXT[!SHOULD]:       REQ-4a applies.
+    TEXT[!MUST]:       a) The NAT MUST silently drop the original SYN packet if sending a
+    TEXT[!MUST]:          response violates the security policy of the NAT.
+    TEXT[!MAY,todo]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    TEXT[!MAY,todo]:       connection are active, it MAY abandon the session if it has been
+    TEXT[!MAY,todo]:       idle for some time.
+    TEXT[!MUST,todo]: In such cases, the value of the "established
+    TEXT[!MUST,todo]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    TEXT[!MUST,todo]:       The value of the "transitory connection idle-timeout" MUST NOT be
+    TEXT[!MUST,todo]:       less than 4 minutes.
+    TEXT[!MAY]:       a) The value of the NAT idle-timeouts MAY be configurable.
+    TEXT[!SHOULD]:    REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
+    TEXT[!SHOULD]:       that all of those ALGs (except for FTP [RFC0959]) be disabled by
+    TEXT[!SHOULD]:       default.
+    TEXT[!MUST,implementation,test]:    REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    TEXT[!MUST,implementation,test]:       overloading" for TCP.
+    TEXT[!MUST]:    REQ-8:  A NAT MUST support "hairpinning" for TCP.
+    TEXT[!MUST]:       a) A NAT's hairpinning behavior MUST be of type "External source
+    TEXT[!MUST]:          IP address and port".
+    TEXT[!SHOULD]:    REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
+    TEXT[!SHOULD]:       Unreachable (Type 3) messages.
+    TEXT[!MUST,implementation,test]:    REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST,implementation,test]:       NAT mapping or TCP connection for which the ICMP was generated.
