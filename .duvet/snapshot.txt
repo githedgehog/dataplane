@@ -41,12 +41,12 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!MUST]:       numerically conflict with the internal network.
 
   SECTION: [Filtering Behavior](#section-5)
-    TEXT[!SHOULD]:    REQ-8:  If application transparency is most important, it is
-    TEXT[!SHOULD]:       RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
-    TEXT[!SHOULD]:       behavior.
-    TEXT[!SHOULD]: If a more stringent filtering behavior is most
-    TEXT[!SHOULD]:       important, it is RECOMMENDED that a NAT have an "Address-Dependent
-    TEXT[!SHOULD]:       Filtering" behavior.
+    TEXT[!SHOULD,todo]:    REQ-8:  If application transparency is most important, it is
+    TEXT[!SHOULD,todo]:       RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+    TEXT[!SHOULD,todo]:       behavior.
+    TEXT[!SHOULD,todo]: If a more stringent filtering behavior is most
+    TEXT[!SHOULD,todo]:       important, it is RECOMMENDED that a NAT have an "Address-Dependent
+    TEXT[!SHOULD,todo]:       Filtering" behavior.
     TEXT[!MAY]:       a) The filtering behavior MAY be an option configurable by the
     TEXT[!MAY]:          administrator of the NAT.
 
@@ -63,10 +63,10 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!SHOULD]:          the NAT administrator to enable or disable each ALG separately.
 
   SECTION: [Deterministic Properties](#section-8)
-    TEXT[!MUST]:    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
-    TEXT[!MUST]:       change the NAT translation (Section 4) or the Filtering
-    TEXT[!MUST]:       (Section 5) Behavior at any point in time, or under any particular
-    TEXT[!MUST]:       conditions.
+    TEXT[!MUST,test]:    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+    TEXT[!MUST,test]:       change the NAT translation (Section 4) or the Filtering
+    TEXT[!MUST,test]:       (Section 5) Behavior at any point in time, or under any particular
+    TEXT[!MUST,test]:       conditions.
 
   SECTION: [ICMP Destination Unreachable Behavior](#section-9)
     TEXT[!SHOULD]: The NAT's default configuration SHOULD NOT filter

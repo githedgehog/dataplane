@@ -137,6 +137,147 @@ fn reply_to(
         .flatten()
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-8
+//= type=test
+//= reason=held for the mapping dimension: pairing is unchanged by exhaustion, measured below
+//# REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+//# change the NAT translation (Section 4) or the Filtering
+//# (Section 5) Behavior at any point in time, or under any particular
+//# conditions.
+/// Address pairing does not change when the pool is under pressure.
+///
+/// REQ-11 is second order: it is not a requirement about a packet, it is a requirement that the
+/// answers to the *other* requirements stay the same. RFC 4787 section 8 says what it is aimed at --
+/// NATs that take a different code path once the port they wanted is taken, so their behaviour has a
+/// "Primary" form before the first conflict and a "Secondary" form after it.
+///
+/// Two readings have to be got right before this can be cited at all. "Behavior" means the class
+/// from section 4, not the values: section 4.2.1 explicitly permits random port assignment, so the
+/// allocator shuffling port blocks is not a violation. And the conflict class section 8 describes --
+/// port preservation with a fallback path -- does not exist here, because nothing ever tries to
+/// preserve a source port.
+///
+/// What can still change is address pooling, so that is what this measures: 254 internal hosts,
+/// 256 flows each, 65,024 flows against a public /24. The pool does spill -- two public addresses
+/// end up in use -- and **no internal host is ever given more than one of them**. Pairing before
+/// the spill and pairing after it are the same behaviour, which is REQ-11 for the mapping
+/// dimension.
+///
+/// Ignored by default because it costs about fourteen seconds against a suite that otherwise runs
+/// in four. It is a measurement to re-take when the allocator changes, not a guard on every commit.
+#[test]
+#[ignore = "characterization probe; run with --ignored --nocapture"]
+fn pairing_is_unchanged_by_pool_exhaustion() {
+    use std::collections::{BTreeMap, BTreeSet};
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let mut given: BTreeMap<IpAddr, BTreeSet<IpAddr>> = BTreeMap::new();
+
+        for host in 1..=254u16 {
+            let source: IpAddr = format!("10.0.0.{host}")
+                .parse()
+                .unwrap_or_else(|_| unreachable!());
+            for sport in 1024..1024 + 256u16 {
+                if let Some((public, _)) = open_flow(&mut lookup, &mut masq, source, peer, sport) {
+                    given.entry(source).or_default().insert(public);
+                }
+            }
+        }
+
+        let publics: BTreeSet<_> = given.values().flatten().copied().collect();
+        println!(
+            "{} hosts, {} public addresses in use",
+            given.len(),
+            publics.len()
+        );
+        assert!(
+            publics.len() > 1,
+            "the pool never spilled to a second address, so this measured nothing about conflict"
+        );
+        let split: Vec<_> = given.iter().filter(|(_, a)| a.len() > 1).collect();
+        assert!(
+            split.is_empty(),
+            "pooling changed under pressure: {} hosts were given more than one public address, \
+             so the behaviour before the spill is not the behaviour after it",
+            split.len()
+        );
+    });
+}
+
+/// Send an inbound packet to a translated tuple from an arbitrary external endpoint.
+fn inbound_from(
+    lookup: &mut FlowLookup,
+    masq: &mut Masquerade,
+    from: IpAddr,
+    sport: u16,
+    translated: (IpAddr, u16),
+) -> bool {
+    let mut packet = build(from, translated.0, false, sport, translated.1);
+    Arrival::inbound().stamp(&mut packet);
+    let out: Vec<Packet<TestBuffer>> = run(lookup, masq, vec![packet], Some(vni(LOCAL_VNI)));
+    !out[0].is_done()
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-5
+//= type=todo
+//# REQ-8:  If application transparency is most important, it is
+//# RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+//# behavior.  If a more stringent filtering behavior is most
+//# important, it is RECOMMENDED that a NAT have an "Address-Dependent
+//# Filtering" behavior.
+/// Only the endpoint a flow addressed can answer it.
+///
+/// Three probes against one flow to `3.3.3.1:80` classify the filtering behaviour exactly, in
+/// RFC 4787 section 5's terms: the same address and port is delivered, the same address on a
+/// different port is dropped, and a different address is dropped. That is
+/// **"Address and Port-Dependent Filtering"**, the most restrictive of the three classes.
+///
+/// REQ-8 is a different species from the requirements around it, and worth reading carefully. It
+/// does not state one behaviour; it states two, and picks between them on a priority nobody has
+/// written down -- transparency or stringency. We satisfy neither branch, because we are stricter
+/// than the stringent one: REQ-8's "more stringent" option is Address-*Dependent* filtering, which
+/// would let `3.3.3.1:81` through.
+///
+/// Stricter than a `SHOULD` asks is still a departure from it, and the honest reading is that this
+/// is a consequence of keying the flow table on the whole five-tuple rather than a filtering policy
+/// anybody chose. Hence `todo`: what is missing is not code, it is a recorded priority.
+///
+/// The behaviour itself is worth pinning regardless of how REQ-8 is resolved -- an unsolicited
+/// packet reaching a tenant because it guessed a live public tuple is a security failure, and the
+/// second and third probes are what rule it out.
+#[test]
+fn only_the_endpoint_a_flow_addressed_can_reply() {
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let elsewhere = *fabric
+            .peer
+            .iter()
+            .find(|a| **a != peer)
+            .unwrap_or_else(|| unreachable!("the fixture offers two peer addresses"));
+        let source: IpAddr = "10.0.0.7".parse().unwrap_or_else(|_| unreachable!());
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+
+        assert!(
+            inbound_from(&mut lookup, &mut masq, peer, 80, translated),
+            "the endpoint the flow addressed could not answer it"
+        );
+        assert!(
+            !inbound_from(&mut lookup, &mut masq, peer, 81, translated),
+            "a packet from the right address on the wrong port reached the tenant"
+        );
+        assert!(
+            !inbound_from(&mut lookup, &mut masq, elsewhere, 80, translated),
+            "a packet from an address the flow never addressed reached the tenant"
+        );
+    });
+}
+
 /// A flow inside its lifetime is unaffected by the passage of time.
 ///
 /// The **preserved** disposition. Stated as a property rather than assumed, because the cheap way to
