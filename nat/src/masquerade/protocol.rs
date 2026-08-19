@@ -6,6 +6,7 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
 
@@ -66,22 +67,21 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
 }
 
 //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=implementation
 //# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
 //# NAT mapping or TCP connection for which the ICMP was generated.
 //
 //= https://www.rfc-editor.org/rfc/rfc4787#section-9
+//= type=implementation
 //# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
 //# NAT mapping.
 //
-// Held by construction: no arm below yields `Closed` or `Reset`, so no ICMP message can end a
-// mapping. The only transition available is the one that records that traffic came back.
-//
-// Both specifications state this requirement, and this function is where both are kept. It runs
-// for every ICMP packet regardless of the protocol of the flow it belongs to, so the guarantee
-// does not depend on which specification you read it under.
+// Held by construction: no arm below yields `Closed` or `Reset`. The `debug_assert!` is what keeps
+// it that way, and it is the same predicate the test cited `type=test` calls -- see
+// `contract::rfc4787::Req12`.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
+    let next = match action {
         NatAction::SrcNat => match status {
             _ => status,
         },
@@ -89,7 +89,12 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
-    }
+    };
+    debug_assert!(
+        Req12::new(status, next).check().is_ok(),
+        "{action} {status:?} -> {next:?}"
+    );
+    next
 }
 
 fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {
