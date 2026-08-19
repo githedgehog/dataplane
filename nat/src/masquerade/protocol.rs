@@ -6,6 +6,7 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
 use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
@@ -56,14 +57,11 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
     }
 }
 
-//= https://www.rfc-editor.org/rfc/rfc5382#section-8
-//= type=implementation
-//# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
-//# NAT mapping or TCP connection for which the ICMP was generated.
-//= https://www.rfc-editor.org/rfc/rfc4787#section-9
-//= type=implementation
-//# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
-//# NAT mapping.
+// No arm of this machine reaches a terminal state, so an ICMP *query* -- an Echo or its
+// reply -- never ends the flow it belongs to. That is half of RFC 5382 REQ-10 and RFC 4787
+// REQ-12, and it is not the half a reader assumes: an ICMP *error* does not come through
+// here at all. It goes to `IcmpErrorHandler`, which does tear a one-way mapping down on a
+// hard error, so neither requirement is met and neither is recorded here.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
     let next = match action {
@@ -75,10 +73,15 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             _ => status,
         },
     };
-    debug_assert!(
-        Req12::new(status, next).check().is_ok(),
-        "{action} {status:?} -> {next:?}"
-    );
+    if cfg!(debug_assertions)
+        && let Err(violation) = Req12::new(status, next).check()
+    {
+        unreachable!(
+            "{spec} {id}: {violation} ({action})",
+            spec = Req12::SPEC,
+            id = Req12::ID
+        );
+    }
     next
 }
 
