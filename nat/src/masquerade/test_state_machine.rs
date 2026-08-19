@@ -4,6 +4,7 @@
 #![cfg(test)]
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
 use crate::masquerade::contract::rfc4787::Req12;
 use crate::masquerade::protocol::next_flow_status;
 use net::buffer::TestBuffer;
@@ -196,14 +197,11 @@ fn ordinary_udp_opens_and_settles() {
     }
 }
 
-//= https://www.rfc-editor.org/rfc/rfc5382#section-8
-//= type=test
-//# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
-//# NAT mapping or TCP connection for which the ICMP was generated.
-//= https://www.rfc-editor.org/rfc/rfc4787#section-9
-//= type=test
-//# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
-//# NAT mapping.
+// This is an Echo Reply, so what it exercises is the ICMP *query* machine. RFC 5382 REQ-10
+// and RFC 4787 REQ-12 are about any ICMP message including errors, and errors do not come
+// through here -- they go to `icmp_handler::nf`, which is where either requirement stands
+// or falls. Citing them from a query test is how a compliance report comes to say a
+// requirement is tested by something that cannot reach the code that breaks it.
 #[test]
 fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     let packet = build_test_icmp4_echo(
