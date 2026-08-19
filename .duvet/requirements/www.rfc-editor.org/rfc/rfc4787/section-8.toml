@@ -1,0 +1,12 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-8"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+change the NAT translation (Section 4) or the Filtering
+(Section 5) Behavior at any point in time, or under any particular
+conditions.
+'''
+

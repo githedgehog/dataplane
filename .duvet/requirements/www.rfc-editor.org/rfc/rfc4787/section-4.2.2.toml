@@ -1,0 +1,10 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.2"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-4:  It is RECOMMENDED that a NAT have a "Port parity
+preservation" behavior of "Yes".
+'''
+
