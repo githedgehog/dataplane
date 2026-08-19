@@ -6,6 +6,7 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
 use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
@@ -75,10 +76,15 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             _ => status,
         },
     };
-    debug_assert!(
-        Req12::new(status, next).check().is_ok(),
-        "{action} {status:?} -> {next:?}"
-    );
+    if cfg!(debug_assertions)
+        && let Err(violation) = Req12::new(status, next).check()
+    {
+        unreachable!(
+            "{spec} {id}: {violation} ({action})",
+            spec = Req12::SPEC,
+            id = Req12::ID
+        );
+    }
     next
 }
 
