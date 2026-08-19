@@ -97,6 +97,14 @@ impl Masquerade {
     };
 
     // Internal flow timeouts for masquerading
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //= type=todo
+    //# REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    //# connection are active, it MAY abandon the session if it has been
+    //# idle for some time.  In such cases, the value of the "established
+    //# connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    //# The value of the "transitory connection idle-timeout" MUST NOT be
+    //# less than 4 minutes.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);

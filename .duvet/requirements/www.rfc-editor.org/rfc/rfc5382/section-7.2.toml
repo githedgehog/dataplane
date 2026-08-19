@@ -1,0 +1,16 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-7.2"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-8:  A NAT MUST support "hairpinning" for TCP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT's hairpinning behavior MUST be of type "External source
+IP address and port".
+'''
+

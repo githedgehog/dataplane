@@ -1,0 +1,158 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-8"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+for TCP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-2:  A NAT MUST support all valid sequences of TCP packets
+(defined in [RFC0793]) for connections initiated both internally
+as well as externally when the connection is permitted by the NAT.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In particular:
+a) In addition to handling the TCP 3-way handshake mode of
+connection initiation, A NAT MUST handle the TCP simultaneous-
+open mode of connection initiation.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-3:  If application transparency is most important, it is
+RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+behavior for TCP.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a more stringent filtering behavior is most
+important, it is RECOMMENDED that a NAT have an "Address-Dependent
+Filtering" behavior.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The filtering behavior MAY be an option configurable by the
+administrator of the NAT.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+b) The filtering behavior for TCP MAY be independent of the
+filtering behavior for UDP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-4:  A NAT MUST NOT respond to an unsolicited inbound SYN packet
+for at least 6 seconds after the packet is received.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If during
+this interval the NAT receives and translates an outbound SYN for
+the connection the NAT MUST silently drop the original unsolicited
+inbound SYN packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Otherwise, the NAT SHOULD send an ICMP Port
+Unreachable error (Type 3, Code 3) for the original SYN, unless
+REQ-4a applies.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) The NAT MUST silently drop the original SYN packet if sending a
+response violates the security policy of the NAT.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+connection are active, it MAY abandon the session if it has been
+idle for some time.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In such cases, the value of the "established
+connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The value of the "transitory connection idle-timeout" MUST NOT be
+less than 4 minutes.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The value of the NAT idle-timeouts MAY be configurable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
+that all of those ALGs (except for FTP [RFC0959]) be disabled by
+default.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+overloading" for TCP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-8:  A NAT MUST support "hairpinning" for TCP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT's hairpinning behavior MUST be of type "External source
+IP address and port".
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
+Unreachable (Type 3) messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+NAT mapping or TCP connection for which the ICMP was generated.
+'''
+
