@@ -1,0 +1,64 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-4.3"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-3:  If application transparency is most important, it is
+RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+behavior for TCP.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a more stringent filtering behavior is most
+important, it is RECOMMENDED that a NAT have an "Address-Dependent
+Filtering" behavior.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The filtering behavior MAY be an option configurable by the
+administrator of the NAT.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+b) The filtering behavior for TCP MAY be independent of the
+filtering behavior for UDP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-4:  A NAT MUST NOT respond to an unsolicited inbound SYN packet
+for at least 6 seconds after the packet is received.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If during
+this interval the NAT receives and translates an outbound SYN for
+the connection the NAT MUST silently drop the original unsolicited
+inbound SYN packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Otherwise, the NAT SHOULD send an ICMP Port
+Unreachable error (Type 3, Code 3) for the original SYN, unless
+REQ-4a applies.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) The NAT MUST silently drop the original SYN packet if sending a
+response violates the security policy of the NAT.
+'''
+

@@ -1,0 +1,11 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-6"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
+that all of those ALGs (except for FTP [RFC0959]) be disabled by
+default.
+'''
+
