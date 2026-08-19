@@ -1,0 +1,59 @@
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
+  SECTION: [Summary of Changes to ICMP](#section-3)
+    TEXT[!MAY]:       An ICMP Extension Structure MAY be appended to ICMPv4 Destination
+    TEXT[!MAY]:       Unreachable, Time Exceeded, and Parameter Problem messages.
+    TEXT[!MAY]:       An ICMP Extension Structure MAY be appended to ICMPv6 Destination
+    TEXT[!MAY]:       Unreachable, and Time Exceeded messages.
+    TEXT[!MUST,implementation,test]:       When the ICMP Extension Structure is appended to an ICMP message
+    TEXT[!MUST,implementation,test]:       and that ICMP message contains an "original datagram" field, the
+    TEXT[!MUST,implementation,test]:       "original datagram" field MUST contain at least 128 octets.
+    TEXT[!MUST,implementation,test]:       When the ICMP Extension Structure is appended to an ICMPv4 message
+    TEXT[!MUST,implementation,test]:       and that ICMPv4 message contains an "original datagram" field, the
+    TEXT[!MUST,implementation,test]:       "original datagram" field MUST be zero padded to the nearest
+    TEXT[!MUST,implementation,test]:       32-bit boundary.
+    TEXT[!MUST,implementation]:       When the ICMP Extension Structure is appended to an ICMPv6 message
+    TEXT[!MUST,implementation]:       and that ICMPv6 message contains an "original datagram" field, the
+    TEXT[!MUST,implementation]:       "original datagram" field MUST be zero padded to the nearest
+    TEXT[!MUST,implementation]:       64-bit boundary.
+    TEXT[!SHOULD]:       ICMP messages defined in the future SHOULD indicate whether or not
+    TEXT[!SHOULD]:       they support the extension mechanism defined in this
+    TEXT[!SHOULD]:       specification.
+
+  SECTION: [ICMP Extensibility](#section-4)
+    TEXT[!MUST]:    The length attribute MUST be specified when the ICMP Extension
+    TEXT[!MUST]:    Structure is appended to the above mentioned ICMP messages.
+    TEXT[!MUST]:    When the length attribute is specified, the "original datagram" field
+    TEXT[!MUST]:    MUST be zero padded to the nearest 32-bit boundary.
+    TEXT[!MUST]:    When the length attribute is specified, the "original datagram" field
+    TEXT[!MUST]:    MUST be zero padded to the nearest 64-bit boundary.
+    TEXT[!MUST]:    In order to achieve backwards compatibility, when the ICMP Extension
+    TEXT[!MUST]:    Structure is appended to an ICMP message and that ICMP message
+    TEXT[!MUST]:    contains an "original datagram" field, the "original datagram" field
+    TEXT[!MUST]:    MUST contain at least 128 octets.
+    TEXT[!MUST]: If the original datagram did not
+    TEXT[!MUST]:    contain 128 octets, the "original datagram" field MUST be zero padded
+    TEXT[!MUST]:    to 128 octets.
+
+  SECTION: [ICMP Messages That Can Be Extended](#section-4.6)
+    TEXT[!MAY]:    The ICMP Extension Structure MAY be appended to messages of the
+    TEXT[!MAY]:    following types:
+    TEXT[!MUST]:    The ICMP Extension Structure MUST NOT be appended to any of the other
+    TEXT[!MUST]:    ICMP messages mentioned in Section 4.
+
+  SECTION: [Compliant Application Receives ICMP Message with No Extensions](#section-5.4)
+    TEXT[!MUST]: If the length attribute is zero, the compliant application
+    TEXT[!MUST]:    MUST determine that the message contains no extensions.
+
+  SECTION: [Compliant Application Receives ICMP Message with Non-Compliant](#section-5.5)
+    TEXT[!MUST]: If the length attribute is zero, the compliant application
+    TEXT[!MUST]:    MUST determine that the message contains no extensions.
+    TEXT[!MUST]:    So, to ease transition yet encourage compliant implementation,
+    TEXT[!MUST]:    compliant TRACEROUTE implementations MUST include a non-default
+    TEXT[!MUST]:    operation mode to also interpret non-compliant responses.
+
+  SECTION: [The ICMP Extension Structure](#section-7)
+    TEXT[!MAY]: Having received an ICMP message
+    TEXT[!MAY]:    with extensions, application software MAY process selected objects
+    TEXT[!MAY]:    while ignoring others.
+    TEXT[!MUST]:    As stated above, the total length of the ICMP message, including
+    TEXT[!MUST]:    extensions, MUST NOT exceed the minimum reassembly buffer size.
