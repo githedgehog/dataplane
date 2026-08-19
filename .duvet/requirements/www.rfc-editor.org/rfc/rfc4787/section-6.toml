@@ -1,0 +1,16 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-6"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-9:  A NAT MUST support "Hairpinning".
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT Hairpinning behavior MUST be "External source IP address
+and port".
+'''
+
