@@ -281,6 +281,27 @@ impl NatAllocator {
         self.genid.store(genid, Ordering::Relaxed);
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //= type=todo
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+    //# for TCP.
+    //
+    // Not held as stated, and the deviation is architectural rather than accidental: the
+    // allocation depends on `dst_vpcd`, so one internal endpoint talking to two destination VPCs
+    // can be given two different public tuples. RFC 5382 was written for a NAT facing a single
+    // external realm, where "endpoint" means a destination address and port; here distinct
+    // destination VPCs are distinct address spaces reached through distinct peerings, and sharing
+    // a pool across them would be the surprising choice.
+    //
+    // So this is probably an exception rather than a defect -- but "probably" is the reason it is
+    // marked `todo`. Whether a destination VPC counts as an endpoint for REQ-1 is a question about
+    // the product, and nobody has answered it. Answering it is cheap; discovering the answer
+    // mattered after a peer-to-peer application fails is not.
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading" for TCP.
+    //
+    // No live allocation is ever handed out twice; the port bitmaps below are what enforce it.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,
