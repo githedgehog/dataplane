@@ -87,6 +87,12 @@
       "url": "https://github.com/githedgehog/dplane-rpc/archive/e8fc33db10e1d00785f2a2b90cbadcad7900f200.tar.gz",
       "hash": "sha256-tjN4qSbKrWfosOV3wt2AnQxmVL0BPZYBjAHG3X00+aM="
     },
+    "duvet": {
+      "type": "Url",
+      "url": "https://static.crates.io/crates/duvet/duvet-0.4.2.crate",
+      "unpack": true,
+      "hash": "sha256-ey5eGuJv65ARtv+q+LDYMRunfOliNGHCTJ24tMgXbjs="
+    },
     "fabric": {
       "type": "GitRelease",
       "repository": {
