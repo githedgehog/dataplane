@@ -17,6 +17,9 @@ mod state;
 mod state_machine;
 mod test;
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-6
+//= type=todo
+//# REQ-9:  A NAT MUST support "Hairpinning".
 // re exports
 pub use allocator_writer::MasqueradeConfig;
 pub use allocator_writer::NatAllocatorWriter;
