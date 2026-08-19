@@ -12,6 +12,8 @@
   wrong thing.
 
 If you need to write a test, prefer [property-based tests] over simple unit tests.
+To find out what your tests are _not_ saying, see the [mutation testing note][mutants]; it is a
+report we read, not a gate that blocks anything.
 For inputs too large to generate directly -- a whole configuration, say -- build them from an algebra of
 valid operations and derive the oracles from that same algebra; see the [config algebra note][config-algebra].
 If you need to handle errors, prefer `Result` types over panics in general, but see the
@@ -28,6 +30,7 @@ If you need to [handle an error][error], follow the guidelines.
 [avoid-global-reasoning]: ./avoid-global-reasoning.md
 [property-based tests]: ./property-testing.md
 [config-algebra]: ./config-algebra-testing.md
+[mutants]: ./mutation-testing.md
 [clock]: ../../clock/src/lib.rs
 [error]: ./error-handling.md
 
