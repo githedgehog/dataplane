@@ -200,6 +200,10 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
     out[0].is_done() || source_of(&out[0]) == before
 }
 
+//= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=test
+//# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+//# overloading" for TCP.
 #[test]
 fn distinct_flows_do_not_share_a_translation() {
     let tally = Tally::default();

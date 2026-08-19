@@ -1,0 +1,10 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-7.1"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+overloading" for TCP.
+'''
+

@@ -50,6 +50,9 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
     }
 }
 
+//= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping or TCP connection for which the ICMP was generated.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
     match action {
