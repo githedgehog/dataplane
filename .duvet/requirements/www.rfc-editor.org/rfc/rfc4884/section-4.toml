@@ -1,0 +1,41 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-4"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+The length attribute MUST be specified when the ICMP Extension
+Structure is appended to the above mentioned ICMP messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the length attribute is specified, the "original datagram" field
+MUST be zero padded to the nearest 32-bit boundary.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the length attribute is specified, the "original datagram" field
+MUST be zero padded to the nearest 64-bit boundary.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In order to achieve backwards compatibility, when the ICMP Extension
+Structure is appended to an ICMP message and that ICMP message
+contains an "original datagram" field, the "original datagram" field
+MUST contain at least 128 octets.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the original datagram did not
+contain 128 octets, the "original datagram" field MUST be zero padded
+to 128 octets.
+'''
+
