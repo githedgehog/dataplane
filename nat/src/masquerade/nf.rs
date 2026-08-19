@@ -226,6 +226,32 @@ impl Masquerade {
             | NatFlowStatus::CHalfClose
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
+            //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+            //= type=todo
+            //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+            //# refresh behavior" of "True".
+            //
+            // Not held in this state, and measured rather than inferred. `OneWay` is not only the
+            // odd transient the comment below describes: it is the *steady* state of any flow that
+            // has never had a reply, and returning `None` here means no amount of outbound traffic
+            // moves its deadline.
+            //
+            // A control and a treatment, on a paused clock, five seconds of `OneWay` lifetime:
+            // silent for eight seconds, the reply to the mapping is dropped; an outbound packet at
+            // four seconds and then the same probe at eight, and it is *also* dropped. The packet
+            // changed nothing. An outbound-only flow -- syslog, netflow, telemetry, a resolver
+            // query nobody answers -- is therefore torn down five seconds after its first packet
+            // however much it sends, and rebuilt from scratch on the next one.
+            //
+            // Once a reply arrives the flow reaches `Established` and outbound refresh does work;
+            // `expiry::outbound_traffic_keeps_an_established_mapping_alive` holds that, verified
+            // over five minutes against a two-minute timer. So REQ-6 is met for connections and
+            // missed for one-way traffic.
+            //
+            // Marked `todo` rather than `exception` because this reads like an oversight rather
+            // than a decision: the comment below reasons about the *reverse* direction and treats
+            // `OneWay` as a corner, which is what makes returning `None` look harmless. Nothing
+            // here weighs one-way outbound traffic and declines to support it.
             NatFlowStatus::OneWay => {
                 // this could happen if a burst of packets are sent before any state is there (snat),
                 // or if we got a TCP segment back without expected flags. This should never happen for
