@@ -12,6 +12,12 @@ let
   };
 in
 {
+  # callPackage rather than a bare import: duvet links against OpenSSL and so needs pkg-config and
+  # the library from the package set, while still taking our overridden rust toolchain.
+  duvet = final.callPackage ../pkgs/duvet {
+    src = sources.duvet;
+    inherit (override-packages) rustPlatform;
+  };
   kopium = import ../pkgs/kopium (
     override-packages
     // {
