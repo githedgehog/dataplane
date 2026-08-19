@@ -14,6 +14,7 @@ mod packet;
 mod probe;
 mod protocol;
 mod state;
+mod state_machine;
 mod test;
 
 // re exports
