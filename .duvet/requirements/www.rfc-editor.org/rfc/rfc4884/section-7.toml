@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-7"
+
+
+[[spec]]
+level = "MAY"
+quote = '''
+Having received an ICMP message
+with extensions, application software MAY process selected objects
+while ignoring others.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+As stated above, the total length of the ICMP message, including
+extensions, MUST NOT exceed the minimum reassembly buffer size.
+'''
+
