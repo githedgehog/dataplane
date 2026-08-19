@@ -92,6 +92,24 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     exclude_wellknown_ports: bool,
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+//= type=exception
+//# a) If the host's source port was in the range 0-1023, it is
+//# RECOMMENDED the NAT's source port be in the same range.
+//
+// Declined, deliberately and unconditionally. `setup.rs` sets `exclude_wellknown_ports` for TCP
+// and UDP alike, so an internal host sourcing from a well-known port is always translated to a
+// port at or above 1024 and this requirement can never be met.
+//
+// This is the one requirement in RFC 4787 that is marked `exception` rather than `todo`, because
+// unlike the timeout and mapping deviations it was actually decided: the range is named, the
+// policy is stated on the constant below, a flag carries it, and tests hold it. Handing a tenant
+// a public source port below 1024 would let it originate traffic that peers and middleboxes read
+// as a privileged service, which is a worse trade than breaking the NFS-style clients RFC 4787
+// cites as the beneficiaries.
+//
+// The second half of REQ-3a -- a source port in 1024-65535 mapping to that same range -- is held,
+// and held by the same line.
 /// Ports 0..=1023 cover the IANA system/well-known range and should not be
 /// allocated by masquerade NAT for TCP or UDP.
 pub(super) const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;

@@ -96,8 +96,9 @@ impl Masquerade {
     // We are far under both floors and this has not been ruled on. The three constants below are
     // transitory timeouts in RFC 5382's sense -- the connection is opening or closing -- and they
     // are seconds against a four-minute floor. The established timeout is `idle_timeout` from the
-    // masquerade configuration, which has no default, no bound and no validation, so a deployment
-    // can set it anywhere including well under two hours four minutes.
+    // masquerade configuration, which defaults to two minutes
+    // (`apalloc::setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT`) but has no lower bound and no
+    // validation, so a deployment can set it anywhere, including zero.
     //
     // The short values are deliberate in intent: this file's own comment says the statuses exist
     // "to know how much to extend the lifetime of flows for port conservation", and a gateway
@@ -105,6 +106,37 @@ impl Masquerade {
     // trade is one we are willing to state as a deviation from a BCP is a product decision, not a
     // code one -- hence `todo` rather than `exception`. Converting it needs a rationale somebody
     // is willing to sign.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=todo
+    //# REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+    //# minutes, unless REQ-5a applies.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=todo
+    //# c) A default value of five minutes or more for the NAT UDP mapping
+    //# timer is RECOMMENDED.
+    //
+    // The UDP case is worse than the TCP one above, and for a reason worth stating plainly:
+    // RFC 4787 has no "transitory" category. A UDP mapping is a UDP mapping, and the timer is
+    // defined as "the time a mapping will stay active without packets traversing the NAT". The
+    // argument that rescues the TCP numbers -- that these are opening and closing states -- has
+    // nothing to attach to here.
+    //
+    // Trace a plain request/response exchange through `next_flow_status_udp`. The first outbound
+    // packet creates the flow at `OneWay`, so five seconds. The reply moves it to `TwoWay`, so
+    // three. Only a *second* outbound packet reaches `Established` and the two-minute
+    // `idle_timeout`. A single round trip followed by a four-second pause therefore loses its
+    // mapping, against a floor of two minutes -- short by a factor of forty.
+    //
+    // REQ-5a does not cover this. It permits shorter timers only for specific well-known
+    // destination ports and only where the shorter timer is specific to the IANA-registered
+    // application on that port; a blanket three-second timer for all UDP is not that. The one
+    // place we do apply a port-specific timer -- the resolver fast-close in `protocol.rs` -- is
+    // the thing REQ-5a describes, and is cited there.
+    //
+    // Even the settled case misses REQ-5c: the default is two minutes where five or more is
+    // RECOMMENDED.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
@@ -566,6 +598,20 @@ impl Masquerade {
             return;
         }
 
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-11
+        //= type=todo
+        //# REQ-14:  A NAT MUST support receiving in-order and out-of-order
+        //# fragments, so it MUST have "Received Fragment Out of Order"
+        //# behavior.
+        //
+        // The TODO below predates the citation; RFC 4787 is what it is a TODO about. Nothing on
+        // this path inspects the fragment offset or the more-fragments flag, so a translated flow
+        // whose packets arrive fragmented is handled by whatever the transport-header parse makes
+        // of a fragment that does not carry one.
+        //
+        // REQ-14a additionally requires that out-of-order fragment handling not become a denial of
+        // service vector, which is a constraint on the design that does not exist yet rather than
+        // on the code that does.
         // TODO: Check whether the packet is fragmented
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done((&error).into());
