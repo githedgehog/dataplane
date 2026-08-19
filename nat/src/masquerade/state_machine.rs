@@ -37,6 +37,7 @@
 #![cfg(test)]
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
 use crate::masquerade::contract::rfc4787::Req12;
 use crate::masquerade::protocol::next_flow_status;
 use net::buffer::TestBuffer;

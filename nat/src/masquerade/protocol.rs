@@ -6,6 +6,7 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
 use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
@@ -76,9 +77,8 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
 //# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
 //# NAT mapping.
 //
-// Held by construction: no arm below yields `Closed` or `Reset`. The `debug_assert!` is what keeps
-// it that way, and it is the same predicate the test cited `type=test` calls -- see
-// `contract::rfc4787::Req12`.
+// Held by construction: no arm below yields `Closed` or `Reset`. `contract::rfc4787::Req12` is what
+// keeps it that way, and it is the same predicate the test cited `type=test` calls.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
     let next = match action {
@@ -90,10 +90,17 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             _ => status,
         },
     };
-    debug_assert!(
-        Req12::new(status, next).check().is_ok(),
-        "{action} {status:?} -> {next:?}"
-    );
+    // `unreachable!` rather than `panic!`, per development/code/error-handling.md: reaching this is
+    // programmer error, not a runtime condition. The whole block folds away in release.
+    if cfg!(debug_assertions)
+        && let Err(violation) = Req12::new(status, next).check()
+    {
+        unreachable!(
+            "{spec} {id}: {violation} ({action})",
+            spec = Req12::SPEC,
+            id = Req12::ID
+        );
+    }
     next
 }
 
