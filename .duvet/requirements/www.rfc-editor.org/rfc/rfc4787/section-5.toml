@@ -1,0 +1,26 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-5"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-8:  If application transparency is most important, it is
+RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+behavior.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a more stringent filtering behavior is most
+important, it is RECOMMENDED that a NAT have an "Address-Dependent
+Filtering" behavior.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The filtering behavior MAY be an option configurable by the
+administrator of the NAT.
+'''
+
