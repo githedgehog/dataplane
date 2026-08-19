@@ -4,6 +4,7 @@
 #![cfg(test)]
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::rfc4787::Req12;
 use crate::masquerade::protocol::next_flow_status;
 use net::buffer::TestBuffer;
 use net::headers::TryTcpMut;
@@ -199,6 +200,10 @@ fn ordinary_udp_opens_and_settles() {
 //= type=test
 //# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
 //# NAT mapping or TCP connection for which the ICMP was generated.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-9
+//= type=test
+//# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping.
 #[test]
 fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     let packet = build_test_icmp4_echo(
@@ -216,16 +221,19 @@ fn an_icmp_reply_makes_a_flow_two_way_and_nothing_more() {
     );
 
     for status in STATUSES {
-        assert_eq!(
-            next_flow_status(&packet, NatAction::SrcNat, status),
-            status,
-            "an outbound icmp packet moved a flow in {status:?}"
-        );
-        if status != NatFlowStatus::OneWay {
+        for action in [NatAction::SrcNat, NatAction::DstNat] {
+            let next = next_flow_status(&packet, action, status);
             assert_eq!(
-                next_flow_status(&packet, NatAction::DstNat, status),
-                status,
-                "an inbound icmp packet moved a flow in {status:?}"
+                Req12::new(status, next).check(),
+                Ok(()),
+                "{action} icmp packet terminated a flow in {status:?}"
+            );
+            if action == NatAction::DstNat && status == NatFlowStatus::OneWay {
+                continue;
+            }
+            assert_eq!(
+                next, status,
+                "an {action} icmp packet moved a flow in {status:?}"
             );
         }
     }
