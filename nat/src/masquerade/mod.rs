@@ -4,6 +4,7 @@
 pub(crate) mod allocation;
 mod allocator_writer;
 pub mod apalloc;
+mod contract;
 mod expiry;
 pub(crate) mod flows;
 mod fuzz;
