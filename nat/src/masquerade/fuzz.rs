@@ -291,6 +291,10 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
 //= type=test
 //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
 //# overloading" for TCP.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+//= type=test
+//# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+//# overloading".
 /// Two live flows never share a translation.
 ///
 /// The exclusivity claim the allocator exists to keep, stated where it matters: at the stage, over

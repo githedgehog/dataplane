@@ -297,11 +297,24 @@ impl NatAllocator {
     // marked `todo`. Whether a destination VPC counts as an endpoint for REQ-1 is a question about
     // the product, and nobody has answered it. Answering it is cheap; discovering the answer
     // mattered after a peer-to-peer application fails is not.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=todo
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+    //
+    // The same deviation, for UDP, on the same code. RFC 4787 states it without the "for TCP"
+    // qualifier, so if the destination-VPC reading above is wrong then it is wrong for both
+    // protocols at once. One decision settles both citations.
     //= https://www.rfc-editor.org/rfc/rfc5382#section-8
     //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
     //# overloading" for TCP.
     //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+    //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading".
+    //
     // No live allocation is ever handed out twice; the port bitmaps below are what enforce it.
+    // The allocator is protocol-agnostic, so the UDP and TCP requirements are one implementation.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,
