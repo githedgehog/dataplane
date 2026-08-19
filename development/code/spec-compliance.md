@@ -1,6 +1,7 @@
 # Specification compliance with duvet
 
-Status: **two specifications tracked, the RFC corpus audited, the procedure itself not yet proven.**
+Status: **three specifications tracked, the RFC corpus and its errata audited, the procedure
+itself not yet proven.**
 The open-questions list below is expected to grow; it is written down so that it grows in one place
 rather than in four people's heads.
 
@@ -123,6 +124,65 @@ Rules, therefore:
 - Review is by somebody who reads the original. A reviewer looking only at our Markdown cannot catch
   the failure this is guarding against.
 
+## Errata
+
+An RFC body is immutable, so a correction to one lives only in its errata. The corpus carries them
+in `inline-errata/`: 1,750 RFCs rendered as HTML with their **Verified** errata spliced into the
+text, the corrected passage wrapped in `<span class="Verified-inline-styling">` and an endnote block
+giving the EID, section, original text, corrected text and notes.
+
+Only Verified errata are inlined -- all 1,750 renderings say so in their header, and no other status
+appears. `RFCs_for_errata.txt` names 2,584 RFCs, so **847 have errata that this corpus never shows
+you**: Reported, Held for Document Update, or Rejected. That is the residual fetch leg, and it is a
+much smaller one than it looked.
+
+**Use the file, not the index.** Ten RFCs have renderings and are absent from
+`RFCs_for_errata.txt` -- among them RFC 1191, Path MTU Discovery. Every one was verified after the
+index's own timestamp, so the index is stale in one direction only: it never lists a spurious RFC,
+it just misses recent ones. The presence or absence of `inline-errata/rfcNNNN.html` is authoritative
+for "has Verified errata"; the index is authoritative for nothing.
+
+What that says about the specifications in play:
+
+| | errata |
+| --- | --- |
+| RFC 4787, RFC 5382, RFC 5508, RFC 6888, RFC 7857 | none of any status |
+| RFC 4884 | one, EID 3 |
+
+**EID 3 does not touch us.** It corrects Section 7's description of the ICMP Extension Header
+checksum from "the one's complement sum of the data structure" to "...of the ICMP Extension
+Structure" -- naming what was already unambiguous from context. The sentence carries no RFC 2119
+keyword, so duvet never extracted it: the two requirements it does extract from Section 7 are a
+`MAY` about ignoring unrecognised objects and a `MUST` about the reassembly buffer size, and neither
+is edited. Nothing in the tree parses an extension structure or verifies its checksum; every RFC
+4884 citation we hold is in Section 3 or Section 5, on the length attribute. So
+`MIN_ORIGINAL_DATAGRAM_OCTETS` was decided against text the erratum leaves alone.
+
+**Read the endnotes, do not diff the body.** In 524 of the 1,750 renderings an erratum has an
+endnote but no spliced-in span, because its "Original Text" is not a verbatim quote the renderer
+could locate -- it is a `GLOBAL` scope, or a prose commentary rather than a passage. RFC 8200 is one
+of them. Diffing a rendering against the base text therefore under-reports; the endnote list is the
+complete one.
+
+Two errata on specifications we have discussed but do not track are worth having read:
+
+- **RFC 2663 EID 400** corrects Section 2.6 from "segments containing FINs or SYNs will be the last
+  packets of the session" to "FINs or **RSTs**" -- the original sentence was nonsense, since a SYN
+  never ends a session. Corrected, it is a warning against exactly what masquerade does: we
+  invalidate the pair the moment `next_flow_status` returns `Reset` or `Closed`, and RFC 2663 says a
+  NAT cannot assume no retransmission follows. **This is not a defect.** RFC 5382 revisits the same
+  question and leaves it to us -- "NAT behavior for handling RST packets, or connections in
+  TIME_WAIT state is left unspecified", with an explicit `MAY` to hold state and an explicit note
+  that holding it "may limit the throughput of connections through a NAT with limited resources".
+  We took the throughput side. The erratum is what makes that a decision rather than an oversight.
+- **RFC 8200 EID 5945** rewrites Section 4.5 from the three-part fragmentation model back to the
+  two-part model of RFC 2460, dropping the "Extension & Upper-Layer Headers" division. It concerns
+  source fragmentation, which this dataplane does not perform, so it is recorded and not acted on.
+
+**The vendored specification stays the base text.** `.duvet/specifications/` must hold what duvet
+would fetch, or the quotes stop matching and the vendoring stops being a drop-in for the network.
+Errata are checked alongside it, not merged into it.
+
 ## Open questions
 
 Expected to expand. Nothing here is scheduled.
@@ -137,10 +197,9 @@ Expected to expand. Nothing here is scheduled.
    `type=implementation` and see whether the test cited `type=test` fails. If it does not, the
    citation is decorative. This is the only item on this list that makes the three tools check each
    other rather than merely coexist.
-4. **Errata.** The rsync corpus carries no errata bodies -- `inline-errata/` holds stylesheets only.
-   It reports that 2,613 RFCs have errata and never what they say. A second fetch leg is needed
-   regardless of how the corpus is pinned. Outstanding and concrete: **RFC 4884 has errata, and the
-   `MIN_ORIGINAL_DATAGRAM_OCTETS` fix was written without reading them.**
+4. **Errata.** Mostly settled; see [Errata](#errata) below. What remains is the 847 RFCs whose
+   errata exist but are not Verified, for which the corpus holds no body. None of them is tracked
+   today; RFC 4443 and RFC 3022 are both in that set and both plausible future targets.
 5. **How the corpus is pinned** -- a git mirror, or `oras` into ghcr.io behind `npins`. Sizing: the
    metadata that drives every drift alarm (indexes, `bcp/`, `std/`) is 5MB; the 232MB is RFC bodies,
    of which we cite perhaps ten. Text gzips about 4:1.
