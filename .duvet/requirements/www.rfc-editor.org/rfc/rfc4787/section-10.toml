@@ -1,0 +1,44 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-10"
+
+# Fragmentation of Outgoing Packets
+#
+#    When the MTU of the adjacent link is too small, fragmentation of
+#    packets going from the internal side to the external side of the NAT
+#    may occur.  This can occur if the NAT is doing Point-to-Point over
+#    Ethernet (PPPoE), or if the NAT has been configured with a small MTU
+#    to reduce serialization delay when sending large packets and small
+#    higher-priority packets, or for other reasons.
+# 
+#    It is worth noting that many IP stacks do not use Path MTU Discovery
+#    with UDP packets.
+# 
+#    The packet could have its Don't Fragment bit set to 1 (DF=1) or 0
+#    (DF=0).
+# 
+#    REQ-13:  If the packet received on an internal IP address has DF=1,
+#       the NAT MUST send back an ICMP message "Fragmentation needed and
+#       DF set" to the host, as described in [RFC0792].
+# 
+#       a) If the packet has DF=0, the NAT MUST fragment the packet and
+#          SHOULD send the fragments in order.
+# 
+#    Justification:  This is as per RFC 792.
+# 
+#       a) This is the same function a router performs in a similar
+#          situation [RFC1812].
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-13:  If the packet received on an internal IP address has DF=1,
+the NAT MUST send back an ICMP message "Fragmentation needed and
+DF set" to the host, as described in [RFC0792].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) If the packet has DF=0, the NAT MUST fragment the packet and
+SHOULD send the fragments in order.
+'''
+
