@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-5.5"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the length attribute is zero, the compliant application
+MUST determine that the message contains no extensions.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+So, to ease transition yet encourage compliant implementation,
+compliant TRACEROUTE implementations MUST include a non-default
+operation mode to also interpret non-compliant responses.
+'''
+
