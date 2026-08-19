@@ -1,0 +1,17 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-7.3"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
+Unreachable (Type 3) messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+NAT mapping or TCP connection for which the ICMP was generated.
+'''
+
