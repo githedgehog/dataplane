@@ -83,6 +83,29 @@ impl Masquerade {
     };
 
     // Internal flow timeouts for masquerading
+    //
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //= type=todo
+    //# REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    //# connection are active, it MAY abandon the session if it has been
+    //# idle for some time.  In such cases, the value of the "established
+    //# connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    //# The value of the "transitory connection idle-timeout" MUST NOT be
+    //# less than 4 minutes.
+    //
+    // We are far under both floors and this has not been ruled on. The three constants below are
+    // transitory timeouts in RFC 5382's sense -- the connection is opening or closing -- and they
+    // are seconds against a four-minute floor. The established timeout is `idle_timeout` from the
+    // masquerade configuration, which defaults to two minutes
+    // (`apalloc::setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT`) but has no lower bound and no
+    // validation, so a deployment can set it anywhere, including zero.
+    //
+    // The short values are deliberate in intent: this file's own comment says the statuses exist
+    // "to know how much to extend the lifetime of flows for port conservation", and a gateway
+    // holding a public port for two hours per idle connection conserves nothing. Whether that
+    // trade is one we are willing to state as a deviation from a BCP is a product decision, not a
+    // code one -- hence `todo` rather than `exception`. Converting it needs a rationale somebody
+    // is willing to sign.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);

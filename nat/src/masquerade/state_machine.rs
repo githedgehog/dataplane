@@ -267,6 +267,10 @@ fn ordinary_udp_opens_and_settles() {
     }
 }
 
+//= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=test
+//# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping or TCP connection for which the ICMP was generated.
 /// An ICMP echo reply makes a one-way flow two-way, and nothing else moves.
 ///
 /// ICMP has no flags to read and no close sequence, so the only evidence available is that a packet
