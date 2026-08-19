@@ -287,6 +287,87 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
     out[0].is_done() || source_of(&out[0]) == before
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+//= type=test
+//# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+//# behavior of "Paired".
+/// One internal endpoint keeps one public address, whatever it is talking to.
+///
+/// RFC 4787 REQ-1 states this as "Endpoint-Independent Mapping": the same internal address and
+/// port must be given the same external address and port regardless of the external endpoint it
+/// is sending to. It is the requirement UNSAF traversal is built on -- a peer learns your public
+/// tuple by talking to a third party, and that is worth nothing if talking to the peer produces a
+/// different one.
+///
+/// Stated at the stage rather than at the allocator, because the allocator cannot answer it. Its
+/// signature takes `src_ip` and no destination address or port, which looks endpoint-independent
+/// until you ask who calls it and how often. The question is what a *second flow* from the same
+/// internal endpoint receives, and only the stage, with the flow table in the loop, knows that.
+///
+/// The probe holds source and source port fixed and moves the destination -- a different peer
+/// address where the fabric offers one, and a different destination port either way.
+#[test]
+fn an_internal_endpoint_keeps_one_public_address() {
+    let tally = Tally::default();
+
+    with_runtime(|| {
+        bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            tally.seen.fetch_add(1, Ordering::Relaxed);
+            let Some(fabric) = fabric(&exposes) else {
+                return;
+            };
+            tally.built.fetch_add(1, Ordering::Relaxed);
+            let (mut lookup, mut masq) = fabric.stages();
+
+            for spec in &probes {
+                let probe = (*spec).resolve(&fabric);
+                let before = (probe.source, probe.sport);
+                let first = run(&mut lookup, &mut masq, vec![probe.packet()], probe.arrival.dst_vpcd);
+                if out_unchanged(&first, before) {
+                    continue;
+                }
+
+                // The same internal endpoint, a different external one.
+                let mut elsewhere = (*spec).resolve(&fabric);
+                elsewhere.dport = elsewhere.dport.wrapping_add(1).max(1);
+                if let Some(other) = fabric.peer.iter().find(|a| **a != probe.destination) {
+                    elsewhere.destination = *other;
+                }
+                if (elsewhere.destination, elsewhere.dport) == (probe.destination, probe.dport) {
+                    continue;
+                }
+
+                let second = run(
+                    &mut lookup,
+                    &mut masq,
+                    vec![elsewhere.packet()],
+                    elsewhere.arrival.dst_vpcd,
+                );
+                if out_unchanged(&second, before) {
+                    continue;
+                }
+
+                assert_eq!(
+                    source_of(&second[0]).0,
+                    source_of(&first[0]).0,
+                    "{before:?} was given {:?} talking to {:?} and {:?} talking to {:?}, so the \
+                     public address it is given depends on who it is addressing",
+                    source_of(&first[0]),
+                    (probe.destination, probe.dport),
+                    source_of(&second[0]),
+                    (elsewhere.destination, elsewhere.dport)
+                );
+                tally.reached.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    });
+
+    tally.report("address pairing");
+}
+
 //= https://www.rfc-editor.org/rfc/rfc5382#section-8
 //= type=test
 //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
