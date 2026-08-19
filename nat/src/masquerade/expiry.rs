@@ -19,6 +19,8 @@ const PAST_EXPIRY: Duration = Duration::from_secs(30);
 
 const WITHIN_LIFETIME: Duration = Duration::from_secs(1);
 
+const NEARLY_ESTABLISHED: Duration = Duration::from_secs(100);
+
 fn vni(raw: u32) -> Vni {
     Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
 }
@@ -156,6 +158,59 @@ fn traffic_extends_a_flow_past_its_first_deadline() {
                 "a refreshed flow stopped answering while still inside its extended lifetime"
             );
         }
+    });
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+//= type=test
+//= reason=held: for established flows; see the OneWay gap recorded in nf.rs
+//# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+//# refresh behavior" of "True".
+#[test]
+fn outbound_traffic_keeps_an_established_mapping_alive() {
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+        let source: IpAddr = "10.0.0.7".parse().unwrap_or_else(|_| unreachable!());
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 1234)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            Some(source),
+            "the reply that establishes the connection was not delivered"
+        );
+        assert_eq!(
+            open_flow(&mut lookup, &mut masq, source, peer, 1234),
+            Some(translated),
+            "the packet that establishes the connection changed its translation"
+        );
+
+        for step in 1..=3 {
+            advance(NEARLY_ESTABLISHED).await;
+            assert_eq!(
+                open_flow(&mut lookup, &mut masq, source, peer, 1234),
+                Some(translated),
+                "at {}s an outbound packet no longer found the mapping",
+                step * NEARLY_ESTABLISHED.as_secs()
+            );
+        }
+
+        advance(PAST_EXPIRY).await;
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            Some(source),
+            "the mapping did not survive five minutes of outbound traffic, so outbound packets \
+             are not refreshing it"
+        );
+
+        advance(Duration::from_mins(5)).await;
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            None,
+            "a mapping held open by outbound traffic never expired once that traffic stopped"
+        );
     });
 }
 
