@@ -166,6 +166,7 @@ let
       cargo-show-asm
       commitlint-rs
       direnv
+      duvet
       gateway-crd
       gettext
       jq
