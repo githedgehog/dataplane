@@ -105,6 +105,14 @@ impl Masquerade {
     //# connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
     //# The value of the "transitory connection idle-timeout" MUST NOT be
     //# less than 4 minutes.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=todo
+    //# REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+    //# minutes, unless REQ-5a applies.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=todo
+    //# c) A default value of five minutes or more for the NAT UDP mapping
+    //# timer is RECOMMENDED.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
@@ -586,6 +594,11 @@ impl Masquerade {
             return;
         }
 
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-11
+        //= type=todo
+        //# REQ-14:  A NAT MUST support receiving in-order and out-of-order
+        //# fragments, so it MUST have "Received Fragment Out of Order"
+        //# behavior.
         // TODO: Check whether the packet is fragmented
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done((&error).into());
