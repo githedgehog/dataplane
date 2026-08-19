@@ -15,6 +15,7 @@ mod probe;
 mod protocol;
 mod state;
 mod test;
+mod test_state_machine;
 
 // re exports
 pub use allocator_writer::MasqueradeConfig;
