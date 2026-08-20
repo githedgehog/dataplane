@@ -66,6 +66,12 @@ default_features := "true"
 # pyroscope server the dataplane image should push profiles to (empty = profiling off)
 pyroscope_url := ""
 
+# HTTP proxy baked into the dataplane image. Gateway nodes have no route off the fabric, so
+# anything the dataplane pushes outward -- profiles today -- has to go through the control proxy.
+# Alloy gets the equivalent injected into its config by fabricator; the dataplane has no such
+# machinery, and without this its pushes simply time out.
+dataplane_proxy_url := ""
+
 # Private computed cargo flag groups for consistent invocations.
 # Recipes should compose these as needed (not all cargo subcommands accept all flags).
 [private]
@@ -552,6 +558,11 @@ build-container target="dataplane" *args: _refuse-instrumented-artifact (build (
             declare -a import_changes=(--change 'ENTRYPOINT ["/bin/dataplane"]')
             if [ -n "{{ pyroscope_url }}" ]; then
                 import_changes+=(--change 'ENV DATAPLANE_PYROSCOPE_URL={{ pyroscope_url }}')
+            fi
+            if [ -n "{{ dataplane_proxy_url }}" ]; then
+                # Both spellings: reqwest reads the lowercase one, most other clients the upper.
+                import_changes+=(--change 'ENV HTTP_PROXY={{ dataplane_proxy_url }}')
+                import_changes+=(--change 'ENV http_proxy={{ dataplane_proxy_url }}')
             fi
             img="$(docker import --platform "${docker_platform}" "${import_changes[@]}" ./results/dataplane.tar)"
             declare -r img
@@ -1492,7 +1503,7 @@ telemetry-purge: telemetry-down
 [script]
 vlab-patch-dataplane:
     {{ _just_debuggable_ }}
-    just pyroscope_url="{{ pyroscope_url }}" oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
+    just pyroscope_url="{{ pyroscope_url }}" dataplane_proxy_url="{{ dataplane_proxy_url }}" oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
     # The fabric ties the validator's tag to the dataplane's (`DataplaneValidatorRef` takes
     # `Versions.Gateway.Dataplane`), so patching one without pushing the other points the
     # fabric at a validator image that does not exist.
