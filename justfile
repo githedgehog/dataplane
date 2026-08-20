@@ -1446,7 +1446,15 @@ telemetry-up: (build "containers.lgtm")
         --publish 9099:9090 \
         --mount type=volume,source=dataplane-telemetry,target=/telemetry \
         lgtm:latest
-    echo "grafana: http://127.0.0.1:3000"
+    # Printing 127.0.0.1 is no help from another machine, which is where whoever wants to look at
+    # a graph usually is. List every address this host actually answers on.
+    echo
+    echo "telemetry stack up. reachable at:"
+    for addr in $(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//') \
+                $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+        printf '  grafana    http://%s:3000\n' "${addr}"
+    done
+    printf '  prometheus http://<host>:9099   loki http://<host>:3100   pyroscope http://<host>:4040\n'
 
 # Point the running fabric's Alloy at the telemetry stack
 [script]
