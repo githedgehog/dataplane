@@ -63,6 +63,9 @@ fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
 # whether to include default cargo features for this workspace (set to "false" to disable)
 default_features := "true"
 
+# pyroscope server the dataplane image should push profiles to (empty = profiling off)
+pyroscope_url := ""
+
 # Private computed cargo flag groups for consistent invocations.
 # Recipes should compose these as needed (not all cargo subcommands accept all flags).
 [private]
@@ -179,6 +182,7 @@ build target="dataplane.tar" *args:
       --argstr platform '{{ platform }}' \
       --argstr tag '{{version}}' \
       --argstr nightly '{{nightly}}' \
+      --argstr pyroscopeUrl '{{ pyroscope_url }}' \
       --print-build-logs \
       --show-trace \
       --out-link "results/${target}" \
@@ -1481,7 +1485,7 @@ telemetry-purge: telemetry-down
 [script]
 vlab-patch-dataplane:
     {{ _just_debuggable_ }}
-    just oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
+    just pyroscope_url="{{ pyroscope_url }}" oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
     # The fabric ties the validator's tag to the dataplane's (`DataplaneValidatorRef` takes
     # `Versions.Gateway.Dataplane`), so patching one without pushing the other points the
     # fabric at a validator image that does not exist.
