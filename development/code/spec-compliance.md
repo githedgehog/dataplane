@@ -134,10 +134,77 @@ the `protocol.rs` failure mode again: a test that walks a path rather than discr
 **RFC 4787 REQ-3 and RFC 5382 REQ-7, "no port overloading" -- not checkable as cited.** Every
 mutant of the cited region is unviable. The citation sits on `allocate_v4`, which only forwards
 to `allocate_from_tables`; the code that enforces the requirement is the one it delegates to.
-The citation names the wrong region, and no amount of testing would have revealed that.
+The citation names the wrong region, and no amount of testing would have revealed that. See
+[Where a citation goes](#where-a-citation-goes-and-what-that-costs-an-abstraction) -- the wrong
+region and the unviable mutants have separate causes, and only the first is a citation error.
 
 That last category is the one to keep in mind when extending this. A citation can be wrong about
 _where_ the requirement lives, and neither duvet nor a coverage report can see it.
+
+## Where a citation goes, and what that costs an abstraction
+
+The rule is one sentence: **cite the narrowest region whose mutation would violate the
+requirement.**
+
+It is worth stating because the obvious alternative -- cite the function whose name matches the
+requirement -- is what produced the RFC 4787 REQ-3 result above, and because there is a live
+worry that a citation model tied to source regions will end up penalising delegation, generics
+and macros. Measured, it mostly does not, and where it does the constraint is narrow.
+
+### Generics and traits: no cost
+
+Trait default bodies and generic functions mutate normally, and one citation on them covers
+every instantiation. `net/src/checksum.rs` is the worked example: the `Checksum` trait's provided
+methods carry the RFC 1624 incremental-update arithmetic, and the mutants land exactly on it
+(`delete !`, `replace >> with <<`). Its low mutant density -- 3.1 per 100 lines against 12.0 for
+`ipv4/mod.rs` -- is signatures without bodies, not logic that got away.
+
+This is an argument _for_ abstraction. A requirement implemented once behind a generic needs one
+citation and one test. The RFC 4884 finding above is what the alternative costs: lines 259 and
+290 of `embedded.rs` are the same check written twice, once for ICMPv4 and once for ICMPv6, and
+the v6 copy went untested and uncaught. Duplication is what hid it.
+
+### Delegation: cite the delegate, and mind the return type
+
+Two separate things, which the REQ-3 result ran together.
+
+A thin forwarding function is the wrong place to cite because it decides nothing -- the
+requirement lives in what it forwards to. That is the real error in the REQ-3 citation:
+`allocate_v4` forwards to `allocate_from_tables`, which is shared by v4 and v6 and is where one
+citation would cover both.
+
+Its mutants being _unviable_ is a different problem with a different cause. cargo-mutants
+replaces a function body with a synthesised return value, so whether it can mutate a function at
+all depends on how hard that type is to fabricate.
+`Result<AllocationResult<AllocatedPort<Ipv4Addr>>, AllocatorError>` defeats it; a delegating
+function returning `bool` mutates fine. So an unviable region is not evidence of over-abstraction
+-- it is evidence that nothing there was checkable, whatever the reason.
+
+### Macros: a real blind spot, and the one rule worth keeping
+
+cargo-mutants generates **nothing** for macro-generated code. Probed directly:
+
+```rust
+macro_rules! bounded { ($name:ident, $min:expr) => {
+    pub fn $name(len: usize) -> bool { len >= $min }
+}; }
+bounded!(at_least_128, 128);   // zero mutants -- the boundary cannot be broken
+pub fn concrete(len: usize) -> bool { len >= 128 }   // three mutants
+```
+
+The `>=` in the macro is exactly the boundary class that RFC 4884 got wrong, and it is
+unreachable by mutation and therefore by the interlock.
+
+That is narrower than "macros are a problem". In this tree the separation already holds: the
+protocol logic a specification constrains is written directly and mutates well -- `tcp/mod.rs`
+15.3 mutants per 100 lines, `icmp6/mod.rs` 14.6, `ipv4/mod.rs` 12.0 -- while the macro-heavy
+files are the combinator and accessor layer, `headers/view.rs` at 1.5 and `headers/pat.rs` at
+2.1, which no RFC has an opinion about. No requirement cited today sits in a macro body.
+
+So the rule is not "avoid macros". It is: **do not put a normative decision inside a macro
+body.** Generate the plumbing; write the comparison the specification names. If that is ever too
+expensive, the fallback is the `contract::` pattern -- lift the decision into a `Requirement`
+predicate the macro calls, which is ordinary mutable code with a citation on it.
 
 ## Do not cite a composite BCP
 
