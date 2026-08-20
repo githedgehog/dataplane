@@ -165,6 +165,7 @@ let
       cargo-nextest
       cargo-show-asm
       commitlint-rs
+      deno
       direnv
       duvet
       gateway-crd
