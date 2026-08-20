@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
+use crate::register::Registered;
 use crate::vpc_stats::VpcStatsStore;
 use crate::{MetricSpec, Register, RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use metrics::Unit;
@@ -23,6 +24,7 @@ use net::packet::DoneReason;
 use rand::Rng;
 use serde::Serialize;
 use small_map::SmallMap;
+use strum::EnumCount as _;
 use tracing::{debug, info};
 #[allow(unused)]
 use tracing::{error, trace, warn};
@@ -148,6 +150,13 @@ fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Option<Vec<(VpcDiscr
 /// Base id of the per-pair (VPC->VPC) drops metric family. Shared with
 /// [`crate::vpc::VpcMetricsSpec::new`], which registers these gauges under the same base.
 pub(crate) const PAIR_DROPS_METRIC_BASE: &str = "vpc_pair_drops";
+
+/// Drops broken out by the verdict that caused them.
+///
+/// `drops` and `vpc_pair_drops` answer "how much is being dropped"; this answers "why", which is
+/// the difference between seeing a drop rate and being able to act on it. Label values come from
+/// `DoneReason`'s `IntoStaticStr`, so they are snake_case and stable against prose edits.
+pub(crate) const DROP_REASON_METRIC: &str = "drops_by_reason";
 
 /// Zero the four gauges (`{base}_packet_count`, `{base}_packet_rate`, `{base}_byte_count`,
 /// `{base}_byte_rate`) for the given label set. Used to clear series belonging to VPCs/peerings
@@ -360,11 +369,45 @@ impl StatsCollector {
         }
     }
 
+    /// Add a batch's per-reason drop tally into its counters.
+    ///
+    /// Registration happens here rather than in `new` because a `StatsCollector` is constructed
+    /// before `install_recorder` runs; anything registered at construction would bind to the no-op
+    /// recorder and never appear. Re-registering each update is what the per-VPC metrics already
+    /// do, and the recorder resolves a key it has seen before to the same counter.
+    fn record_drop_reasons(tally: &[u64; DoneReason::COUNT]) {
+        for (index, &packets) in tally.iter().enumerate() {
+            if packets == 0 {
+                continue;
+            }
+            let Some(reason) = DoneReason::from_repr(
+                u8::try_from(index).unwrap_or_else(|_| unreachable!("index came from the tally")),
+            ) else {
+                // Only reachable if `DoneReason::COUNT` and the discriminants disagree.
+                error!("no drop reason for index {index}. This is a bug");
+                continue;
+            };
+            let counter: Registered<metrics::Counter> = MetricSpec::new(
+                DROP_REASON_METRIC,
+                Unit::Count,
+                vec![(
+                    "reason".to_string(),
+                    <&'static str>::from(reason).to_string(),
+                )],
+            )
+            .register();
+            counter.metric.increment(packets);
+        }
+    }
+
     /// Calculate updated stats and submit any expired entries to the SG filter.
     #[tracing::instrument(level = "trace")]
     async fn update(&mut self, update: Option<MetricsUpdate>) {
         self.refresh_vpc_store().await;
         if let Some(update) = update {
+            // Drops broken out by reason. Whole-batch and unapportioned: a counter, not a rate.
+            Self::record_drop_reasons(&update.summary.drop_reasons);
+
             // Find outstanding changes which line up with batch
             let mut slices: Vec<_> = self
                 .outstanding
@@ -752,6 +795,13 @@ pub struct BatchSummary<T> {
     /// Note that precise control over this time is not guaranteed.
     pub planned_end: Instant,
     pub(crate) vpc: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<T>>,
+    /// Packets dropped in this batch, indexed by `DoneReason as usize`.
+    ///
+    /// Unlike everything else here this is a plain monotonic tally, not a rate: it is added
+    /// straight into its counters when the batch is consumed and never apportioned across the
+    /// smoothing slices. Batches created for the smoothing machinery therefore leave it zeroed,
+    /// which is correct -- only the batch the datapath filled has drops to report.
+    pub(crate) drop_reasons: [u64; DoneReason::COUNT],
 }
 
 /// A `MetricsUpdate` is basically just a `BatchSummary` with a more precise duration associated
@@ -777,6 +827,7 @@ impl<T> BatchSummary<T> {
             start: clock::now(),
             planned_end,
             vpc: hashbrown::HashMap::with_capacity(capacity),
+            drop_reasons: [0; DoneReason::COUNT],
         }
     }
 
@@ -786,6 +837,7 @@ impl<T> BatchSummary<T> {
             start,
             planned_end: start + duration,
             vpc: hashbrown::HashMap::with_capacity(Self::DEFAULT_CAPACITY),
+            drop_reasons: [0; DoneReason::COUNT],
         }
     }
 
@@ -795,6 +847,7 @@ impl<T> BatchSummary<T> {
             start,
             planned_end: start + duration,
             vpc: hashbrown::HashMap::with_capacity(capacity),
+            drop_reasons: [0; DoneReason::COUNT],
         }
     }
 }
@@ -902,6 +955,11 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             };
 
             let is_drop = done_reason != DoneReason::Delivered;
+            if is_drop {
+                // `DoneReason` is `#[repr(u8)]` and fieldless, so the discriminant indexes the
+                // tally directly -- no lookup on the per-packet path.
+                self.update.drop_reasons[done_reason as usize] += 1;
+            }
             let bytes: u64 = packet.total_len().into();
 
             fn bump(
@@ -1055,7 +1113,9 @@ mod contract {
     use crate::{BatchSummary, PacketAndByte, TransmitSummary};
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use clock::Duration;
+    use net::packet::DoneReason;
     use small_map::SmallMap;
+    use strum::EnumCount as _;
     use vpcmap::VpcDiscriminant;
 
     impl<T> TypeGenerator for PacketAndByte<T>
@@ -1128,6 +1188,7 @@ mod contract {
                 start,
                 planned_end: start + duration,
                 vpc: vpc_gen.generate(driver)?,
+                drop_reasons: [0; DoneReason::COUNT],
             })
         }
     }
@@ -1241,6 +1302,67 @@ mod drop_stats_tests {
             .collect();
         assert_eq!(out.len(), 1, "a verdict-less packet was swallowed");
         assert_eq!(out[0].get_done(), Some(DoneReason::InternalFailure));
+    }
+
+    /// The tally is indexed by discriminant, so it has to survive the round trip that
+    /// `record_drop_reasons` makes: index -> `DoneReason` -> label. If `#[repr(u8)]` or the
+    /// variant order ever drifts from `COUNT`, this catches it before a dashboard lies.
+    #[test]
+    fn every_reason_round_trips_through_its_index() {
+        for index in 0..DoneReason::COUNT {
+            let reason = DoneReason::from_repr(u8::try_from(index).expect("index fits in u8"))
+                .expect("every index below COUNT names a reason");
+            assert_eq!(reason as usize, index, "{reason:?} does not index itself");
+            let label = <&'static str>::from(reason);
+            assert!(!label.is_empty(), "{reason:?} has no label");
+            assert_eq!(
+                label,
+                label.to_lowercase(),
+                "{reason:?} label is not snake_case"
+            );
+        }
+    }
+
+    #[test]
+    fn drops_are_tallied_against_the_reason_that_caused_them() {
+        let (a, b) = (vpcd(100), vpcd(200));
+        let mut stats = new_stats();
+        run(
+            &mut stats,
+            vec![
+                mk_packet(Some(a), Some(b), Some(DoneReason::NatOutOfResources)),
+                mk_packet(Some(a), Some(b), Some(DoneReason::NatOutOfResources)),
+                mk_packet(Some(a), Some(b), Some(DoneReason::AclDropped)),
+                // Delivered is not a drop and must not appear anywhere in the tally.
+                mk_packet(Some(a), Some(b), Some(DoneReason::Delivered)),
+            ],
+        );
+
+        let tally = &stats.update.drop_reasons;
+        assert_eq!(tally[DoneReason::NatOutOfResources as usize], 2);
+        assert_eq!(tally[DoneReason::AclDropped as usize], 1);
+        assert_eq!(tally[DoneReason::Delivered as usize], 0);
+        // Total tallied drops agree with the per-VPC drop count, which is the invariant that makes
+        // `drops_by_reason` decomposable against `drops`.
+        let summary = stats.update.vpc.get(&a).expect("src summary present");
+        assert_eq!(tally.iter().sum::<u64>(), summary.drops.packets);
+    }
+
+    /// A drop whose source VPC never resolved is still a drop, and the reason is the only axis
+    /// that can account for it -- the per-VPC counters cannot.
+    #[test]
+    fn a_drop_without_a_source_vpc_is_still_tallied() {
+        let mut stats = new_stats();
+        run(
+            &mut stats,
+            vec![mk_packet(None, None, Some(DoneReason::Unroutable))],
+        );
+
+        assert_eq!(
+            stats.update.drop_reasons[DoneReason::Unroutable as usize],
+            1
+        );
+        assert!(stats.update.vpc.is_empty(), "no VPC summary should exist");
     }
 
     #[test]
