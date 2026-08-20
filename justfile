@@ -1429,6 +1429,23 @@ vlab-purge: vlab-down
 vlab-patch-dataplane:
     {{ _just_debuggable_ }}
     just oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
+    # The fabric ties the validator's tag to the dataplane's (`DataplaneValidatorRef` takes
+    # `Versions.Gateway.Dataplane`), so patching one without pushing the other points the
+    # fabric at a validator image that does not exist.
+    VERSION="{{ version }}" just platform=wasm32-wasip1 oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container validator
+    # Patching the fabric to a tag the registry does not have takes the dataplane down with
+    # ImagePullBackOff, and the resulting silence looks like a dataplane that is running and
+    # simply has nothing to say. Confirm both images are actually there before pointing the
+    # fabric at them.
+    #
+    # Built from `vlab_oci_repo` rather than reusing `oci_image_dataplane`, which is derived
+    # from the default `oci_repo` (127.0.0.1) -- not the bridge address the push above used.
+    for image in "{{ vlab_oci_repo }}/{{ oci_name }}:{{ version }}" "{{ vlab_oci_repo }}/{{ oci_name }}/validator:{{ version }}"; do
+        if ! skopeo inspect --tls-verify=false "docker://${image}" >/dev/null 2>&1; then
+            >&2 echo "vlab-patch-dataplane: ${image} is not in the registry; refusing to patch"
+            exit 1
+        fi
+    done
     pushd ./scripts/vlab
     ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"overrides":{"versions":{"gateway":{"dataplane":"{{version}}"}}}}}'
     popd
