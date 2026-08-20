@@ -32,6 +32,9 @@ in
       (builtins.fromTOML (builtins.readFile ../../Cargo.toml))
       .workspace.dependencies.iai-callgrind.version;
   };
+  zot = final.callPackage ../pkgs/zot {
+    src = sources.zot;
+  };
   cargo-bolero =
     (prev.cargo-bolero.override { inherit (override-packages) rustPlatform; }).overrideAttrs
       (_: {
