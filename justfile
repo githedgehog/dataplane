@@ -754,6 +754,37 @@ coverage *args:
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
 
+[script]
+duvet *args:
+    {{ _just_debuggable_ }}
+    duvet report {{ args }}
+
+[script]
+duvet-check:
+    {{ _just_debuggable_ }}
+    for input in .duvet/config.toml .duvet/snapshot.txt; do
+      if [ ! -f "${input}" ]; then
+        echo "error: ${input} is missing; this check has nothing to compare and cannot pass" >&2
+        exit 1
+      fi
+    done
+    duvet report
+    if ! git diff --quiet -- .duvet/snapshot.txt; then
+      echo "error: .duvet/snapshot.txt is stale; run \`just duvet\` and commit the result" >&2
+      git --no-pager diff -- .duvet/snapshot.txt >&2
+      exit 1
+    fi
+
+[script]
+mutants *args:
+    {{ _just_debuggable_ }}
+    cargo mutants --test-tool nextest {{ args }}
+
+[script]
+spec-interlock *args:
+    {{ _just_debuggable_ }}
+    ./scripts/spec-interlock.ts {{ args }}
+
 # Use Nix-built archives so local and CI coverage report the same binaries.
 [script]
 coverage-archive package="tests.all" *args:
