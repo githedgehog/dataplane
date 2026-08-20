@@ -1285,6 +1285,52 @@ mod tests {
         assert!(matches::<(&Ipv4, &TruncatedTcp)>(e));
     }
 
+    /// An ICMP error quoting an ICMP packet, which the builder had never been asked to assemble.
+    ///
+    /// `EmbeddedAssembler::icmp4` and `::icmp6` were the two inner-transport methods no test called,
+    /// and with them the `EmbeddedTransport::Icmp4 => NextHeader::ICMP` arm of the fixup that sets
+    /// the quoted packet's protocol field. A ping that draws a destination-unreachable is the
+    /// ordinary way to produce one, so the gap was in the tests rather than in the scenario.
+    ///
+    /// The inner protocol number is checked directly: `fixup_embedded` is what writes it, the shape
+    /// match below would pass without it, and a quoted packet whose IP header disagrees with the
+    /// transport it carries is exactly what a peer cannot parse.
+    #[test]
+    fn icmp4_quoted_inside_an_icmp4_error() {
+        use crate::headers::builder::Blank;
+        use crate::icmp4::Icmp4;
+        use crate::ip::NextHeader;
+        let h = icmp4_with_embedded(|a| a.ipv4(|_| {}).icmp4(Icmp4::blank()));
+        let e = h.embedded_ip().expect("embedded must be present");
+        assert!(matches::<(&Ipv4, &TruncatedIcmp4)>(e));
+        let Some(Net::Ipv4(ip)) = e.net() else {
+            unreachable!("the quoted packet carries an IPv4 header")
+        };
+        assert_eq!(
+            ip.next_header(),
+            NextHeader::ICMP,
+            "the quoted IP header does not name the transport it carries"
+        );
+    }
+
+    #[test]
+    fn icmp6_quoted_inside_an_icmp6_error() {
+        use crate::headers::builder::Blank;
+        use crate::icmp6::Icmp6;
+        use crate::ip::NextHeader;
+        let h = icmp6_with_embedded(|a| a.ipv6(|_| {}).icmp6(Icmp6::blank()));
+        let e = h.embedded_ip().expect("embedded must be present");
+        assert!(matches::<(&Ipv6, &TruncatedIcmp6)>(e));
+        let Some(Net::Ipv6(ip)) = e.net() else {
+            unreachable!("the quoted packet carries an IPv6 header")
+        };
+        assert_eq!(
+            ip.next_header(),
+            NextHeader::ICMP6,
+            "the quoted IP header does not name the transport it carries"
+        );
+    }
+
     #[test]
     fn ipv6_truncated_udp_matches_full_inner_packet() {
         use crate::udp::UdpPort;
@@ -1789,4 +1835,656 @@ mod tests {
             _ => panic!("post-mutation: expected EmbeddedTransport::Tcp(FullHeader)"),
         }
     }
+}
+
+// ===========================================================================
+// Differential properties
+// ===========================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // fine to unwrap in tests
+mod embedded_view_properties {
+    use super::*;
+    use crate::eth::Eth;
+    use crate::headers::{Headers, ShapedIcmpError, ShapedQuote};
+    use crate::icmp4::Icmp4;
+    use crate::icmp6::Icmp6;
+    use crate::vlan::Vlan;
+
+    /// Both structural walks over a quoted packet, across the range of outer and inner shapes.
+    ///
+    /// The pairing this checks is the one soundness rests on, and it is not the obvious one.
+    /// `as_embedded`/`as_embedded_mut` *decide* with [`embedded_sealed::Sealed::matches`], which
+    /// walks [`EmbeddedHeaders`] through [`EmbeddedStep`]. [`EmbeddedLookMut::look_mut`] then
+    /// *delivers* through [`EmbeddedMatcherMut`], a completely separate implementation with its own
+    /// pre-split [`EmbeddedFields`](super::super::pat::EmbeddedFields) and its own gap check, and it
+    /// unwraps that chain with `unreachable_unchecked` on the strength of the first one's answer.
+    /// Two implementations, one of them licensing the other to skip its own `None` branch. If they
+    /// ever disagree the result is undefined behaviour, not a wrong answer.
+    ///
+    /// So the oracle here is `pat()`/`pat_mut()`'s `.embedded()` chain, which is the same machinery
+    /// `look_mut` uses -- making this differential test exactly the invariant `look_mut` assumes.
+    ///
+    /// Arity matters twice over, because `matches`, `look` and `look_mut` are generated per *inner*
+    /// arity while `as_embedded`/`as_embedded_mut` are generated per *outer* arity, each threading
+    /// the extension cursor by hand. Before this the suite reached one outer arity and one inner
+    /// arity, of eight and three.
+    macro_rules! embedded_agrees {
+        (
+            $read:ident, $mutable:ident,
+            ($outer:ty, $($ol:ident),+),
+            ($inner:ty, $($il:ident),+)
+        ) => {
+            #[test]
+            fn $read() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator(ShapedIcmpError)
+                    .for_each(|h: &Headers| {
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        let licensed = h
+                            .as_view::<$outer>()
+                            .is_some_and(|w| w.as_embedded::<$inner>().is_some());
+                        if licensed {
+                            HIT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable =
+                            h.pat()$(.$ol())+.embedded()$(.$il())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the read walk disagree for ",
+                                stringify!($inner),
+                                " inside ",
+                                stringify!($outer),
+                                ", so `look` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    concat!(stringify!($inner), " in ", stringify!($outer)),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
+                );
+            }
+
+            #[test]
+            fn $mutable() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator(ShapedIcmpError)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        // `as_embedded_mut`'s reference cannot outlive the `and_then` closure it
+                        // would be produced in, so this asks the question without keeping it.
+                        let licensed = match owned.as_view_mut::<$outer>() {
+                            Some(w) => w.as_embedded_mut::<$inner>().is_some(),
+                            None => false,
+                        };
+                        if licensed {
+                            HIT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let deliverable =
+                            owned.pat_mut()$(.$ol())+.embedded()$(.$il())+.done().is_some();
+                        assert_eq!(
+                            licensed, deliverable,
+                            concat!(
+                                "`matches` and the mutable walk disagree for ",
+                                stringify!($inner),
+                                " inside ",
+                                stringify!($outer),
+                                ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    concat!(stringify!($inner), " in ", stringify!($outer)),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    /// A shape the generator never produces makes its property pass for the wrong reason.
+    ///
+    /// Two shapes compound here -- an outer arity and an inner one -- so a property can starve much
+    /// more quietly than in [`view`](super::super::view): demanding four VLAN tags *and* a
+    /// particular extension inside the quoted packet multiplies two small probabilities. Each pair
+    /// reports its own hit rate, and the pairs are chosen to vary one dimension at a time for
+    /// exactly that reason.
+    fn agreement_is_not_vacuous(shape: &str, seen: usize, hit: usize) {
+        println!("{shape}: matched {hit} of {seen}");
+        // Twenty thousand rather than [`view`](super::super::view)'s five hundred, because
+        // compounding costs an order of magnitude: the widest pair here matches about one packet in
+        // twenty, and `(&Ipv6, &HopByHop, &TruncatedTcp)` inside an ICMPv6 error matches about one
+        // in a thousand. Five hundred cases at that rate would fail this check outright half the
+        // time it ran. A deliberately short run should say nothing rather than say something false.
+        //
+        // Ten thousand, not the twenty-five thousand a default run manages here. The thinnest shape
+        // in this module draws about eight hits per ten thousand, and coverage instrumentation costs
+        // about a fifth of the throughput -- measured at 17 hits in 20,206 cases against 21 in
+        // 25,857 without. A threshold set at the observed count would therefore switch itself off on
+        // any busier runner, silently. At ten thousand draws a shape that really is drawable misses
+        // entirely about three times in ten thousand runs, which is the trade this wants.
+        if seen > 10_000 {
+            assert!(
+                hit > 0,
+                "{shape} never matched in {seen} packets: the two walks agree only because the \
+                 generator cannot produce this shape"
+            );
+        }
+    }
+
+    type O4V4 = (&'static Eth, &'static Ipv4, &'static Icmp4);
+    type O4V6 = (&'static Eth, &'static Ipv6, &'static Icmp6);
+
+    // ---- Inner shapes, at the one outer arity the builders could already express ----------
+    //
+    // Varying the inner shape alone: network layer, both enum forms, every truncated transport,
+    // and the extension region.
+    embedded_agrees!(
+        read_inner_v4_tcp,
+        mutable_inner_v4_tcp,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_inner_v6_udp,
+        mutable_inner_v6_udp,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &TruncatedUdp), ipv6, udp)
+    );
+    embedded_agrees!(
+        read_inner_net_only,
+        mutable_inner_net_only,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Net,), net)
+    );
+    embedded_agrees!(
+        read_inner_v6_only,
+        mutable_inner_v6_only,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6,), ipv6)
+    );
+    // An ICMP error quoting an ICMP packet -- a `TruncatedIcmp4` inside an `Icmp4`. Legitimate:
+    // an unreachable in response to a ping quotes the echo request.
+    embedded_agrees!(
+        read_inner_icmp_in_icmp4,
+        mutable_inner_icmp_in_icmp4,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Ipv4, &TruncatedIcmp4), ipv4, icmp4)
+    );
+    embedded_agrees!(
+        read_inner_icmp_in_icmp6,
+        mutable_inner_icmp_in_icmp6,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &TruncatedIcmp6), ipv6, icmp6)
+    );
+
+    // ---- The embedded extension region ---------------------------------------------------
+    //
+    // `ext_gap_ok_embedded` versus `ext_gap_ok_mut_embedded`: naming an extension switches the
+    // quoted packet from skip-extensions-silently to consume-them-all, so these match only a quote
+    // carrying that extension and no other. The read pair shares `ext_gap_ok_embedded` between the
+    // two walks and so tests the by-hand `ec` threading; the mutable pair runs two genuinely
+    // different implementations against each other, one over `EmbeddedHeaders` and one over a
+    // pre-split `EmbeddedFields`.
+    embedded_agrees!(
+        read_inner_ext_v6,
+        mutable_inner_ext_v6,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &HopByHop, &TruncatedTcp), ipv6, hop_by_hop, tcp)
+    );
+    embedded_agrees!(
+        read_inner_ext_v4_auth,
+        mutable_inner_ext_v4_auth,
+        (O4V4, eth, ipv4, icmp4),
+        ((&Ipv4, &Ipv4Auth, &TruncatedTcp), ipv4, ipv4_auth, tcp)
+    );
+    // Entering the region and stopping there: the gap check runs at the transport step, so with no
+    // transport named the remaining extensions are simply left unvisited. Telling this apart from
+    // the two above is the whole reason the check sits where it does.
+    embedded_agrees!(
+        read_inner_ext_no_transport,
+        mutable_inner_ext_no_transport,
+        (O4V6, eth, ipv6, icmp6),
+        ((&Ipv6, &HopByHop), ipv6, hop_by_hop)
+    );
+
+    // ---- Outer arities -------------------------------------------------------------------
+    //
+    // `as_embedded` and `as_embedded_mut` are written out once per outer arity, eight times. Arities
+    // 1 and 2 cannot be instantiated: both require `EmbeddedHeaders: Within<LastLayer>`, which holds
+    // only for `Icmp4` and `Icmp6`, and neither can appear that early. `Eth` is the only layer with
+    // `Within<()>`, so an arity-1 shape must be `(&Eth,)`; an arity-2 shape must then end in
+    // something `Within<Eth>`, and no ICMP layer is. Asking for either is a compile error --
+    // `Icmp4: Within<()> is not satisfied` and `Icmp4: Within<eth::Eth> is not satisfied` -- so those
+    // two macro arms are 44 lines that can never run and could be deleted.
+    //
+    // 3 through 8 is therefore all of them. The inner shape is held cheap on purpose here, so that a
+    // thin outer shape is the only improbable thing each property asks for.
+    embedded_agrees!(
+        read_outer_4,
+        mutable_outer_4,
+        ((&Eth, &Vlan, &Ipv4, &Icmp4), eth, vlan, ipv4, icmp4),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_outer_5,
+        mutable_outer_5,
+        (
+            (&Eth, &Vlan, &Vlan, &Ipv6, &Icmp6),
+            eth,
+            vlan,
+            vlan,
+            ipv6,
+            icmp6
+        ),
+        ((&Ipv6, &TruncatedUdp), ipv6, udp)
+    );
+    embedded_agrees!(
+        read_outer_6,
+        mutable_outer_6,
+        (
+            (&Eth, &Vlan, &Vlan, &Vlan, &Ipv4, &Icmp4),
+            eth,
+            vlan,
+            vlan,
+            vlan,
+            ipv4,
+            icmp4
+        ),
+        // An inner shape that can miss on a quote that *is* present, so the shape check's own
+        // rejection is reached rather than only the absent-quote early return above it.
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    embedded_agrees!(
+        read_outer_7,
+        mutable_outer_7,
+        (
+            (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv4, &Icmp4),
+            eth,
+            vlan,
+            vlan,
+            vlan,
+            vlan,
+            ipv4,
+            icmp4
+        ),
+        ((&Ipv4, &TruncatedTcp), ipv4, tcp)
+    );
+    // Arity 8, and the only outer shape that also enters the *outer* extension region: `Icmp6`
+    // directly after a `HopByHop` makes the outer gap check strict too.
+    embedded_agrees!(
+        read_outer_8,
+        mutable_outer_8,
+        (
+            (&Eth, &Vlan, &Vlan, &Vlan, &Vlan, &Ipv6, &HopByHop, &Icmp6),
+            eth,
+            vlan,
+            vlan,
+            vlan,
+            vlan,
+            ipv6,
+            hop_by_hop,
+            icmp6
+        ),
+        // `Ipv6` rather than `Net`: a quote of the other family misses, which is the only way to
+        // reach this arity's shape-check rejection.
+        ((&Ipv6,), ipv6)
+    );
+
+    // The `EmbeddedTransport` enum has no read-side property above, and that is an asymmetry in
+    // `pat.rs` rather than a choice here: `EmbeddedMatcherMut::transport` exists but
+    // `EmbeddedMatcher::transport` does not, so the immutable oracle cannot name the enum even
+    // though every concrete variant and every other layer is paired between the two. The mutable
+    // side is checked below; adding the missing method would let the read side follow in one line.
+    #[test]
+    fn mutable_inner_transport_enum() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static HIT: AtomicUsize = AtomicUsize::new(0);
+        bolero::check!()
+            .with_generator(ShapedIcmpError)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let licensed = match owned.as_view_mut::<O4V4>() {
+                    Some(w) => w.as_embedded_mut::<(&Net, &EmbeddedTransport)>().is_some(),
+                    None => false,
+                };
+                if licensed {
+                    HIT.fetch_add(1, Ordering::Relaxed);
+                }
+                let deliverable = owned
+                    .pat_mut()
+                    .eth()
+                    .ipv4()
+                    .icmp4()
+                    .embedded()
+                    .net()
+                    .transport()
+                    .done()
+                    .is_some();
+                assert_eq!(
+                    licensed, deliverable,
+                    "`matches` and the mutable walk disagree for (&Net, &EmbeddedTransport): {h:?}"
+                );
+            });
+        agreement_is_not_vacuous(
+            "(&Net, &EmbeddedTransport)",
+            SEEN.load(Ordering::Relaxed),
+            HIT.load(Ordering::Relaxed),
+        );
+    }
+
+    // ---- Delivering, not merely deciding -------------------------------------------------
+
+    /// Write through every reference `look_mut` hands out, in the extension-region shape.
+    ///
+    /// The properties above compare *decisions*. This one takes the decision up on its offer: it
+    /// calls `look_mut`, which runs the `unreachable_unchecked` the decision licenses, and then
+    /// writes through all three references. The assertions are close to beside the point -- what
+    /// matters is that three `&mut` into one `EmbeddedHeaders` are created and written through, so
+    /// that miri with stacked borrows enabled can judge whether
+    /// [`EmbeddedFields`](super::super::pat::EmbeddedFields) handed out two paths to the same
+    /// layer. The arity-3 shape is the one that borrows from all three of its fields at once,
+    /// including a slice element, which is the hardest of them to split soundly.
+    fn exercise_the_embedded_split() {
+        bolero::check!()
+            .with_generator(ShapedIcmpError)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let Some(outer) = owned.as_view_mut::<O4V6>() else {
+                    return;
+                };
+                let Some(ew) = outer.as_embedded_mut::<(&Ipv6, &HopByHop, &TruncatedTcp)>() else {
+                    return;
+                };
+                let (ip, ext, tcp) = ew.look_mut();
+
+                let want_hops = ip.hop_limit().wrapping_add(1);
+                ip.set_hop_limit(want_hops);
+                let seen_ext = ext.next_header();
+                let seen_tcp = matches!(tcp, TruncatedTcp::FullHeader(_));
+
+                assert_eq!(
+                    ip.hop_limit(),
+                    want_hops,
+                    "the write through ipv6 did not stick"
+                );
+                assert_eq!(
+                    ext.next_header(),
+                    seen_ext,
+                    "the extension header changed under a write to ipv6"
+                );
+                assert_eq!(
+                    matches!(tcp, TruncatedTcp::FullHeader(_)),
+                    seen_tcp,
+                    "the quoted transport changed under a write to ipv6"
+                );
+            });
+    }
+
+    /// Shards of [`exercise_the_embedded_split`], so the machine can be used.
+    ///
+    /// Same reasoning as the shards in [`view`](super::super::view): under miri this is the
+    /// expensive property and the one that matters most, and its cost is wall-clock rather than
+    /// cores. Each shard seeds itself from the OS, so `N` shards explore `N` independent streams
+    /// and nextest runs them concurrently. Eight rather than sixteen -- `view`'s split is the wider
+    /// one and should keep the larger share of the cores.
+    macro_rules! split_shards {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    exercise_the_embedded_split();
+                }
+            )*
+        };
+    }
+
+    split_shards!(
+        the_embedded_split_hands_out_distinct_layers,
+        embedded_split_shard_2,
+        embedded_split_shard_3,
+        embedded_split_shard_4,
+        embedded_split_shard_5,
+        embedded_split_shard_6,
+        embedded_split_shard_7,
+        embedded_split_shard_8,
+    );
+
+    /// `look` and `look_mut` pick the same slots, one inner shape per instantiation.
+    ///
+    /// Agreeing that a match exists is weaker than agreeing on *which* layers were selected, and
+    /// this is the only thing in the suite that asks the stronger question across the family.
+    ///
+    /// It is also the only thing that *calls* `look` and `look_mut` at more than a couple of shapes,
+    /// which matters more than it looks: the differential properties above go through
+    /// [`embedded_sealed::Sealed::matches`] and so exercise [`EmbeddedStep`], while `look_mut` is the
+    /// sole caller of [`EmbeddedStepMut`] -- a second, separate set of per-layer impls that delegate
+    /// into [`EmbeddedMatcherMut`]. Deciding a shape matches never runs a line of it. So there is one
+    /// instantiation per layer that has an `EmbeddedStepMut` impl, and the extension ones are the
+    /// point: one implementation indexes `net_ext` by a cursor, the other consumes a slice, and
+    /// nothing before this compared what they returned.
+    macro_rules! same_layers {
+        ($name:ident, $gen:expr, $outer:ty, $shape:ty, $($binding:ident),+) => {
+            #[test]
+            fn $name() {
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator($gen)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        // `h` and `&mut h` cannot be held at once, so the packet is pinned across
+                        // both calls and the raw addresses compared afterwards.
+                        let immutable = {
+                            let Some(outer) = owned.as_view::<$outer>() else {
+                                return;
+                            };
+                            let Some(ew) = outer.as_embedded::<$shape>() else {
+                                return;
+                            };
+                            let ($($binding,)+) = ew.look();
+                            ($(std::ptr::from_ref($binding),)+)
+                        };
+                        HIT.fetch_add(1, Ordering::Relaxed);
+                        let mutable = {
+                            let outer = owned.as_view_mut::<$outer>().unwrap_or_else(|| {
+                                unreachable!("the same packet matched a moment ago")
+                            });
+                            let ew = outer.as_embedded_mut::<$shape>().unwrap_or_else(|| {
+                                unreachable!("the same shape matched a moment ago")
+                            });
+                            let ($($binding,)+) = ew.look_mut();
+                            ($(std::ptr::from_ref(&*$binding),)+)
+                        };
+                        assert_eq!(
+                            immutable, mutable,
+                            concat!(
+                                "`look` and `look_mut` selected different layers of the quoted \
+                                 packet for ",
+                                stringify!($shape)
+                            )
+                        );
+                    });
+                agreement_is_not_vacuous(
+                    concat!("look/look_mut ", stringify!($shape)),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    /// The strict gap check applies to the transport *enum* too, not just concrete variants.
+    ///
+    /// Stated as a direct assertion rather than a differential, because the immutable oracle cannot
+    /// express it -- see the note above `mutable_inner_transport_enum`. That leaves the enum's own
+    /// gap check with nothing else reaching it, and it is worth reaching: naming an extension makes
+    /// the check strict, so a second, unnamed extension must turn a hit into a miss even though the
+    /// transport pattern is the permissive one.
+    ///
+    /// The second extension is a clone of the first, which keeps this free of any assumption about
+    /// what other extension types exist while still being two headers where the shape names one.
+    #[test]
+    fn the_transport_enum_still_refuses_an_unconsumed_extension() {
+        bolero::check!()
+            .with_generator(ShapedQuote { ext: 0, v4: false })
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let quoted = owned
+                    .embedded_ip_mut()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote always attaches a quote"));
+                let first = quoted
+                    .net_ext
+                    .first()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote always places one extension"))
+                    .clone();
+                quoted.net_ext.push(first);
+
+                let outer = owned
+                    .as_view::<O4V6>()
+                    .unwrap_or_else(|| unreachable!("ShapedQuote draws an ICMPv6 error"));
+                assert!(
+                    outer
+                        .as_embedded::<(&Ipv6, &HopByHop, &EmbeddedTransport)>()
+                        .is_none(),
+                    "naming one extension of two matched anyway, so the gap check did not run for \
+                     the transport enum"
+                );
+                // Not naming an extension skips the region silently, which is the other half of the
+                // same rule and shows the miss above is the gap check rather than a broken shape.
+                assert!(
+                    outer.as_embedded::<(&Ipv6, &EmbeddedTransport)>().is_some(),
+                    "a shape that never entered the extension region was refused"
+                );
+            });
+    }
+
+    // Network layer, both concrete and as the enum, at inner arity 1. These shapes are common
+    // enough in the broad generator's output -- around one packet in twenty -- to use it.
+    same_layers!(same_layers_v4_only, ShapedIcmpError, O4V4, (&Ipv4,), ip);
+    same_layers!(same_layers_v6_only, ShapedIcmpError, O4V6, (&Ipv6,), ip);
+    same_layers!(same_layers_net_only, ShapedIcmpError, O4V4, (&Net,), net);
+
+    // Every truncated transport, and the transport enum.
+    same_layers!(
+        same_layers_v4_tcp,
+        ShapedIcmpError,
+        O4V4,
+        (&Ipv4, &TruncatedTcp),
+        ip,
+        tcp
+    );
+    same_layers!(
+        same_layers_v6_udp,
+        ShapedIcmpError,
+        O4V6,
+        (&Ipv6, &TruncatedUdp),
+        ip,
+        udp
+    );
+    same_layers!(
+        same_layers_icmp_in_icmp4,
+        ShapedIcmpError,
+        O4V4,
+        (&Ipv4, &TruncatedIcmp4),
+        ip,
+        icmp
+    );
+    same_layers!(
+        same_layers_icmp_in_icmp6,
+        ShapedIcmpError,
+        O4V6,
+        (&Ipv6, &TruncatedIcmp6),
+        ip,
+        icmp
+    );
+    same_layers!(
+        same_layers_transport_enum,
+        ShapedIcmpError,
+        O4V4,
+        (&Net, &EmbeddedTransport),
+        net,
+        transport
+    );
+
+    // Every extension header, which is where the two walks diverge most: one indexes `net_ext` by a
+    // cursor, the other consumes a slice. These use the narrow generator, because on the broad one
+    // they matched six to twenty-three packets in twenty-four thousand -- see [`ShapedQuote`].
+    //
+    // Each therefore sees a quoted packet with exactly one extension, and that is not a limitation
+    // of the generator but of what is expressible: embedded shapes stop at arity 3, so a shape can
+    // name at most one extension, and naming one makes the gap check strict -- a second, unconsumed
+    // extension is a miss. One is the only number of extensions a matching quote can carry. Cursor
+    // arithmetic past position zero is consequently unreachable from here, and is covered by the
+    // differential properties above, which do draw multi-extension quotes and compare the two walks
+    // on the misses.
+    same_layers!(
+        same_layers_ext_hop_by_hop,
+        ShapedQuote { ext: 0, v4: false },
+        O4V6,
+        (&Ipv6, &HopByHop, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_dest_opts,
+        ShapedQuote { ext: 1, v4: false },
+        O4V6,
+        (&Ipv6, &DestOpts, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_routing,
+        ShapedQuote { ext: 2, v4: false },
+        O4V6,
+        (&Ipv6, &Routing, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_fragment,
+        ShapedQuote { ext: 3, v4: false },
+        O4V6,
+        (&Ipv6, &Fragment, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_v6_auth,
+        ShapedQuote { ext: 4, v4: false },
+        O4V6,
+        (&Ipv6, &Ipv6Auth, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
+    same_layers!(
+        same_layers_ext_v4_auth,
+        ShapedQuote { ext: 0, v4: true },
+        O4V4,
+        (&Ipv4, &Ipv4Auth, &TruncatedTcp),
+        ip,
+        ext,
+        tcp
+    );
 }
