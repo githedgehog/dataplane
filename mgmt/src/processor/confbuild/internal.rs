@@ -311,7 +311,7 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
+pub(crate) const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
 
 /// Create a route-map that adds community "no-advertise" to all routes
 fn route_map_add_noadv_comm() -> RouteMap {
@@ -391,4 +391,246 @@ pub fn build_internal_config(
     }
     debug!("Successfully built internal config for genid {genid}");
     Ok(internal)
+}
+
+/// Properties over the whole configuration chain.
+///
+/// A gateway configuration passes through four steps before the dataplane sees it:
+///
+/// ```text
+/// GatewayAgent (CRD) ──▶ ExternalConfig ──▶ validated ──▶ InternalConfig ──▶ FRR text
+/// ```
+///
+/// The converters and the validator are well covered, and the renderers now are too -- but the
+/// renderers were tested against an `InternalConfig` built by hand, and this builder was covered by
+/// one sample configuration in a test that printed its output. So the third arrow, the one that
+/// turns a *validated* configuration into the one the dataplane applies, has never seen a generated
+/// input.
+///
+/// That arrow is where the interesting failure lives, and there is precedent: a port-forwarding
+/// expose that validated and could not be built (`fix(config): Refuse a port-forwarding expose the
+/// dataplane cannot build`). It matters because `apply_gw_config` is a linear `?`-chain and there is
+/// no transaction: by the time a late step fails, kernel interfaces, the flow filter, ACLs, static
+/// NAT and the masquerade allocator have all been committed.
+///
+/// So the claim is: **whatever validates, builds; and whatever builds, renders.**
+#[cfg(test)]
+mod chain_properties {
+    use super::*;
+    use config::{ExternalConfig, GenId};
+    use k8s_intf::bolero::AddressFamily;
+    use k8s_intf::bolero::crd::{GatewayAgentBuilder, GatewayAgents};
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use routing::Render;
+    use std::collections::BTreeSet;
+
+    /// The configurations these properties draw from: legal, and **IPv4 only**.
+    ///
+    /// # Why IPv4 only
+    ///
+    /// Because IPv6 peering configuration cannot be rendered, and these properties say so loudly the
+    /// moment they are allowed to see it. `internal.rs` never uses `IpVer::V6`:
+    ///
+    /// * the advertise prefix list is built `IpVer::V4` over *unfiltered* prefixes, so a v6 prefix
+    ///   reaches `PrefixList::add_entry` and returns `ConfigError::InternalFailure`;
+    /// * the import prefix list is `IpVer::V4` *and* filtered by `is_ipv4()`, so v6 prefixes are
+    ///   dropped in silence -- no error, and no route either.
+    ///
+    /// Neither was reachable from a test until the generated gateway began joining its own gateway
+    /// groups, because `build_routing_config_peer` builds nothing for a peering whose group does not
+    /// list this gateway. See `.scratch/ipv6-peering-exec-summary.md`.
+    ///
+    /// **Widening this one function to `AddressFamily::all()` is the check for whether that is fixed**,
+    /// and it is deliberately the only place any of these properties names a family.
+    fn ipv4_agents() -> GatewayAgents {
+        GatewayAgentBuilder::new()
+            .families(vec![AddressFamily::V4])
+            .build()
+    }
+
+    /// Everything the chain produces for one generated CRD, or `None` if the configuration was
+    /// legal as a CRD but not a valid gateway configuration.
+    ///
+    /// Validation failing is not a defect: `LegalValue` generates values that are legal against the
+    /// *schema*, and plenty of those describe configurations that are semantically wrong -- two vpcs
+    /// claiming one vni, exposes that overlap. The claim starts after validation succeeds.
+    fn chain(agent: &GatewayAgent) -> Option<(GenId, InternalConfig)> {
+        let external = ExternalConfig::try_from(agent)
+            .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+        let validated = external.validate().ok()?;
+        let genid = validated.genid();
+        let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
+            panic!("a validated configuration would not build: {e}\n{validated:#?}")
+        });
+        Some((genid, internal))
+    }
+
+    /// A configuration that validates can be built and rendered.
+    ///
+    /// The rendering half is not incidental: `Render` returns no `Result`, so the only way it can
+    /// fail is to panic, and the renderers had only ever been given hand-written input.
+    #[test]
+    fn whatever_validates_builds_and_renders() {
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                let Some((genid, internal)) = chain(agent) else {
+                    return;
+                };
+                let text = internal.render(&genid).to_string();
+                assert!(
+                    text.contains(&format!("! config for gen {genid}")),
+                    "the rendered config does not say which generation it is for"
+                );
+            });
+    }
+
+    /// The built configuration carries a vrf for exactly the vnis the overlay's vpcs have.
+    ///
+    /// This is the correspondence the third arrow is supposed to establish. A vpc without a vrf is a
+    /// tenant with no forwarding table; a vrf without a vpc is one FRR will configure and nothing
+    /// will use.
+    #[test]
+    fn every_vpc_gets_a_vrf_and_no_more() {
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                let external = ExternalConfig::try_from(agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                let internal = build_internal_config(&validated, None)
+                    .unwrap_or_else(|e| panic!("a validated configuration would not build: {e}"));
+
+                let wanted: BTreeSet<u32> = validated
+                    .external()
+                    .overlay()
+                    .vpc_table()
+                    .values()
+                    .map(|vpc| vpc.vni().as_u32())
+                    .collect();
+                let built: BTreeSet<u32> = internal
+                    .vrfs
+                    .iter_by_name()
+                    .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
+                    .collect();
+                assert_eq!(built, wanted, "vrfs do not match the vpcs they come from");
+            });
+    }
+
+    /// The properties above are not vacuous, and say how far they reach.
+    ///
+    /// They are all of the form "if it validates, then ..." -- so they are worth nothing if nothing
+    /// validates. It is worth measuring rather than assuming, and the measurement turned out to be
+    /// the most useful thing in this module.
+    ///
+    /// This started out measuring a failure. When first written, about a sixth of configurations
+    /// validated and **none of them had a peering** -- twenty-four thousand peerings drawn per four
+    /// thousand configurations, not one surviving. Peerings are where the exposes, the NAT and the
+    /// ACLs live, so that whole half of the model reached the builder never, while the CRD
+    /// generators sat at 94% coverage and every per-converter property passed, because those run
+    /// before validation.
+    ///
+    /// Seven causes, all in the generators, all now fixed: peering pairs drawn independently so a
+    /// duplicated pair was near-certain; exposes drawing a mix of address families when one expose
+    /// must be single-family; prefixes as short as `/0`, which always overlaps a reserved range; the
+    /// NAT flavour chosen *after* the shape it constrains; the two manifests of a peering drawing
+    /// families independently when they must agree; both manifests free to use a stateful flavour
+    /// when only one may; and a peering naming a gateway group drawn freely rather than one that
+    /// exists.
+    ///
+    /// So the assertions are now the ones worth making: most configurations validate, and they carry
+    /// peerings.
+    #[test]
+    fn the_properties_are_not_vacuous() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static VALIDATED: AtomicUsize = AtomicUsize::new(0);
+        static VPCS: AtomicUsize = AtomicUsize::new(0);
+        static PEERINGS: AtomicUsize = AtomicUsize::new(0);
+        static ACLS: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                if let Ok(validated) = external.validate() {
+                    VALIDATED.fetch_add(1, Ordering::Relaxed);
+                    let table = validated.external().overlay().vpc_table();
+                    VPCS.fetch_add(table.len(), Ordering::Relaxed);
+                    PEERINGS.fetch_add(
+                        table
+                            .values()
+                            .map(|vpc| vpc.peerings().len())
+                            .sum::<usize>(),
+                        Ordering::Relaxed,
+                    );
+                    ACLS.fetch_add(
+                        table
+                            .values()
+                            .flat_map(|vpc| vpc.peerings())
+                            .filter(|peering| peering.acl().is_some())
+                            .count(),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let validated = VALIDATED.load(Ordering::Relaxed);
+        let vpcs = VPCS.load(Ordering::Relaxed);
+        let peerings = PEERINGS.load(Ordering::Relaxed);
+        let acls = ACLS.load(Ordering::Relaxed);
+        println!(
+            "{validated}/{seen} validated, carrying {vpcs} vpcs, {peerings} peerings, {acls} acls"
+        );
+        assert!(seen > 0, "no configurations were generated");
+        assert!(
+            validated * 2 >= seen,
+            "only {validated} of {seen} configurations validated: the properties above are \
+             checking much less than they look like they are"
+        );
+        assert!(vpcs > validated, "validated configurations carry no vpcs");
+        assert!(
+            peerings > 0,
+            "no validated configuration carries a peering, so nothing downstream of validation \
+             has seen the exposes or the NAT"
+        );
+        // Not merely "more than none": a *share* of them. An ACL rule can be refused for reasons
+        // that have nothing to do with the rule -- `scope: flow` needs one side of the peering to be
+        // stateful throughout -- so a generator that gets those wrong still produces some valid
+        // ACLs, just far fewer. Asserting the share is what notices that.
+        assert!(
+            acls * 2 >= validated,
+            "only {acls} of {validated} validated configurations carry an ACL: most generated ACLs \
+             are being refused for something other than what they say"
+        );
+    }
+
+    /// Building and rendering the same configuration twice gives the same text.
+    ///
+    /// Already checked over hand-built `InternalConfig`s; here the input comes from a generated CRD,
+    /// so the whole chain has to be deterministic, not just the last step of it. It matters because
+    /// `frr-reload.py` diffs the output against what FRR is running.
+    #[test]
+    fn the_chain_is_deterministic() {
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                let Some((genid, once)) = chain(agent) else {
+                    return;
+                };
+                let (_, twice) = chain(agent).unwrap_or_else(|| {
+                    panic!("the same CRD validated once and not the second time")
+                });
+                assert_eq!(
+                    once.render(&genid).to_string(),
+                    twice.render(&genid).to_string(),
+                    "the configuration chain is not deterministic"
+                );
+            });
+    }
 }

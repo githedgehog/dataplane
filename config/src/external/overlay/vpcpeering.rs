@@ -432,8 +432,8 @@ impl VpcExpose {
         // - we have no exclusion prefixes (note: we could relax this constraint now that we
         //   collapse exclusion prefixes early)
         // - we have a single prefix on each side (private and public addresses)
-        // - we have the same number of addresses on each side
-        // - the list of associated port ranges also has the same size on each side
+        // - a port range is present on each side
+        // - the two prefixes are the same length, and the two port ranges the same size
         if collapsed_expose.has_port_forwarding() {
             if !self.nots.is_empty() || !self.not_as_or_empty().is_empty() {
                 return Err(ConfigError::Forbidden(
@@ -446,12 +446,6 @@ impl VpcExpose {
                     "Port forwarding requires a single prefix on each side",
                 ));
             }
-            if ips_sizes != as_range_sizes {
-                return Err(ConfigError::MismatchedPrefixSizes(
-                    ips_sizes,
-                    as_range_sizes,
-                ));
-            }
             // For port forwarding, ensure that a port range is always present. Lack of port range would imply
             // all ports, which is not allowed since port 0 is forbidden in the implementation
             for prefixes in [collapsed_expose.ips(), collapsed_expose.as_range_or_empty()] {
@@ -460,6 +454,43 @@ impl VpcExpose {
                         "Port forwarding requires a port range on each prefix",
                     ));
                 }
+            }
+
+            // Matched lengths and matched port counts, rather than the matched *totals* static NAT
+            // asks for just above.
+            //
+            // A total is addresses times ports, so it is equally satisfied by a `/32` carrying 100
+            // ports opposite a `/30` carrying 25. A port-forwarding rule cannot express that: it
+            // maps one prefix onto another address for address, and one port range onto another
+            // positionally. `PortFwEntry::is_valid` duly refuses such a rule -- but it does so
+            // while the configuration is being *applied*, at the last of the NAT stages, by which
+            // point the kernel interfaces, the flow filter, the ACLs, the static NAT tables and
+            // the masquerade allocator have all been committed. The apply then fails and rolls
+            // back, which restores the configuration but not the masquerade flows that rebuilding
+            // the allocator has already torn down. Refusing the same shape here costs nothing.
+            //
+            // Single prefixes carrying port ranges, both established above.
+            let internal = collapsed_expose
+                .ips()
+                .first()
+                .unwrap_or_else(|| unreachable!());
+            let external = collapsed_expose
+                .as_range_or_empty()
+                .first()
+                .unwrap_or_else(|| unreachable!());
+            if internal.prefix().length() != external.prefix().length() {
+                return Err(ConfigError::MismatchedPrefixLengths {
+                    private: internal.prefix().length(),
+                    public: external.prefix().length(),
+                });
+            }
+            let internal_ports = internal.ports().unwrap_or_else(|| unreachable!());
+            let external_ports = external.ports().unwrap_or_else(|| unreachable!());
+            if internal_ports.len() != external_ports.len() {
+                return Err(ConfigError::MismatchedPortRangeSizes {
+                    private: internal_ports.len(),
+                    public: external_ports.len(),
+                });
             }
         }
 
@@ -1003,5 +1034,556 @@ impl VpcPeeringTable {
         self.0
             .values()
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+pub mod contract {
+    //! Generators for the configuration types.
+    //!
+    //! These exist so that the stages downstream of configuration -- NAT's static, masquerade and
+    //! port-forwarding tables -- can be driven by generated configurations rather than by a
+    //! handful of hand-written ones.
+
+    use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
+    use crate::ConfigError;
+    use crate::external::overlay::vpc::{Vpc, VpcTable};
+    use crate::external::overlay::{Overlay, ValidatedOverlay};
+    use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::{
+        IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
+    };
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::ops::Bound::Included;
+    use std::time::Duration;
+
+    /// The widest span of addresses either side of a generated expose covers, as host bits.
+    ///
+    /// Kept small because the two sides are matched address for address: nothing here needs a
+    /// large prefix to be interesting, and a large one only makes what consumes it slower.
+    const MAX_HOST_BITS: u8 = 8;
+
+    /// The widest port range either side covers. Same reasoning.
+    const MAX_PORTS: u16 = 1024;
+
+    /// Generates [`VpcExpose`]s that use port forwarding and that [`VpcExpose::validate`] accepts.
+    ///
+    /// Valid by construction rather than by generate-and-reject, so every case reaches the code
+    /// under test. The rules being satisfied, each of which `validate` enforces:
+    ///
+    /// * exactly one prefix on each side, and no exclusion prefixes;
+    /// * both sides of one address family;
+    /// * neither prefix overlapping a special-use block -- hence drawing from `10.0.0.0/8` and
+    ///   `172.16.0.0/12` for v4 and from `2001:db8::/32` for v6, which are not reserved here;
+    /// * a port range present on each side, since a missing one means every port and port 0 is
+    ///   forbidden. Note that [`PrefixWithOptionalPorts::new`] *drops* a range covering all ports,
+    ///   turning it into the missing case, so the ranges here are always bounded;
+    /// * equal total size on the two sides, where size counts addresses times ports.
+    ///
+    /// The last of those used to be a product -- addresses times ports -- which a `/32` carrying
+    /// 100 ports opposite a `/30` carrying 25 satisfies while being a pairing no port-forwarding
+    /// rule can express. Validation compares the two lengths and the two port counts directly now,
+    /// so matched sides are the whole legal space rather than a corner of it that this generator
+    /// was staying inside. See `tests::compensating_sizes_do_not_make_a_valid_expose`.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct PortForwardingExpose;
+
+    impl ValueGenerator for PortForwardingExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let host_bits = driver.gen_u8(Included(&0), Included(&MAX_HOST_BITS))?;
+            let (internal, external) = if driver.produce::<bool>()? {
+                v4_pair(driver, host_bits)?
+            } else {
+                v6_pair(driver, host_bits)?
+            };
+
+            // One port count for both sides: equal address counts and equal port counts is what
+            // makes the two totals agree, and is what `PortFwEntry` accepts.
+            let count = driver.gen_u16(Included(&1), Included(&MAX_PORTS))?;
+            let internal_ports = port_range(driver, count)?;
+            let external_ports = port_range(driver, count)?;
+
+            let proto = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => L4Protocol::Tcp,
+                1 => L4Protocol::Udp,
+                _ => L4Protocol::Any,
+            };
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(5)),
+                _ => Some(Duration::from_mins(5)),
+            };
+
+            VpcExpose::empty()
+                .make_port_forwarding(idle_timeout, Some(proto))
+                .ok()?
+                .ip(PrefixWithOptionalPorts::new(internal, Some(internal_ports)))
+                .as_range(PrefixWithOptionalPorts::new(external, Some(external_ports)))
+                .ok()
+        }
+    }
+
+    /// Generates [`VpcExpose`]s that masquerade and that [`VpcExpose::validate`] accepts.
+    ///
+    /// Looser than [`PortForwardingExpose`], because masquerade is: several prefixes are allowed on
+    /// each side and their sizes need not agree, which is the point of masquerade -- many private
+    /// addresses behind few public ones. What it does forbid is port ranges, on either side.
+    ///
+    /// Prefixes within a side are carved so as not to overlap, since a manifest rejects
+    /// overlapping ones, and the two sides are drawn from separate blocks.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct MasqueradeExpose;
+
+    impl ValueGenerator for MasqueradeExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = driver.produce::<bool>()?;
+            let privates = driver.gen_u8(Included(&1), Included(&3))?;
+            let publics = driver.gen_u8(Included(&1), Included(&2))?;
+            let base = driver.produce::<u8>()?;
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(30)),
+                _ => Some(Duration::from_mins(2)),
+            };
+
+            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+            for index in 0..privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Private, base.wrapping_add(index))?,
+                    None,
+                ));
+            }
+            for index in 0..publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(
+                        block(v4, Side::Public, base.wrapping_add(index))?,
+                        None,
+                    ))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Side {
+        Private,
+        Public,
+    }
+
+    // One non-overlapping block per index, from a range that is not special-use.
+    fn block(v4: bool, side: Side, index: u8) -> Option<Prefix> {
+        if v4 {
+            // 10.<index>.0.0/24 and 172.16.<index>.0/24.
+            let bits = match side {
+                Side::Private => 0x0A00_0000 | (u32::from(index) << 16),
+                Side::Public => 0xAC10_0000 | (u32::from(index) << 8),
+            };
+            prefix_v4(bits, 24)
+        } else {
+            // 2001:db8:0:<index>::/64 and 2001:db8:1:<index>::/64.
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            let bits = (0x2001_0db8u128 << 96) | (selector << 80) | (u128::from(index) << 64);
+            prefix_v6(bits, 64)
+        }
+    }
+
+    /// Generates [`VpcExpose`]s that use static NAT and that [`VpcExpose::validate`] accepts.
+    ///
+    /// The interesting rule for static NAT is that the two sides must be the same total size while
+    /// being free to have completely different shapes: a `/26` on one side can be answered by four
+    /// `/28`s on the other. That fragmenting is what `RangeBuilder` exists to work out, so the
+    /// generator produces it deliberately -- one total, split independently into a different set
+    /// of prefixes per side.
+    ///
+    /// Sizes stay small so that a property can enumerate every address on both sides rather than
+    /// sampling. Parts are placed largest first from an aligned base, which keeps every prefix
+    /// aligned to its own size and keeps them from overlapping.
+    ///
+    /// No port ranges yet: static NAT permits them, and they take the mapping down a second path
+    /// (`PortAddrTranslationValue` rather than `AddrTranslationValue`) that carries its own
+    /// unfinished work. That path wants a generator of its own.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct StaticNatExpose;
+
+    /// The largest total either side covers, as a power of two. Small enough to enumerate.
+    const MAX_TOTAL_LOG: u8 = 6;
+
+    impl ValueGenerator for StaticNatExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = driver.produce::<bool>()?;
+            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
+            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
+
+            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+            for prefix in privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+            }
+            for prefix in publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    // Split 2^total_log into powers of two, largest first. Halving a part keeps the total the
+    // same, which is what lets the two sides be split independently and still agree.
+    fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
+        let mut parts = vec![total_log];
+        for _ in 0..driver.gen_u8(Included(&0), Included(&3))? {
+            let splittable: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, log)| **log > 0)
+                .map(|(index, _)| index)
+                .collect();
+            if splittable.is_empty() {
+                break;
+            }
+            let choice = usize::from(driver.gen_u8(
+                Included(&0),
+                Included(&u8::try_from(splittable.len() - 1).ok()?),
+            )?);
+            let log = parts.swap_remove(splittable[choice]);
+            parts.push(log - 1);
+            parts.push(log - 1);
+        }
+        parts.sort_unstable_by(|a, b| b.cmp(a));
+        Some(parts)
+    }
+
+    // Lay the parts out from the side's base, largest first, so each lands on a multiple of its
+    // own size and none of them overlap.
+    //
+    // Each part is followed by a gap of its own size. Placed end to end they would be aligned
+    // siblings, and validation normalizes those back into one prefix -- so the shape the generator
+    // worked out to differ between the sides would be collapsed away before anything saw it.
+    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let mut cursor = if v4 {
+            u128::from(match side {
+                Side::Private => 0x0A00_0000u32,
+                Side::Public => 0xAC10_0000,
+            })
+        } else {
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            (0x2001_0db8u128 << 96) | (selector << 80)
+        };
+
+        let mut out = Vec::with_capacity(parts.len());
+        for &log in parts {
+            let prefix = if v4 {
+                prefix_v4(u32::try_from(cursor).ok()?, 32 - log)?
+            } else {
+                prefix_v6(cursor, 128 - log)?
+            };
+            out.push(prefix);
+            cursor += 2u128 << log;
+        }
+        Some(out)
+    }
+
+    /// The VNI of the VPC offering the expose in [`overlay_offering`].
+    pub const LOCAL_VNI: u32 = 100;
+    /// The VNI of the peer it is offered to.
+    pub const REMOTE_VNI: u32 = 200;
+
+    /// A two-VPC overlay whose local side offers `expose`.
+    ///
+    /// The remote side exposes an unrelated prefix, because a manifest with no exposes is
+    /// rejected, and one of the same address family, because a peering's two manifests must agree
+    /// on that.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever validating the resulting overlay returns. A generator from this module
+    /// produces exposes that pass, so a caller driving one can treat an error as a failure.
+    pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
+        overlay_with(expose)?.validate()
+    }
+
+    /// The same two-VPC overlay as [`overlay_offering`], before validation.
+    ///
+    /// Separate because a caller assembling a whole [`crate::ExternalConfig`] has to hand it an
+    /// unvalidated overlay and validate the lot -- validating the overlay alone skips every check
+    /// that spans the underlay and the overlay together.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed vpcs and peering this builds cannot be assembled, which
+    /// would be a bug here rather than anything about `expose`.
+    pub fn overlay_with(expose: VpcExpose) -> Result<Overlay, ConfigError> {
+        overlay_with_exposes(vec![expose])
+    }
+
+    /// The same, with several exposes on the local side.
+    ///
+    /// Worth having separately because one expose at a time only reaches the checks that look at an
+    /// expose on its own. The interesting rejections -- and the interesting things for whatever
+    /// consumes the result to get wrong -- are between exposes.
+    ///
+    /// # Errors
+    ///
+    /// As [`overlay_with`]. Note that *validating* the result may still fail for reasons that are
+    /// about the combination, such as two exposes covering overlapping prefixes, which is a
+    /// legitimate rejection rather than a defect.
+    pub fn overlay_with_exposes(exposes: Vec<VpcExpose>) -> Result<Overlay, ConfigError> {
+        let remote_prefix = match exposes
+            .first()
+            .and_then(|expose| expose.ips.first().map(PrefixWithOptionalPorts::prefix))
+        {
+            Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
+            _ => "3.3.3.0/24",
+        };
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
+
+        let local = exposes
+            .into_iter()
+            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
+        let remote = VpcManifest::new("VPC-2").exposing(
+            VpcExpose::empty().ip(remote_prefix
+                .parse::<Prefix>()
+                .unwrap_or_else(|_| unreachable!())
+                .into()),
+        );
+        let mut peerings = VpcPeeringTable::new();
+        peerings.add(VpcPeering::with_default_group(
+            "VPC-1--VPC-2",
+            local,
+            remote,
+        ))?;
+
+        Ok(Overlay::new(vpc_table, peerings))
+    }
+
+    /// Which NAT flavour a generated expose uses, for a caller that wants to branch on it.
+    #[must_use]
+    pub fn nat_config(expose: &VpcExpose) -> Option<&VpcExposeNatConfig> {
+        expose.nat_config()
+    }
+
+    // A private and a public prefix of the same length, from blocks that are not special-use.
+    fn v4_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
+        let len = 32 - host_bits;
+        let mask = u32::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        // 10.0.0.0/8 and 172.16.0.0/12; masking only clears host bits, so the blocks survive.
+        let internal = (0x0A00_0000 | (driver.produce::<u32>()? & 0x00FF_FFFF)) & mask;
+        let external = (0xAC10_0000 | (driver.produce::<u32>()? & 0x000F_FFFF)) & mask;
+        Some((prefix_v4(internal, len)?, prefix_v4(external, len)?))
+    }
+
+    // 2001:db8::/32, with the two sides separated so they cannot be the same prefix.
+    const INTERNAL_BASE: u128 = 0x2001_0db8_0000_0000_0000_0000_0000_0000;
+    const EXTERNAL_BASE: u128 = 0x2001_0db8_0001_0000_0000_0000_0000_0000;
+
+    fn v6_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
+        let len = 128 - host_bits;
+        let mask = u128::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let internal = (INTERNAL_BASE | u128::from(driver.produce::<u64>()?)) & mask;
+        let external = (EXTERNAL_BASE | u128::from(driver.produce::<u64>()?)) & mask;
+        Some((prefix_v6(internal, len)?, prefix_v6(external, len)?))
+    }
+
+    fn prefix_v4(bits: u32, len: u8) -> Option<Prefix> {
+        Ipv4Prefix::new(Ipv4Addr::from_bits(bits), len)
+            .ok()
+            .map(Prefix::from)
+    }
+
+    fn prefix_v6(bits: u128, len: u8) -> Option<Prefix> {
+        Ipv6Prefix::new(Ipv6Addr::from_bits(bits), len)
+            .ok()
+            .map(Prefix::from)
+    }
+
+    // A range of exactly `count` ports, never starting at 0 and never covering every port.
+    fn port_range<D: Driver>(driver: &mut D, count: u16) -> Option<PortRange> {
+        // Parenthesised: `start + count - 1` would add before subtracting, and the sum reaches
+        // 65536 at the top of the range.
+        let last_start = u16::MAX - (count - 1);
+        let start = driver.gen_u16(Included(&1), Included(&last_start))?;
+        PortRange::new(start, start + (count - 1)).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Everything this generator produces is something `validate` accepts.
+        ///
+        /// The generator exists to reach the code past validation, so a case that does not get
+        /// there is a case wasted -- and silently, since a rejected configuration still counts as
+        /// a run.
+        #[test]
+        fn every_generated_expose_validates() {
+            bolero::check!()
+                .with_generator(PortForwardingExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate();
+                    assert!(
+                        validated.is_ok(),
+                        "generated expose was rejected: {expose} -- {:?}",
+                        validated.err()
+                    );
+                });
+        }
+
+        // A port-forwarding expose from a prefix and an inclusive port range on each side.
+        fn forwarding(internal: (&str, u16, u16), external: (&str, u16, u16)) -> VpcExpose {
+            let side = |(prefix, first, last): (&str, u16, u16)| {
+                PrefixWithOptionalPorts::new(
+                    prefix.into(),
+                    Some(PortRange::new(first, last).unwrap_or_else(|_| unreachable!())),
+                )
+            };
+            VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!())
+                .ip(side(internal))
+                .as_range(side(external))
+                .unwrap_or_else(|_| unreachable!())
+        }
+
+        /// Sides of different prefix lengths are refused, however their totals work out.
+        ///
+        /// A total counts addresses times ports, so a `/32` with 100 ports and a `/30` with 25 have
+        /// the same one -- which is what a size check alone accepts. A port-forwarding rule maps
+        /// address for address and port for port, so it cannot express that pairing, and
+        /// `PortFwEntry` refuses it. It used to refuse it during the apply, after the earlier
+        /// stages had committed and with a rollback to follow that restores the configuration but
+        /// not the flows already torn down. Refused here, none of that happens.
+        #[test]
+        fn compensating_sizes_do_not_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/32", 1000, 1099), ("172.16.0.0/30", 2000, 2024));
+            assert!(
+                matches!(
+                    expose.validate(),
+                    Err(ConfigError::MismatchedPrefixLengths {
+                        private: 32,
+                        public: 30
+                    })
+                ),
+                "a /32 with 100 ports opposite a /30 with 25 was accepted: {:?}",
+                expose.validate()
+            );
+        }
+
+        /// Matched prefixes with port ranges of different sizes are refused too.
+        #[test]
+        fn port_ranges_of_different_sizes_do_not_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/32", 1000, 1099), ("172.16.0.0/32", 2000, 2049));
+            assert!(
+                matches!(
+                    expose.validate(),
+                    Err(ConfigError::MismatchedPortRangeSizes {
+                        private: 100,
+                        public: 50
+                    })
+                ),
+                "100 ports opposite 50 was accepted: {:?}",
+                expose.validate()
+            );
+        }
+
+        /// And the matched case still passes, so the two guards are about mismatch rather than
+        /// about port forwarding having stopped validating at all.
+        #[test]
+        fn matched_sides_still_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/30", 1000, 1099), ("172.16.0.0/30", 2000, 2099));
+            assert!(expose.validate().is_ok(), "{:?}", expose.validate());
+        }
+
+        /// The masquerade generator's cases validate too, and stay masquerade.
+        ///
+        /// Masquerade's own rule is that neither side carries a port range, which is easy to break
+        /// by reusing the port-forwarding shape.
+        #[test]
+        fn every_generated_masquerade_expose_validates() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_masquerade());
+                    assert!(!validated.ips().is_empty());
+                    assert!(!validated.as_range_or_empty().is_empty());
+                });
+        }
+
+        /// A generated expose can be dropped into an overlay that validates.
+        ///
+        /// The helper is what every downstream property is built on, so a case it cannot place is
+        /// a case none of them see.
+        #[test]
+        fn a_generated_expose_can_be_offered_in_an_overlay() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose)
+                .cloned()
+                .for_each(|expose: VpcExpose| {
+                    let shown = expose.to_string();
+                    assert!(
+                        overlay_offering(expose).is_ok(),
+                        "could not build an overlay around {shown}"
+                    );
+                });
+        }
+
+        /// The static NAT generator's cases validate, and the two sides really do differ in shape.
+        ///
+        /// The second half is the part worth asserting: a generator that always produced one
+        /// prefix per side would pass the first half while never exercising the fragmenting that
+        /// `RangeBuilder` exists for.
+        #[test]
+        fn every_generated_static_nat_expose_validates() {
+            let mut shapes_differed = false;
+            bolero::check!()
+                .with_generator(StaticNatExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_static_nat());
+                    if validated.ips().len() != validated.as_range_or_empty().len() {
+                        shapes_differed = true;
+                    }
+                });
+            assert!(
+                shapes_differed,
+                "no generated expose had a different number of prefixes on each side, so the \
+                 mapping was never asked to fragment"
+            );
+        }
+
+        /// And it is port forwarding that comes out the other side, with both sides intact.
+        #[test]
+        fn a_generated_expose_survives_validation_as_port_forwarding() {
+            bolero::check!()
+                .with_generator(PortForwardingExpose)
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| panic!("{e:?}"));
+                    assert!(validated.has_port_forwarding());
+                    assert_eq!(validated.ips().len(), 1);
+                    assert_eq!(validated.as_range_or_empty().len(), 1);
+                });
+        }
     }
 }
