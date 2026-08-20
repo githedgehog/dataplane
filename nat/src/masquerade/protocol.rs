@@ -6,6 +6,8 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
+use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
 
@@ -14,6 +16,21 @@ use net::packet::Packet;
 use net::tcp::Tcp;
 
 impl NatFlowStatus {
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //# a) For specific destination ports in the well-known port range
+    //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+    //# are specific to the IANA-registered application running over
+    //# that specific destination port.
+    //
+    // This is the exemption REQ-5a describes, and it is the only port-specific timer we have. The
+    // match is on the reply's *source* port, which is the destination port of the session that
+    // asked -- the thing REQ-5a is written about.
+    //
+    // Two of the three ports qualify. 53 and 853 are inside the well-known range and are the
+    // IANA registrations for DNS and DNS-over-TLS. 8853 is not: it is above 1023, so REQ-5a does
+    // not reach it and closing that flow immediately is a plain deviation from REQ-5 rather than a
+    // permitted optimisation. It is a small one -- the flow is a resolver exchange either way --
+    // but it is not covered by the exemption the other two sit under.
     fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
         match packet.headers().pat().eth().net().udp().done() {
             Some((_, _, udp)) => match udp.source().as_u16() {
@@ -51,14 +68,20 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
 }
 
 //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=implementation
 //# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
 //# NAT mapping or TCP connection for which the ICMP was generated.
 //
-// Held by construction: no arm below yields `Closed` or `Reset`, so no ICMP message can end a
-// mapping. The only transition available is the one that records that traffic came back.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-9
+//= type=implementation
+//# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping.
+//
+// Held by construction: no arm below yields `Closed` or `Reset`. `contract::rfc4787::Req12` is what
+// keeps it that way, and it is the same predicate the test cited `type=test` calls.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
+    let next = match action {
         NatAction::SrcNat => match status {
             _ => status,
         },
@@ -66,7 +89,19 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
+    };
+    // `unreachable!` rather than `panic!`, per development/code/error-handling.md: reaching this is
+    // programmer error, not a runtime condition. The whole block folds away in release.
+    if cfg!(debug_assertions)
+        && let Err(violation) = Req12::new(status, next).check()
+    {
+        unreachable!(
+            "{spec} {id}: {violation} ({action})",
+            spec = Req12::SPEC,
+            id = Req12::ID
+        );
     }
+    next
 }
 
 fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {

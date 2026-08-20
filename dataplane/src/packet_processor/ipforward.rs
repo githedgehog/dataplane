@@ -219,6 +219,36 @@ impl IpForwarder {
     }
 
     /// Encapsulate a packet in Vxlan with the provided [`VxlanEncapsulation`] params
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-10
+    //= type=todo
+    //# REQ-13:  If the packet received on an internal IP address has DF=1,
+    //# the NAT MUST send back an ICMP message "Fragmentation needed and
+    //# DF set" to the host, as described in [RFC0792].
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-10
+    //= type=todo
+    //# a) If the packet has DF=0, the NAT MUST fragment the packet and
+    //# SHOULD send the fragments in order.
+    //
+    // Neither is held, and not for want of a branch: there is no MTU on this datapath to compare a
+    // packet against. `net::interface::Mtu` lives entirely in the control plane -- `config`, the
+    // FRR renderer and `interface-manager`, which push it to the kernel over netlink -- and reaches
+    // neither `dataplane`, `pipeline` nor `nat`.
+    //
+    // The requirement lands here because this is the one place the dataplane makes a packet
+    // *larger*: VxLAN encapsulation prepends an outer Ethernet, IP, UDP and VxLAN header to a frame
+    // already sized for the tenant's link. The only size limits it can fail on are the mbuf's own
+    // headroom and the 2^16 ceiling of the IP length field, and neither is a link MTU, so a frame
+    // too large for the underlay leaves here intact and is dropped without notice further on.
+    //
+    // The wider fact is that this stage originates no ICMP error at all. `decrement_ttl` below has
+    // the same shape: expiry sets `DoneReason::HopLimitExceeded` and drops, where RFC 1812 section
+    // 4.3.2.3 asks a router for ICMP Time Exceeded. `nat::icmp_handler` translates and forwards
+    // ICMP errors that arrive; nothing in the tree builds one.
+    //
+    // So REQ-13, REQ-13a and the TTL case are one decision rather than three findings -- does this
+    // gateway originate ICMP errors? -- and answering it needs an egress MTU first, which is the
+    // larger half of the work. `todo` rather than `exception` because nobody has ruled.
     fn vxlan_encap<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,

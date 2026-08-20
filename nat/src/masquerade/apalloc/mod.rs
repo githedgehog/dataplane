@@ -286,22 +286,52 @@ impl NatAllocator {
     //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
     //# for TCP.
     //
-    // Not held as stated, and the deviation is architectural rather than accidental: the
-    // allocation depends on `dst_vpcd`, so one internal endpoint talking to two destination VPCs
-    // can be given two different public tuples. RFC 5382 was written for a NAT facing a single
-    // external realm, where "endpoint" means a destination address and port; here distinct
-    // destination VPCs are distinct address spaces reached through distinct peerings, and sharing
-    // a pool across them would be the surprising choice.
+    // Not held, and measured rather than reasoned about. An earlier reading of this code blamed
+    // `dst_vpcd` and concluded the deviation only showed up across destination VPCs, which would
+    // have made it defensible. `fuzz::an_internal_endpoint_keeps_one_public_address` was written
+    // to check that and refuted it on the first input it drew.
     //
-    // So this is probably an exception rather than a defect -- but "probably" is the reason it is
-    // marked `todo`. Whether a destination VPC counts as an endpoint for REQ-1 is a question about
-    // the product, and nobody has answered it. Answering it is cheap; discovering the answer
-    // mattered after a peer-to-peer application fails is not.
+    // Holding the internal endpoint at 10.0.0.0:1 and moving only the *destination port*, from
+    // 3.3.3.1:1 to 3.3.3.1:2, moves the public port from 1024 to 1025. Same destination address,
+    // same VPC, different mapping. In RFC 4787's taxonomy (section 4.1) that is
+    // "Address and Port-Dependent Mapping" -- the most restrictive of the three classes, and the
+    // one REQ-1 exists to forbid.
+    //
+    // The signature above is what made the earlier reading plausible: `allocate_v4` takes no
+    // destination address and no destination port, so it looks endpoint-independent. The
+    // dependence is not in its arguments, it is in being called again for every new flow. Nothing
+    // at the allocator level can see that, which is why the property lives at the stage.
+    //
+    // What this costs is UNSAF traversal, which is the entire justification RFC 4787 gives for
+    // REQ-1: a peer learns its public tuple by talking to a third party, and here that tuple is
+    // worth nothing for talking to anybody else. Whether this gateway intends to carry
+    // peer-to-peer traffic is a product question, and it is a much sharper one than the
+    // destination-VPC question it replaces.
+    //
+    // Still `todo` rather than `exception`, on the same grounds as before: an exception asserts
+    // somebody weighed this and accepted it. Now that the cost is stated precisely, that decision
+    // is worth asking for.
+    //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=todo
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+    //
+    // The same deviation, for UDP, on the same code, and the measurement above was taken over UDP
+    // probes. RFC 4787 states it without the "for TCP" qualifier. One decision settles both.
+    //
+    // The half that *is* held is REQ-2, cited in `alloc.rs`: the public address is stable across
+    // destinations even though the port is not. That is the partial-conformance case in its
+    // clearest form -- one requirement met, its neighbour missed, by the same two lines of code.
     //= https://www.rfc-editor.org/rfc/rfc5382#section-8
     //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
     //# overloading" for TCP.
     //
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+    //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading".
+    //
     // No live allocation is ever handed out twice; the port bitmaps below are what enforce it.
+    // The allocator is protocol-agnostic, so the UDP and TCP requirements are one implementation.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,

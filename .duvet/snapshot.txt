@@ -1,3 +1,176 @@
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
+  SECTION: [Address and Port Mapping](#section-4.1)
+    TEXT[!MUST,todo]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+    TEXT[!SHOULD,implementation,test]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    TEXT[!SHOULD,implementation,test]:       behavior of "Paired".
+
+  SECTION: [Port Assignment Behavior](#section-4.2.1)
+    TEXT[!MUST,implementation,test]:    REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    TEXT[!MUST,implementation,test]:       overloading".
+    TEXT[!SHOULD,exception]:       a) If the host's source port was in the range 0-1023, it is
+    TEXT[!SHOULD,exception]:          RECOMMENDED the NAT's source port be in the same range.
+    TEXT[!SHOULD]: If the
+    TEXT[!SHOULD]:          host's source port was in the range 1024-65535, it is
+    TEXT[!SHOULD]:          RECOMMENDED that the NAT's source port be in that range.
+
+  SECTION: [Port Parity](#section-4.2.2)
+    TEXT[!SHOULD]:    REQ-4:  It is RECOMMENDED that a NAT have a "Port parity
+    TEXT[!SHOULD]:       preservation" behavior of "Yes".
+
+  SECTION: [Mapping Refresh](#section-4.3)
+    TEXT[!MUST,todo]:    REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+    TEXT[!MUST,todo]:       minutes, unless REQ-5a applies.
+    TEXT[!MAY,implementation]:       a) For specific destination ports in the well-known port range
+    TEXT[!MAY,implementation]:          (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+    TEXT[!MAY,implementation]:          are specific to the IANA-registered application running over
+    TEXT[!MAY,implementation]:          that specific destination port.
+    TEXT[!MAY]:       b) The value of the NAT UDP mapping timer MAY be configurable.
+    TEXT[!SHOULD,todo]:       c) A default value of five minutes or more for the NAT UDP mapping
+    TEXT[!SHOULD,todo]:          timer is RECOMMENDED.
+    TEXT[!MUST,test,todo]:    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+    TEXT[!MUST,test,todo]:       refresh behavior" of "True".
+    TEXT[!MAY]:       a) The NAT mapping Refresh Direction MAY have a "NAT Inbound
+    TEXT[!MAY]:          refresh behavior" of "True".
+
+  SECTION: [Conflicting Internal and External IP Address Spaces](#section-4.4)
+    TEXT[!MUST]:    REQ-7:  A NAT device whose external IP interface can be configured
+    TEXT[!MUST]:       dynamically MUST either (1) automatically ensure that its internal
+    TEXT[!MUST]:       network uses IP addresses that do not conflict with its external
+    TEXT[!MUST]:       network, or (2) be able to translate and forward traffic between
+    TEXT[!MUST]:       all internal nodes and all external nodes whose IP addresses
+    TEXT[!MUST]:       numerically conflict with the internal network.
+
+  SECTION: [Filtering Behavior](#section-5)
+    TEXT[!SHOULD,todo]:    REQ-8:  If application transparency is most important, it is
+    TEXT[!SHOULD,todo]:       RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+    TEXT[!SHOULD,todo]:       behavior.
+    TEXT[!SHOULD,todo]: If a more stringent filtering behavior is most
+    TEXT[!SHOULD,todo]:       important, it is RECOMMENDED that a NAT have an "Address-Dependent
+    TEXT[!SHOULD,todo]:       Filtering" behavior.
+    TEXT[!MAY]:       a) The filtering behavior MAY be an option configurable by the
+    TEXT[!MAY]:          administrator of the NAT.
+
+  SECTION: [Hairpinning Behavior](#section-6)
+    TEXT[!MUST,todo]:    REQ-9:  A NAT MUST support "Hairpinning".
+    TEXT[!MUST]:       a) A NAT Hairpinning behavior MUST be "External source IP address
+    TEXT[!MUST]:          and port".
+
+  SECTION: [Application Level Gateways](#section-7)
+    TEXT[!SHOULD]:    REQ-10:  To eliminate interference with UNSAF NAT traversal
+    TEXT[!SHOULD]:       mechanisms and allow integrity protection of UDP communications,
+    TEXT[!SHOULD]:       NAT ALGs for UDP-based protocols SHOULD be turned off.
+    TEXT[!SHOULD]:       a) If a NAT includes ALGs, it is RECOMMENDED that the NAT allow
+    TEXT[!SHOULD]:          the NAT administrator to enable or disable each ALG separately.
+
+  SECTION: [Deterministic Properties](#section-8)
+    TEXT[!MUST,test]:    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+    TEXT[!MUST,test]:       change the NAT translation (Section 4) or the Filtering
+    TEXT[!MUST,test]:       (Section 5) Behavior at any point in time, or under any particular
+    TEXT[!MUST,test]:       conditions.
+
+  SECTION: [ICMP Destination Unreachable Behavior](#section-9)
+    TEXT[!SHOULD]: The NAT's default configuration SHOULD NOT filter
+    TEXT[!SHOULD]:    ICMP messages based on their source IP address.
+    TEXT[!SHOULD]: Such ICMP messages
+    TEXT[!SHOULD]:    SHOULD be rewritten by the NAT (specifically, the IP headers and the
+    TEXT[!SHOULD]:    ICMP payload) and forwarded to the appropriate internal or external
+    TEXT[!SHOULD]:    host.
+    TEXT[!MUST]: Receipt of any sort of ICMP message MUST NOT
+    TEXT[!MUST]:    destroy the NAT mapping.
+    TEXT[!MUST,implementation]:    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST,implementation]:       NAT mapping.
+    TEXT[!SHOULD]:       a) The NAT's default configuration SHOULD NOT filter ICMP messages
+    TEXT[!SHOULD]:          based on their source IP address.
+    TEXT[!SHOULD]:       b) It is RECOMMENDED that a NAT support ICMP Destination
+    TEXT[!SHOULD]:          Unreachable messages.
+
+  SECTION: [Fragmentation of Outgoing Packets](#section-10)
+    TEXT[!MUST]:    REQ-13:  If the packet received on an internal IP address has DF=1,
+    TEXT[!MUST]:       the NAT MUST send back an ICMP message "Fragmentation needed and
+    TEXT[!MUST]:       DF set" to the host, as described in [RFC0792].
+    TEXT[!MUST]:       a) If the packet has DF=0, the NAT MUST fragment the packet and
+    TEXT[!MUST]:          SHOULD send the fragments in order.
+
+  SECTION: [Receiving Fragmented Packets](#section-11)
+    TEXT[!MUST,todo]:    REQ-14:  A NAT MUST support receiving in-order and out-of-order
+    TEXT[!MUST,todo]:       fragments, so it MUST have "Received Fragment Out of Order"
+    TEXT[!MUST,todo]:       behavior.
+    TEXT[!MUST]:       a) A NAT's out-of-order fragment processing mechanism MUST be
+    TEXT[!MUST]:          designed so that fragmentation-based DoS attacks do not
+    TEXT[!MUST]:          compromise the NAT's ability to process in-order and
+    TEXT[!MUST]:          unfragmented IP packets.
+
+  SECTION: [Requirements](#section-12)
+    TEXT[!MUST]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+    TEXT[!SHOULD]:    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+    TEXT[!SHOULD]:       behavior of "Paired".
+    TEXT[!MUST]:    REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    TEXT[!MUST]:       overloading".
+    TEXT[!SHOULD]:       a) If the host's source port was in the range 0-1023, it is
+    TEXT[!SHOULD]:          RECOMMENDED the NAT's source port be in the same range.
+    TEXT[!SHOULD]: If the
+    TEXT[!SHOULD]:          host's source port was in the range 1024-65535, it is
+    TEXT[!SHOULD]:          RECOMMENDED that the NAT's source port be in that range.
+    TEXT[!SHOULD]:    REQ-4:  It is RECOMMENDED that a NAT have a "Port parity
+    TEXT[!SHOULD]:       preservation" behavior of "Yes".
+    TEXT[!MUST]:    REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+    TEXT[!MUST]:       minutes, unless REQ-5a applies.
+    TEXT[!MAY]:       a) For specific destination ports in the well-known port range
+    TEXT[!MAY]:          (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+    TEXT[!MAY]:          are specific to the IANA-registered application running over
+    TEXT[!MAY]:          that specific destination port.
+    TEXT[!MAY]:       b) The value of the NAT UDP mapping timer MAY be configurable.
+    TEXT[!SHOULD]:       c) A default value of five minutes or more for the NAT UDP mapping
+    TEXT[!SHOULD]:          timer is RECOMMENDED.
+    TEXT[!MUST]:    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+    TEXT[!MUST]:       refresh behavior" of "True".
+    TEXT[!MAY]:       a) The NAT mapping Refresh Direction MAY have a "NAT Inbound
+    TEXT[!MAY]:          refresh behavior" of "True".
+    TEXT[!MUST]:    REQ-7  A NAT device whose external IP interface can be configured
+    TEXT[!MUST]:       dynamically MUST either (1) Automatically ensure that its internal
+    TEXT[!MUST]:       network uses IP addresses that do not conflict with its external
+    TEXT[!MUST]:       network, or (2) Be able to translate and forward traffic between
+    TEXT[!MUST]:       all internal nodes and all external nodes whose IP addresses
+    TEXT[!MUST]:       numerically conflict with the internal network.
+    TEXT[!SHOULD]:    REQ-8:  If application transparency is most important, it is
+    TEXT[!SHOULD]:       RECOMMENDED that a NAT have "Endpoint-Independent Filtering"
+    TEXT[!SHOULD]:       behavior.
+    TEXT[!SHOULD]: If a more stringent filtering behavior is most
+    TEXT[!SHOULD]:       important, it is RECOMMENDED that a NAT have "Address-Dependent
+    TEXT[!SHOULD]:       Filtering" behavior.
+    TEXT[!MAY]:       a) The filtering behavior MAY be an option configurable by the
+    TEXT[!MAY]:          administrator of the NAT.
+    TEXT[!MUST]:    REQ-9:  A NAT MUST support "Hairpinning".
+    TEXT[!MUST]:       a) A NAT Hairpinning behavior MUST be "External source IP address
+    TEXT[!MUST]:          and port".
+    TEXT[!SHOULD]:    REQ-10:  To eliminate interference with UNSAF NAT traversal
+    TEXT[!SHOULD]:       mechanisms and allow integrity protection of UDP communications,
+    TEXT[!SHOULD]:       NAT ALGs for UDP-based protocols SHOULD be turned off.
+    TEXT[!SHOULD]:       a) If a NAT includes ALGs, it is RECOMMENDED that the NAT allow
+    TEXT[!SHOULD]:          the NAT administrator to enable or disable each ALG separately.
+    TEXT[!MUST]:    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+    TEXT[!MUST]:       change the NAT translation (Section 4) or the Filtering
+    TEXT[!MUST]:       (Section 5) Behavior at any point in time, or under any particular
+    TEXT[!MUST]:       conditions.
+    TEXT[!MUST]:    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST]:       NAT mapping.
+    TEXT[!SHOULD]:       a) The NAT's default configuration SHOULD NOT filter ICMP messages
+    TEXT[!SHOULD]:          based on their source IP address.
+    TEXT[!SHOULD]:       b) It is RECOMMENDED that a NAT support ICMP Destination
+    TEXT[!SHOULD]:          Unreachable messages.
+    TEXT[!MUST]:    REQ-13  If the packet received on an internal IP address has DF=1,
+    TEXT[!MUST]:       the NAT MUST send back an ICMP message "Fragmentation needed and
+    TEXT[!MUST]:       DF set" to the host, as described in [RFC0792].
+    TEXT[!MUST]:       a) If the packet has DF=0, the NAT MUST fragment the packet and
+    TEXT[!MUST]:          SHOULD send the fragments in order.
+    TEXT[!MUST]:    REQ-14:  A NAT MUST support receiving in-order and out-of-order
+    TEXT[!MUST]:       fragments, so it MUST have "Received Fragment Out of Order"
+    TEXT[!MUST]:       behavior.
+    TEXT[!MUST]:       a) A NAT's out-of-order fragment processing mechanism MUST be
+    TEXT[!MUST]:          designed so that fragmentation-based DoS attacks do not
+    TEXT[!MUST]:          compromise the NAT's ability to process in-order and
+    TEXT[!MUST]:          unfragmented IP packets.
+
 SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
   SECTION: [Summary of Changes to ICMP](#section-3)
     TEXT[!MAY]:       An ICMP Extension Structure MAY be appended to ICMPv4 Destination
