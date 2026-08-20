@@ -1,7 +1,7 @@
 # Specification compliance with duvet
 
-Status: **three specifications tracked, the RFC corpus and its errata audited, the procedure
-itself not yet proven.**
+Status: **three specifications tracked, the RFC corpus and its errata audited, the citation
+interlock built and returning findings.**
 The open-questions list below is expected to grow; it is written down so that it grows in one place
 rather than in four people's heads.
 
@@ -77,6 +77,67 @@ paragraph, which duvet correctly declines to treat as normative.
 
 **Modern format is fine.** There is no cliff at RFC 8650; xml2rfc v3 output parses (RFC 9000: 522
 requirements, RFC 9110: 412, RFC 8446: 431).
+
+## Is a citation true? The interlock
+
+`just spec-interlock`, implemented by `scripts/spec-interlock.ts`.
+
+duvet checks that a `type=test` citation _exists_. It cannot check that the test named by one
+says anything about the code named by the other: both are comments, and a refactor can separate
+them without either changing. A requirement can therefore show implementation **and** test --
+the fully-green state -- while nothing tests it.
+
+The check is to make the tools check each other. For each requirement duvet has matched to both
+an implementation and a test, mutate **only** the cited implementation region and run **only**
+the cited tests. A mutant that survives is a change to the code that claims to implement the
+requirement which the test that claims to check it does not notice.
+
+The unit is a (requirement, implementation, test) triple, not a file. `cargo mutants -f <file>`
+answers a weaker question -- "is this file tested" -- and buries the signal: the RFC 4884 finding
+below is four mutants among the 125 that `embedded.rs` generates.
+
+### Outcomes
+
+Four, and the last two matter as much as the first.
+
+| | meaning |
+| --- | --- |
+| **held** | every mutant in the cited region was caught by the cited tests |
+| **decorative** | a mutant survived; the citation does not carry the weight it claims |
+| **no-mutants** | the region produced nothing testable -- usually every mutant unviable |
+| **stale** | the cited test name matches no test; the citation has rotted |
+
+`no-mutants` is not a pass. Reporting it as one would credit a citation for a check that never
+ran, which is the failure the tool exists to catch. `stale` exists because it is the tool's own
+worst failure mode: a renamed test makes the filter match nothing, nextest exits 0 having run
+nothing, every mutant survives, and a citation that is merely out of date is reported as
+decorative. The test names are checked against `cargo nextest list` before any mutant runs.
+
+### What it found, first time out
+
+Seven requirements carry both an implementation and a test. Three hold. Six minutes.
+
+**RFC 4884, "at least 128 octets" -- decorative, and on the path where the original defect was.**
+Four mutants survive `a_field_shorter_than_128_octets_is_refused`:
+
+- The test iterates `[120, 124]`. It never tests 128, so `<` versus `<=` at the boundary is
+  invisible -- the same boundary class the `flow_info.rs` measurement above found.
+- The citation is on **both** the ICMPv4 and the ICMPv6 branch, and there is no v6 test helper at
+  all. All three of the v6 branch's mutants survive. The RFC 4884 fix was applied to both
+  branches and tested on one.
+
+**RFC 4787 REQ-2, "IP address pooling: Paired" -- decorative.** `replace match guard
+e.is_exhaustion() with true` survives. The guard is what separates allocator exhaustion from
+every other allocator error, and the cited test never produces a non-exhaustion error. This is
+the `protocol.rs` failure mode again: a test that walks a path rather than discriminating one.
+
+**RFC 4787 REQ-3 and RFC 5382 REQ-7, "no port overloading" -- not checkable as cited.** Every
+mutant of the cited region is unviable. The citation sits on `allocate_v4`, which only forwards
+to `allocate_from_tables`; the code that enforces the requirement is the one it delegates to.
+The citation names the wrong region, and no amount of testing would have revealed that.
+
+That last category is the one to keep in mind when extending this. A citation can be wrong about
+_where_ the requirement lives, and neither duvet nor a coverage report can see it.
 
 ## Do not cite a composite BCP
 
@@ -183,20 +244,56 @@ Two errata on specifications we have discussed but do not track are worth having
 would fetch, or the quotes stop matching and the vendoring stops being a drop-in for the network.
 Errata are checked alongside it, not merged into it.
 
+## Which specifications apply to us
+
+A first enumeration, from what the tree already names: every `RFC ####` mention in a `.rs` file,
+mapped to the crate that makes it. It is a lower bound -- it finds specifications somebody has
+already thought about, not ones nobody has -- but it is evidence rather than recollection, and it
+is a `grep` to regenerate.
+
+Twenty-eight RFCs, of which three are tracked.
+
+| RFC | crates | note |
+| --- | --- | --- |
+| 8200 (IPv6) | `net` | **46 mentions, the most in the tree, and duvet cannot parse it** -- 0 uppercase keywords, 79 lowercase. Synthesis or nothing. |
+| 4787 (NAT/UDP) | `nat`, `dataplane` | tracked |
+| 4884 (ICMP extension) | `nat`, `net` | tracked |
+| 7348 (VXLAN) | `net`, `dpdk` | 15 mentions, untracked |
+| 4302 (IP AH) | `net` | 11 mentions, untracked |
+| 5382 (NAT/TCP) | `nat` | tracked |
+| 792, 1812, 1122, 1191 | `net`, `dataplane` | foundational; expect the same lowercase problem as 8200 |
+| 9293 (TCP), 2018, 7323, 3168, 6946, 3540, 2675 | `net` | TCP option and fragmentation behaviour |
+| 5508 (NAT/ICMP) | `nat`, `net` | duvet-friendly, on-topic, untracked -- 92 requirements |
+| 6437, 4861, 6918 | `net` | IPv6 flow label, ND |
+| 1624 | `net` | checksum update |
+| 7854, 8671 | `routing` | BMP |
+| 3339, 9562, 7637 | `config`, `mgmt`, `id`, `dpdk` | formats, not behaviour |
+
+What this changes about the plan:
+
+- **The largest specification surface is the one duvet handles worst.** `net` is the biggest crate
+  and its obligations are concentrated in RFC 8200, RFC 791, RFC 792 and RFC 1812 -- the
+  lowercase-normative, foundational documents. Extending compliance tracking to the whole codebase
+  is therefore mostly a _synthesis_ problem, not a configuration problem, and synthesis is the part
+  of this method with a hazard attached.
+- **The cheap wins are still in NAT.** RFC 5508 is duvet-friendly, on-topic, and one config edit
+  from being tracked.
+- **Most crates have no external specification at all.** `lpm`, `acl`, `flow-filter`, `config`,
+  `mgmt` and roughly thirty others implement internal semantics. duvet has nothing to say about
+  them; bolero and cargo-mutants have everything to say. Whether to synthesize in-repo
+  specifications for them is deliberately still open -- see the scoping question below.
+
 ## Open questions
 
 Expected to expand. Nothing here is scheduled.
 
-1. **Which RFCs apply to us at all.** Prior to everything else, and never yet enumerated. RFC 4787
-   (59 requirements), RFC 5508 (92), RFC 6888 (41) and RFC 7857 (29) are duvet-friendly, directly
-   on-topic and untracked -- 221 requirements one config edit away, no synthesis needed.
+1. ~~**Which RFCs apply to us at all.**~~ A first pass is above. What remains is the harder half:
+   the specifications that constrain us and that nothing in the tree mentions.
 2. **Which of those are not RFC 2119 conforming**, and so need synthesis per the section above.
-3. **Is a citation true?** duvet checks that a `type=test` citation _exists_, not that the test
-   exercises the requirement. This is the vacuity problem that the llvm-cov execution counters
-   caught twice. The cross-check uses artifacts we already produce: mutate the region cited
-   `type=implementation` and see whether the test cited `type=test` fails. If it does not, the
-   citation is decorative. This is the only item on this list that makes the three tools check each
-   other rather than merely coexist.
+   RFC 8200 is the known case and the most consequential one.
+3. ~~**Is a citation true?**~~ Built; see [the interlock](#is-a-citation-true-the-interlock). What
+   remains is deciding whether it becomes a gate. It is far too slow to run per pull request over
+   everything -- six minutes for seven requirements -- but `--only` on a changed citation is cheap.
 4. **Errata.** Mostly settled; see [Errata](#errata) below. What remains is the 847 RFCs whose
    errata exist but are not Verified, for which the corpus holds no body. None of them is tracked
    today; RFC 4443 and RFC 3022 are both in that set and both plausible future targets.
@@ -211,8 +308,9 @@ Expected to expand. Nothing here is scheduled.
    requirements into the snapshot in one commit; QUIC would add 522. Without a rule for scoping
    _within_ a specification the report becomes wallpaper on the day it gets interesting -- the same
    lesson as "do not test printers" and "classify, do not eliminate".
-8. **Should the snapshot be a blocking gate?** Unlike cargo-mutants it can be: `duvet report` takes
-   4ms and is bit-for-bit deterministic. It would be the cheapest correctness gate we have.
+8. ~~**Should the snapshot be a blocking gate?**~~ Yes, and it is: `just duvet-check`. The snapshot
+   had drifted two commits after being introduced, which settled the argument -- a
+   regenerate-by-hand rule is one nobody runs. What remains is wiring it into CI.
 9. **A coverage report analogous to the existing ones**, so that specification coverage is read the
    same way as line and mutant coverage.
 
