@@ -21,4 +21,13 @@ nix-hash --to-sri --type sha256 \
     "$(nix-prefetch-url --type sha256 "$opengrep_url")" \
     > nix/pkgs/opengrep/binary.sri
 
+# Refresh the zot release-asset content hash on the same contract as opengrep
+# above: the pin tracks the tag, the raw binary hash lives in
+# nix/pkgs/zot/binary.sri.
+zot_version="$(jq --exit-status --raw-output '.pins.zot.version' npins/sources.json)"
+zot_url="https://github.com/project-zot/zot/releases/download/${zot_version}/zot-linux-amd64"
+nix-hash --to-sri --type sha256 \
+    "$(nix-prefetch-url --type sha256 "$zot_url")" \
+    > nix/pkgs/zot/binary.sri
+
 ./scripts/update-doc-headers.sh
