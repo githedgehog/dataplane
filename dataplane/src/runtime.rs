@@ -204,16 +204,6 @@ pub fn main() {
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
-    type Req3 = usize;
-
-    macro_rules! req {
-        ($id:expr) => {
-            Req3
-        };
-    }
-
-    type X = req![3];
-
     let agent_running = args.pyroscope_url().and_then(|url| {
         let pyroscope_config = PyroscopeConfig::default();
         let sample_rate = pyroscope_config.sample_rate;
