@@ -182,7 +182,6 @@ build target="dataplane.tar" *args:
       --argstr platform '{{ platform }}' \
       --argstr tag '{{version}}' \
       --argstr nightly '{{nightly}}' \
-      --argstr pyroscopeUrl '{{ pyroscope_url }}' \
       --print-build-logs \
       --show-trace \
       --out-link "results/${target}" \
@@ -546,7 +545,15 @@ build-container target="dataplane" *args: _refuse-instrumented-artifact (build (
             esac
             declare -r docker_platform
             declare img
-            img="$(docker import --platform "${docker_platform}" --change 'ENTRYPOINT ["/bin/dataplane"]' ./results/dataplane.tar)"
+            # The rootfs tarball carries no image config; everything the runtime sees is set
+            # here. A controller owns the dataplane's argv in a fabric, so an environment
+            # variable baked in at import is the only way to reach an option like the pyroscope
+            # endpoint.
+            declare -a import_changes=(--change 'ENTRYPOINT ["/bin/dataplane"]')
+            if [ -n "{{ pyroscope_url }}" ]; then
+                import_changes+=(--change 'ENV DATAPLANE_PYROSCOPE_URL={{ pyroscope_url }}')
+            fi
+            img="$(docker import --platform "${docker_platform}" "${import_changes[@]}" ./results/dataplane.tar)"
             declare -r img
             docker tag "${img}" "{{oci_image_dataplane}}"
             echo "imported {{ oci_image_dataplane }} (${docker_platform})"
