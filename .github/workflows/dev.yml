@@ -68,6 +68,7 @@ jobs:
     outputs:
       container_profiles: "${{ steps.container-profiles.outputs.value }}"
       parallel: "${{ steps.parallel.outputs.value }}"
+      container_targets: "${{ steps.container-targets.outputs.value }}"
       profiles: "${{ steps.profiles.outputs.value }}"
       concurrency: "${{ steps.concurrency.outputs.value }}"
       cross: "${{ steps.cross.outputs.value }}"
@@ -131,6 +132,16 @@ jobs:
           labels: "test/all-profiles"
           on-value: '["debug", "release", "fuzz"]'
           off-value: '["debug"]'
+
+      # Debug images are opt-in on pull requests because of their size.
+      - id: "container-targets"
+        uses: *gate
+        with:
+          labels: "debug-images"
+          # Keep this on one line: `ci-gate` writes the value to GITHUB_OUTPUT
+          # with a plain printf, which a multi-line value would corrupt.
+          on-value: '["frr.dataplane", "dataplane", "dataplane-core-viewer", "dataplane-dev-debugger", "dataplane-syscall-tracer", "validator"]'
+          off-value: '["frr.dataplane", "dataplane", "validator"]'
 
       # Lab jobs require release images but not other release/fuzz checks.
       - id: "container-profiles"
@@ -425,10 +436,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
-        nix-target:
-          - frr.dataplane
-          - dataplane
-          - validator
+        nix-target: "${{ fromJSON(needs.plan.outputs.container_targets) }}"
         # TODO: enable cfi and safe-stack on release when possible
         profile: "${{ fromJSON(needs.plan.outputs.container_profiles) }}"
         exclude:
@@ -443,6 +451,17 @@ jobs:
         with:
           recipe: "ci::push-container"
           recipe_args: "${{ matrix.nix-target }} ${{ matrix.profile }} ${{ needs.version.outputs.version }}"
+
+      # A debug image that builds is not a debug image that works.  Two of
+      # these shipped with entrypoints that could not do what the README
+      # documents, and building them said nothing about it.
+      - name: "smoke"
+        if: "${{ startsWith(matrix.nix-target, 'dataplane-') }}"
+        uses: *just
+        with:
+          recipe: "ci::smoke-container"
+          recipe_args: "${{ matrix.nix-target }} ${{ matrix.profile }}"
+
       - *verify-clean-tree
       - *tmate
 

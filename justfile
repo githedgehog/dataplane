@@ -114,7 +114,9 @@ oci_insecure := ""
 oci_name := "githedgehog/dataplane"
 oci_frr_prefix := "githedgehog/dataplane/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
-oci_image_dataplane_debugger := oci_repo + "/" + oci_name + "/debugger:" + version
+oci_image_dataplane_core_viewer := oci_repo + "/" + oci_name + "/core-viewer:" + version
+oci_image_dataplane_dev_debugger := oci_repo + "/" + oci_name + "/dev-debugger:" + version
+oci_image_dataplane_syscall_tracer := oci_repo + "/" + oci_name + "/syscall-tracer:" + version
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
@@ -256,6 +258,339 @@ setup-roots *args:
         {{ args }}
     done
 
+# Ports the debug helpers listen on.  Override for a second session.
+gdb_port := "2345"
+
+bs_port := "4711"
+
+# Workspace binaries the debug images already carry, spelled as the images
+# spell them.  The nix attribute is keyed by directory (`workspace.init`) but
+# the binary it installs is `dataplane-init`, and it is the binary name that has
+# to appear here -- `debug` passes it straight through as `/bin/<name>`.
+[private]
+_debug_binaries := "dataplane cli dataplane-init"
+
+# Build settings to forward when a recipe has to re-enter `just` rather than
+# depend on it.  A debug session is only useful against the same build the
+# problem showed up in.
+[private]
+_forward := "jobs=" + jobs + " cores=" + cores + " debug_justfile=" + debug_justfile \
+    + " profile=" + profile + " platform=" + platform + " libc=" + libc \
+    + " features=" + features + " default_features=" + default_features \
+    + " instrument=" + instrument + " sanitize=" + sanitize + " nightly=" + nightly
+
+# List what `just debug` can run at the current profile: the workspace binaries
+# the images carry, and every test in a nextest archive.
+[script]
+debug-list package="tests.all": (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }))
+    {{ _just_debuggable_ }}
+    declare -r suite="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
+    echo "binaries:"
+    for b in {{ _debug_binaries }}; do printf '  %s\n' "${b}"; done
+    echo "tests:"
+    cargo nextest list --archive-file results/"${suite}"/*.tar.zst --workspace-remap "$(pwd)"
+
+# Run a workspace binary or a single test under a debug helper, in the image
+# that carries it, built at the current profile and instrumentation.
+#
+#   just debug                                   # pick from a list
+#   just debug bugstalker                        # pick, then wait for an editor
+#   just debug lurk dataplane                    # trace syscalls, streams JSON
+#   just debug gdb dataplane                     # gdbserver, waits for gdb
+#   just profile=fuzz debug gdb test_parse_interface args
+#
+# `target` is one of the workspace binaries, or a nextest filter.  Leave it out
+# and everything is offered; give a filter matching one test and it is used
+# without asking; give one matching several and those are offered.  `package`
+# narrows which archive is built to find them, so naming one is much quicker
+# than the default of building every test in the workspace.  gdb and bugstalker
+# wait for a client instead of running to completion.
+#
+# The remapped source prefix is relative, so a client shows source only if its
+# working directory is the root of the tree the binary was built from.  This
+# passes `-w` for that in every case; a local `gdb` needs you to be standing in
+# the right place yourself.
+[script]
+debug tool="gdb" target="" package="tests.all" *args: (build-container (if tool == "gdb" { "dataplane-core-viewer" } else if tool == "bugstalker" { "dataplane-dev-debugger" } else if tool == "lurk" { "dataplane-syscall-tracer" } else { error("debug: unknown tool '" + tool + "'; expected gdb, bugstalker, or lurk") }))
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+
+    declare image
+    case "{{ tool }}" in
+        gdb)        image="{{ oci_image_dataplane_core_viewer }}" ;;
+        bugstalker) image="{{ oci_image_dataplane_dev_debugger }}" ;;
+        lurk)       image="{{ oci_image_dataplane_syscall_tracer }}" ;;
+        *)
+            # Unreachable: the dependency above rejects anything else before
+            # this body runs.  Kept so `set -u` cannot meet an unset `image`.
+            >&2 echo "debug: unknown tool '{{ tool }}'"
+            exit 1
+            ;;
+    esac
+    declare -r image
+
+    # Resolve the target to a program, its arguments, and a working directory.
+    declare program workdir
+    declare -a program_args=() mounts=()
+    if [[ -n '{{ target }}' && " {{ _debug_binaries }} " == *" {{ target }} "* ]]; then
+        # The images carry these already, so nothing needs mounting.  `/src` is
+        # where they ship the sources, and the remapped prefix is relative, so
+        # the debugger only resolves source if it starts there.
+        program="/bin/{{ target }}"
+        workdir="/src"
+    else
+        # A test, or nothing yet.  Either way the archive has to exist before
+        # there is anything to name or to choose between.
+        declare -r suite="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
+        just {{ _forward }} build "${suite}"
+        declare -r extract="${PWD}/results/debug-extract"
+        rm -rf -- "${extract}"
+        mkdir -p -- "${extract}"
+        declare errors candidates
+        errors="$(mktemp)"
+        candidates="$(mktemp)"
+        declare -r errors candidates
+        trap 'rm -f -- "${errors}" "${candidates}"' EXIT
+        # Keep nextest's diagnostics: it writes progress to stderr and JSON to
+        # stdout, and discarding the former turns "cargo is not on PATH" into
+        # an empty result that looks like "no such test".
+        declare listing
+        if ! listing="$(cargo nextest list --archive-file results/"${suite}"/*.tar.zst \
+                --workspace-remap "$(pwd)" --extract-to "${extract}" --extract-overwrite \
+                --message-format json \
+                {{ if target == "" { "" } else { "-E 'test(/" + target + "/)'" } }} \
+                2>"${errors}")"; then
+            >&2 echo "::error::could not list the tests in ${suite}"
+            >&2 cat -- "${errors}"
+            exit 1
+        fi
+        declare -r listing
+
+        # label \t binary \t workdir \t test, so a picker can show the label
+        # and the caller can read the rest back off the same line.
+        if [ -z '{{ target }}' ]; then
+            for b in {{ _debug_binaries }}; do
+                printf '%s (binary)\t/bin/%s\t/\t\n' "${b}" "${b}"
+            done >>"${candidates}"
+        fi
+        jq -r '
+            ."rust-suites" | to_entries[] | .value as $s
+            | ($s.testcases // {} | to_entries[]
+               | select(."value"."filter-match"."status" == "matches") | .key) as $t
+            | "\($s."binary-id") \($t)\t\($s."binary-path")\t\($s.cwd)\t\($t)"
+        ' <<<"${listing}" >>"${candidates}"
+
+        declare -i found
+        found="$(wc -l <"${candidates}")"
+        declare chosen
+        if [ "${found}" -eq 0 ]; then
+            >&2 echo "::error::nothing in ${suite} matches '{{ target }}'"
+            exit 1
+        elif [ "${found}" -eq 1 ]; then
+            chosen="$(cat -- "${candidates}")"
+        elif [ -t 0 ]; then
+            # Several matches and someone to ask.  Showing only the label keeps
+            # the store paths out of the list without losing them.
+            if ! command -v sk >/dev/null 2>&1; then
+                >&2 echo "::error::sk (skim) is not on PATH; use the dev shell, or name a target exactly"
+                exit 1
+            fi
+            chosen="$(sk --delimiter '\t' --with-nth 1 \
+                --prompt "{{ tool }} > " --height 40% --reverse <"${candidates}")"
+            if [ -z "${chosen}" ]; then
+                >&2 echo "debug: nothing picked"
+                exit 1
+            fi
+        else
+            if [ -n '{{ target }}' ]; then
+                >&2 echo "::error::'{{ target }}' matches ${found} in ${suite}; name one exactly, or pick from a terminal:"
+            else
+                >&2 echo "::error::not a terminal, so nothing to ask; name one of:"
+            fi
+            >&2 cut -f1 -- "${candidates}"
+            exit 1
+        fi
+        declare -r chosen
+
+        program="$(cut -f2 <<<"${chosen}")"
+        # nextest gives a test its package root as the working directory, and
+        # anything reading a relative path depends on that.
+        workdir="$(cut -f3 <<<"${chosen}")"
+        declare test_name
+        test_name="$(cut -f4 <<<"${chosen}")"
+        declare -r test_name
+        if [ -n "${test_name}" ]; then
+            program_args=(--exact "${test_name}" --nocapture)
+            # Built outside the image, so it still resolves its loader and its
+            # libraries through the store; the store has to come along.
+            mounts=(-v /nix/store:/nix/store:ro -v "${extract}":"${extract}":ro -v "${PWD}":"${PWD}":ro)
+        fi
+    fi
+    declare -r program workdir
+
+    case "{{ tool }}" in
+        lurk)
+            docker run --rm -i "${mounts[@]}" -w "${workdir}" --entrypoint /bin/lurk \
+                "${image}" --json --follow-forks "${program}" "${program_args[@]}" {{ args }}
+            ;;
+        gdb)
+            >&2 echo "gdbserver on {{ gdb_port }}.  Connect with:"
+            >&2 echo "    gdb -ex 'target remote 127.0.0.1:{{ gdb_port }}' '${program}'"
+            # Randomization stays on: docker's default seccomp answers
+            # personality(ADDR_NO_RANDOMIZE) with EPERM, and gdbserver would
+            # otherwise open with an alarming warning about a benign failure.
+            # Loopback, not `0.0.0.0`: gdbserver runs whatever a client asks
+            # it to, with no authentication, and a bare `-p` would offer that
+            # to anything that can reach this machine.
+            docker run --rm -i -p "127.0.0.1:{{ gdb_port }}:{{ gdb_port }}" "${mounts[@]}" -w "${workdir}" \
+                --entrypoint /bin/gdbserver "${image}" --no-disable-randomization \
+                ":{{ gdb_port }}" "${program}" "${program_args[@]}" {{ args }}
+            ;;
+        bugstalker)
+            # It takes the program from the client's launch request, not from
+            # here, so connecting an editor to this is only half of it.  Print
+            # the other half ready to paste into .zed/debug.json: `tcp_connection`
+            # is what stops the editor spawning a `bs` of its own.
+            >&2 echo "bugstalker DAP on {{ bs_port }}.  Give the editor:"
+            >&2 jq -n --arg l "container: {{ tool }} {{ target }}" --arg p "${program}" \
+                --arg w "${workdir}" --argjson port "{{ bs_port }}" \
+                '{label: $l, adapter: "bugstalker-dap", request: "launch",
+                  program: $p, args: $ARGS.positional, cwd: $w,
+                  tcp_connection: {host: "127.0.0.1", port: $port}}' \
+                --args "${program_args[@]}" {{ args }}
+            # The container end is 4711 whatever `bs_port` says: the image's
+            # entrypoint hardcodes `--dap-remote=0.0.0.0:4711`, so publishing
+            # `bs_port:bs_port` only worked while `bs_port` was 4711.  Loopback
+            # for the same reason as gdbserver -- a DAP `launch` request runs
+            # an arbitrary program.
+            docker run --rm -i -p "127.0.0.1:{{ bs_port }}:4711" "${mounts[@]}" -w "${workdir}" "${image}"
+            ;;
+    esac
+
+# Open a core file in a gdb matched to the build that produced it.
+#
+# Symbols only line up with the exact version and profile that dumped, so pass
+# the same build settings that produced the binary.
+[script]
+inspect-core core *args: (build-container "dataplane-core-viewer")
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+    if [ ! -r '{{ core }}' ]; then
+        >&2 echo "inspect-core: cannot read '{{ core }}'"
+        exit 1
+    fi
+    declare core_dir core_file
+    core_dir="$(cd "$(dirname -- '{{ core }}')" && pwd)"
+    core_file="$(basename -- '{{ core }}')"
+    declare -r core_dir core_file
+    docker run --rm -it -v "${core_dir}":/cores:ro \
+        "{{ oci_image_dataplane_core_viewer }}" "/cores/${core_file}" {{ args }}
+
+# Check that the debug images actually do what the README says they do.
+#
+# Building an image proves it links; it does not prove the entrypoint runs.
+# Both of these shipped broken: the tracer's documented `docker run` produced a
+# well-formed JSON trace of its own child failing to start, and still exited 0.
+[script]
+smoke-container target: (build-container (if target == "dataplane-core-viewer" { target } else if target == "dataplane-dev-debugger" { target } else if target == "dataplane-syscall-tracer" { target } else { error("smoke-container: no smoke test for '" + target + "'; expected dataplane-core-viewer, dataplane-dev-debugger, or dataplane-syscall-tracer") }))
+    {{ _just_debuggable_ }}
+    declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{ docker_sock }}}"
+    case "{{ target }}" in
+        "dataplane-syscall-tracer")
+            # A trace runs to megabytes, so keep it in a file rather than a
+            # variable: `declare -x` would put it in the environment, and every
+            # child process then fails to exec with E2BIG, which reads exactly
+            # like a failed trace.  Here-strings are fine at this size -- bash
+            # backs them with a pipe or temp file -- and the checks below use
+            # them on captured output.
+            declare trace
+            trace="$(mktemp)"
+            declare -r trace
+            # Name the container and remove it by name.  `timeout` signals the
+            # docker CLI, and the daemon -- not the CLI -- owns the container's
+            # lifetime, so on the timeout path `--rm` alone can leave a `lurk`
+            # tracing something for as long as the runner lives.
+            declare cid
+            cid="smoke-syscall-tracer-$$"
+            declare -r cid
+            trap 'rm -f -- "${trace}"; docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
+            # No seccomp relaxation on purpose: this is the documented command.
+            timeout 60 docker run --rm --name "${cid}" \
+                "{{ oci_image_dataplane_syscall_tracer }}" \
+                >"${trace}" 2>&1 || true
+            if grep -q "Unable to set ADDR_NO_RANDOMIZE" "${trace}"; then
+                >&2 echo "::error::lurk could not disable ASLR, so the tracee never ran"
+                exit 1
+            fi
+            # The tracee has to actually execute, not merely be attached to.
+            if ! grep -q '"syscall":"execve"' "${trace}"; then
+                >&2 echo "::error::no execve in the trace: the traced program never started"
+                >&2 head -20 "${trace}"
+                exit 1
+            fi
+            printf 'syscall-tracer: traced %s syscalls\n' "$(grep -c '"type":"SYSCALL"' "${trace}")"
+            ;;
+        "dataplane-dev-debugger")
+            # Only that it comes up and listens.  Driving a DAP session from
+            # CI means carrying a protocol client for a contract better
+            # exercised by pointing a real editor at `just debug bugstalker`.
+            declare cid
+            # Let docker pick the host port and read it back.  A fixed one
+            # collides: these run on a shared daemon, and `container_profiles`
+            # can put two of these jobs on the same node at once, where the
+            # second bind fails and reads as "the listener never came up".
+            cid="$(docker run -d --rm -p 127.0.0.1::4711 "{{ oci_image_dataplane_dev_debugger }}")"
+            declare -r cid
+            trap 'docker kill "${cid}" >/dev/null 2>&1 || true' EXIT
+            declare -i waited=0
+            declare port
+            port="$(docker port "${cid}" 4711/tcp | head -1)"
+            port="${port##*:}"
+            declare -r port
+            if [ -z "${port}" ]; then
+                >&2 echo "::error::docker published no host port for 4711/tcp"
+                exit 1
+            fi
+            until timeout 1 bash -c "</dev/tcp/127.0.0.1/${port}" 2>/dev/null; do
+                if [ "${waited}" -ge 60 ]; then
+                    >&2 echo "::error::dev-debugger never listened on 4711"
+                    >&2 docker logs "${cid}" 2>&1 | tail -20
+                    exit 1
+                fi
+                sleep 1
+                waited=$(( waited + 1 ))
+            done
+            echo "dev-debugger: DAP listener up"
+            ;;
+        "dataplane-core-viewer")
+            # The Rust pretty-printers are the reason this image exists, and
+            # what registers them is the entrypoint's own `source` flag -- so
+            # drive the real entrypoint rather than invoking gdb directly,
+            # which would only test a copy of it.
+            declare out
+            out="$(printf 'info pretty-printer\nquit\n' \
+                | timeout 120 docker run --rm -i "{{ oci_image_dataplane_core_viewer }}" 2>&1)"
+            if grep -qiE "traceback|no module named" <<<"${out}"; then
+                >&2 echo "::error::gdb could not load the rust pretty-printers"
+                >&2 printf '%s\n' "${out}"
+                exit 1
+            fi
+            # A registered printer set, not merely a clean start.
+            for want in StdString StdVec StdHashMap; do
+                if ! grep -q "${want}" <<<"${out}"; then
+                    >&2 echo "::error::rust pretty-printer ${want} is not registered"
+                    exit 1
+                fi
+            done
+            echo "core-viewer: rust pretty-printers registered"
+            ;;
+        *)
+            # Unreachable: the dependency above rejects anything else first.
+            >&2 echo "::error::no smoke test defined for {{ target }}"
+            exit 1
+            ;;
+    esac
+
 # Build the dataplane container image
 [script]
 build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
@@ -279,10 +614,20 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             docker tag "${img}" "{{oci_image_dataplane}}"
             echo "imported {{ oci_image_dataplane }} (${docker_platform})"
             ;;
-        "dataplane-debugger")
-            docker load < ./results/containers.dataplane-debugger
-            docker tag "ghcr.io/githedgehog/dataplane/debugger:{{version}}" "{{oci_image_dataplane_debugger}}"
-            echo "imported {{ oci_image_dataplane_debugger }}"
+        "dataplane-core-viewer")
+            docker load < ./results/containers.dataplane-core-viewer
+            docker tag "ghcr.io/githedgehog/dataplane/core-viewer:{{version}}" "{{oci_image_dataplane_core_viewer}}"
+            echo "imported {{ oci_image_dataplane_core_viewer }}"
+            ;;
+        "dataplane-dev-debugger")
+            docker load < ./results/containers.dataplane-dev-debugger
+            docker tag "ghcr.io/githedgehog/dataplane/dev-debugger:{{version}}" "{{oci_image_dataplane_dev_debugger}}"
+            echo "imported {{ oci_image_dataplane_dev_debugger }}"
+            ;;
+        "dataplane-syscall-tracer")
+            docker load < ./results/containers.dataplane-syscall-tracer
+            docker tag "ghcr.io/githedgehog/dataplane/syscall-tracer:{{version}}" "{{oci_image_dataplane_syscall_tracer}}"
+            echo "imported {{ oci_image_dataplane_syscall_tracer }}"
             ;;
         "debug-tools")
             # Uses nix only to produce a base image with the runtime closure (glibc, bash, etc.)
@@ -386,8 +731,14 @@ push-container target="dataplane" *args: (build-container target args) && versio
         "dataplane")
             push_image "{{ oci_image_dataplane }}"
             ;;
-        "dataplane-debugger")
-            push_image "{{ oci_image_dataplane_debugger }}"
+        "dataplane-core-viewer")
+            push_image "{{ oci_image_dataplane_core_viewer }}"
+            ;;
+        "dataplane-dev-debugger")
+            push_image "{{ oci_image_dataplane_dev_debugger }}"
+            ;;
+        "dataplane-syscall-tracer")
+            push_image "{{ oci_image_dataplane_syscall_tracer }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"
@@ -421,7 +772,14 @@ push-container target="dataplane" *args: (build-container target args) && versio
 [script]
 push:
     {{ _just_debuggable_ }}
-    for container in dataplane frr.dataplane validator; do
+    # Debug images must match the release they inspect.
+    for container in \
+        dataplane \
+        dataplane-core-viewer \
+        dataplane-dev-debugger \
+        dataplane-syscall-tracer \
+        frr.dataplane \
+        validator; do
         if [ "${container}" = "validator" ]; then
           platform="wasm32-wasip1"
         else
