@@ -259,6 +259,10 @@ let
         "sha256-XwEKLdc2Y7fteSKKOERgjKTdxELy7K/wOVuB/SSj3ng=";
     };
   };
+  source-volatile = orig: {
+    name = "dataplane-volatile-${orig.name or "${orig.pname}-${orig.version}"}";
+    allowSubstitutes = false;
+  };
   # For wasm32, pkgs is the host nixpkgs (no pkgsCross), so ctarget resolves to the
   # host platform (e.g. x86_64-unknown-linux-gnu).  That means is-cross-compile is
   # false for wasm, which is intentional: we don't want native cross-compilation
@@ -277,7 +281,7 @@ let
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
     builtins.readFile (
-      pkgs.runCommandLocal "package-list"
+      (pkgs.runCommandLocal "package-list"
         {
           TOMLQ = "${pkgs.pkgsBuildHost.yq}/bin/tomlq";
           JQ = "${pkgs.pkgsBuildHost.jq}/bin/jq";
@@ -294,6 +298,8 @@ let
               done | $JQ --sort-keys --slurp 'add' > $out
             ''
         )
+      ).overrideAttrs
+        source-volatile
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
@@ -663,178 +669,186 @@ let
     ) package-list;
   };
 
-  dataplane.tar = pkgs.stdenv'.mkDerivation {
-    pname = "dataplane.tar";
-    inherit version;
-    dontUnpack = true;
-    src = null;
-    dontPatchShebangs = true;
-    dontFixup = true;
-    dontPatchElf = true;
-    buildPhase =
-      let
-        # `libc-pkg` and not `libc` so the outer function-arg `libc` (the
-        # string "gnu" / "musl" / "none") stays visible inside this scope
-        # for the conditional below.
-        libc-pkg = pkgs.pkgsHostHost.libc;
-        # libgcc_s.so.1 is consumed by glibc-dynamic Rust binaries for
-        # unwinding.  musl Rust targets static-link musl + Rust's
-        # compiler-builtins, so libgcc has no consumer; bundling it would
-        # waste closure space and pull in glibc-targeted build outputs that
-        # are wrong for a musl container.
-        #
-        # IMPORTANT: must be the path baked into the matching ld-linux's
-        # compiled-in search list, which is `pkgs.pkgsHostHost.glibc.libgcc`
-        # (the `xgcc-...-libgcc` / cross `libgcc-<triple>-...` derivation).
-        # `pkgs.stdenv.cc.cc.lib` ships the same `libgcc_s.so.1` content but
-        # at a different store path that ld-linux doesn't search, so the
-        # binary can't find it at runtime even though the file exists in
-        # the tar.
-        libgcc-tar-input = if libc == "gnu" then "${pkgs.pkgsHostHost.glibc.libgcc}" else "";
-        # libc.out is needed by anything dynamically linked in the tar,
-        # regardless of libc choice.  The Rust binaries on musl are
-        # statically linked and don't need it, but busybox (bundled below
-        # for `/bin/*` shell utilities) is dynamically linked against
-        # whichever libc its pkgset uses.  Omitting libc.out on musl leaves
-        # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
-        # isn't present in the image.
-        libc-tar-input = "${libc-pkg.out}";
-      in
-      ''
-        tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
-        ln -s /run "$tmp/var/run"
-        for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
-          cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
-        done
-        cd "$tmp"
-        ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
-        ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
-        ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
-        for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
-            ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
-        done
-        ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
-        ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
-        ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
-        # we take some care to make the tar file reproducible here
-        tar \
-          --create \
-          \
-          --sort=name \
-          \
-          --clamp-mtime \
-          --mtime=0 \
-          \
-          --format=posix \
-          --numeric-owner \
-          --owner=0 \
-          --group=0 \
-          \
-          `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
-          `# More, we expressly forbid setuid / setgid anything.` \
-          --mode='ugo-sw' \
-          \
-          `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
-          --no-acls \
-          --no-xattrs \
-          --no-selinux \
-          \
-          `# we already copied this stuff in to /etc directly, no need to copy it into the store again.` \
-          --exclude '${libc-pkg}/etc' \
-          \
-          `# There are a few components of glibc which have absolutely nothing to do with our goals and present` \
-          `# material and trivially avoided hazards just by their presence.  Thus, we filter them out here.` \
-          `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
-          `# just not do anything in that case. ` \
-           \
-          `# Anybody even trying to access the glibc audit functionality in our container environment is ` \
-          `# 100% up to no good.` \
-          `# Intercepting and messing with dynamic library loading is _absolutely_ not on our todo list, and this ` \
-          `# stuff has a history of causing security issues (arbitrary code execution).  Just disarm this.` \
-          `# Go check out this one, it is a classic: ` \
-          `# https://www.exploit-db.com/exploits/18105 ` \
-          \
-          --exclude '${libc-pkg}/lib/audit*' \
-          \
-          `# The glibc character set conversion code is not only useless to us, is is an increasingly common attack ` \
-          `# vector (see CVE-2024-2961 for example).  We are 100% unicode only, so all of these legacy character ` \
-          `# conversion algorithms can and should be excluded.  We wouldn't run on (e.g.) old MAC hardware anyway.` \
-          `# More, we have zero need or desire (or meaningful ability) to change glibc locales in the container ` \
-          `# and it wouldn't be respected by rust's core/std libs anyway. ` \
-          `# This is also how fedora packages glibc, and for the same basic reasons.` \
-          `# See https://fedoraproject.org/wiki/Changes/Gconv_package_split_in_glibc` \
-          --exclude '${libc-pkg}/lib/gconv*' \
-          --exclude '${libc-pkg}/share/i18n*' \
-          --exclude '${libc-pkg}/share/locale*' \
-          \
-          `# getconf isn't even shipped in the container so this is useless.  You couldn't change limits in the ` \
-          `# container like this anyway.  Even if we needed to and could, we wouldn't use setconf et al.` \
-          --exclude '${libc-pkg}/libexec*' \
-          \
-          --verbose \
-          --file "$out" \
-          \
-          . \
-          ${libc-tar-input} \
-          ${libgcc-tar-input} \
-          ${workspace.dataplane} \
-          ${workspace.init} \
-          ${workspace.cli} \
-          ${pkgs.pkgsHostHost.busybox}
-      '';
-  };
+  dataplane.tar =
+    (pkgs.stdenv'.mkDerivation {
+      pname = "dataplane.tar";
+      inherit version;
+      dontUnpack = true;
+      src = null;
+      dontPatchShebangs = true;
+      dontFixup = true;
+      dontPatchElf = true;
+      buildPhase =
+        let
+          # `libc-pkg` and not `libc` so the outer function-arg `libc` (the
+          # string "gnu" / "musl" / "none") stays visible inside this scope
+          # for the conditional below.
+          libc-pkg = pkgs.pkgsHostHost.libc;
+          # libgcc_s.so.1 is consumed by glibc-dynamic Rust binaries for
+          # unwinding.  musl Rust targets static-link musl + Rust's
+          # compiler-builtins, so libgcc has no consumer; bundling it would
+          # waste closure space and pull in glibc-targeted build outputs that
+          # are wrong for a musl container.
+          #
+          # IMPORTANT: must be the path baked into the matching ld-linux's
+          # compiled-in search list, which is `pkgs.pkgsHostHost.glibc.libgcc`
+          # (the `xgcc-...-libgcc` / cross `libgcc-<triple>-...` derivation).
+          # `pkgs.stdenv.cc.cc.lib` ships the same `libgcc_s.so.1` content but
+          # at a different store path that ld-linux doesn't search, so the
+          # binary can't find it at runtime even though the file exists in
+          # the tar.
+          libgcc-tar-input = if libc == "gnu" then "${pkgs.pkgsHostHost.glibc.libgcc}" else "";
+          # libc.out is needed by anything dynamically linked in the tar,
+          # regardless of libc choice.  The Rust binaries on musl are
+          # statically linked and don't need it, but busybox (bundled below
+          # for `/bin/*` shell utilities) is dynamically linked against
+          # whichever libc its pkgset uses.  Omitting libc.out on musl leaves
+          # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
+          # isn't present in the image.
+          libc-tar-input = "${libc-pkg.out}";
+        in
+        ''
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
+          ln -s /run "$tmp/var/run"
+          for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
+            cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
+          done
+          cd "$tmp"
+          ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
+          ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
+          ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
+          for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
+              ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
+          done
+          ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
+          ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
+          ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
+          # we take some care to make the tar file reproducible here
+          tar \
+            --create \
+            \
+            --sort=name \
+            \
+            --clamp-mtime \
+            --mtime=0 \
+            \
+            --format=posix \
+            --numeric-owner \
+            --owner=0 \
+            --group=0 \
+            \
+            `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
+            `# More, we expressly forbid setuid / setgid anything.` \
+            --mode='ugo-sw' \
+            \
+            `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
+            --no-acls \
+            --no-xattrs \
+            --no-selinux \
+            \
+            `# we already copied this stuff in to /etc directly, no need to copy it into the store again.` \
+            --exclude '${libc-pkg}/etc' \
+            \
+            `# There are a few components of glibc which have absolutely nothing to do with our goals and present` \
+            `# material and trivially avoided hazards just by their presence.  Thus, we filter them out here.` \
+            `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
+            `# just not do anything in that case. ` \
+             \
+            `# Anybody even trying to access the glibc audit functionality in our container environment is ` \
+            `# 100% up to no good.` \
+            `# Intercepting and messing with dynamic library loading is _absolutely_ not on our todo list, and this ` \
+            `# stuff has a history of causing security issues (arbitrary code execution).  Just disarm this.` \
+            `# Go check out this one, it is a classic: ` \
+            `# https://www.exploit-db.com/exploits/18105 ` \
+            \
+            --exclude '${libc-pkg}/lib/audit*' \
+            \
+            `# The glibc character set conversion code is not only useless to us, is is an increasingly common attack ` \
+            `# vector (see CVE-2024-2961 for example).  We are 100% unicode only, so all of these legacy character ` \
+            `# conversion algorithms can and should be excluded.  We wouldn't run on (e.g.) old MAC hardware anyway.` \
+            `# More, we have zero need or desire (or meaningful ability) to change glibc locales in the container ` \
+            `# and it wouldn't be respected by rust's core/std libs anyway. ` \
+            `# This is also how fedora packages glibc, and for the same basic reasons.` \
+            `# See https://fedoraproject.org/wiki/Changes/Gconv_package_split_in_glibc` \
+            --exclude '${libc-pkg}/lib/gconv*' \
+            --exclude '${libc-pkg}/share/i18n*' \
+            --exclude '${libc-pkg}/share/locale*' \
+            \
+            `# getconf isn't even shipped in the container so this is useless.  You couldn't change limits in the ` \
+            `# container like this anyway.  Even if we needed to and could, we wouldn't use setconf et al.` \
+            --exclude '${libc-pkg}/libexec*' \
+            \
+            --verbose \
+            --file "$out" \
+            \
+            . \
+            ${libc-tar-input} \
+            ${libgcc-tar-input} \
+            ${workspace.dataplane} \
+            ${workspace.init} \
+            ${workspace.cli} \
+            ${pkgs.pkgsHostHost.busybox}
+        '';
+    }).overrideAttrs
+      source-volatile;
 
-  containers.dataplane = pkgs.dockerTools.buildLayeredImage {
-    name = "ghcr.io/githedgehog/dataplane";
-    inherit tag;
-    contents = pkgs.buildEnv {
-      name = "dataplane-env";
-      pathsToLink = [
-        "/bin"
-        "/etc"
-        "/var"
-        "/lib"
-      ];
-      paths = [
-        pkgs.pkgsHostHost.dockerTools.fakeNss
-        pkgs.pkgsHostHost.busybox
-        pkgs.pkgsHostHost.dockerTools.usrBinEnv
-        workspace.cli
-        workspace.dataplane
-        workspace.init
-      ];
-    };
-    config.Entrypoint = [ "/bin/dataplane" ];
-  };
+  containers.dataplane =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [
+            pkgs.pkgsHostHost.dockerTools.fakeNss
+            pkgs.pkgsHostHost.busybox
+            pkgs.pkgsHostHost.dockerTools.usrBinEnv
+            workspace.cli
+            workspace.dataplane
+            workspace.init
+          ];
+        }).overrideAttrs
+          source-volatile;
+      config.Entrypoint = [ "/bin/dataplane" ];
+    }).overrideAttrs
+      source-volatile;
 
-  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
-    name = "ghcr.io/githedgehog/dataplane/debugger";
-    inherit tag;
-    contents = pkgs.buildEnv {
-      name = "dataplane-debugger-env";
-      pathsToLink = [
-        "/bin"
-        "/etc"
-        "/var"
-        "/lib"
-      ];
-      paths = [
-        pkgs.pkgsBuildHost.gdb
-        pkgs.pkgsBuildHost.rr
-        pkgs.pkgsBuildHost.coreutils
-        pkgs.pkgsBuildHost.bashInteractive
-        pkgs.pkgsBuildHost.iproute2
-        pkgs.pkgsBuildHost.ethtool
-        pkgs.pkgsHostHost.dockerTools.usrBinEnv
+  containers.dataplane-debugger =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/debugger";
+      inherit tag;
+      contents = pkgs.buildEnv {
+        name = "dataplane-debugger-env";
+        pathsToLink = [
+          "/bin"
+          "/etc"
+          "/var"
+          "/lib"
+        ];
+        paths = [
+          pkgs.pkgsBuildHost.gdb
+          pkgs.pkgsBuildHost.rr
+          pkgs.pkgsBuildHost.coreutils
+          pkgs.pkgsBuildHost.bashInteractive
+          pkgs.pkgsBuildHost.iproute2
+          pkgs.pkgsBuildHost.ethtool
+          pkgs.pkgsHostHost.dockerTools.usrBinEnv
 
-        pkgs.pkgsHostHost.libc.debug
-        workspace.cli.debug
-        workspace.dataplane.debug
-        workspace.init.debug
-      ];
-    };
-  };
+          pkgs.pkgsHostHost.libc.debug
+          workspace.cli.debug
+          workspace.dataplane.debug
+          workspace.init.debug
+        ];
+      };
+    }).overrideAttrs
+      source-volatile;
 
   debug-tools =
     pkgs:
@@ -883,149 +897,155 @@ let
       pkgs.pkgsHostHost.glibc.libgcc
     ];
 
-  containers.debug-tools = pkgs.dockerTools.buildLayeredImage {
-    name = "debug-tools";
-    tag = "dev"; # don't push or tag this with anything that might end up in the production repo
-    contents = pkgs.buildEnv {
-      name = "debug-tools-env";
-      pathsToLink = [
-        "/bin"
-        "/etc"
-        "/lib"
-        "/libexec"
-        "/share"
-        "/tmp"
-        "/usr"
-        "/var"
+  containers.debug-tools =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "debug-tools";
+      tag = "dev"; # don't push or tag this with anything that might end up in the production repo
+      contents = pkgs.buildEnv {
+        name = "debug-tools-env";
+        pathsToLink = [
+          "/bin"
+          "/etc"
+          "/lib"
+          "/libexec"
+          "/share"
+          "/tmp"
+          "/usr"
+          "/var"
+        ];
+        paths = debug-tools pkgs;
+      };
+
+      fakeRootCommands = ''
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        mkdir -p /{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
+        ln -s /run /var/run
+        # symlinks to help imitate the real image
+        ln -s /bin/dataplane /dataplane
+        ln -s /bin/cli /dataplane-cli
+        ln -s /bin/dataplane-init /dataplane-init
+      '';
+
+      enableFakechroot = true;
+
+    }).overrideAttrs
+      source-volatile;
+
+  containers.frr.dataplane =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/frr";
+      inherit tag;
+      contents = pkgs.buildEnv {
+        name = "dataplane-frr-env";
+        pathsToLink = [
+          "/bin"
+          "/etc"
+          "/lib"
+          "/libexec"
+          "/share"
+          "/usr"
+          "/var"
+        ];
+        paths = with pkgs; [
+          bash
+          coreutils
+          dockerTools.usrBinEnv
+          fancy.dplane-plugin
+          fancy.dplane-rpc
+          fancy.frr-agent
+          fancy.frr-config
+          fancy.frr.dataplane
+          findutils
+          gnugrep
+          iproute2
+          jq
+          prometheus-frr-exporter
+          python3Minimal
+          tini
+        ];
+      };
+
+      fakeRootCommands = ''
+        #!${pkgs.bash}/bin/bash
+        set -euxo pipefail
+        mkdir /tmp
+        mkdir -p /run/frr/hh
+        chown -R frr:frr /run/frr
+        mkdir -p /var
+        ln -s /run /var/run
+        chown -R frr:frr /var/run/frr
+        rm /etc/passwd /etc/group
+        cp ${pkgs.fancy.frr-config}/etc/passwd /etc/passwd
+        cp ${pkgs.fancy.frr-config}/etc/group /etc/group
+      '';
+
+      enableFakechroot = true;
+
+      config.Entrypoint = [
+        "/bin/tini"
+        "--"
       ];
-      paths = debug-tools pkgs;
-    };
+      config.Cmd = [ "/libexec/frr/docker-start" ];
+    }).overrideAttrs
+      source-volatile;
 
-    fakeRootCommands = ''
-      #!${pkgs.bash}/bin/bash
-      set -euo pipefail
-      mkdir -p /{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
-      ln -s /run /var/run
-      # symlinks to help imitate the real image
-      ln -s /bin/dataplane /dataplane
-      ln -s /bin/cli /dataplane-cli
-      ln -s /bin/dataplane-init /dataplane-init
-    '';
+  containers.frr.host =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/frr-host";
+      inherit tag;
+      contents = pkgs.buildEnv {
+        name = "dataplane-frr-host-env";
+        pathsToLink = [
+          "/bin"
+          "/etc"
+          "/lib"
+          "/libexec"
+          "/share"
+          "/usr"
+          "/var"
+        ];
+        paths = with pkgs; [
+          bash
+          coreutils
+          dockerTools.usrBinEnv
+          # TODO: frr-config's docker-start launches /bin/frr-agent which is not
+          # present in the host container.  A host-specific entrypoint script may
+          # be needed once this container is actively deployed.
+          fancy.frr-config
+          fancy.frr.host
+          findutils
+          gnugrep
+          iproute2
+          jq
+          prometheus-frr-exporter
+          python3Minimal
+          tini
+        ];
+      };
+      fakeRootCommands = ''
+        #!${pkgs.bash}/bin/bash
+        set -euxo pipefail
+        mkdir /tmp
+        mkdir -p /run/frr/hh
+        chown -R frr:frr /run/frr
+        mkdir -p /var
+        ln -s /run /var/run
+        chown -R frr:frr /var/run/frr
+        rm /etc/passwd /etc/group
+        cp ${pkgs.fancy.frr-config}/etc/passwd /etc/passwd
+        cp ${pkgs.fancy.frr-config}/etc/group /etc/group
+      '';
 
-    enableFakechroot = true;
+      enableFakechroot = true;
 
-  };
-
-  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
-    name = "ghcr.io/githedgehog/dataplane/frr";
-    inherit tag;
-    contents = pkgs.buildEnv {
-      name = "dataplane-frr-env";
-      pathsToLink = [
-        "/bin"
-        "/etc"
-        "/lib"
-        "/libexec"
-        "/share"
-        "/usr"
-        "/var"
+      config.Entrypoint = [
+        "/bin/tini"
+        "--"
       ];
-      paths = with pkgs; [
-        bash
-        coreutils
-        dockerTools.usrBinEnv
-        fancy.dplane-plugin
-        fancy.dplane-rpc
-        fancy.frr-agent
-        fancy.frr-config
-        fancy.frr.dataplane
-        findutils
-        gnugrep
-        iproute2
-        jq
-        prometheus-frr-exporter
-        python3Minimal
-        tini
-      ];
-    };
-
-    fakeRootCommands = ''
-      #!${pkgs.bash}/bin/bash
-      set -euxo pipefail
-      mkdir /tmp
-      mkdir -p /run/frr/hh
-      chown -R frr:frr /run/frr
-      mkdir -p /var
-      ln -s /run /var/run
-      chown -R frr:frr /var/run/frr
-      rm /etc/passwd /etc/group
-      cp ${pkgs.fancy.frr-config}/etc/passwd /etc/passwd
-      cp ${pkgs.fancy.frr-config}/etc/group /etc/group
-    '';
-
-    enableFakechroot = true;
-
-    config.Entrypoint = [
-      "/bin/tini"
-      "--"
-    ];
-    config.Cmd = [ "/libexec/frr/docker-start" ];
-  };
-
-  containers.frr.host = pkgs.dockerTools.buildLayeredImage {
-    name = "ghcr.io/githedgehog/dataplane/frr-host";
-    inherit tag;
-    contents = pkgs.buildEnv {
-      name = "dataplane-frr-host-env";
-      pathsToLink = [
-        "/bin"
-        "/etc"
-        "/lib"
-        "/libexec"
-        "/share"
-        "/usr"
-        "/var"
-      ];
-      paths = with pkgs; [
-        bash
-        coreutils
-        dockerTools.usrBinEnv
-        # TODO: frr-config's docker-start launches /bin/frr-agent which is not
-        # present in the host container.  A host-specific entrypoint script may
-        # be needed once this container is actively deployed.
-        fancy.frr-config
-        fancy.frr.host
-        findutils
-        gnugrep
-        iproute2
-        jq
-        prometheus-frr-exporter
-        python3Minimal
-        tini
-      ];
-    };
-    fakeRootCommands = ''
-      #!${pkgs.bash}/bin/bash
-      set -euxo pipefail
-      mkdir /tmp
-      mkdir -p /run/frr/hh
-      chown -R frr:frr /run/frr
-      mkdir -p /var
-      ln -s /run /var/run
-      chown -R frr:frr /var/run/frr
-      rm /etc/passwd /etc/group
-      cp ${pkgs.fancy.frr-config}/etc/passwd /etc/passwd
-      cp ${pkgs.fancy.frr-config}/etc/group /etc/group
-    '';
-
-    enableFakechroot = true;
-
-    config.Entrypoint = [
-      "/bin/tini"
-      "--"
-    ];
-    config.Cmd = [ "/libexec/frr/docker-start" ];
-  };
+      config.Cmd = [ "/libexec/frr/docker-start" ];
+    }).overrideAttrs
+      source-volatile;
 
 in
 {
