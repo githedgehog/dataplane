@@ -219,6 +219,15 @@ impl IpForwarder {
     }
 
     /// Encapsulate a packet in Vxlan with the provided [`VxlanEncapsulation`] params
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-10
+    //= type=todo
+    //# REQ-13:  If the packet received on an internal IP address has DF=1,
+    //# the NAT MUST send back an ICMP message "Fragmentation needed and
+    //# DF set" to the host, as described in [RFC0792].
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-10
+    //= type=todo
+    //# a) If the packet has DF=0, the NAT MUST fragment the packet and
+    //# SHOULD send the fragments in order.
     fn vxlan_encap<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
