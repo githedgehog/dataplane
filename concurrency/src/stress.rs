@@ -30,7 +30,7 @@ pub fn shuttle_config() -> shuttle::Config {
 ///
 /// * default backend -- one direct call, no scheduling exploration.
 /// * `loom` -- `loom::model`.
-/// * `shuttle` -- the [`shuttle_config`]-configured `PortfolioRunner`
+/// * `shuttle` -- the `shuttle_config`-configured `PortfolioRunner`
 ///   (`RandomScheduler` + `PctScheduler`, plus `DfsScheduler` under
 ///   `shuttle_dfs`).
 ///

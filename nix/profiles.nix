@@ -45,6 +45,9 @@ let
     # Register `emulated` so `#[cfg_attr(emulated, ...)]` never trips
     # `unexpected_cfgs`; only *set* for is-emulated-test and miri.
     "--check-cfg=cfg(emulated)"
+    # Only coverage lowers counter-heavy loop counts; sanitizers retain the
+    # iterations that help expose races.
+    "--check-cfg=cfg(instrumented)"
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
@@ -61,6 +64,7 @@ let
       ]
   )
   ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
+  ++ (if instrumentation == "coverage" then [ "--cfg=instrumented" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"

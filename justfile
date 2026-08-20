@@ -329,26 +329,75 @@ build-container-quick:
 push-container target="dataplane" *args: (build-container target args) && version
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
+
+    # Preserve completed builds across transient registry failures. Skopeo
+    # retries blobs; this outer loop retries known-safe, idempotent whole pushes
+    # and announces them so registry degradation remains visible.
+    retry() {
+        declare -r what="$1"
+        shift
+        declare -ri attempts=4
+        declare -i attempt=1
+        declare -i delay
+        declare log
+        log="$(mktemp)"
+        declare -r log
+        while true; do
+            # Stream multi-gigabyte pushes so they do not appear hung.
+            if "$@" 2>&1 | tee "${log}"; then
+                rm -f -- "${log}"
+                return 0
+            fi
+            if [ "${attempt}" -ge "${attempts}" ]; then
+                >&2 echo "::error::${what} failed after ${attempts} attempts"
+                rm -f -- "${log}"
+                return 1
+            fi
+            # Match registry status and transport vocabulary shared by skopeo
+            # and oras. Bound 403 so it cannot match inside a digest.
+            if ! grep -qiE \
+                    -e 'blob upload (unknown|invalid)|blob transfer' \
+                    -e '\b(403|429|500|502|503|504)\b' \
+                    -e 'forbidden|denied|too many requests|rate limit' \
+                    -e 'internal server error|bad gateway|service unavailable|gateway time-?out' \
+                    -e 'temporarily unavailable|try again' \
+                    -e 'unexpected EOF|connection reset|broken pipe|i/o timeout|TLS handshake' \
+                    "${log}"; then
+                >&2 echo "::error::${what} failed with a non-retryable error"
+                rm -f -- "${log}"
+                return 1
+            fi
+            delay=$(( 5 * 2 ** (attempt - 1) + RANDOM % 5 ))
+            >&2 echo "::warning::${what} failed (attempt ${attempt}/${attempts}), retrying in ${delay}s"
+            sleep "${delay}"
+            attempt=$(( attempt + 1 ))
+        done
+    }
+
+    push_image() {
+        declare -r image="$1"
+        retry "push of ${image}" \
+            skopeo copy --retry-times=3 --src-daemon-host="${DOCKER_HOST}" \
+                {{ _skopeo_dest_insecure }} "docker-daemon:${image}" "docker://${image}"
+        echo "Pushed ${image}"
+    }
+
     case "{{target}}" in
         "dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane }}" "docker://{{ oci_image_dataplane }}"
-            echo "Pushed {{ oci_image_dataplane }}"
+            push_image "{{ oci_image_dataplane }}"
             ;;
         "dataplane-debugger")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_debugger }}" "docker://{{ oci_image_dataplane_debugger }}"
-            echo "Pushed {{ oci_image_dataplane_debugger }}"
+            push_image "{{ oci_image_dataplane_debugger }}"
             ;;
         "debug-tools")
             >&2 echo "do not push the debug tools!"
             exit 1
             ;;
         "frr.dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_dataplane}}" "docker://{{oci_image_frr_dataplane}}"
-            echo "Pushed {{ oci_image_frr_dataplane }}"
+            push_image "{{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_host}}" "docker://{{oci_image_frr_host}}"
-            echo "Pushed {{ oci_image_frr_host }}"
+            push_image "{{oci_image_frr_host}}"
             ;;
         "validator")
             if [ "{{platform}}" != "wasm32-wasip1" ]; then
@@ -356,7 +405,8 @@ push-container target="dataplane" *args: (build-container target args) && versio
               exit 1
             fi
             pushd ./results/workspace.validator/bin
-            oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
+            retry "push of {{ oci_image_dataplane_validator }}" \
+                oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
             popd
             echo "Pushed {{ oci_image_dataplane_validator }}"
             ;;
@@ -391,6 +441,94 @@ check-dependencies *args:
     {{ _just_debuggable_ }}
     cargo deny {{ _cargo_feature_flags }} check {{ args }}
 
+# Ensure the shared dependency derivations stay reusable across revisions.
+#
+# Two things break that, and they are different kinds of thing, so they take
+# different questions.
+#
+# The workspace source is a store path, so "the dependency build must not
+# depend on it" is a statement about the derivation graph and nix can answer it
+# outright: instantiate once and read the inputs. That is exact, it names the
+# offending path, and it needs no edit to the working tree.
+#
+# The git version is a string. It reaches a derivation as an environment
+# variable and never as an input path, so no graph walk can see it; the only
+# way to ask is to instantiate under two tags and compare.
+#
+# Both have regressed before, and both surface as a slow cache miss rather than
+# a failure, which is why they are checked at all.
+[script]
+check-deps-reuse:
+    {{ _just_debuggable_ }}
+    # Keep Nix stderr; it is the only diagnostic when instantiation fails.
+    declare src
+    src="$(nix eval --raw --impure --expr '(import ./default.nix { }).src.outPath')"
+    declare -r src
+    if [ -z "${src}" ]; then
+        >&2 echo "::error::could not resolve the workspace source path"
+        exit 1
+    fi
+
+    deps_drv() {
+        declare drv
+        drv="$(nix-instantiate default.nix -A "$1" --argstr tag "$3" | tail -1)"
+        grep -ao "/nix/store/[a-z0-9]\{32\}-$2[^\"]*\.drv" "${drv}" | sort -u
+    }
+
+    # Report through the status; command substitution would run this in a
+    # subshell and discard failure-count updates.
+    check_reuse() {
+        declare -r attr="$1" name="$2"
+
+        declare baseline
+        if ! baseline="$(deps_drv "${attr}" "${name}" dev)" || [ -z "${baseline}" ]; then
+            >&2 echo "::error::could not resolve ${name} from ${attr}"
+            return 1
+        fi
+
+        # The source question, put to the graph.
+        declare drv
+        while IFS= read -r drv; do
+            [ -z "${drv}" ] && continue
+            if nix-store -q --requisites "${drv}" | grep -qxF "${src}"; then
+                >&2 echo "::error::${name} depends on the workspace source"
+                >&2 echo "  ${src}"
+                >&2 echo "  is a build input of ${drv}"
+                return 1
+            fi
+        done <<<"${baseline}"
+
+        # The version question, put to two instantiations.
+        declare tagged
+        if ! tagged="$(deps_drv "${attr}" "${name}" v0.25.2-15-gdeadbee-dirty)"; then
+            >&2 echo "::error::could not resolve ${name} from ${attr} with a release tag"
+            return 1
+        fi
+        if [ "${tagged}" != "${baseline}" ]; then
+            >&2 echo "::error::${name} depends on the git version"
+            >&2 echo "  tag=dev  -> ${baseline}"
+            >&2 echo "  tag=v0.. -> ${tagged}"
+            return 1
+        fi
+
+        printf '%s is reusable: %s\n' "${name}" "${baseline}"
+    }
+
+    # Check production and test flag sets independently: a regression in a
+    # production-only flag would sail past a test-only guard.
+    declare -r -A targets=(
+        [workspace.dataplane]="dataplane-deps"
+        [tests.all]="dataplane-tests-deps"
+    )
+    declare -i failures=0
+    for attr in "${!targets[@]}"; do
+        check_reuse "${attr}" "${targets[${attr}]}" || failures=$(( failures + 1 ))
+    done
+
+    if [ "${failures}" -ne 0 ]; then
+        exit 1
+    fi
+
 [script]
 opengrep:
     {{ _just_debuggable_ }}
@@ -406,15 +544,132 @@ zizmor *args="":
     {{ _just_debuggable_ }}
     zizmor --persona=pedantic {{args}} .
 
-[script]
-clippy *args:
+# Run the CI-equivalent cached lint; direct Cargo remains the fast inner loop.
+clippy package="" *args: (build (if package == "" { "clippy.all" } else { "clippy.pkg." + package }) args)
     {{ _just_debuggable_ }}
-    cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings
 
 [script]
 actionlint:
     {{ _just_debuggable_ }}
     actionlint
+
+# Keep default.nix formatted without adopting legacy files under nix/.
+[script]
+nixfmt *args="--check":
+    {{ _just_debuggable_ }}
+    nixfmt {{ args }} default.nix
+
+# Keep the lint recipe, workflow steps, and outcome aggregation aligned; drift
+# in any of the three silently disables a check.
+[script]
+check-lint-wiring:
+    {{ _just_debuggable_ }}
+    declare -r wf=".github/workflows/dev.yml"
+    declare -i failures=0
+
+    # Nix-backed checks run under a `ci::check-` prefix; accept either spelling
+    # so a recipe stays covered when it moves between workflow jobs.
+    declare recipe
+    while read -r recipe; do
+        grep -qE "recipe: \"(ci::check-)?${recipe}\"" "${wf}" && continue
+        >&2 echo "::error::\`just lint\` runs ${recipe}, but ${wf} never does"
+        failures=$(( failures + 1 ))
+    done < <(just --dump --dump-format json | jq -r '.recipes.lint.dependencies[].recipe')
+
+    # Every lint step is `continue-on-error`, so a step the aggregator does not
+    # read cannot fail the run.
+    declare id
+    while read -r id; do
+        grep -qF "steps.${id}.outcome" "${wf}" && continue
+        >&2 echo "::error::${wf} runs ${id} but never reads its outcome"
+        failures=$(( failures + 1 ))
+    done < <(yq -r '.jobs.lint.steps[] | select(.id) | .id' "${wf}")
+
+    if [ "${failures}" -ne 0 ]; then
+        exit 1
+    fi
+    echo "lint wiring agrees"
+
+# Images are per-revision, so verify that each realized image and its
+# dockerTools assembly paths are rejected by the actual Cachix push filter.
+[script]
+check-push-filter:
+    {{ _just_debuggable_ }}
+    declare -r action=".github/actions/nix-shell/action.yml"
+    declare push_filter
+    push_filter="$(yq -r '.runs.steps[] | select(.with.pushFilter) | .with.pushFilter' "${action}")"
+    declare -r push_filter
+    if [ -z "${push_filter}" ] || [ "${push_filter}" = "null" ]; then
+        >&2 echo "::error::no pushFilter found in ${action}; nothing is keeping images out of the cache"
+        exit 1
+    fi
+
+    # Walk `containers` and `dataplane` both: the latter holds `dataplane.tar`,
+    # which the release build selects directly and which is per-revision for the
+    # same reasons. Both nest, so recurse rather than assume one level.  Each line is "attr outPath drvPath".
+    declare -a images=()
+    mapfile -t images < <(
+        nix eval --impure --raw --expr '
+          let
+            d = import ./default.nix { };
+            lib = d.pkgs.lib;
+            flatten = prefix: set:
+              lib.concatLists (lib.mapAttrsToList (n: v:
+                let nm = if prefix == "" then n else "${prefix}.${n}"; in
+                if lib.isDerivation v then [ "${nm} ${v.outPath} ${v.drvPath}" ]
+                else if builtins.isAttrs v then flatten nm v
+                else [ ]
+              ) set);
+          in lib.concatStringsSep "\n" (flatten "" { inherit (d) containers dataplane; }) + "\n"
+        '
+    )
+    if [ "${#images[@]}" -eq 0 ]; then
+        >&2 echo "::error::found no container images to check; did the attribute move?"
+        exit 1
+    fi
+
+    declare -i failures=0
+    declare -i checked=0
+    for entry in "${images[@]}"; do
+        [ -z "${entry}" ] && continue
+        declare name out drv base
+        read -r name out drv <<<"${entry}"
+        # Recover the base name after `source-volatile` has renamed the output.
+        base="${out##*/}"
+        base="${base#*-dataplane-volatile-}"
+        base="${base%.tar.gz}"
+
+        declare -a candidates=( "${out}" )
+        # Test dockerTools artifacts; ordinary closure dependencies stay cached.
+        mapfile -t -O "${#candidates[@]}" candidates < <(
+            nix-store -q --requisites "${drv}" 2>/dev/null \
+                | grep '\.drv$' \
+                | xargs -r nix-store -q --outputs 2>/dev/null \
+                | sort -u \
+                | while IFS= read -r path; do
+                    declare stem="${path##*/}"
+                    case "${stem#*-}" in
+                        "${base}-base.json" | "${base}-conf.json" \
+                        | "${base}-customisation-layer" | "${base}-env" \
+                        | "stream-${base}") printf '%s\n' "${path}" ;;
+                    esac
+                done
+        )
+
+        for path in "${candidates[@]}"; do
+            checked=$(( checked + 1 ))
+            if ! printf '%s\n' "${path}" | grep -qE "${push_filter}"; then
+                >&2 echo "::error::${name} would push ${path##*/} to Cachix"
+                failures=$(( failures + 1 ))
+            fi
+        done
+    done
+
+    if [ "${failures}" -ne 0 ]; then
+        >&2 echo "::error::extend the pushFilter in ${action}, or mark the image with \`source-volatile\`"
+        exit 1
+    fi
+    printf 'no cache leak: %d paths across %d artifacts\n' "${checked}" "${#images[@]}"
 
 # Limit linting to tracked Markdown so generated files cannot affect CI.
 [script]
@@ -469,14 +724,16 @@ lint: \
     (pinact "--fix=false" "--no-api") \
     (actionlint) \
     (markdownlint) \
+    (nixfmt) \
+    (check-lint-wiring) \
+    (check-push-filter) \
     (license-headers)
     {{ _just_debuggable_ }}
 
-# Run doctests
-[script]
-doctest *args:
+# Cargo cannot archive doctests, so run them inside the Nix sandbox.
+doctest package="" *args: (build (if package == "" { "doctests.all" } else { "doctests.pkg." + package }) args)
     {{ _just_debuggable_ }}
-    cargo test --doc {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }}
+
 
 # Run instrumented tests and report coverage. Args are forwarded to nextest; for example,
 # `just coverage -p dataplane-nat` scopes the run to this crate.
@@ -538,6 +795,20 @@ coverage-archive package="tests.all" *args:
     declare src_prefix
     src_prefix="$(cat "${prefix_file}")"
     declare -r src_prefix
+    # llvm-cov resolves relative remaps against the vanished build sandbox.
+    # Reject absolute prefixes and redirect relative ones to this worktree.
+    case "${src_prefix}" in
+        /*)
+            >&2 echo "::error::source prefix ${src_prefix} is absolute; coverage expects a relative remap"
+            exit 1
+            ;;
+    esac
+
+    # llvm-cov emits the resolved absolute paths and Codecov wants them relative
+    # to the repository root, so the root goes into a BRE below.  Escape it.
+    declare root_re
+    root_re="$(sed -e 's#[].[^$*\\/]#\\&#g' <<<"${root}")"
+    declare -r root_re
 
     # Nextest changes cwd; `%m` also pools compatible profiles across tests.
     export LLVM_PROFILE_FILE="${profraw}/cov-%m.profraw"
@@ -579,17 +850,28 @@ coverage-archive package="tests.all" *args:
             "${extract}/target/nextest/binaries-metadata.json"
     )
 
+    # Resolve remapped paths against this worktree and filter out the standard
+    # library and native dependencies. llvm-cov ignores nonexistent filters,
+    # so the trailing path must name the real tree.
+    declare -ra scope=( --compilation-dir="${root}" "${objects[@]}" "${root}" )
+
     llvm-cov export \
         --format=lcov \
         --instr-profile="${out}/coverage.profdata" \
-        "${objects[@]}" \
-        "${src_prefix}" \
-        | sed -e "s#^SF:${src_prefix}/#SF:#" > "${out}/lcov.info"
+        "${scope[@]}" \
+        | sed -e "s#^SF:${root_re}/#SF:#" > "${out}/lcov.info"
 
     # Codecov needs repository-relative paths; reject failed rewrites.
     if grep -q '^SF:/' "${out}/lcov.info"; then
-        >&2 echo "::error::absolute paths survived the ${src_prefix} rewrite:"
+        >&2 echo "::error::absolute paths survived the ${root} rewrite:"
         >&2 grep -m5 '^SF:/' "${out}/lcov.info"
+        exit 1
+    fi
+
+    # A filter that matches nothing reports full coverage of an empty set, which
+    # reads as success everywhere downstream.  Insist on some workspace source.
+    if ! grep -q '^SF:' "${out}/lcov.info"; then
+        >&2 echo "::error::no workspace sources in the report; the ${root} filter matched nothing"
         exit 1
     fi
 
@@ -598,13 +880,11 @@ coverage-archive package="tests.all" *args:
         --output-dir="${out}/html" \
         --show-branches=count \
         --instr-profile="${out}/coverage.profdata" \
-        "${objects[@]}" \
-        "${src_prefix}"
+        "${scope[@]}"
 
     llvm-cov report \
         --instr-profile="${out}/coverage.profdata" \
-        "${objects[@]}" \
-        "${src_prefix}"
+        "${scope[@]}"
 
     echo "lcov report: ${out}/lcov.info"
     echo "html report: ${out}/html/index.html"

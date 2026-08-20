@@ -253,6 +253,9 @@ mod tests {
         const NUM_WORKERS: u16 = 6;
         const NUM_PACKETS: u64 = cfg_select! {
             emulated => 30,
+            // Coverage instruments every counter; the full count costs ~47s
+            // and reaches no additional lines.
+            instrumented => 2_000,
             _ => 100_000,
         };
         const TENTH: u64 = NUM_PACKETS / 10;

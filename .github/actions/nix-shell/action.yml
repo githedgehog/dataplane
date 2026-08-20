@@ -32,6 +32,12 @@ runs:
         signingKey: '${{ inputs.cachix_signing_key }}'
         # prettier-ignore
         authToken: '${{ inputs.cachix_auth_token }}'
+        # Exclude images and dockerTools assembly paths, whose customization
+        # layers can reintroduce the source closure. Match artifact shapes so new
+        # images are covered automatically; `check-push-filter` verifies them.
+        # Anchor `stream-` to a store-path name so cached crates such as
+        # tokio-stream are not swept up by it.
+        pushFilter: '(-dataplane-volatile-|-customisation-layer$|-(base|conf|layers)\.json$|-excludePaths$|/[0-9a-z]{32}-stream-|-env$)'
 
     - name: "use nix shell"
       uses: "rrbutani/use-nix-shell-action@59a52b2b9bbfe3cc0e7deb8f9059abe37a439edf" # v1.1.0

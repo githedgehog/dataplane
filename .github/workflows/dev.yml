@@ -67,6 +67,7 @@ jobs:
     runs-on: "ubuntu-latest"
     outputs:
       container_profiles: "${{ steps.container-profiles.outputs.value }}"
+      parallel: "${{ steps.parallel.outputs.value }}"
       profiles: "${{ steps.profiles.outputs.value }}"
       concurrency: "${{ steps.concurrency.outputs.value }}"
       cross: "${{ steps.cross.outputs.value }}"
@@ -80,6 +81,19 @@ jobs:
         uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
         with:
           persist-credentials: "false"
+
+      # Let merge-gating runs finish quickly without allowing pull requests to
+      # crowd them out. `strategy` cannot read `env`, so expose this via `plan`.
+      - id: "parallel"
+        env:
+          EVENT: "${{ github.event_name }}"
+        run: |
+          set -euo pipefail
+          case "${EVENT}" in
+            merge_group | push) value="4" ;;
+            *) value="1" ;;
+          esac
+          printf 'value=%s\n' "${value}" >>"${GITHUB_OUTPUT}"
 
       - id: "miri"
         uses: &gate "./.github/actions/ci-gate"
@@ -183,10 +197,14 @@ jobs:
       JUST_VARS: ""
     strategy:
       fail-fast: false
-      # Keep one pull request from occupying the shared lab pool.
-      max-parallel: 1
+      # Each entry gets its own runner; this limits shared-pool occupancy.
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
+        exclude:
+          # Fuzz repeats the release compile here; coverage, sanitizers, and
+          # fuzzing jobs already exercise that profile.
+          - profile: "fuzz"
     steps:
       - *checkout
 
@@ -217,6 +235,13 @@ jobs:
         uses: *just
         with:
           recipe: "ci::check-doctest"
+          recipe_args: "${{ matrix.profile }}"
+
+      # Build API docs so links and cfg declarations cannot rot unnoticed.
+      - name: "docs"
+        uses: *just
+        with:
+          recipe: "ci::check-docs"
           recipe_args: "${{ matrix.profile }}"
 
       - &verify-clean-tree
@@ -319,6 +344,35 @@ jobs:
         with:
           recipe: "markdownlint"
 
+      - name: "nixfmt"
+        id: "nixfmt"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "nixfmt"
+
+      - name: "check-lint-wiring"
+        id: "check-lint-wiring"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-lint-wiring"
+
+      - name: "check-push-filter"
+        id: "check-push-filter"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-push-filter"
+
+      # Cache misses still pass, so guard dependency reuse explicitly.
+      - name: "check-deps-reuse"
+        id: "check-deps-reuse"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "check-deps-reuse"
+
       - name: "license-headers"
         id: "license-headers"
         continue-on-error: true
@@ -337,6 +391,10 @@ jobs:
             pinact=${{ steps.pinact.outcome }}
             actionlint=${{ steps.actionlint.outcome }}
             markdownlint=${{ steps.markdownlint.outcome }}
+            nixfmt=${{ steps.nixfmt.outcome }}
+            check-lint-wiring=${{ steps.check-lint-wiring.outcome }}
+            check-push-filter=${{ steps.check-push-filter.outcome }}
+            check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
         run: |
           set -euo pipefail
@@ -365,7 +423,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         nix-target:
           - frr.dataplane
@@ -399,7 +457,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix:
         sanitizer:
           - thread
@@ -444,7 +502,7 @@ jobs:
     env: *ci-env
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       # Fuzz provides optimized coverage while retaining safety checks.
       matrix:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
@@ -632,6 +690,7 @@ jobs:
       JUST_VARS: ""
     strategy:
       fail-fast: false
+      # Keep cross serial so one pull request cannot occupy the lab.
       max-parallel: 1
       matrix:
         platform:
@@ -699,6 +758,7 @@ jobs:
     with:
       # ci:+hlab is required to enable hybrid lab tests on PR
       # ci:+vlab is required to enable virtual lab tests on PR
+      # ci:-vlab opts back out, including for ci:+merge-ready
       # ci:-upgrade disables upgrade tests on PR
       # hlab is disabled for main and merge_queue till we have gateway tests for it
       # ci:+merge-ready mirrors the merge queue, which skips HLAB.
@@ -706,7 +766,8 @@ jobs:
         ${{
           github.event_name == 'pull_request'
           && (
-            matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+            contains(github.event.pull_request.labels.*.name, 'ci:-vlab')
+            || matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
             || !matrix.hybrid
                && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
                && !contains(github.event.pull_request.labels.*.name, 'ci:+merge-ready')

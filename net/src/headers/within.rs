@@ -418,7 +418,7 @@ use crate::icmp6::TruncatedIcmp6;
 use crate::tcp::TruncatedTcp;
 use crate::udp::TruncatedUdp;
 
-/// Marker type for the starting position of an [`EmbeddedMatcher`].
+/// Marker type for the starting position of an [`crate::headers::pat::EmbeddedMatcher`].
 ///
 /// Embedded headers begin at the network layer (no Eth, no VLAN), so
 /// `Within<EmbeddedStart>` is implemented for Ipv4, Ipv6, and Net.

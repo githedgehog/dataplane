@@ -21,6 +21,26 @@ even if you have not installed [nextest] on your system.
 cargo nextest run --cargo-profile=release
 ```
 
+## Linting (clippy)
+
+`just clippy` builds clippy through nix, so a developer and CI run the same
+thing and the result is cached. Its first argument is a _package_, not a flag:
+
+```shell
+just clippy            # the whole workspace
+just clippy nat        # one package, as with `just test`
+```
+
+`just clippy -p nat` does not work -- `-p` binds to the package parameter and
+the rest is forwarded to `nix build`. It fails rather than silently linting the
+wrong thing, but the spelling above is the one that works.
+
+For a fast inner loop, skip the recipe and use the dev shell directly:
+
+```shell
+cargo clippy --all-targets
+```
+
 ## Code Coverage (llvm-cov)
 
 The nix-shell also ships with [cargo llvm-cov] for collecting
