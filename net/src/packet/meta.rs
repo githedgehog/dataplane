@@ -15,7 +15,7 @@ use concurrency::sync::Arc;
 use serde::Serialize;
 use std::fmt::Display;
 use std::net::IpAddr;
-use strum_macros::{EnumCount, FromRepr};
+use strum_macros::{EnumCount, FromRepr, IntoStaticStr};
 use tracing::error;
 
 /// Every VRF is univocally identified with a numerical VRF id
@@ -80,7 +80,10 @@ impl Display for VpcDiscriminant {
 
 #[repr(u8)]
 #[allow(unused)]
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, EnumCount, FromRepr)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, EnumCount, FromRepr, IntoStaticStr)]
+// Metric label values, so snake_case rather than the prose the `Display` impl produces. These
+// strings are part of the metrics contract: renaming a variant renames a time series.
+#[strum(serialize_all = "snake_case")]
 pub enum DoneReason {
     InternalFailure,      /* catch-all for internal issues */
     InterfaceUnknown,     /* the interface cannot be found */
