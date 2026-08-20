@@ -21,7 +21,7 @@ use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
-use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
+use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore, Visited};
 use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
 use crate::interfaces::iftable::IfTable;
@@ -40,7 +40,7 @@ use net::vxlan::Vni;
 use std::fmt::Display;
 use std::fmt::Write;
 use std::os::unix::net::SocketAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -126,27 +126,40 @@ impl Display for Nhop {
         if self.is_unresolved() {
             write!(f, " (unresolved)")?;
         }
-        fmt_nhop_resolvers(f, self, 2)
+        fmt_nhop_resolvers(f, self, 2, &mut vec![self.id()])
     }
 }
 
-fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> std::fmt::Result {
+/// Print a next-hop's resolvers, and theirs, and so on down.
+///
+/// `path` holds the next-hops between the one being displayed and this one. A resolver already on
+/// that path closes a resolution loop: we name it and stop, since the recursion has nothing new to
+/// show and would otherwise run until `depth` overflowed -- which it did, panicking from inside a
+/// `Display` impl that both the CLI and the warning about resolution loops go through.
+fn fmt_nhop_resolvers(
+    f: &mut std::fmt::Formatter<'_>,
+    rc: &Nhop,
+    depth: u8,
+    path: &mut Visited,
+) -> std::fmt::Result {
     let Ok(resolvers) = rc.resolvers.try_borrow() else {
         warn!("Try-borrow on nhop resolvers failed!");
         return Ok(());
     };
     let tab = 5 * depth as usize;
     let indent = " ".repeat(tab);
-    if !resolvers.is_empty() {
-        for r in resolvers.iter() {
-            if let Some(r) = r.upgrade().as_ref() {
-                write!(f, "\n{indent} {}", r.key)?;
-                if r.is_unresolved() {
-                    write!(f, " (UNRESOLVED)")?;
-                }
-                fmt_nhop_resolvers(f, r, depth + 1)?;
-            }
+    for r in resolvers.iter().filter_map(Weak::upgrade) {
+        write!(f, "\n{indent} {}", r.key)?;
+        if r.is_unresolved() {
+            write!(f, " (UNRESOLVED)")?;
         }
+        if path.contains(&r.id()) {
+            write!(f, " (LOOP)")?;
+            continue;
+        }
+        path.push(r.id());
+        fmt_nhop_resolvers(f, &r, depth.saturating_add(1), path)?;
+        path.pop();
     }
     Ok(())
 }
@@ -168,7 +181,14 @@ fn fmt_nhop_instruction(f: &mut std::fmt::Formatter<'_>, rc: &Nhop) -> std::fmt:
 
 // formats nhop using the display of the key, recoursing over resolvers
 // Does not use Nhop::fmt().
-fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> std::fmt::Result {
+//
+// `path` guards against a resolution loop, as in `fmt_nhop_resolvers` above.
+fn fmt_nhop_rec(
+    f: &mut std::fmt::Formatter<'_>,
+    rc: &Rc<Nhop>,
+    depth: u8,
+    path: &mut Visited,
+) -> std::fmt::Result {
     let tab = 8 * depth as usize;
     let indent = " ".repeat(tab);
 
@@ -184,6 +204,9 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> st
     if rc.is_unresolved() {
         write!(f, " (UNRESOLVED)")?;
     }
+    if path.contains(&rc.id()) {
+        return writeln!(f, " (LOOP)");
+    }
     writeln!(f)?;
     //    fmt_nhop_instruction(f, rc)?;
 
@@ -191,11 +214,11 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> st
         error!("Try-borrow on next-hop resolvers failed!");
         return Ok(());
     };
-    for r in resolvers.iter() {
-        if let Some(r) = r.upgrade().as_ref() {
-            fmt_nhop_rec(f, r, depth + 1)?;
-        }
+    path.push(rc.id());
+    for r in resolvers.iter().filter_map(Weak::upgrade) {
+        fmt_nhop_rec(f, &r, depth.saturating_add(1), path)?;
     }
+    path.pop();
     //    if let Ok(fg) = rc.as_ref().fibgroup.read() {
     //        writeln!(f, "FibG {}", fg)?;
     //    }
@@ -206,7 +229,7 @@ impl Display for NhopStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("Next-hop Store ({})", self.len())).fmt(f)?;
         for nhop in self.iter() {
-            fmt_nhop_rec(f, nhop, 0)?;
+            fmt_nhop_rec(f, nhop, 0, &mut Visited::new())?;
             fmt_nhop_instruction(f, nhop)?;
         }
         line(f)
@@ -407,7 +430,7 @@ impl Display for VrfV4Nexthops<'_> {
             .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv4()));
 
         for nhop in iter {
-            fmt_nhop_rec(f, nhop, 0)?;
+            fmt_nhop_rec(f, nhop, 0, &mut Visited::new())?;
         }
         line(f)
     }
@@ -425,7 +448,7 @@ impl Display for VrfV6Nexthops<'_> {
             .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv6()));
 
         for nhop in iter {
-            fmt_nhop_rec(f, nhop, 0)?;
+            fmt_nhop_rec(f, nhop, 0, &mut Visited::new())?;
         }
         line(f)
     }

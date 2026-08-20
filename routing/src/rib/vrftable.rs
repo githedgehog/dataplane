@@ -176,6 +176,17 @@ impl VrfTable {
         vrfid: VrfId,
         iftablew: &mut IfTableWriter,
     ) -> Result<(), RouterError> {
+        // The default vrf is not removable. `Vrf::set_status` says as much and keeps the default
+        // vrf `Active` so that the sweeps below never pick it up, but nothing stopped a caller
+        // naming it here -- and `get_default_vrf` treats the default vrf's existence as given,
+        // with an `unreachable!()` rather than an error.
+        if vrfid == Vrf::DEFAULT_VRFID {
+            error!("Refusing to remove the default vrf");
+            return Err(RouterError::Internal(
+                "Bug: the default vrf cannot be removed",
+            ));
+        }
+
         // remove the vrf from the vrf table
         debug!("Removing VRF {vrfid}...");
         let Some(mut vrf) = self.by_id.remove(&vrfid) else {
@@ -189,7 +200,7 @@ impl VrfTable {
         // delete the corresponding fib
         if let Some(fibw) = vrf.fibw.take() {
             debug!("Deleting Fib for vrf {vrfid} from the FibTable");
-            self.fibtablew.del_fib(vrfid, vrf.vni);
+            self.fibtablew.del_fib(vrfid);
             fibw.destroy();
         }
 
@@ -935,5 +946,789 @@ mod tests {
     #[test]
     fn test_vrf_fibgroup_2() {
         test_vrf_fibgroup(build_test_vrf_nhops_partially_resolved());
+    }
+}
+
+/// Model-based properties over a [`VrfTable`].
+///
+/// The vrf table is where four key spaces have to agree: `by_id`, `by_vni`, each [`Vrf`]'s own
+/// `vni` field, and the fib table's two -- `FibKey::Id` and the `FibKey::Vni` alias. Nothing holds
+/// them together but the table's own methods doing the right number of things in the right order,
+/// so what is generated here is sequences of those methods, and what is checked is that all four
+/// still describe the same set of vrfs afterwards.
+#[cfg(test)]
+mod vrftable_properties {
+    use super::*;
+    use crate::interfaces::iftablerw::IfTableWriter;
+    use crate::rib::vrf::VrfStatus;
+    use bolero::{Driver, ValueGenerator};
+    use std::collections::BTreeMap;
+    use std::ops::Bound::Included;
+
+    const NUM_VRFS: u8 = 3;
+    const NUM_VNIS: u8 = 2;
+    const NUM_STATUSES: u8 = 3;
+    const MAX_CHANGES: u8 = 12;
+
+    /// Vrf ids a generated table may hold, the default among them: `remove_vrf` takes any id, and
+    /// whether it should take that one is exactly the question worth generating for.
+    fn vrf_ids() -> Vec<VrfId> {
+        (0..u32::from(NUM_VRFS)).collect()
+    }
+
+    fn vnis() -> Vec<Vni> {
+        (1..=u32::from(NUM_VNIS))
+            .map(|i| Vni::new_checked(100 * i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn statuses() -> Vec<VrfStatus> {
+        vec![VrfStatus::Active, VrfStatus::Deleting, VrfStatus::Deleted]
+    }
+
+    /// One change, as [`VrfTable`] exposes them, over indices into the pools above.
+    #[derive(Debug, Clone)]
+    enum Change {
+        AddVrf { vrf: usize, vni: Option<usize> },
+        SetVni { vrf: usize, vni: usize },
+        UnsetVni { vrf: usize },
+        RemoveVrf { vrf: usize },
+        SetStatus { vrf: usize, status: usize },
+        RemoveDeleted,
+        RemoveDeleting,
+    }
+
+    /// Draws sequences of [`Change`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&6))? {
+                    0 => {
+                        // `NUM_VNIS` means "created without a vni", which is the ordinary case.
+                        // One draw rather than an `Option<Option<_>>`, which cannot be told apart
+                        // from the driver running out of input.
+                        let vrf = index(driver, NUM_VRFS)?;
+                        let drawn = index(driver, NUM_VNIS + 1)?;
+                        Change::AddVrf {
+                            vrf,
+                            vni: (drawn < usize::from(NUM_VNIS)).then_some(drawn),
+                        }
+                    }
+                    1 => Change::SetVni {
+                        vrf: index(driver, NUM_VRFS)?,
+                        vni: index(driver, NUM_VNIS)?,
+                    },
+                    2 => Change::UnsetVni {
+                        vrf: index(driver, NUM_VRFS)?,
+                    },
+                    3 => Change::RemoveVrf {
+                        vrf: index(driver, NUM_VRFS)?,
+                    },
+                    4 => Change::SetStatus {
+                        vrf: index(driver, NUM_VRFS)?,
+                        status: index(driver, NUM_STATUSES)?,
+                    },
+                    5 => Change::RemoveDeleted,
+                    _ => Change::RemoveDeleting,
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// Which vrfs exist, and for each the vni it carries and the status it is in.
+    ///
+    /// One map, from which all four of the table's views are derivable -- which is the point. The
+    /// table keeps them as four separate structures updated by hand; if any method updates three
+    /// of them, this says which one it missed.
+    type Model = BTreeMap<VrfId, (Option<Vni>, VrfStatus)>;
+
+    fn owner_of(model: &Model, vni: Vni) -> Option<VrfId> {
+        model
+            .iter()
+            .find_map(|(id, (carried, _))| (*carried == Some(vni)).then_some(*id))
+    }
+
+    fn fresh_model() -> Model {
+        Model::from([(Vrf::DEFAULT_VRFID, (None, VrfStatus::Active))])
+    }
+
+    fn apply(table: &mut VrfTable, iftw: &mut IfTableWriter, model: &mut Model, change: &Change) {
+        let ids = vrf_ids();
+        let all_vnis = vnis();
+        match change {
+            Change::AddVrf { vrf, vni } => {
+                let id = ids[*vrf];
+                let vni = vni.map(|i| all_vnis[i]);
+                let config = RouterVrfConfig::new(id, &format!("vrf{id}")).set_vni(vni);
+                let _ = table.add_vrf(&config);
+                // refused if the id is taken, or if the vni is
+                if model.contains_key(&id) || vni.is_some_and(|v| owner_of(model, v).is_some()) {
+                    return;
+                }
+                model.insert(id, (vni, VrfStatus::Active));
+            }
+            Change::SetVni { vrf, vni } => {
+                let id = ids[*vrf];
+                let vni = all_vnis[*vni];
+                let _ = table.set_vni(id, vni);
+                match owner_of(model, vni) {
+                    // another vrf holds it: refused. The same vrf already holds it: nothing to do
+                    Some(_) => (),
+                    // otherwise the vrf drops whatever vni it had and takes this one -- but only
+                    // if it exists at all
+                    None => {
+                        if let Some(entry) = model.get_mut(&id) {
+                            entry.0 = Some(vni);
+                        }
+                    }
+                }
+            }
+            Change::UnsetVni { vrf } => {
+                let id = ids[*vrf];
+                let _ = table.unset_vni(id);
+                if let Some(entry) = model.get_mut(&id) {
+                    entry.0 = None;
+                }
+            }
+            Change::RemoveVrf { vrf } => {
+                let id = ids[*vrf];
+                let _ = table.remove_vrf(id, iftw);
+                // the default vrf is refused
+                if id != Vrf::DEFAULT_VRFID {
+                    model.remove(&id);
+                }
+            }
+            Change::SetStatus { vrf, status } => {
+                let id = ids[*vrf];
+                let status = statuses()[*status];
+                if let Ok(vrf) = table.get_vrf_mut(id) {
+                    vrf.set_status(status);
+                }
+                // the default vrf's status is fixed: it is what keeps the sweeps below from
+                // deleting it
+                if id != Vrf::DEFAULT_VRFID
+                    && let Some(entry) = model.get_mut(&id)
+                {
+                    entry.1 = status;
+                }
+            }
+            Change::RemoveDeleted => {
+                table.remove_deleted_vrfs(iftw);
+                model.retain(|_, (_, status)| *status != VrfStatus::Deleted);
+            }
+            Change::RemoveDeleting => {
+                table.remove_deleting_vrfs(iftw);
+                model.retain(|_, (_, status)| *status != VrfStatus::Deleting);
+            }
+        }
+    }
+
+    /// Check every view of the table against the one model, and against each other.
+    fn check(table: &VrfTable, model: &Model, at: &str) {
+        let ids = vrf_ids();
+        let all_vnis = vnis();
+
+        // 1. by_id holds exactly the vrfs the model says, each carrying what the model says
+        assert_eq!(table.len(), model.len(), "vrf count {at}");
+        for id in &ids {
+            let Ok(vrf) = table.get_vrf(*id) else {
+                assert!(!model.contains_key(id), "vrf {id} missing {at}");
+                continue;
+            };
+            let (vni, status) = model
+                .get(id)
+                .unwrap_or_else(|| panic!("vrf {id} unexpected {at}"));
+            assert_eq!(vrf.vrfid, *id, "vrf {id} filed under the wrong key {at}");
+            assert_eq!(vrf.vni, *vni, "vrf {id} vni {at}");
+            assert_eq!(vrf.status, *status, "vrf {id} status {at}");
+        }
+
+        // 2. by_vni is exactly the inverse of the vnis the vrfs carry -- no stale entry left by a
+        //    removal, and none missing after a vni was set
+        assert_eq!(
+            table.by_vni.len(),
+            model.values().filter(|(vni, _)| vni.is_some()).count(),
+            "vni index size {at}"
+        );
+        for vni in &all_vnis {
+            assert_eq!(
+                table.get_vrfid_by_vni(*vni).ok(),
+                owner_of(model, *vni),
+                "vni {vni} index {at}"
+            );
+            assert_eq!(
+                table.get_vrf_by_vni(*vni).map(|vrf| vrf.vrfid).ok(),
+                owner_of(model, *vni),
+                "vni {vni} lookup {at}"
+            );
+        }
+
+        // 3. the fib table holds a fib for every vrf, under its id and under its vni if it has
+        //    one, and every one of those keys reaches a live fib with the right identity
+        let fibs = table.fibtablew.enter().unwrap_or_else(|| unreachable!());
+        let expected_keys = model.len() + model.values().filter(|(v, _)| v.is_some()).count();
+        assert_eq!(fibs.len(), expected_keys, "fib table size {at}");
+        for id in &ids {
+            let key = FibKey::from_vrfid(*id);
+            let Some(fib) = fibs.get_fib(key) else {
+                assert!(!model.contains_key(id), "no fib for vrf {id} {at}");
+                continue;
+            };
+            assert!(fib.is_valid(), "fib for vrf {id} is dead {at}");
+            assert_eq!(
+                fib.get_id(),
+                Some(key),
+                "fib for vrf {id} is not its own {at}"
+            );
+        }
+        for vni in &all_vnis {
+            let Some(fib) = fibs.get_fib(FibKey::from_vni(*vni)) else {
+                assert!(owner_of(model, *vni).is_none(), "no fib for vni {vni} {at}");
+                continue;
+            };
+            let owner = owner_of(model, *vni)
+                .unwrap_or_else(|| panic!("fib aliased by vni {vni} with no owner {at}"));
+            assert!(fib.is_valid(), "fib aliased by vni {vni} is dead {at}");
+            assert_eq!(
+                fib.get_id(),
+                Some(FibKey::from_vrfid(owner)),
+                "vni {vni} reaches the wrong fib {at}"
+            );
+        }
+        drop(fibs);
+
+        // 4. the default vrf is always there and always active. `get_default_vrf` treats that as
+        //    given, with an `unreachable!()` rather than an error
+        assert!(table.contains(Vrf::DEFAULT_VRFID), "no default vrf {at}");
+        assert_eq!(
+            table.get_default_vrf().status,
+            VrfStatus::Active,
+            "default vrf not active {at}"
+        );
+
+        // 5. the table's own consistency check agrees. `check_vni` is the in-tree half of this
+        //    oracle; it should pass for a vrf with a vni and fail for one without
+        for id in &ids {
+            let Some((vni, _)) = model.get(id) else {
+                continue;
+            };
+            assert_eq!(
+                table.check_vni(*id).is_ok(),
+                vni.is_some(),
+                "check_vni disagrees for vrf {id} {at}"
+            );
+        }
+    }
+
+    /// The pools and the constants that index them agree.
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vrf_ids().len(), usize::from(NUM_VRFS));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(statuses().len(), usize::from(NUM_STATUSES));
+        assert_eq!(vrf_ids()[0], Vrf::DEFAULT_VRFID);
+    }
+
+    /// After any sequence of changes, every view of the vrf table still describes the same vrfs.
+    #[test]
+    fn a_vrf_tables_four_views_stay_in_step() {
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (fibtw, _fibtr) = FibTableWriter::new();
+                let (mut iftw, _iftr) = IfTableWriter::new();
+                let mut table = VrfTable::new(fibtw);
+                let mut model = fresh_model();
+
+                check(&table, &model, "on a fresh table");
+                for (step, change) in changes.iter().enumerate() {
+                    apply(&mut table, &mut iftw, &mut model, change);
+                    check(&table, &model, &format!("at step {step} of {changes:?}"));
+                }
+            });
+    }
+}
+
+/// Properties over resolution **across** vrfs.
+///
+/// `VrfTable::refresh_non_default_fibs` and `refresh_fibs_by_vni` hand the default vrf to every
+/// other vrf as its resolution vrf, which is how a next-hop in an overlay vrf reaches an interface
+/// the underlay knows about. Nothing exercised that path: both functions, `set_stale`,
+/// `remove_stale_routes` and `values_mut_except_default` were at zero coverage, and every generated
+/// next-hop graph so far has lived inside a single vrf.
+#[cfg(test)]
+mod crossvrf_properties {
+    use super::*;
+    use crate::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
+    use crate::rib::vrf::tests::{build_test_nhop, build_test_route, mk_addr};
+    use crate::rib::vrf::{Route, RouteNhop, RouteOrigin};
+    use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::Prefix;
+    use net::interface::InterfaceIndex;
+    use std::collections::BTreeMap;
+    use std::net::IpAddr;
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_VRFS: u8 = 2; // non-default vrfs
+    const NUM_VNIS: u8 = 2;
+    const NUM_UNDERLAY: u8 = 2;
+    const NUM_OVERLAY: u8 = 2;
+    const NUM_IFINDEXES: u8 = 3;
+    const NUM_VIAS: u8 = 3;
+    const MAX_ROUTES: u8 = 3;
+
+    /// Non-default vrf ids. The default vrf is 0 and `VrfTable::new` makes it.
+    fn vrf_ids() -> Vec<VrfId> {
+        (1..=u32::from(NUM_VRFS)).collect()
+    }
+
+    fn vnis() -> Vec<Vni> {
+        (1..=u32::from(NUM_VNIS))
+            .map(|i| Vni::new_checked(100 * i).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    /// Prefixes the default vrf carries routes for. Nested, so a longest match has to be chosen.
+    fn underlay() -> Vec<Prefix> {
+        ["7.0.0.0/8", "7.1.0.0/16"]
+            .iter()
+            .map(|p| Prefix::from_str(p).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    /// Prefixes the other vrfs carry routes for.
+    fn overlay() -> Vec<Prefix> {
+        ["10.0.0.0/8", "10.1.0.0/16"]
+            .iter()
+            .map(|p| Prefix::from_str(p).unwrap_or_else(|_| unreachable!()))
+            .collect()
+    }
+
+    fn ifindexes() -> Vec<u32> {
+        (1..=u32::from(NUM_IFINDEXES)).collect()
+    }
+
+    /// On-link addresses a directly connected underlay next-hop may carry, one per interface.
+    ///
+    /// Whether the resolving next-hop has an address of its own is what decides which address ends
+    /// up in the fib, and `rib2fib` is explicit that the deeper one wins: the next-hop being
+    /// resolved supplies the layer-2 target "unless a next-hop deeper in the resolution chain
+    /// provides one of its own". Generating both cases is what lets this property tell
+    /// `EgressObject::merge`'s rule -- first ifindex, last address -- from its inverse.
+    fn onlink_addrs() -> Vec<IpAddr> {
+        (1..=NUM_IFINDEXES)
+            .map(|i| mk_addr(&format!("7.200.0.{i}")))
+            .collect()
+    }
+
+    /// Addresses an overlay route may point via. `8.0.0.1` is covered by no underlay prefix, so it
+    /// reaches only the default vrf's root -- whose preset next-hop is a drop.
+    fn vias() -> Vec<IpAddr> {
+        ["7.0.0.1", "7.1.0.1", "8.0.0.1"]
+            .iter()
+            .map(|a| mk_addr(a))
+            .collect()
+    }
+
+    /// A generated arrangement of vrfs and routes.
+    #[derive(Debug, Clone)]
+    struct Topology {
+        /// Whether each non-default vrf carries a vni. Vrf `i` gets vni `i`, so two vrfs can never
+        /// ask for the same one -- `add_vrf` rightly refuses that, and it is the `VrfTable`
+        /// property's business rather than this one's.
+        vrfs: Vec<bool>,
+        /// Routes in the default vrf, as (underlay prefix index, ifindex index, on-link). Directly
+        /// connected: the next-hop carries an interface, and an address of its own when `on-link`.
+        underlay: Vec<(usize, usize, bool)>,
+        /// Routes in the other vrfs, as (vrf index, overlay prefix index, via index). Recursive:
+        /// the next-hop carries an address and no interface, so it has to be resolved.
+        overlay: Vec<(usize, usize, usize)>,
+        /// One more default-vrf route, applied after the first refresh, so that a later refresh has
+        /// something to notice.
+        later: Option<(usize, usize, bool)>,
+        /// Vnis to pass to `refresh_fibs_by_vni`.
+        selected: Vec<usize>,
+    }
+
+    /// Draws [`Topology`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Topologies;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    impl ValueGenerator for Topologies {
+        type Output = Topology;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Topology> {
+            let mut vrfs = Vec::with_capacity(usize::from(NUM_VRFS));
+            for _ in 0..NUM_VRFS {
+                vrfs.push(driver.produce::<bool>()?);
+            }
+
+            let count = driver.gen_u8(Included(&0), Included(&MAX_ROUTES))?;
+            let mut underlay = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                underlay.push((
+                    index(driver, NUM_UNDERLAY)?,
+                    index(driver, NUM_IFINDEXES)?,
+                    driver.produce::<bool>()?,
+                ));
+            }
+
+            let count = driver.gen_u8(Included(&0), Included(&MAX_ROUTES))?;
+            let mut overlay = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                overlay.push((
+                    index(driver, NUM_VRFS)?,
+                    index(driver, NUM_OVERLAY)?,
+                    index(driver, NUM_VIAS)?,
+                ));
+            }
+
+            let later = if driver.produce::<bool>()? {
+                Some((
+                    index(driver, NUM_UNDERLAY)?,
+                    index(driver, NUM_IFINDEXES)?,
+                    driver.produce::<bool>()?,
+                ))
+            } else {
+                None
+            };
+
+            let count = driver.gen_u8(Included(&0), Included(&NUM_VNIS))?;
+            let mut selected = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                selected.push(index(driver, NUM_VNIS)?);
+            }
+
+            Some(Topology {
+                vrfs,
+                underlay,
+                overlay,
+                later,
+                selected,
+            })
+        }
+    }
+
+    /// The default vrf's routes, as the model sees them: prefix index -> (ifindex index, on-link).
+    /// A later route for a prefix replaces an earlier one, as the trie does.
+    type Underlay = BTreeMap<usize, (usize, bool)>;
+
+    /// The other vrfs' routes: (vrf index, overlay prefix index) -> via index. A map for the same
+    /// reason: the generator may name one prefix twice, and only the last route survives.
+    type Overlay = BTreeMap<(usize, usize), usize>;
+
+    /// The interface the default vrf leads to for `via`, or `None` if `via` reaches only the root --
+    /// whose preset next-hop is a drop, so nothing is reachable through it.
+    ///
+    /// A longest-prefix match over the generated route list, asking no next-hop anything.
+    fn resolves_to(model: &Underlay, via: usize) -> Option<(u32, bool)> {
+        let address = vias()[via];
+        let prefixes = underlay();
+        model
+            .iter()
+            .filter(|(prefix, _)| prefixes[**prefix].covers_addr(&address))
+            .max_by_key(|(prefix, _)| prefixes[**prefix].length())
+            .map(|(_, (ifindex, onlink))| (ifindexes()[*ifindex], *onlink))
+    }
+
+    /// What the fib should hold for an overlay route pointing via `via`.
+    ///
+    /// One entry, and the shape of it is the whole point of resolving recursively: the interface
+    /// comes from the *resolver* in the default vrf, and the address stays that of the next-hop that
+    /// needed resolving. `EgressObject::merge` keeping the first ifindex and the last address is
+    /// what produces that, and `rib2fib` explains why it must -- otherwise the egress stage would
+    /// resolve the packet's own destination at layer 2, which is only right when it is on-link.
+    fn expected_entry(model: &Underlay, via: usize) -> FibEntry {
+        match resolves_to(model, via) {
+            // the interface comes from the resolver; the address is the resolver's own if it has
+            // one, and otherwise stays that of the next-hop that needed resolving
+            Some((ifindex, onlink)) => {
+                let index = usize::try_from(ifindex).unwrap_or_else(|_| unreachable!()) - 1;
+                let address = if onlink {
+                    onlink_addrs()[index]
+                } else {
+                    vias()[via]
+                };
+                FibEntry::with_inst(PktInstruction::Egress(EgressObject::new(
+                    InterfaceIndex::try_new(ifindex).ok(),
+                    Some(address),
+                    None,
+                )))
+            }
+            None => FibEntry::drop_fibentry(),
+        }
+    }
+
+    fn underlay_route(ifindex: usize, onlink: bool) -> (Route, Vec<RouteNhop>) {
+        let address = onlink.then(|| onlink_addrs()[ifindex].to_string());
+        (
+            build_test_route(RouteOrigin::Connected, 0, 0),
+            vec![build_test_nhop(
+                address.as_deref(),
+                Some(ifindexes()[ifindex]),
+                0,
+                None,
+            )],
+        )
+    }
+
+    fn overlay_route(via: usize) -> (Route, Vec<RouteNhop>) {
+        (
+            build_test_route(RouteOrigin::Bgp, 20, 100),
+            vec![build_test_nhop(
+                Some(&vias()[via].to_string()),
+                None,
+                0,
+                None,
+            )],
+        )
+    }
+
+    /// Build the table described by `topology`, without refreshing anything yet.
+    fn realize(topology: &Topology, rstore: &RmacStore) -> (VrfTable, Underlay, Overlay) {
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let mut table = VrfTable::new(fibtw);
+        let ids = vrf_ids();
+        let all_vnis = vnis();
+
+        for (vrf, has_vni) in topology.vrfs.iter().enumerate() {
+            let config = RouterVrfConfig::new(ids[vrf], &format!("vrf{vrf}"))
+                .set_vni(has_vni.then(|| all_vnis[vrf]));
+            table
+                .add_vrf(&config)
+                .unwrap_or_else(|e| unreachable!("{e}"));
+        }
+
+        let mut model = Underlay::new();
+        for (prefix, ifindex, onlink) in &topology.underlay {
+            let (route, nhops) = underlay_route(*ifindex, *onlink);
+            let vrf0 = table
+                .get_vrf_mut(Vrf::DEFAULT_VRFID)
+                .unwrap_or_else(|e| unreachable!("{e}"));
+            vrf0.add_route_complete(&underlay()[*prefix], route, &nhops, None, rstore);
+            model.insert(*prefix, (*ifindex, *onlink));
+        }
+
+        let mut overlay_model = Overlay::new();
+        for (vrf, prefix, via) in &topology.overlay {
+            let (route, nhops) = overlay_route(*via);
+            // deliberately inserted with no resolution vrf, so the route starts resolved against
+            // its own vrf -- where the address reaches nothing. Only the table-level refresh can
+            // put it right, which is what makes the refresh load-bearing here.
+            let target = table
+                .get_vrf_mut(ids[*vrf])
+                .unwrap_or_else(|e| unreachable!("{e}"));
+            target.add_route_complete(&overlay()[*prefix], route, &nhops, None, rstore);
+            overlay_model.insert((*vrf, *prefix), *via);
+        }
+
+        (table, model, overlay_model)
+    }
+
+    /// The fib entries a vrf offers for one overlay prefix, or `None` if it has no such route.
+    fn fib_entries(table: &VrfTable, vrfid: VrfId, prefix: Prefix) -> Option<Vec<FibEntry>> {
+        let vrf = table.get_vrf(vrfid).unwrap_or_else(|e| unreachable!("{e}"));
+        let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+        let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+        let Prefix::IPV4(wanted) = prefix else {
+            unreachable!()
+        };
+        fib.iter_v4().find(|(p, _)| *p == wanted).map(|(_, route)| {
+            route
+                .iter()
+                .flat_map(|group| group.entries().iter().cloned())
+                .collect()
+        })
+    }
+
+    /// Every entry in every fib of every vrf is one the forwarder can execute.
+    ///
+    /// This is the rib-to-fib contract: `FibEntry::is_valid` is the written-down half of it, and
+    /// `rib2fib` filters on it -- but the drop injected for an empty group bypasses that filter, and
+    /// nothing checked the whole table at once.
+    fn every_entry_is_executable(table: &VrfTable, at: &str) {
+        for vrf in table.values() {
+            let fibw = vrf.fibw.as_ref().unwrap_or_else(|| unreachable!());
+            let fib = fibw.enter().unwrap_or_else(|| unreachable!());
+            for (prefix, route) in fib.iter_v4() {
+                for group in route.iter() {
+                    assert!(!group.is_empty(), "empty group for {prefix} {at}");
+                    for entry in group.iter() {
+                        assert!(
+                            entry.is_valid(),
+                            "vrf {} offers unusable {entry:?} for {prefix} {at}",
+                            vrf.vrfid
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The pools and the constants that index them agree.
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(vrf_ids().len(), usize::from(NUM_VRFS));
+        assert_eq!(vnis().len(), usize::from(NUM_VNIS));
+        assert_eq!(underlay().len(), usize::from(NUM_UNDERLAY));
+        assert_eq!(overlay().len(), usize::from(NUM_OVERLAY));
+        assert_eq!(ifindexes().len(), usize::from(NUM_IFINDEXES));
+        assert_eq!(vias().len(), usize::from(NUM_VIAS));
+        // vrf `i` takes vni `i`, so there must be at least as many vnis as vrfs
+        const { assert!(NUM_VNIS >= NUM_VRFS) };
+        // the last via must be reachable through no underlay prefix, so that the unresolvable case
+        // is generated
+        assert_eq!(onlink_addrs().len(), usize::from(NUM_IFINDEXES));
+        let all: Underlay = (0..usize::from(NUM_UNDERLAY))
+            .map(|p| (p, (0, false)))
+            .collect();
+        assert!(resolves_to(&all, usize::from(NUM_VIAS) - 1).is_none());
+    }
+
+    /// A refresh resolves every other vrf's next-hops through the default vrf.
+    ///
+    /// The interface has to come from the default vrf's route, and the address has to stay that of
+    /// the next-hop being resolved.
+    #[test]
+    fn a_refresh_resolves_other_vrfs_through_the_default_one() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Topologies)
+            .cloned()
+            .for_each(|topology: Topology| {
+                let (mut table, model, routes) = realize(&topology, &rstore);
+                table.refresh_non_default_fibs(&rstore);
+                every_entry_is_executable(&table, "after a refresh");
+
+                let ids = vrf_ids();
+                for ((vrf, prefix), via) in &routes {
+                    let got = fib_entries(&table, ids[*vrf], overlay()[*prefix])
+                        .unwrap_or_else(|| panic!("no fib route for {prefix} in vrf {vrf}"));
+                    assert_eq!(
+                        got,
+                        vec![expected_entry(&model, *via)],
+                        "vrf {vrf} prefix {prefix} via {via}, for {topology:?}"
+                    );
+                }
+            });
+    }
+
+    /// `refresh_fibs_by_vni` refreshes the vrfs whose vni is named, and leaves the rest alone.
+    #[test]
+    fn refreshing_by_vni_touches_only_those_vnis() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Topologies)
+            .cloned()
+            .for_each(|topology: Topology| {
+                let Some(later) = topology.later else { return };
+                let (mut table, mut model, routes) = realize(&topology, &rstore);
+                table.refresh_non_default_fibs(&rstore);
+
+                let ids = vrf_ids();
+                let all_vnis = vnis();
+
+                // what each overlay route offers before anything changes
+                let before: BTreeMap<(usize, usize), Option<Vec<FibEntry>>> = routes
+                    .keys()
+                    .map(|(vrf, prefix)| {
+                        (
+                            (*vrf, *prefix),
+                            fib_entries(&table, ids[*vrf], overlay()[*prefix]),
+                        )
+                    })
+                    .collect();
+
+                // change the underlay, then refresh only the named vnis
+                let (prefix, ifindex, onlink) = later;
+                let (route, nhops) = underlay_route(ifindex, onlink);
+                let vrf0 = table
+                    .get_vrf_mut(Vrf::DEFAULT_VRFID)
+                    .unwrap_or_else(|e| unreachable!("{e}"));
+                vrf0.add_route_complete(&underlay()[prefix], route, &nhops, None, &rstore);
+                model.insert(prefix, (ifindex, onlink));
+
+                let selected: Vec<Vni> = topology.selected.iter().map(|i| all_vnis[*i]).collect();
+                table.refresh_fibs_by_vni(&selected, &rstore);
+                every_entry_is_executable(&table, "after refreshing by vni");
+
+                for ((vrf, prefix), via) in &routes {
+                    let got = fib_entries(&table, ids[*vrf], overlay()[*prefix]);
+                    let vni = table
+                        .get_vrf(ids[*vrf])
+                        .unwrap_or_else(|e| unreachable!("{e}"))
+                        .vni;
+                    if vni.is_some_and(|vni| selected.contains(&vni)) {
+                        assert_eq!(
+                            got,
+                            Some(vec![expected_entry(&model, *via)]),
+                            "refreshed vrf {vrf} prefix {prefix}, for {topology:?}"
+                        );
+                    } else {
+                        assert_eq!(
+                            got,
+                            before[&(*vrf, *prefix)],
+                            "untouched vrf {vrf} prefix {prefix}, for {topology:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    /// Marking everything stale and sweeping leaves every vrf with only its preset drop routes.
+    ///
+    /// The default vrf is swept separately from the rest, since it is the resolution vrf for them.
+    #[test]
+    fn a_stale_sweep_empties_every_vrf() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Topologies)
+            .cloned()
+            .for_each(|topology: Topology| {
+                let (mut table, _model, _routes) = realize(&topology, &rstore);
+                table.refresh_non_default_fibs(&rstore);
+
+                table.set_stale(true);
+                table.remove_stale_routes(&rstore);
+
+                for vrf in table.values() {
+                    assert_eq!(vrf.len_v4(), 1, "vrf {} kept ipv4 routes", vrf.vrfid);
+                    assert_eq!(vrf.len_v6(), 1, "vrf {} kept ipv6 routes", vrf.vrfid);
+                    for prefix in [Prefix::root_v4(), Prefix::root_v6()] {
+                        let route = vrf
+                            .get_route(prefix)
+                            .unwrap_or_else(|| panic!("vrf {} lost {prefix}", vrf.vrfid));
+                        assert!(
+                            route.is_preset_drop_route(),
+                            "vrf {} left {prefix} as something other than the preset drop route",
+                            vrf.vrfid
+                        );
+                    }
+                }
+                every_entry_is_executable(&table, "after a stale sweep");
+            });
     }
 }
