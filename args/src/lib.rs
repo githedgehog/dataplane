@@ -1423,8 +1423,13 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     metrics_address: SocketAddr,
 
     /// Pyroscope server address for profiling uploads
+    ///
+    /// Also settable by environment. Where the dataplane is launched by a controller that owns
+    /// argv -- which is how it runs in a fabric -- a flag with no environment fallback is a flag
+    /// nobody can set, so profiling could not be turned on at all.
     #[arg(
         long,
+        env = "DATAPLANE_PYROSCOPE_URL",
         value_name = "URL of pyroscope server",
         help = "URL of Pyroscope server (e.g. http://127.0.0.1:4040)"
     )]
