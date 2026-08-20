@@ -73,6 +73,31 @@ Test scaffolding compiled into a library -- `net/src/buffer/test_buffer.rs` is t
 with thirty survivors -- belongs here too. Files behind a module-level `#![cfg(test)]` are skipped
 automatically and need no exclusion.
 
+## `StructField` mutants ignore every filter
+
+Measured, and it silently voids part of the configuration above.
+
+`cargo mutants` does not apply `--re`, `--exclude-re`, or `.cargo/mutants.toml` to mutants of
+the `StructField` genre -- the `delete field X from struct Y expression` ones. A pattern that
+matches nothing still returns them:
+
+```console
+$ cargo mutants --list -p dataplane-net --re 'zzz_no_such_mutant_zzz'
+net/src/flows/flow_info.rs:478:13: delete field status from struct Self expression in ...
+net/src/headers/embedded.rs:1677:21: delete field net from struct EmbeddedHeaders expression in contract::...
+... 13 in total
+```
+
+Two consequences:
+
+- **The `contract::` exclusion is not doing what this document says it does.** Four of those
+  thirteen are in a `contract` module and are excluded by name in `.cargo/mutants.toml`. They are
+  generated and run regardless. The exclusion works for every other genre, which is why it looked
+  effective.
+- **A filtered run is not scoped the way it appears to be.** Anything reading `missed.txt` and
+  assuming it holds only what was asked for will over-report. `scripts/spec-interlock.ts` filters
+  the result set itself for this reason rather than trusting the flags.
+
 ## Cost
 
 Measured on `dataplane-net`: 2,271 mutants, about 4.5s to build and 7.6s to test each, four at a
