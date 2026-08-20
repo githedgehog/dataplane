@@ -163,6 +163,7 @@ let
       cargo-nextest
       commitlint-rs
       direnv
+      duvet
       gateway-crd
       gettext
       jq

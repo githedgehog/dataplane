@@ -13,6 +13,7 @@ use crate::masquerade::flows::check_masquerading_flow;
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::masquerade::protocol::next_flow_status;
 use crate::masquerade::state::MasqueradeState;
+use clock::Duration;
 use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
@@ -26,7 +27,6 @@ use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
 use std::fmt::Debug;
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -83,6 +83,28 @@ impl Masquerade {
     };
 
     // Internal flow timeouts for masquerading
+    //
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //= type=todo
+    //# REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    //# connection are active, it MAY abandon the session if it has been
+    //# idle for some time.  In such cases, the value of the "established
+    //# connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    //# The value of the "transitory connection idle-timeout" MUST NOT be
+    //# less than 4 minutes.
+    //
+    // We are far under both floors and this has not been ruled on. The three constants below are
+    // transitory timeouts in RFC 5382's sense -- the connection is opening or closing -- and they
+    // are seconds against a four-minute floor. The established timeout is `idle_timeout` from the
+    // masquerade configuration, which has no default, no bound and no validation, so a deployment
+    // can set it anywhere including well under two hours four minutes.
+    //
+    // The short values are deliberate in intent: this file's own comment says the statuses exist
+    // "to know how much to extend the lifetime of flows for port conservation", and a gateway
+    // holding a public port for two hours per idle connection conserves nothing. Whether that
+    // trade is one we are willing to state as a deviation from a BCP is a product decision, not a
+    // code one -- hence `todo` rather than `exception`. Converting it needs a rationale somebody
+    // is willing to sign.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
@@ -180,14 +202,24 @@ impl Masquerade {
             }
         };
 
-        // extend the duration of the flow according to the new status
+        // Extend the duration of the flow according to the new status -- and of its partner.
+        //
+        // Both halves, on every refresh, not just on the transition into Established. A pair is one
+        // connection: a packet in either direction is evidence that the whole thing is alive, and
+        // conntrack has always treated it that way.
+        //
+        // Refreshing only the half a packet happened to hit made the other half expire under a live
+        // connection whenever traffic ran mostly one way -- a download, a DNS response, any session
+        // that mostly receives. The forward half is the one that owns the `Allocation`, so its
+        // expiry released the address and port while the reverse half went on translating to them.
+        // The allocator would then hand that same tuple to another tenant, whose replies arrive at
+        // the first tenant's still-live reverse entry.
+        //
+        // `reset_expiry_unchecked` refuses to move a deadline earlier, so extending the partner can
+        // only ever lengthen its life.
         if let Some(extend_by) = extend_by {
             let _ = flow_info.reset_expiry_unchecked(extend_by);
-            // if we transition to established, let the related flow get the configured timeout too
-            if current != new_status
-                && new_status == NatFlowStatus::Established
-                && let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade)
-            {
+            if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
                 let _ = related.reset_expiry_unchecked(extend_by);
             }
         }
@@ -289,7 +321,7 @@ impl Masquerade {
             MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout);
 
         // build a flow pair from the keys (without NAT state)
-        let expires_at = Instant::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
+        let expires_at = clock::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
         let (forward, reverse) = FlowInfo::related_pair(
             expires_at,
             *initial_flow_key,

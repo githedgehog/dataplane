@@ -22,6 +22,7 @@ arrayvec = { workspace = true, features = ["serde", "std"] }
 bitflags = { workspace = true }
 bolero = { workspace = true, features = ["std"], optional = true }
 bytecheck = { workspace = true }
+clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 derive_builder = { workspace = true, features = ["alloc"] }
@@ -41,5 +42,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+clock = { workspace = true, features = ["virtual"] }
 ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }

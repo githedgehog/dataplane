@@ -70,7 +70,7 @@ impl RateLimitFilter {
             buckets: Box::new(std::array::from_fn(|_| AtomicU64::new(initial))),
             capacity_milli,
             refill_milli_per_ms: u64::from(config.replenish_per_second),
-            baseline: Instant::now(),
+            baseline: clock::now(),
         }
     }
 

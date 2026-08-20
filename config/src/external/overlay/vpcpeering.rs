@@ -1125,6 +1125,111 @@ pub mod contract {
         }
     }
 
+    /// Several port-forwarding exposes for one manifest, which a manifest will accept together.
+    ///
+    /// The third of these, and for the same two reasons as [`StaticNatExposes`] and
+    /// [`MasqueradeExposes`]: [`PortForwardingExpose`] draws its prefixes from anywhere inside
+    /// `10.0.0.0/8` and `172.16.0.0/12`, so two of them can overlap, and independent draws mix
+    /// address families, which a peering refuses.
+    ///
+    /// Port forwarding has a third constraint the others do not. A rule is keyed by
+    /// `(source vpc, protocol)`, so two exposes naming the same protocol produce two rules with the
+    /// same key and the second replaces the first in the table -- a legal configuration that
+    /// silently halves what a property is testing. `L4Protocol::Any` expands to both TCP and UDP,
+    /// so it collides with everything. One protocol per expose, assigned by position.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PortForwardingExposes(pub u8);
+
+    impl Default for PortForwardingExposes {
+        fn default() -> Self {
+            Self(2)
+        }
+    }
+
+    /// The most exposes [`PortForwardingExposes`] can draw, one per distinct protocol key.
+    pub const MAX_PORT_FORWARDING_EXPOSES: u8 = 2;
+
+    impl ValueGenerator for PortForwardingExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(
+                Included(&1),
+                Included(&self.0.clamp(1, MAX_PORT_FORWARDING_EXPOSES)),
+            )?;
+            (0..count)
+                .map(|slot| {
+                    let proto = if slot == 0 {
+                        L4Protocol::Tcp
+                    } else {
+                        L4Protocol::Udp
+                    };
+                    port_forwarding_expose(driver, v4, slot, proto)
+                })
+                .collect()
+        }
+    }
+
+    /// One port-forwarding expose of the given family and protocol, in its own block.
+    fn port_forwarding_expose<D: Driver>(
+        driver: &mut D,
+        v4: bool,
+        block: u8,
+        proto: L4Protocol,
+    ) -> Option<VpcExpose> {
+        let host_bits = driver.gen_u8(Included(&0), Included(&MAX_HOST_BITS))?;
+        let (internal, external) = if v4 {
+            v4_pair_in_block(driver, host_bits, block)?
+        } else {
+            v6_pair_in_block(driver, host_bits, block)?
+        };
+
+        let count = driver.gen_u16(Included(&1), Included(&MAX_PORTS))?;
+        let internal_ports = port_range(driver, count)?;
+        let external_ports = port_range(driver, count)?;
+        let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+            0 => None,
+            1 => Some(Duration::from_secs(5)),
+            _ => Some(Duration::from_mins(5)),
+        };
+
+        VpcExpose::empty()
+            .make_port_forwarding(idle_timeout, Some(proto))
+            .ok()?
+            .ip(PrefixWithOptionalPorts::new(internal, Some(internal_ports)))
+            .as_range(PrefixWithOptionalPorts::new(external, Some(external_ports)))
+            .ok()
+    }
+
+    // As `v4_pair`, but confined to a /16 of its own so two exposes cannot overlap.
+    fn v4_pair_in_block<D: Driver>(
+        driver: &mut D,
+        host_bits: u8,
+        block: u8,
+    ) -> Option<(Prefix, Prefix)> {
+        let len = 32 - host_bits;
+        let mask = u32::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let slot = u32::from(block) << 16;
+        let internal = (0x0A00_0000 | slot | (driver.produce::<u32>()? & 0x0000_FFFF)) & mask;
+        let external = (0xAC10_0000 | slot | (driver.produce::<u32>()? & 0x0000_FFFF)) & mask;
+        Some((prefix_v4(internal, len)?, prefix_v4(external, len)?))
+    }
+
+    // As `v6_pair`, likewise blocked.
+    fn v6_pair_in_block<D: Driver>(
+        driver: &mut D,
+        host_bits: u8,
+        block: u8,
+    ) -> Option<(Prefix, Prefix)> {
+        let len = 128 - host_bits;
+        let mask = u128::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let slot = u128::from(block) << 64;
+        let internal = (INTERNAL_BASE | slot | u128::from(driver.produce::<u32>()?)) & mask;
+        let external = (EXTERNAL_BASE | slot | u128::from(driver.produce::<u32>()?)) & mask;
+        Some((prefix_v6(internal, len)?, prefix_v6(external, len)?))
+    }
+
     /// Generates [`VpcExpose`]s that masquerade and that [`VpcExpose::validate`] accepts.
     ///
     /// Looser than [`PortForwardingExpose`], because masquerade is: several prefixes are allowed on
@@ -1136,37 +1241,73 @@ pub mod contract {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct MasqueradeExpose;
 
+    /// Several masquerade exposes for one manifest, which a manifest will accept together.
+    ///
+    /// The same two problems [`StaticNatExposes`] solves, for the same reasons. [`MasqueradeExpose`]
+    /// draws its base index freely, so two of them collide whenever their index ranges intersect --
+    /// which is often, since each covers up to three consecutive indices. Here each expose gets a
+    /// slot of [`MASQUERADE_SLOT`] indices, wider than the widest one can occupy, and the address
+    /// family is drawn once and shared.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MasqueradeExposes(pub u8);
+
+    impl Default for MasqueradeExposes {
+        fn default() -> Self {
+            Self(3)
+        }
+    }
+
+    /// Indices reserved per expose. [`MasqueradeExpose`] uses at most three consecutive ones.
+    const MASQUERADE_SLOT: u8 = 4;
+
+    impl ValueGenerator for MasqueradeExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            (0..count)
+                .map(|slot| masquerade_expose(driver, v4, slot.wrapping_mul(MASQUERADE_SLOT)))
+                .collect()
+        }
+    }
+
     impl ValueGenerator for MasqueradeExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = driver.produce::<bool>()?;
-            let privates = driver.gen_u8(Included(&1), Included(&3))?;
-            let publics = driver.gen_u8(Included(&1), Included(&2))?;
             let base = driver.produce::<u8>()?;
-            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
-                0 => None,
-                1 => Some(Duration::from_secs(30)),
-                _ => Some(Duration::from_mins(2)),
-            };
-
-            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
-            for index in 0..privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(
-                    block(v4, Side::Private, base.wrapping_add(index))?,
-                    None,
-                ));
-            }
-            for index in 0..publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(
-                        block(v4, Side::Public, base.wrapping_add(index))?,
-                        None,
-                    ))
-                    .ok()?;
-            }
-            Some(expose)
+            masquerade_expose(driver, v4, base)
         }
+    }
+
+    /// One masquerade expose of the given family, from the given base index.
+    fn masquerade_expose<D: Driver>(driver: &mut D, v4: bool, base: u8) -> Option<VpcExpose> {
+        let privates = driver.gen_u8(Included(&1), Included(&3))?;
+        let publics = driver.gen_u8(Included(&1), Included(&2))?;
+        let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+            0 => None,
+            1 => Some(Duration::from_secs(30)),
+            _ => Some(Duration::from_mins(2)),
+        };
+
+        let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+        for index in 0..privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(
+                block(v4, Side::Private, base.wrapping_add(index))?,
+                None,
+            ));
+        }
+        for index in 0..publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Public, base.wrapping_add(index))?,
+                    None,
+                ))
+                .ok()?;
+        }
+        Some(expose)
     }
 
     #[derive(Clone, Copy)]
@@ -1207,36 +1348,152 @@ pub mod contract {
     /// sampling. Parts are placed largest first from an aligned base, which keeps every prefix
     /// aligned to its own size and keeps them from overlapping.
     ///
-    /// No port ranges yet: static NAT permits them, and they take the mapping down a second path
-    /// (`PortAddrTranslationValue` rather than `AddrTranslationValue`) that carries its own
-    /// unfinished work. That path wants a generator of its own.
+    /// Addresses only. For the port-range form, which takes the mapping down a different path, see
+    /// [`StaticNatExposes::with_ports`].
     #[derive(Debug, Clone, Copy, Default)]
     pub struct StaticNatExpose;
 
+    /// Several static NAT exposes for one manifest, which a manifest will accept together.
+    ///
+    /// [`StaticNatExpose`] draws one expose, and one expose builds a table with one rule in it.
+    /// Several are what give a longest-prefix match anything to choose between, so anything testing
+    /// a lookup wants this rather than a repeated draw of the single-expose generator.
+    ///
+    /// Two independent draws are refused by a manifest almost every time, for two reasons that both
+    /// have to be handled here rather than by the caller:
+    ///
+    /// * **Overlap.** Every expose is laid out from the same two bases, so two of them cover the
+    ///   same addresses. Each is placed in a block of its own instead, [`BLOCK_STRIDE`] apart, which
+    ///   is wider than the widest span one expose can occupy.
+    /// * **Address family.** A peering's manifests must agree on one family, so a v4 expose beside a
+    ///   v6 one is refused. The family is drawn once here and shared.
+    ///
+    /// # Ports
+    ///
+    /// Static NAT permits a port range on each prefix, and that takes the mapping down a second
+    /// path: `NatTableValue::Pat` and `PortAddrTranslationValue` rather than
+    /// `NatTableValue::Nat` and `AddrTranslationValue`. The rule validation applies is that the two
+    /// sides cover the same **total**, counting addresses times ports -- so a `/32` carrying 64
+    /// ports is a legal answer to a `/30` carrying 16, and the mapping has to run across both
+    /// dimensions at once.
+    ///
+    /// That asymmetry is the whole reason the path exists, so [`StaticNatExposes::with_ports`]
+    /// draws it deliberately: one total per expose, split into addresses and ports **independently
+    /// per side**. Note that this is legal for static NAT and *illegal* for port forwarding, which
+    /// requires the two lengths and the two port counts to match individually.
+    #[derive(Debug, Clone, Copy)]
+    pub struct StaticNatExposes {
+        /// The most exposes to draw. The generator draws between one and this.
+        pub max: u8,
+        /// Whether each prefix carries a port range.
+        pub ports: bool,
+    }
+
+    impl Default for StaticNatExposes {
+        fn default() -> Self {
+            Self::addresses_only(3)
+        }
+    }
+
+    impl StaticNatExposes {
+        /// Exposes whose prefixes carry no port range, mapping address to address.
+        #[must_use]
+        pub fn addresses_only(max: u8) -> Self {
+            Self { max, ports: false }
+        }
+
+        /// Exposes whose prefixes carry port ranges, mapping address and port together.
+        #[must_use]
+        pub fn with_ports(max: u8) -> Self {
+            Self { max, ports: true }
+        }
+    }
+
     /// The largest total either side covers, as a power of two. Small enough to enumerate.
     const MAX_TOTAL_LOG: u8 = 6;
+
+    /// The distance between two blocks.
+    ///
+    /// A side lays out at most `2^MAX_TOTAL_LOG` addresses, each part followed by a gap of its own
+    /// size, so it spans at most twice that. Double it again for room to grow.
+    const BLOCK_STRIDE: u128 = 4 << MAX_TOTAL_LOG;
 
     impl ValueGenerator for StaticNatExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = driver.produce::<bool>()?;
-            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
-
-            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
-            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
-
-            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
-            for prefix in privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
-            }
-            for prefix in publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
-                    .ok()?;
-            }
-            Some(expose)
+            static_nat_expose(driver, v4, 0)
         }
+    }
+
+    impl ValueGenerator for StaticNatExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.max.max(1)))?;
+            (0..count)
+                .map(|block| {
+                    if self.ports {
+                        static_nat_pat_expose(driver, v4, block)
+                    } else {
+                        static_nat_expose(driver, v4, block)
+                    }
+                })
+                .collect()
+        }
+    }
+
+    /// One static NAT expose of the given family, laid out in the given block.
+    fn static_nat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let privates = place(v4, Side::Private, block, &split(driver, total_log)?)?;
+        let publics = place(v4, Side::Public, block, &split(driver, total_log)?)?;
+
+        let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+        for prefix in privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+        }
+        for prefix in publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                .ok()?;
+        }
+        Some(expose)
+    }
+
+    /// One static NAT expose whose two sides carry port ranges.
+    ///
+    /// One prefix per side rather than a split, because the interesting asymmetry here is between
+    /// the two *dimensions* -- how a total is divided between addresses and ports -- and adding a
+    /// prefix split on top only makes the case harder to read for no new coverage.
+    ///
+    /// Each side draws its own division of the same total, so a `/32` carrying 64 ports opposite a
+    /// `/30` carrying 16 is a shape this produces on purpose. Both sides' port ranges start at a
+    /// drawn offset, so a mapping that quietly assumes the two ranges begin at the same port fails
+    /// here rather than in the field.
+    fn static_nat_pat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let mut side = |which| -> Option<PrefixWithOptionalPorts> {
+            let port_log = driver.gen_u8(Included(&0), Included(&total_log))?;
+            let addr_log = total_log - port_log;
+            let prefix = *place(v4, which, block, &[addr_log])?.first()?;
+            let ports = port_range(driver, 1u16 << port_log)?;
+            Some(PrefixWithOptionalPorts::new(prefix, Some(ports)))
+        };
+
+        let private = side(Side::Private)?;
+        let public = side(Side::Public)?;
+
+        VpcExpose::empty()
+            .make_static_nat()
+            .ok()?
+            .ip(private)
+            .as_range(public)
+            .ok()
     }
 
     // Split 2^total_log into powers of two, largest first. Halving a part keeps the total the
@@ -1271,19 +1528,21 @@ pub mod contract {
     // Each part is followed by a gap of its own size. Placed end to end they would be aligned
     // siblings, and validation normalizes those back into one prefix -- so the shape the generator
     // worked out to differ between the sides would be collapsed away before anything saw it.
-    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
-        let mut cursor = if v4 {
-            u128::from(match side {
-                Side::Private => 0x0A00_0000u32,
-                Side::Public => 0xAC10_0000,
-            })
-        } else {
-            let selector = match side {
-                Side::Private => 0u128,
-                Side::Public => 1,
+    fn place(v4: bool, side: Side, block: u8, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let offset = u128::from(block) * BLOCK_STRIDE;
+        let mut cursor = offset
+            + if v4 {
+                u128::from(match side {
+                    Side::Private => 0x0A00_0000u32,
+                    Side::Public => 0xAC10_0000,
+                })
+            } else {
+                let selector = match side {
+                    Side::Private => 0u128,
+                    Side::Public => 1,
+                };
+                (0x2001_0db8u128 << 96) | (selector << 80)
             };
-            (0x2001_0db8u128 << 96) | (selector << 80)
-        };
 
         let mut out = Vec::with_capacity(parts.len());
         for &log in parts {

@@ -240,7 +240,7 @@ mod nf_test {
         // strict lower bound (`expires_at >= before + timeout`) that is
         // independent of how long the rest of the test takes -- otherwise
         // slow test execution (e.g. under miri) eats into the tolerance.
-        let before_reply = std::time::Instant::now();
+        let before_reply = clock::now();
         let output = process_packet(&mut pipeline, reply);
         assert_eq!(output.ip_source().unwrap().to_string(), "70.71.72.73");
         assert_eq!(output.ip_destination().unwrap().to_string(), "10.0.0.1");
@@ -255,7 +255,7 @@ mod nf_test {
 
         // process original packet again. It should be fast-natted
         let repeated = udp_packet_to_port_forward();
-        let before_repeated = std::time::Instant::now();
+        let before_repeated = clock::now();
         let output = process_packet(&mut pipeline, repeated);
         assert_eq!(output.ip_source().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.ip_destination().unwrap().to_string(), "192.168.1.2");

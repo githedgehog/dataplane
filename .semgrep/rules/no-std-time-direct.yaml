@@ -1,0 +1,40 @@
+# Source-level enforcement of the `clock` facade.
+#
+# The workspace reads the monotonic clock through `clock::now()` so that a test
+# can pause and advance it. A direct `Instant::now()` compiles and passes review
+# and then, under a paused clock, produces a deadline the timers do not share --
+# which surfaces as a timeout test behaving strangely rather than as an error.
+# Same shape as no-std-sync-direct.yaml: clippy sees the facade's re-exports by
+# canonical path, so this catches the call sites instead.
+rules:
+  - id: rust-no-direct-clock-read
+    languages: [rust]
+    severity: ERROR
+    message: |
+      Read the clock via `clock::now()` (or `clock::system_now()` for wall
+      time), not `Instant::now()` / `SystemTime::now()`. The workspace's
+      `clock` facade reads `std` in production and tokio's pausable clock
+      under the `virtual` feature; reading `std` directly pins the deadline
+      to the wall clock while the timer waiting on it follows tokio's, so a
+      test that advances time sees the two diverge.
+
+      `Duration` needs no facade -- it is a plain value with no clock in it,
+      and `clock` re-exports it only for convenience.
+    paths:
+      exclude:
+        # CodeQL test fixtures deliberately contain the violations this rule
+        # detects, including evasions this rule misses. See .codeql/README.md.
+        - .codeql/tests/
+        # The facade itself, which is the one place allowed to read a clock.
+        - clock/src/
+        # Real OS threads on a real clock, deliberately: these test the
+        # quiescent protocol's interaction with the scheduler, not a timeout.
+        - concurrency/tests/
+    pattern-either:
+      - pattern: Instant::now()
+      - pattern: std::time::Instant::now()
+      - pattern: SystemTime::now()
+      - pattern: std::time::SystemTime::now()
+      # tokio's clock is what the facade routes to; reaching for it directly
+      # scatters the routing decision across the workspace again.
+      - pattern: tokio::time::Instant::now()

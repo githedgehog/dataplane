@@ -14,6 +14,7 @@ use crate::test_utils::{
     vpcd,
 };
 use crate::{FlowFilter, LookupResult, NatRequirement};
+use clock::Duration;
 use concurrency::sync::Arc;
 use lpm::prefix::L4Protocol;
 use net::FlowKey;
@@ -23,7 +24,6 @@ use net::headers::Headers;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::parse::DeParse;
 use pipeline::{NetworkFunction, PipelineData};
-use std::time::{Duration, Instant};
 
 // -------------------------------------------------------------------------------------------------
 // Helpers
@@ -53,7 +53,7 @@ fn attach_flow(
 ) -> Arc<FlowInfo> {
     let flow_key = FlowKey::try_from(&*packet).unwrap();
 
-    let expires_at = Instant::now() + Duration::from_secs(60);
+    let expires_at = clock::now() + Duration::from_secs(60);
     let (flow_info, _) = FlowInfo::related_pair(
         expires_at,
         flow_key,

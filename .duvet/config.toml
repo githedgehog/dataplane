@@ -1,0 +1,36 @@
+# duvet: specification compliance coverage.
+#
+# `duvet report` matches citations in the source -- `//= <url>` followed by the requirement text --
+# against the requirements duvet extracts from the specification, so a requirement with nothing
+# implementing it, or an implementation with nothing testing it, is visible.
+#
+# Everything under .duvet/ is committed except `reports/`. That is not incidental: `duvet report`
+# reads the specification from `.duvet/specifications/` and only reaches the network when it is
+# missing, so vendoring the text is what lets the report run in a nix build sandbox at all. It also
+# means an errata, a reformat, or a fetch that quietly returns something else arrives as a
+# reviewable diff rather than as a change in results nobody can explain.
+'$schema' = "https://awslabs.github.io/duvet/config/v0.4.0.json"
+
+# Every crate in the workspace. The generated default is `src/**/*.rs`, which matches nothing here.
+[[source]]
+pattern = "*/src/**/*.rs"
+
+# RFC 4884 is the first specification tracked, because the code already cites it: the
+# "original datagram" length checks in net/src/headers/embedded.rs were found to contradict it.
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4884"
+
+# RFC 5382 states 22 numbered requirements for how a NAT must treat TCP. It constrains values this
+# codebase already has and chose without reference to it -- notably the idle timeouts in
+# nat/src/masquerade/nf.rs. Tracked second for that reason.
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc5382"
+
+[report.html]
+enabled = true
+
+# The snapshot is the regression gate. It is line-oriented and diffs cleanly, and its unit is a
+# sentence somebody else wrote -- which, unlike a mutant's file:line, does not move when a function
+# is reformatted.
+[report.snapshot]
+enabled = true
