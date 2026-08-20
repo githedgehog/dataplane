@@ -762,6 +762,57 @@ coverage *args:
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
 
+# Report specification compliance. See development/code/spec-compliance.md
+[script]
+duvet *args:
+    {{ _just_debuggable_ }}
+    duvet report {{ args }}
+
+# Fail if the compliance snapshot is out of date
+[script]
+duvet-check:
+    {{ _just_debuggable_ }}
+    # `duvet report` takes milliseconds and is bit-for-bit deterministic, so unlike mutation
+    # testing this can be a gate, and it is the cheapest correctness check in the repo. It is
+    # one because the snapshot had already drifted two commits after being introduced: a
+    # regenerate-by-hand rule is one nobody runs.
+    #
+    # The inputs are checked first because their absence is the one way this gate passes while
+    # measuring nothing: `duvet report` succeeds over zero specifications, and `git diff` over a
+    # file that does not exist is empty, so a tree with no `.duvet` reports compliance rather than
+    # the truth. A gate that cannot tell "nothing has drifted" from "there is nothing here" is
+    # worse than no gate, because it is believed.
+    for input in .duvet/config.toml .duvet/snapshot.txt; do
+      if [ ! -f "${input}" ]; then
+        echo "error: ${input} is missing; this check has nothing to compare and cannot pass" >&2
+        exit 1
+      fi
+    done
+    duvet report
+    if ! git diff --quiet -- .duvet/snapshot.txt; then
+      echo "error: .duvet/snapshot.txt is stale; run \`just duvet\` and commit the result" >&2
+      git --no-pager diff -- .duvet/snapshot.txt >&2
+      exit 1
+    fi
+
+# Mutation-test a crate or a diff. See development/code/mutation-testing.md
+[script]
+mutants *args:
+    {{ _just_debuggable_ }}
+    # Deliberately not a gate, and deliberately not the whole workspace by default: a full
+    # sweep is hours, and the product is the list of survivors rather than the score. Scope
+    # it, as in `just mutants -p dataplane-nat` or `just mutants --in-diff <(git diff main)`.
+    cargo mutants --test-tool nextest {{ args }}
+
+# Check that each `type=test` citation tests its `type=implementation` citation
+[script]
+spec-interlock *args:
+    {{ _just_debuggable_ }}
+    # The cross-check duvet cannot do alone: mutate only the cited implementation region, run
+    # only the cited tests, and report a citation whose test notices nothing as decorative.
+    # See development/code/spec-compliance.md.
+    ./scripts/spec-interlock.ts {{ args }}
+
 # Use Nix-built archives so local and CI coverage report the same binaries.
 [script]
 coverage-archive package="tests.all" *args:
