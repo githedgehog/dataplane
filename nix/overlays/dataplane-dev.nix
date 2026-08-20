@@ -66,6 +66,9 @@ in
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
+  cargo-expand = prev.cargo-expand.override { inherit (override-packages) rustPlatform; };
+  cargo-show-asm = prev.cargo-show-asm.override { inherit (override-packages) rustPlatform; };
+  cargo-mutants = prev.cargo-mutants.override { inherit (override-packages) rustPlatform; };
   cargo-llvm-cov = (prev.cargo-llvm-cov.override override-packages).overrideAttrs (orig: {
     # the test suite is very impractical in our CI (fails on nightly for spurious reasons), and has nothing to do with
     # our project.
@@ -85,15 +88,113 @@ in
       destination = "/src/fabric/${p}";
     };
 
-  gdb' = prev.gdb.overrideAttrs (orig: {
-    CFLAGS = "-Os -flto";
-    CXXFLAGS = "-Os -flto";
-    LDFLAGS = "-flto -Wl,--as-needed,--gc-sections -static-libstdc++ -static-libgcc";
-    buildInputs = (orig.buildInputs or [ ]);
-    configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-static"
-      "--disable-inprocess-agent"
-      "--disable-source-highlight" # breaks static compile
-    ];
-  });
+  # A gdb that can be copied into a VM or an image that has no nix store, and
+  # still run: musl, no interpreter, no shared libraries at all.
+  #
+  # Configure flags cannot get you here.  `--enable-static` and
+  # `--disable-shared` -- which nixpkgs already passes -- only decide whether
+  # the libbfd, libopcodes, and libctf that this tree builds are archives; they
+  # say nothing about how the gdb executable links against readline, ncurses,
+  # expat, or python, and those have no static outputs in the default package
+  # set.  Hence pkgsStatic, which rebuilds the dependencies rather than the
+  # link line.
+  #
+  # pkgsStatic gates python support on host == build, so this gdb configures
+  # `--without-python` and cannot load the Rust pretty printers.  It is a
+  # bare-metal debugger, not a replacement for the ordinary `gdb` that
+  # `containers.dataplane-core-viewer` ships with `rust-gdb-printers`.
+  gdb' = final.pkgsStatic.gdb.override {
+    # dejagnu is a buildInput only so that gdb's own test suite can run, and we
+    # never run it.  It also cannot be built here: expect resolves `tclStubsPtr`
+    # from tcl's stub library, which exists to be filled in by a dynamic loader,
+    # so a static link leaves it undefined.
+    dejagnu = final.pkgsStatic.emptyDirectory;
+  };
+
+  # A perf that can be copied into a VM or an image with no nix store, for the
+  # same reason as `gdb'`.
+  #
+  # Unlike gdb this cannot come from pkgsStatic: elfutils carries
+  # `badPlatforms = isStatic` because its Makefile builds libelf.so
+  # unconditionally, and a static toolchain cannot emit a shared object at all
+  # (`crtbeginT.o: relocation R_X86_64_32 against hidden symbol __TMC_END__`).
+  # perf without libelf/libdw is not worth shipping, so build against ordinary
+  # glibc packages -- whose elfutils already installs libelf.a and libdw.a --
+  # and make only the final link static.
+  perf' =
+    let
+      # Every dependency below is either unusable in a static binary or not
+      # worth its transitive static closure.  Dropping them at the argument
+      # layer keeps them out of the build; the NO_* flags tell perf's own
+      # configure-equivalent the same thing, so the two cannot disagree.
+      none = final.emptyDirectory;
+    in
+    (final.perf.override {
+      stdenv = final.stdenvAdapters.makeStaticBinaries final.stdenv;
+      withPython = false;
+      withLibcap = false;
+      newt = none;
+      slang = none;
+      babeltrace = none;
+      libunwind = none;
+      libpfm = none;
+      numactl = none;
+      openssl = none;
+      libopcodes = none;
+      libtraceevent = none;
+      systemtap-unwrapped = none;
+    }).overrideAttrs
+      (orig: {
+        # dlfilters are dlopen-ed plugins, which a static perf could not load
+        # even if the toolchain could build them.
+        postPatch = orig.postPatch + ''
+          substituteInPlace Makefile.perf \
+            --replace-fail \
+              'DLFILTERS := dlfilter-test-api-v0.so dlfilter-test-api-v2.so dlfilter-show-cycles.so' \
+              'DLFILTERS :=' \
+            --replace-fail '$(INSTALL) $(DLFILTERS) ' 'true '
+        '';
+        # perf keys off -static in LDFLAGS to add `-lelf -lz -llzma -lbz2 -ldl`
+        # to the libdw link.  Without it the libdw probe fails and perf builds
+        # with DWARF support silently off -- it still links, so this is only
+        # visible in `perf version --build-options`.  Pass it in the
+        # environment, not via makeFlags, so Makefile.config's own `LDFLAGS +=`
+        # still appends.
+        env = orig.env // {
+          LDFLAGS = "-static";
+        };
+        # A static link does not follow a library's own dependencies, so
+        # libelf.a and libdw.a's compression backends have to be named here,
+        # as archives rather than the shared objects the normal outputs carry.
+        buildInputs = orig.buildInputs ++ [
+          final.zlib.static
+          (final.zstd.override { static = true; })
+          (final.xz.override { enableStatic = true; })
+          (final.bzip2.override { enableStatic = true; })
+        ];
+        makeFlags = orig.makeFlags ++ [
+          "NO_LIBPYTHON=1"
+          "NO_LIBPERL=1"
+          "NO_SLANG=1"
+          "NO_NEWT=1"
+          "NO_LIBBABELTRACE=1"
+          "NO_LIBNUMA=1"
+          "NO_LIBAUDIT=1"
+          "NO_LIBBPF=1"
+          "NO_LIBPFM4=1"
+          "NO_LIBCRYPTO=1"
+          "NO_JVMTI=1"
+          "NO_LIBUNWIND=1"
+          "NO_LIBDEBUGINFOD=1"
+          "NO_LIBTRACEEVENT=1"
+          "NO_SDT=1"
+          # Only C++ demangling.  perf's Rust v0 demangler is built in and
+          # unaffected, which is what matters for a Rust dataplane.
+          "NO_DEMANGLE=1"
+        ];
+        # wrapProgram would replace the binary with a shell script, defeating
+        # the point of a static build.  It only put objdump on PATH for
+        # `perf annotate`, which needs a toolchain on the target regardless.
+        preFixup = "";
+      });
 }

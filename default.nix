@@ -159,8 +159,11 @@ let
       cargo-deny
       cargo-depgraph
       cargo-edit
+      cargo-expand
       cargo-llvm-cov
+      cargo-mutants
       cargo-nextest
+      cargo-show-asm
       commitlint-rs
       direnv
       duvet
