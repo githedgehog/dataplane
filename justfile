@@ -134,6 +134,8 @@ oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
 
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
+[private]
+_oras_insecure := if oci_insecure == "true" { "--insecure" } else { "" }
 
 [private]
 nightly := "false"
@@ -672,7 +674,7 @@ push-container target="dataplane" *args: (build-container target args) && versio
             fi
             pushd ./results/workspace.validator/bin
             retry "push of {{ oci_image_dataplane_validator }}" \
-                oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
+                oras push {{ _oras_insecure }} --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
             popd
             echo "Pushed {{ oci_image_dataplane_validator }}"
             ;;
@@ -1423,6 +1425,49 @@ vlab-purge: vlab-down
     docker volume rm vlab || true
     docker volume rm zot || true
     docker volume rm vlab-secrets || true
+
+# Address the vlab control node reaches the telemetry stack on: the gateway of the docker bridge
+# the vlab container sits on, i.e. this host. Gateway nodes get there via control-proxy, which
+# fabricator wires into the generated Alloy config on its own.
+[private]
+telemetry_host := "192.168.19.0"
+
+# Start the persisted telemetry stack (Loki, Prometheus, Pyroscope, Grafana)
+[script]
+telemetry-up: (build "containers.lgtm")
+    {{ _just_debuggable_ }}
+    docker load < ./results/containers.lgtm
+    docker rm -f lgtm 2>/dev/null || true
+    docker volume create dataplane-telemetry
+    docker run --detach --name lgtm --restart unless-stopped \
+        --publish 3000:3000 \
+        --publish 3100:3100 \
+        --publish 4040:4040 \
+        --publish 9099:9090 \
+        --mount type=volume,source=dataplane-telemetry,target=/telemetry \
+        lgtm:latest
+    echo "grafana: http://127.0.0.1:3000"
+
+# Point the running fabric's Alloy at the telemetry stack
+[script]
+telemetry-wire:
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"config":{"observability":{"targets":{"loki":{"lab":{"url":"http://{{ telemetry_host }}:3100/loki/api/v1/push"}},"prometheus":{"lab":{"url":"http://{{ telemetry_host }}:9099/api/v1/write","sendIntervalSeconds":15}},"pyroscope":{"lab":{"url":"http://{{ telemetry_host }}:4040"}}}},"gateway":{"observability":{"dataplane":{"metrics":true,"metricsInterval":15}}},"control":{"observability":{"kubePodLogs":true,"kubeEvents":true}}}}}'
+    popd
+
+# Stop the telemetry stack, keeping its data
+[script]
+telemetry-down:
+    {{ _just_debuggable_ }}
+    docker rm -f lgtm || true
+
+# Stop the telemetry stack and delete everything it has collected
+[confirm]
+[script]
+telemetry-purge: telemetry-down
+    {{ _just_debuggable_ }}
+    docker volume rm dataplane-telemetry || true
 
 # Build, push the dataplane image to the vlab registry, and patch the running fabric
 [script]

@@ -1853,6 +1853,83 @@ let
   #
   # Fixed tag "latest" so scripts/vlab/run.sh can refer to `vlab` unambiguously
   # without threading the dataplane's `tag` argstr through.
+  # Telemetry sink for the lab: Loki, Prometheus, Pyroscope and Grafana in one image.
+  #
+  # Built here rather than composed from upstream container images so it pins with everything else
+  # and so the components run as root against a single volume -- the off-the-shelf images disagree
+  # about uids, and half of them are distroless, which turns a volume permission fix into an
+  # exercise in finding an image that has a shell.
+  #
+  # Fixed tag "latest": nothing versions this against the dataplane, and scripts/telemetry/run.sh
+  # refers to it by name.
+  containers.lgtm = pkgs.dockerTools.buildLayeredImage {
+    name = "lgtm";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "lgtm-env";
+      pathsToLink = [ "/" ];
+      paths = with pkgs.pkgsHostHost; [
+        bashInteractive
+        cacert
+        coreutils
+        curl
+        dockerTools.binSh
+        dockerTools.fakeNss
+        dockerTools.usrBinEnv
+        grafana
+        grafana-loki
+        prometheus
+        pyroscope
+
+        (writeTextDir "etc/loki/config.yaml" (builtins.readFile ./scripts/telemetry/root/etc/loki/config.yaml))
+        (writeTextDir "etc/prometheus/prometheus.yml" (builtins.readFile ./scripts/telemetry/root/etc/prometheus/prometheus.yml))
+        (writeTextDir "etc/pyroscope/config.yaml" (builtins.readFile ./scripts/telemetry/root/etc/pyroscope/config.yaml))
+        (writeTextDir "etc/grafana/grafana.ini" (builtins.readFile ./scripts/telemetry/root/etc/grafana/grafana.ini))
+        (writeTextDir "etc/grafana/provisioning/datasources/datasources.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/datasources/datasources.yaml
+        ))
+
+        (writeShellApplication {
+          name = "lgtm-entrypoint";
+          runtimeInputs = [
+            coreutils
+            grafana
+            grafana-loki
+            prometheus
+            pyroscope
+          ];
+          text = builtins.readFile ./scripts/telemetry/entrypoint.sh;
+        })
+      ];
+    };
+
+    # The volume mounts over /telemetry at run time; /tmp is not in the closure and Grafana's
+    # provisioning walk wants it.
+    extraCommands = ''
+      mkdir -p tmp telemetry
+      chmod 1777 tmp
+    '';
+
+    config = {
+      WorkingDir = "/telemetry";
+      Volumes."/telemetry" = { };
+      ExposedPorts = {
+        "3000/tcp" = { };
+        "3100/tcp" = { };
+        "4040/tcp" = { };
+        "9090/tcp" = { };
+      };
+      Env = [
+        "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+        # Grafana's static assets live in the store, so its home path is only knowable from nix.
+        "GF_PATHS_HOME=${pkgs.grafana}/share/grafana"
+        "GF_PATHS_DATA=/telemetry/grafana"
+        "GF_PATHS_PROVISIONING=/etc/grafana/provisioning"
+      ];
+      Entrypoint = [ "/bin/lgtm-entrypoint" ];
+    };
+  };
+
   containers.vlab = pkgs.dockerTools.buildLayeredImage {
     name = "vlab";
     tag = "latest";
