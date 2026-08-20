@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+apiVersion: 1
+providers:
+  - name: dataplane
+    type: file
+    allowUiUpdates: false
+    options:
+      # Read-only: the dashboard is in the image, so edits made in the UI would be silently lost
+      # on the next rebuild. Copy a panel out and commit it instead.
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false
