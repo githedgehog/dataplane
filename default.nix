@@ -1888,6 +1888,12 @@ let
         (writeTextDir "etc/grafana/provisioning/datasources/datasources.yaml" (
           builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/datasources/datasources.yaml
         ))
+        (writeTextDir "etc/grafana/provisioning/dashboards/dashboards.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/dashboards/dashboards.yaml
+        ))
+        (writeTextDir "etc/grafana/dashboards/dataplane-nat.json" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/dashboards/dataplane-nat.json
+        ))
 
         (writeShellApplication {
           name = "lgtm-entrypoint";
