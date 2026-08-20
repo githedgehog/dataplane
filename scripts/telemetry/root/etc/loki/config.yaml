@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+# Single-binary Loki. Everything lives under the one volume so a lab teardown does not take the
+# measurements with it.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  # Loki and Pyroscope are both dskit services and both default to gRPC 9095, so whichever starts
+  # second dies on bind. Loki moves, because Pyroscope's metastore client dials its own gRPC port
+  # by the default value and does not follow the listener when it is changed.
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /telemetry/loki
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /telemetry/loki/chunks
+      rules_directory: /telemetry/loki/rules
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # A lab replays and backfills; refusing old samples would silently drop exactly the runs we care
+  # about comparing.
+  reject_old_samples: false
+  allow_structured_metadata: true
+  volume_enabled: true
