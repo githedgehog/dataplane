@@ -12,7 +12,8 @@ net = { workspace = true, features = [] }
 
 # external
 bytecheck = { workspace = true, features = [] }
-clap = { workspace = true, features = ["derive", "std", "usage"] }
+# "env" backs the environment fallbacks on args a controller-managed deployment cannot pass.
+clap = { workspace = true, features = ["derive", "env", "std", "usage"] }
 memmap2 = { workspace = true, features = [] }
 miette = { workspace = true, features = ["derive", "fancy"] }
 nix = { workspace = true, features = ["fs"] }
