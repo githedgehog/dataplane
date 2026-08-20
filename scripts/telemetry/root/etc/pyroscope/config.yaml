@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+server:
+  http_listen_port: 4040
+  log_level: warn
+
+pyroscopedb:
+  data_path: /telemetry/pyroscope
