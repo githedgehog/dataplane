@@ -208,6 +208,7 @@ let
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
       markdownlint-cli2
+      mcp-grafana
       nixfmt
       npins
       opengrep
