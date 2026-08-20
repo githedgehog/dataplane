@@ -77,19 +77,19 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!SHOULD]:    host.
     TEXT[!MUST]: Receipt of any sort of ICMP message MUST NOT
     TEXT[!MUST]:    destroy the NAT mapping.
-    TEXT[!MUST,implementation]:    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
-    TEXT[!MUST,implementation]:       NAT mapping.
+    TEXT[!MUST,implementation,test]:    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST,implementation,test]:       NAT mapping.
     TEXT[!SHOULD]:       a) The NAT's default configuration SHOULD NOT filter ICMP messages
     TEXT[!SHOULD]:          based on their source IP address.
     TEXT[!SHOULD]:       b) It is RECOMMENDED that a NAT support ICMP Destination
     TEXT[!SHOULD]:          Unreachable messages.
 
   SECTION: [Fragmentation of Outgoing Packets](#section-10)
-    TEXT[!MUST]:    REQ-13:  If the packet received on an internal IP address has DF=1,
-    TEXT[!MUST]:       the NAT MUST send back an ICMP message "Fragmentation needed and
-    TEXT[!MUST]:       DF set" to the host, as described in [RFC0792].
-    TEXT[!MUST]:       a) If the packet has DF=0, the NAT MUST fragment the packet and
-    TEXT[!MUST]:          SHOULD send the fragments in order.
+    TEXT[!MUST,todo]:    REQ-13:  If the packet received on an internal IP address has DF=1,
+    TEXT[!MUST,todo]:       the NAT MUST send back an ICMP message "Fragmentation needed and
+    TEXT[!MUST,todo]:       DF set" to the host, as described in [RFC0792].
+    TEXT[!MUST,todo]:       a) If the packet has DF=0, the NAT MUST fragment the packet and
+    TEXT[!MUST,todo]:          SHOULD send the fragments in order.
 
   SECTION: [Receiving Fragmented Packets](#section-11)
     TEXT[!MUST,todo]:    REQ-14:  A NAT MUST support receiving in-order and out-of-order
