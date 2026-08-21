@@ -95,6 +95,18 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                 };
                 examined.push(ip.clone());
                 if !ip.has_free_ports() {
+                    // Skipping is right -- another address may still have room -- but skipping
+                    // silently is not. `outcome` starts at `NoFreeIp`, so a pool whose every
+                    // address is port-exhausted would leave it untouched and report "no free IP
+                    // available" for a pool that has no shortage of addresses at all. That sends
+                    // an operator to the wrong end of the problem: an empty bitmap wants more
+                    // addresses, whereas exhausted port blocks want the block allocator looked at.
+                    //
+                    // `has_free_ports` is false only when the address has no block left to draw
+                    // and no free port in the blocks it already holds, so `NoPortBlock` is the
+                    // accurate reading. Recording it rather than breaking keeps the scan going,
+                    // and a later address that succeeds still overwrites this.
+                    outcome = Err(AllocatorError::NoPortBlock);
                     continue;
                 }
                 let addr = ip.ip();

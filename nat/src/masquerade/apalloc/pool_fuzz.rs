@@ -418,6 +418,56 @@ fn an_exhausted_address_neither_strands_its_neighbours_nor_reads_as_an_empty_poo
     );
 }
 
+/// A pool whose addresses are all in use and all out of ports reports the port shortage rather
+/// than an empty pool.
+///
+/// The sibling test above reaches this through a block held on another thread, which leaves one
+/// address still answering `has_free_ports`. Here nothing is held elsewhere and every address is
+/// drained flat, so the reuse scan skips all of them and the draw that follows finds an empty
+/// bitmap -- the shape that used to answer `NoFreeIp`, because skipping an address left the
+/// initial value of `outcome` untouched.
+///
+/// The distinction is what an operator acts on. `NoFreeIp` says to add public addresses; this pool
+/// has every address it was configured with and is using all of them, so the shortage is ports.
+#[test]
+#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
+fn a_pool_out_of_ports_is_not_reported_as_a_pool_out_of_addresses() {
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: u128 = 2;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let ports = usize::try_from(ADDRESSES).unwrap_or_else(|_| unreachable!()) * PORTS_PER_ADDRESS;
+    let mut held = Vec::with_capacity(ports);
+    let outcome = loop {
+        match pool_sets[0].allocate(false) {
+            Ok(allocation) => held.push(allocation),
+            Err(e) => break e,
+        }
+        // Bounding the walk turns a pool that hands out more than it holds into a failure rather
+        // than a hang.
+        assert!(
+            held.len() <= ports,
+            "the pool handed out more ports than it has"
+        );
+    };
+
+    assert_eq!(
+        held.len(),
+        ports,
+        "the pool refused while it still had ports to give"
+    );
+    assert_eq!(
+        outcome,
+        AllocatorError::NoPortBlock,
+        "a pool out of ports was reported as a pool out of addresses"
+    );
+}
+
 /// The in-use list must not grow as allocations come and go.
 ///
 /// An address is handed back by whichever side reaches the pool first, so the bitmap stays honest
