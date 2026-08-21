@@ -98,6 +98,28 @@ Two consequences:
   assuming it holds only what was asked for will over-report. `scripts/spec-interlock.ts` filters
   the result set itself for this reason rather than trusting the flags.
 
+## Classifying, in practice
+
+The release gate below asks for every mutant to be classified rather than killed. Two worked
+examples exist, both found by the [citation interlock](./spec-compliance.md) and both recorded in
+its `ACCEPTED` list with reasons:
+
+- `IpAllocator::allocate`, the exhaustion guard. Equivalent because the function it guards can only
+  return one error from a well-formed pool.
+- `Bitmap256::allocate_port_from_bitmap`, the second-half bound. Equivalent because the caller only
+  enters the bitmap when the block is not full, which excludes the one value the two operators
+  disagree on.
+
+Both were settled the same way, and it is worth copying: **read the code for the invariant, then
+apply the mutant by hand and run the whole crate's suite.** A passing suite is not proof of
+equivalence, but a failing one is proof against it, and it costs one command. Both of these
+also had a symmetric sibling that _was_ caught -- the first-half bound, the non-exhaustion arm --
+and that asymmetry is usually the clearest evidence that an invariant rather than a gap is doing
+the work.
+
+Two of eleven survivors across that exercise were equivalent. A procedure that only knows how to
+demand more tests would have produced two entrenching tests instead.
+
 ## Cost
 
 Measured on `dataplane-net`: 2,271 mutants, about 4.5s to build and 7.6s to test each, four at a
