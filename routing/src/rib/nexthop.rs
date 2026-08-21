@@ -60,6 +60,12 @@ pub struct NhopKey {
     pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
+    /// The name of `ifindex`'s interface, for diagnostics only.
+    ///
+    /// Not populated when a next-hop is learned over the CPI, and it must not be: the name has to
+    /// be looked up against the interface table, which is populated out of band, so a key carrying
+    /// one would differ before and after we learn about the interface -- two next-hops where there
+    /// is one. See `RouteNhop::from_rpc_nhop`, and the same argument for a vxlan dmac above it.
     pub ifname: Option<String>,
 }
 
@@ -161,6 +167,20 @@ impl Hash for Nhop {
     }
 }
 
+/// A next-hop's address in memory, used to tell next-hops apart in the visited sets that the
+/// walks over the resolver graph keep.
+///
+/// Address rather than key: keys are unique within one [`NhopStore`], but a next-hop may hold
+/// resolvers that belong to another one, where an equal key would name a different object. A
+/// resolution loop is a loop in the object graph, and next-hops live in `Rc`s, which do not move.
+pub(crate) type NhopId = *const Nhop;
+
+/// The next-hops a walk over the resolver graph has already visited.
+///
+/// A `Vec` rather than a set: resolver chains are a handful of next-hops long and fan out by two
+/// or three, so a linear scan costs less than hashing.
+pub(crate) type Visited = Vec<NhopId>;
+
 impl Nhop {
     /// Create a new Nhop object from a key object
     fn from_key(key: &NhopKey) -> Self {
@@ -184,23 +204,47 @@ impl Nhop {
         self
     }
 
-    /// Recursive method to check if a next-hop resolves via another, `checked`.
-    /// We use this method to avoid resolution loops that would happen in case of routing loops.
-    /// Resolution loops would cause us to stack overflow. This method is recursive, but
-    /// short-circuits in case of loop. The method takes the advantage that there cannot be two
-    /// next-hops with the same key.
+    /// This next-hop's identity for the visited sets of the walks over the resolver graph.
+    pub(crate) fn id(&self) -> NhopId {
+        std::ptr::from_ref(self)
+    }
+
+    /// Tell if a next-hop resolves via another, `checked`: that is, whether `checked` is reachable
+    /// from `self` along resolver edges, `self` included.
+    ///
+    /// This is the guard against routing loops. `lazy_resolve` refuses an edge from `a` to `r`
+    /// exactly when `r.resolves_with(a)`, since such an edge would close a cycle, and a cycle in
+    /// the resolver graph would send the walks over it round for ever.
+    ///
+    /// The walk is total whether or not the graph already holds a cycle, because `visited` stops
+    /// it from entering any next-hop twice. That matters for two reasons: the guard should not
+    /// depend on the very invariant it exists to maintain, and a diamond-shaped graph is otherwise
+    /// re-walked once per path through it.
     fn resolves_with(&self, checked: &Nhop) -> bool {
+        self.resolves_with_rec(checked, &mut Visited::new())
+    }
+
+    fn resolves_with_rec(&self, checked: &Nhop, visited: &mut Visited) -> bool {
         // resolve to oneself is forbidden
         if self.key == checked.key {
             error!("Loop detected for next-hop {}!", self.key);
             return true;
         }
+        // a next-hop already visited leads nowhere new: either we are inside a cycle, or we
+        // reached it by another path and have already looked at everything beyond it.
+        // a next-hop already visited leads nowhere new: either we are inside a cycle, or we
+        // reached it by another path and have already looked at everything beyond it.
+        if visited.contains(&self.id()) {
+            return false;
+        }
+        visited.push(self.id());
+
         // resolvers should not refer back to the checked next-hop
         let resolvers = self.resolvers.borrow();
         resolvers
             .iter()
             .filter_map(Weak::upgrade)
-            .any(|res| res.resolves_with(checked))
+            .any(|res| res.resolves_with_rec(checked, visited))
     }
 
     /// Tell if a next-hop requires resolution
@@ -264,8 +308,15 @@ impl Nhop {
     }
 
     /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
+    ///
+    /// `visited` guards against a resolution loop, as in `resolves_with` above.
     #[cfg(test)]
-    fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
+    fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>, visited: &mut Visited) {
+        if visited.contains(&self.id()) {
+            return;
+        }
+        visited.push(self.id());
+
         let Ok(resolvers) = self.resolvers.try_borrow_mut() else {
             error!("Try-borrow-mut() failed on next-hop resolvers!");
             return;
@@ -297,7 +348,7 @@ impl Nhop {
                         self.key.ifname.clone(),
                     ));
                 } else {
-                    r.quick_resolve_rec(result);
+                    r.quick_resolve_rec(result, visited);
                 }
             }
         }
@@ -311,7 +362,7 @@ impl Nhop {
     #[cfg(test)]
     pub fn quick_resolve(&self) -> BTreeSet<NhopKey> {
         let mut out: BTreeSet<NhopKey> = BTreeSet::new();
-        self.quick_resolve_rec(&mut out);
+        self.quick_resolve_rec(&mut out, &mut Visited::new());
         out
     }
 }
@@ -1043,5 +1094,283 @@ mod tests {
 
         a.add_resolver(&checked);
         assert!(a.resolves_with(checked.as_ref()));
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    /// Displaying a next-hop caught in a resolution loop terminates, and says which edge closes it.
+    ///
+    /// It used to walk the resolvers with an untracked `u8` depth, so a loop recursed until that
+    /// depth overflowed -- a panic raised from inside a `Display` impl that both the CLI and the
+    /// warning this module logs about resolution loops go through.
+    fn test_display_of_a_resolution_loop_terminates() {
+        let mut store = NhopStore::new();
+        let a = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
+        let b = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
+        a.add_resolver(&b);
+        b.add_resolver(&a);
+
+        let nhop = format!("{a}");
+        assert!(nhop.contains("(LOOP)"), "loop not reported in {nhop}");
+
+        let whole_store = format!("{store}");
+        assert!(
+            whole_store.contains("(LOOP)"),
+            "loop not reported in {whole_store}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fibgroup_properties {
+    use super::*;
+    use crate::fib::fibobjects::FibEntry;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound::Included;
+
+    const MAX_NODES: u8 = 6;
+    const MAX_RESOLVERS: u8 = 2;
+
+    /// A next-hop graph, given as an adjacency list over node indices.
+    ///
+    /// **Cycles included**, self-loops among them. A routing loop is exactly a cycle here, and
+    /// both walks over the resolver graph have to survive one -- `resolves_with` because it is the
+    /// guard that keeps cycles out and so cannot presume its own success, and
+    /// `build_nhop_fibgroup_rec` because nothing in the types ties it to that guard.
+    #[derive(Debug, Clone)]
+    struct Graph {
+        /// `edges[i]` are the nodes that `i` resolves via, in the order they were wired.
+        edges: Vec<Vec<usize>>,
+        /// Whether node `i` knows an interface, and so needs no resolving.
+        grounded: Vec<bool>,
+    }
+
+    impl Graph {
+        /// Which nodes are reachable from `start`, itself included. A plain closure over the
+        /// adjacency list, computed without asking any next-hop anything.
+        fn reachable_from(&self, start: usize) -> Vec<bool> {
+            let mut seen = vec![false; self.edges.len()];
+            let mut stack = vec![start];
+            while let Some(node) = stack.pop() {
+                if std::mem::replace(&mut seen[node], true) {
+                    continue;
+                }
+                stack.extend_from_slice(&self.edges[node]);
+            }
+            seen
+        }
+    }
+
+    /// Draws [`Graph`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Graphs;
+
+    impl ValueGenerator for Graphs {
+        type Output = Graph;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Graph> {
+            let nodes = usize::from(driver.gen_u8(Included(&1), Included(&MAX_NODES))?);
+            let last = u8::try_from(nodes - 1).ok()?;
+            let mut edges = Vec::with_capacity(nodes);
+            let mut grounded = Vec::with_capacity(nodes);
+            for _ in 0..nodes {
+                let count = driver.gen_u8(Included(&0), Included(&MAX_RESOLVERS))?;
+                let mut resolvers = Vec::with_capacity(usize::from(count));
+                for _ in 0..count {
+                    resolvers.push(usize::from(driver.gen_u8(Included(&0), Included(&last))?));
+                }
+                edges.push(resolvers);
+                grounded.push(driver.produce::<bool>()?);
+            }
+            Some(Graph { edges, grounded })
+        }
+    }
+
+    // Build the graph in an `NhopStore`, returning the next-hops by index.
+    fn realize(graph: &Graph) -> (NhopStore, Vec<Rc<Nhop>>) {
+        let mut store = NhopStore::new();
+        let nodes: Vec<Rc<Nhop>> = (0..graph.edges.len())
+            .map(|index| {
+                let raw = u8::try_from(index).unwrap_or_else(|_| unreachable!());
+                let mut key = NhopKey::from_address(&format!("10.0.0.{}", raw + 1));
+                if graph.grounded[index] {
+                    key.ifindex = Some(
+                        InterfaceIndex::try_new(u32::from(raw) + 1)
+                            .unwrap_or_else(|_| unreachable!()),
+                    );
+                }
+                store.add_nhop(&key)
+            })
+            .collect();
+
+        for (from, resolvers) in graph.edges.iter().enumerate() {
+            for to in resolvers {
+                nodes[from].add_resolver(&nodes[*to]);
+            }
+        }
+        (store, nodes)
+    }
+
+    // The oracle: every *simple* root-to-leaf path, its next-hops' instructions concatenated,
+    // squashed, and kept if the forwarder could execute it.
+    //
+    // Enumerated over the generated adjacency list rather than by walking the recursion under
+    // test. "Simple" is the loop guard restated: a path that would revisit a node stops there and
+    // contributes nothing, because going round a loop is not forwarding.
+    fn expected(
+        graph: &Graph,
+        nodes: &[Rc<Nhop>],
+        from: usize,
+        path: &mut Vec<usize>,
+        prefix: &FibEntry,
+        out: &mut Vec<FibEntry>,
+    ) {
+        if path.contains(&from) {
+            return;
+        }
+        path.push(from);
+
+        let mut entry = prefix.clone();
+        entry.extend_from_slice(&nodes[from].instructions.borrow());
+
+        if graph.edges[from].is_empty() {
+            // A next-hop with neither an interface nor a way to reach one contributes nothing.
+            if !nodes[from].must_be_resolved() {
+                entry.squash();
+                if entry.is_valid() {
+                    out.push(entry);
+                }
+            }
+        } else {
+            for to in &graph.edges[from] {
+                expected(graph, nodes, *to, path, &entry, out);
+            }
+        }
+
+        path.pop();
+    }
+
+    /// A next-hop's fib group is one entry per usable resolution path, and never empty.
+    #[test]
+    fn a_fibgroup_is_the_usable_paths_through_the_graph() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
+                for node in &nodes {
+                    node.build_nhop_instructions(&rstore);
+                }
+
+                let mut want = Vec::new();
+                expected(
+                    &graph,
+                    &nodes,
+                    0,
+                    &mut Vec::new(),
+                    &FibEntry::new(),
+                    &mut want,
+                );
+                if want.is_empty() {
+                    // Nothing usable: the group carries a drop so packets are not misrouted.
+                    want.push(FibEntry::drop_fibentry());
+                }
+
+                let got = nodes[0].build_nhop_fibgroup();
+                assert_eq!(got.entries(), &want, "for {graph:?}");
+            });
+    }
+
+    /// Every entry a fib group offers is one the forwarder can execute.
+    ///
+    /// `FibEntry::is_valid` is the written-down form of that, and `rib2fib` filters on it -- but
+    /// the drop injected when nothing is usable bypasses the filter, so it is worth asserting over
+    /// the group rather than trusting the one call site.
+    #[test]
+    fn every_entry_in_a_fibgroup_is_usable() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
+                for node in &nodes {
+                    node.build_nhop_instructions(&rstore);
+                }
+                let group = nodes[0].build_nhop_fibgroup();
+                assert!(!group.is_empty(), "for {graph:?}");
+                for entry in group.iter() {
+                    assert!(entry.is_valid(), "unusable entry {entry:?} for {graph:?}");
+                }
+            });
+    }
+
+    /// A next-hop every one of whose paths loops back gets a drop, not an infinite walk.
+    ///
+    /// The general case falls out of the two properties above -- they only terminate because the
+    /// walk does -- but a routing loop is the failure this guard exists for, so it is worth one
+    /// case that says so in as many words.
+    #[test]
+    fn a_next_hop_in_a_resolution_loop_drops() {
+        let rstore = RmacStore::new();
+        let mut store = NhopStore::new();
+
+        // 7.0.0.1 -> 8.0.0.2 -> 9.0.0.3 -> 7.0.0.1, and no way out to an interface.
+        let a = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
+        let b = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
+        let c = store.add_nhop(&NhopKey::from_address("9.0.0.3"));
+        a.add_resolver(&b);
+        b.add_resolver(&c);
+        c.add_resolver(&a);
+        store.rebuild_nhop_instructions(&rstore);
+
+        let group = a.build_nhop_fibgroup();
+        assert_eq!(
+            group.entries(),
+            &vec![FibEntry::drop_fibentry()],
+            "a packet caught in a routing loop must be dropped"
+        );
+    }
+
+    /// `resolves_with` answers reachability in the resolver graph.
+    ///
+    /// That is the whole of what the loop guard rests on: `lazy_resolve` refuses an edge from `a`
+    /// to `r` exactly when `r.resolves_with(a)`, which is to say when `a` is already reachable
+    /// from `r` and the edge would close a cycle. Checked against a closure computed over the
+    /// adjacency list, which asks no next-hop anything -- and, now that the graphs may contain
+    /// cycles, over graphs where `resolves_with` has to terminate on its own account.
+    #[test]
+    fn resolves_with_answers_reachability() {
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
+                for (from, node) in nodes.iter().enumerate() {
+                    let reachable = graph.reachable_from(from);
+                    for (to, other) in nodes.iter().enumerate() {
+                        assert_eq!(
+                            node.resolves_with(other),
+                            reachable[to],
+                            "{from} -> {to}, for {graph:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    /// A next-hop always resolves via itself, which is what makes the guard refuse a self-loop.
+    #[test]
+    fn a_next_hop_resolves_via_itself() {
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
+                for node in &nodes {
+                    assert!(node.resolves_with(node));
+                }
+            });
     }
 }

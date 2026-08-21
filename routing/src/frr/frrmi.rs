@@ -327,6 +327,11 @@ impl Frrmi {
             return Err(FrrErr::NotConnected);
         };
         loop {
+            if let Some(announced) = self.readb.oversized() {
+                error!("Frr-agent announced a {announced}-octet message: refusing it");
+                self.readb.clear();
+                return Err(FrrErr::DecodeFailure);
+            }
             let pending = self.readb.next_read_len();
             debug!("Recv data (read:{} pending:{pending})", self.readb.used);
             match Self::recv(sock, &mut self.readb, pending) {
@@ -400,6 +405,14 @@ struct IoBuffer {
     used: usize,
 }
 impl IoBuffer {
+    /// Octets of `|length|genid|` ahead of every message body.
+    const HEADER_LEN: usize = 16;
+
+    /// The largest message body we will accept off the wire. Responses from the frr-agent are a
+    /// status word or an error message, so this is generous by orders of magnitude; it is here to
+    /// bound the allocation, not to constrain the protocol.
+    const MAX_MSG_LEN: usize = 16 * 1024 * 1024;
+
     #[must_use]
     #[allow(unused)]
     pub fn new() -> Self {
@@ -412,6 +425,10 @@ impl IoBuffer {
         self.buffer.clear();
         self.used = 0;
     }
+    /// The size of the buffer. Meaningful on the **write** side only, where `serialize` fills it:
+    /// there, `buffer.len()` is the size of the message and `used` is how much of it has gone out.
+    /// On the read side `recv` resizes the buffer to the size of the read it is about to attempt, so
+    /// `buffer.len()` says what we hoped for and only `used` says what arrived.
     #[must_use]
     fn len(&self) -> usize {
         self.buffer.len()
@@ -426,37 +443,45 @@ impl IoBuffer {
         self.extend(msg);
     }
 
-    /// Tell the length that a message (encoded as |length|genid|data|) must have.
-    /// If less than 8 octets have been read it is not possible to know how big the message is yet.
+    /// Tell the length that a message (encoded as |length|genid|data|) must have, once the whole
+    /// header has been received. `None` until then.
+    ///
+    /// Off `used`, not off `buffer.len()`: see [`IoBuffer::len`]. Reading the length out of a
+    /// buffer sized for a read that has not happened yet takes whatever `resize` zero-filled for
+    /// the tail of the header, so a half-arrived header reads as a complete one announcing a
+    /// shorter message.
     #[must_use]
     fn msg_len(&self) -> Option<usize> {
-        if self.buffer.len() < 8 {
-            None
-        } else {
-            let len_buf = &self.buffer[0..8]
-                .try_into()
-                .unwrap_or_else(|_| unreachable!());
-
-            #[allow(clippy::cast_possible_truncation)]
-            let msg_len = u64::from_ne_bytes(*len_buf) as usize;
-            Some(msg_len)
+        if self.used < Self::HEADER_LEN {
+            return None;
         }
+        let len_buf: &[u8; 8] = &self.buffer[0..8]
+            .try_into()
+            .unwrap_or_else(|_| unreachable!());
+
+        #[allow(clippy::cast_possible_truncation)]
+        let msg_len = u64::from_ne_bytes(*len_buf) as usize;
+        Some(msg_len)
     }
-    /// Tell the number of octets that should be read next according to the contents of the read buffer
-    /// to get a message or be able to determine its length.
-    /// If less than 16 octets have been received, this returns the number needed to have exactly 16.
-    /// Else, we return the number of octets that are pending to have the complete message.
+
+    /// The announced message length, if it is one we refuse to accept.
+    ///
+    /// The length prefix comes off the wire and `recv` resizes the read buffer to it, so without a
+    /// bound a confused or hostile frr-agent could ask us to allocate up to `u64::MAX`.
+    #[must_use]
+    fn oversized(&self) -> Option<usize> {
+        self.msg_len().filter(|len| *len > Self::MAX_MSG_LEN)
+    }
+
+    /// Tell the number of octets that should be read next according to what has been received so
+    /// far, to get a message or be able to determine its length.
+    /// Until the whole header has arrived, this returns the number needed to complete it.
+    /// After that, the number of octets still pending to have the complete message.
     #[must_use]
     fn next_read_len(&self) -> usize {
-        if self.len() < 16 {
-            16 - self.len()
-        } else {
-            let msg_len = self.msg_len().unwrap_or_else(|| unreachable!());
-            if msg_len > (self.len() - 16) {
-                msg_len - (self.len() - 16)
-            } else {
-                0
-            }
+        match self.msg_len() {
+            None => Self::HEADER_LEN - self.used,
+            Some(msg_len) => msg_len.saturating_sub(self.used - Self::HEADER_LEN),
         }
     }
 
@@ -464,7 +489,9 @@ impl IoBuffer {
     #[must_use]
     fn is_ready(&self) -> bool {
         match self.msg_len() {
-            Some(m) => self.len() == m + 16,
+            // subtracting rather than adding 16: the announced length is peer-supplied, and
+            // `m + 16` overflows for one close enough to `usize::MAX`
+            Some(msg_len) => self.used - Self::HEADER_LEN == msg_len,
             None => false,
         }
     }
@@ -486,5 +513,197 @@ impl IoBuffer {
         let data = data.to_string();
         self.clear();
         Ok(FrrmiResponse { genid, data })
+    }
+}
+
+/// Properties over the frrmi wire framing.
+///
+/// `IoBuffer` exists to cope with partial reads and writes on a stream socket -- so the property
+/// worth having is that the message survives *any* division of its octets into reads. The oracle is
+/// the message itself: serialize, deliver the bytes in generated chunks, and what comes back out
+/// must be what went in.
+#[cfg(test)]
+mod framing_properties {
+    use super::*;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound::Included;
+
+    const MAX_BODY: u8 = 20;
+    const MAX_CHUNK: u8 = 24;
+    const MAX_CHUNKS: u8 = 8;
+    const MAX_MESSAGES: u8 = 4;
+
+    /// A message, and the way the peer's octets happen to arrive.
+    #[derive(Debug, Clone)]
+    struct Delivery {
+        genid: GenId,
+        /// The response body. Empty is worth generating: a zero-length body makes every octet of
+        /// the length prefix zero, which is the value a half-read header is indistinguishable from.
+        body: String,
+        /// Sizes of the successive writes the peer makes. Applied in order and clamped to what is
+        /// left; anything still unsent after the list runs out goes in one final write.
+        chunks: Vec<usize>,
+    }
+
+    /// Draws [`Delivery`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Deliveries;
+
+    impl ValueGenerator for Deliveries {
+        type Output = Delivery;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Delivery> {
+            let genid = GenId::from(driver.gen_u8(Included(&0), Included(&3))?);
+            let body_len = usize::from(driver.gen_u8(Included(&0), Included(&MAX_BODY))?);
+            let body: String = (0..body_len)
+                .map(|i| char::from(b'a' + u8::try_from(i % 26).unwrap_or_else(|_| unreachable!())))
+                .collect();
+
+            let count = driver.gen_u8(Included(&0), Included(&MAX_CHUNKS))?;
+            let mut chunks = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                chunks.push(usize::from(
+                    driver.gen_u8(Included(&1), Included(&MAX_CHUNK))?,
+                ));
+            }
+            Some(Delivery {
+                genid,
+                body,
+                chunks,
+            })
+        }
+    }
+
+    /// A `Frrmi` reading from one end of a socket pair, with the peer's end alongside it.
+    fn connected_pair() -> (UnixStream, Frrmi) {
+        let (peer, ours) = UnixStream::pair().unwrap_or_else(|e| unreachable!("{e}"));
+        let frrmi = Frrmi {
+            sock: Some(ours),
+            ..Frrmi::default()
+        };
+        (peer, frrmi)
+    }
+
+    /// Draws a sequence of [`Delivery`]s to send down one connection.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Streams;
+
+    impl ValueGenerator for Streams {
+        type Output = Vec<Delivery>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Delivery>> {
+            let count = driver.gen_u8(Included(&1), Included(&MAX_MESSAGES))?;
+            let mut out = Vec::with_capacity(usize::from(count));
+            for _ in 0..count {
+                out.push(Deliveries.generate(driver)?);
+            }
+            Some(out)
+        }
+    }
+
+    /// A message survives being delivered in any sequence of chunks.
+    #[test]
+    fn a_message_survives_any_division_into_reads() {
+        bolero::check!()
+            .with_generator(Deliveries)
+            .cloned()
+            .for_each(|delivery: Delivery| {
+                let mut wire = IoBuffer::new();
+                wire.serialize(delivery.genid, delivery.body.as_bytes());
+                let bytes = wire.buffer;
+
+                let (mut peer, mut frrmi) = connected_pair();
+
+                let mut sent = 0;
+                let mut got = None;
+                let mut sizes = delivery.chunks.iter().copied();
+                while sent < bytes.len() {
+                    let take = sizes.next().unwrap_or(usize::MAX).min(bytes.len() - sent);
+                    peer.write_all(&bytes[sent..sent + take])
+                        .unwrap_or_else(|e| unreachable!("{e}"));
+                    sent += take;
+
+                    match frrmi.recv_msg() {
+                        Ok(Some(response)) => {
+                            assert!(got.is_none(), "two messages from one, for {delivery:?}");
+                            got = Some(response);
+                        }
+                        Ok(None) => (),
+                        Err(e) => panic!("recv failed with {e} for {delivery:?}"),
+                    }
+                }
+
+                let response = got.unwrap_or_else(|| panic!("no message, for {delivery:?}"));
+                assert_eq!(response.genid, delivery.genid, "genid for {delivery:?}");
+                assert_eq!(response.data, delivery.body, "body for {delivery:?}");
+            });
+    }
+
+    /// A connection carries one message after another, however the octets are divided.
+    ///
+    /// The chunking runs over the whole stream rather than over each message, so a single write may
+    /// straddle a message boundary or carry several messages at once. `deserialize` clears the read
+    /// buffer, and this is what says nothing is left in it to confuse the message after.
+    #[test]
+    fn a_connection_carries_one_message_after_another() {
+        bolero::check!()
+            .with_generator(Streams)
+            .cloned()
+            .for_each(|deliveries: Vec<Delivery>| {
+                let mut bytes = Vec::new();
+                for delivery in &deliveries {
+                    let mut wire = IoBuffer::new();
+                    wire.serialize(delivery.genid, delivery.body.as_bytes());
+                    bytes.extend_from_slice(&wire.buffer);
+                }
+
+                let (mut peer, mut frrmi) = connected_pair();
+
+                // one chunk list over the whole stream, taken from the deliveries in turn
+                let mut sizes = deliveries.iter().flat_map(|d| d.chunks.iter().copied());
+                let mut got: Vec<(GenId, String)> = Vec::new();
+                let mut sent = 0;
+                while sent < bytes.len() {
+                    let take = sizes.next().unwrap_or(usize::MAX).min(bytes.len() - sent);
+                    peer.write_all(&bytes[sent..sent + take])
+                        .unwrap_or_else(|e| unreachable!("{e}"));
+                    sent += take;
+
+                    // drain: a single write may have completed more than one message
+                    loop {
+                        match frrmi.recv_msg() {
+                            Ok(Some(response)) => got.push((response.genid, response.data)),
+                            Ok(None) => break,
+                            Err(e) => panic!("recv failed with {e} for {deliveries:?}"),
+                        }
+                    }
+                }
+
+                let want: Vec<(GenId, String)> = deliveries
+                    .iter()
+                    .map(|d| (d.genid, d.body.clone()))
+                    .collect();
+                assert_eq!(got, want, "for {deliveries:?}");
+            });
+    }
+
+    /// A message longer than we will accept is refused, not allocated for.
+    ///
+    /// The length prefix is whatever the peer put on the wire, and `recv` resizes the read buffer to
+    /// it. Announcing `u64::MAX` used to make that resize overflow its own length arithmetic.
+    #[test]
+    fn an_absurd_announced_length_is_refused() {
+        let mut header = Vec::new();
+        header.extend_from_slice(&u64::MAX.to_ne_bytes());
+        header.extend_from_slice(&0i64.to_ne_bytes());
+
+        let (mut peer, mut frrmi) = connected_pair();
+        peer.write_all(&header)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+
+        assert!(
+            matches!(frrmi.recv_msg(), Err(FrrErr::DecodeFailure)),
+            "an absurd length must be refused"
+        );
     }
 }

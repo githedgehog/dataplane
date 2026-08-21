@@ -504,3 +504,412 @@ impl FibReaderFactory {
         FibReader(self.0.handle())
     }
 }
+
+/// Model-based properties over a [`Fib`] driven through its writer.
+///
+/// The generator here is the one the pipeline harness will want: it produces a *populated* fib,
+/// reached the way production reaches one -- a sequence of `FibChange`s through a `FibWriter` --
+/// rather than by reaching into the tries. Everything the fib is asked afterwards is checked
+/// against a model kept alongside it.
+#[cfg(test)]
+mod fib_properties {
+    use super::*;
+    use crate::fib::fibgroupstore::tests::{build_fib_entry_egress, build_fibgroup};
+    use bolero::{Driver, ValueGenerator};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::ops::Bound::Included;
+    use std::str::FromStr;
+
+    const NUM_NHOPS: u8 = 4;
+    const NUM_PREFIXES: u8 = 8;
+    const NUM_ENTRIES: u8 = 4;
+    const MAX_CHANGES: u8 = 12;
+    const MAX_KEYS_PER_ROUTE: u8 = 3;
+    const MAX_ENTRIES_PER_GROUP: u8 = 3;
+
+    /// The drop next-hop, first in [`nhop_keys`]. The store creates its group at construction and
+    /// refuses to delete it.
+    const DROP_KEY: usize = 0;
+    /// `0.0.0.0/0` and `::/0`, at these indices in [`prefixes`]. A fib always carries a route for
+    /// both: `Fib::lpm` has no answer for an address nothing covers, and says so with an
+    /// `unreachable!()` on the forwarding path.
+    const ROOT_V4: usize = 0;
+    const ROOT_V6: usize = 5;
+
+    /// The next-hop keys a generated fib may mention.
+    ///
+    /// A small pool on purpose. What is worth exercising is the collisions -- a route pinning a
+    /// group against deletion, a registration mutating a group two routes share -- and collisions
+    /// need a small pool to happen often. The drop key is in it because the rib does register
+    /// groups under it, and because the store treats it as permanent.
+    fn nhop_keys() -> Vec<NhopKey> {
+        vec![
+            NhopKey::with_drop(),
+            NhopKey::with_addr_ifindex("10.0.0.1", 1),
+            NhopKey::with_addr_ifindex("10.0.0.2", 2),
+            NhopKey::with_ifindex(3),
+        ]
+    }
+
+    /// The prefixes a generated fib may carry routes for. Nested on purpose, so a longest match
+    /// has something to be longer than, and both roots so that deleting one is reachable.
+    fn prefixes() -> Vec<Prefix> {
+        [
+            "0.0.0.0/0",
+            "10.0.0.0/8",
+            "10.1.0.0/16",
+            "10.1.2.0/24",
+            "10.1.2.3/32",
+            "::/0",
+            "2001:db8::/32",
+            "2001:db8:1::/48",
+        ]
+        .iter()
+        .map(|p| Prefix::from_str(p).unwrap_or_else(|_| unreachable!()))
+        .collect()
+    }
+
+    /// Addresses to look up: one inside each level of the nesting, and one outside all of them in
+    /// each family, so a lookup that falls through to the root is exercised too.
+    fn probes() -> Vec<IpAddr> {
+        [
+            "9.9.9.9",
+            "10.9.9.9",
+            "10.1.9.9",
+            "10.1.2.9",
+            "10.1.2.3",
+            "2000::1",
+            "2001:db8::1",
+            "2001:db8:1::1",
+        ]
+        .iter()
+        .map(|a| IpAddr::from_str(a).unwrap_or_else(|_| unreachable!()))
+        .collect()
+    }
+
+    /// The entries a generated group may be built from.
+    fn entry_pool() -> Vec<FibEntry> {
+        (1..=u32::from(NUM_ENTRIES))
+            .map(|i| build_fib_entry_egress(i, &format!("10.0.9.{i}"), &format!("eth{i}")))
+            .collect()
+    }
+
+    /// One change, as the writer API exposes them, over indices into the pools above.
+    #[derive(Debug, Clone)]
+    enum Change {
+        RegisterGroup { key: usize, entries: Vec<usize> },
+        UnregisterGroup { key: usize },
+        AddRoute { prefix: usize, keys: Vec<usize> },
+        DelRoute { prefix: usize },
+    }
+
+    /// Draws sequences of [`Change`]s.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ChangeSequences;
+
+    fn index<D: Driver>(driver: &mut D, count: u8) -> Option<usize> {
+        driver
+            .gen_u8(Included(&0), Included(&(count - 1)))
+            .map(usize::from)
+    }
+
+    fn indices<D: Driver>(driver: &mut D, count: u8, most: u8) -> Option<Vec<usize>> {
+        // Deliberately able to draw none: an empty group and a route with no next-hops are both
+        // things the fib is supposed to refuse, and refusing is behaviour worth checking.
+        let len = driver.gen_u8(Included(&0), Included(&most))?;
+        let mut out = Vec::with_capacity(usize::from(len));
+        for _ in 0..len {
+            out.push(index(driver, count)?);
+        }
+        Some(out)
+    }
+
+    impl ValueGenerator for ChangeSequences {
+        type Output = Vec<Change>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<Change>> {
+            let len = driver.gen_u8(Included(&0), Included(&MAX_CHANGES))?;
+            let mut out = Vec::with_capacity(usize::from(len));
+            for _ in 0..len {
+                let change = match driver.gen_u8(Included(&0), Included(&3))? {
+                    0 => Change::RegisterGroup {
+                        key: index(driver, NUM_NHOPS)?,
+                        entries: indices(driver, NUM_ENTRIES, MAX_ENTRIES_PER_GROUP)?,
+                    },
+                    1 => Change::UnregisterGroup {
+                        key: index(driver, NUM_NHOPS)?,
+                    },
+                    2 => Change::AddRoute {
+                        prefix: index(driver, NUM_PREFIXES)?,
+                        keys: indices(driver, NUM_NHOPS, MAX_KEYS_PER_ROUTE)?,
+                    },
+                    _ => Change::DelRoute {
+                        prefix: index(driver, NUM_PREFIXES)?,
+                    },
+                };
+                out.push(change);
+            }
+            Some(out)
+        }
+    }
+
+    /// What the fib should hold, tracked beside it.
+    ///
+    /// Not a reimplementation: two maps, which is the fib with the tries, the group store's
+    /// reference counting and its `UnsafeCell` sharing all taken away. What the model does have to
+    /// get right is which changes the fib *refuses*, and that is the part worth writing down --
+    /// three guards in three files decide it, and none of them says so where the next one can see.
+    #[derive(Debug, Clone)]
+    struct Model {
+        /// next-hop key index -> the entries of its group.
+        groups: BTreeMap<usize, Vec<FibEntry>>,
+        /// prefix index -> the next-hop keys of its route, in order.
+        routes: BTreeMap<usize, Vec<usize>>,
+    }
+
+    impl Model {
+        /// A fresh fib: a drop group, and a route to it for each root.
+        fn new() -> Self {
+            Self {
+                groups: BTreeMap::from([(DROP_KEY, vec![FibEntry::drop_fibentry()])]),
+                routes: BTreeMap::from([(ROOT_V4, vec![DROP_KEY]), (ROOT_V6, vec![DROP_KEY])]),
+            }
+        }
+
+        fn referenced(&self, key: usize) -> bool {
+            self.routes.values().any(|keys| keys.contains(&key))
+        }
+
+        /// Drop every group no route points at. The store does this by reference count; here the
+        /// routes are the reference count.
+        fn purge(&mut self) {
+            let referenced: BTreeSet<usize> = self
+                .routes
+                .values()
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            self.groups
+                .retain(|key, _| *key == DROP_KEY || referenced.contains(key));
+        }
+
+        fn apply(&mut self, change: &Change, pool: &[FibEntry]) {
+            match change {
+                Change::RegisterGroup { key, entries } => {
+                    // a group with no entries is refused: a route reaching one would leave the
+                    // forwarder with nothing to execute
+                    if entries.is_empty() {
+                        return;
+                    }
+                    let entries = entries.iter().map(|i| pool[*i].clone()).collect();
+                    self.groups.insert(*key, entries);
+                }
+                Change::UnregisterGroup { key } => {
+                    // the drop group is permanent, and a group a route still names is pinned
+                    if *key == DROP_KEY || self.referenced(*key) {
+                        return;
+                    }
+                    self.groups.remove(key);
+                }
+                Change::AddRoute { prefix, keys } => {
+                    // a route with no next-hops is refused, and so is one naming a group that was
+                    // never registered -- whole, not in part
+                    if keys.is_empty() || keys.iter().any(|k| !self.groups.contains_key(k)) {
+                        return;
+                    }
+                    // note: no purge here. Replacing a route releases the old route's hold on its
+                    // groups, but the fib leaves them in the store until something purges.
+                    self.routes.insert(*prefix, keys.clone());
+                }
+                Change::DelRoute { prefix } => {
+                    // a root route is not deleted but reset to drop, so that a lookup always has
+                    // an answer
+                    let removed = if *prefix == ROOT_V4 || *prefix == ROOT_V6 {
+                        self.routes.insert(*prefix, vec![DROP_KEY])
+                    } else {
+                        self.routes.remove(prefix)
+                    };
+                    if removed.is_some() {
+                        self.purge();
+                    }
+                }
+            }
+        }
+
+        /// The longest prefix carrying a route that covers `addr`.
+        fn lpm(&self, addr: &IpAddr, prefixes: &[Prefix]) -> Option<usize> {
+            self.routes
+                .keys()
+                .copied()
+                .filter(|i| prefixes[*i].covers_addr(addr))
+                .max_by_key(|i| prefixes[*i].length())
+        }
+
+        /// The entries a route offers: its groups' entries, concatenated in next-hop key order.
+        fn entries_for(&self, prefix: usize) -> Vec<FibEntry> {
+            self.routes[&prefix]
+                .iter()
+                .flat_map(|key| self.groups[key].iter().cloned())
+                .collect()
+        }
+    }
+
+    fn apply_to_fib(writer: &mut FibWriter, change: &Change, pool: &[FibEntry], keys: &[NhopKey]) {
+        let prefixes = prefixes();
+        match change {
+            Change::RegisterGroup { key, entries } => {
+                let entries: Vec<FibEntry> = entries.iter().map(|i| pool[*i].clone()).collect();
+                writer.register_fibgroup(&keys[*key], &build_fibgroup(&entries), true);
+            }
+            Change::UnregisterGroup { key } => writer.unregister_fibgroup(&keys[*key], true),
+            Change::AddRoute {
+                prefix,
+                keys: route,
+            } => {
+                let route = route.iter().map(|k| keys[*k].clone()).collect();
+                writer.add_fibroute(prefixes[*prefix], route, true);
+            }
+            Change::DelRoute { prefix } => writer.del_fibroute(prefixes[*prefix]),
+        }
+    }
+
+    /// The pools and the constants that index them agree.
+    #[test]
+    fn the_pools_are_the_size_the_generator_thinks() {
+        assert_eq!(nhop_keys().len(), usize::from(NUM_NHOPS));
+        assert_eq!(prefixes().len(), usize::from(NUM_PREFIXES));
+        assert_eq!(entry_pool().len(), usize::from(NUM_ENTRIES));
+        assert_eq!(nhop_keys()[DROP_KEY], NhopKey::with_drop());
+        assert_eq!(prefixes()[ROOT_V4], Prefix::root_v4());
+        assert_eq!(prefixes()[ROOT_V6], Prefix::root_v6());
+        for probe in probes() {
+            assert!(
+                prefixes().iter().any(|p| p.covers_addr(&probe)),
+                "probe {probe} is covered by no prefix, not even a root"
+            );
+        }
+    }
+
+    /// After any sequence of changes, a fib answers every lookup the way the model says.
+    ///
+    /// This is the whole of the fib's read path against an independent account of its contents:
+    /// which prefix the lookup lands on, and which entries the route there offers. It covers the
+    /// group store's sharing too, since registering a group under a key two routes name has to
+    /// change what both of them offer.
+    #[test]
+    fn a_fib_answers_lookups_the_way_the_model_says() {
+        let keys = nhop_keys();
+        let prefixes = prefixes();
+        let probes = probes();
+        let pool = entry_pool();
+
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (mut writer, _reader) = FibWriter::new(FibKey::from_vrfid(1));
+                let mut model = Model::new();
+
+                for (step, change) in changes.iter().enumerate() {
+                    apply_to_fib(&mut writer, change, &pool, &keys);
+                    model.apply(change, &pool);
+
+                    let fib = writer.enter().unwrap_or_else(|| unreachable!());
+                    let at = || format!("at step {step} of {changes:?}");
+
+                    assert_eq!(fib.len_groups(), model.groups.len(), "{}", at());
+
+                    for probe in &probes {
+                        let want = model
+                            .lpm(probe, &prefixes)
+                            .unwrap_or_else(|| panic!("model has no route for {probe} {}", at()));
+
+                        let (hit, route) = fib.lpm_with_prefix(probe);
+                        assert_eq!(hit, prefixes[want], "for {probe} {}", at());
+
+                        let got: Vec<FibEntry> = route
+                            .iter()
+                            .flat_map(|group| group.entries().iter().cloned())
+                            .collect();
+                        assert_eq!(got, model.entries_for(want), "for {probe} {}", at());
+                    }
+                }
+            });
+    }
+
+    /// A lookup always lands on a route with at least one entry to execute.
+    ///
+    /// `Fib::lpm_entry_prefix` panics outright on a route with none -- "hit route without
+    /// fibgroups/entries. This is a bug." -- on the forwarding path, for every packet that reaches
+    /// it. The invariant that saves it is held jointly by three guards in three files: the store
+    /// refuses an empty group, the writer refuses a route with no next-hop keys, and
+    /// `FibRoute::from_nhopkeys` refuses a route naming a group that is not registered. Nothing
+    /// states the invariant they add up to, so state it here.
+    #[test]
+    fn every_route_a_lookup_reaches_has_an_entry_to_execute() {
+        let keys = nhop_keys();
+        let probes = probes();
+        let pool = entry_pool();
+
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (mut writer, _reader) = FibWriter::new(FibKey::from_vrfid(1));
+                for change in &changes {
+                    apply_to_fib(&mut writer, change, &pool, &keys);
+                }
+
+                let fib = writer.enter().unwrap_or_else(|| unreachable!());
+                for probe in &probes {
+                    let (_, route) = fib.lpm_with_prefix(probe);
+                    assert!(route.len() > 0, "no entry for {probe} after {changes:?}");
+                    // and the index arithmetic that picks among them is total over that range
+                    for index in 0..route.len() {
+                        let _ = route.get_fibentry(index);
+                    }
+                }
+            });
+    }
+
+    /// A reader sees what the writer sees, once every change has been published.
+    #[test]
+    fn a_reader_and_a_writer_agree_after_publishing() {
+        let keys = nhop_keys();
+        let probes = probes();
+        let pool = entry_pool();
+
+        bolero::check!()
+            .with_generator(ChangeSequences)
+            .cloned()
+            .for_each(|changes: Vec<Change>| {
+                let (mut writer, reader) = FibWriter::new(FibKey::from_vrfid(1));
+                for change in &changes {
+                    apply_to_fib(&mut writer, change, &pool, &keys);
+                }
+
+                for probe in &probes {
+                    let (want_prefix, want_entries) = {
+                        let fib = writer.enter().unwrap_or_else(|| unreachable!());
+                        let (prefix, route) = fib.lpm_with_prefix(probe);
+                        let entries: Vec<FibEntry> = route
+                            .iter()
+                            .flat_map(|group| group.entries().iter().cloned())
+                            .collect();
+                        (prefix, entries)
+                    };
+
+                    let (got_prefix, route) = reader
+                        .lpm_route_with_prefix(*probe)
+                        .unwrap_or_else(|| unreachable!());
+                    let got_entries: Vec<FibEntry> = route
+                        .iter()
+                        .flat_map(|group| group.entries().iter().cloned())
+                        .collect();
+
+                    assert_eq!(got_prefix, want_prefix, "for {probe} after {changes:?}");
+                    assert_eq!(got_entries, want_entries, "for {probe} after {changes:?}");
+                }
+            });
+    }
+}
