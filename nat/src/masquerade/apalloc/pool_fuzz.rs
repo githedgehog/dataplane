@@ -8,16 +8,19 @@
 
 #![cfg(test)]
 
-use super::alloc::{PoolSet, map_address};
+use super::alloc::{NatPool, PoolSet, Tenancy, map_address};
 use super::region::AddrInterval;
+use super::reserved::ReservedPorts;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
+use concurrency::sync::{Arc, mpsc};
 use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::thread;
 use std::time::Duration;
 
 // 10.1.0.0, with a window small enough that regions stay cheap to build.
@@ -332,6 +335,174 @@ fn a_freed_port_block_is_reused_while_its_address_is_held() {
     assert!(pool_sets[0].allocate(false).is_err());
 }
 
+/// An address that has run out of port blocks must neither strand the addresses behind it nor be
+/// reported as an empty pool.
+///
+/// Both halves are about the *reason* an allocation fails rather than whether it fails. Ending the
+/// scan at an exhausted address would refuse a request that the address behind it could have
+/// served; and answering `NoFreeIp` -- which the draw step reports whenever the bitmap is empty --
+/// hides why the addresses already in use could not help. The two are not the same operational
+/// problem: an empty bitmap wants more addresses, whereas exhausted port blocks want the block
+/// allocator looked at, and that distinction is read straight off the log line an operator sees.
+///
+/// Reaching the state needs a second thread but not a race. Port blocks are handed out per thread,
+/// so a block held elsewhere keeps `has_free_ports` true on the first address while this thread can
+/// no longer obtain a block of its own on it -- which is what makes every later scan reach that
+/// address, fail on it, and have to carry on past it. The handshake makes the arrangement
+/// deterministic.
+#[test]
+#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
+fn an_exhausted_address_neither_strands_its_neighbours_nor_reads_as_an_empty_pool() {
+    const PORTS_PER_BLOCK: usize = 256;
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: u128 = 2;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+        &specs,
+        NextHeader::TCP,
+        false,
+    ));
+
+    // The helper takes a block on the first address and keeps a single port in it. The block is no
+    // longer free, but it still has room, so that address never stops reporting free ports.
+    let (took_block, block_taken) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let helper_sets = Arc::clone(&pool_sets);
+    let helper = thread::spawn(move || {
+        let held = helper_sets[0]
+            .allocate(false)
+            .expect("the first allocation on an empty pool");
+        took_block.send(()).expect("the test thread is waiting");
+        // A failing test drops the sender; the helper has nothing to add to that diagnosis.
+        let _ = released.recv();
+        drop(held);
+    });
+    block_taken.recv().expect("the helper takes a block");
+
+    let ports = usize::try_from(ADDRESSES).unwrap_or_else(|_| unreachable!()) * PORTS_PER_ADDRESS;
+    let mut held = Vec::with_capacity(ports - PORTS_PER_BLOCK);
+    let outcome = loop {
+        match pool_sets[0].allocate(false) {
+            Ok(allocation) => held.push(allocation),
+            Err(e) => break e,
+        }
+        // The pool cannot hand out more than it holds. Bounding the walk turns a pool that frees
+        // an address it should not into a failure rather than a hang.
+        assert!(
+            held.len() <= ports,
+            "the pool handed out more ports than it has"
+        );
+    };
+
+    assert_eq!(
+        held.len(),
+        ports - PORTS_PER_BLOCK,
+        "the scan stopped at the exhausted address instead of carrying on past it"
+    );
+    assert_eq!(
+        outcome,
+        AllocatorError::NoPortBlock,
+        "an address out of port blocks was reported as an empty pool"
+    );
+
+    // The exhaustion is transient: the block returns once the helper's last port does.
+    release.send(()).expect("the helper is waiting");
+    helper.join().expect("the helper thread panicked");
+    assert!(
+        pool_sets[0].allocate(false).is_ok(),
+        "the released block was never handed back"
+    );
+}
+
+/// A pool whose addresses are all in use and all out of ports reports the port shortage rather
+/// than an empty pool.
+///
+/// The sibling test above reaches this through a block held on another thread, which leaves one
+/// address still answering `has_free_ports`. Here nothing is held elsewhere and every address is
+/// drained flat, so the reuse scan skips all of them and the draw that follows finds an empty
+/// bitmap -- the shape that used to answer `NoFreeIp`, because skipping an address left the
+/// initial value of `outcome` untouched.
+///
+/// The distinction is what an operator acts on. `NoFreeIp` says to add public addresses; this pool
+/// has every address it was configured with and is using all of them, so the shortage is ports.
+#[test]
+#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
+fn a_pool_out_of_ports_is_not_reported_as_a_pool_out_of_addresses() {
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: u128 = 2;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+
+    let ports = usize::try_from(ADDRESSES).unwrap_or_else(|_| unreachable!()) * PORTS_PER_ADDRESS;
+    let mut held = Vec::with_capacity(ports);
+    let outcome = loop {
+        match pool_sets[0].allocate(false) {
+            Ok(allocation) => held.push(allocation),
+            Err(e) => break e,
+        }
+        // Bounding the walk turns a pool that hands out more than it holds into a failure rather
+        // than a hang.
+        assert!(
+            held.len() <= ports,
+            "the pool handed out more ports than it has"
+        );
+    };
+
+    assert_eq!(
+        held.len(),
+        ports,
+        "the pool refused while it still had ports to give"
+    );
+    assert_eq!(
+        outcome,
+        AllocatorError::NoPortBlock,
+        "a pool out of ports was reported as a pool out of addresses"
+    );
+}
+
+/// The in-use list must not grow as allocations come and go.
+///
+/// An address is handed back by whichever side reaches the pool first, so the bitmap stays honest
+/// with or without the sweep -- but nothing else prunes the list itself. An entry left behind is
+/// both dead weight the next scan has to walk and a slot that is never reclaimed, so a long-lived
+/// pool serving short-lived flows would grow one entry per flow.
+#[test]
+fn the_in_use_list_does_not_grow_as_allocations_come_and_go() {
+    const ROUNDS: usize = 64;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let allocator = pool_sets[0]
+        .regions()
+        .next()
+        .expect("one region over one address")
+        .allocator();
+
+    for _ in 0..ROUNDS {
+        // Taking the pool's only address and releasing it again leaves an entry whose weak
+        // reference no longer upgrades.
+        drop(pool_sets[0].allocate(false).expect("the pool has room"));
+    }
+
+    let (_, in_use) = allocator.get_pool_clone_for_tests();
+    assert!(
+        in_use.len() <= 1,
+        "the in-use list grew to {} entries over {ROUNDS} allocations",
+        in_use.len()
+    );
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // IPv6
 ///////////////////////////////////////////////////////////////////////////////
@@ -471,4 +642,146 @@ fn a_shared_region_honours_the_claims_of_every_owner() {
     pool_sets[1]
         .reserve(address, free_port)
         .expect("an unclaimed port of a shared region is still available");
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Tenancy bookkeeping
+///////////////////////////////////////////////////////////////////////////////
+
+/// Addresses in the pool the tenancy properties run against. Small, so operations collide on the
+/// same offset often -- re-issue and stale hand-back are the interesting cases and both need two
+/// leases on one address.
+const TENANCY_POOL_SIZE: u32 = 3;
+const TENANCY_OPS: usize = 32;
+/// Bitmap indices are zero-based only for IPv6, whose addresses do not fit a `u32`. For IPv4 the
+/// index *is* the address, so these properties have to speak in absolute values.
+#[allow(clippy::cast_possible_truncation)]
+const TENANCY_BASE: u32 = BASE as u32;
+
+/// One step against a pool's tenancy bookkeeping.
+///
+/// `Abandon` is the state that motivates the whole scheme: an address whose owner is gone without
+/// having handed it back. It is reachable in production only by losing a race, so it is modelled
+/// directly here rather than waited for.
+#[derive(Debug, Clone, Copy, TypeGenerator)]
+enum TenancyOp {
+    Lease(u8),
+    HandBack(u8),
+    HandBackStale(u8),
+    Abandon(u8),
+    Reclaim,
+}
+
+impl TenancyOp {
+    fn offset(self) -> u32 {
+        let raw = match self {
+            TenancyOp::Lease(o)
+            | TenancyOp::HandBack(o)
+            | TenancyOp::HandBackStale(o)
+            | TenancyOp::Abandon(o) => o,
+            TenancyOp::Reclaim => 0,
+        };
+        TENANCY_BASE + (u32::from(raw) % TENANCY_POOL_SIZE)
+    }
+}
+
+/// Every address is either free in the bitmap or currently leased. Never both, never neither.
+///
+/// "Neither" is the defect this machinery exists to prevent: an address whose owner has released
+/// it but whose hand-back has not landed is absent from both, and an allocation that consults them
+/// is told the pool is empty while the pool is holding an address belonging to no one. Stating it
+/// as a partition means any future change that reintroduces the gap fails here, whatever route it
+/// takes to get there.
+fn assert_partition(pool: &NatPool<Ipv4Addr>, after: &str) {
+    for offset in TENANCY_BASE..TENANCY_BASE + TENANCY_POOL_SIZE {
+        let free = pool.bitmap_contains_for_tests(offset);
+        let leased = pool.current_tenancy_for_tests(offset).is_some();
+        assert!(
+            free != leased,
+            "offset {offset} is in {} after {after}",
+            if free {
+                "both the bitmap and a lease"
+            } else {
+                "neither the bitmap nor a lease"
+            },
+        );
+    }
+}
+
+#[test]
+fn an_address_is_always_either_free_or_leased() {
+    bolero::check!()
+        .with_type()
+        .cloned()
+        .for_each(|ops: Vec<TenancyOp>| {
+            let mut pool = NatPool::<Ipv4Addr>::for_range(
+                AddrInterval::new(BASE, BASE + u128::from(TENANCY_POOL_SIZE) - 1),
+                ReservedPorts::default(),
+                true,
+            );
+            // Tenancies handed out per offset, most recent last, so a stale one can be replayed.
+            let mut history: BTreeMap<u32, Vec<Tenancy>> = BTreeMap::new();
+            let mut every_tenancy = BTreeSet::new();
+
+            assert_partition(&pool, "construction");
+
+            for op in ops.into_iter().take(TENANCY_OPS) {
+                let offset = op.offset();
+                match op {
+                    // Only lease what is free; leasing over a live lease is the re-issue case and
+                    // is covered by `Abandon` followed by `Lease`.
+                    TenancyOp::Lease(_) => {
+                        if pool.current_tenancy_for_tests(offset).is_none() {
+                            let tenancy = pool.begin_tenancy_for_tests(offset);
+                            assert!(
+                                every_tenancy.insert(tenancy),
+                                "tenancy {tenancy:?} was handed out twice"
+                            );
+                            history.entry(offset).or_default().push(tenancy);
+                        }
+                    }
+                    TenancyOp::HandBack(_) => {
+                        if let Some(current) = pool.current_tenancy_for_tests(offset) {
+                            assert!(
+                                pool.end_tenancy_for_tests(offset, current),
+                                "the current lease was refused"
+                            );
+                            assert!(
+                                !pool.end_tenancy_for_tests(offset, current),
+                                "handing the same lease back twice was accepted"
+                            );
+                        }
+                    }
+                    // A lease that has been retired must never free whatever holds the address now.
+                    TenancyOp::HandBackStale(_) => {
+                        let current = pool.current_tenancy_for_tests(offset);
+                        if let Some(stale) = history
+                            .get(&offset)
+                            .and_then(|seen| seen.iter().find(|t| Some(**t) != current))
+                        {
+                            assert!(
+                                !pool.end_tenancy_for_tests(offset, *stale),
+                                "a retired lease was allowed to hand the address back"
+                            );
+                            assert_eq!(
+                                pool.current_tenancy_for_tests(offset),
+                                current,
+                                "a retired lease disturbed the current one"
+                            );
+                        }
+                    }
+                    TenancyOp::Abandon(_) => {
+                        if let Some(current) = pool.current_tenancy_for_tests(offset) {
+                            pool.plant_dead_entry_for_tests(offset, current);
+                        }
+                    }
+                    TenancyOp::Reclaim => pool.reclaim_ended_tenancies_for_tests(),
+                }
+                assert_partition(&pool, &format!("{op:?}"));
+            }
+
+            // Whatever the sequence, running the backstop leaves no address stranded.
+            pool.reclaim_ended_tenancies_for_tests();
+            assert_partition(&pool, "a final reclaim");
+        });
 }

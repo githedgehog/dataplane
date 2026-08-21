@@ -11,12 +11,46 @@ use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use concurrency::thread;
 use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 use tracing::{debug, error};
+
+///////////////////////////////////////////////////////////////////////////////
+// Tenancy
+///////////////////////////////////////////////////////////////////////////////
+
+/// Identifies one lease of one public address, so that a lease which has ended cannot be confused
+/// with the lease that replaced it.
+///
+/// A [`NatPool`] hands an address out at most once per tenancy. The address returns to the pool
+/// when its tenancy ends, and ending a tenancy that is no longer the current one does nothing. That
+/// is what makes the hand-back safe to perform from either side: an [`AllocatedIp`] releasing
+/// itself, or an allocation reclaiming an address whose owner has already gone away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Tenancy(u64);
+
+impl Tenancy {
+    /// The tenancy handed to the first lease of any address in a pool.
+    const FIRST: Tenancy = Tenancy(0);
+
+    /// The tenancy that follows this one.
+    ///
+    /// Wrapping is not a correctness concern: distinguishing a lease from its successor only
+    /// requires that a `u64` counter not wrap while a single `AllocatedIp` is being dropped.
+    fn next(self) -> Tenancy {
+        Tenancy(self.0.wrapping_add(1))
+    }
+}
+
+/// Bounds retries while an address changes hands.
+///
+/// Mirrors `BLOCK_LOOKUP_ATTEMPTS` in the port allocator, for the same reason: two steps that each
+/// read a consistent pool can still straddle a change made between them.
+const ADDRESS_LOOKUP_ATTEMPTS: usize = 4;
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -41,8 +75,8 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         self.pool.read()
     }
 
-    fn deallocate_ip(&self, ip: I) {
-        self.pool.write().deallocate_from_pool(ip);
+    fn deallocate_ip(&self, ip: I, tenancy: Tenancy) {
+        self.pool.write().deallocate_from_pool(ip, tenancy);
     }
 
     fn reuse_allocated_ip(
@@ -61,16 +95,41 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                 };
                 examined.push(ip.clone());
                 if !ip.has_free_ports() {
+                    // Skipping is right -- another address may still have room -- but skipping
+                    // silently is not. `outcome` starts at `NoFreeIp`, so a pool whose every
+                    // address is port-exhausted would leave it untouched and report "no free IP
+                    // available" for a pool that has no shortage of addresses at all. That sends
+                    // an operator to the wrong end of the problem: an empty bitmap wants more
+                    // addresses, whereas exhausted port blocks want the block allocator looked at.
+                    //
+                    // `has_free_ports` is false only when the address has no block left to draw
+                    // and no free port in the blocks it already holds, so `NoPortBlock` is the
+                    // accurate reading. Recording it rather than breaking keeps the scan going,
+                    // and a later address that succeeds still overwrites this.
+                    outcome = Err(AllocatorError::NoPortBlock);
                     continue;
                 }
+                let addr = ip.ip();
                 match ip.allocate_port_for_ip(allow_null) {
                     Ok(port) => {
                         debug!("Allocated port {port}");
                         outcome = Ok(port);
                         break;
                     }
-                    // If there is no free port left, loop again to try another IP address
-                    Err(AllocatorError::NoFreePort(_)) => {}
+                    // This address is out of space, but another may still have room: keep
+                    // scanning. Running out of port blocks is exhaustion just as much as running
+                    // out of ports within a block, and ending the scan there would strand every
+                    // address behind this one in the list.
+                    //
+                    // Matching the whole exhaustion class rather than naming the port errors keeps
+                    // this honest if that class grows. It cannot swallow `NoFreeIp`, which is also
+                    // in the class: allocating a port for an address the caller already holds has
+                    // no address to run out of, so the port allocator never returns it.
+                    Err(e) if e.is_exhaustion() => {
+                        debug!("Address {addr} is out of space: {e}");
+                        outcome = Err(e);
+                    }
+                    // Anything else describes allocator failure, not exhaustion. Report it.
                     Err(e) => {
                         outcome = Err(e);
                         break;
@@ -85,9 +144,9 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
 
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let mut allocated_ips = self.pool.write();
-        let new_ip = allocated_ips.use_new_ip(self.clone(), self.randomize)?;
+        let (offset, new_ip) = allocated_ips.use_new_ip(self.clone(), self.randomize)?;
         let arc_ip = Arc::new(new_ip);
-        allocated_ips.add_in_use(&arc_ip);
+        allocated_ips.add_in_use(offset, &arc_ip);
         debug!("Allocated new ip {}", arc_ip.ip());
         Ok(arc_ip)
     }
@@ -114,16 +173,51 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        // FIXME: Should we clean up every time??
-        self.cleanup_used_ips();
+        // Reusing an address and drawing a fresh one each read a pool that is internally
+        // consistent, but the decision to move from the first to the second is taken between them,
+        // and the pool can change in the gap. Two flows starting at once on a pool whose address
+        // does not yet exist is enough: the loser's scan finds nothing, and by the time it draws,
+        // the winner holds the only address, so it reports exhaustion for a pool that could serve
+        // it. Releases move the state the other way just as easily. Neither step is wrong on its
+        // own; the pair just needs to be retried when it straddles a change.
+        //
+        // Bounded, and never reports success it did not achieve -- if the pool really is empty,
+        // every attempt fails the same way and the last reason is returned.
+        let mut exhausted = None;
+        for _ in 0..ADDRESS_LOOKUP_ATTEMPTS {
+            // FIXME: Should we clean up every time??
+            self.cleanup_used_ips();
 
-        // Draw a fresh address only when the addresses already in use are exhausted. Other errors
-        // describe allocator failure and must be preserved.
-        match self.reuse_allocated_ip(allow_null) {
-            Ok(port) => Ok(port),
-            Err(e) if e.is_exhaustion() => self.allocate_from_new_ip(allow_null),
-            Err(e) => Err(e),
+            // Draw a fresh address only when the addresses already in use are exhausted. Other
+            // errors describe allocator failure and must be preserved.
+            let reuse = match self.reuse_allocated_ip(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(reuse) if reuse.is_exhaustion() => reuse,
+                Err(e) => return Err(e),
+            };
+
+            match self.allocate_from_new_ip(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(drawn) if drawn.is_exhaustion() => {
+                    // Drawing reports `NoFreeIp` whenever the bitmap is empty, which for a
+                    // single-address pool is always. That answer hides why the addresses already
+                    // in use could not serve the request, and the two are not the same operational
+                    // problem: an empty bitmap wants more addresses, whereas exhausted port blocks
+                    // want the block allocator looked at. So the draw only gets the last word when
+                    // it has something to say beyond an empty bitmap.
+                    exhausted = Some(if matches!(drawn, AllocatorError::NoFreeIp) {
+                        reuse
+                    } else {
+                        drawn
+                    });
+                    thread::yield_now();
+                }
+                Err(drawn) => return Err(drawn),
+            }
         }
+
+        debug!("Address lookup changed {ADDRESS_LOOKUP_ATTEMPTS} times");
+        Err(exhausted.unwrap_or(AllocatorError::NoFreeIp))
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
@@ -150,7 +244,10 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     #[cfg(test)]
     pub fn get_pool_clone_for_tests(&self) -> (RoaringBitmap, VecDeque<Weak<AllocatedIp<I>>>) {
         let pool = self.pool.read();
-        (pool.bitmap.0.clone(), pool.in_use.clone())
+        (
+            pool.bitmap.0.clone(),
+            pool.in_use.iter().map(|entry| entry.ip.clone()).collect(),
+        )
     }
 }
 
@@ -250,6 +347,9 @@ impl<I: NatIpWithBitmap> PoolSet<I> {
 #[derive(Debug)]
 pub(crate) struct AllocatedIp<I: NatIpWithBitmap> {
     ip: I,
+    /// The lease this address was handed out under. Returned to the pool on drop so the pool can
+    /// tell a stale hand-back from a live one.
+    tenancy: Tenancy,
     port_allocator: port_alloc::PortAllocator<I>,
     ip_allocator: IpAllocator<I>,
 }
@@ -261,10 +361,12 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         reserved: ReservedForAddr,
         randomize: bool,
         exclude_wellknown_ports: bool,
+        tenancy: Tenancy,
     ) -> Self {
         let port_allocator = PortAllocator::new(reserved, randomize, exclude_wellknown_ports);
         Self {
             ip,
+            tenancy,
             port_allocator,
             ip_allocator,
         }
@@ -280,6 +382,10 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
     /// creates one honours the reservations without having to be told about them.
     pub(crate) fn reserved_ports(&self) -> &ReservedForAddr {
         self.port_allocator.reserved_ports()
+    }
+
+    fn tenancy(&self) -> Tenancy {
+        self.tenancy
     }
 
     // Used for Display; should probably not be accessed directly anywhere else
@@ -321,7 +427,7 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
 
 impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
     fn drop(&mut self) {
-        self.ip_allocator.deallocate_ip(self.ip);
+        self.ip_allocator.deallocate_ip(self.ip, self.tenancy);
     }
 }
 
@@ -329,18 +435,44 @@ impl<I: NatIpWithBitmap> Drop for AllocatedIp<I> {
 // NatPool
 ///////////////////////////////////////////////////////////////////////////////
 
+/// One address this pool has handed out, and the lease it was handed out under.
+///
+/// The weak reference alone cannot answer "is this address available?". It stops resolving the
+/// moment the last [`AllocatedPort`](port_alloc::AllocatedPort) goes away, which is *before*
+/// `AllocatedIp::drop` runs and returns the address to the bitmap. Recording the offset and the
+/// tenancy next to the weak reference lets whoever notices first finish the hand-back, so the
+/// address is never absent from both the bitmap and this list.
+#[derive(Debug)]
+struct InUseEntry<I: NatIpWithBitmap> {
+    offset: u32,
+    tenancy: Tenancy,
+    ip: Weak<AllocatedIp<I>>,
+}
+
 /// A [`NatPool`] is a pool of IP addresses that can be allocated from. It contains a bitmap of
 /// available IP addresses, and a list of weak references to [`AllocatedIp`] objects representing
 /// the allocated IPs potentially available for use (if they still have free ports)
+///
+/// # Invariant
+///
+/// Every address of the pool is either free in `bitmap` or has a current tenancy in `tenancies`,
+/// never both and never neither. `tenancies` is what makes that invariant maintainable: it is
+/// updated in the same critical section as `bitmap`, whereas the liveness of an `AllocatedIp`
+/// changes on whatever thread happens to drop the last reference to it.
 #[derive(Debug)]
 pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap: PoolBitmap,
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
-    in_use: VecDeque<Weak<AllocatedIp<I>>>,
+    in_use: VecDeque<InUseEntry<I>>,
     /// The public tuples of this region that port forwarding may claim. Applied to every address as
     /// it is put to use, so masquerade never hands one of them out.
     reserved: ReservedPorts,
+    /// The current tenancy of every address not free in `bitmap`. An address is removed from here
+    /// exactly when it returns to the bitmap.
+    tenancies: BTreeMap<u32, Tenancy>,
+    /// The tenancy the next lease of any address in this pool will be handed.
+    next_tenancy: Tenancy,
     exclude_wellknown_ports: bool,
 }
 
@@ -372,61 +504,212 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
             reserved,
+            tenancies: BTreeMap::new(),
+            next_tenancy: Tenancy::FIRST,
             exclude_wellknown_ports,
         }
     }
 
-    fn add_in_use(&mut self, ip: &Arc<AllocatedIp<I>>) {
-        self.in_use.push_back(Arc::downgrade(ip));
+    /// Take the address at `offset` out of the bitmap and record the lease it is handed out under.
+    ///
+    /// Overwriting an existing tenancy is deliberate: it retires the previous lease, so that
+    /// lease's eventual hand-back becomes a no-op rather than freeing an address this pool has
+    /// already re-issued.
+    fn begin_tenancy(&mut self, offset: u32) -> Tenancy {
+        let tenancy = self.next_tenancy;
+        self.next_tenancy = tenancy.next();
+        self.bitmap.set_ip_allocated(offset);
+        self.tenancies.insert(offset, tenancy);
+        tenancy
+    }
+
+    /// Return the address at `offset` to the bitmap, but only if `tenancy` is still its current
+    /// lease.
+    ///
+    /// Returns whether the hand-back happened. A `false` answer means some other caller already
+    /// completed it, or the pool has since re-issued the address; neither is an error, and both
+    /// must leave the bitmap alone.
+    fn end_tenancy(&mut self, offset: u32, tenancy: Tenancy) -> bool {
+        if self.tenancies.get(&offset) != Some(&tenancy) {
+            return false;
+        }
+        self.tenancies.remove(&offset);
+        self.bitmap.set_ip_free(offset);
+        true
+    }
+
+    // Reach the tenancy bookkeeping directly from tests. The states worth asserting on -- a lease
+    // retired while its owner's `Drop` is still in flight -- need two threads to reach for real,
+    // so the invariant is pinned on the pool instead of raced for.
+    #[cfg(test)]
+    pub(crate) fn begin_tenancy_for_tests(&mut self, offset: u32) -> Tenancy {
+        self.begin_tenancy(offset)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn end_tenancy_for_tests(&mut self, offset: u32, tenancy: Tenancy) -> bool {
+        self.end_tenancy(offset, tenancy)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bitmap_contains_for_tests(&self, offset: u32) -> bool {
+        self.bitmap.0.contains(offset)
+    }
+
+    /// Plant an entry whose address is already gone, so the reclaim path can be driven without a
+    /// second thread. `Weak::new()` never upgrades and reports a strong count of zero, which is
+    /// exactly the state a released address is in before its `Drop` reaches this pool.
+    #[cfg(test)]
+    pub(crate) fn plant_dead_entry_for_tests(&mut self, offset: u32, tenancy: Tenancy) {
+        self.in_use.push_back(InUseEntry {
+            offset,
+            tenancy,
+            ip: Weak::new(),
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reclaim_ended_tenancies_for_tests(&mut self) {
+        self.reclaim_ended_tenancies();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_use_len_for_tests(&self) -> usize {
+        self.in_use.len()
+    }
+
+    /// The lease currently held on the address at `offset`, if any.
+    ///
+    /// Together with the bitmap this is the whole of the pool's opinion about an address, which is
+    /// what lets a test assert the partition the allocator is supposed to maintain.
+    #[cfg(test)]
+    pub(crate) fn current_tenancy_for_tests(&self, offset: u32) -> Option<Tenancy> {
+        self.tenancies.get(&offset).copied()
+    }
+
+    /// Finish the hand-back of every address whose `AllocatedIp` is gone, dropping their entries.
+    ///
+    /// This is the other half of the [`InUseEntry`] contract: the thread that dropped the last
+    /// reference may still be waiting for this pool's lock, so any caller that holds the lock and
+    /// sees a dead weak reference completes the hand-back on its behalf.
+    ///
+    /// Deliberately not shared with [`NatPool::cleanup`], which it otherwise resembles. `cleanup`
+    /// upgrades each entry and hands the resulting `Arc`s to its caller to drop after the guard is
+    /// released; this runs with the write lock held and must never mint an `Arc` at all, because
+    /// the one it minted could be the last and `AllocatedIp::drop` takes that same lock. Reading
+    /// `strong_count` answers the liveness question without that hazard.
+    fn reclaim_ended_tenancies(&mut self) {
+        let mut ended = Vec::new();
+        self.in_use.retain(|entry| {
+            if entry.ip.strong_count() > 0 {
+                return true;
+            }
+            ended.push((entry.offset, entry.tenancy));
+            false
+        });
+        for (offset, tenancy) in ended {
+            if self.end_tenancy(offset, tenancy) {
+                debug!("Reclaimed address at offset {offset} from an ended tenancy");
+            }
+        }
+    }
+
+    fn add_in_use(&mut self, offset: u32, ip: &Arc<AllocatedIp<I>>) {
+        self.in_use.push_back(InUseEntry {
+            offset,
+            tenancy: ip.tenancy(),
+            ip: Arc::downgrade(ip),
+        });
     }
 
     /// Drop the entries whose addresses are gone, handing the caller every address that is still
     /// alive so it can release them once the pool lock is no longer held. See `cleanup_used_ips`.
+    ///
+    /// Dropping an entry also completes that address's hand-back, so pruning the list can never
+    /// lose track of an address.
     fn cleanup(&mut self, keep_alive: &mut Vec<Arc<AllocatedIp<I>>>) {
-        self.in_use.retain(|ip| match ip.upgrade() {
-            Some(alive) => {
+        let mut ended = Vec::new();
+        self.in_use.retain(|entry| {
+            if let Some(alive) = entry.ip.upgrade() {
                 keep_alive.push(alive);
-                true
+                return true;
             }
-            None => false,
+            ended.push((entry.offset, entry.tenancy));
+            false
         });
+        for (offset, tenancy) in ended {
+            self.end_tenancy(offset, tenancy);
+        }
     }
 
     pub(crate) fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
-        self.in_use.iter()
+        self.in_use.iter().map(|entry| &entry.ip)
     }
 
     fn use_new_ip(
         &mut self,
         ip_allocator: IpAllocator<I>,
         randomize: bool,
-    ) -> Result<AllocatedIp<I>, AllocatorError> {
+    ) -> Result<(u32, AllocatedIp<I>), AllocatorError> {
         // Retrieve the first available offset
-        let offset = self.bitmap.pop_ip()?;
+        let offset = match self.bitmap.pop_ip() {
+            Ok(offset) => offset,
+            Err(empty) => {
+                // The bitmap being empty is not proof the pool is: an address whose last lease
+                // ended a moment ago is not in the bitmap yet, and no longer reachable through
+                // `in_use` either. Finish those hand-backs -- under the same lock as the retry, so
+                // the answer cannot go stale between the two -- before reporting exhaustion.
+                self.reclaim_ended_tenancies();
+                self.bitmap.pop_ip().map_err(|_| empty)?
+            }
+        };
 
         // the ip being allocated
-        let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
+        let ip = match I::try_from_offset(offset, &self.bitmap_mapping) {
+            Ok(ip) => ip,
+            Err(e) => {
+                // The offset has left the bitmap but has no tenancy yet, so returning here would
+                // leave it in the "neither" state this type's invariant rules out -- the same
+                // state the hand-back window used to produce. Nothing can reach it today (v4
+                // offsets convert infallibly, and v6 offsets come from the very mapping this
+                // consults), but an invariant that holds only because its violation is currently
+                // unreachable stops holding the moment either side of that changes. Put the
+                // address back rather than rely on the argument.
+                self.bitmap.set_ip_free(offset);
+                return Err(e);
+            }
+        };
+        let tenancy = self.begin_tenancy(offset);
 
         // determine the set of reserved ports that cannot be allocated for this ip
         let reserved = self.reserved.for_addr(ip.to_ip_addr());
 
-        Ok(AllocatedIp::new(
-            ip,
-            ip_allocator,
-            reserved,
-            randomize,
-            self.exclude_wellknown_ports,
+        Ok((
+            offset,
+            AllocatedIp::new(
+                ip,
+                ip_allocator,
+                reserved,
+                randomize,
+                self.exclude_wellknown_ports,
+                tenancy,
+            ),
         ))
     }
 
-    fn deallocate_from_pool(&mut self, ip: I) {
+    fn deallocate_from_pool(&mut self, ip: I, tenancy: Tenancy) {
         debug!("Address {ip} was deallocated");
         // The address was handed out by this pool, so it maps back into it. This runs while an
         // allocation is being dropped and has nowhere to report a failure, so say so and leave the
         // address marked in use rather than panicking on the drop path.
         match I::try_to_offset(ip, &self.reverse_bitmap_mapping) {
             Ok(offset) => {
-                self.bitmap.set_ip_free(offset);
+                if !self.end_tenancy(offset, tenancy) {
+                    // An allocation noticed this lease had ended and completed the hand-back
+                    // already, possibly re-issuing the address in the process. Freeing it here
+                    // would hand the same address to a second `AllocatedIp`.
+                    debug!("Address {ip} was already handed back before its lease was dropped");
+                }
             }
             Err(e) => error!("Address {ip} does not map back into the pool it came from: {e}"),
         }
@@ -457,12 +740,12 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
         // Allocate the IP now.
         //
-        // If the IP was already allocated in the bitmap, this is OK: it means that the IP was
-        // allocated in the past, it is no longer in used (because it is not in the list of in-use
-        // IPs), but we haven't deallocated from the bitmap yet (this happens when another thread
-        // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
-        // function to remove the IP from the bitmap in that other thread yet).
-        let _ = self.bitmap.set_ip_allocated(offset);
+        // The address may still be marked allocated in the bitmap: it was handed out in the past
+        // and is no longer in use (it is not in the list of in-use IPs), but the thread dropping
+        // the previous `AllocatedIp` has not reached this pool's lock yet. Opening a new tenancy
+        // retires that previous lease, so when its drop does arrive it will not free an address
+        // this reservation now owns. `begin_tenancy` takes the address out of the bitmap itself.
+        let tenancy = self.begin_tenancy(offset);
 
         // Reservations apply here as well: an address put to use by carrying a live masquerade flow
         // over to a new allocator must not be able to re-take a port that port forwarding claims.
@@ -472,8 +755,9 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             self.reserved.for_addr(ip.to_ip_addr()),
             randomize,
             self.exclude_wellknown_ports,
+            tenancy,
         ));
-        self.add_in_use(&arc_ip);
+        self.add_in_use(offset, &arc_ip);
         Ok(arc_ip)
     }
 

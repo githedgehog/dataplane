@@ -488,3 +488,185 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
         }
     });
 }
+
+/// An address whose last lease has just ended must not vanish from the pool.
+///
+/// An address is reachable through the in-use list only while an allocation still holds it, and
+/// through the bitmap only once its hand-back has completed. `Weak` stops resolving the moment the
+/// last `AllocatedPort` goes away, which is strictly before `AllocatedIp::drop` reaches the pool
+/// lock, so an allocation landing in between used to find the address in neither and report
+/// exhaustion. On a one-address pool that is the whole pool, and the packet is dropped.
+///
+/// This is the shape DNS traffic takes. A reply from port 53 moves the flow to
+/// [`NatFlowStatus::Closed`](crate::common::NatFlowStatus::Closed), which invalidates the pair at
+/// once to conserve ports, so a pool carrying only DNS destroys and rebuilds its address once per
+/// query, and the next query races the hand-back of the last one.
+///
+/// Deliberately one fixed shape rather than a generated one, and kept alongside the generated
+/// sibling below rather than replaced by it. One address, one releaser, one allocator is the
+/// minimal configuration that reproduces the field failure, and it is a case of special interest:
+/// it is what the affected deployments actually run, and against the unfixed allocator it fails
+/// here with the same error those deployments logged. A generator would explore more and, when it
+/// did fail, shrink to something less immediately recognisable as the reported bug.
+#[concurrency::model_test]
+fn an_allocation_racing_the_last_release_is_still_served() {
+    concurrency::stress(|| {
+        // One address, so a hand-back in flight is the pool's entire capacity. This is the shape
+        // the masquerade exposes actually deploy: one public address per peering.
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            IDLE_TIMEOUT,
+        )];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let allocation = pools[0].allocate(false).expect("the pool can serve");
+
+        let releaser = thread::spawn(move || drop(allocation));
+        let claimant = {
+            let pools = pools.clone();
+            thread::spawn(move || pools[0].allocate(false))
+        };
+
+        let outcome = claimant.join().expect("the allocating thread panicked");
+        releaser.join().expect("the releasing thread panicked");
+
+        // Whichever order the two threads take, the pool has room to serve: either the address is
+        // still held, and has its remaining ports, or it has been handed back and can be drawn
+        // afresh. There is no interleaving in which the only correct answer is "out of resources".
+        assert!(
+            outcome.is_ok(),
+            "an allocation racing the release of the only address was refused: {:?}",
+            outcome.as_ref().err()
+        );
+    });
+}
+
+/// Addresses and workers for the generated hand-back scenarios. Both small: the race needs an
+/// address to reach zero references, and every extra worker makes some flow more likely to be
+/// holding one at all times, which hides the window rather than exposing it. Worker counts start
+/// at two because a lone worker has nothing to race.
+const MAX_HANDBACK_ADDRESSES: u8 = 3;
+const MAX_HANDBACK_WORKERS: usize = 3;
+const MAX_HANDBACK_OPS: usize = 5;
+
+/// What a worker does to a pool while its neighbours do the same.
+#[derive(Clone, Copy, Debug, bolero::TypeGenerator)]
+enum HandbackOp {
+    /// Take a tuple and keep it.
+    Allocate,
+    /// Give back the tuple taken longest ago, which is what opens the window.
+    ReleaseOldest,
+}
+
+/// A generated shape for the hand-back race.
+#[derive(Clone, Debug)]
+struct HandbackScenario {
+    addresses: u8,
+    ops: Vec<Vec<HandbackOp>>,
+}
+
+impl bolero::TypeGenerator for HandbackScenario {
+    fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
+        let addresses = driver.produce::<u8>()? % MAX_HANDBACK_ADDRESSES + 1;
+        let worker_count = usize::from(driver.produce::<u8>()?) % (MAX_HANDBACK_WORKERS - 1) + 2;
+
+        let mut ops = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let mut worker: Vec<HandbackOp> = driver.produce()?;
+            worker.truncate(MAX_HANDBACK_OPS);
+            // A worker that never allocates cannot race anything.
+            if !worker.iter().any(|op| matches!(op, HandbackOp::Allocate)) {
+                worker.insert(0, HandbackOp::Allocate);
+            }
+            ops.push(worker);
+        }
+        Some(Self { addresses, ops })
+    }
+}
+
+impl HandbackScenario {
+    /// Far below any real limit: a single address carries 252 usable port blocks of 256 ports
+    /// each, and these scenarios hold a handful of tuples at once. So an exhaustion error here
+    /// cannot mean the pool ran out -- only that it lost track of an address it still owned.
+    fn run(&self) {
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(
+                BASE,
+                BASE + u128::from(self.addresses) - 1,
+            )],
+            IDLE_TIMEOUT,
+        )];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::with_capacity(self.ops.len());
+
+        for worker in &self.ops {
+            let pools = pools.clone();
+            let failures = failures.clone();
+            let worker = worker.clone();
+            handles.push(thread::spawn(move || {
+                let mut held = Vec::new();
+                for op in worker {
+                    match op {
+                        HandbackOp::Allocate => match pools[0].allocate(false) {
+                            Ok(allocation) => held.push(allocation),
+                            Err(e) => failures.lock().push(e),
+                        },
+                        HandbackOp::ReleaseOldest => {
+                            if !held.is_empty() {
+                                drop(held.remove(0));
+                            }
+                        }
+                    }
+                    thread::yield_now();
+                }
+                drop(held);
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("a worker panicked");
+        }
+
+        let failures = failures.lock();
+        assert!(
+            failures.is_empty(),
+            "allocation was refused on a pool that was nowhere near exhausted: {:?} \
+             (addresses: {}, workers: {})",
+            *failures,
+            self.addresses,
+            self.ops.len(),
+        );
+    }
+}
+
+/// The same property as the fixed scenario above, over generated shapes.
+///
+/// Whatever the number of addresses, the number of workers, or the interleaving of taking and
+/// giving back, an allocation must never be refused while the pool still owns an address. The
+/// fixed test says the reported bug is real in the configuration that met it; this says the same
+/// symptom does not survive in the neighbourhood around it.
+///
+/// It found a second defect doing so, which the bounded retry in `IpAllocator::allocate` now
+/// covers: a scan and a draw that each read a consistent pool, straddling a change made between
+/// them. Against `main` without that retry this fails in both concurrency models.
+#[concurrency::model_test]
+fn no_generated_handback_shape_refuses_an_allocation() {
+    bolero::check!()
+        .with_type()
+        .cloned()
+        .for_each(|scenario: HandbackScenario| {
+            concurrency::stress(move || {
+                scenario.run();
+            });
+        });
+}
