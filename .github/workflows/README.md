@@ -63,6 +63,11 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 - `ci:+miri` - Run Miri checks
 - `ci:+wasm` - Run the WASM build check
 - `ci:+concurrency` - Run Shuttle and Loom tests
+- `ci:+debug-images` - Also build and push the core viewer, DAP debugger, and
+  syscall tracer images. They are built on main, in the merge queue, and on
+  dispatch regardless, and `ci:+merge-ready` turns them on too, since
+  `ci-gate` treats that label as enabling every gate; this is for when the
+  build itself needs debugging
 - `ci:+cross` - Build all cross-platform containers
 - `ci:+cross/full` - Also run the workspace test suite under qemu-user, on the
   two aarch64 musl legs. Gated like every other job, so the merge queue and
@@ -104,6 +109,8 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 - Coverage: `debug` by default; `fuzz` on deep runs
 - Miri: required on deep runs; opt-in on pull requests with `ci:+miri`
 - Containers: debug/release for dataplane and FRR; release for validator
+- Debug images (core viewer, DAP debugger, syscall tracer): deep runs only,
+  or on a pull request with `ci:+debug-images`
 - VLAB configurations: spine-leaf fabric mode, L2VNI/L3VNI VPC modes,
   with gateway enabled
 
@@ -111,6 +118,83 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 
 - Container images pushed to GitHub Container Registry (GHCR)
 - Release containers published on tag pushes via `just push`
+- `ghcr.io/githedgehog/dataplane/core-viewer` opens a core file from the lab.
+  It carries gdb plus the unstripped binaries and sources for the matching
+  `ghcr.io/githedgehog/dataplane` build.
+  Pull the tag matching the build the core came from; symbols only line up with
+  the exact version and profile that produced it.
+  The entrypoint takes the core as its only argument:
+
+  ```console
+  docker run --rm -it -v /path/to/cores:/cores \
+    ghcr.io/githedgehog/dataplane/core-viewer:TAG /cores/core.1234
+  ```
+
+- `ghcr.io/githedgehog/dataplane/dev-debugger` debugs a live dataplane from an
+  editor. It carries bugstalker, which understands Rust's std collections and
+  enum layouts, and listens for a Debug Adapter Protocol client on port 4711.
+  Publish the port and point the editor's DAP client at it:
+
+  ```console
+  docker run --rm -p 127.0.0.1:4711:4711 ghcr.io/githedgehog/dataplane/dev-debugger:TAG
+  ```
+
+  Connecting does not by itself start anything. In remote-DAP mode bugstalker
+  waits for the client's `launch` request to name the program, so the editor
+  has to send `program`, and any dataplane arguments as `args`. A request
+  without `program` is rejected with `launch: missing arguments.program`.
+  For VS Code, in `.vscode/launch.json`. `type` has to match whatever debug
+  type the BugStalker extension you installed registers -- it is not a name we
+  choose, and it differs between extensions, so check the one you have rather
+  than copying this field blind:
+
+  ```json
+  {
+    "type": "bs",
+    "request": "launch",
+    "name": "dataplane (container)",
+    "debugServer": 4711,
+    "program": "/bin/dataplane",
+    "args": []
+  }
+  ```
+
+  For `nvim-dap`, where the first line names the adapter itself, so `type = "bs"`
+  below is our own label rather than an extension's:
+
+  ```lua
+  dap.adapters.bs = { type = "server", host = "127.0.0.1", port = 4711 }
+  dap.configurations.rust = {
+    {
+      type = "bs",
+      request = "launch",
+      name = "dataplane (container)",
+      program = "/bin/dataplane",
+      args = {},
+    },
+  }
+  ```
+
+- `ghcr.io/githedgehog/dataplane/syscall-tracer` records what the dataplane
+  asks the kernel for, as JSON, using lurk.
+  It carries the same stripped binaries the release image ships, since nothing
+  here symbolizes, so it is smaller than the other two -- though not by as much
+  as that suggests: like them it ships the source tree, which the entrypoint
+  makes the working directory. Only the debug symbols and the debuggers
+  themselves are absent.
+
+  ```console
+  docker run --rm ghcr.io/githedgehog/dataplane/syscall-tracer:TAG > trace.jsonl
+  ```
+
+  The stream is one JSON object per line, except that tracing child threads
+  makes lurk announce each one with a bare `Attaching to child <pid>` line.
+  Filter those out if the consumer needs strict JSONL:
+
+  ```console
+  jq -R 'fromjson? // empty' < trace.jsonl
+  ```
+
 - Coverage reports from each `coverage/<profile>` job, kept for 7 days:
   - `coverage-html-<profile>.tar.gz` - `llvm-cov` HTML report, including the
     per-branch counts that Codecov does not render. Unpack and open
@@ -120,6 +204,53 @@ If those queue failures stop being rare, the phasing is worth revisiting.
 
   Both upload unarchived, so they download as the named file rather than
   wrapped in a zip.
+
+### Debugging locally
+
+The published images debug what CI built. To debug what you are building, `just
+debug` builds the matching image and runs a workspace binary or a single test
+inside it, at whatever `profile`, `platform`, `instrument`, and `sanitize` you
+pass. Symbols only line up when those match the build the problem appeared in,
+which is the whole reason to go through the image rather than a system gdb.
+
+```console
+just debug                             # pick from a list
+just debug bugstalker                  # pick, then wait for an editor
+just debug lurk dataplane              # trace syscalls, streams JSON, runs to exit
+just debug gdb dataplane               # gdbserver on 2345, waits for a client
+just profile=fuzz debug gdb test_parse_interface args
+just debug-list                        # print the same list without running anything
+```
+
+Name nothing and everything is offered through `skim`, which the dev shell
+provides. Name a filter matching one test and it runs without asking; name one
+matching several and those are offered. A filter matching nothing is an error
+rather than a guess, and so is an ambiguous one when there is no terminal to
+ask at, which is what makes this safe to call from a script.
+
+The third argument narrows which archive is searched, so
+`just debug gdb some_test args` builds only `args`' tests. It is worth passing:
+the default builds every test in the workspace, which is a long wait if all you
+wanted was to pick from a short list.
+
+`gdb` and `bugstalker` block until you disconnect and interrupt them; that is
+the point. `gdb` prints the `target remote` line to use. `bugstalker` prints a
+`.zed/debug.json` entry ready to paste, because in remote-DAP mode it takes the
+program from the client's launch request rather than from its own command line,
+so connecting an editor is only half of it. The `tcp_connection` field in that
+entry is what stops the editor spawning a second debugger of its own.
+
+A test runs with its package directory as the working directory, the way
+nextest runs it, so relative paths behave the same as under `just test`.
+
+To open a core file:
+
+```console
+just inspect-core /path/to/core.1234
+```
+
+Pass the same build settings that produced the binary that dumped
+(`just profile=release inspect-core ...`), for the same reason.
 
 ---
 

@@ -182,6 +182,7 @@ let
       qemu-user
       rust-toolchain
       shellcheck
+      skim # the `just debug` picker
       skopeo
       wasmtime
       wget
@@ -431,6 +432,8 @@ let
                   # Keep debug paths stable across revisions. Source readers
                   # must resolve this relative prefix from the workspace root.
                   "--remap-path-prefix==${src-prefix}"
+                  # Keep debug outputs from retaining the complete Rust toolchain.
+                  "--remap-path-prefix=${pkgs.rust-toolchain}/lib/rustlib/src/rust=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
                 ]
               )
             else
@@ -470,6 +473,13 @@ let
                     mkdir -p $debug/bin
                     for f in $out/bin/*; do
                       mv "$f" "$debug/bin/$(basename "$f")"
+                      # Trade index for size.  gdb has consumed `.debug_names`
+                      # as a real DWARF-5 index since 14, and this ships 17.2,
+                      # so dropping it is not free -- gdb rebuilds an index on
+                      # each start instead.  The section is large enough on
+                      # these binaries that the image is worth more than the
+                      # startup, and bugstalker does not read it at all.
+                      ${objcopy} --remove-section=.debug_names "$debug/bin/$(basename "$f")"
                       ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                     done
@@ -962,32 +972,169 @@ let
     }).overrideAttrs
       source-volatile;
 
-  containers.dataplane-debugger =
-    (pkgs.dockerTools.buildLayeredImage {
-      name = "ghcr.io/githedgehog/dataplane/debugger";
-      inherit tag;
-      contents = pkgs.buildEnv {
-        name = "dataplane-debugger-env";
-        pathsToLink = [
-          "/bin"
-          "/etc"
-          "/var"
-          "/lib"
-        ];
-        paths = [
-          pkgs.pkgsBuildHost.gdb
-          pkgs.pkgsBuildHost.rr
-          pkgs.pkgsBuildHost.coreutils
-          pkgs.pkgsBuildHost.bashInteractive
-          pkgs.pkgsBuildHost.iproute2
-          pkgs.pkgsBuildHost.ethtool
-          pkgs.pkgsHostHost.dockerTools.usrBinEnv
+  # Shared runtime and unstripped binaries for the debugger images.
+  debug-image-paths = [
+    pkgs.pkgsBuildHost.coreutils
+    pkgs.pkgsBuildHost.bashInteractive
+    pkgs.pkgsHostHost.dockerTools.usrBinEnv
 
-          pkgs.pkgsHostHost.libc.debug
-          workspace.cli.debug
-          workspace.dataplane.debug
-          workspace.init.debug
+    pkgs.pkgsHostHost.libc.debug
+    workspace.cli.debug
+    workspace.dataplane.debug
+    workspace.init.debug
+  ];
+
+  # Copy Rust's gdb helpers without retaining rustc as a runtime dependency.
+  rust-gdb-printers = pkgs.runCommand "rust-gdb-printers" { } ''
+    mkdir -p "$out/lib/rustlib/etc"
+    for f in gdb_load_rust_pretty_printers.py gdb_lookup.py gdb_providers.py rust_types.py; do
+      cp -L "${pkgs.rust-toolchain}/lib/rustlib/etc/$f" "$out/lib/rustlib/etc/$f"
+    done
+  '';
+
+  # Opens dataplane core files with matching symbols and sources.
+  containers.dataplane-core-viewer =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/core-viewer";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-core-viewer-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [
+            pkgs.pkgsBuildHost.gdb
+            rust-gdb-printers
+          ]
+          ++ debug-image-paths;
+        }).overrideAttrs
+          source-volatile;
+      # gdb needs a writable HOME for logs and its index cache.
+      extraCommands = ''
+        # The remapped prefix is relative, so a debugger resolves source against
+        # its working directory rather than an absolute path.  Ship the tree at
+        # /src and start there.  Referencing ${src} is also what keeps it in the
+        # image closure: with the remap no longer naming a store path, nothing
+        # else retains it.
+        ln -s "${src}" src
+        mkdir -p tmp
+        chmod 1777 tmp
+      '';
+      config = {
+        WorkingDir = "/src";
+        Entrypoint = [
+          "/bin/gdb"
+          "--directory=/lib/rustlib/etc"
+          "-iex"
+          "add-auto-load-safe-path /lib/rustlib/etc"
+          "-iex"
+          "source /lib/rustlib/etc/gdb_load_rust_pretty_printers.py"
+          "/bin/dataplane"
         ];
+        Env = [ "HOME=/tmp" ];
+      };
+    }).overrideAttrs
+      source-volatile;
+
+  # Exposes bugstalker's DAP server for live debugging.
+  containers.dataplane-dev-debugger =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/dev-debugger";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-dev-debugger-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [ pkgs.pkgsBuildHost.bugstalker ] ++ debug-image-paths;
+        }).overrideAttrs
+          source-volatile;
+      # bugstalker needs a writable HOME for its keymap and history.
+      extraCommands = ''
+        # The remapped prefix is relative, so a debugger resolves source against
+        # its working directory rather than an absolute path.  Ship the tree at
+        # /src and start there.  Referencing ${src} is also what keeps it in the
+        # image closure: with the remap no longer naming a store path, nothing
+        # else retains it.
+        ln -s "${src}" src
+        mkdir -p tmp
+        chmod 1777 tmp
+      '';
+      config = {
+        WorkingDir = "/src";
+        Entrypoint = [
+          "/bin/bs"
+          # Bind the published interface rather than container-local loopback.
+          "--dap-remote=0.0.0.0:4711"
+          # rustc is absent, so bugstalker cannot infer this path.
+          "--std-lib-path=${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust"
+          # No debuggee here on purpose.  In `--dap-remote` mode bugstalker
+          # ignores the CLI debuggee and waits for the client's `launch` request
+          # to name one, so a path here would be silently dead and would imply
+          # that connecting alone starts the dataplane.  The editor supplies
+          # `program` instead; see .github/workflows/README.md.
+        ];
+        Env = [ "HOME=/tmp" ];
+        ExposedPorts = {
+          "4711/tcp" = { };
+        };
+      };
+    }).overrideAttrs
+      source-volatile;
+
+  # Traces the release binaries' syscalls as JSON with lurk.
+  containers.dataplane-syscall-tracer =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "ghcr.io/githedgehog/dataplane/syscall-tracer";
+      inherit tag;
+      contents =
+        (pkgs.buildEnv {
+          name = "dataplane-syscall-tracer-env";
+          pathsToLink = [
+            "/bin"
+            "/etc"
+            "/var"
+            "/lib"
+          ];
+          paths = [
+            pkgs.pkgsBuildHost.lurk
+            pkgs.pkgsHostHost.dockerTools.fakeNss
+            pkgs.pkgsHostHost.busybox
+            pkgs.pkgsHostHost.dockerTools.usrBinEnv
+            workspace.cli
+            workspace.dataplane
+            workspace.init
+          ];
+        }).overrideAttrs
+          source-volatile;
+      extraCommands = ''
+        # The remapped prefix is relative, so a debugger resolves source against
+        # its working directory rather than an absolute path.  Ship the tree at
+        # /src and start there.  Referencing ${src} is also what keeps it in the
+        # image closure: with the remap no longer naming a store path, nothing
+        # else retains it.
+        ln -s "${src}" src
+        mkdir -p tmp
+        chmod 1777 tmp
+      '';
+      config = {
+        WorkingDir = "/src";
+        Entrypoint = [
+          "/bin/lurk"
+          "--json"
+          # Include the worker threads where the dataplane does its work.
+          "--follow-forks"
+          "/bin/dataplane"
+        ];
+        Env = [ "HOME=/tmp" ];
       };
     }).overrideAttrs
       source-volatile;
@@ -1006,6 +1153,7 @@ let
       # pkgs.wireshark-cli
 
       pkgs.bashInteractive
+      pkgs.bugstalker
       pkgs.coreutils
       pkgs.curl
       pkgs.debianutils
