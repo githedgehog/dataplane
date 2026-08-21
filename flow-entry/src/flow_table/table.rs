@@ -19,6 +19,16 @@ pub enum FlowTableError {
     CapacityExceeded,
 }
 
+/// What [`FlowTable::insert_if_absent`] did.
+#[derive(Debug)]
+pub enum Insertion {
+    /// The flow is in the table, put there by this call.
+    Installed,
+    /// Nothing was inserted: a live flow already holds the key. That flow is carried here, since a
+    /// caller that lost the key generally wants to go on with whatever won it.
+    Occupied(Arc<FlowInfo>),
+}
+
 type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 #[derive(Debug)]
@@ -212,25 +222,52 @@ impl FlowTable {
         });
     }
 
+    /// Whether a flow may go into a table that is at its limit.
+    ///
+    /// Reject new flows when at capacity.  Exception: always admit the second half of a
+    /// related pair (e.g. the reverse NAT flow) to avoid leaving a one-sided entry.
+    fn admit(&self, table: &Table, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
+        if table.len() < self.capacity.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let has_related_in_table = val
+            .related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|rel| rel.is_active());
+
+        if has_related_in_table {
+            Ok(())
+        } else {
+            Err(FlowTableError::CapacityExceeded)
+        }
+    }
+
+    /// Retire a flow that has just been displaced from the table, and the other half of its pair.
+    ///
+    /// The displaced flow is unreachable by key from here on. The half of its pair that is still
+    /// in the table is unreachable in a worse way: it stays live under a key of its own, mapping a
+    /// translation whose allocation goes back to the pool as soon as the displaced half is
+    /// collected. Return traffic matching that key once the public pair has been handed out again
+    /// would then be translated for whoever held it before. So the pair goes together.
+    fn displace(old: Option<&Arc<FlowInfo>>) {
+        let Some(old) = old else {
+            return;
+        };
+        old.update_status(FlowStatus::Detached);
+        old.token.cancel();
+        if let Some(related) = old.related.as_ref().and_then(Weak::upgrade) {
+            debug!("insert: invalidating the partner of a displaced flow");
+            related.invalidate();
+        }
+    }
+
     fn insert_common(&self, val: &Arc<FlowInfo>) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
         let table = self.table.read();
-        let capacity = self.capacity.load(Ordering::Relaxed);
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key}");
 
-        // Reject new flows when at capacity.  Exception: always admit the second half of a
-        // related pair (e.g. the reverse NAT flow) to avoid leaving a one-sided entry.
-        if table.len() >= capacity {
-            let has_related_in_table = val
-                .related
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .is_some_and(|rel| rel.is_active());
-
-            if !has_related_in_table {
-                return Err(FlowTableError::CapacityExceeded);
-            }
-        }
+        self.admit(&table, val)?;
 
         let result = table.insert(*flow_key, val.clone());
         // Set Active only after the insert so that the invariant holds: Active iff in the
@@ -243,10 +280,7 @@ impl FlowTable {
         #[cfg(not(any(feature = "shuttle", feature = "loom")))]
         Self::start_timer(self.table.clone(), val.clone());
 
-        if let Some(old) = result.as_ref() {
-            old.update_status(FlowStatus::Detached);
-            old.token.cancel();
-        }
+        Self::displace(result.as_ref());
 
         let Some(ret) = result else {
             return Ok(None);
@@ -257,6 +291,80 @@ impl FlowTable {
         }
 
         Ok(Some(ret))
+    }
+
+    /// Add a flow entry to the table, unless a live flow already holds its key.
+    ///
+    /// Two packets of one new flow can reach a NAT stage at the same time. Packets of a 5-tuple
+    /// usually land on one core, but nothing guarantees that, and each packet builds a pair of its
+    /// own. With a plain insert whoever gets there second displaces the other's forward flow while
+    /// its reverse stays in the table: reverse keys carry the allocation that made them, no two
+    /// allocations agree, so the two never collide and the loser's reverse is never displaced with
+    /// its partner. That orphan outlives the allocation it maps, and return traffic for a public
+    /// pair handed out again later reaches whoever held it before.
+    ///
+    /// Arbitrating on one key is enough to prevent it, because racing packets of a single flow
+    /// share their forward key by construction: only the caller who wins it goes on to insert a
+    /// reverse.
+    ///
+    /// A flow that is present but no longer live is displaced as usual. It is a corpse its timer
+    /// has not swept yet, and standing aside for one would drop a packet that could have replaced
+    /// it.
+    ///
+    /// # Returns
+    ///
+    /// [`Insertion::Installed`] if the flow went in, or [`Insertion::Occupied`] with the live flow
+    /// that holds the key if it did not.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this thread already holds the read lock on the table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
+    pub fn insert_if_absent(&self, val: &Arc<FlowInfo>) -> Result<Insertion, FlowTableError> {
+        let table = self.table.read();
+        let flow_key = val.flowkey();
+        debug!("insert: inserting flow {flow_key} unless it is already held");
+
+        self.admit(&table, val)?;
+
+        // The entry guard holds this key's shard, so testing the incumbent and standing aside
+        // cannot race another insert of the same key. It has to end before the table guard does,
+        // hence resolving to a value here rather than returning from inside the match.
+        let displaced = match table.entry(*flow_key) {
+            dashmap::Entry::Occupied(mut occupied) => {
+                if occupied.get().is_active() {
+                    Err(occupied.get().clone())
+                } else {
+                    Ok(Some(occupied.insert(val.clone())))
+                }
+            }
+            dashmap::Entry::Vacant(vacant) => {
+                vacant.insert(val.clone());
+                Ok(None)
+            }
+        };
+        let displaced = match displaced {
+            Ok(displaced) => displaced,
+            Err(held) => {
+                drop(table);
+                debug!("insert: flow {flow_key} is already held by a live flow");
+                return Ok(Insertion::Occupied(held));
+            }
+        };
+
+        // Active only after the insert, as in `insert_common`.
+        val.update_status(FlowStatus::Active);
+        drop(table);
+
+        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
+        Self::start_timer(self.table.clone(), val.clone());
+
+        Self::displace(displaced.as_ref());
+
+        Ok(Insertion::Installed)
     }
 
     /// Lookup a flow in the table.
@@ -412,6 +520,7 @@ mod tests {
 
     #[concurrency_mode(std)]
     mod std_tests {
+        use net::flows::FlowInfoFlags;
         use std::time::Instant;
         use tracing_test::traced_test;
 
@@ -632,6 +741,108 @@ mod tests {
 
             let () = tokio::time::sleep(Duration::from_secs(5)).await;
             assert_eq!(flow_table.active_len().unwrap(), 0);
+        }
+
+        fn key_for(src_port: u16) -> FlowKey {
+            FlowKey::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                "1.2.3.4".parse::<IpAddr>().unwrap(),
+                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(src_port).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            )
+        }
+
+        /// A live flow keeps its key against a second insertion.
+        ///
+        /// This is what stops two packets of one new flow from each installing a pair. Without it
+        /// the second one displaces the first's forward flow, and the first's reverse -- which
+        /// carries an allocation of its own and so collides with nothing -- is left in the table
+        /// mapping a translation whose allocation is about to go back to the pool.
+        #[tokio::test]
+        async fn an_active_flow_holds_its_key_against_a_second_insertion() {
+            let flow_table = FlowTable::default();
+            let key = key_for(1025);
+            let far_future = Instant::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key, far_future));
+            assert!(matches!(
+                flow_table.insert_if_absent(&first).unwrap(),
+                Insertion::Installed
+            ));
+
+            let second = Arc::new(FlowInfo::new(key, far_future));
+            let outcome = flow_table.insert_if_absent(&second).unwrap();
+            let Insertion::Occupied(held) = outcome else {
+                panic!("a live flow was displaced by a second insertion: {outcome:?}");
+            };
+            assert!(Arc::ptr_eq(&held, &first), "the wrong flow was reported");
+
+            // The incumbent is still the one serving the key, and the newcomer never went in.
+            let found = flow_table.lookup(&key).expect("the key is still served");
+            assert!(Arc::ptr_eq(&found, &first));
+            assert_ne!(second.status(), FlowStatus::Active);
+        }
+
+        /// A flow that is no longer live does not hold its key.
+        ///
+        /// Standing aside for one would drop a packet that could have replaced it: the entry is a
+        /// corpse whose timer has not swept it yet.
+        #[tokio::test]
+        async fn a_flow_that_is_not_live_is_displaced() {
+            let flow_table = FlowTable::default();
+            let key = key_for(1026);
+            let far_future = Instant::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key, far_future));
+            flow_table.insert_if_absent(&first).unwrap();
+            first.invalidate();
+
+            let second = Arc::new(FlowInfo::new(key, far_future));
+            assert!(
+                matches!(
+                    flow_table.insert_if_absent(&second).unwrap(),
+                    Insertion::Installed
+                ),
+                "a flow that was no longer live held its key"
+            );
+            let found = flow_table.lookup(&key).expect("the key is served");
+            assert!(Arc::ptr_eq(&found, &second));
+        }
+
+        /// Displacing a flow takes the other half of its pair with it.
+        ///
+        /// The two halves have different keys, so nothing displaces the partner in its own right.
+        /// Left behind it stays live, mapping a translation whose allocation returns to the pool
+        /// with the half that was displaced.
+        #[tokio::test]
+        async fn displacing_a_flow_invalidates_its_partner() {
+            let flow_table = FlowTable::default();
+            let (forward_key, reverse_key) = (key_for(1027), key_for(1028));
+            let far_future = Instant::now() + Duration::from_hours(1);
+
+            let (forward, reverse) = FlowInfo::related_pair(
+                far_future,
+                forward_key,
+                FlowInfoFlags::INITIATOR,
+                reverse_key,
+                FlowInfoFlags::default(),
+            )
+            .expect("related_pair should succeed for distinct keys");
+            flow_table.insert_from_arc(&forward).unwrap();
+            flow_table.insert_from_arc(&reverse).unwrap();
+            assert!(reverse.is_active());
+
+            // The unconditional path still displaces, and has to clean up after itself.
+            let replacement = Arc::new(FlowInfo::new(forward_key, far_future));
+            flow_table.insert_from_arc(&replacement).unwrap();
+
+            assert!(
+                !reverse.is_active(),
+                "the partner of a displaced flow was left live in the table"
+            );
         }
 
         #[tokio::test]
