@@ -324,10 +324,9 @@ impl NatAllocator {
     // clearest form -- one requirement met, its neighbour missed, by the same two lines of code.
     //
     // RFC 4787 REQ-3 and RFC 5382 REQ-7 -- "MUST NOT have a Port assignment behavior of Port
-    // overloading" -- were cited here, and now sit on `Bitmap256::allocate_port_from_bitmap`,
-    // which is what would have to hand a port out twice for either to break. This function only
-    // forwards to `allocate_from_tables`; there is nothing here to get wrong, which is why
-    // `just spec-interlock` could not check the citation while it was here.
+    // overloading" -- are cited on `Bitmap256::allocate_port_from_bitmap`, which is what would
+    // have to hand a port out twice for either to break. This function only forwards to
+    // `allocate_from_tables` and decides nothing either requirement is about.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,

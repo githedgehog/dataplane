@@ -857,10 +857,9 @@ impl Bitmap256 {
     //# overloading".
     //
     // Port overloading is handing the same public port to two live flows, and this is the
-    // function that would have to do it. Every port the allocator returns is claimed here, by
-    // the bit set below, and nothing else marks one used -- so this is the narrowest region
-    // whose mutation would violate either requirement. Both were cited on `allocate_v4` until
-    // the interlock found nothing there it could break.
+    // function that would have to do it: every port the allocator returns is claimed by the bit
+    // set below, and nothing else marks one used. The citation belongs here rather than on a
+    // caller because a caller cannot violate the requirement without going through this.
     //
     // The allocator is protocol-agnostic, so the UDP and TCP requirements are one
     // implementation, and one test discharges both.
