@@ -281,19 +281,13 @@ impl NatAllocator {
         self.genid.store(genid, Ordering::Relaxed);
     }
 
-    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-4.1
     //= type=todo
     //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
     //# for TCP.
     //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
     //= type=todo
     //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
-    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
-    //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
-    //# overloading" for TCP.
-    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
-    //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
-    //# overloading".
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,
