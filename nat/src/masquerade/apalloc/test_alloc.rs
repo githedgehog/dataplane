@@ -512,6 +512,16 @@ mod std_tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::num::NonZero;
 
+    /// The bitmap offset of the only address in a single-address IPv4 pool.
+    ///
+    /// For IPv4 the offset *is* the address bits, not an index from the region start, so a pool
+    /// built over one address holds exactly one offset and it is never zero. Asserting against the
+    /// real offset is what lets the bitmap refute the claim being made: at offset zero every
+    /// `!contains` passes because zero was never in the bitmap to begin with.
+    fn only_offset(base: u128) -> u32 {
+        u32::try_from(base).unwrap_or_else(|_| unreachable!("these pools are built over IPv4"))
+    }
+
     /// The property the whole hand-back scheme rests on: a lease that has been retired cannot free
     /// the lease that replaced it.
     ///
@@ -529,38 +539,46 @@ mod std_tests {
             true,
         );
 
-        let first = pool.begin_tenancy_for_tests(0);
+        let offset = only_offset(base);
+        // Unleased, the address is free. Without this the `!contains` assertions below would pass
+        // on an offset the bitmap never held.
+        assert!(
+            pool.bitmap_contains_for_tests(offset),
+            "the pool did not start with its only address free"
+        );
+
+        let first = pool.begin_tenancy_for_tests(offset);
         // The address is out of the bitmap while it is leased.
         assert!(
-            !pool.bitmap_contains_for_tests(0),
+            !pool.bitmap_contains_for_tests(offset),
             "leased address is still free"
         );
 
         // A second lease opens before the first one's hand-back arrives, which is exactly what
         // `reclaim_ended_tenancies` and `reserve_from_pool` do when they find a dead weak.
-        let second = pool.begin_tenancy_for_tests(0);
+        let second = pool.begin_tenancy_for_tests(offset);
         assert_ne!(first, second, "re-issue must mint a distinct tenancy");
 
         // The late hand-back for the first lease must be refused.
         assert!(
-            !pool.end_tenancy_for_tests(0, first),
+            !pool.end_tenancy_for_tests(offset, first),
             "a retired tenancy was allowed to hand the address back"
         );
         assert!(
-            !pool.bitmap_contains_for_tests(0),
+            !pool.bitmap_contains_for_tests(offset),
             "a retired tenancy freed an address that had been re-issued"
         );
 
         // The current lease still can, and that is the only one that may.
-        assert!(pool.end_tenancy_for_tests(0, second));
+        assert!(pool.end_tenancy_for_tests(offset, second));
         assert!(
-            pool.bitmap_contains_for_tests(0),
+            pool.bitmap_contains_for_tests(offset),
             "current lease failed to hand back"
         );
 
         // And a second attempt with the same tenancy is inert rather than double-freeing.
-        assert!(!pool.end_tenancy_for_tests(0, second));
-        assert!(pool.bitmap_contains_for_tests(0));
+        assert!(!pool.end_tenancy_for_tests(offset, second));
+        assert!(pool.bitmap_contains_for_tests(offset));
     }
 
     /// The reclaim backstop actually reclaims.
@@ -579,17 +597,20 @@ mod std_tests {
             true,
         );
 
-        let tenancy = pool.begin_tenancy_for_tests(0);
+        let offset = only_offset(base);
+        assert!(pool.bitmap_contains_for_tests(offset));
+
+        let tenancy = pool.begin_tenancy_for_tests(offset);
         // The address is leased, and its owner has gone without handing it back -- the state that
         // makes the pool report exhaustion while holding an address belonging to no one.
-        pool.plant_dead_entry_for_tests(0, tenancy);
-        assert!(!pool.bitmap_contains_for_tests(0));
+        pool.plant_dead_entry_for_tests(offset, tenancy);
+        assert!(!pool.bitmap_contains_for_tests(offset));
         assert_eq!(pool.in_use_len_for_tests(), 1);
 
         pool.reclaim_ended_tenancies_for_tests();
 
         assert!(
-            pool.bitmap_contains_for_tests(0),
+            pool.bitmap_contains_for_tests(offset),
             "reclaim left the address in neither the bitmap nor the in-use list"
         );
         assert_eq!(
@@ -610,16 +631,19 @@ mod std_tests {
             true,
         );
 
-        let stale = pool.begin_tenancy_for_tests(0);
-        pool.plant_dead_entry_for_tests(0, stale);
+        let offset = only_offset(base);
+        assert!(pool.bitmap_contains_for_tests(offset));
+
+        let stale = pool.begin_tenancy_for_tests(offset);
+        pool.plant_dead_entry_for_tests(offset, stale);
         // The address is re-issued before the reclaim runs, retiring `stale`.
-        let current = pool.begin_tenancy_for_tests(0);
+        let current = pool.begin_tenancy_for_tests(offset);
         assert_ne!(stale, current);
 
         pool.reclaim_ended_tenancies_for_tests();
 
         assert!(
-            !pool.bitmap_contains_for_tests(0),
+            !pool.bitmap_contains_for_tests(offset),
             "reclaim freed an address that had been re-issued"
         );
         assert_eq!(
@@ -628,8 +652,8 @@ mod std_tests {
             "the dead entry should still be dropped"
         );
         // The current lease is untouched and remains the only one that can hand back.
-        assert!(pool.end_tenancy_for_tests(0, current));
-        assert!(pool.bitmap_contains_for_tests(0));
+        assert!(pool.end_tenancy_for_tests(offset, current));
+        assert!(pool.bitmap_contains_for_tests(offset));
     }
 
     /// Tenancies are minted per pool rather than per address, so an address cannot inherit a
@@ -643,9 +667,10 @@ mod std_tests {
             true,
         );
 
+        let first = only_offset(base);
         let mut seen = std::collections::BTreeSet::new();
         for round in 0..4 {
-            for offset in 0..2u32 {
+            for offset in [first, first + 1] {
                 let tenancy = pool.begin_tenancy_for_tests(offset);
                 assert!(
                     seen.insert(tenancy),

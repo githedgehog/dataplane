@@ -547,7 +547,8 @@ fn an_allocation_racing_the_last_release_is_still_served() {
 
 /// Addresses and workers for the generated hand-back scenarios. Both small: the race needs an
 /// address to reach zero references, and every extra worker makes some flow more likely to be
-/// holding one at all times, which hides the window rather than exposing it.
+/// holding one at all times, which hides the window rather than exposing it. Worker counts start
+/// at two because a lone worker has nothing to race.
 const MAX_HANDBACK_ADDRESSES: u8 = 3;
 const MAX_HANDBACK_WORKERS: usize = 3;
 const MAX_HANDBACK_OPS: usize = 5;
@@ -571,7 +572,7 @@ struct HandbackScenario {
 impl bolero::TypeGenerator for HandbackScenario {
     fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
         let addresses = driver.produce::<u8>()? % MAX_HANDBACK_ADDRESSES + 1;
-        let worker_count = usize::from(driver.produce::<u8>()? % 2) + 2;
+        let worker_count = usize::from(driver.produce::<u8>()?) % (MAX_HANDBACK_WORKERS - 1) + 2;
 
         let mut ops = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
@@ -583,7 +584,6 @@ impl bolero::TypeGenerator for HandbackScenario {
             }
             ops.push(worker);
         }
-        let _ = MAX_HANDBACK_WORKERS;
         Some(Self { addresses, ops })
     }
 }

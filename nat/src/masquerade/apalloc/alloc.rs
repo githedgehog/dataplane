@@ -653,7 +653,20 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         };
 
         // the ip being allocated
-        let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
+        let ip = match I::try_from_offset(offset, &self.bitmap_mapping) {
+            Ok(ip) => ip,
+            Err(e) => {
+                // The offset has left the bitmap but has no tenancy yet, so returning here would
+                // leave it in the "neither" state this type's invariant rules out -- the same
+                // state the hand-back window used to produce. Nothing can reach it today (v4
+                // offsets convert infallibly, and v6 offsets come from the very mapping this
+                // consults), but an invariant that holds only because its violation is currently
+                // unreachable stops holding the moment either side of that changes. Put the
+                // address back rather than rely on the argument.
+                self.bitmap.set_ip_free(offset);
+                return Err(e);
+            }
+        };
         let tenancy = self.begin_tenancy(offset);
 
         // determine the set of reserved ports that cannot be allocated for this ip
