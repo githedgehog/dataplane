@@ -322,16 +322,12 @@ impl NatAllocator {
     // The half that *is* held is REQ-2, cited in `alloc.rs`: the public address is stable across
     // destinations even though the port is not. That is the partial-conformance case in its
     // clearest form -- one requirement met, its neighbour missed, by the same two lines of code.
-    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
-    //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
-    //# overloading" for TCP.
     //
-    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
-    //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
-    //# overloading".
-    //
-    // No live allocation is ever handed out twice; the port bitmaps below are what enforce it.
-    // The allocator is protocol-agnostic, so the UDP and TCP requirements are one implementation.
+    // RFC 4787 REQ-3 and RFC 5382 REQ-7 -- "MUST NOT have a Port assignment behavior of Port
+    // overloading" -- were cited here, and now sit on `Bitmap256::allocate_port_from_bitmap`,
+    // which is what would have to hand a port out twice for either to break. This function only
+    // forwards to `allocate_from_tables`; there is nothing here to get wrong, which is why
+    // `just spec-interlock` could not check the citation while it was here.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,
