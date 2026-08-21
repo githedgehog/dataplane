@@ -14,6 +14,33 @@ const ATTRIBUTE_LINE = /^\s*#\[/;
 const FN_LINE = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/;
 const MUTANT_LINE = /^([^:]+):(\d+):(\d+): /;
 
+interface Accepted {
+  requirement: string;
+  mutant: string;
+  reason: string;
+}
+
+const ACCEPTED: Accepted[] = [
+  {
+    requirement: "https://www.rfc-editor.org/rfc/rfc4787#section-4.1",
+    mutant:
+      "nat/src/masquerade/apalloc/alloc.rs: replace match guard e.is_exhaustion() with true in IpAllocator<I>::allocate",
+    reason:
+      "Equivalent under the allocator's invariants. `reuse_allocated_ip` skips `NoFreePort` " +
+      "and loops, so the only error it can return from a well-formed pool is `NoFreeIp`, " +
+      "which is exhaustion; the non-exhaustion arm is defensive depth against an internal " +
+      "inconsistency. The whole 210-test nat suite passes with the guard forced to `true`. " +
+      "The guard is kept because a future allocator that can fail for a non-exhaustion reason " +
+      "must not draw a second public address for a host that already holds one.",
+  },
+];
+
+function stableName(mutant: string): string {
+  const match = MUTANT_LINE.exec(mutant);
+  if (!match) return mutant;
+  return `${match[1]}: ${mutant.slice(match[0].length)}`;
+}
+
 interface Region {
   path: string;
   start: number;
@@ -337,6 +364,7 @@ interface Result {
   detail?: string;
   caught?: string[];
   missed?: string[];
+  accepted?: Accepted[];
   unviable?: string[];
   timeout?: string[];
 }
@@ -345,6 +373,7 @@ async function runTriple(
   triple: Triple,
   output: string,
   jobs: number,
+  used: Set<Accepted>,
 ): Promise<Result> {
   const pkg = await packageOf(triple.implementations[0].path);
   const testPackages = new Set(
@@ -410,10 +439,24 @@ async function runTriple(
     );
   };
 
-  const [caught, missed, unviable, timeout] = await Promise.all(
+  const [caught, survived, unviable, timeout] = await Promise.all(
     ["caught", "missed", "unviable", "timeout"].map(read),
   );
-  if (!caught.length && !missed.length) {
+
+  const accepted: Accepted[] = [];
+  const missed = survived.filter((mutant) => {
+    const entry = ACCEPTED.find((a) =>
+      a.requirement === `${triple.spec}#${triple.section}` &&
+      a.mutant === stableName(mutant)
+    );
+    if (entry) {
+      accepted.push(entry);
+      used.add(entry);
+      return false;
+    }
+    return true;
+  });
+  if (!caught.length && !missed.length && !accepted.length) {
     const why = unviable.length || timeout.length
       ? `${unviable.length} unviable and ${timeout.length} timed out, so none could be tested`
       : "generated no mutants";
@@ -430,6 +473,7 @@ async function runTriple(
     outcome: missed.length ? "decorative" : "held",
     caught,
     missed,
+    accepted,
     unviable,
     timeout,
   };
@@ -532,18 +576,26 @@ async function main(): Promise<number> {
   }
 
   await Deno.mkdir(args.output, { recursive: true });
+  const used = new Set<Accepted>();
   let failures = 0;
   for (const triple of triples) {
     console.log(
       `==> ${triple.spec}#${triple.section} (requirement ${triple.index})`,
     );
-    const result = await runTriple(triple, args.output, Number(args.jobs));
+    const result = await runTriple(
+      triple,
+      args.output,
+      Number(args.jobs),
+      used,
+    );
     if (result.outcome === "held") {
       console.log(
-        `    held: ${
-          result.caught!.length
-        } mutants in the cited region, all caught by ${
-          triple.tests.join(", ")
+        `    held: ${result.caught!.length} of ${
+          result.caught!.length + result.accepted!.length
+        } mutants in the cited region caught by ${triple.tests.join(", ")}${
+          result.accepted!.length
+            ? `, ${result.accepted!.length} accepted below`
+            : ""
         }`,
       );
     } else if (result.outcome === "decorative") {
@@ -564,6 +616,22 @@ async function main(): Promise<number> {
       console.log(
         `    (${skipped} unviable or timed out, not counted either way)`,
       );
+    }
+    for (const entry of result.accepted ?? []) {
+      console.log(`    accepted: ${entry.mutant}`);
+      console.log(`        ${entry.reason}`);
+    }
+  }
+
+  const stale = ACCEPTED.filter((entry) => !used.has(entry));
+  const checkedAll = !args.only.length;
+  if (stale.length && checkedAll) {
+    failures += stale.length;
+    console.log();
+    for (const entry of stale) {
+      console.log(`STALE ACCEPT: no surviving mutant matches`);
+      console.log(`    requirement ${entry.requirement}`);
+      console.log(`    mutant      ${entry.mutant}`);
     }
   }
 
