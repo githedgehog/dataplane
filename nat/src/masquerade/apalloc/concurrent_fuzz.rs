@@ -651,29 +651,14 @@ impl HandbackScenario {
 
 /// The same property as the fixed scenario above, over generated shapes.
 ///
-/// IGNORED: this currently fails, and it fails on unmodified `main` as well as with the tenancy
-/// fix applied -- verified by running it against `origin/main` with nothing else changed. It is
-/// therefore a second, independent defect rather than a regression, and it is left here, failing
-/// and ignored, because deleting it would discard the only reproducer anyone has for it.
-///
-/// What is known: one address, three workers, a mixture of taking and releasing tuples, and an
-/// allocation is refused with `NoFreeIp` while the pool is nowhere near exhausted -- the same
-/// observable symptom as the bug this module's fixed scenario covers, reached by a different
-/// route. The pool is healthy again by the time the workers join, so the window is transient.
-///
-/// What is not known: the mechanism. The obvious candidate -- that `allocate` commits to drawing a
-/// fresh address after its scan comes up empty, and never re-checks if another thread creates the
-/// address in that gap -- is wrong: adding that re-scan does not fix it. Whatever the real cause,
-/// it is not the hand-back window, which the tenancies close.
-///
-/// Do not un-ignore this without a diagnosis. A green run here would mean the defect moved rather
-/// than that it went away.
-#[ignore = "reproduces a second, pre-existing allocator race; see the comment above"]
-///
 /// Whatever the number of addresses, the number of workers, or the interleaving of taking and
 /// giving back, an allocation must never be refused while the pool still owns an address. The
-/// fixed test says this bug is real in the configuration that met it; this says the same defect
-/// does not survive in the neighbourhood around that configuration.
+/// fixed test says the reported bug is real in the configuration that met it; this says the same
+/// symptom does not survive in the neighbourhood around it.
+///
+/// It found a second defect doing so, which the bounded retry in `IpAllocator::allocate` now
+/// covers: a scan and a draw that each read a consistent pool, straddling a change made between
+/// them. Against `main` without that retry this fails in both concurrency models.
 #[concurrency::model_test]
 fn no_generated_handback_shape_refuses_an_allocation() {
     bolero::check!()

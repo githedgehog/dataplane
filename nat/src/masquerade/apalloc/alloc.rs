@@ -11,6 +11,7 @@ use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use concurrency::thread;
 use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -44,6 +45,12 @@ impl Tenancy {
         Tenancy(self.0.wrapping_add(1))
     }
 }
+
+/// Bounds retries while an address changes hands.
+///
+/// Mirrors `BLOCK_LOOKUP_ATTEMPTS` in the port allocator, for the same reason: two steps that each
+/// read a consistent pool can still straddle a change made between them.
+const ADDRESS_LOOKUP_ATTEMPTS: usize = 4;
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -154,33 +161,50 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        // FIXME: Should we clean up every time??
-        self.cleanup_used_ips();
+        // Reusing an address and drawing a fresh one each read a pool that is internally
+        // consistent, but the decision to move from the first to the second is taken between them,
+        // and the pool can change in the gap. Two flows starting at once on a pool whose address
+        // does not yet exist is enough: the loser's scan finds nothing, and by the time it draws,
+        // the winner holds the only address, so it reports exhaustion for a pool that could serve
+        // it. Releases move the state the other way just as easily. Neither step is wrong on its
+        // own; the pair just needs to be retried when it straddles a change.
+        //
+        // Bounded, and never reports success it did not achieve -- if the pool really is empty,
+        // every attempt fails the same way and the last reason is returned.
+        let mut exhausted = None;
+        for _ in 0..ADDRESS_LOOKUP_ATTEMPTS {
+            // FIXME: Should we clean up every time??
+            self.cleanup_used_ips();
 
-        // Draw a fresh address only when the addresses already in use are exhausted. Other errors
-        // describe allocator failure and must be preserved.
-        match self.reuse_allocated_ip(allow_null) {
-            Ok(port) => Ok(port),
-            Err(reuse) if reuse.is_exhaustion() => {
-                self.allocate_from_new_ip(allow_null).map_err(|fresh| {
-                    // Drawing a fresh address reports `NoFreeIp` whenever the bitmap is empty,
-                    // which for a single-address pool is always. That answer hides why the
-                    // addresses already in use could not serve the request, and the two are not
-                    // the same operational problem: an empty bitmap wants more addresses, whereas
-                    // exhausted port blocks want the block allocator looked at. So prefer
-                    // whichever of the two is not `NoFreeIp`; if neither is, the fresh-address
-                    // error is no less informative than the reuse one, and both describe the same
-                    // exhaustion. This is diagnostics only -- every branch stays within the
-                    // exhaustion class, so callers that switch on `is_exhaustion` are unaffected.
-                    match (&reuse, &fresh) {
-                        (AllocatorError::NoFreeIp, _) => fresh,
+            // Draw a fresh address only when the addresses already in use are exhausted. Other
+            // errors describe allocator failure and must be preserved.
+            let reuse = match self.reuse_allocated_ip(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(reuse) if reuse.is_exhaustion() => reuse,
+                Err(e) => return Err(e),
+            };
+
+            match self.allocate_from_new_ip(allow_null) {
+                Ok(port) => return Ok(port),
+                Err(drawn) if drawn.is_exhaustion() => {
+                    // Drawing reports `NoFreeIp` whenever the bitmap is empty, which for a
+                    // single-address pool is always. That answer hides why the addresses already
+                    // in use could not serve the request, and the two are not the same operational
+                    // problem: an empty bitmap wants more addresses, whereas exhausted port blocks
+                    // want the block allocator looked at. Keep whichever is not `NoFreeIp`.
+                    exhausted = Some(match (&reuse, &drawn) {
+                        (AllocatorError::NoFreeIp, _) => drawn,
                         (_, AllocatorError::NoFreeIp) => reuse,
-                        _ => fresh,
-                    }
-                })
+                        _ => drawn,
+                    });
+                    thread::yield_now();
+                }
+                Err(drawn) => return Err(drawn),
             }
-            Err(e) => Err(e),
         }
+
+        debug!("Address lookup changed {ADDRESS_LOOKUP_ATTEMPTS} times");
+        Err(exhausted.unwrap_or(AllocatorError::NoFreeIp))
     }
 
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
