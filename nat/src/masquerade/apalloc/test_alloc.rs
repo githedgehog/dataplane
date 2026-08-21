@@ -512,6 +512,150 @@ mod std_tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::num::NonZero;
 
+    /// The property the whole hand-back scheme rests on: a lease that has been retired cannot free
+    /// the lease that replaced it.
+    ///
+    /// This is what makes the hand-back safe to complete from either side. An allocation that finds
+    /// a dead weak reference may reclaim the address and re-issue it immediately; the original
+    /// owner's `Drop` then arrives late, and must do nothing rather than hand back an address
+    /// somebody else is now using. Reaching that state for real needs two threads, so the property
+    /// is pinned here directly on the pool.
+    #[test]
+    fn a_retired_tenancy_cannot_free_the_lease_that_replaced_it() {
+        let base = u128::from(addr_v4_bits("10.1.0.0"));
+        let mut pool = NatPool::<Ipv4Addr>::for_range(
+            AddrInterval::new(base, base),
+            ReservedPorts::default(),
+            true,
+        );
+
+        let first = pool.begin_tenancy_for_tests(0);
+        // The address is out of the bitmap while it is leased.
+        assert!(
+            !pool.bitmap_contains_for_tests(0),
+            "leased address is still free"
+        );
+
+        // A second lease opens before the first one's hand-back arrives, which is exactly what
+        // `reclaim_ended_tenancies` and `reserve_from_pool` do when they find a dead weak.
+        let second = pool.begin_tenancy_for_tests(0);
+        assert_ne!(first, second, "re-issue must mint a distinct tenancy");
+
+        // The late hand-back for the first lease must be refused.
+        assert!(
+            !pool.end_tenancy_for_tests(0, first),
+            "a retired tenancy was allowed to hand the address back"
+        );
+        assert!(
+            !pool.bitmap_contains_for_tests(0),
+            "a retired tenancy freed an address that had been re-issued"
+        );
+
+        // The current lease still can, and that is the only one that may.
+        assert!(pool.end_tenancy_for_tests(0, second));
+        assert!(
+            pool.bitmap_contains_for_tests(0),
+            "current lease failed to hand back"
+        );
+
+        // And a second attempt with the same tenancy is inert rather than double-freeing.
+        assert!(!pool.end_tenancy_for_tests(0, second));
+        assert!(pool.bitmap_contains_for_tests(0));
+    }
+
+    /// The reclaim backstop actually reclaims.
+    ///
+    /// `cleanup` ends tenancies too, and in practice it runs first -- at the top of every
+    /// `allocate` -- so the retry inside `use_new_ip` only matters for an address whose last
+    /// reference dies in the gap between the two. Measured against the shuttle suite that path
+    /// never executes, so without this it is the one piece of the hand-back with no coverage at
+    /// all.
+    #[test]
+    fn the_reclaim_backstop_frees_an_address_whose_owner_is_already_gone() {
+        let base = u128::from(addr_v4_bits("10.1.0.0"));
+        let mut pool = NatPool::<Ipv4Addr>::for_range(
+            AddrInterval::new(base, base),
+            ReservedPorts::default(),
+            true,
+        );
+
+        let tenancy = pool.begin_tenancy_for_tests(0);
+        // The address is leased, and its owner has gone without handing it back -- the state that
+        // makes the pool report exhaustion while holding an address belonging to no one.
+        pool.plant_dead_entry_for_tests(0, tenancy);
+        assert!(!pool.bitmap_contains_for_tests(0));
+        assert_eq!(pool.in_use_len_for_tests(), 1);
+
+        pool.reclaim_ended_tenancies_for_tests();
+
+        assert!(
+            pool.bitmap_contains_for_tests(0),
+            "reclaim left the address in neither the bitmap nor the in-use list"
+        );
+        assert_eq!(
+            pool.in_use_len_for_tests(),
+            0,
+            "reclaim freed the address but kept the dead entry"
+        );
+    }
+
+    /// Reclaim must not disturb an address that is still held, and must not free one whose lease
+    /// has already been retired by a re-issue.
+    #[test]
+    fn the_reclaim_backstop_leaves_live_and_reissued_leases_alone() {
+        let base = u128::from(addr_v4_bits("10.1.0.0"));
+        let mut pool = NatPool::<Ipv4Addr>::for_range(
+            AddrInterval::new(base, base),
+            ReservedPorts::default(),
+            true,
+        );
+
+        let stale = pool.begin_tenancy_for_tests(0);
+        pool.plant_dead_entry_for_tests(0, stale);
+        // The address is re-issued before the reclaim runs, retiring `stale`.
+        let current = pool.begin_tenancy_for_tests(0);
+        assert_ne!(stale, current);
+
+        pool.reclaim_ended_tenancies_for_tests();
+
+        assert!(
+            !pool.bitmap_contains_for_tests(0),
+            "reclaim freed an address that had been re-issued"
+        );
+        assert_eq!(
+            pool.in_use_len_for_tests(),
+            0,
+            "the dead entry should still be dropped"
+        );
+        // The current lease is untouched and remains the only one that can hand back.
+        assert!(pool.end_tenancy_for_tests(0, current));
+        assert!(pool.bitmap_contains_for_tests(0));
+    }
+
+    /// Tenancies are minted per pool rather than per address, so an address cannot inherit a
+    /// predecessor's identity by being re-leased at the same offset.
+    #[test]
+    fn tenancies_are_never_reused_within_a_pool() {
+        let base = u128::from(addr_v4_bits("10.1.0.0"));
+        let mut pool = NatPool::<Ipv4Addr>::for_range(
+            AddrInterval::new(base, base + 1),
+            ReservedPorts::default(),
+            true,
+        );
+
+        let mut seen = std::collections::BTreeSet::new();
+        for round in 0..4 {
+            for offset in 0..2u32 {
+                let tenancy = pool.begin_tenancy_for_tests(offset);
+                assert!(
+                    seen.insert(tenancy),
+                    "tenancy repeated at offset {offset} in round {round}"
+                );
+                assert!(pool.end_tenancy_for_tests(offset, tenancy));
+            }
+        }
+    }
+
     #[test]
     fn test_build_allocator() {
         let allocator = build_allocator();

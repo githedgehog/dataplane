@@ -501,6 +501,46 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         true
     }
 
+    // Reach the tenancy bookkeeping directly from tests. The states worth asserting on -- a lease
+    // retired while its owner's `Drop` is still in flight -- need two threads to reach for real,
+    // so the invariant is pinned on the pool instead of raced for.
+    #[cfg(test)]
+    pub(crate) fn begin_tenancy_for_tests(&mut self, offset: u32) -> Tenancy {
+        self.begin_tenancy(offset)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn end_tenancy_for_tests(&mut self, offset: u32, tenancy: Tenancy) -> bool {
+        self.end_tenancy(offset, tenancy)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bitmap_contains_for_tests(&self, offset: u32) -> bool {
+        self.bitmap.0.contains(offset)
+    }
+
+    /// Plant an entry whose address is already gone, so the reclaim path can be driven without a
+    /// second thread. `Weak::new()` never upgrades and reports a strong count of zero, which is
+    /// exactly the state a released address is in before its `Drop` reaches this pool.
+    #[cfg(test)]
+    pub(crate) fn plant_dead_entry_for_tests(&mut self, offset: u32, tenancy: Tenancy) {
+        self.in_use.push_back(InUseEntry {
+            offset,
+            tenancy,
+            ip: Weak::new(),
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reclaim_ended_tenancies_for_tests(&mut self) {
+        self.reclaim_ended_tenancies();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_use_len_for_tests(&self) -> usize {
+        self.in_use.len()
+    }
+
     /// Finish the hand-back of every address whose `AllocatedIp` is gone, dropping their entries.
     ///
     /// This is the other half of the [`InUseEntry`] contract: the thread that dropped the last
