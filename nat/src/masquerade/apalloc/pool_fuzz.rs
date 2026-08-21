@@ -390,6 +390,12 @@ fn an_exhausted_address_neither_strands_its_neighbours_nor_reads_as_an_empty_poo
             Ok(allocation) => held.push(allocation),
             Err(e) => break e,
         }
+        // The pool cannot hand out more than it holds. Bounding the walk turns a pool that frees
+        // an address it should not into a failure rather than a hang.
+        assert!(
+            held.len() <= ports,
+            "the pool handed out more ports than it has"
+        );
     };
 
     assert_eq!(
