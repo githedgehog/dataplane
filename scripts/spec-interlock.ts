@@ -43,6 +43,49 @@ const FN_LINE = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/;
 /** A mutant as cargo-mutants names it in `caught.txt` and friends: `path:line:col: what`. */
 const MUTANT_LINE = /^([^:]+):(\d+):(\d+): /;
 
+/**
+ * A mutant that survives its requirement's cited tests, and why that is the correct outcome.
+ *
+ * `development/code/mutation-testing.md` asks for every mutant to be *classified*, not killed:
+ * some are equivalent, and the cheapest way to turn one green is to assert whatever the code
+ * already does, which entrenches the behaviour instead of checking it. Without somewhere to
+ * record that judgement the interlock reports an equivalent mutant as decorative forever, and
+ * the pressure is to write the entrenching test.
+ *
+ * Kept here rather than in a data file for the reason `.cargo/mutants.toml` gives for holding
+ * cargo-mutants' exclusions: the reasoning stays in one place, next to what acts on it.
+ */
+interface Accepted {
+  /** The requirement, so an accept cannot silently cover a different citation. */
+  requirement: string;
+  /** cargo-mutants' own stable name -- `<path>: <what>`, with no line or column, so that the
+   * entry survives the function being moved or reformatted. */
+  mutant: string;
+  reason: string;
+}
+
+const ACCEPTED: Accepted[] = [
+  {
+    requirement: "https://www.rfc-editor.org/rfc/rfc4787#section-4.1",
+    mutant:
+      "nat/src/masquerade/apalloc/alloc.rs: replace match guard e.is_exhaustion() with true in IpAllocator<I>::allocate",
+    reason:
+      "Equivalent under the allocator's invariants. `reuse_allocated_ip` skips `NoFreePort` " +
+      "and loops, so the only error it can return from a well-formed pool is `NoFreeIp`, " +
+      "which is exhaustion; the non-exhaustion arm is defensive depth against an internal " +
+      "inconsistency. The whole 210-test nat suite passes with the guard forced to `true`. " +
+      "The guard is kept because a future allocator that can fail for a non-exhaustion reason " +
+      "must not draw a second public address for a host that already holds one.",
+  },
+];
+
+/** cargo-mutants' stable name for a mutant: its `<path>: <what>`, dropping line and column. */
+function stableName(mutant: string): string {
+  const match = MUTANT_LINE.exec(mutant);
+  if (!match) return mutant;
+  return `${match[1]}: ${mutant.slice(match[0].length)}`;
+}
+
 /** A half-open line range `[start, end)`, 1-indexed, in `path`. */
 interface Region {
   path: string;
@@ -463,6 +506,7 @@ interface Result {
   detail?: string;
   caught?: string[];
   missed?: string[];
+  accepted?: Accepted[];
   unviable?: string[];
   timeout?: string[];
 }
@@ -472,6 +516,7 @@ async function runTriple(
   triple: Triple,
   output: string,
   jobs: number,
+  used: Set<Accepted>,
 ): Promise<Result> {
   const pkg = await packageOf(triple.implementations[0].path);
   const testPackages = new Set(
@@ -537,13 +582,31 @@ async function runTriple(
     );
   };
 
-  const [caught, missed, unviable, timeout] = await Promise.all(
+  const [caught, survived, unviable, timeout] = await Promise.all(
     ["caught", "missed", "unviable", "timeout"].map(read),
   );
+
+  // Split the survivors into the ones somebody has judged equivalent and the ones nobody has.
+  // Only the second kind is a finding.
+  const accepted: Accepted[] = [];
+  const missed = survived.filter((mutant) => {
+    const entry = ACCEPTED.find((a) =>
+      a.requirement === `${triple.spec}#${triple.section}` &&
+      a.mutant === stableName(mutant)
+    );
+    if (entry) {
+      accepted.push(entry);
+      used.add(entry);
+      return false;
+    }
+    return true;
+  });
   // A region whose every mutant is unviable or timed out is not evidence either way: nothing
   // ran that the test could have noticed. Reporting that as "held" would credit the citation
   // for a check that never happened, which is the exact failure this tool exists to catch.
-  if (!caught.length && !missed.length) {
+  // An accepted survivor is the opposite case -- somebody read that mutant and wrote down why
+  // it lives -- so a region holding nothing else has been answered rather than missed.
+  if (!caught.length && !missed.length && !accepted.length) {
     const why = unviable.length || timeout.length
       ? `${unviable.length} unviable and ${timeout.length} timed out, so none could be tested`
       : "generated no mutants";
@@ -560,6 +623,7 @@ async function runTriple(
     outcome: missed.length ? "decorative" : "held",
     caught,
     missed,
+    accepted,
     unviable,
     timeout,
   };
@@ -668,18 +732,26 @@ async function main(): Promise<number> {
   }
 
   await Deno.mkdir(args.output, { recursive: true });
+  const used = new Set<Accepted>();
   let failures = 0;
   for (const triple of triples) {
     console.log(
       `==> ${triple.spec}#${triple.section} (requirement ${triple.index})`,
     );
-    const result = await runTriple(triple, args.output, Number(args.jobs));
+    const result = await runTriple(
+      triple,
+      args.output,
+      Number(args.jobs),
+      used,
+    );
     if (result.outcome === "held") {
       console.log(
-        `    held: ${
-          result.caught!.length
-        } mutants in the cited region, all caught by ${
-          triple.tests.join(", ")
+        `    held: ${result.caught!.length} of ${
+          result.caught!.length + result.accepted!.length
+        } mutants in the cited region caught by ${triple.tests.join(", ")}${
+          result.accepted!.length
+            ? `, ${result.accepted!.length} accepted below`
+            : ""
         }`,
       );
     } else if (result.outcome === "decorative") {
@@ -703,6 +775,27 @@ async function main(): Promise<number> {
       console.log(
         `    (${skipped} unviable or timed out, not counted either way)`,
       );
+    }
+    // Printed on every run, not hidden. An accepted mutant is a judgement somebody made, and it
+    // should be as visible as the finding it replaced -- otherwise the list only ever grows.
+    for (const entry of result.accepted ?? []) {
+      console.log(`    accepted: ${entry.mutant}`);
+      console.log(`        ${entry.reason}`);
+    }
+  }
+
+  // An accept that matches nothing is worse than no accept: it reads as a considered judgement
+  // while silently covering a mutant that no longer exists, and it would go on hiding whatever
+  // takes that name next.
+  const stale = ACCEPTED.filter((entry) => !used.has(entry));
+  const checkedAll = !args.only.length;
+  if (stale.length && checkedAll) {
+    failures += stale.length;
+    console.log();
+    for (const entry of stale) {
+      console.log(`STALE ACCEPT: no surviving mutant matches`);
+      console.log(`    requirement ${entry.requirement}`);
+      console.log(`    mutant      ${entry.mutant}`);
     }
   }
 
