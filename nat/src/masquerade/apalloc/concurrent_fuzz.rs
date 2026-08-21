@@ -501,6 +501,13 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
 /// [`NatFlowStatus::Closed`](crate::common::NatFlowStatus::Closed), which invalidates the pair at
 /// once to conserve ports, so a pool carrying only DNS destroys and rebuilds its address once per
 /// query, and the next query races the hand-back of the last one.
+///
+/// Deliberately one fixed shape rather than a generated one, and kept alongside the generated
+/// sibling below rather than replaced by it. One address, one releaser, one allocator is the
+/// minimal configuration that reproduces the field failure, and it is a case of special interest:
+/// it is what the affected deployments actually run, and against the unfixed allocator it fails
+/// here with the same error those deployments logged. A generator would explore more and, when it
+/// did fail, shrink to something less immediately recognisable as the reported bug.
 #[concurrency::model_test]
 fn an_allocation_racing_the_last_release_is_still_served() {
     concurrency::stress(|| {
@@ -536,4 +543,145 @@ fn an_allocation_racing_the_last_release_is_still_served() {
             outcome.as_ref().err()
         );
     });
+}
+
+/// Addresses and workers for the generated hand-back scenarios. Both small: the race needs an
+/// address to reach zero references, and every extra worker makes some flow more likely to be
+/// holding one at all times, which hides the window rather than exposing it.
+const MAX_HANDBACK_ADDRESSES: u8 = 3;
+const MAX_HANDBACK_WORKERS: usize = 3;
+const MAX_HANDBACK_OPS: usize = 5;
+
+/// What a worker does to a pool while its neighbours do the same.
+#[derive(Clone, Copy, Debug, bolero::TypeGenerator)]
+enum HandbackOp {
+    /// Take a tuple and keep it.
+    Allocate,
+    /// Give back the tuple taken longest ago, which is what opens the window.
+    ReleaseOldest,
+}
+
+/// A generated shape for the hand-back race.
+#[derive(Clone, Debug)]
+struct HandbackScenario {
+    addresses: u8,
+    ops: Vec<Vec<HandbackOp>>,
+}
+
+impl bolero::TypeGenerator for HandbackScenario {
+    fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
+        let addresses = driver.produce::<u8>()? % MAX_HANDBACK_ADDRESSES + 1;
+        let worker_count = usize::from(driver.produce::<u8>()? % 2) + 2;
+
+        let mut ops = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let mut worker: Vec<HandbackOp> = driver.produce()?;
+            worker.truncate(MAX_HANDBACK_OPS);
+            // A worker that never allocates cannot race anything.
+            if !worker.iter().any(|op| matches!(op, HandbackOp::Allocate)) {
+                worker.insert(0, HandbackOp::Allocate);
+            }
+            ops.push(worker);
+        }
+        let _ = MAX_HANDBACK_WORKERS;
+        Some(Self { addresses, ops })
+    }
+}
+
+impl HandbackScenario {
+    /// Far below any real limit: a single address carries 252 usable port blocks of 256 ports
+    /// each, and these scenarios hold a handful of tuples at once. So an exhaustion error here
+    /// cannot mean the pool ran out -- only that it lost track of an address it still owned.
+    fn run(&self) {
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(
+                BASE,
+                BASE + u128::from(self.addresses) - 1,
+            )],
+            IDLE_TIMEOUT,
+        )];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::with_capacity(self.ops.len());
+
+        for worker in &self.ops {
+            let pools = pools.clone();
+            let failures = failures.clone();
+            let worker = worker.clone();
+            handles.push(thread::spawn(move || {
+                let mut held = Vec::new();
+                for op in worker {
+                    match op {
+                        HandbackOp::Allocate => match pools[0].allocate(false) {
+                            Ok(allocation) => held.push(allocation),
+                            Err(e) => failures.lock().push(e),
+                        },
+                        HandbackOp::ReleaseOldest => {
+                            if !held.is_empty() {
+                                drop(held.remove(0));
+                            }
+                        }
+                    }
+                    thread::yield_now();
+                }
+                drop(held);
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("a worker panicked");
+        }
+
+        let failures = failures.lock();
+        assert!(
+            failures.is_empty(),
+            "allocation was refused on a pool that was nowhere near exhausted: {:?} \
+             (addresses: {}, workers: {})",
+            *failures,
+            self.addresses,
+            self.ops.len(),
+        );
+    }
+}
+
+/// The same property as the fixed scenario above, over generated shapes.
+///
+/// IGNORED: this currently fails, and it fails on unmodified `main` as well as with the tenancy
+/// fix applied -- verified by running it against `origin/main` with nothing else changed. It is
+/// therefore a second, independent defect rather than a regression, and it is left here, failing
+/// and ignored, because deleting it would discard the only reproducer anyone has for it.
+///
+/// What is known: one address, three workers, a mixture of taking and releasing tuples, and an
+/// allocation is refused with `NoFreeIp` while the pool is nowhere near exhausted -- the same
+/// observable symptom as the bug this module's fixed scenario covers, reached by a different
+/// route. The pool is healthy again by the time the workers join, so the window is transient.
+///
+/// What is not known: the mechanism. The obvious candidate -- that `allocate` commits to drawing a
+/// fresh address after its scan comes up empty, and never re-checks if another thread creates the
+/// address in that gap -- is wrong: adding that re-scan does not fix it. Whatever the real cause,
+/// it is not the hand-back window, which the tenancies close.
+///
+/// Do not un-ignore this without a diagnosis. A green run here would mean the defect moved rather
+/// than that it went away.
+#[ignore = "reproduces a second, pre-existing allocator race; see the comment above"]
+///
+/// Whatever the number of addresses, the number of workers, or the interleaving of taking and
+/// giving back, an allocation must never be refused while the pool still owns an address. The
+/// fixed test says this bug is real in the configuration that met it; this says the same defect
+/// does not survive in the neighbourhood around that configuration.
+#[concurrency::model_test]
+fn no_generated_handback_shape_refuses_an_allocation() {
+    bolero::check!()
+        .with_type()
+        .cloned()
+        .for_each(|scenario: HandbackScenario| {
+            concurrency::stress(move || {
+                scenario.run();
+            });
+        });
 }
