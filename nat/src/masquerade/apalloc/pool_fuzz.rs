@@ -264,13 +264,9 @@ fn re_reservation_after_a_config_change_is_honoured() {
 /// This carries the port-overloading citations as well as
 /// `distinct_flows_do_not_share_a_translation`, because the two reach different code and neither
 /// is sufficient alone. The stage-level property states the claim where it is observable -- two
-/// flows, one reply path -- but it draws a handful of ports, so it never exhausts a 256-port
-/// block and never reaches the second half of [`Bitmap256`]. Walking a region dry does, and
-/// `seen` is what turns "handed out twice" into a failure.
-///
-/// The interlock is what made the gap visible: with only the stage property cited, seven mutants
-/// in the bitmap's second half survived, one of them replacing the bit that marks a port used --
-/// port overloading itself. See `development/code/spec-compliance.md`.
+/// flows, one reply path -- but it draws a handful of ports, so it never fills a 256-port block
+/// and never enters the second half of [`Bitmap256`]. Only walking a region dry reaches that
+/// half, and `seen` is what turns "handed out twice" into a failure.
 //= https://www.rfc-editor.org/rfc/rfc5382#section-8
 //= type=test
 //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
