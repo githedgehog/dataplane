@@ -15,7 +15,10 @@ If you need to write a test, prefer [property-based tests] over simple unit test
 To find out what your tests are _not_ saying, see the [mutation testing note][mutants]; it is a
 report we read, not a gate that blocks anything.
 To find out whether they are saying what the specification asked for, see the
-[specification compliance note][duvet].
+[specification compliance note][duvet]. If you write a `//=` citation, `just spec-interlock` is
+what decides whether it is a claim or a comment: it mutates the code you cited and runs the test
+you cited, and cites nothing on your behalf. Put the citation on the narrowest code whose
+mutation would violate the requirement, not on the function whose name matches it.
 For inputs too large to generate directly -- a whole configuration, say -- build them from an algebra of
 valid operations and derive the oracles from that same algebra; see the [config algebra note][config-algebra].
 If you need to handle errors, prefer `Result` types over panics in general, but see the

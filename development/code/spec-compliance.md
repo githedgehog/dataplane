@@ -1,7 +1,7 @@
 # Specification compliance with duvet
 
 Status: **three specifications tracked, the RFC corpus and its errata audited, the citation
-interlock built and returning findings.**
+interlock built; every cited requirement now holds.**
 The open-questions list below is expected to grow; it is written down so that it grows in one place
 rather than in four people's heads.
 
@@ -24,11 +24,11 @@ specification, and nothing inside the suite can notice.
 
 Two specifications, roughly one afternoon.
 
-| | outcome |
-| --- | --- |
+|                            | outcome                                                 |
+| -------------------------- | ------------------------------------------------------- |
 | RFC 4884 length validation | **real defect**, fixed in `net/src/headers/embedded.rs` |
-| RFC 5382 REQ-7, REQ-10 | already held, already tested, never named |
-| RFC 5382 REQ-5, REQ-1 | conformance gaps, recorded as `todo` |
+| RFC 5382 REQ-7, REQ-10     | already held, already tested, never named               |
+| RFC 5382 REQ-5, REQ-1      | conformance gaps, recorded as `todo`                    |
 
 The defect is the strongest argument for the tool: `is_full_payload()` checked the RFC 4884 length
 attribute in **bits** where the RFC counts 32-bit **words**, so it rejected seven of eight
@@ -59,10 +59,10 @@ Latin-1 bytes. The only ones a networking project might want are RFC 1305 (NTPv3
 
 **It is blind to lowercase normative language.** This is the important one:
 
-| | RFC 2119 keywords | lowercase must/should | cites RFC 2119 |
-| --- | --- | --- | --- |
-| RFC 8200 (IPv6, STD 86) | 0 | 79 | no |
-| RFC 3022 (traditional NAT) | 0 | 24 | no |
+|                            | RFC 2119 keywords | lowercase must/should | cites RFC 2119 |
+| -------------------------- | ----------------- | --------------------- | -------------- |
+| RFC 8200 (IPv6, STD 86)    | 0                 | 79                    | no             |
+| RFC 3022 (traditional NAT) | 0                 | 24                    | no             |
 
 RFC 8200 says "It must obey the protocol requirements for routers when receiving (forwarding)
 interfaces." That is a real obligation with no uppercase token to key on. duvet is not
@@ -94,18 +94,36 @@ requirement which the test that claims to check it does not notice.
 
 The unit is a (requirement, implementation, test) triple, not a file. `cargo mutants -f <file>`
 answers a weaker question -- "is this file tested" -- and buries the signal: the RFC 4884 finding
-below is four mutants among the 125 that `embedded.rs` generates.
+below was four mutants among the 125 that `embedded.rs` generates.
+
+### Three tiers, cheapest first
+
+Each catches what the one below it cannot, and running them in this order is what keeps the
+expensive one affordable.
+
+1. **Coverage** -- `cargo llvm-cov` over the cited region, running only the cited tests. Answers
+   "did the test go there at all". Seconds.
+2. **Mutation** -- `cargo mutants` over the same region, same tests. Answers "did it care". Minutes.
+3. **Judgement** -- a person. Answers "is this the right sentence, on the right code, and is this
+   survivor equivalent". Not automatable, and the sections below are what it has to work with.
+
+Coverage runs first because it can settle the question outright: a cited test that executes **no**
+line of the cited region cannot be testing the requirement, and there is no reason to build a
+mutant to confirm it.
+
+It must not become a threshold. A caught mutant was necessarily executed, so coverage adds nothing
+wherever mutation already succeeds -- only zero is decisive, and only as an error. Anything above
+zero is used to _explain_ a survivor rather than to judge one, which is the split below.
 
 ### Outcomes
 
-Four, and the last two matter as much as the first.
-
-| | meaning |
-| --- | --- |
-| **held** | every mutant in the cited region was caught by the cited tests |
-| **decorative** | a mutant survived; the citation does not carry the weight it claims |
-| **no-mutants** | the region produced nothing testable -- usually every mutant unviable |
-| **stale** | the cited test name matches no test; the citation has rotted |
+|                | meaning                                                                |
+| -------------- | ---------------------------------------------------------------------- |
+| **held**       | every mutant in the cited region was caught, or accepted with a reason |
+| **decorative** | a mutant survived unaccounted for                                      |
+| **uncovered**  | the cited tests execute none of the cited region                       |
+| **no-mutants** | the region produced nothing testable -- usually every mutant unviable  |
+| **stale**      | the cited test name matches no test; the citation has rotted           |
 
 `no-mutants` is not a pass. Reporting it as one would credit a citation for a check that never
 ran, which is the failure the tool exists to catch. `stale` exists because it is the tool's own
@@ -113,33 +131,88 @@ worst failure mode: a renamed test makes the filter match nothing, nextest exits
 nothing, every mutant survives, and a citation that is merely out of date is reported as
 decorative. The test names are checked against `cargo nextest list` before any mutant runs.
 
+The same hazard has now appeared three times -- `stale`, `no-mutants`, and a coverage collection
+that failed silently and returned an empty map, which reads as "nothing was executed" and
+relabelled every survivor. **A measurement that fails silently reads as a measurement that
+succeeded.** Every step here reports its own failure as a distinct outcome for that reason.
+
+### Why a mutant survived
+
+A survivor has two possible causes needing opposite fixes, and mutation alone cannot tell them
+apart. Coverage of the mutated line does:
+
+|               | meaning                             | the fix                                           |
+| ------------- | ----------------------------------- | ------------------------------------------------- |
+| **unreached** | the cited tests never ran that line | change what the test **feeds**                    |
+| **tolerated** | they ran it and passed anyway       | change what it **asserts** -- or it is equivalent |
+
+Splitting the ten survivors on RFC 4787 REQ-3 by hand took longer than the run that found them.
+
+### Accepted mutants
+
+Some survivors are equivalent, and the cheapest way to turn one green is to assert whatever the
+code already does -- the entrenchment [mutation testing](./mutation-testing.md) warns about,
+arrived at from the other direction. `scripts/spec-interlock.ts` therefore carries an `ACCEPTED`
+list: a requirement, a mutant, and a reason.
+
+Two rules keep it from becoming a way of not looking. An accept is **printed in full on every
+run**, next to the finding it replaced. And an accept that matches no live mutant is a **failure**,
+because a stale one reads as a considered judgement while silently covering whatever takes that
+name next.
+
+Both current entries are upstream invariants rather than gaps, and both were settled the same way:
+read the code, then apply the mutant by hand and run the whole crate's suite. That is the shape of
+the argument to expect.
+
 ### What it found, first time out
 
-Seven requirements carry both an implementation and a test. Three hold. Six minutes.
+Seven requirements carried both an implementation and a test. duvet reported all seven green.
+**Three actually held.** Closing the other four is recorded below, because what each one turned
+out to be is more useful than the count.
 
-**RFC 4884, "at least 128 octets" -- decorative, and on the path where the original defect was.**
-Four mutants survive `a_field_shorter_than_128_octets_is_refused`:
+| finding                           | what it really was                                   |
+| --------------------------------- | ---------------------------------------------------- |
+| RFC 4884, "at least 128 octets"   | a genuine test gap, in two ways                      |
+| RFC 4787 REQ-2, "pooling: Paired" | an equivalent mutant                                 |
+| RFC 4787 REQ-3 / RFC 5382 REQ-7   | a citation on the wrong code, then on the wrong test |
 
-- The test iterates `[120, 124]`. It never tests 128, so `<` versus `<=` at the boundary is
-  invisible -- the same boundary class the `flow_info.rs` measurement above found.
-- The citation is on **both** the ICMPv4 and the ICMPv6 branch, and there is no v6 test helper at
-  all. All three of the v6 branch's mutants survive. The RFC 4884 fix was applied to both
-  branches and tested on one.
+**RFC 4884 -- a real gap, on the path where the original defect was.** The test iterated
+`[120, 124]`, so `<` versus `<=` at the boundary was invisible: 128 itself was never tested.
+Worse, the citation sat on **both** the ICMPv4 and ICMPv6 branches and there was no v6 fixture at
+all, so three of the v6 branch's mutants had nothing to catch them. The RFC 4884 fix had been
+applied to both branches and tested on one. Closed by taking the boundary from both sides in both
+families.
 
-**RFC 4787 REQ-2, "IP address pooling: Paired" -- decorative.** `replace match guard
-e.is_exhaustion() with true` survives. The guard is what separates allocator exhaustion from
-every other allocator error, and the cited test never produces a non-exhaustion error. This is
-the `protocol.rs` failure mode again: a test that walks a path rather than discriminating one.
+**RFC 4787 REQ-2 -- not a defect.** `replace match guard e.is_exhaustion() with true` survives,
+and is equivalent: `reuse_allocated_ip` skips `NoFreePort` and loops, so from a well-formed pool
+it can only return `NoFreeIp`, which _is_ exhaustion. Accepted with that reasoning.
 
-**RFC 4787 REQ-3 and RFC 5382 REQ-7, "no port overloading" -- not checkable as cited.** Every
-mutant of the cited region is unviable. The citation sits on `allocate_v4`, which only forwards
-to `allocate_from_tables`; the code that enforces the requirement is the one it delegates to.
-The citation names the wrong region, and no amount of testing would have revealed that. See
-[Where a citation goes](#where-a-citation-goes-and-what-that-costs-an-abstraction) -- the wrong
-region and the unviable mutants have separate causes, and only the first is a citation error.
+**RFC 4787 REQ-3 / RFC 5382 REQ-7 -- wrong twice over, and the most instructive.** The citation
+sat on `allocate_v4`, which only forwards; every mutant of it was unviable, so the interlock could
+not check the citation at all. Moving it to `Bitmap256::allocate_port_from_bitmap` -- the bit that
+marks a port used, and the narrowest thing whose mutation would violate either requirement -- made
+it checkable, and it immediately failed with ten survivors.
 
-That last category is the one to keep in mind when extending this. A citation can be wrong about
-_where_ the requirement lives, and neither duvet nor a coverage report can see it.
+Coverage said seven of those were **unreached**: the cited stage-level property draws a handful of
+ports, so it never fills a 256-port block and never enters the second half of the bitmap. One of
+the seven replaced the bit that marks a port used, which is port overloading itself.
+
+And the fix was **no new test**. `a_region_can_be_allocated_dry` already walks two address ranges
+dry asserting no tuple is handed out twice; it simply was not cited. Adding the citation killed
+nine. The tenth was an invariant and is accepted.
+
+### What that costs to believe
+
+Three things generalise, and all three are invisible to duvet:
+
+- **A citation can be on the wrong code.** REQ-3 pointed at a forwarding wrapper for as long as it
+  existed. `no-mutants` is the only signal that catches this, which is why it is not a pass.
+- **A citation can be on the right code and name the wrong test.** The requirement was fully
+  tested, by a good test, that nobody had cited. duvet cannot see this at all: it checks that a
+  `type=test` citation exists, not that the test it names is the one doing the work.
+- **A requirement can need more than one cited test, at different altitudes.** The stage-level
+  property states port overloading where it is observable -- two flows, one reply path. The
+  exhaustion walk reaches the code that would commit it. Neither is sufficient; both are cited.
 
 ## Where a citation goes, and what that costs an abstraction
 
@@ -213,10 +286,10 @@ The worst failure found, because it exits 0 and reports a plausible number.
 209 of 239 BCP entries in the mirror are symlinks to a single RFC and are harmless. The other 27 are
 concatenations, and **BCP 127 is one of them**: RFC 4787 + RFC 6888 + RFC 7857 in one file.
 
-| | requirements |
-| --- | --- |
-| `bcp127.txt` | **42** |
-| RFC 4787 + 6888 + 7857, extracted separately | **129** |
+|                                              | requirements |
+| -------------------------------------------- | ------------ |
+| `bcp127.txt`                                 | **42**       |
+| RFC 4787 + 6888 + 7857, extracted separately | **129**      |
 
 duvet keys requirements by section anchor, and each member document has its own `section-5`, so the
 last document in the concatenation wins. RFC 6888 loses all three of its sections; RFC 4787 loses
@@ -272,10 +345,10 @@ for "has Verified errata"; the index is authoritative for nothing.
 
 What that says about the specifications in play:
 
-| | errata |
-| --- | --- |
+|                                                  | errata             |
+| ------------------------------------------------ | ------------------ |
 | RFC 4787, RFC 5382, RFC 5508, RFC 6888, RFC 7857 | none of any status |
-| RFC 4884 | one, EID 3 |
+| RFC 4884                                         | one, EID 3         |
 
 **EID 3 does not touch us.** It corrects Section 7's description of the ICMP Extension Header
 checksum from "the one's complement sum of the data structure" to "...of the ICMP Extension
@@ -320,21 +393,21 @@ is a `grep` to regenerate.
 
 Twenty-eight RFCs, of which three are tracked.
 
-| RFC | crates | note |
-| --- | --- | --- |
-| 8200 (IPv6) | `net` | **46 mentions, the most in the tree, and duvet cannot parse it** -- 0 uppercase keywords, 79 lowercase. Synthesis or nothing. |
-| 4787 (NAT/UDP) | `nat`, `dataplane` | tracked |
-| 4884 (ICMP extension) | `nat`, `net` | tracked |
-| 7348 (VXLAN) | `net`, `dpdk` | 15 mentions, untracked |
-| 4302 (IP AH) | `net` | 11 mentions, untracked |
-| 5382 (NAT/TCP) | `nat` | tracked |
-| 792, 1812, 1122, 1191 | `net`, `dataplane` | foundational; expect the same lowercase problem as 8200 |
-| 9293 (TCP), 2018, 7323, 3168, 6946, 3540, 2675 | `net` | TCP option and fragmentation behaviour |
-| 5508 (NAT/ICMP) | `nat`, `net` | duvet-friendly, on-topic, untracked -- 92 requirements |
-| 6437, 4861, 6918 | `net` | IPv6 flow label, ND |
-| 1624 | `net` | checksum update |
-| 7854, 8671 | `routing` | BMP |
-| 3339, 9562, 7637 | `config`, `mgmt`, `id`, `dpdk` | formats, not behaviour |
+| RFC                                            | crates                         | note                                                                                                                          |
+| ---------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 8200 (IPv6)                                    | `net`                          | **46 mentions, the most in the tree, and duvet cannot parse it** -- 0 uppercase keywords, 79 lowercase. Synthesis or nothing. |
+| 4787 (NAT/UDP)                                 | `nat`, `dataplane`             | tracked                                                                                                                       |
+| 4884 (ICMP extension)                          | `nat`, `net`                   | tracked                                                                                                                       |
+| 7348 (VXLAN)                                   | `net`, `dpdk`                  | 15 mentions, untracked                                                                                                        |
+| 4302 (IP AH)                                   | `net`                          | 11 mentions, untracked                                                                                                        |
+| 5382 (NAT/TCP)                                 | `nat`                          | tracked                                                                                                                       |
+| 792, 1812, 1122, 1191                          | `net`, `dataplane`             | foundational; expect the same lowercase problem as 8200                                                                       |
+| 9293 (TCP), 2018, 7323, 3168, 6946, 3540, 2675 | `net`                          | TCP option and fragmentation behaviour                                                                                        |
+| 5508 (NAT/ICMP)                                | `nat`, `net`                   | duvet-friendly, on-topic, untracked -- 92 requirements                                                                        |
+| 6437, 4861, 6918                               | `net`                          | IPv6 flow label, ND                                                                                                           |
+| 1624                                           | `net`                          | checksum update                                                                                                               |
+| 7854, 8671                                     | `routing`                      | BMP                                                                                                                           |
+| 3339, 9562, 7637                               | `config`, `mgmt`, `id`, `dpdk` | formats, not behaviour                                                                                                        |
 
 What this changes about the plan:
 
@@ -358,9 +431,12 @@ Expected to expand. Nothing here is scheduled.
    the specifications that constrain us and that nothing in the tree mentions.
 2. **Which of those are not RFC 2119 conforming**, and so need synthesis per the section above.
    RFC 8200 is the known case and the most consequential one.
-3. ~~**Is a citation true?**~~ Built; see [the interlock](#is-a-citation-true-the-interlock). What
-   remains is deciding whether it becomes a gate. It is far too slow to run per pull request over
-   everything -- six minutes for seven requirements -- but `--only` on a changed citation is cheap.
+3. ~~**Is a citation true?**~~ Built; see [the interlock](#is-a-citation-true-the-interlock). All
+   seven cited requirements hold, which means the tool currently has nothing to say and its next
+   real test is the next citation somebody writes. What remains is whether it becomes a gate:
+   seven minutes for seven requirements is too slow per pull request over everything, but
+   `--only` on a changed citation is cheap, and `uncovered` is now reachable without building a
+   single mutant.
 4. **Errata.** Mostly settled; see [Errata](#errata) below. What remains is the 847 RFCs whose
    errata exist but are not Verified, for which the corpus holds no body. None of them is tracked
    today; RFC 4443 and RFC 3022 are both in that set and both plausible future targets.
