@@ -127,14 +127,96 @@ interface Report {
 async function run(
   cmd: string,
   args: string[],
-): Promise<{ code: number; stdout: string }> {
+  env: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const output = await new Deno.Command(cmd, {
     args,
     cwd: REPO,
+    env,
     stdout: "piped",
     stderr: "piped",
   }).output();
-  return { code: output.code, stdout: new TextDecoder().decode(output.stdout) };
+  const decode = (b: Uint8Array) => new TextDecoder().decode(b);
+  return {
+    code: output.code,
+    stdout: decode(output.stdout),
+    stderr: decode(output.stderr),
+  };
+}
+
+/**
+ * How many times the cited tests executed each line of the files they are cited against.
+ *
+ * Cheap next to mutation -- one instrumented run rather than one build and test cycle per
+ * mutant -- and it answers a question mutation cannot separate out on its own: a mutant that
+ * survives because the test never reached it needs a different input, while one that survives
+ * although the test ran straight through it needs a different assertion.
+ *
+ * The instrumented build gets its own target directory. Sharing the default one would make
+ * every ordinary `cargo test` afterwards rebuild from scratch, because the coverage flags
+ * differ.
+ */
+async function lineCounts(
+  pkg: string,
+  tests: string[],
+  paths: string[],
+  outDir: string,
+  sharedTarget: string,
+): Promise<Map<string, number> | null> {
+  // Added to the parent environment rather than replacing it: `Deno.Command` inherits unless
+  // `clearEnv` is set, which keeps PATH and the toolchain selection intact without this tool
+  // needing `--allow-env`.
+  const env = {
+    LLVM_COV: join(REPO, "devroot", "bin", "llvm-cov"),
+    LLVM_PROFDATA: join(REPO, "devroot", "bin", "llvm-profdata"),
+    // Shared across requirements, not per-requirement: the instrumented build is the slow part
+    // and is identical for every citation in the same package.
+    CARGO_TARGET_DIR: sharedTarget,
+  };
+  // `--output-path` will not create the directory it writes into.
+  await Deno.mkdir(outDir, { recursive: true });
+
+  // Returning null rather than an empty map matters: an empty map is indistinguishable from
+  // "nothing was executed", and would relabel every survivor as unreached -- a confident wrong
+  // answer, which is worse than no answer.
+  const step = async (args: string[]) => {
+    const { code, stderr } = await run("cargo", args, env);
+    if (code !== 0) {
+      console.log(`    warning: coverage step \`${args.join(" ")}\` failed`);
+      const tail = stderr.trim().split("\n").slice(-3).join("\n        ");
+      if (tail) console.log(`        ${tail}`);
+    }
+    return code === 0;
+  };
+
+  // Only the profiles, not the build: the build is the slow part and is reusable.
+  const jsonPath = join(outDir, "coverage.json");
+  const ok =
+    await step(["llvm-cov", "clean", "--workspace", "--profraw-only"]) &&
+    await step(["llvm-cov", "--no-report", "--branch", "nextest", "-p", pkg, ...tests]) &&
+    await step(["llvm-cov", "report", "--json", "--output-path", jsonPath]);
+  if (!ok) return null;
+
+  const counts = new Map<string, number>();
+  let report;
+  try {
+    report = JSON.parse(await Deno.readTextFile(jsonPath));
+  } catch (e) {
+    console.log(`    warning: coverage report unreadable: ${e}`);
+    return null;
+  }
+  for (const file of report.data?.[0]?.files ?? []) {
+    const match = paths.find((p) => file.filename.endsWith(p));
+    if (!match) continue;
+    // A segment is [line, column, count, hasCount, ...]. One line can carry several, so the
+    // largest wins: the question here is only whether execution ever got there.
+    for (const [line, _col, count, hasCount] of file.segments ?? []) {
+      if (!hasCount) continue;
+      const key = `${match}:${line}`;
+      counts.set(key, Math.max(counts.get(key) ?? 0, count));
+    }
+  }
+  return counts;
 }
 
 /**
@@ -337,11 +419,21 @@ async function selectsATest(pkg: string, tests: string[]): Promise<boolean> {
 }
 
 interface Result {
-  outcome: "held" | "decorative" | "stale" | "unsupported" | "no-mutants";
+  outcome:
+    | "held"
+    | "decorative"
+    | "uncovered"
+    | "stale"
+    | "unsupported"
+    | "no-mutants";
   detail?: string;
   caught?: string[];
   missed?: string[];
   accepted?: Accepted[];
+  /** Survivors on a line the cited tests never executed: the test needs a different input. */
+  unreached?: string[];
+  /** Survivors on a line they did execute: the test needs a different assertion. */
+  tolerated?: string[];
   unviable?: string[];
   timeout?: string[];
 }
@@ -372,6 +464,30 @@ async function runTriple(
 
   const outDir = join(output, `requirement-${triple.index}`);
   const files = [...new Set(triple.implementations.map((r) => r.path))].sort();
+
+  // Coverage first, because it is cheap and can settle the question outright. A cited test that
+  // never executes a single line of the cited region cannot be testing the requirement, whatever
+  // the mutants would have said, and skipping them saves the build-and-test cycle per mutant.
+  const counts = await lineCounts(
+    pkg,
+    triple.tests,
+    files,
+    outDir,
+    join(output, "cov-target"),
+  );
+  const regionLines = triple.implementations.flatMap((r) =>
+    Array.from({ length: r.end - r.start }, (_, i) => `${r.path}:${r.start + i}`)
+  );
+  const executable = regionLines.filter((key) => counts?.has(key));
+  const executed = executable.filter((key) => (counts?.get(key) ?? 0) > 0);
+  if (counts && executable.length && !executed.length) {
+    return {
+      outcome: "uncovered",
+      detail: `${triple.tests.join(", ")} never executes ${
+        triple.implementations.map(showRegion).join(", ")
+      }; the citation cannot be testing this requirement`,
+    };
+  }
   await run("cargo", [
     "mutants",
     "--package",
@@ -439,11 +555,21 @@ async function runTriple(
       timeout,
     };
   }
+  // Split the survivors by whether the cited tests got to them at all. The two need opposite
+  // fixes, and telling them apart by hand meant reading a coverage report anyway.
+  // With no coverage there is no basis to split them, and guessing would relabel every
+  // survivor as unreached. Leave both buckets empty; the reporter then lists them plainly.
+  const reached = (mutant: string) => {
+    const match = MUTANT_LINE.exec(mutant);
+    return match ? (counts!.get(`${match[1]}:${match[2]}`) ?? 0) > 0 : false;
+  };
   return {
     outcome: missed.length ? "decorative" : "held",
     caught,
     missed,
     accepted,
+    unreached: counts ? missed.filter((m) => !reached(m)) : [],
+    tolerated: counts ? missed.filter(reached) : [],
     unviable,
     timeout,
   };
@@ -526,7 +652,24 @@ async function main(): Promise<number> {
       console.log(
         `    DECORATIVE: ${result.missed!.length} mutants survive ${triple.tests.join(", ")}`,
       );
-      for (const mutant of result.missed!) console.log(`        ${mutant}`);
+      if (result.unreached?.length) {
+        console.log(
+          `      unreached (${result.unreached.length}) -- the test never runs these lines, so`,
+        );
+        console.log(`      closing them means changing what it feeds, not what it asserts:`);
+        for (const mutant of result.unreached) console.log(`        ${mutant}`);
+      }
+      if (result.tolerated?.length) {
+        console.log(
+          `      tolerated (${result.tolerated.length}) -- the test runs these lines and passes`,
+        );
+        console.log(`      anyway, so either an assertion is missing or the mutant is equivalent:`);
+        for (const mutant of result.tolerated) console.log(`        ${mutant}`);
+      }
+      if (!result.unreached?.length && !result.tolerated?.length) {
+        console.log(`      (unclassified -- coverage was not collected)`);
+        for (const mutant of result.missed!) console.log(`        ${mutant}`);
+      }
     } else {
       failures += 1;
       console.log(`    ${result.outcome.toUpperCase()}: ${result.detail}`);
