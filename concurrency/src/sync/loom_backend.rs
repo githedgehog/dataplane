@@ -28,6 +28,9 @@
 //!     returns `Some` -- the upgrade-fails-after-last-strong-drop race
 //!     real `Weak` exposes is not modelled.
 //!   * `Arc::strong_count` reflects live `Arc`s **and** live `Weak`s.
+//!   * `Weak::strong_count` likewise never reaches `0` while the `Weak`
+//!     itself is alive, so a caller using it to detect "the last strong
+//!     reference is gone" never observes that condition under loom.
 //!   * `Arc::weak_count` panics: the shim has no separate weak count
 //!     to report, and returning `0` silently would make assertions
 //!     pass for the wrong reason on every backend. See the per-method
@@ -545,6 +548,24 @@ impl<T: ?Sized> Weak<T> {
     #[must_use]
     pub fn upgrade(&self) -> Option<Arc<T>> {
         self.inner.as_ref().map(|a| Arc(a.clone()))
+    }
+
+    /// See `std::sync::Weak::strong_count`.
+    ///
+    /// `0` for a `Weak` that has never been associated with an `Arc`, matching std. Otherwise the
+    /// same caveat as `Arc::strong_count` applies and then some: this shim's `Weak` holds a strong
+    /// clone, so the count includes live `Weak`s and cannot reach `0` while `self` is alive. A
+    /// caller asking "has the last strong reference gone?" is therefore always told "no" under
+    /// loom -- inert rather than wrong, but it means such a path is not model-checked here. That is
+    /// the same limitation the module header records for `upgrade`; see the note there about tests
+    /// that need the strong/weak race.
+    ///
+    /// Offered anyway because the alternative is worse: callers that must answer that question
+    /// while holding a lock the value's `Drop` also takes cannot use `upgrade`, since the
+    /// temporary `Arc` it mints may be the last one and would run `Drop` re-entrantly.
+    #[must_use]
+    pub fn strong_count(&self) -> usize {
+        self.inner.as_ref().map_or(0, inner::Arc::strong_count)
     }
 }
 
