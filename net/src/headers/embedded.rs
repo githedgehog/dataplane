@@ -22,6 +22,7 @@ use crate::udp::{TruncatedUdp, UdpChecksum, UdpPort};
 use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use derive_builder::Builder;
+use std::net::IpAddr;
 use std::num::NonZero;
 
 #[cfg(any(test, feature = "bolero"))]
@@ -609,41 +610,86 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Fold the change of a 16-bit field into the header's checksum.
+    ///
+    /// `increment_update_checksum` computes the new checksum and hands it back; it does not store
+    /// it, despite taking `&mut self`. Setting it is the point of this method, and it is what makes
+    /// a translated quote's checksum agree with the bytes around it.
+    ///
+    /// Setting fails only on a header too truncated to hold a checksum, which is a header the
+    /// caller could not have read one out of either, so there is nothing to do about it here.
     pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = tcp.increment_update_checksum(
+                let updated = tcp.increment_update_checksum(
                     TcpChecksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = tcp.set_checksum(updated);
             }
             EmbeddedTransport::Udp(udp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = udp.increment_update_checksum(
+                let updated = udp.increment_update_checksum(
                     UdpChecksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = udp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp4(icmp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = icmp.increment_update_checksum(
+                let updated = icmp.increment_update_checksum(
                     Icmp4Checksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = icmp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp6(icmp) => {
-                // Silently ignore errors if transport header is truncated
-                let _ = icmp.increment_update_checksum(
+                let updated = icmp.increment_update_checksum(
                     Icmp6Checksum::new(current_checksum),
                     old_value,
                     new_value,
                 );
+                let _ = icmp.set_checksum(updated);
             }
         }
+    }
+
+    /// Fold a change to one of the quoted packet's IP addresses into this header's checksum.
+    ///
+    /// TCP, UDP and `ICMPv6` are checksummed over a pseudo-header built from the source and
+    /// destination addresses, so rewriting either address of a quoted packet leaves the quoted
+    /// transport checksum describing an address that is no longer there. `ICMPv4` has no
+    /// pseudo-header and is left alone.
+    ///
+    /// Incremental, because a quote is usually truncated: there is no payload to compute a
+    /// checksum over from scratch, only a delta to apply to the one already there.
+    pub fn update_checksum_for_address(&mut self, old: IpAddr, new: IpAddr) {
+        if matches!(self, EmbeddedTransport::Icmp4(_)) {
+            return;
+        }
+        // Translating between address families would change the shape of the pseudo-header rather
+        // than a value inside it, so there would be no delta to fold.
+        if old.is_ipv4() != new.is_ipv4() {
+            return;
+        }
+        for (old_word, new_word) in address_words(old).into_iter().zip(address_words(new)) {
+            let Some(current) = self.checksum() else {
+                return;
+            };
+            self.update_checksum(current, old_word, new_word);
+        }
+    }
+}
+
+// The 16-bit words of an address, in the order a checksum sums them.
+fn address_words(addr: IpAddr) -> ArrayVec<u16, 8> {
+    match addr {
+        IpAddr::V4(addr) => {
+            let [a, b, c, d] = addr.octets();
+            ArrayVec::from_iter([u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])])
+        }
+        IpAddr::V6(addr) => ArrayVec::from(addr.segments()),
     }
 }
 
@@ -1377,6 +1423,115 @@ mod tests {
 
         // Before calling check_full_payload, should be false
         assert!(!headers.is_full_payload());
+    }
+
+    // Checksum folding for a rewritten address in a quoted packet.
+    //
+    // A quote is usually truncated, so folding a delta into the checksum already there is the only
+    // option: there is no payload to compute one over. These build the one case where both routes
+    // are open -- a full header over a known payload -- and hold the fold against a computation
+    // from scratch.
+    //
+    // The checksum starts out correct on purpose. An RFC 1624 update is exact given a correct
+    // starting value and says nothing at all given a wrong one, so only a correct start tests
+    // anything.
+    mod address_folding {
+        use super::*;
+        use crate::icmp4::{Icmp4, Icmp4EchoRequest, Icmp4Type};
+        use crate::ip::NextHeader;
+        use crate::ipv4::UnicastIpv4Addr;
+        use crate::ipv6::UnicastIpv6Addr;
+        use crate::tcp::{Tcp, TcpChecksumPayload};
+        use crate::udp::{UdpChecksumPayload, UdpPort};
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        const PAYLOAD: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+        fn v4_net(source: Ipv4Addr, next_header: NextHeader) -> Net {
+            let mut ip = Ipv4::default();
+            ip.set_source(UnicastIpv4Addr::new(source).unwrap_or_else(|_| unreachable!()))
+                .set_destination(Ipv4Addr::new(192, 168, 1, 2))
+                .set_next_header(next_header);
+            Net::Ipv4(ip)
+        }
+
+        fn v6_net(source: Ipv6Addr, next_header: NextHeader) -> Net {
+            let mut ip = Ipv6::default();
+            ip.set_source(UnicastIpv6Addr::new(source).unwrap_or_else(|_| unreachable!()))
+                .set_destination(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2))
+                .set_next_header(next_header);
+            Net::Ipv6(ip)
+        }
+
+        /// Two words to fold, over a TCP pseudo-header.
+        #[test]
+        fn a_v4_address_change_matches_a_fresh_tcp_checksum() {
+            let (old, new) = (Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(10, 11, 12, 13));
+
+            let mut tcp = Tcp::new(123.try_into().unwrap(), 456.try_into().unwrap());
+            tcp.update_checksum(&TcpChecksumPayload::new(
+                &v4_net(old, NextHeader::TCP),
+                &PAYLOAD,
+            ))
+            .unwrap_or_else(|()| unreachable!());
+
+            let mut quoted = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp.clone()));
+            quoted.update_checksum_for_address(IpAddr::V4(old), IpAddr::V4(new));
+
+            let expected = tcp
+                .compute_checksum(&TcpChecksumPayload::new(
+                    &v4_net(new, NextHeader::TCP),
+                    &PAYLOAD,
+                ))
+                .unwrap_or_else(|()| unreachable!());
+            assert_eq!(quoted.checksum(), Some(u16::from(expected)));
+        }
+
+        /// Eight words to fold, over a UDP pseudo-header.
+        #[test]
+        fn a_v6_address_change_matches_a_fresh_udp_checksum() {
+            let old = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+            let new = Ipv6Addr::new(0x2001, 0xdb8, 0xdead, 0xbeef, 1, 2, 3, 4);
+
+            let mut udp = Udp::new(
+                UdpPort::new_checked(123).unwrap(),
+                UdpPort::new_checked(456).unwrap(),
+            );
+            udp.update_checksum(&UdpChecksumPayload::new(
+                &v6_net(old, NextHeader::UDP),
+                &PAYLOAD,
+            ))
+            .unwrap_or_else(|()| unreachable!());
+
+            let mut quoted = EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp.clone()));
+            quoted.update_checksum_for_address(IpAddr::V6(old), IpAddr::V6(new));
+
+            let expected = udp
+                .compute_checksum(&UdpChecksumPayload::new(
+                    &v6_net(new, NextHeader::UDP),
+                    &PAYLOAD,
+                ))
+                .unwrap_or_else(|()| unreachable!());
+            assert_eq!(quoted.checksum(), Some(u16::from(expected)));
+        }
+
+        /// `ICMPv4` is checksummed over itself alone, so the addresses around it are none of its
+        /// business and folding one must not disturb it.
+        #[test]
+        fn a_v4_address_change_leaves_an_icmpv4_quote_alone() {
+            let mut icmp =
+                Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 18, seq: 2 }));
+            icmp.update_checksum(&PAYLOAD)
+                .unwrap_or_else(|()| unreachable!());
+
+            let mut quoted = EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp));
+            let before = quoted.checksum();
+            quoted.update_checksum_for_address(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)),
+            );
+            assert_eq!(quoted.checksum(), before);
+        }
     }
 }
 
