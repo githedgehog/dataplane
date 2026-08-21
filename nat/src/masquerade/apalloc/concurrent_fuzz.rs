@@ -488,3 +488,52 @@ fn tidying_a_dead_block_entry_does_not_drop_a_live_one() {
         }
     });
 }
+
+/// An address whose last lease has just ended must not vanish from the pool.
+///
+/// An address is reachable through the in-use list only while an allocation still holds it, and
+/// through the bitmap only once its hand-back has completed. `Weak` stops resolving the moment the
+/// last `AllocatedPort` goes away, which is strictly before `AllocatedIp::drop` reaches the pool
+/// lock, so an allocation landing in between used to find the address in neither and report
+/// exhaustion. On a one-address pool that is the whole pool, and the packet is dropped.
+///
+/// This is the shape DNS traffic takes. A reply from port 53 moves the flow to
+/// [`NatFlowStatus::Closed`](crate::common::NatFlowStatus::Closed), which invalidates the pair at
+/// once to conserve ports, so a pool carrying only DNS destroys and rebuilds its address once per
+/// query, and the next query races the hand-back of the last one.
+#[concurrency::model_test]
+fn an_allocation_racing_the_last_release_is_still_served() {
+    concurrency::stress(|| {
+        // One address, so a hand-back in flight is the pool's entire capacity. This is the shape
+        // the masquerade exposes actually deploy: one public address per peering.
+        let specs = vec![PoolSpec::new(
+            vec![AddrInterval::new(BASE, BASE)],
+            IDLE_TIMEOUT,
+        )];
+        let pools = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+            &specs,
+            NextHeader::TCP,
+            false,
+        ));
+
+        let allocation = pools[0].allocate(false).expect("the pool can serve");
+
+        let releaser = thread::spawn(move || drop(allocation));
+        let claimant = {
+            let pools = pools.clone();
+            thread::spawn(move || pools[0].allocate(false))
+        };
+
+        let outcome = claimant.join().expect("the allocating thread panicked");
+        releaser.join().expect("the releasing thread panicked");
+
+        // Whichever order the two threads take, the pool has room to serve: either the address is
+        // still held, and has its remaining ports, or it has been handed back and can be drawn
+        // afresh. There is no interleaving in which the only correct answer is "out of resources".
+        assert!(
+            outcome.is_ok(),
+            "an allocation racing the release of the only address was refused: {:?}",
+            outcome.as_ref().err()
+        );
+    });
+}
