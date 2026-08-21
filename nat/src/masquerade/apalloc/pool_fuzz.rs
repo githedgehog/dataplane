@@ -259,6 +259,26 @@ fn re_reservation_after_a_config_change_is_honoured() {
         });
 }
 
+/// Exhausting a region hands out every port exactly once.
+///
+/// This carries the port-overloading citations as well as
+/// `distinct_flows_do_not_share_a_translation`, because the two reach different code and neither
+/// is sufficient alone. The stage-level property states the claim where it is observable -- two
+/// flows, one reply path -- but it draws a handful of ports, so it never exhausts a 256-port
+/// block and never reaches the second half of [`Bitmap256`]. Walking a region dry does, and
+/// `seen` is what turns "handed out twice" into a failure.
+///
+/// The interlock is what made the gap visible: with only the stage property cited, seven mutants
+/// in the bitmap's second half survived, one of them replacing the bit that marks a port used --
+/// port overloading itself. See `development/code/spec-compliance.md`.
+//= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=test
+//# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+//# overloading" for TCP.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+//= type=test
+//# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+//# overloading".
 #[test]
 #[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
 fn a_region_can_be_allocated_dry() {
