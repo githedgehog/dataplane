@@ -1003,6 +1003,33 @@ mod tests {
         buf
     }
 
+    // Create IPv6 + full TCP header + 60 bytes payload.
+    //
+    // 120 octets in total, matching `create_full_ipv4_tcp_packet_with_payload`, so that the two
+    // families can be driven through the same length cases. The IPv6 header is 40 octets against
+    // IPv4's 20, so the payload is 60 rather than 80 to keep the totals equal.
+    fn create_full_ipv6_tcp_packet_with_payload() -> Vec<u8> {
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 80, // 20 bytes TCP + 60 bytes payload
+            next_header: IpNumber::TCP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        let tcp_header = etherparse::TcpHeader::new(80, 443, 1000, 0);
+        tcp_header.write(&mut buf).unwrap();
+
+        buf.extend_from_slice(&[1u8; 60]);
+
+        buf
+    }
+
     // Basic parsing, deparsing checks
 
     #[test]
@@ -1361,6 +1388,23 @@ mod tests {
         (headers, consumed.get() as usize, buf)
     }
 
+    /// As `v4_with_field_of`, for `ICMPv6`.
+    ///
+    /// `check_full_payload` implements the 128-octet minimum twice, once per address family, and
+    /// the two copies are not reachable by the same fixture. Without this one the ICMPv6 arm has
+    /// no test at all.
+    fn v6_with_field_of(field_len: usize, padding_byte: u8) -> (EmbeddedHeaders, usize, Vec<u8>) {
+        let mut buf = create_full_ipv6_tcp_packet_with_payload();
+        assert_eq!(buf.len(), 120, "the embedded packet is 120 octets");
+        buf.extend(std::iter::repeat_n(padding_byte, field_len - buf.len()));
+        assert_eq!(buf.len(), field_len);
+        // Extension structure, which is not part of the field.
+        buf.extend_from_slice(&[0x55u8; 32]);
+        let (headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf).unwrap();
+        (headers, consumed.get() as usize, buf)
+    }
+
     /// A field is accepted at any 32-bit-aligned length, not only at multiples of 32 octets.
     ///
     /// The length attribute counts 32-bit words, so every value it can express is already aligned.
@@ -1386,23 +1430,42 @@ mod tests {
         }
     }
 
-    /// A field shorter than 128 octets is refused.
+    /// The 128-octet minimum is exact, and it holds for both address families.
     ///
     /// This is the requirement the octet/bit confusion displaced: the old check let a 32-octet
     /// field through and rejected a 132-octet one, which is exactly backwards.
+    ///
+    /// "At least 128" is a boundary, so refusing 124 does not state it -- that is equally true of
+    /// a check written `<=`, which would refuse a conforming 128-octet field. The requirement is
+    /// only pinned by taking the boundary from both sides. Both families are driven because
+    /// `check_full_payload` implements the minimum once per family and carries this citation on
+    /// each; testing one leaves the other's copy free to say anything.
     //= https://www.rfc-editor.org/rfc/rfc4884#section-3
     //= type=test
     //# When the ICMP Extension Structure is appended to an ICMP message
     //# and that ICMP message contains an "original datagram" field, the
     //# "original datagram" field MUST contain at least 128 octets.
     #[test]
-    fn a_field_shorter_than_128_octets_is_refused() {
-        for field_len in [120usize, 124] {
-            let (mut headers, consumed, buf) = v4_with_field_of(field_len, 0);
-            headers.check_full_payload(&buf, buf.len(), consumed, field_len);
+    fn the_128_octet_minimum_is_exact() {
+        type Fixture = fn(usize, u8) -> (EmbeddedHeaders, usize, Vec<u8>);
+        for (family, build) in [
+            ("ICMPv4", v4_with_field_of as Fixture),
+            ("ICMPv6", v6_with_field_of as Fixture),
+        ] {
+            for field_len in [120usize, 124] {
+                let (mut headers, consumed, buf) = build(field_len, 0);
+                headers.check_full_payload(&buf, buf.len(), consumed, field_len);
+                assert!(
+                    !headers.is_full_payload(),
+                    "{family}: a {field_len}-octet field is below the 128-octet minimum"
+                );
+            }
+
+            let (mut headers, consumed, buf) = build(128, 0);
+            headers.check_full_payload(&buf, buf.len(), consumed, 128);
             assert!(
-                !headers.is_full_payload(),
-                "a {field_len}-octet field is below the 128-octet minimum"
+                headers.is_full_payload(),
+                "{family}: 128 octets is the minimum, so a 128-octet field must be accepted"
             );
         }
     }
