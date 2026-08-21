@@ -15,10 +15,12 @@ use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
 use bolero::{Driver, TypeGenerator};
+use concurrency::sync::{Arc, mpsc};
 use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::thread;
 use std::time::Duration;
 
 // 10.1.0.0, with a window small enough that regions stay cheap to build.
@@ -331,6 +333,118 @@ fn a_freed_port_block_is_reused_while_its_address_is_held() {
         held.push(allocation);
     }
     assert!(pool_sets[0].allocate(false).is_err());
+}
+
+/// An address that has run out of port blocks must neither strand the addresses behind it nor be
+/// reported as an empty pool.
+///
+/// Both halves are about the *reason* an allocation fails rather than whether it fails. Ending the
+/// scan at an exhausted address would refuse a request that the address behind it could have
+/// served; and answering `NoFreeIp` -- which the draw step reports whenever the bitmap is empty --
+/// hides why the addresses already in use could not help. The two are not the same operational
+/// problem: an empty bitmap wants more addresses, whereas exhausted port blocks want the block
+/// allocator looked at, and that distinction is read straight off the log line an operator sees.
+///
+/// Reaching the state needs a second thread but not a race. Port blocks are handed out per thread,
+/// so a block held elsewhere keeps `has_free_ports` true on the first address while this thread can
+/// no longer obtain a block of its own on it -- which is what makes every later scan reach that
+/// address, fail on it, and have to carry on past it. The handshake makes the arrangement
+/// deterministic.
+#[test]
+#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
+fn an_exhausted_address_neither_strands_its_neighbours_nor_reads_as_an_empty_pool() {
+    const PORTS_PER_BLOCK: usize = 256;
+    const PORTS_PER_ADDRESS: usize = 65536 - 1024;
+    const ADDRESSES: u128 = 2;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE + ADDRESSES - 1)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = Arc::new(pool_sets_for_specs::<Ipv4Addr>(
+        &specs,
+        NextHeader::TCP,
+        false,
+    ));
+
+    // The helper takes a block on the first address and keeps a single port in it. The block is no
+    // longer free, but it still has room, so that address never stops reporting free ports.
+    let (took_block, block_taken) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let helper_sets = Arc::clone(&pool_sets);
+    let helper = thread::spawn(move || {
+        let held = helper_sets[0]
+            .allocate(false)
+            .expect("the first allocation on an empty pool");
+        took_block.send(()).expect("the test thread is waiting");
+        // A failing test drops the sender; the helper has nothing to add to that diagnosis.
+        let _ = released.recv();
+        drop(held);
+    });
+    block_taken.recv().expect("the helper takes a block");
+
+    let ports = usize::try_from(ADDRESSES).unwrap_or_else(|_| unreachable!()) * PORTS_PER_ADDRESS;
+    let mut held = Vec::with_capacity(ports - PORTS_PER_BLOCK);
+    let outcome = loop {
+        match pool_sets[0].allocate(false) {
+            Ok(allocation) => held.push(allocation),
+            Err(e) => break e,
+        }
+    };
+
+    assert_eq!(
+        held.len(),
+        ports - PORTS_PER_BLOCK,
+        "the scan stopped at the exhausted address instead of carrying on past it"
+    );
+    assert_eq!(
+        outcome,
+        AllocatorError::NoPortBlock,
+        "an address out of port blocks was reported as an empty pool"
+    );
+
+    // The exhaustion is transient: the block returns once the helper's last port does.
+    release.send(()).expect("the helper is waiting");
+    helper.join().expect("the helper thread panicked");
+    assert!(
+        pool_sets[0].allocate(false).is_ok(),
+        "the released block was never handed back"
+    );
+}
+
+/// The in-use list must not grow as allocations come and go.
+///
+/// An address is handed back by whichever side reaches the pool first, so the bitmap stays honest
+/// with or without the sweep -- but nothing else prunes the list itself. An entry left behind is
+/// both dead weight the next scan has to walk and a slot that is never reclaimed, so a long-lived
+/// pool serving short-lived flows would grow one entry per flow.
+#[test]
+fn the_in_use_list_does_not_grow_as_allocations_come_and_go() {
+    const ROUNDS: usize = 64;
+
+    let specs = vec![PoolSpec::new(
+        vec![AddrInterval::new(BASE, BASE)],
+        IDLE_TIMEOUT,
+    )];
+    let pool_sets = pool_sets_for_specs::<Ipv4Addr>(&specs, NextHeader::TCP, false);
+    let allocator = pool_sets[0]
+        .regions()
+        .next()
+        .expect("one region over one address")
+        .allocator();
+
+    for _ in 0..ROUNDS {
+        // Taking the pool's only address and releasing it again leaves an entry whose weak
+        // reference no longer upgrades.
+        drop(pool_sets[0].allocate(false).expect("the pool has room"));
+    }
+
+    let (_, in_use) = allocator.get_pool_clone_for_tests();
+    assert!(
+        in_use.len() <= 1,
+        "the in-use list grew to {} entries over {ROUNDS} allocations",
+        in_use.len()
+    );
 }
 
 ///////////////////////////////////////////////////////////////////////////////

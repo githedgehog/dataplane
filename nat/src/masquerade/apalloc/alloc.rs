@@ -191,11 +191,12 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                     // single-address pool is always. That answer hides why the addresses already
                     // in use could not serve the request, and the two are not the same operational
                     // problem: an empty bitmap wants more addresses, whereas exhausted port blocks
-                    // want the block allocator looked at. Keep whichever is not `NoFreeIp`.
-                    exhausted = Some(match (&reuse, &drawn) {
-                        (AllocatorError::NoFreeIp, _) => drawn,
-                        (_, AllocatorError::NoFreeIp) => reuse,
-                        _ => drawn,
+                    // want the block allocator looked at. So the draw only gets the last word when
+                    // it has something to say beyond an empty bitmap.
+                    exhausted = Some(if matches!(drawn, AllocatorError::NoFreeIp) {
+                        reuse
+                    } else {
+                        drawn
                     });
                     thread::yield_now();
                 }
