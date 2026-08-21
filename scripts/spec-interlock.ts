@@ -80,14 +80,81 @@ interface Report {
 async function run(
   cmd: string,
   args: string[],
-): Promise<{ code: number; stdout: string }> {
+  env: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const output = await new Deno.Command(cmd, {
     args,
     cwd: REPO,
+    env,
     stdout: "piped",
     stderr: "piped",
   }).output();
-  return { code: output.code, stdout: new TextDecoder().decode(output.stdout) };
+  const decode = (b: Uint8Array) => new TextDecoder().decode(b);
+  return {
+    code: output.code,
+    stdout: decode(output.stdout),
+    stderr: decode(output.stderr),
+  };
+}
+
+async function lineCounts(
+  pkg: string,
+  tests: string[],
+  paths: string[],
+  outDir: string,
+  sharedTarget: string,
+): Promise<Map<string, number> | null> {
+  const env = {
+    LLVM_COV: join(REPO, "devroot", "bin", "llvm-cov"),
+    LLVM_PROFDATA: join(REPO, "devroot", "bin", "llvm-profdata"),
+    CARGO_TARGET_DIR: sharedTarget,
+  };
+  await Deno.mkdir(outDir, { recursive: true });
+
+  const step = async (args: string[]) => {
+    const { code, stderr } = await run("cargo", args, env);
+    if (code !== 0) {
+      console.log(`    warning: coverage step \`${args.join(" ")}\` failed`);
+      const tail = stderr.trim().split("\n").slice(-3).join("\n        ");
+      if (tail) console.log(`        ${tail}`);
+    }
+    return code === 0;
+  };
+
+  const jsonPath = join(outDir, "coverage.json");
+  const ok =
+    await step(["llvm-cov", "clean", "--workspace", "--profraw-only"]) &&
+    await step([
+      "llvm-cov",
+      "--no-report",
+      "--branch",
+      "nextest",
+      "-p",
+      pkg,
+      "-E",
+      testFilterset(tests),
+    ]) &&
+    await step(["llvm-cov", "report", "--json", "--output-path", jsonPath]);
+  if (!ok) return null;
+
+  const counts = new Map<string, number>();
+  let report;
+  try {
+    report = JSON.parse(await Deno.readTextFile(jsonPath));
+  } catch (e) {
+    console.log(`    warning: coverage report unreadable: ${e}`);
+    return null;
+  }
+  for (const file of report.data?.[0]?.files ?? []) {
+    const match = paths.find((p) => file.filename.endsWith(p));
+    if (!match) continue;
+    for (const [line, _col, count, hasCount] of file.segments ?? []) {
+      if (!hasCount) continue;
+      const key = `${match}:${line}`;
+      counts.set(key, Math.max(counts.get(key) ?? 0, count));
+    }
+  }
+  return counts;
 }
 
 async function duvetReport(jsonPath: string): Promise<Report> {
@@ -356,6 +423,7 @@ interface Result {
   outcome:
     | "held"
     | "decorative"
+    | "uncovered"
     | "stale"
     | "unsupported"
     | "no-mutants"
@@ -365,6 +433,8 @@ interface Result {
   caught?: string[];
   missed?: string[];
   accepted?: Accepted[];
+  unreached?: string[];
+  tolerated?: string[];
   unviable?: string[];
   timeout?: string[];
 }
@@ -404,6 +474,30 @@ async function runTriple(
 
   const outDir = join(output, `requirement-${triple.index}`);
   const files = [...new Set(triple.implementations.map((r) => r.path))].sort();
+
+  const counts = await lineCounts(
+    pkg,
+    triple.tests,
+    files,
+    outDir,
+    join(output, "cov-target"),
+  );
+  const regionLines = triple.implementations.flatMap((r) =>
+    Array.from(
+      { length: r.end - r.start },
+      (_, i) => `${r.path}:${r.start + i}`,
+    )
+  );
+  const executable = regionLines.filter((key) => counts?.has(key));
+  const executed = executable.filter((key) => (counts?.get(key) ?? 0) > 0);
+  if (counts && executable.length && !executed.length) {
+    return {
+      outcome: "uncovered",
+      detail: `${triple.tests.join(", ")} never executes ${
+        triple.implementations.map(showRegion).join(", ")
+      }; the citation cannot be testing this requirement`,
+    };
+  }
   const mutation = await run("cargo", [
     "mutants",
     "--package",
@@ -469,11 +563,17 @@ async function runTriple(
       timeout,
     };
   }
+  const reached = (mutant: string) => {
+    const match = MUTANT_LINE.exec(mutant);
+    return match ? (counts!.get(`${match[1]}:${match[2]}`) ?? 0) > 0 : false;
+  };
   return {
     outcome: missed.length ? "decorative" : "held",
     caught,
     missed,
     accepted,
+    unreached: counts ? missed.filter((m) => !reached(m)) : [],
+    tolerated: counts ? missed.filter(reached) : [],
     unviable,
     timeout,
   };
@@ -526,6 +626,12 @@ async function main(): Promise<number> {
   if (args.help) {
     console.log(
       "usage: spec-interlock.ts [--list] [--only <requirement>]... [--jobs N]",
+    );
+    console.log(
+      "  results and the instrumented build are kept under target/spec-interlock; the build is",
+    );
+    console.log(
+      "  the expensive part of a run and every requirement in a package reuses it",
     );
     return 0;
   }
@@ -605,7 +711,28 @@ async function main(): Promise<number> {
           triple.tests.join(", ")
         }`,
       );
-      for (const mutant of result.missed!) console.log(`        ${mutant}`);
+      if (result.unreached?.length) {
+        console.log(
+          `      unreached (${result.unreached.length}) -- the test never runs these lines, so`,
+        );
+        console.log(
+          `      closing them means changing what it feeds, not what it asserts:`,
+        );
+        for (const mutant of result.unreached) console.log(`        ${mutant}`);
+      }
+      if (result.tolerated?.length) {
+        console.log(
+          `      tolerated (${result.tolerated.length}) -- the test runs these lines and passes`,
+        );
+        console.log(
+          `      anyway, so either an assertion is missing or the mutant is equivalent:`,
+        );
+        for (const mutant of result.tolerated) console.log(`        ${mutant}`);
+      }
+      if (!result.unreached?.length && !result.tolerated?.length) {
+        console.log(`      (unclassified -- coverage was not collected)`);
+        for (const mutant of result.missed!) console.log(`        ${mutant}`);
+      }
     } else {
       failures += 1;
       console.log(`    ${result.outcome.toUpperCase()}: ${result.detail}`);
