@@ -77,6 +77,24 @@ const ACCEPTED: Accepted[] = [
       "The guard is kept because a future allocator that can fail for a non-exhaustion reason " +
       "must not draw a second public address for a host that already holds one.",
   },
+  // The same code answers to both specifications, so the judgement is recorded against each.
+  ...[
+    "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1",
+    "https://www.rfc-editor.org/rfc/rfc5382#section-8",
+  ].map((requirement) => ({
+    requirement,
+    mutant:
+      "nat/src/masquerade/apalloc/port_alloc.rs: replace < with <= in Bitmap256::allocate_port_from_bitmap",
+    reason:
+      "Equivalent on the second half, and unreachable rather than untested. `allocate_port` " +
+      "only enters the bitmap when `!is_full()`, and `bitmap_full()` is both halves at " +
+      "`u128::MAX`. Reaching the second-half branch means the first half is already full, so a " +
+      "block that is not full has a zero in the second half and `trailing_ones() < 128` always " +
+      "holds; `ones == 128`, the only value the two operators disagree on, cannot occur. The " +
+      "whole 210-test nat suite passes with `<=` applied. Note the same mutant on the *first* " +
+      "half is caught, and correctly: a block with the first half full and the second free is " +
+      "ordinary, so `ones == 128` is reachable there and `1u128 << 128` overflows.",
+  })),
 ];
 
 /** cargo-mutants' stable name for a mutant: its `<path>: <what>`, dropping line and column. */
