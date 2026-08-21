@@ -111,3 +111,64 @@ pub fn build_port_forwarding_configuration(
     }
     Ok(ruleset)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::{
+        LOCAL_VNI, PortForwardingExpose, REMOTE_VNI, overlay_offering,
+    };
+
+    /// A port-forwarding expose becomes exactly the rules it describes.
+    ///
+    /// The interesting part is not that rules come out, but that the two sides do not get crossed:
+    /// the expose's `as_range` is what traffic arrives on and its `ips` is where traffic goes, and
+    /// a rule that has them the other way round forwards to the wrong place while satisfying every
+    /// check the rule itself makes.
+    #[test]
+    fn an_expose_becomes_the_rules_it_describes() {
+        bolero::check!()
+            .with_generator(PortForwardingExpose)
+            .cloned()
+            .for_each(|expose: VpcExpose| {
+                let nat = expose.nat.as_ref().expect("port forwarding sets nat");
+                let proto = nat.proto;
+                let internal = *expose.ips.first().expect("one prefix");
+                let external = *nat.as_range.first().expect("one prefix");
+
+                let overlay = overlay_offering(expose.clone()).expect("overlay");
+                let rules = build_port_forwarding_configuration(overlay.vpc_table())
+                    .expect("a validated port-forwarding expose should build");
+
+                // `Any` is served by one rule per protocol; anything else by one.
+                let expected = if proto == L4Protocol::Any { 2 } else { 1 };
+                assert_eq!(rules.len(), expected, "for {expose}");
+
+                for rule in &rules {
+                    assert_eq!(rule.ext_prefix, external.prefix(), "external prefix");
+                    assert_eq!(rule.int_prefix, internal.prefix(), "internal prefix");
+                    assert_eq!(
+                        rule.ext_ports.first().get(),
+                        external.ports().expect("ports").start(),
+                        "external ports"
+                    );
+                    assert_eq!(
+                        rule.int_ports.first().get(),
+                        internal.ports().expect("ports").start(),
+                        "internal ports"
+                    );
+                    // The rule forwards into the local VPC, and admits traffic from the peer.
+                    assert_eq!(rule.dst_vpcd, VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
+                    assert_eq!(
+                        rule.key.src_vpcd(),
+                        VpcDiscriminant::from_vni(vni(REMOTE_VNI))
+                    );
+                }
+            });
+    }
+
+    fn vni(raw: u32) -> net::vxlan::Vni {
+        net::vxlan::Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
+    }
+}

@@ -36,7 +36,7 @@ shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
 # internal
-config = { workspace = true }
+config = { workspace = true, features = ["bolero"] }
 fixin = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }

@@ -75,8 +75,33 @@ pub enum ConfigError {
     #[error("Invalid ACL configuration: {0}")]
     InvalidAcl(String),
     // NAT-specific
-    #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
+    /// The two sides of a static NAT expose cover different numbers of address-port pairs.
+    //
+    // The sizes are rendered with `Debug` because `PrefixWithPortsSize` is a 145-bit bnum type
+    // with no `Display`, and Debug pads it out to a run of digits that reads as gibberish. Hence
+    // leading with what to change and leaving the numbers to the end.
+    #[error(
+        "Mismatched sizes for static NAT: the exposed prefixes and the range they translate to \
+         must cover the same number of address-port pairs (they cover {0:?} and {1:?})"
+    )]
     MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
+    /// The two sides of a port-forwarding expose have prefixes of different lengths.
+    ///
+    /// Distinct from [`ConfigError::MismatchedPrefixSizes`], which compares addresses times ports.
+    /// That product can match while the lengths do not -- a `/32` carrying 100 ports and a `/30`
+    /// carrying 25 both come to 100 -- so reporting it as a size mismatch would name two numbers
+    /// that are equal. A port-forwarding rule maps addresses one for one, so it is the lengths
+    /// that have to agree.
+    #[error(
+        "Mismatched prefix lengths for port forwarding: /{private} exposed and /{public} \
+         translated to; a rule maps addresses one for one, so the two must be the same length"
+    )]
+    MismatchedPrefixLengths { private: u8, public: u8 },
+    #[error(
+        "Mismatched port range sizes for port forwarding: {private} ports exposed and {public} \
+         translated to; a rule maps ports one for one, so the two must be the same size"
+    )]
+    MismatchedPortRangeSizes { private: usize, public: usize },
     #[error("Peering {0} has manifests using incompatible NAT modes")]
     IncompatibleNatModes(String),
     #[error("Vpc {0} has a peering with no exposes")]
