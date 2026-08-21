@@ -834,6 +834,12 @@ impl Bitmap256 {
     //
     // In the last example above, we have three trailing ones in the first half, telling us that
     // port at 1 << 3 (port number 3) is free.
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading" for TCP.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+    //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading".
     fn allocate_port_from_bitmap(&mut self) -> Result<u16, ()> {
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.first_half.trailing_ones() as u16;
