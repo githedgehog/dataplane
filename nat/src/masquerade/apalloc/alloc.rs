@@ -541,6 +541,15 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.in_use.len()
     }
 
+    /// The lease currently held on the address at `offset`, if any.
+    ///
+    /// Together with the bitmap this is the whole of the pool's opinion about an address, which is
+    /// what lets a test assert the partition the allocator is supposed to maintain.
+    #[cfg(test)]
+    pub(crate) fn current_tenancy_for_tests(&self, offset: u32) -> Option<Tenancy> {
+        self.tenancies.get(&offset).copied()
+    }
+
     /// Finish the hand-back of every address whose `AllocatedIp` is gone, dropping their entries.
     ///
     /// This is the other half of the [`InUseEntry`] contract: the thread that dropped the last

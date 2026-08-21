@@ -8,8 +8,9 @@
 
 #![cfg(test)]
 
-use super::alloc::{PoolSet, map_address};
+use super::alloc::{NatPool, PoolSet, Tenancy, map_address};
 use super::region::AddrInterval;
+use super::reserved::ReservedPorts;
 use super::setup::{PoolSpec, pool_sets_for_specs};
 use crate::masquerade::allocation::AllocatorError;
 use crate::port::NatPort;
@@ -471,4 +472,146 @@ fn a_shared_region_honours_the_claims_of_every_owner() {
     pool_sets[1]
         .reserve(address, free_port)
         .expect("an unclaimed port of a shared region is still available");
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Tenancy bookkeeping
+///////////////////////////////////////////////////////////////////////////////
+
+/// Addresses in the pool the tenancy properties run against. Small, so operations collide on the
+/// same offset often -- re-issue and stale hand-back are the interesting cases and both need two
+/// leases on one address.
+const TENANCY_POOL_SIZE: u32 = 3;
+const TENANCY_OPS: usize = 32;
+/// Bitmap indices are zero-based only for IPv6, whose addresses do not fit a `u32`. For IPv4 the
+/// index *is* the address, so these properties have to speak in absolute values.
+#[allow(clippy::cast_possible_truncation)]
+const TENANCY_BASE: u32 = BASE as u32;
+
+/// One step against a pool's tenancy bookkeeping.
+///
+/// `Abandon` is the state that motivates the whole scheme: an address whose owner is gone without
+/// having handed it back. It is reachable in production only by losing a race, so it is modelled
+/// directly here rather than waited for.
+#[derive(Debug, Clone, Copy, TypeGenerator)]
+enum TenancyOp {
+    Lease(u8),
+    HandBack(u8),
+    HandBackStale(u8),
+    Abandon(u8),
+    Reclaim,
+}
+
+impl TenancyOp {
+    fn offset(self) -> u32 {
+        let raw = match self {
+            TenancyOp::Lease(o)
+            | TenancyOp::HandBack(o)
+            | TenancyOp::HandBackStale(o)
+            | TenancyOp::Abandon(o) => o,
+            TenancyOp::Reclaim => 0,
+        };
+        TENANCY_BASE + (u32::from(raw) % TENANCY_POOL_SIZE)
+    }
+}
+
+/// Every address is either free in the bitmap or currently leased. Never both, never neither.
+///
+/// "Neither" is the defect this machinery exists to prevent: an address whose owner has released
+/// it but whose hand-back has not landed is absent from both, and an allocation that consults them
+/// is told the pool is empty while the pool is holding an address belonging to no one. Stating it
+/// as a partition means any future change that reintroduces the gap fails here, whatever route it
+/// takes to get there.
+fn assert_partition(pool: &NatPool<Ipv4Addr>, after: &str) {
+    for offset in TENANCY_BASE..TENANCY_BASE + TENANCY_POOL_SIZE {
+        let free = pool.bitmap_contains_for_tests(offset);
+        let leased = pool.current_tenancy_for_tests(offset).is_some();
+        assert!(
+            free != leased,
+            "offset {offset} is in {} after {after}",
+            if free {
+                "both the bitmap and a lease"
+            } else {
+                "neither the bitmap nor a lease"
+            },
+        );
+    }
+}
+
+#[test]
+fn an_address_is_always_either_free_or_leased() {
+    bolero::check!()
+        .with_type()
+        .cloned()
+        .for_each(|ops: Vec<TenancyOp>| {
+            let mut pool = NatPool::<Ipv4Addr>::for_range(
+                AddrInterval::new(BASE, BASE + u128::from(TENANCY_POOL_SIZE) - 1),
+                ReservedPorts::default(),
+                true,
+            );
+            // Tenancies handed out per offset, most recent last, so a stale one can be replayed.
+            let mut history: BTreeMap<u32, Vec<Tenancy>> = BTreeMap::new();
+            let mut every_tenancy = BTreeSet::new();
+
+            assert_partition(&pool, "construction");
+
+            for op in ops.into_iter().take(TENANCY_OPS) {
+                let offset = op.offset();
+                match op {
+                    // Only lease what is free; leasing over a live lease is the re-issue case and
+                    // is covered by `Abandon` followed by `Lease`.
+                    TenancyOp::Lease(_) => {
+                        if pool.current_tenancy_for_tests(offset).is_none() {
+                            let tenancy = pool.begin_tenancy_for_tests(offset);
+                            assert!(
+                                every_tenancy.insert(tenancy),
+                                "tenancy {tenancy:?} was handed out twice"
+                            );
+                            history.entry(offset).or_default().push(tenancy);
+                        }
+                    }
+                    TenancyOp::HandBack(_) => {
+                        if let Some(current) = pool.current_tenancy_for_tests(offset) {
+                            assert!(
+                                pool.end_tenancy_for_tests(offset, current),
+                                "the current lease was refused"
+                            );
+                            assert!(
+                                !pool.end_tenancy_for_tests(offset, current),
+                                "handing the same lease back twice was accepted"
+                            );
+                        }
+                    }
+                    // A lease that has been retired must never free whatever holds the address now.
+                    TenancyOp::HandBackStale(_) => {
+                        let current = pool.current_tenancy_for_tests(offset);
+                        if let Some(stale) = history
+                            .get(&offset)
+                            .and_then(|seen| seen.iter().find(|t| Some(**t) != current))
+                        {
+                            assert!(
+                                !pool.end_tenancy_for_tests(offset, *stale),
+                                "a retired lease was allowed to hand the address back"
+                            );
+                            assert_eq!(
+                                pool.current_tenancy_for_tests(offset),
+                                current,
+                                "a retired lease disturbed the current one"
+                            );
+                        }
+                    }
+                    TenancyOp::Abandon(_) => {
+                        if let Some(current) = pool.current_tenancy_for_tests(offset) {
+                            pool.plant_dead_entry_for_tests(offset, current);
+                        }
+                    }
+                    TenancyOp::Reclaim => pool.reclaim_ended_tenancies_for_tests(),
+                }
+                assert_partition(&pool, &format!("{op:?}"));
+            }
+
+            // Whatever the sequence, running the backstop leaves no address stranded.
+            pool.reclaim_ended_tenancies_for_tests();
+            assert_partition(&pool, "a final reclaim");
+        });
 }
