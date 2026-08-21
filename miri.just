@@ -25,7 +25,20 @@ export target := cpu + "-unknown-linux-gnu"
 export provenance := "permissive"
 export schedule_seed := choose('5', "0123456789")
 export seeds := "1"
-export stacked_borrow_check := "disabled"
+# Overridable from the environment because `just` will not override a *module's* variables from the
+# command line: `just miri stacked_borrow_check=enabled test` is parsed as a recipe name, and
+# `just --set stacked_borrow_check enabled miri test` is refused outright ("not present in justfile").
+# Without `env()` these knobs can only be changed by editing this file, which is how
+# `stacked_borrow_check` came to be effectively unreachable.
+export stacked_borrow_check := env("STACKED_BORROW_CHECK", "disabled")
+
+# How long each bolero property gets, in milliseconds.
+#
+# Needed because this recipe launches its own `nix-shell`, which does not inherit the caller's
+# environment: exporting `BOLERO_RANDOM_TEST_TIME_MS` before `just miri test` has no effect, and every
+# property silently stops at bolero's one-second default. Under miri that is about 25 cases -- enough to
+# prove the harness runs and nothing else.
+export bolero_test_time_ms := env("BOLERO_TEST_TIME_MS", "30000")
 export preemption_rate := "0.10"
 export weak_failure_rate := "0.05"
 export randomize_struct_layout := "enabled"
@@ -63,6 +76,7 @@ test *args="":
       # Umbrella cfg shared with the qemu-user path in nix/profiles.nix.
       RUSTFLAGS+="--cfg=emulated"
       declare -rx RUSTFLAGS
+      declare -rx BOLERO_RANDOM_TEST_TIME_MS="${bolero_test_time_ms}"
       declare -a cmd=("nice" "-n" "19" "cargo" "miri" "nextest" "run" "--profile=miri" "--target=${target}")
       if [ "${cores}" != "0" ]; then
         # nextest defaults --test-threads to the core count; the miri profile

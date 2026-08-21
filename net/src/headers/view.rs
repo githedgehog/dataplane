@@ -2575,3 +2575,682 @@ mod tests {
         assert_eq!(v.vid(), vid_updated);
     }
 }
+
+/// The `unsafe` boundary, checked against the safe implementation of the same semantics.
+///
+/// [`HeadersView`] earns its zero-cost extraction with `unwrap_unchecked`: [`Look::look`] repeats the
+/// [`ViewStep::step`] chain that [`sealed::Sealed::matches`] already ran and tells the compiler the
+/// `None` arms cannot happen. **The soundness of that rests entirely on the two chains agreeing**, and
+/// they are written out separately for every arity by the macro above -- eight-odd hand-written pairs,
+/// each threading the VLAN and extension cursors through by hand. A transposed cursor in one of them
+/// is not a wrong answer, it is undefined behaviour.
+///
+/// That is the same shape as every defect this campaign found in `routing`: an invariant enforced at a
+/// distance by a different function from the one relying on it. The difference is the consequence.
+///
+/// The oracle is [`Matcher`](super::pat::Matcher), which decides the same question safely and returns
+/// an `Option`. Comparing the two is a differential test between two existing implementations rather
+/// than against a third transcription of the rules -- if they disagree, either `matches` admits a
+/// packet `look` cannot extract from (undefined behaviour) or `Matcher` mis-matches in the datapath.
+/// Both are worth knowing.
+///
+/// References are compared by **address**, not by value: two VLAN tags with identical contents are a
+/// pass under `assert_eq!` and a bug if the two implementations picked different ones.
+///
+/// # Two lines of defence, and where each one fires
+///
+/// Both `matches` and `look` call the same [`ViewStep::step`], so a bug *inside* `step` is invisible
+/// here -- it moves both sides together. What is checked is the hand-written *chaining* around it,
+/// which is where the duplication is.
+///
+/// Against a divergence in that chaining there are two independent guards, and both were demonstrated
+/// by breaking the arity-3 arm on purpose:
+///
+/// 1. **This differential, which fires first.** The `Matcher` comparison happens *before* `look` is
+///    called, so a divergence in either direction fails with a shrunk counterexample rather than by
+///    invoking undefined behaviour. Making `matches` stricter, or making it accept everything, both
+///    fail here in under a second.
+/// 2. **The standard library's own check, as a backstop.** `unwrap_unchecked` bottoms out in
+///    `hint::unreachable_unchecked`, whose `assert_unsafe_precondition!` is gated on `ub_checks` --
+///    which follows `-Cdebug-assertions`, and `profile.fuzz` sets that **on**. So if a divergence ever
+///    slipped past guard 1 -- if `Matcher` carried the same bug, say -- reaching `look` aborts:
+///
+///    ```text
+///    unsafe precondition(s) violated: hint::unreachable_unchecked must never be reached
+///    thread caused non-unwinding panic. aborting.
+///    ```
+///
+///    Verified by calling `look` on a deliberately over-permissive `matches` with the differential
+///    removed: `SIGABRT`, in the fuzz profile, no miri required. Note it is a *non-unwinding* panic, so
+///    bolero cannot catch it and the process dies -- which under libfuzzer is exactly right, a saved
+///    `crash-*` artifact rather than a silent pass.
+///
+/// The practical consequence is that **`just fuzz` on the fuzz profile already detects the unsound
+/// direction**, and that is where the assurance mostly comes from. Miri remains useful for what
+/// `ub_checks` does not model -- aliasing and provenance across the `as_ref_unchecked` boundary -- but
+/// it is not the only thing standing between this and undefined behaviour.
+///
+/// These do run clean under `just miri test -p dataplane-net view_properties`. Worth knowing what that
+/// is worth, though: bolero manages 5 cases a second under miri against roughly 35,000 native, and the
+/// miri recipe spawns its own `nix-shell`, so `BOLERO_RANDOM_TEST_TIME_MS` from the caller's
+/// environment never arrives and the run stops at **25 cases per property**. A smoke test, not a proof.
+/// Raising it means setting the budget inside `miri.just`.
+#[cfg(test)]
+mod view_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::Look;
+    use crate::headers::{Headers, Net, ShapedHeaders, Transport};
+    use crate::vlan::Vlan;
+
+    /// `as_view` and `Matcher` must agree on whether the packet has the shape, and on which layers.
+    #[test]
+    fn eth_net_transport_agrees_with_the_matcher() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let matched = h.pat().eth().net().transport().done();
+                match h.as_view::<(&Eth, &Net, &Transport)>() {
+                    None => assert!(
+                        matched.is_none(),
+                        "the matcher accepted a shape as_view refused: {h:?}"
+                    ),
+                    Some(view) => {
+                        let Some((m_eth, m_net, m_transport)) = matched else {
+                            panic!("as_view accepted a shape the matcher refused: {h:?}");
+                        };
+                        let (v_eth, v_net, v_transport) = view.look();
+                        assert!(std::ptr::eq(v_eth, m_eth), "eth differs: {h:?}");
+                        assert!(std::ptr::eq(v_net, m_net), "net differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_transport, m_transport),
+                            "transport differs: {h:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    /// The same, for a shape that names a VLAN tag.
+    ///
+    /// This is where the interesting half of the contract lives: a tag the shape does not mention is a
+    /// miss, so the two implementations have to agree about *how many* tags were consumed, not merely
+    /// that some were.
+    #[test]
+    fn eth_vlan_net_transport_agrees_with_the_matcher() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let matched = h.pat().eth().vlan().net().transport().done();
+                match h.as_view::<(&Eth, &Vlan, &Net, &Transport)>() {
+                    None => assert!(
+                        matched.is_none(),
+                        "the matcher accepted a vlan shape as_view refused: {h:?}"
+                    ),
+                    Some(view) => {
+                        let Some((m_eth, m_vlan, m_net, m_transport)) = matched else {
+                            panic!("as_view accepted a vlan shape the matcher refused: {h:?}");
+                        };
+                        let (v_eth, v_vlan, v_net, v_transport) = view.look();
+                        assert!(std::ptr::eq(v_eth, m_eth), "eth differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_vlan, m_vlan),
+                            "the two implementations consumed different vlan tags: {h:?}"
+                        );
+                        assert!(std::ptr::eq(v_net, m_net), "net differs: {h:?}");
+                        assert!(
+                            std::ptr::eq(v_transport, m_transport),
+                            "transport differs: {h:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    // A shape starting at `Net` rather than `Eth` was tried here and does not compile: `Net` does not
+    // satisfy `Within<()>`, so the adjacency graph forbids a shape that begins mid-stack. That half of
+    // the contract is enforced at compile time and needs no property.
+}
+
+/// The **mutable** half of the unsafe boundary, which is the more delicate one.
+///
+/// [`Look::look`] and [`sealed::Sealed::matches`] at least walk the stack the same way: both chain
+/// [`ViewStep::step`]. [`LookMut::look_mut`] does not. It builds a [`MatcherMut`](super::pat::MatcherMut)
+/// from [`Headers::pat_mut`] and chains [`ViewStepMut::chain`] over it, then calls
+/// `unreachable_unchecked` if that comes back `None`.
+///
+/// So the invariant is established by one traversal and consumed by a **different** one. Nothing makes
+/// `ViewStep::step` and `ViewStepMut::chain` agree except that they were written to; where the read path
+/// risks a mis-threaded cursor between two copies of the same walk, this risks two walks disagreeing
+/// outright.
+///
+/// Note what is *not* worth testing here: `look_mut` against `MatcherMut` directly. `look_mut` **is**
+/// `MatcherMut` plus an `unreachable_unchecked`, so that comparison is the implementation against
+/// itself. The question worth asking is whether `matches` -- the `ViewStep` walk that licensed the
+/// unchecked call -- agrees with the `ViewStepMut` walk that has to deliver on it.
+///
+/// # Aliasing, and why `ub_checks` cannot help
+///
+/// `look_mut` hands back several `&mut` into one [`Headers`], pre-split through
+/// [`Fields`](super::pat::Fields). If that split ever aliased, two of those references would point at
+/// the same layer -- undefined behaviour of a kind the `ub_checks` backstop does **not** model. It
+/// checks the `unreachable_unchecked` precondition, nothing about aliasing.
+///
+/// Only miri sees that, and only with stacked borrows *on*, which this repo turns off by default:
+///
+/// ```text
+/// STACKED_BORROW_CHECK=enabled just miri test -p dataplane-net view_mut_properties
+/// ```
+///
+/// Through the environment, not `just`'s command line: a *module's* variables cannot be overridden
+/// there. `just miri stacked_borrow_check=enabled test` parses as a recipe name and
+/// `just --set stacked_borrow_check enabled miri test` is refused, which is why `miri.just` reads both
+/// knobs via `env()`.
+#[cfg(test)]
+mod view_mut_properties {
+    use crate::eth::Eth;
+    use crate::headers::view::{Look, LookMut};
+    use crate::headers::{Headers, Net, ShapedHeaders, SometimesHeadless, Transport};
+
+    /// The type a `Matcher` method name selects.
+    ///
+    /// A shape and the chain that matches it are the same statement written twice --
+    /// `(&Eth, &Ipv6, &HopByHop, &Transport)` and `.eth().ipv6().hop_by_hop().transport()` -- and
+    /// writing both by hand at every instantiation is a standing invitation to write two different
+    /// statements. The pair that disagrees still compiles and still passes; it just quietly tests
+    /// something other than what it says. So the chain is the input and the shape is derived.
+    ///
+    /// The table is the only place the correspondence lives, and it is the whole of it: every entry
+    /// below names a method the `matcher_net!`, `matcher_ext!` and `matcher_transport!` invocations
+    /// in [`pat`](super::pat) generate, plus the four written out by hand.
+    macro_rules! layer_ty {
+        (eth) => {
+            crate::eth::Eth
+        };
+        (vlan) => {
+            crate::vlan::Vlan
+        };
+        (net) => {
+            crate::headers::Net
+        };
+        (ipv4) => {
+            crate::ipv4::Ipv4
+        };
+        (ipv6) => {
+            crate::ipv6::Ipv6
+        };
+        (hop_by_hop) => {
+            crate::ipv6::HopByHop
+        };
+        (dest_opts) => {
+            crate::ipv6::DestOpts
+        };
+        (routing) => {
+            crate::ipv6::Routing
+        };
+        (fragment) => {
+            crate::ipv6::Fragment
+        };
+        (ipv4_auth) => {
+            crate::ip_auth::Ipv4Auth
+        };
+        (ipv6_auth) => {
+            crate::ip_auth::Ipv6Auth
+        };
+        (transport) => {
+            crate::headers::Transport
+        };
+        (tcp) => {
+            crate::tcp::Tcp
+        };
+        (udp) => {
+            crate::udp::Udp
+        };
+        (icmp4) => {
+            crate::icmp4::Icmp4
+        };
+        (icmp6) => {
+            crate::icmp6::Icmp6
+        };
+        (vxlan) => {
+            crate::vxlan::Vxlan
+        };
+    }
+
+    /// The `Shape` a chain of matcher method names denotes.
+    macro_rules! shape_of {
+        ($($layer:ident),+ $(,)?) => { ($(&'static layer_ty!($layer),)+) };
+    }
+
+    /// The address of each layer in a tuple of references, without naming the arity.
+    ///
+    /// Agreeing that a shape matches is the soundness question; handing back the *same* layers is the
+    /// correctness one, and it was previously checked only at arities three and four, because that is
+    /// where a tuple can be destructured by hand into a fixed number of bindings. Reducing the tuple
+    /// to its addresses removes the need to name the arity at all, so the check applies wherever the
+    /// agreement check does.
+    ///
+    /// Addresses rather than values: two layers can hold equal bytes without being the same layer, and
+    /// picking the wrong VLAN tag out of four identical ones is exactly the cursor bug this is looking
+    /// for.
+    trait Addrs {
+        /// One address per element.
+        type Out: PartialEq + core::fmt::Debug;
+        /// Where each element of this tuple lives.
+        fn addrs(&self) -> Self::Out;
+    }
+
+    macro_rules! impl_addrs {
+        ($n:literal; $($T:ident $idx:tt),+) => {
+            impl<'a, $($T),+> Addrs for ($(&'a $T,)+) {
+                type Out = [usize; $n];
+                fn addrs(&self) -> [usize; $n] {
+                    [$(core::ptr::from_ref::<$T>(self.$idx) as usize),+]
+                }
+            }
+
+            impl<'a, $($T),+> Addrs for ($(&'a mut $T,)+) {
+                type Out = [usize; $n];
+                fn addrs(&self) -> [usize; $n] {
+                    [$(core::ptr::from_ref::<$T>(&*self.$idx) as usize),+]
+                }
+            }
+        };
+    }
+
+    impl_addrs!(1; A 0);
+    impl_addrs!(2; A 0, B 1);
+    impl_addrs!(3; A 0, B 1, C 2);
+    impl_addrs!(4; A 0, B 1, C 2, D 3);
+    impl_addrs!(5; A 0, B 1, C 2, D 3, E 4);
+    impl_addrs!(6; A 0, B 1, C 2, D 3, E 4, F 5);
+    impl_addrs!(7; A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+    impl_addrs!(8; A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
+    /// Both walks, at every arity the oracle can express.
+    ///
+    /// The decision is what soundness turns on: if `matches` says yes where the walk that must deliver
+    /// says no, `look`/`look_mut` reach `unreachable_unchecked`. So this compares decisions across the
+    /// whole family, for the read path and the mutable path both.
+    ///
+    /// Arity matters because `matches`, `look` and `look_mut` are generated separately for each one, by
+    /// a macro, with the VLAN and extension cursors threaded through by hand every time. Testing two
+    /// arities tested two of eight copies.
+    ///
+    /// Each property asks two things of a shape, and the second is the reason `look` and `look_mut`
+    /// appear here rather than only in the split test:
+    ///
+    /// * **the decision**, `matches` against the matcher chain. This is what soundness turns on: if
+    ///   `matches` says yes where the walk that must deliver says no, `look`/`look_mut` reach
+    ///   `unreachable_unchecked`. Disagreement here is undefined behaviour, not a wrong answer.
+    /// * **the delivery**, `look`/`look_mut` against the same chain's tuple, compared by address.
+    ///   Agreeing that a shape is present is not the same as picking the same layers out of it, and
+    ///   the cursor arithmetic that decides *which* VLAN tag or *which* extension header comes back
+    ///   is written out by hand once per arity. A shape naming four tags has four chances to be off
+    ///   by one and no way for the decision check to notice.
+    ///
+    /// Delivery was previously checked at arities three and four only, because a tuple has to be
+    /// destructured into a fixed number of bindings to be compared -- which is why [`Addrs`] exists.
+    macro_rules! arity_agrees {
+        ($read:ident, $mutable:ident, $gen:expr, $($layer:ident),+) => {
+            #[test]
+            fn $read() {
+                type Shape = shape_of!($($layer),+);
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator($gen)
+                    .for_each(|h: &Headers| {
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        let licensed = h.as_view::<Shape>().is_some();
+                        if licensed {
+                            HIT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let chain = h.pat()$(.$layer())+.done();
+                        assert_eq!(
+                            licensed, chain.is_some(),
+                            concat!(
+                                "`matches` and the read walk disagree for ",
+                                stringify!(($($layer),+)),
+                                ", so `look` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                        if let (Some(view), Some(chain)) = (h.as_view::<Shape>(), chain) {
+                            assert_eq!(
+                                view.look().addrs(), chain.addrs(),
+                                concat!(
+                                    "`look` and the read walk agreed that ",
+                                    stringify!(($($layer),+)),
+                                    " is present and then handed back different layers: {:?}"
+                                ),
+                                h
+                            );
+                        }
+                    });
+                agreement_is_not_vacuous(
+                    stringify!(($($layer),+)),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
+                );
+            }
+
+            #[test]
+            fn $mutable() {
+                type Shape = shape_of!($($layer),+);
+                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                static SEEN: AtomicUsize = AtomicUsize::new(0);
+                static HIT: AtomicUsize = AtomicUsize::new(0);
+                bolero::check!()
+                    .with_generator($gen)
+                    .for_each(|h: &Headers| {
+                        let mut owned = h.clone();
+                        SEEN.fetch_add(1, Ordering::Relaxed);
+                        let licensed = owned.as_view_mut::<Shape>().is_some();
+                        if licensed {
+                            HIT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // The two walks each want the whole of `owned` mutably, so they take turns
+                        // and hand back addresses rather than references. Nothing is written
+                        // between the two, so the addresses stay comparable.
+                        let chain = owned.pat_mut()$(.$layer())+.done().map(|t| t.addrs());
+                        assert_eq!(
+                            licensed, chain.is_some(),
+                            concat!(
+                                "`matches` and the mutable walk disagree for ",
+                                stringify!(($($layer),+)),
+                                ", so `look_mut` would reach `unreachable_unchecked`: {:?}"
+                            ),
+                            h
+                        );
+                        if let Some(view) = owned.as_view_mut::<Shape>() {
+                            assert_eq!(
+                                Some(view.look_mut().addrs()), chain,
+                                concat!(
+                                    "`look_mut` and the mutable walk agreed that ",
+                                    stringify!(($($layer),+)),
+                                    " is present and then handed back different layers: {:?}"
+                                ),
+                                h
+                            );
+                        }
+                    });
+                agreement_is_not_vacuous(
+                    stringify!(($($layer),+)),
+                    SEEN.load(Ordering::Relaxed),
+                    HIT.load(Ordering::Relaxed),
+                );
+            }
+        };
+    }
+
+    /// A shape the generator never produces makes its property pass for the wrong reason.
+    ///
+    /// Two implementations agreeing that nothing matches is not agreement worth having, and the higher
+    /// arities are where it would happen quietly: arity 7 needs a packet carrying exactly four VLAN
+    /// tags, since a tag the shape does not name is a miss. So every arity reports its own hit rate and
+    /// fails if it never matched at all.
+    fn agreement_is_not_vacuous(shape: &str, seen: usize, hit: usize) {
+        println!("{shape}: matched {hit} of {seen}");
+        // The default run is a second long, which is plenty here -- these properties manage tens of
+        // thousands of cases a second -- but a short sample should say so rather than fail.
+        if seen > 500 {
+            assert!(
+                hit > 0,
+                "{shape} never matched in {seen} packets: the two walks agree only because the \
+                 generator cannot produce this shape"
+            );
+        }
+    }
+
+    // Every arity from one to eight, which is all of them.
+    //
+    // `Matcher` names every layer the `Within` graph does -- `matcher_net!`, `matcher_ext!` and
+    // `matcher_transport!` give it `.ipv4()`, `.ipv6()`, `.hop_by_hop()`, `.dest_opts()`,
+    // `.routing()`, `.fragment()`, `.ipv4_auth()`, `.ipv6_auth()`, `.tcp()`, `.udp()`, `.icmp4()` and
+    // `.icmp6()` alongside the generic `.eth()` / `.vlan()` / `.net()` / `.transport()`. So the
+    // oracle reaches as far as the code does: `Eth` + four VLAN tags (`MAX_VLANS`) + `Ipv6` +
+    // `HopByHop` + `Transport` is eight, and the extension region is expressible.
+    //
+    // `SometimesHeadless` rather than `ShapedHeaders`: the first step of every one of these is `Eth`,
+    // and the branch where that step refuses is generated once per arity. Nothing that always sets
+    // `eth` can reach any of them.
+    arity_agrees!(read_1, mutable_1, SometimesHeadless, eth);
+    arity_agrees!(read_2, mutable_2, SometimesHeadless, eth, net);
+    arity_agrees!(read_3, mutable_3, SometimesHeadless, eth, net, transport);
+    arity_agrees!(
+        read_4,
+        mutable_4,
+        SometimesHeadless,
+        eth,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_5,
+        mutable_5,
+        SometimesHeadless,
+        eth,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_6,
+        mutable_6,
+        SometimesHeadless,
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_7,
+        mutable_7,
+        SometimesHeadless,
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        vlan,
+        net,
+        transport
+    );
+    arity_agrees!(
+        read_8,
+        mutable_8,
+        SometimesHeadless,
+        eth,
+        vlan,
+        vlan,
+        vlan,
+        vlan,
+        ipv6,
+        hop_by_hop,
+        transport
+    );
+
+    // Shapes that enter the IPv6 extension region, where `ExtGapCheck` switches from
+    // skip-extensions-silently to consume-them-all.
+    //
+    // This is the subtlest part of the contract and the part the module documentation spends most of
+    // its words on. It is also where the two walks are least alike: on the read path both call
+    // `ExtGapCheck::ext_gap_ok`, so what is under test is the by-hand threading of the `ec` cursor
+    // through each separately generated arity -- which is the plausible bug. On the mutable path
+    // they call genuinely different implementations, `ext_gap_ok` against a `Headers` versus
+    // `ext_gap_ok_mut` against a pre-split `Fields`, so those two are checked against each other
+    // as well.
+    //
+    // Each shape below is deliberately exact: naming `HopByHop` and then `Transport` matches only a
+    // packet carrying that extension and no other, since an unconsumed extension is a miss once the
+    // chain has entered the region.
+    arity_agrees!(
+        read_ext_v6_one,
+        mutable_ext_v6_one,
+        SometimesHeadless,
+        eth,
+        ipv6,
+        hop_by_hop,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_two,
+        mutable_ext_v6_two,
+        SometimesHeadless,
+        eth,
+        ipv6,
+        hop_by_hop,
+        dest_opts,
+        transport
+    );
+    arity_agrees!(
+        read_ext_v6_three,
+        mutable_ext_v6_three,
+        SometimesHeadless,
+        eth,
+        ipv6,
+        hop_by_hop,
+        dest_opts,
+        routing,
+        transport
+    );
+    // The IPv4 authentication header is the only extension that belongs on a v4 packet, and it is
+    // the only way to reach the strict branch without IPv6.
+    arity_agrees!(
+        read_ext_v4_auth,
+        mutable_ext_v4_auth,
+        SometimesHeadless,
+        eth,
+        ipv4,
+        ipv4_auth,
+        transport
+    );
+    // Entering the region and then *not* naming a transport: the gap check never runs, so every
+    // extension after the named one is simply left unvisited. Distinguishing this from the strict
+    // case above is the whole point of running the check at the transport step rather than the
+    // extension step.
+    arity_agrees!(
+        read_ext_v6_no_transport,
+        mutable_ext_v6_no_transport,
+        SometimesHeadless,
+        eth,
+        ipv6,
+        hop_by_hop
+    );
+
+    // The UDP encapsulation layer, which no shape named until now.
+    //
+    // `Vxlan` is the one `ViewStep` that runs no gap check at all -- it reads `udp_encap` and ignores
+    // both cursors -- and the one layer that is not part of the linear header stack, so nothing about
+    // it follows from the arities above. `CommonHeaders` has been drawing VXLAN packets the whole
+    // time; the gap was that no property ever asked for one.
+    //
+    // `ShapedHeaders` rather than `SometimesHeadless` here, because this shape is already narrow:
+    // `Udp` is one of three next headers, the encapsulation is a coin flip on top of that, and the
+    // net step demands no VLAN tags. Removing the Ethernet header as well would spend the hit rate
+    // on a branch the eight arities above already cover.
+    arity_agrees!(
+        read_vxlan_v4,
+        mutable_vxlan_v4,
+        ShapedHeaders,
+        eth,
+        ipv4,
+        udp,
+        vxlan
+    );
+    arity_agrees!(
+        read_vxlan_net,
+        mutable_vxlan_net,
+        ShapedHeaders,
+        eth,
+        net,
+        udp,
+        vxlan
+    );
+
+    /// Exercise the multi-`&mut` split itself: write through every reference and read the writes back.
+    ///
+    /// The assertions are almost beside the point. What matters is that the references are *created and
+    /// written through*, so that miri with stacked borrows enabled can judge whether
+    /// [`Fields`](super::pat::Fields) handed out two paths to the same layer. Nothing else in the suite
+    /// does that.
+    fn exercise_the_mutable_split() {
+        bolero::check!()
+            .with_generator(ShapedHeaders)
+            .for_each(|h: &Headers| {
+                let mut owned = h.clone();
+                let Some(view) = owned.as_view_mut::<(&Eth, &Net, &Transport)>() else {
+                    return;
+                };
+                let (eth, net, transport) = view.look_mut();
+
+                // A write through each reference, then a read back through the same one. If two of
+                // these aliased, the writes would interfere and miri would object to the borrow stack
+                // long before the values did.
+                let want_src =
+                    crate::eth::mac::SourceMac::try_from(crate::eth::mac::Mac([2, 0, 0, 0, 0, 1]))
+                        .unwrap_or_else(|_| {
+                            unreachable!("a locally-administered unicast mac is a valid source")
+                        });
+                eth.set_source(want_src);
+                let seen_net = net.dst_addr();
+                let seen_transport = transport.dst_port();
+
+                assert_eq!(
+                    eth.source(),
+                    want_src,
+                    "the write through eth did not stick"
+                );
+                assert_eq!(net.dst_addr(), seen_net, "net changed under a write to eth");
+                assert_eq!(
+                    transport.dst_port(),
+                    seen_transport,
+                    "transport changed under a write to eth"
+                );
+            });
+    }
+
+    /// Shards of [`exercise_the_mutable_split`], so the machine can be used.
+    ///
+    /// Under miri this property is the expensive one and the one that matters most, and its cost is
+    /// wall-clock: bolero manages about five cases a second. Raising the time budget buys cases
+    /// linearly, but only on one core.
+    ///
+    /// Each shard seeds itself from the OS, so `N` shards explore `N` independent streams and nextest
+    /// runs them concurrently -- turning a machine with cores to spare into more cases for the same
+    /// wall time, which is the only lever that does not cost patience. Sixteen rather than sixty: miri
+    /// carries a large memory footprint per process, and the other properties want cores too.
+    macro_rules! split_shards {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    exercise_the_mutable_split();
+                }
+            )*
+        };
+    }
+
+    split_shards!(
+        the_mutable_split_hands_out_distinct_layers,
+        split_shard_02,
+        split_shard_03,
+        split_shard_04,
+        split_shard_05,
+        split_shard_06,
+        split_shard_07,
+        split_shard_08,
+        split_shard_09,
+        split_shard_10,
+        split_shard_11,
+        split_shard_12,
+        split_shard_13,
+        split_shard_14,
+        split_shard_15,
+        split_shard_16,
+    );
+}
