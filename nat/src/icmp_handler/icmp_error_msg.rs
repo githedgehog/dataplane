@@ -47,13 +47,6 @@ pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     state: &NatTranslationData,
 ) -> Result<(), IcmpErrorMsgError> {
-    let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = (
-        state.src_addr,
-        state.dst_addr,
-        state.src_port,
-        state.dst_port,
-    );
-
     // From REQ-4 from RFC 5508, "NAT Behavioral Requirements for ICMP":
     //
     //    If the NAT has active mapping for the embedded payload, then the NAT MUST do the
@@ -62,11 +55,11 @@ pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
     //
     //        a) Revert the IP and transport headers of the embedded IP packet to their original
     //        form, using the matching mapping;
-    if let Some(src_addr) = target_src_addr {
-        nat_translate_icmp_inner_src(packet, src_addr, target_src_port)?;
+    if let Some(src) = state.src {
+        nat_translate_icmp_inner_src(packet, src.addr, src.port)?;
     }
-    if let Some(dst_addr) = target_dst_addr {
-        nat_translate_icmp_inner_dst(packet, dst_addr, target_dst_port)?;
+    if let Some(dst) = state.dst {
+        nat_translate_icmp_inner_dst(packet, dst.addr, dst.port)?;
     }
     Ok(())
 }
@@ -224,6 +217,7 @@ fn translate_inner_tcp_udp_dst(
 #[cfg(test)]
 mod bolero_tests {
     use super::*;
+    use crate::NatEndpoint;
     use crate::NatPort;
     use net::buffer::TestBuffer;
     use net::checksum::ChecksumError;
@@ -351,18 +345,18 @@ mod bolero_tests {
                     let initial_outer_addresses = get_outer_addresses(icmp_error_msg).unwrap();
                     let initial_ports = get_inner_ports(icmp_error_msg);
                     let tr_data = match icmp_error_msg.headers().try_ip() {
-                        Some(Net::Ipv4(_)) => NatTranslationData {
-                            src_addr: Some(IpAddr::V4(Ipv4Addr::from(*src_v4))),
-                            dst_addr: Some(IpAddr::V4(*dst_v4)),
-                            src_port: *src_port,
-                            dst_port: *dst_port,
-                        },
-                        Some(Net::Ipv6(_)) => NatTranslationData {
-                            src_addr: Some(IpAddr::V6(Ipv6Addr::from(*src_v6))),
-                            dst_addr: Some(IpAddr::V6(*dst_v6)),
-                            src_port: *src_port,
-                            dst_port: *dst_port,
-                        },
+                        Some(Net::Ipv4(_)) => NatTranslationData::default()
+                            .with_src(NatEndpoint::new(
+                                IpAddr::V4(Ipv4Addr::from(*src_v4)),
+                                *src_port,
+                            ))
+                            .with_dst(NatEndpoint::new(IpAddr::V4(*dst_v4), *dst_port)),
+                        Some(Net::Ipv6(_)) => NatTranslationData::default()
+                            .with_src(NatEndpoint::new(
+                                IpAddr::V6(Ipv6Addr::from(*src_v6)),
+                                *src_port,
+                            ))
+                            .with_dst(NatEndpoint::new(IpAddr::V6(*dst_v6), *dst_port)),
                         None => unreachable!(),
                     };
 
@@ -393,8 +387,8 @@ mod bolero_tests {
                     }
 
                     let (translation_src_port, translation_dst_port) = (
-                        tr_data.src_port.map(NatPort::as_u16),
-                        tr_data.dst_port.map(NatPort::as_u16),
+                        tr_data.src.and_then(|src| src.port).map(NatPort::as_u16),
+                        tr_data.dst.and_then(|dst| dst.port).map(NatPort::as_u16),
                     );
                     let new_outer_addresses = get_outer_addresses(&icmp_error_msg_clone).unwrap();
                     let new_inner_addresses = get_inner_addresses(&icmp_error_msg_clone).unwrap();
@@ -404,8 +398,8 @@ mod bolero_tests {
                     assert_eq!(initial_outer_addresses, new_outer_addresses);
 
                     // Check inner IP addresses have been updated
-                    assert_eq!(Some(new_inner_addresses.0), tr_data.src_addr);
-                    assert_eq!(Some(new_inner_addresses.1), tr_data.dst_addr);
+                    assert_eq!(Some(new_inner_addresses.0), tr_data.src.map(|src| src.addr));
+                    assert_eq!(Some(new_inner_addresses.1), tr_data.dst.map(|dst| dst.addr));
 
                     // Check inner ports have been updated
                     match (initial_ports, new_ports) {
