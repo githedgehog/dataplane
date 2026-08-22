@@ -13,8 +13,8 @@ use std::net::IpAddr;
 use tracing::{debug, error, warn};
 
 use routing::{
-    EgressObject, Encapsulation, FibEntry, FibKey, FibTableReader, PktInstruction, Vtep,
-    VxlanEncapsulation,
+    EgressObject, FibEntry, FibKey, FibTableReader, PktInstruction, ResolvedEncapsulation,
+    ResolvedVxlan, Vtep,
 };
 
 use net::headers::{Headers, Net};
@@ -178,7 +178,7 @@ impl IpForwarder {
 
     /// Build the vxlan headers needed to encapsulate the packet in vxlan. This function returns
     /// an error as a string since there's nothing we can do other than logging if this fails.
-    fn build_vxlan_headers(vxlan: &VxlanEncapsulation, vtep: &Vtep) -> Result<VxlanEncap, String> {
+    fn build_vxlan_headers(vxlan: &ResolvedVxlan, vtep: &Vtep) -> Result<VxlanEncap, String> {
         let Some(src_ip) = &vtep.get_ip() else {
             return Err("VTEP has no Ip address".to_string());
         };
@@ -252,7 +252,7 @@ impl IpForwarder {
     fn vxlan_encap<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        vxlan: &VxlanEncapsulation,
+        vxlan: &ResolvedVxlan,
         vtep: &Vtep,
     ) {
         let nfi = &self.name;
@@ -262,11 +262,7 @@ impl IpForwarder {
             packet.done(DoneReason::VxlanEncapFailure);
             return;
         };
-        let Some(dst_mac) = &vxlan.dmac else {
-            error!("{nfi}: VxLAN encap FAILED: unknown dst rmac!");
-            packet.done(DoneReason::VxlanEncapFailure);
-            return;
-        };
+        let dst_mac = &vxlan.dmac;
 
         // set current packet src mac (inner)
         if let Err(e) = packet.set_eth_source(*src_mac) {
@@ -323,12 +319,12 @@ impl IpForwarder {
         #[allow(clippy::unused_self)] // Reserve the right to use self in the future
         &self,
         packet: &mut Packet<Buf>,
-        encap: &Encapsulation,
+        encap: &ResolvedEncapsulation,
         vtep: &Vtep,
     ) {
         match encap {
-            Encapsulation::Mpls(_label) => todo!(),
-            Encapsulation::Vxlan(vxlan) => self.vxlan_encap(packet, vxlan, vtep),
+            ResolvedEncapsulation::Mpls(_label) => todo!(),
+            ResolvedEncapsulation::Vxlan(vxlan) => self.vxlan_encap(packet, vxlan, vtep),
         }
     }
 
