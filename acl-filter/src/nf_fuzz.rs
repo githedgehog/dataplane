@@ -82,19 +82,11 @@ fn packet_for(summary: &PacketSummary) -> Option<Packet<TestBuffer>> {
         .ok()?;
     packet.set_ip_destination(summary.dst_ip).ok()?;
     if tcp {
-        packet
-            .set_tcp_source_port(TcpPort::new_checked(sport.max(1)).ok()?)
-            .ok()?;
-        packet
-            .set_tcp_destination_port(TcpPort::new_checked(dport.max(1)).ok()?)
-            .ok()?;
+        packet.set_tcp_source_port(TcpPort::new(sport)).ok()?;
+        packet.set_tcp_destination_port(TcpPort::new(dport)).ok()?;
     } else {
-        packet
-            .set_udp_source_port(UdpPort::new_checked(sport.max(1)).ok()?)
-            .ok()?;
-        packet
-            .set_udp_destination_port(UdpPort::new_checked(dport.max(1)).ok()?)
-            .ok()?;
+        packet.set_udp_source_port(UdpPort::new(sport)).ok()?;
+        packet.set_udp_destination_port(UdpPort::new(dport)).ok()?;
     }
 
     let meta = packet.meta_mut();
@@ -103,13 +95,6 @@ fn packet_for(summary: &PacketSummary) -> Option<Packet<TestBuffer>> {
     meta.set_overlay(true);
     meta.set_keep(true);
     Some(packet)
-}
-
-/// The summary a built packet actually carries, with its ports normalized the way the builder did.
-fn expected_summary(summary: &PacketSummary) -> PacketSummary {
-    let mut expected = summary.clone();
-    expected.ports = summary.ports.map(|(s, d)| (s.max(1), d.max(1)));
-    expected
 }
 
 fn filter(built: &crate::fuzz_gen::BuiltOverlay) -> AclFilter {
@@ -269,7 +254,9 @@ fn the_summary_survives_the_round_trip_through_a_packet() {
 
                 let read = PacketSummary::try_from(&packet)
                     .unwrap_or_else(|e| panic!("a built packet did not yield a summary: {e:?}"));
-                let expected = expected_summary(&summary);
+                // The builder no longer normalizes anything: a probe's ports are `NonZero`, so
+                // what goes into the packet is what comes back out.
+                let expected = &summary;
 
                 assert_eq!(
                     (read.src_vni, read.dst_vni),

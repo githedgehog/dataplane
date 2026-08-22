@@ -18,6 +18,9 @@ use concurrency::sync::LazyLock;
 use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
+use std::num::NonZero;
+
+use lpm::prefix::with_ports::KeyPort;
 use lpm::prefix::{IpPrefix, L4Protocol, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -172,7 +175,10 @@ pub(crate) fn oracle_lookup(overlay: &ValidatedOverlay, probe: &Probe) -> Lookup
     if probe.src_ip.is_ipv4() != probe.dst_ip.is_ipv4() {
         return LookupResult::DestinationMiss;
     }
-    let (sport, dport) = probe.ports.unwrap_or((0, 0));
+    // The oracle models the key encoding, sentinel and all: a probe with no ports lowers to the
+    // same zero the real key does, and so matches exactly the wildcard ranges.
+    let (sport, dport) = probe.ports.unzip();
+    let (sport, dport) = (KeyPort::new(sport).get(), KeyPort::new(dport).get());
 
     let verdict = oracle_stage1(src_vpc, probe, dport, probe.dst_vpcd);
     let Some((dst_vpcd, dst_nat)) = verdict else {
@@ -305,7 +311,7 @@ fn dpdk_backend_matches_reference_on_generated_overlays() {
                     src_ip: format!("10.0.0.{i}").parse().unwrap(),
                     dst_ip: "10.0.0.99".parse().unwrap(),
                     proto: NextHeader::TCP,
-                    ports: Some((1, 2)),
+                    ports: Some((NonZero::new(1).unwrap(), NonZero::new(2).unwrap())),
                     gate: SourceGate::Ungated,
                 })
                 .collect();
