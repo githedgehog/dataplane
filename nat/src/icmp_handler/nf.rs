@@ -6,7 +6,7 @@
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
-use net::headers::TryIcmpAny;
+use net::headers::{EmbeddedTransport, TryEmbeddedTransport, TryIcmpAny};
 use net::icmp_any::IcmpAny;
 use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::icmp6::Icmp6Type;
@@ -56,6 +56,19 @@ fn is_icmp_unrecoverable<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> (boo
             (false, Some("Packet too big"))
         }
         _ => (false, None),
+    }
+}
+
+//= https://www.rfc-editor.org/rfc/rfc5508#section-4.3
+//# REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+//# Query or Query response message, a NAT device MUST NOT refresh
+//# or delete the NAT Session that pertains to the embedded
+//# payload within the ICMP Error packet.
+fn embeds_icmp_query<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+    match packet.try_embedded_transport() {
+        Some(EmbeddedTransport::Icmp4(icmp4)) => icmp4.is_query_message(),
+        Some(EmbeddedTransport::Icmp6(icmp6)) => icmp6.is_query_message(),
+        _ => false,
     }
 }
 
@@ -164,9 +177,10 @@ impl IcmpErrorHandler {
         // if the problem is hardly recoverable. This expedites removing those flows, which would probably
         // be never hit again and, in case of masquerading, releases the allocated ports sooner.
         // This optimization is only applied if the `NatFlowStatus` is one-way.
+        let embeds_query = embeds_icmp_query(packet);
         let (unrecoverable, reason) = is_icmp_unrecoverable(packet);
         let reason = reason.unwrap_or("unspecified");
-        if unrecoverable && status == NatFlowStatus::OneWay {
+        if unrecoverable && status == NatFlowStatus::OneWay && !embeds_query {
             debug!("Invalidating flows due to ICMP error (reason={reason} flow-status={status})");
             flow.invalidate_pair();
         } else {
