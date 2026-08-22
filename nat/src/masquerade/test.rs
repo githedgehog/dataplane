@@ -135,6 +135,14 @@ fn addr_v4(addr: &str) -> Ipv4Addr {
     Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
 }
 
+fn v4_addrs(src: &str, dst: &str) -> net::flow_key::FlowAddrs {
+    net::flow_key::FlowAddrs::V4 {
+        src: net::ipv4::UnicastIpv4Addr::new(addr_v4(src)).expect("fixture sources are unicast"),
+        dst: net::ipv4::UnicastIpv4Addr::new(addr_v4(dst))
+            .expect("fixture destinations are unicast"),
+    }
+}
+
 fn vni(vni: u32) -> Vni {
     Vni::new_checked(vni).expect("Failed to create VNI")
 }
@@ -602,8 +610,7 @@ async fn test_full_config() {
     // Get corresponding session table entries and check idle timeout
     let Some((_, idle_timeout)) = nat.get_session(
         Some(vpcd(100)),
-        IpAddr::from_str(orig_src).unwrap(),
-        IpAddr::from_str(orig_dst).unwrap(),
+        v4_addrs(orig_src, orig_dst),
         IpProtoKey::Udp(UdpProtoKey {
             src_port: UdpPort::new_checked(9998).unwrap(),
             dst_port: UdpPort::new_checked(443).unwrap(),
@@ -615,8 +622,7 @@ async fn test_full_config() {
     // Reverse path
     let Some((_, idle_timeout)) = nat.get_session(
         Some(vpcd(200)),
-        IpAddr::from_str(orig_dst).unwrap(),
-        IpAddr::from_str(target_src).unwrap(),
+        v4_addrs(orig_dst, target_src),
         IpProtoKey::Udp(UdpProtoKey {
             src_port: UdpPort::new_checked(output_dst_port).unwrap(),
             dst_port: UdpPort::new_checked(output_src_port).unwrap(),
