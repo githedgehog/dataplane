@@ -3,7 +3,7 @@
 
 use crate::NatPort;
 use crate::common::NatAction;
-use crate::masquerade::apalloc::NatAllocator;
+use crate::masquerade::apalloc::{AnyReservation, NatAllocator};
 use crate::masquerade::state::MasqueradeState;
 
 use config::GenId;
@@ -73,7 +73,11 @@ fn re_reserve_ip_and_port(
     let port_u16 = port.as_u16();
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
-    match new_allocator.reserve_port(proto, src_vpcd, dst_vpcd, src_ip, ip, port) {
+    let reservation = AnyReservation::new(src_ip, ip).map_err(|e| {
+        error!("Cannot re-reserve {ip} for flow {flow_key}: {e}. This is a bug");
+    })?;
+
+    match new_allocator.reserve_port(proto, src_vpcd, dst_vpcd, reservation, port) {
         Ok(alloc) => {
             debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
             let mut guard = flow_info.locked.write();
