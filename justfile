@@ -757,21 +757,42 @@ coverage *args:
     echo
     echo "html report: ${out}/html/index.html  (\`just serve-coverage\` to browse it)"
 
+# The address `serve` binds.
+#
+# Loopback, not static-web-server's default of `::`. A coverage report is the whole source tree
+# rendered as html; the machine on the next desk has no business fetching it. Override with
+# `just serve_host=:: serve ...` when the browser is somewhere else.
+serve_host := "127.0.0.1"
+
 # Serve a directory of generated html over http.
 #
 # The reports llvm-cov and criterion produce are multi-page and fetch siblings relatively, which
 # a `file://` origin refuses; the index looks fine and everything under it is empty. Serving them
 # is the difference between a report you can read and one you can only open.
+#
+# `index` is the path within `dir` worth opening, and only affects what gets printed -- callers
+# pass it so that this recipe stays the one place that knows the scheme, host and port.
 [doc("Serve a directory of generated html over http")]
 [script]
-serve dir port="8080":
+serve dir port="8080" index="index.html":
     {{ _just_debuggable_ }}
     if [ ! -d '{{ dir }}' ]; then
       echo "error: no such directory: {{ dir }}" >&2
       exit 1
     fi
-    echo "serving {{ dir }} at http://127.0.0.1:{{ port }} (ctrl-c to stop)"
-    static-web-server --root '{{ dir }}' --port '{{ port }}' --log-level warn
+    # `static-web-server` joined the dev shell recently enough that a shell entered before it --
+    # direnv keeps one alive for days -- has everything else on PATH but not this. Fall back to
+    # devroot rather than reporting that as `command not found`.
+    server="$(command -v static-web-server || true)"
+    if [ -z "${server}" ] && [ -x ./devroot/bin/static-web-server ]; then
+      server="$(pwd)/devroot/bin/static-web-server"
+    fi
+    if [ -z "${server}" ]; then
+      echo "error: static-web-server not found; re-enter the dev shell, or \`just setup-roots\`" >&2
+      exit 1
+    fi
+    echo "serving {{ dir }} at http://{{ serve_host }}:{{ port }}/{{ index }} (ctrl-c to stop)"
+    "${server}" --root '{{ dir }}' --host '{{ serve_host }}' --port '{{ port }}' --log-level warn
 
 # Browse the coverage report from `just coverage`
 serve-coverage port="8080": (serve "./target/nextest/coverage/html" port)
