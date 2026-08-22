@@ -276,6 +276,10 @@ impl Fib {
                 panic!("{bad}");
             }
             let mut entry_index = 0;
+            // `packet_hash_ecmp(0, 0)` is `hash % 1`, so the guard saves a hash rather than
+            // deciding anything: `> 1` and `>= 1` are the same router. `== 1` and `< 1` are not --
+            // both collapse every flow onto entry zero -- and `ecmp_uses_the_whole_group_and_picks_
+            // the_same_entry_for_a_packet` is what says so.
             if num_entries > 1 {
                 entry_index = packet.packet_hash_ecmp(0, (num_entries - 1) as u8);
             }
