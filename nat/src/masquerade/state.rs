@@ -4,7 +4,7 @@
 use super::apalloc::Allocation;
 use super::packet::NatTranslate;
 use crate::common::{AtomicNatFlowStatus, NatAction};
-use crate::{NatPort, NatTranslationData};
+use crate::{NatEndpoint, NatPort, NatTranslationData};
 use std::fmt::Display;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -88,12 +88,10 @@ impl MasqueradeState {
 
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
         match self.action {
-            NatAction::SrcNat => {
-                NatTranslationData::new(None, Some(self.use_ip), None, Some(self.use_port))
-            }
-            NatAction::DstNat => {
-                NatTranslationData::new(Some(self.use_ip), None, Some(self.use_port), None)
-            }
+            NatAction::SrcNat => NatTranslationData::default()
+                .with_dst(NatEndpoint::with_port(self.use_ip, self.use_port)),
+            NatAction::DstNat => NatTranslationData::default()
+                .with_src(NatEndpoint::with_port(self.use_ip, self.use_port)),
         }
     }
 
