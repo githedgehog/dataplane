@@ -39,7 +39,8 @@ pub trait IpAddress:
 {
     type Unicast: IpAddress<Unicast = Self::Unicast> + Into<Self>;
 
-    const BITS: u8 = const { <Self as FixedSize>::SIZE as u8 * 8 };
+    #[allow(clippy::cast_possible_truncation)]
+    const BITS: u8 = const { (<Self as FixedSize>::SIZE * 8) as u8 };
 
     fn to_ip_addr(self) -> IpAddr;
 
