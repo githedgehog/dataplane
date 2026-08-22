@@ -18,8 +18,8 @@ use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, Validat
 use dpdk::acl::{CategoryMask, Priority};
 use lookup::Lookup;
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
-use match_action::{Erased, ExactSpec, FieldPredicate, FixedSize, MatchKey, PrefixSpec, RangeSpec};
-use net::ip::NextHeader;
+use match_action::{Erased, ExactSpec, FieldPredicate, MatchKey, PrefixSpec, RangeSpec};
+use net::ip::{IpAddress, NextHeader};
 use net::vxlan::Vni;
 use std::collections::HashMap;
 use std::fmt;
@@ -238,7 +238,11 @@ fn rule_predicates<T: IpVersion>(
 /// Per-IP-version behaviour for the address key fields: the wildcard prefix, and narrowing a
 /// version-agnostic [`Prefix`] to this version. `prefix_spec` returns `None` for the other
 /// version, which is what keeps each table to a single address width.
-pub(super) trait IpVersion: FixedSize {
+///
+/// Extends [`IpAddress`] rather than restating it: the seal and the version-narrowing this needs
+/// are shared with every other version-generic corner of the tree, while [`Prefix`] lives in
+/// `lpm`, which `net` does not depend on. So only the prefix half is local.
+pub(super) trait IpVersion: IpAddress {
     fn wildcard() -> Prefix;
     fn prefix_spec(prefix: Prefix) -> Option<PrefixSpec<Self>>;
 }
