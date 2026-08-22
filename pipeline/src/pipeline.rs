@@ -245,7 +245,12 @@ mod test {
 
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
-        let num_stages = 999;
+        // Pulling one packet through a dyn pipeline nests one stack frame per stage, and a frame
+        // holds a `Packet`. At 999 this test sat within a few bytes per frame of overflowing a
+        // thread stack, so *any* new field on `PacketMeta` -- a production one as much as a
+        // test-only one -- broke it, in a crate whose author was not touching packet metadata.
+        // 500 is still far longer than any real pipeline and leaves room to grow one.
+        let num_stages = 500;
 
         for _ in 0..num_stages {
             pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
