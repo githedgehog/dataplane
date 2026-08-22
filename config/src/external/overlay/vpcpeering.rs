@@ -1738,6 +1738,68 @@ pub mod contract {
         Ok(Overlay::new(vpc_table, peerings))
     }
 
+    /// The VNI of the `n`th peer VPC in [`overlay_with_peers`]. Peer zero is [`REMOTE_VNI`].
+    #[must_use]
+    pub const fn peer_vni(n: u8) -> u32 {
+        REMOTE_VNI + n as u32
+    }
+
+    /// The prefix the `n`th peer VPC exposes, whose second octet names the peer.
+    ///
+    /// The naming is the point. A property asking "did this packet go to the right VPC" needs to
+    /// know the answer without consulting the thing that decides it, and a destination address
+    /// that *says* which peer it belongs to gives it that: the expected VNI is read off the
+    /// address the test itself chose, not looked up in the table the flow filter also reads.
+    ///
+    /// Peers past the 254th wrap, which is a caller asking for more than this shape supports and
+    /// would silently give two peers one prefix; [`overlay_with_peers`] refuses them instead.
+    #[must_use]
+    pub fn peer_prefix(n: u8) -> Prefix {
+        let octet = u16::from(n) + 1;
+        format!("10.{octet}.0.0/16")
+            .parse()
+            .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
+    }
+
+    /// A local VPC peered with `peers` others, each exposing the prefix that names it.
+    ///
+    /// The two-VPC helpers above are for properties about *what happens to a packet*; this is for
+    /// the ones about *where it goes*, which need somewhere for it to go wrong. Nothing is
+    /// translated: NAT would put a second question between the destination the test chose and the
+    /// VPC the pipeline picked, and this is only asking about the second.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vpcs and peerings cannot be assembled, which would be a bug here
+    /// rather than anything about the arguments.
+    ///
+    /// # Panics
+    ///
+    /// If `peers` is zero, or more than the 254 that fit distinct second octets. A peering table
+    /// with nothing in it is not a configuration any property here can ask a question about, and
+    /// two peers sharing a prefix would make "which vpc exposes this address" ambiguous, which is
+    /// the one thing callers of this rely on.
+    pub fn overlay_with_peers(local: Prefix, peers: u8) -> Result<Overlay, ConfigError> {
+        assert!(peers > 0, "a local vpc with no peers has nowhere to send");
+        assert!(peers <= 254, "more peers than distinct second octets");
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+
+        let mut peerings = VpcPeeringTable::new();
+        for n in 0..peers {
+            let name = format!("PEER-{n}");
+            vpc_table.add(Vpc::new(&name, &format!("P{n:04}"), peer_vni(n))?)?;
+            peerings.add(VpcPeering::with_default_group(
+                &format!("VPC-1--{name}"),
+                VpcManifest::new("VPC-1").exposing(VpcExpose::empty().ip(local.into())),
+                VpcManifest::new(&name).exposing(VpcExpose::empty().ip(peer_prefix(n).into())),
+            ))?;
+        }
+
+        Ok(Overlay::new(vpc_table, peerings))
+    }
+
     /// An ACL over the peering that permits exactly one protocol in the request direction.
     ///
     /// Deliberately the simplest shape that constrains anything, because the point of an ACL in a
