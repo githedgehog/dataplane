@@ -131,8 +131,11 @@ fn show_bad_arg(input_line: &str, argname: &str) {
     }
 }
 
-/// Build arguments from map of arguments
-fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
+/// Build arguments from map of arguments.
+///
+/// Returns `None` rather than an error: the reason has already been printed to the terminal by
+/// the time this returns, so there is nothing left for a caller to report.
+fn process_args(input: &TermInput) -> Option<CliArgs> {
     let args = CliArgs::from_args_map(input.get_args().clone());
     match args {
         Err(ArgsError::UnrecognizedArgs(args_map)) => {
@@ -140,13 +143,13 @@ fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
             for arg in args_map.keys() {
                 show_bad_arg(input.get_line(), arg);
             }
-            Err(())
+            None
         }
         Err(e) => {
             print_err!(" {}", e);
-            Err(())
+            None
         }
-        Ok(args) => Ok(args),
+        Ok(args) => Some(args),
     }
 }
 
@@ -158,7 +161,7 @@ fn process_command(
 ) {
     if let Some(node) = cmds.find_best(input.get_tokens()) {
         if let Some(action) = &node.action {
-            if let Ok(args) = process_args(input) {
+            if let Some(args) = process_args(input) {
                 execute_action(*action, &args, cmdline, terminal, input);
             }
         } else if node.depth > 0 {

@@ -119,15 +119,16 @@ impl InterfaceMonitor {
     ///
     /// # Errors
     ///
-    /// This method fails if a netlink connection cannot be created.
-    pub async fn run(monitor: Arc<Self>) -> Result<(), ()> {
+    /// This method fails if a netlink connection cannot be created, and says why: a caller that
+    /// spawns this and drops the result gets the log, but one that awaits it can now tell a
+    /// permissions problem from a missing interface.
+    pub async fn run(monitor: Arc<Self>) -> Result<(), std::io::Error> {
         info!("Starting interface monitor");
         for i in &monitor.tracked {
             info!("Will track status of interface {i}");
         }
         let (conn, _, mut messages) = rtnetlink::new_multicast_connection(&[MulticastGroup::Link])
-            .inspect_err(|e| error!("Failed to open netlink connection: {e}"))
-            .map_err(|_| ())?;
+            .inspect_err(|e| error!("Failed to open netlink connection: {e}"))?;
 
         tokio::spawn(conn);
 

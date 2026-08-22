@@ -14,23 +14,31 @@ use hwlocality::{
 };
 use tracing::error;
 
-impl TryFrom<ObjectAttributes<'_>> for NodeAttributes {
-    type Error = ();
-
-    fn try_from(value: ObjectAttributes) -> Result<Self, ()> {
-        Ok(match value {
+impl NodeAttributes {
+    /// Convert hwloc object attributes, if they are a kind we model.
+    ///
+    /// Returns `None` rather than an error: every failure below is logged where it is detected,
+    /// and the sole caller only asks whether it got attributes.
+    fn from_object_attributes(value: ObjectAttributes) -> Option<Self> {
+        Some(match value {
             ObjectAttributes::NUMANode(&x) => Self::NumaNode(x.into()),
-            ObjectAttributes::Cache(&x) => Self::Cache(x.try_into().map_err(|err| {
-                error!("failed to convert cache attributes: {err}");
-            })?),
+            ObjectAttributes::Cache(&x) => Self::Cache(
+                x.try_into()
+                    .inspect_err(|err| error!("failed to convert cache attributes: {err}"))
+                    .ok()?,
+            ),
             ObjectAttributes::Group(&x) => Self::Group(x.into()),
             ObjectAttributes::PCIDevice(&x) => Self::Pci(x.into()),
-            ObjectAttributes::Bridge(&x) => Self::Bridge(x.try_into().map_err(|()| {
-                error!("failed to convert bridge attributes");
-            })?),
-            ObjectAttributes::OSDevice(&x) => Self::OsDevice(x.try_into().map_err(|()| {
-                error!("failed to convert os device attributes");
-            })?),
+            ObjectAttributes::Bridge(&x) => Self::Bridge(
+                x.try_into()
+                    .inspect_err(|()| error!("failed to convert bridge attributes"))
+                    .ok()?,
+            ),
+            ObjectAttributes::OSDevice(&x) => Self::OsDevice(
+                x.try_into()
+                    .inspect_err(|()| error!("failed to convert os device attributes"))
+                    .ok()?,
+            ),
         })
     }
 }
@@ -55,7 +63,7 @@ impl<'a> From<&'a TopologyObject> for Node {
                 .collect(),
             attributes: value
                 .attributes()
-                .and_then(|x| NodeAttributes::try_from(x).ok()),
+                .and_then(NodeAttributes::from_object_attributes),
             children: value.all_children().map(Node::from).collect(),
         }
     }

@@ -368,8 +368,11 @@ impl Reconcile for Manager<Action> {
 }
 
 impl Observe for Manager<Action> {
+    // No wrapper: this observation cannot fail. Every insert below reports its own trouble and
+    // carries on, so the walk always ends with a set of actions -- possibly an empty one, which is
+    // itself a valid observation of "no actions installed".
     type Observation<'a>
-        = Result<ActionBase, ()>
+        = ActionBase
     where
         Self: 'a;
 
@@ -409,6 +412,6 @@ impl Observe for Manager<Action> {
                 }
             }
         }
-        Ok(actions)
+        actions
     }
 }
