@@ -18,6 +18,14 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 export callgrind_package := "dataplane-routing"
 export callgrind_bench := "fib_lookup_callgrind"
 
+# The nix profile `criterion` builds with.
+#
+# Not the root justfile's default of `debug`, which is what this recipe used to inherit: a debug
+# build of the fib lookup measures about nine times slower than a release one and optimises
+# nothing, so every number it produced was meaningless in a way that still looked like a
+# measurement. Benchmark what ships.
+profile := "release"
+
 # What a benchmark run can tell you, and what it cannot, is in
 # `development/code/benchmarking.md`. Read it before drawing a conclusion from one of these.
 [private]
@@ -29,6 +37,11 @@ default: criterion
 # criterion` to exercise them; a plain run builds them as an empty `main()` and only runs the
 # reference benches.
 #
+# Writes an html report to `target/criterion/report/index.html`, with the distribution and
+# regression plots that the terminal summary flattens into three numbers. Worth opening whenever a
+# result is surprising: a bimodal distribution or a visible outlier cluster usually means the
+# machine interfered rather than the code changed.
+#
 # Goes through the nix build rather than cargo so the binaries are the ones CI would produce.
 #
 # Skips the `*_callgrind` targets, which the same build produces. They are not criterion benches:
@@ -38,7 +51,7 @@ default: criterion
 [script]
 criterion *args:
     {{ _just_debuggable_ }}
-    just build benches {{ args }}
+    just profile='{{ profile }}' build benches {{ args }}
     shopt -s nullglob
     for bench in ./results/benches/bin/*; do
       case "${bench}" in
@@ -46,6 +59,10 @@ criterion *args:
       esac
       "${bench}" --bench
     done
+    if [ -f target/criterion/report/index.html ]; then
+      echo
+      echo "html report: target/criterion/report/index.html"
+    fi
 
 # Run the iai-callgrind benches: instructions retired and modelled cache traffic, rather than
 # wall-clock. Bit-for-bit repeatable run to run, which is what makes them gateable in CI -- and
@@ -75,6 +92,19 @@ compare baseline="base" *args:
         --save-baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
       ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
     fi
+
+# Browse the criterion report: distribution and regression plots per benchmark.
+#
+# Delegates to the root `serve` recipe rather than starting its own server, so there is one place
+# that knows how these are served.
+[doc("Serve the criterion html report over http")]
+[script]
+serve port="8080":
+    {{ _just_debuggable_ }}
+    # Serves the parent of `report/`, because the top-level index links sideways into each
+    # benchmark's own directory; serving `report/` alone gives an index whose every link 404s.
+    echo "criterion index: http://127.0.0.1:{{ port }}/report/index.html"
+    just serve ./target/criterion '{{ port }}'
 
 # Record a baseline for `compare` to measure against, without reporting.
 #
