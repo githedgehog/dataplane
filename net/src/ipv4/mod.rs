@@ -47,6 +47,13 @@ pub struct Ipv4LengthError {
     max: usize,
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
+#[error("invalid IPv4 options length {len}: must be a multiple of 4 and at most 40 bytes")]
+#[allow(missing_docs)]
+pub struct Ipv4OptionsLenError {
+    len: usize,
+}
+
 impl Ipv4 {
     /// The minimum length of an IPv4 header (i.e., a header with no options)
     #[allow(clippy::unwrap_used)] // const-eval and trivially safe
@@ -80,6 +87,14 @@ impl Ipv4 {
     #[must_use]
     pub fn options(&self) -> &[u8] {
         self.0.options.as_slice()
+    }
+
+    #[allow(missing_docs)]
+    pub fn set_options(&mut self, data: &[u8]) -> Result<&mut Self, Ipv4OptionsLenError> {
+        self.0
+            .set_options(data)
+            .map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
+        Ok(self)
     }
 
     // TODO: proper wrapper type for [`IpNumber`] (low priority)
@@ -488,6 +503,13 @@ mod contract {
         /// Generates an arbitrary [`Ipv4`] header with the [`NextHeader`] specified in `self`.
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Self::Output> {
             let mut header = Ipv4(Ipv4Header::default());
+            let option_words = u8::gen_bounded(u, Bound::Included(&0), Bound::Included(&10))?;
+            let mut options = [0u8; (Ipv4::MAX_LEN.get() - Ipv4::MIN_LEN.get()) as usize];
+            let options = &mut options[..(option_words as usize) * 4];
+            for byte in options.iter_mut() {
+                *byte = u.produce()?;
+            }
+            header.set_options(options).ok()?;
             header.set_source(u.produce()?);
             header.set_destination(Ipv4Addr::from(u.produce::<u32>()?));
             header.set_next_header(self.0);
@@ -520,7 +542,6 @@ mod contract {
         /// reach the set of all [`Ipv4`] (as should be true with any implementation of
         /// [`TypeGenerator`]).
         ///
-        /// Unfortunately, the current implementation does not cover [`Ipv4::options`].
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
             GenWithNextHeader(u.produce()?).generate(u)
         }
@@ -539,13 +560,15 @@ mod test {
     #[test]
     fn parse_back() {
         bolero::check!().with_type().for_each(|header: &Ipv4| {
-            let mut buffer = [0u8; MIN_LEN_USIZE];
+            let mut buffer = [0u8; MAX_LEN_USIZE];
             let bytes_written = header
                 .deparse(&mut buffer)
                 .unwrap_or_else(|e| unreachable!("{e:?}"));
-            assert_eq!(bytes_written, Ipv4::MIN_LEN);
+            assert_eq!(bytes_written.get() as usize, header.header_len());
+            assert!(bytes_written >= Ipv4::MIN_LEN && bytes_written <= Ipv4::MAX_LEN);
             let (parse_back, bytes_read) = Ipv4::parse(&buffer[..(bytes_written.get() as usize)])
                 .unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert_eq!(header.options(), parse_back.options());
             assert_eq!(header.source(), parse_back.source());
             assert_eq!(header.destination(), parse_back.destination());
             assert_eq!(header.protocol(), parse_back.protocol());
