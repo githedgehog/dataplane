@@ -301,6 +301,108 @@ pub(crate) fn verdict(packet: &Packet<TestBuffer>) -> Verdict {
     }
 }
 
+/// How many bytes of driver input a property here may draw before it is truncated.
+///
+/// The default is 4096, and it is not a cap on the *corpus entry* -- it is the point at which
+/// `bolero`'s byte driver stops reading and **fills the rest of every draw with zeros**. Nothing
+/// fails when that happens. The generator returns a value, the property runs, and the tail of the
+/// batch is a run of identical all-zero stacks: shape zero, address zero, port zero. It looks like
+/// coverage and is not.
+///
+/// That matters more here than for the single-value generators elsewhere in the tree, because a
+/// batch draws a configuration *and* sixteen header stacks from one input. Measured by
+/// [`the_generators_fit_the_input_budget`], `acl::Batch` wanted a median of 3001 bytes and a
+/// maximum of 7272 -- so at the default more than half of its inputs were being cut short, and the
+/// half being cut were the rich ones: deep chains, extension headers, ipv4 options. The fuzzer was
+/// being steered away from complexity at exactly the point complexity begins.
+///
+/// Sized with room to grow rather than to the measurement: the driver only truncates, so a budget
+/// larger than any generator wants costs nothing at all, and a budget that has to be revisited
+/// every time a shape is added is a budget nobody will revisit.
+///
+/// The engine has a separate limit of its own. See `just fuzz` -- raising this constant alone
+/// changes nothing under libfuzzer, which will not offer an input longer than its `-max_len`.
+pub(crate) const MAX_INPUT_LEN: usize = 65536;
+
+/// The largest number of bytes `generator` drew across `SAMPLES` runs against an unlimited budget.
+///
+/// Not an exact figure -- a generator's demand is a distribution and this is the top of a sample --
+/// which is why [`MAX_INPUT_LEN`] is sized well above what it reports rather than to it.
+#[cfg(test)]
+fn largest_draw<G: bolero::ValueGenerator>(generator: &G) -> usize {
+    use bolero::generator::bolero_generator::driver::{Options, bytes::Driver};
+
+    const SAMPLES: usize = 64;
+    /// Larger than any plausible demand, so the measurement is of the generator and not of this.
+    const UNLIMITED: usize = 1 << 20;
+
+    let options = Options::default().with_max_len(UNLIMITED);
+    // A deterministic stream rather than a random one: the generator needs bytes that vary, and a
+    // test whose reported figure moves between runs is one nobody can act on.
+    let mut state: u64 = 0x243f_6a88_85a3_08d3;
+    let mut bytes = vec![0u8; UNLIMITED];
+    (0..SAMPLES)
+        .map(|_| {
+            for byte in &mut bytes {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                // Truncation is the point: the top bits of an LCG are the ones worth keeping.
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    *byte = (state >> 33) as u8;
+                }
+            }
+            let mut driver = Driver::new(&bytes[..], &options);
+            assert!(
+                generator.generate(&mut driver).is_some(),
+                "the generator gave up on a budget it cannot exhaust"
+            );
+            UNLIMITED - driver.as_slice().len()
+        })
+        .max()
+        .unwrap_or_else(|| unreachable!("SAMPLES is not zero"))
+}
+
+/// No generator here draws more than [`MAX_INPUT_LEN`], with room to spare.
+///
+/// The failure this guards against is silent, which is the only reason it is worth a test. A
+/// generator that outgrows the budget does not error -- it starts getting zeros, and the property
+/// built on it goes on passing while testing less than it says. Enriching a shape is exactly the
+/// kind of change that would do it, and exactly the kind nobody would think to re-measure after.
+///
+/// Called from each module rather than centrally so that each `Batch` can stay private to the
+/// module that owns it.
+#[cfg(test)]
+fn assert_within_budget<G: bolero::ValueGenerator>(name: &str, generator: &G) {
+    let largest = largest_draw(generator);
+    eprintln!("{name}: largest draw {largest} of {MAX_INPUT_LEN} bytes");
+    assert!(
+        largest * 2 <= MAX_INPUT_LEN,
+        "{name} drew {largest} bytes, over half of the {MAX_INPUT_LEN} budget. Raise \
+         MAX_INPUT_LEN and `just fuzz`'s `-l`, or the tail of every batch will be zeros."
+    );
+}
+
+/// Assert a coverage guard, naming the one way it fails that is not a defect.
+///
+/// These guards say a property was not vacuous -- that the inputs actually reached the behaviour
+/// under test. There is one benign way to fail them, and it costs an afternoon to work out from
+/// first principles: a `__fuzz__` corpus sitting beside this file, left by `just fuzz`.
+///
+/// `bolero` replays that corpus before it explores randomly, and a coverage-guided corpus is
+/// selected for the *unusual* -- entries earn their place by reaching an edge nothing else reached,
+/// which in a pipeline means error paths. A large one can consume the whole time budget before the
+/// random phase starts, and a run made entirely of interesting inputs can contain no ordinary ones
+/// at all. That is the corpus working as designed, and it is not this property failing.
+#[cfg(test)]
+fn assert_covered(covered: bool, what: &str) {
+    assert!(
+        covered,
+        "{what}. Check for a `__fuzz__` corpus beside this test before reading further: replaying \
+         one can spend the budget on inputs chosen for being unusual. Move it aside and re-run to \
+         tell that apart from a real gap."
+    );
+}
+
 /// The underlay the routed fabric sits on.
 ///
 /// One uplink, carrying tunnelled traffic in both directions. The addresses are the ones
@@ -633,6 +735,11 @@ mod shapes {
         Packet::new(buffer).ok()
     }
 
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("shapes::Batch", &Batch);
+    }
+
     /// Every packet leaves the pipeline with a verdict, whatever shape it arrived in.
     ///
     /// The weakest thing worth saying end to end, and the one both of this week's defects would
@@ -652,6 +759,7 @@ mod shapes {
             LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
 
         bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, stacks)| {
                 // The pipeline holds rte_acl tables and a flow table, neither of which is safe to
@@ -707,15 +815,15 @@ mod shapes {
             by_shape.join(" ")
         );
 
-        assert!(
+        super::assert_covered(
             forwarded > 0,
-            "no packet was ever forwarded: the harness is exercising the drop path only"
+            "no packet was ever forwarded: the harness is exercising the drop path only",
         );
-        assert!(dropped > 0, "no packet was ever dropped");
+        super::assert_covered(dropped > 0, "no packet was ever dropped");
         for shape in Shape::ALL {
-            assert!(
+            super::assert_covered(
                 BY_SHAPE[shape as usize].load(Ordering::Relaxed) > 0,
-                "no {shape:?} packet ever reached the pipeline"
+                &format!("no {shape:?} packet ever reached the pipeline"),
             );
         }
     }
@@ -859,6 +967,11 @@ mod round_trip {
     /// directions, the flow table has to still hold the state masquerade created, and masquerade
     /// has to invert its own allocation. A single-stage harness can check the last of those and
     /// none of the rest.
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("round_trip::Batch", &Batch);
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_translated_flow_comes_back_to_where_it_started() {
@@ -866,6 +979,7 @@ mod round_trip {
         static NOT_FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, flows)| {
                 let Some(mut fabric) = Fabric::build(exposes) else {
@@ -955,9 +1069,9 @@ mod round_trip {
             "round-tripped={round_tripped} not-forwarded={}",
             NOT_FORWARDED.load(Ordering::Relaxed)
         );
-        assert!(
+        super::assert_covered(
             round_tripped > 0,
-            "no flow was ever forwarded, so nothing was ever checked to come back"
+            "no flow was ever forwarded, so nothing was ever checked to come back",
         );
     }
 }
@@ -1191,6 +1305,11 @@ mod acl {
     /// The counters below then have to show that some denial actually came *from* the ACL --
     /// otherwise a pipeline that dropped everything early would satisfy the deny direction
     /// vacuously.
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("acl::Batch", &Batch);
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
@@ -1200,7 +1319,10 @@ mod acl {
         static PERMITTED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DENIED_BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
-        bolero::check!().with_generator(Batch).for_each(
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Batch)
+            .for_each(
             |(exposes, default_allow, rule_proto, packets)| {
                 let default = if *default_allow {
                     AclAction::Allow
@@ -1277,20 +1399,20 @@ mod acl {
             "permitted={permitted} (forwarded {permitted_out}) denied={denied} \
              (by the acl {denied_by_acl}) behind-extension={behind}"
         );
-        assert!(permitted > 0, "no packet was ever permitted");
-        assert!(denied > 0, "no packet was ever denied");
-        assert!(
+        super::assert_covered(permitted > 0, "no packet was ever permitted");
+        super::assert_covered(denied > 0, "no packet was ever denied");
+        super::assert_covered(
             permitted_out > 0,
-            "no permitted packet was ever forwarded: the permit direction is vacuous"
+            "no permitted packet was ever forwarded: the permit direction is vacuous",
         );
-        assert!(
+        super::assert_covered(
             denied_by_acl > 0,
             "no denial ever came from the acl: the deny direction is being satisfied by stages \
-             ahead of it, and would hold with the acl removed"
+             ahead of it, and would hold with the acl removed",
         );
-        assert!(
+        super::assert_covered(
             behind > 0,
-            "no packet was ever sent behind an extension header, which is the shape this exists for"
+            "no packet was ever sent behind an extension header, which is the shape this exists for",
         );
     }
 }
@@ -1494,6 +1616,7 @@ mod routed {
         static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, stacks)| {
                 let Some(mut fabric) = Fabric::routed(exposes, None) else {
@@ -1535,11 +1658,8 @@ mod routed {
         // Both guards, because either alone can be satisfied by the pipeline doing nothing: a
         // fabric that refused everything would never deliver, and a generator that never drew a
         // tag would make the assertion above unreachable.
-        assert!(
-            delivered > 0,
-            "nothing ever reached the wire: the property is vacuous"
-        );
-        assert!(tagged > 0, "no tagged shape was ever generated");
+        super::assert_covered(delivered > 0, "nothing ever reached the wire");
+        super::assert_covered(tagged > 0, "no tagged shape was ever generated");
     }
 
     /// Push one packet through a bare pipeline and take back the one that comes out.
@@ -1552,3 +1672,4 @@ mod routed {
         out.pop().unwrap_or_else(|| unreachable!())
     }
 }
+
