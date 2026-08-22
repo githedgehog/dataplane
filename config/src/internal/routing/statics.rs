@@ -8,7 +8,6 @@ use std::net::IpAddr;
 
 #[derive(Clone, Debug, Ord, Eq, PartialEq, PartialOrd)]
 pub enum StaticRouteNhop {
-    Unset,
     Interface(String),
     Address(IpAddr),
     Null0,
@@ -26,10 +25,15 @@ pub struct StaticRoute {
 
 impl StaticRoute {
     #[must_use]
-    pub fn new(prefix: Prefix) -> Self {
+    /// A static route to `prefix` via `next_hop`.
+    ///
+    /// The next hop is an argument rather than something a later builder method fills in: a route
+    /// without one cannot be rendered, and this used to start life holding a `StaticRouteNhop::Unset`
+    /// that the FRR renderer would panic on if a caller forgot to chain a setter.
+    pub fn new(prefix: Prefix, next_hop: StaticRouteNhop) -> Self {
         Self {
             prefix,
-            next_hop: StaticRouteNhop::Unset,
+            next_hop,
             next_hop_vrf: None,
             tag: None,
         }
