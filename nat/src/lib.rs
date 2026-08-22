@@ -35,46 +35,40 @@ pub use port::NatPort;
 pub use static_nat::StaticNat;
 use std::net::IpAddr;
 
+#[derive(Debug, Clone, Copy)]
+struct NatEndpoint {
+    addr: IpAddr,
+    port: Option<NatPort>,
+}
+
+impl NatEndpoint {
+    #[must_use]
+    pub(crate) fn new(addr: IpAddr, port: Option<NatPort>) -> Self {
+        Self { addr, port }
+    }
+
+    #[must_use]
+    pub(crate) fn with_port(addr: IpAddr, port: NatPort) -> Self {
+        Self::new(addr, Some(port))
+    }
+}
+
 #[derive(Debug, Default)]
 struct NatTranslationData {
-    src_addr: Option<IpAddr>,
-    dst_addr: Option<IpAddr>,
-    src_port: Option<NatPort>,
-    dst_port: Option<NatPort>,
+    src: Option<NatEndpoint>,
+    dst: Option<NatEndpoint>,
 }
+
 impl NatTranslationData {
     #[must_use]
-    pub(crate) fn new(
-        src_addr: Option<IpAddr>,
-        dst_addr: Option<IpAddr>,
-        src_port: Option<NatPort>,
-        dst_port: Option<NatPort>,
-    ) -> Self {
-        Self {
-            src_addr,
-            dst_addr,
-            src_port,
-            dst_port,
-        }
-    }
-    #[must_use]
-    pub(crate) fn src_addr(mut self, address: IpAddr) -> Self {
-        self.src_addr = Some(address);
+    pub(crate) fn with_src(mut self, endpoint: NatEndpoint) -> Self {
+        self.src = Some(endpoint);
         self
     }
+
     #[must_use]
-    pub(crate) fn dst_addr(mut self, address: IpAddr) -> Self {
-        self.dst_addr = Some(address);
-        self
-    }
-    #[must_use]
-    pub(crate) fn src_port(mut self, natport: NatPort) -> Self {
-        self.src_port = Some(natport);
-        self
-    }
-    #[must_use]
-    pub(crate) fn dst_port(mut self, natport: NatPort) -> Self {
-        self.dst_port = Some(natport);
+    pub(crate) fn with_dst(mut self, endpoint: NatEndpoint) -> Self {
+        self.dst = Some(endpoint);
         self
     }
 }
