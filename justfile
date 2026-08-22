@@ -749,16 +749,26 @@ coverage *args:
     echo
     echo "html report: ${out}/html/index.html  (\`just serve-coverage\` to browse it)"
 
+serve_host := "127.0.0.1"
+
 [doc("Serve a directory of generated html over http")]
 [script]
-serve dir port="8080":
+serve dir port="8080" index="index.html":
     {{ _just_debuggable_ }}
     if [ ! -d '{{ dir }}' ]; then
       echo "error: no such directory: {{ dir }}" >&2
       exit 1
     fi
-    echo "serving {{ dir }} at http://127.0.0.1:{{ port }} (ctrl-c to stop)"
-    static-web-server --root '{{ dir }}' --port '{{ port }}' --log-level warn
+    server="$(command -v static-web-server || true)"
+    if [ -z "${server}" ] && [ -x ./devroot/bin/static-web-server ]; then
+      server="$(pwd)/devroot/bin/static-web-server"
+    fi
+    if [ -z "${server}" ]; then
+      echo "error: static-web-server not found; re-enter the dev shell, or \`just setup-roots\`" >&2
+      exit 1
+    fi
+    echo "serving {{ dir }} at http://{{ serve_host }}:{{ port }}/{{ index }} (ctrl-c to stop)"
+    "${server}" --root '{{ dir }}' --host '{{ serve_host }}' --port '{{ port }}' --log-level warn
 
 serve-coverage port="8080": (serve "./target/nextest/coverage/html" port)
 
