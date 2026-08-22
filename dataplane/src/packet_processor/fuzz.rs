@@ -1465,6 +1465,7 @@ mod routed {
     };
     use net::vlan::Vid;
     use super::round_trip::udp;
+    use std::collections::BTreeMap;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1882,6 +1883,121 @@ mod routed {
             round_tripped > 0,
             "no flow ever reached the wire, so no reply was ever checked to come back",
         );
+    }
+
+    /// Every packet of a flow is translated the same way, and no two flows are translated onto
+    /// each other.
+    ///
+    /// Two claims about the same round, because the data for both falls out of it.
+    ///
+    /// **Stability.** A flow's second packet has to be given the translation its first was given.
+    /// If it is not, the far side sees the connection change source port mid-conversation and the
+    /// pool leaks an allocation per packet. What makes this hold is that the flow table is
+    /// consulted before a new allocation is made, and a refactor of either is what would break it.
+    ///
+    /// The two rounds are deliberately **interleaved rather than back to back**: every other flow
+    /// in the batch is established in between, and the second round runs in reverse order. A
+    /// weaker version -- send the same packet twice in a row -- is satisfied by an implementation
+    /// that remembers only the last translation it made, and would say nothing about a table.
+    ///
+    /// Break-tested twice, and the second is what says the claim is about state rather than
+    /// arithmetic. Dropping the line in `flow_entry`'s `FlowLookup` that attaches flow state fails
+    /// this, with the second packet a port further along the pool cursor than the first. Turning
+    /// masquerade's randomised port selection back *on* -- which the harness disables so two runs
+    /// of one configuration agree -- does **not** fail it: a randomly chosen port comes back
+    /// identically the second time, because the table is what is consulted. A property that merely
+    /// noticed a deterministic allocator would have failed that.
+    ///
+    /// **Injectivity.** Two distinct flows must not be given a public tuple that makes their
+    /// replies indistinguishable. A reply is matched on what the far side saw, so if two flows to
+    /// the same destination share a public address *and* port, no stage downstream can tell whose
+    /// reply is whose. `nat::masquerade::apalloc` checks its own pool for this; what is checked
+    /// here is the allocation the assembled pipeline actually handed out.
+    ///
+    /// Neither claim computes a translation. The oracle for the first is equality with what came
+    /// back earlier, and for the second that a map has no two keys sharing a value.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_flow_keeps_its_translation_and_does_not_share_it() {
+        static STABLE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DISTINCT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Flows)
+            .for_each(|flows| {
+                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                    return;
+                };
+
+                // Keyed by the flow, so that a batch which happens to draw the same flow twice is
+                // one flow rather than a false counterexample to either claim.
+                let mut first: BTreeMap<(u8, u16, u16), (IpAddr, u16)> = BTreeMap::new();
+                for flow in flows {
+                    if let Some(public) = translation_of(&mut fabric, *flow) {
+                        first.insert((flow.host, flow.sport, flow.dport), public);
+                    }
+                }
+
+                // Distinct flows to one destination must not collide. The destination is the same
+                // for every flow here, so the public tuple alone has to separate them.
+                let mut seen: BTreeMap<(IpAddr, u16), (u8, u16, u16)> = BTreeMap::new();
+                for (flow, public) in &first {
+                    if let Some(other) = seen.insert(*public, *flow) {
+                        assert_eq!(
+                            other, *flow,
+                            "two flows were given the same public tuple {public:?}: a reply to it \
+                             cannot be attributed to either"
+                        );
+                    }
+                    DISTINCT.fetch_add(1, Ordering::Relaxed);
+                }
+
+                // Reverse order, so a flow's two packets are separated by every other flow in the
+                // batch rather than adjacent to each other.
+                for flow in flows.iter().rev() {
+                    let key = (flow.host, flow.sport, flow.dport);
+                    let Some(expected) = first.get(&key) else {
+                        continue;
+                    };
+                    let again = translation_of(&mut fabric, *flow)
+                        .expect("a flow that was translated once stopped being translated");
+                    assert_eq!(
+                        again, *expected,
+                        "flow {key:?} was translated differently the second time: the established \
+                         flow was not found, so a fresh allocation was made"
+                    );
+                    STABLE.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let (stable, distinct) = (
+            STABLE.load(Ordering::Relaxed),
+            DISTINCT.load(Ordering::Relaxed),
+        );
+        eprintln!("stable={stable} distinct-flows={distinct}");
+        super::assert_covered(stable > 0, "no flow was ever sent a second packet");
+        super::assert_covered(distinct > 0, "no flow was ever translated");
+    }
+
+    /// Send one packet of `flow` and report the public source it was given, or `None` if it did
+    /// not reach the wire.
+    fn translation_of(fabric: &mut Fabric, flow: Flow) -> Option<(IpAddr, u16)> {
+        let src: IpAddr = format!("1.1.0.{}", flow.host)
+            .parse()
+            .unwrap_or_else(|_| unreachable!());
+        let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let request = udp(src, dst, flow.sport, flow.dport)?;
+
+        let out = fabric.send(tunnelled(&request));
+        if !matches!(verdict(&out), Verdict::Delivered { .. }) {
+            return None;
+        }
+        let translated = inside(&out).expect("a delivered request was not tunnelled");
+        Some((
+            translated.ip_source()?,
+            translated.transport_src_port()?.get(),
+        ))
     }
 
     /// The tenant payload: what is left once every header has been accounted for.
