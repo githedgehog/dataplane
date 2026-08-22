@@ -1953,10 +1953,8 @@ mod adversarial_headers {
 
 // Protocol, port, and flow-generation edge cases.
 
-/// IPv6 extension headers occupy `Net::next_header()`, while `try_transport()` still finds the TCP
-/// ports. Protocol-restricted exposes therefore do not match TCP behind an extension header.
 #[test]
-fn ipv6_extension_header_masks_the_transport_protocol() {
+fn ipv6_extension_header_does_not_mask_the_transport_protocol() {
     use net::headers::builder::HeaderStack;
     use net::headers::{TryIp, TryTransport};
     use net::ipv6::UnicastIpv6Addr;
@@ -1987,6 +1985,11 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
         "an extension header should occupy the next-header field",
     );
     assert_eq!(
+        probe_packet.upper_layer_proto(),
+        Some(net::ip::NextHeader::TCP),
+        "the protocol the packet carries is TCP, whatever the IP header's field says",
+    );
+    assert_eq!(
         probe_packet
             .try_transport()
             .and_then(|t| t.dst_port())
@@ -2015,11 +2018,12 @@ fn ipv6_extension_header_masks_the_transport_protocol() {
     );
     let (mut flow_filter, _writer) = make_flow_filter(tcp_only);
     let out = run(&mut flow_filter, packet(Some(vpcd(100)), with_hop_by_hop()));
-    assert_eq!(
-        out.get_done(),
-        Some(DoneReason::Filtered),
-        "a TCP-restricted expose does not see this packet as TCP, so nothing covers it",
+    assert!(
+        !out.is_done(),
+        "a TCP-restricted expose did not see this packet as TCP: {:?}",
+        out.get_done()
     );
+    assert_eq!(out.meta().dst_vpcd, Some(vpcd(200)));
 
     // An unrestricted expose confirms that the address remains routable.
     let any_proto = context(
