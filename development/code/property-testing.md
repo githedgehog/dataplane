@@ -176,6 +176,25 @@ enforces it.
 apply to, and a guard that excuses everything looks exactly like a contract that always holds.
 `every_contract_is_reached` counts what each has actually judged.
 
+**A stateful contract is a tripwire, not a net.** The one straddling masquerade -- one flow gets one
+public tuple, however many of its packets are in a burst -- is the allocation defect stated as an
+invariant rather than driven as a case. It does not replace
+`burst::a_burst_of_one_flow_allocates_once`, and it is worth being clear why: today it fires only in
+that property, because no other property happens to send two packets of one flow in a burst. What it
+adds is that any _future_ property will be checked for free, without its author having thought about
+allocation, and that when it does fire the message names the boundary rather than the symptom. The
+property is the alarm you set; the contract is the one that goes off in a room nobody was watching.
+
+That contract is also the whole reason `net`'s `TestMeta` exists. Masquerade rewrites the source, so
+a flow key read on the way out describes the translated packet -- a different key per allocation,
+which is the thing being checked and so no use for grouping. Correlating before and after needs
+packet identity, and nothing else here does.
+
+**Scope a stateful contract to the smallest window that makes it true.** This one is cleared per
+burst. Across bursts a flow may legitimately be invalidated and reallocated to a different port, so
+a fabric-lifetime memory would report correct behaviour as a violation; within a burst nothing can,
+because `IcmpErrorHandler` runs ahead of the barrier.
+
 **Vacuous and unfalsifiable are different, and worth separating.** One contract here judges ordinary
 traffic on every run -- so it is not vacuous -- and yet has no reachable violation, because every
 way of breaking it is caught by a stage in between. That is a claim about the pipeline's shape, not

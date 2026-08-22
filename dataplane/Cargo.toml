@@ -63,7 +63,7 @@ clock = { workspace = true, features = ["virtual"] }
 # header stacks.
 config = { workspace = true, features = ["bolero"] }
 lpm = { workspace = true, features = ["testing"] }
-net = { workspace = true, features = ["bolero", "builder", "test_buffer"] }
+net = { workspace = true, features = ["bolero", "builder", "test_buffer", "test_meta"] }
 routing = { workspace = true, features = ["testing"] }
 
 # external

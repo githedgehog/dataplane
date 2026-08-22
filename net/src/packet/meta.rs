@@ -151,6 +151,31 @@ pub struct PacketMeta {
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
     pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
+    /// Room for a test to recognise a packet it has seen before. See [`TestMeta`].
+    #[cfg(feature = "test_meta")]
+    pub test: Option<Box<TestMeta>>,
+}
+
+/// What a test may hang on a packet, and nothing else may.
+///
+/// Behind a feature rather than `cfg(test)` because `cfg(test)` is set only for the crate under
+/// test: when a *dependent* crate's tests are what need this, this crate is an ordinary dependency
+/// and its `cfg(test)` is unset, so a field gated that way would not exist where it is wanted.
+///
+/// One boxed field rather than several inline ones, because a fixture that grows the struct it is
+/// measuring changes what it observes. That is not hypothetical: adding this cost eight bytes per
+/// `Packet`, and `pipeline`'s `long_dyn_pipeline` -- which nests one stack frame per stage --
+/// overflowed its stack on the strength of it. Cargo unifies features across a workspace build, so
+/// enabling this anywhere enables it everywhere.
+///
+/// It carries identity and nothing else, on purpose. What a test wants to remember *about* a
+/// packet belongs in the test, keyed by this; putting that history here would spread the test's
+/// bookkeeping through the datapath. The observation should be cheap, not the observer.
+#[cfg(feature = "test_meta")]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TestMeta {
+    /// Distinguishes this packet from every other one a test has built.
+    pub id: u64,
 }
 impl PacketMeta {
     #[must_use]
