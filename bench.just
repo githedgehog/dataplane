@@ -37,6 +37,10 @@ default: criterion
 # criterion` to exercise them; a plain run builds them as an empty `main()` and only runs the
 # reference benches.
 #
+# Arguments are a criterion filter, not build arguments: `just bench criterion fib_lpm` runs only
+# the benchmarks whose name matches. Worth using -- a full sweep is over half an hour, nearly all
+# of it the rte_acl benches walking fifteen rule counts.
+#
 # Writes an html report to `target/criterion/report/index.html`, with the distribution and
 # regression plots that the terminal summary flattens into three numbers. Worth opening whenever a
 # result is surprising: a bimodal distribution or a visible outlier cluster usually means the
@@ -51,13 +55,13 @@ default: criterion
 [script]
 criterion *args:
     {{ _just_debuggable_ }}
-    just profile='{{ profile }}' build benches {{ args }}
+    just profile='{{ profile }}' build benches
     shopt -s nullglob
     for bench in ./results/benches/bin/*; do
       case "${bench}" in
         *_callgrind) continue ;;
       esac
-      "${bench}" --bench
+      "${bench}" --bench {{ args }}
     done
     if [ -f target/criterion/report/index.html ]; then
       echo
