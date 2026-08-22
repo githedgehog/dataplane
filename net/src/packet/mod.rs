@@ -846,11 +846,14 @@ mod qos_roundtrip_tests {
 
     /// Decapsulation hands on whatever the inner frame was, VLAN tags included.
     ///
-    /// This is the premise the overlay's refusal of tagged frames rests on. `vxlan_decap` replaces
-    /// the headers with the parsed inner frame and nothing strips a tag on the way, so a tag the
-    /// far side put in the tunnel arrives intact and is the gateway's to accept or refuse. If this
-    /// test ever fails because decapsulation started stripping tags, the check in `IpForwarder`
-    /// has become dead code and should go.
+    /// The premise on both sides of the overlay's current refusal of tagged frames. Decapsulation
+    /// replaces the headers with the parsed inner frame and strips nothing, so a tag the far side
+    /// put in the tunnel arrives intact -- which is what makes it the gateway's to refuse today,
+    /// and what would make it the gateway's to carry if it were ever taught to.
+    ///
+    /// If this test fails because decapsulation started stripping tags, that is a decision
+    /// somebody made silently: it would make the check in `IpForwarder` dead code and would take
+    /// the layer away from any stage that wanted it later.
     #[test]
     fn decapsulation_hands_on_a_vlan_tag_it_was_given() {
         use crate::buffer::TestBuffer;
