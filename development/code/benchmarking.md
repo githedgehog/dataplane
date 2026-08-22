@@ -180,6 +180,56 @@ we are deployed on, so a benchmark can be run against a customer's cache rather 
 whatever is under it. That is a different job from asking the local machine, and it is not worth
 starting until there is a reason to trust the answer.
 
+## Reporting a run in CI
+
+`just bench-compare` runs the callgrind benches, compares them against a baseline, and prints a
+markdown report: a one-line headline, a table of every metric, and -- only when something moved
+past the threshold -- a bar chart. `scripts/bench-report.ts` does the rendering and can be pointed
+at any iai-callgrind JSON run.
+
+### There is nothing to remember between runs
+
+The obvious design is to store yesterday's numbers somewhere and diff against them. Do not: it
+makes the answer depend on which runner recorded the baseline, and CI runners are not
+interchangeable.
+
+Because callgrind counts work rather than measuring time, the comparison is valid as long as both
+sides ran on the _same_ machine -- and nothing says the two sides have to be on different days. Run
+the base commit with `--save-baseline`, run the head commit with `--baseline`, both in one job:
+
+```sh
+git checkout "$BASE_SHA" -- .
+just bench-compare base --headline-only >/dev/null   # records
+git checkout "$HEAD_SHA" -- .
+just bench-compare base > report.md                  # compares
+```
+
+iai-callgrind keeps the baseline under `target/iai` for the length of the job, each record already
+carries both values and the delta, and no state outlives the run. A runner twice as slow as another
+changes nothing, because no time is being measured.
+
+### Where the report goes
+
+Write the full report to `$GITHUB_STEP_SUMMARY` and post only the headline as a sticky pull request
+comment linking to it:
+
+```sh
+cat report.md >> "$GITHUB_STEP_SUMMARY"
+gh pr comment "$PR" --edit-last --body "$(./scripts/bench-report.ts run.jsonl --headline-only)
+[Full report](${RUN_URL})" || gh pr comment "$PR" --body "..."
+```
+
+A gist would work too, but the job summary is better here and costs nothing: it renders markdown
+and mermaid, it is permalinked to the run that produced it, and it needs no secret.
+`GITHUB_TOKEN` **cannot create gists** -- that requires a personal access token with `gist` scope,
+which is a credential to manage and rotate in exchange for a worse artifact.
+
+### Gating
+
+`Ir` is bit-identical run to run, so it can gate. iai-callgrind takes `--regression=Ir=5` to fail a
+run on a percentage change. Start by reporting only: a threshold set before anyone knows the normal
+churn rate is a threshold that will be turned off. Watch the reports for a while, then pick one.
+
 ## Writing a benchmark that measures what you think
 
 Both benchmarks in this repository were wrong the first time, in ways that produced plausible

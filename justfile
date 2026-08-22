@@ -219,6 +219,25 @@ bench-callgrind *args:
     {{ _just_debuggable_ }}
     cargo bench -p dataplane-routing --bench fib_lookup_callgrind {{ args }}
 
+# Compare the callgrind benches against a baseline and print a markdown report.
+#
+# `just bench-compare` on its own records a baseline from the current tree and reports nothing to
+# compare against; run it once on the base commit and again on your branch. CI does exactly that,
+# both times on the same runner, which is what makes the comparison meaningful without anything
+# being stored between jobs.
+[script]
+bench-compare baseline="base" *args:
+    {{ _just_debuggable_ }}
+    mkdir -p results/bench
+    if [ -d "target/iai" ] && cargo bench -p dataplane-routing --bench fib_lookup_callgrind -- \
+        --baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl 2>/dev/null; then
+      ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
+    else
+      cargo bench -p dataplane-routing --bench fib_lookup_callgrind -- \
+        --save-baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
+      ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
+    fi
+
 [script]
 build-each *args: (build "workspace" args)
     {{ _just_debuggable_ }}
