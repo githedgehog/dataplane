@@ -7,55 +7,37 @@
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwTableError};
 use config::ConfigError;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc, ValidatedVpcTable};
-use config::external::overlay::vpcpeering::ValidatedExpose;
+use config::external::overlay::vpcpeering::{PortForwardExpose, ValidatedExpose};
 use lpm::prefix::L4Protocol;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
-fn port_fw_proto(expose: &ValidatedExpose) -> L4Protocol {
-    expose.nat().unwrap_or_else(|| unreachable!()).proto
+fn as_port_forward(expose: &ValidatedExpose) -> Result<PortForwardExpose, PortFwTableError> {
+    expose.as_port_forward().ok_or_else(|| {
+        PortFwTableError::Unsupported(format!(
+            "expose is not a well-formed port-forwarding expose: {expose:?}"
+        ))
+    })
 }
 
 fn expose_to_portfw_rule(
-    expose: &ValidatedExpose,
+    expose: PortForwardExpose,
     proto: NextHeader,
     src_vpc: VpcDiscriminant,
     dst_vpc: VpcDiscriminant,
 ) -> Result<PortFwEntry, PortFwTableError> {
-    let nat = expose.nat().unwrap_or_else(|| unreachable!());
-    debug_assert!(nat.is_port_forwarding());
-    debug_assert_eq!(nat.as_range.len(), 1);
-    debug_assert_eq!(expose.ips().len(), 1);
+    let (internal, external) = (expose.internal(), expose.external());
 
-    // in a port forwarding expose, the range must always be Some(range) because a None
-    // would imply a Some(max_range) which includes port 0 which is forbidden. So, finding
-    // `None` would be a validation failure
-    let prefix = expose.ips().first().unwrap_or_else(|| unreachable!());
-    let (prefix, ports) = (
-        prefix.prefix(),
-        prefix.ports().unwrap_or_else(|| unreachable!()),
-    );
-
-    let as_range = nat.as_range.first().unwrap_or_else(|| unreachable!());
-    let (ext_prefix, ext_ports) = (
-        as_range.prefix(),
-        as_range.ports().unwrap_or_else(|| unreachable!()),
-    );
-
-    // the idle timeout of the api gets mapped to the established timeout in port-forwarding
-    let idle_timeout = expose.idle_timeout();
-
-    // build the rule
     let key = PortFwKey::new(src_vpc, proto);
     PortFwEntry::new(
         key,
         dst_vpc,
-        ext_prefix,
-        prefix,
-        (ext_ports.start(), ext_ports.end()),
-        (ports.start(), ports.end()),
+        external.prefix(),
+        internal.prefix(),
+        (external.ports().start(), external.ports().end()),
+        (internal.ports().start(), internal.ports().end()),
         None,
-        idle_timeout,
+        expose.idle_timeout(),
     )
 }
 fn vpc_port_fw_peering(
@@ -67,7 +49,8 @@ fn vpc_port_fw_peering(
     for expose in peering.local().port_forwarding_exposes() {
         let remote_vpc_vni = vpc_table.get_remote_vni(peering);
         let src_vpc = VpcDiscriminant::from_vni(remote_vpc_vni);
-        match port_fw_proto(expose) {
+        let expose = as_port_forward(expose)?;
+        match expose.proto() {
             L4Protocol::Tcp => {
                 let rule = expose_to_portfw_rule(expose, NextHeader::TCP, src_vpc, dst_vpc)?;
                 rules.push(rule);
