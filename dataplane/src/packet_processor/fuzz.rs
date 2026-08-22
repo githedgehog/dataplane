@@ -1151,6 +1151,7 @@ mod routed {
     };
     use net::parse::DeParse;
     use net::vlan::Vid;
+    use std::collections::BTreeMap;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1472,6 +1473,82 @@ mod routed {
             round_tripped > 0,
             "no flow ever reached the wire, so no reply was ever checked to come back",
         );
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_flow_keeps_its_translation_and_does_not_share_it() {
+        static STABLE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DISTINCT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Flows)
+            .for_each(|flows| {
+                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                    return;
+                };
+
+                let mut first: BTreeMap<(u8, u16, u16), (IpAddr, u16)> = BTreeMap::new();
+                for flow in flows {
+                    if let Some(public) = translation_of(&mut fabric, *flow) {
+                        first.insert((flow.host, flow.sport, flow.dport), public);
+                    }
+                }
+
+                let mut seen: BTreeMap<(IpAddr, u16), (u8, u16, u16)> = BTreeMap::new();
+                for (flow, public) in &first {
+                    if let Some(other) = seen.insert(*public, *flow) {
+                        assert_eq!(
+                            other, *flow,
+                            "two flows were given the same public tuple {public:?}: a reply to it \
+                             cannot be attributed to either"
+                        );
+                    }
+                    DISTINCT.fetch_add(1, Ordering::Relaxed);
+                }
+
+                for flow in flows.iter().rev() {
+                    let key = (flow.host, flow.sport, flow.dport);
+                    let Some(expected) = first.get(&key) else {
+                        continue;
+                    };
+                    let again = translation_of(&mut fabric, *flow)
+                        .expect("a flow that was translated once stopped being translated");
+                    assert_eq!(
+                        again, *expected,
+                        "flow {key:?} was translated differently the second time: the established \
+                         flow was not found, so a fresh allocation was made"
+                    );
+                    STABLE.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let (stable, distinct) = (
+            STABLE.load(Ordering::Relaxed),
+            DISTINCT.load(Ordering::Relaxed),
+        );
+        eprintln!("stable={stable} distinct-flows={distinct}");
+        super::assert_covered(stable > 0, "no flow was ever sent a second packet");
+        super::assert_covered(distinct > 0, "no flow was ever translated");
+    }
+
+    fn translation_of(fabric: &mut Fabric, flow: Flow) -> Option<(IpAddr, u16)> {
+        let src: IpAddr = format!("1.1.0.{}", flow.host)
+            .parse()
+            .unwrap_or_else(|_| unreachable!());
+        let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let request = udp(src, dst, flow.sport, flow.dport)?;
+
+        let out = fabric.send(tunnelled(&request));
+        if !matches!(verdict(&out), Verdict::Delivered { .. }) {
+            return None;
+        }
+        let translated = inside(&out).expect("a delivered request was not tunnelled");
+        Some((
+            translated.ip_source()?,
+            translated.transport_src_port()?.get(),
+        ))
     }
 
     fn payload_of(packet: &Packet<TestBuffer>) -> Vec<u8> {
