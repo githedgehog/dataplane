@@ -13,16 +13,26 @@ use config::external::overlay::vpcpeering::contract::{
 };
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
+use lpm::prefix::Prefix;
 use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::static_nat::NatTablesWriter;
 use nat::static_nat::setup::build_nat_configuration;
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::TestBuffer;
+use net::eth::mac::{Mac, SourceMac};
+use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction};
+use routing::testing::RouterTables;
+use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
+use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use std::net::IpAddr;
+
+use super::egress::Egress;
+use super::ingress::Ingress;
+use super::ipforward::IpForwarder;
 
 pub(crate) struct Fabric {
     pipeline: DynPipeline<TestBuffer>,
@@ -32,6 +42,7 @@ pub(crate) struct Fabric {
     _static_nat: NatTablesWriter,
     _portfw: PortFwTableWriter,
     _masquerade: NatAllocatorWriter,
+    _tables: Option<RouterTables>,
 }
 
 impl Fabric {
@@ -40,6 +51,18 @@ impl Fabric {
     }
 
     pub(crate) fn build_with_acl(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        Self::assemble(exposes, acl, None)
+    }
+
+    pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        Self::assemble(exposes, acl, Some(topology()))
+    }
+
+    fn assemble(
+        exposes: &[VpcExpose],
+        acl: Option<&Acl>,
+        tables: Option<RouterTables>,
+    ) -> Option<Self> {
         let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
             .ok()?
             .validate()
@@ -47,6 +70,11 @@ impl Fabric {
 
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
+
+        if let Some(tables) = &tables {
+            pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+        }
 
         pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
         pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
@@ -95,6 +123,15 @@ impl Fabric {
             masquerade.get_reader(),
         ));
 
+        if let Some(tables) = &tables {
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
+            pipeline = pipeline.add_stage(Egress::new(
+                "egress",
+                tables.interfaces(),
+                tables.adjacencies(),
+            ));
+        }
+
         Some(Self {
             pipeline,
             _flow_table: flow_table,
@@ -103,6 +140,7 @@ impl Fabric {
             _static_nat: static_nat,
             _portfw: portfw,
             _masquerade: masquerade,
+            _tables: tables,
         })
     }
 
@@ -134,11 +172,21 @@ pub(crate) enum Verdict {
         src: Option<IpAddr>,
         dst: Option<IpAddr>,
     },
+    Delivered {
+        oif: Option<InterfaceIndex>,
+        src: Option<IpAddr>,
+        dst: Option<IpAddr>,
+    },
     Dropped(DoneReason),
 }
 
 pub(crate) fn verdict(packet: &Packet<TestBuffer>) -> Verdict {
     match packet.get_done() {
+        Some(DoneReason::Delivered) => Verdict::Delivered {
+            oif: packet.meta().oif,
+            src: packet.ip_source(),
+            dst: packet.ip_destination(),
+        },
         Some(reason) => Verdict::Dropped(reason),
         None => Verdict::Forwarded {
             dst_vpcd: packet.meta().dst_vpcd,
@@ -146,6 +194,85 @@ pub(crate) fn verdict(packet: &Packet<TestBuffer>) -> Verdict {
             dst: packet.ip_destination(),
         },
     }
+}
+
+pub(crate) const UPLINK: u32 = 1;
+pub(crate) const LOCAL_VTEP: &str = "5.6.7.8";
+pub(crate) const PEER_VTEP: &str = "1.2.3.4";
+pub(crate) const GATEWAY_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xaa]);
+pub(crate) const PEER_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xbb]);
+
+const UNDERLAY_VRF: u32 = 0;
+const LOCAL_VRF: u32 = LOCAL_VNI;
+const REMOTE_VRF: u32 = REMOTE_VNI;
+
+pub(crate) fn uplink() -> InterfaceIndex {
+    InterfaceIndex::try_new(UPLINK).unwrap_or_else(|_| unreachable!())
+}
+
+fn topology() -> RouterTables {
+    let mut tables = RouterTables::new();
+
+    tables.vrf(UNDERLAY_VRF, None);
+    tables.interface(
+        uplink(),
+        "uplink",
+        SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
+    );
+    tables.attach(uplink(), UNDERLAY_VRF);
+    tables.route_via(
+        UNDERLAY_VRF,
+        Prefix::expect_from((LOCAL_VTEP, 32)),
+        nhop(&LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!())),
+        &FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink()))),
+    );
+
+    tables.vrf(LOCAL_VRF, Some(vni(LOCAL_VNI)));
+
+    tables.vrf(REMOTE_VRF, Some(vni(REMOTE_VNI)));
+    tables.vtep(
+        REMOTE_VRF,
+        Vtep::with_ip_and_mac(
+            LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+            GATEWAY_MAC,
+        ),
+    );
+    let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
+    let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+        ResolvedVxlan {
+            vni: vni(REMOTE_VNI),
+            remote: peer,
+            dmac: PEER_MAC,
+        },
+    )));
+    out.add(PktInstruction::Egress(EgressObject::new(
+        Some(uplink()),
+        Some(peer),
+    )));
+    tables.route_via(
+        REMOTE_VRF,
+        Prefix::root_v4(),
+        nhop(&peer),
+        &FibGroup::with_entry(out),
+    );
+
+    tables.adjacency(peer, uplink(), PEER_MAC);
+
+    tables
+}
+
+fn nhop(address: &IpAddr) -> NhopKey {
+    NhopKey::new(
+        RouteOrigin::default(),
+        Some(*address),
+        None,
+        None,
+        FwAction::Forward,
+    )
+}
+
+fn vni(raw: u32) -> Vni {
+    Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
 }
 
 #[cfg(test)]
@@ -182,6 +309,9 @@ mod smoke {
                 assert_eq!(dst, Some("3.3.3.1".parse().unwrap()));
             }
             Verdict::Dropped(reason) => panic!("the packet was dropped: {reason:?}"),
+            Verdict::Delivered { .. } => {
+                unreachable!("the overlay slice has no egress stage")
+            }
         }
     }
 }
@@ -204,7 +334,7 @@ mod shapes {
     const MAX_EXPOSES: u8 = 2;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Shape {
+    pub(super) enum Shape {
         V4Tcp,
         V4Udp,
         V4Icmp,
@@ -217,7 +347,7 @@ mod shapes {
     }
 
     impl Shape {
-        const ALL: [Shape; 9] = [
+        pub(super) const ALL: [Shape; 9] = [
             Shape::V4Tcp,
             Shape::V4Udp,
             Shape::V4Icmp,
@@ -290,7 +420,7 @@ mod shapes {
         }
     }
 
-    struct Batch;
+    pub(super) struct Batch;
 
     impl ValueGenerator for Batch {
         type Output = (Vec<VpcExpose>, Vec<(Shape, Headers)>);
@@ -305,7 +435,7 @@ mod shapes {
         }
     }
 
-    fn aim(headers: &mut Headers, private: Option<Prefix>) {
+    pub(super) fn aim(headers: &mut Headers, private: Option<Prefix>) {
         let Some(private) = private else { return };
         match private.as_address() {
             IpAddr::V4(addr) => {
@@ -335,7 +465,7 @@ mod shapes {
         }
     }
 
-    fn wire(headers: &Headers) -> Option<Packet<TestBuffer>> {
+    pub(super) fn wire(headers: &Headers) -> Option<Packet<TestBuffer>> {
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).ok()?;
         Packet::new(buffer).ok()
@@ -384,6 +514,9 @@ mod shapes {
                         }
                         Verdict::Dropped(_) => {
                             DROPPED.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Verdict::Delivered { .. } => {
+                            unreachable!("the overlay slice has no egress stage")
                         }
                     }
                 }
@@ -604,6 +737,9 @@ mod round_trip {
                             "the reply of a forwarded flow was dropped: {reason:?} \
                              (request {src} -> {dst} became {public_src}:{public_port})"
                         ),
+                        Verdict::Delivered { .. } => {
+                            unreachable!("the overlay slice has no egress stage")
+                        }
                     }
                 }
             });
@@ -909,5 +1045,198 @@ mod acl {
             behind > 0,
             "no packet was ever sent behind an extension header, which is the shape this exists for"
         );
+    }
+}
+
+#[cfg(test)]
+mod routed {
+    use super::shapes::{Batch, Shape, aim, wire};
+    use super::*;
+    use net::buffer::TestBuffer;
+    use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryVxlan};
+    use net::ip::dscp::Dscp;
+    use net::ip::ecn::Ecn;
+    use net::packet::test_utils::{
+        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying,
+    };
+    use net::vlan::Vid;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn exposes() -> Vec<VpcExpose> {
+        vec![
+            VpcExpose::empty()
+                .make_masquerade(None)
+                .unwrap()
+                .ip("1.1.0.0/16".parse::<Prefix>().unwrap().into())
+                .as_range("2.2.0.0/16".parse::<Prefix>().unwrap().into())
+                .unwrap(),
+        ]
+    }
+
+    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+        let bytes = inner
+            .clone()
+            .serialize()
+            .expect("the inner frame serializes");
+        let mut packet =
+            build_test_vxlan_ipv4_packet_carrying(Dscp::default(), Ecn::default(), bytes.as_ref())
+                .expect("a well-formed tunnelled frame");
+        packet
+            .set_eth_destination(GATEWAY_MAC)
+            .expect("the frame has an ethernet header");
+        packet.meta_mut().iif = Some(uplink());
+        packet.meta_mut().set_keep(true);
+        packet
+    }
+
+    fn inner() -> Packet<TestBuffer> {
+        build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_tunnelled_frame_is_decapsulated_translated_and_sent_back_out_tunnelled() {
+        let mut fabric = Fabric::routed(&exposes(), None).expect("a valid configuration");
+
+        let out = fabric.send(tunnelled(&inner()));
+
+        match verdict(&out) {
+            Verdict::Delivered { oif, src, dst } => {
+                assert_eq!(oif, Some(uplink()), "delivered over the wrong interface");
+                assert_eq!(
+                    src,
+                    Some(LOCAL_VTEP.parse().unwrap()),
+                    "the outer source is not this gateway's vtep: it did not get re-encapsulated"
+                );
+                assert_eq!(dst, Some(PEER_VTEP.parse().unwrap()));
+                assert_eq!(
+                    out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                    Some(vni(REMOTE_VNI)),
+                    "encapsulated towards the wrong vpc"
+                );
+                assert_eq!(
+                    out.try_eth().map(|eth| eth.destination().inner()),
+                    Some(PEER_MAC),
+                    "the frame was not addressed to the resolved next hop"
+                );
+            }
+            other => panic!("the frame did not leave the gateway: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_vlan_tag_is_refused_at_decapsulation() {
+        let tables = topology();
+        let mut pipeline = DynPipeline::new()
+            .add_stage(Ingress::new("ingress", tables.interfaces()))
+            .add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+
+        let plain = one(&mut pipeline, tunnelled(&inner()));
+        assert_eq!(
+            verdict(&plain),
+            Verdict::Forwarded {
+                dst_vpcd: None,
+                src: Some("1.1.0.1".parse().unwrap()),
+                dst: Some("3.3.3.1".parse().unwrap()),
+            },
+            "an untagged frame did not survive decapsulation: the fixture is refusing everything"
+        );
+
+        let tagged = one(&mut pipeline, tunnelled(&tagged_inner()));
+        assert_eq!(
+            verdict(&tagged),
+            Verdict::Dropped(DoneReason::Unhandled),
+            "a tagged frame survived decapsulation"
+        );
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_vlan_tag_inside_the_tunnel_never_leaves_the_gateway() {
+        let mut fabric = Fabric::routed(&exposes(), None).expect("a valid configuration");
+
+        let out = fabric.send(tunnelled(&tagged_inner()));
+
+        assert!(
+            !matches!(verdict(&out), Verdict::Delivered { .. }),
+            "a tagged frame was sent out onto the wire: {:?}",
+            verdict(&out)
+        );
+    }
+
+    fn tagged_inner() -> Packet<TestBuffer> {
+        let mut inner = inner();
+        inner
+            .headers_mut()
+            .push_vlan(Vid::new(42).expect("a valid vlan id"))
+            .expect("the inner frame has an ethernet header");
+
+        let bytes = inner.serialize().expect("a tagged frame serializes");
+        let reparsed = Packet::new(TestBuffer::from_raw_data(bytes.as_ref()))
+            .expect("a tagged frame parses back");
+        assert!(
+            !reparsed.headers().vlan().is_empty(),
+            "the fixture did not actually tag the frame"
+        );
+        reparsed
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_tagged_shape_never_reaches_the_wire() {
+        static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_generator(Batch)
+            .for_each(|(exposes, stacks)| {
+                let Some(mut fabric) = Fabric::routed(exposes, None) else {
+                    return;
+                };
+                let private = exposes.first().and_then(|e| {
+                    e.ips
+                        .first()
+                        .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                });
+
+                for (shape, headers) in stacks {
+                    let mut headers = headers.clone();
+                    aim(&mut headers, private);
+                    let Some(frame) = wire(&headers) else {
+                        continue;
+                    };
+                    let tagged = *shape == Shape::VlanV4Tcp;
+                    if tagged {
+                        TAGGED.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let out = fabric.send(tunnelled(&frame));
+                    if matches!(verdict(&out), Verdict::Delivered { .. }) {
+                        assert!(!tagged, "a tagged frame was sent out onto the wire");
+                        DELIVERED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let delivered = DELIVERED.load(Ordering::Relaxed);
+        let tagged = TAGGED.load(Ordering::Relaxed);
+        eprintln!("delivered={delivered} tagged={tagged}");
+
+        assert!(
+            delivered > 0,
+            "nothing ever reached the wire: the property is vacuous"
+        );
+        assert!(tagged > 0, "no tagged shape was ever generated");
+    }
+
+    fn one(
+        pipeline: &mut DynPipeline<TestBuffer>,
+        packet: Packet<TestBuffer>,
+    ) -> Packet<TestBuffer> {
+        let mut out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+        assert_eq!(out.len(), 1, "the pipeline did not return the packet");
+        out.pop().unwrap_or_else(|| unreachable!())
     }
 }
