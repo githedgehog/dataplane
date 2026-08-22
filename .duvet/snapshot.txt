@@ -77,8 +77,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!SHOULD]:    host.
     TEXT[!MUST]: Receipt of any sort of ICMP message MUST NOT
     TEXT[!MUST]:    destroy the NAT mapping.
-    TEXT[!MUST]:    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
-    TEXT[!MUST]:       NAT mapping.
+    TEXT[!MUST,exception]:    REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST,exception]:       NAT mapping.
     TEXT[!SHOULD]:       a) The NAT's default configuration SHOULD NOT filter ICMP messages
     TEXT[!SHOULD]:          based on their source IP address.
     TEXT[!SHOULD]:       b) It is RECOMMENDED that a NAT support ICMP Destination
@@ -300,8 +300,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
   SECTION: [ICMP Responses to TCP Packets](#section-7.3)
     TEXT[!SHOULD]:    REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
     TEXT[!SHOULD]:       Unreachable (Type 3) messages.
-    TEXT[!MUST]:    REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
-    TEXT[!MUST]:       NAT mapping or TCP connection for which the ICMP was generated.
+    TEXT[!MUST,exception]:    REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+    TEXT[!MUST,exception]:       NAT mapping or TCP connection for which the ICMP was generated.
 
   SECTION: [Requirements](#section-8)
     TEXT[!MUST]:    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
