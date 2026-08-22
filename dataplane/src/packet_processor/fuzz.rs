@@ -98,7 +98,7 @@ use super::ipforward::IpForwarder;
 /// so a fabric that let a writer go would be a pipeline whose configuration silently emptied.
 pub(crate) struct Fabric {
     pipeline: DynPipeline<TestBuffer>,
-    _flow_table: Arc<FlowTable>,
+    flow_table: Arc<FlowTable>,
     _flow_filter: FlowFilterContextWriter,
     _acl: AclFilterContextWriter,
     _static_nat: NatTablesWriter,
@@ -231,7 +231,7 @@ impl Fabric {
 
         Self {
             pipeline,
-            _flow_table: flow_table,
+            flow_table,
             _flow_filter: flow_filter,
             _acl: acl,
             _static_nat: static_nat,
@@ -250,6 +250,11 @@ impl Fabric {
         let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+
+    /// How many entries the flow table holds, for a property about state rather than packets.
+    pub(crate) fn flows(&self) -> Option<usize> {
+        self.flow_table.len()
     }
 
     /// Send several packets through as one burst, and hand back what came out.
@@ -1479,7 +1484,7 @@ mod acl {
 /// shape the dataplane actually runs in.
 #[cfg(test)]
 mod burst {
-    use super::routed::{exposes, inside, tunnelled};
+    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
     use super::round_trip::udp;
     use super::*;
     use net::headers::TryVxlan;
@@ -1541,17 +1546,100 @@ mod burst {
         }
     }
 
+    /// A burst carrying several packets of one flow allocates once for it.
+    ///
+    /// The case [`a_burst_is_treated_the_same_as_one_packet_at_a_time`] excludes by construction,
+    /// and the one that was broken. `FlowLookup` stamps each packet with the flow state it found,
+    /// `FlowFilter` collects the whole burst before anything downstream runs, so every packet of a
+    /// burst is stamped before any of them is masqueraded. Masquerade read only the stamp, so a
+    /// burst of sixteen UDP packets of one flow took sixteen ports out of the pool, left the far
+    /// side seeing sixteen sources, and put sixteen reverse entries in the flow table. A TCP SYN
+    /// and its first data segment in one burst had the data dropped as "TCP without SYN".
+    ///
+    /// Two things are asserted rather than one, because a fix that translated consistently while
+    /// still allocating each time would satisfy the first alone:
+    ///
+    /// - every packet of the burst leaves with the **same** public source;
+    /// - the flow table holds exactly what one flow needs, whatever the size of the burst.
+    ///
+    /// The second is the one that says the pool is not being drained. It is stated as a
+    /// *comparison with a single packet* rather than a number, so it says "a burst costs what one
+    /// packet costs" without this test having to know how many entries a flow is made of.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_burst_of_one_flow_allocates_once() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Burst)
+            .for_each(|members| {
+                // One flow, drawn: which flow varies, that it is one flow does not.
+                let m = members[0];
+                let src: IpAddr = format!("1.1.0.{}", m.host)
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
+                let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                let packet = || udp(src, dst, 4000, m.dport).map(|p| tunnelled(&p));
+
+                // What one packet of this flow costs, as the baseline the burst must match.
+                let (Some(mut alone), Some(mut burst)) = (
+                    Fabric::routed(&exposes(), None),
+                    Fabric::routed(&exposes(), None),
+                ) else {
+                    return;
+                };
+                let Some(one) = packet() else { return };
+                let single = treatment(&alone.send(one));
+                if !matches!(single.verdict, Verdict::Delivered { .. }) {
+                    return;
+                }
+                let cost_of_one = alone.flows();
+
+                let Some(together) = (0..BURST).map(|_| packet()).collect::<Option<Vec<_>>>()
+                else {
+                    return;
+                };
+                let out = burst.send_batch(together);
+
+                for (i, packet) in out.iter().enumerate() {
+                    let t = treatment(packet);
+                    assert_eq!(
+                        t.inner_sport, single.inner_sport,
+                        "packet {i} of a burst of one flow was given a different public port \
+                         from the same packet sent alone: the burst allocated more than once"
+                    );
+                    assert_eq!(
+                        t.inner_src, single.inner_src,
+                        "packet {i} of a burst of one flow left under a different public address"
+                    );
+                    assert_eq!(
+                        t.verdict, single.verdict,
+                        "packet {i} of a burst of one flow reached a different verdict"
+                    );
+                }
+                assert_eq!(
+                    burst.flows(),
+                    cost_of_one,
+                    "a burst of {BURST} packets of one flow cost more flow-table entries than \
+                     one packet of it did"
+                );
+                CHECKED.fetch_add(1, Ordering::Relaxed);
+            });
+
+        let checked = CHECKED.load(Ordering::Relaxed);
+        eprintln!("single-flow-bursts={checked}");
+        super::assert_covered(checked > 0, "no burst of a single flow was ever delivered");
+    }
+
     /// A burst is treated the same as the same packets sent one at a time.
     ///
     /// # Why the flows are distinct
     ///
-    /// This is the strongest form of the claim that is actually true, and the limit is worth
-    /// stating rather than discovering. `FlowFilter` is a barrier: in a burst, every packet has
-    /// been through `FlowLookup` before any of them reaches the nat stages. Two packets of *one*
-    /// flow in one burst therefore both miss the flow table, where sent one at a time the second
-    /// would hit the state the first created. Whatever the right answer to that is, it is a
-    /// question about how a burst should handle a flow it is itself establishing -- not about
-    /// whether batching preserves per-packet behaviour, which is what this asks.
+    /// This property is about whether batching preserves *per-packet* behaviour. Several packets
+    /// of one flow in a burst is a different question -- how a burst handles a flow it is itself
+    /// establishing -- and it has its own property, [`a_burst_of_one_flow_allocates_once`], which
+    /// is where the defect that shape hid turned up.
     ///
     /// So the members of a burst are made distinct by construction: one host and one destination
     /// port each, assigned by position rather than drawn. A generator that could draw a collision
@@ -1913,7 +2001,7 @@ mod routed {
     /// The outer addresses come from the fixture rather than from here, and the topology was
     /// chosen to match them. Deliberately: a helper that rewrote the outer header to whatever the
     /// topology wanted could not be used to build a frame the topology should *refuse*.
-    fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let bytes = inner.clone().serialize().expect("the inner frame serializes");
         let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
             from,

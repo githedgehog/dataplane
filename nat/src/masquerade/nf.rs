@@ -329,8 +329,30 @@ impl Masquerade {
 
     // Get the flow info referred to by the packet and, if found, check its masquerade state.
     // Refresh the flow status and update the flow or invalidate it
-    fn get_masquerade_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatTranslate> {
-        let flow_info = packet.meta().flow_info.as_ref()?;
+    //
+    // The packet's `flow_info` is a stamp taken by `FlowLookup`, and it is an optimisation rather
+    // than the source of truth: it is only as fresh as the moment it was taken. `FlowFilter`
+    // collects the whole rx burst before anything downstream of it runs, so every packet of a
+    // burst is stamped before any of them is masqueraded -- and a burst carrying several packets
+    // of one new flow would otherwise allocate for every one of them. Sixteen UDP packets of a
+    // single flow in one burst took sixteen ports out of the pool and left the far side seeing
+    // sixteen sources; a TCP SYN and its first data segment in one burst had the data dropped as
+    // "TCP without SYN", because the flow the SYN created was invisible to it.
+    //
+    // Consulting the table is what makes a flow the burst is itself establishing visible to the
+    // rest of the burst. It costs a lookup only where the stamp missed, which is the path that is
+    // about to do an allocation anyway.
+    fn get_masquerade_state<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> Option<NatTranslate> {
+        let looked_up;
+        let flow_info = if let Some(stamped) = packet.meta().flow_info.as_ref() {
+            stamped
+        } else {
+            looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+            &looked_up
+        };
         if !flow_info.is_active() {
             debug!("Hit INACTIVE flow: {}", flow_info.logfmt());
             return None;
@@ -563,7 +585,7 @@ impl Masquerade {
         let nfi = self.name();
 
         // Hot path: if we have a session with masquerade state, translate the packet
-        if let Some(translate) = Self::get_masquerade_state(packet) {
+        if let Some(translate) = self.get_masquerade_state(packet) {
             return Ok(masquerade(packet, &translate)?);
         }
 
