@@ -65,6 +65,7 @@ use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
 use concurrency::sync::Arc;
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
+use config::external::overlay::{Overlay, ValidatedOverlay};
 use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes_and_acl,
 };
@@ -134,7 +135,19 @@ impl Fabric {
     /// frame, and everything that stamp asserts -- that the vni names a fib, that the frame parses
     /// back, that nothing in it disqualifies it -- is under test rather than assumed.
     pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
-        Self::assemble(exposes, acl, Some(topology()))
+        Self::assemble(exposes, acl, Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])))
+    }
+
+    /// A routed fabric over a configuration the caller built, rather than the two-vpc one.
+    ///
+    /// For properties about *where* a packet goes, which need more than one destination to choose
+    /// between. The caller supplies the underlay too, because the vnis it has to be able to
+    /// encapsulate into are the ones its own configuration names.
+    pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
+        Some(Self::with_overlay(
+            &overlay.clone().validate().ok()?,
+            Some(tables),
+        ))
     }
 
     fn assemble(
@@ -146,7 +159,10 @@ impl Fabric {
             .ok()?
             .validate()
             .ok()?;
+        Some(Self::with_overlay(&overlay, tables))
+    }
 
+    fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
@@ -160,13 +176,13 @@ impl Fabric {
 
         let flow_filter = FlowFilterContextWriter::new();
         flow_filter.store(
-            FlowFilterContext::try_from(&overlay).expect("a validated overlay lowers to tables"),
+            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
         );
         pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", flow_filter.get_reader()));
 
         let acl = AclFilterContextWriter::new();
         acl.store(
-            AclFilterContext::try_from(&overlay).expect("a validated overlay lowers to acls"),
+            AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
         );
         pipeline = pipeline.add_stage(AclFilter::new("acl-filter", acl.get_reader()));
 
@@ -213,7 +229,7 @@ impl Fabric {
             ));
         }
 
-        Some(Self {
+        Self {
             pipeline,
             _flow_table: flow_table,
             _flow_filter: flow_filter,
@@ -222,7 +238,7 @@ impl Fabric {
             _portfw: portfw,
             _masquerade: masquerade,
             _tables: tables,
-        })
+        }
     }
 
     /// Send one packet through, and hand back what came out.
@@ -422,10 +438,6 @@ pub(crate) const PEER_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xbb]);
 
 /// The vrf a tunnelled frame arrives in, before it is anybody's overlay traffic.
 const UNDERLAY_VRF: u32 = 0;
-/// The vrf the local vpc's vni resolves to.
-const LOCAL_VRF: u32 = LOCAL_VNI;
-/// The vrf the peer vpc's vni resolves to, and the one that encapsulates on the way out.
-const REMOTE_VRF: u32 = REMOTE_VNI;
 
 pub(crate) fn uplink() -> InterfaceIndex {
     InterfaceIndex::try_new(UPLINK).unwrap_or_else(|_| unreachable!())
@@ -442,7 +454,7 @@ pub(crate) fn uplink() -> InterfaceIndex {
 /// simplification -- a real fabric would have a vtep per host -- but it is the simplification that
 /// keeps the *asymmetry under test* in the pipeline rather than in the topology. A fixture that
 /// could only encapsulate one way would make a reply fail for a reason no property is about.
-fn topology() -> RouterTables {
+pub(crate) fn topology(vnis: &[Vni]) -> RouterTables {
     let mut tables = RouterTables::new();
 
     tables.vrf(UNDERLAY_VRF, None);
@@ -459,11 +471,12 @@ fn topology() -> RouterTables {
         &FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink()))),
     );
 
-    tables.vrf(LOCAL_VRF, Some(vni(LOCAL_VNI)));
-    encapsulate_out_of(&mut tables, LOCAL_VRF, vni(LOCAL_VNI));
-
-    tables.vrf(REMOTE_VRF, Some(vni(REMOTE_VNI)));
-    encapsulate_out_of(&mut tables, REMOTE_VRF, vni(REMOTE_VNI));
+    // One fib per vni, each numbered by it: a fib is reached by vni, so a vrf id that is the vni
+    // keeps the two from having to be kept in step by hand.
+    for reachable in vnis {
+        tables.vrf(reachable.as_u32(), Some(*reachable));
+        encapsulate_out_of(&mut tables, reachable.as_u32(), *reachable);
+    }
 
     tables.adjacency(
         PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
@@ -1441,6 +1454,184 @@ mod acl {
     }
 }
 
+/// Where a packet goes, when there is more than one place it could.
+///
+/// Every property above runs against one peering, so "was this routed to the right vpc" has only
+/// one answer and cannot be got wrong. This module gives the pipeline three destinations and a
+/// reason to choose between them.
+#[cfg(test)]
+mod destination {
+    use super::routed::{inside, tunnelled};
+    use super::round_trip::udp;
+    use super::*;
+    use config::external::overlay::vpcpeering::contract::{overlay_with_peers, peer_vni};
+    use lpm::prefix::Prefix;
+    use net::headers::TryVxlan;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// How many peer vpcs the local one is peered with.
+    ///
+    /// Three rather than two, so that a stage picking the wrong peer has somewhere wrong to go
+    /// that is not simply "the other one" -- an off-by-one in a table walk lands on peer 1 whether
+    /// the answer was 0 or 2, and with two peers that is indistinguishable from a swap.
+    const PEERS: u8 = 3;
+
+    /// The prefix the local vpc exposes, which every packet here is sent from.
+    fn local_prefix() -> Prefix {
+        "1.1.0.0/16"
+            .parse()
+            .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
+    }
+
+    /// A packet to send: which peer it is addressed to, and where from.
+    #[derive(Debug, Clone, Copy)]
+    struct Aim {
+        /// `Some(n)` addresses peer `n`; `None` addresses a range no peering covers.
+        peer: Option<u8>,
+        host: u8,
+        third: u8,
+        sport: u16,
+        dport: u16,
+    }
+
+    struct Aims;
+
+    const AIMS_PER_FABRIC: usize = 12;
+
+    impl bolero::ValueGenerator for Aims {
+        type Output = Vec<Aim>;
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Vec<Aim>> {
+            (0..AIMS_PER_FABRIC)
+                .map(|_| {
+                    let choice = driver.produce::<u8>()?;
+                    Some(Aim {
+                        // One in four aimed nowhere, so the negative half of the claim is
+                        // exercised without swamping the positive half.
+                        peer: (choice % 4 != 3).then_some(choice % PEERS),
+                        host: driver.produce()?,
+                        third: driver.produce()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("destination::Aims", &Aims);
+    }
+
+    /// A packet leaves for the vpc that exposes its destination, and for no vpc at all otherwise.
+    ///
+    /// # Why the oracle is not the flow filter written twice
+    ///
+    /// The temptation here is to ask the configuration which peering covers the destination, and
+    /// that would be worthless: it is the flow filter's own decision procedure, so a filter that
+    /// consulted the wrong table would be agreed with rather than caught.
+    ///
+    /// Instead the answer is built into the address. Peer `n` exposes `10.<n+1>.0.0/16`, so a
+    /// destination _names_ the vpc it belongs to, and the expected vni is read off the address the
+    /// test itself chose before the pipeline saw it. Nothing here looks at a peering table.
+    ///
+    /// # What each half catches
+    ///
+    /// The positive half -- addressed to peer `n`, leaves under peer `n`'s vni -- catches a filter
+    /// that finds *a* peering rather than the right one: prefixes loaded into the wrong peering's
+    /// table, a lookup returning the first match instead of the longest, a table walk off by one.
+    ///
+    /// The negative half -- addressed outside every peering, reaches no vpc -- is what stops the
+    /// positive half being satisfied by a filter that says yes to everything. Together they are
+    /// the claim; either alone is much weaker than it looks.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
+        static REACHED: LazyLock<[AtomicU64; PEERS as usize]> =
+            LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Aims)
+            .for_each(|aims| {
+                let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
+                    .chain((0..PEERS).map(|n| vni(peer_vni(n))))
+                    .collect();
+                let overlay = overlay_with_peers(local_prefix(), PEERS)
+                    .unwrap_or_else(|e| unreachable!("the multi-peer contract does not build: {e}"));
+                let Some(mut fabric) = Fabric::routed_over(&overlay, topology(&vnis)) else {
+                    unreachable!("the multi-peer contract does not validate")
+                };
+
+                for aim in aims {
+                    let src: IpAddr = format!("1.1.0.{}", aim.host)
+                        .parse()
+                        .unwrap_or_else(|_| unreachable!());
+                    // Addressed either inside one peer's advertised /16 or into 172.16/12, which
+                    // no peering here covers.
+                    let dst: IpAddr = match aim.peer {
+                        Some(n) => format!("10.{}.{}.{}", n + 1, aim.third, aim.host),
+                        None => format!("172.16.{}.{}", aim.third, aim.host),
+                    }
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
+
+                    let Some(packet) = udp(src, dst, aim.sport, aim.dport) else {
+                        continue;
+                    };
+                    let out = fabric.send(tunnelled(&packet));
+                    let left = matches!(verdict(&out), Verdict::Delivered { .. });
+
+                    if let Some(n) = aim.peer {
+                        assert!(
+                            left,
+                            "a packet to {dst}, which peer {n} exposes, did not leave: {:?}",
+                            verdict(&out)
+                        );
+                        assert_eq!(
+                            out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                            Some(vni(peer_vni(n))),
+                            "a packet to {dst} left for the wrong vpc"
+                        );
+                        // The destination must survive too: leaving for the right vpc with a
+                        // rewritten address would be a different packet arriving correctly.
+                        let carried = inside(&out).expect("a delivered packet was not tunnelled");
+                        assert_eq!(
+                            carried.ip_destination(),
+                            Some(dst),
+                            "the destination was rewritten on the way out"
+                        );
+                        REACHED[n as usize].fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        assert!(
+                            !left,
+                            "a packet to {dst}, which no peering covers, was sent to {:?}",
+                            out.try_vxlan().map(net::vxlan::Vxlan::vni)
+                        );
+                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let reached: Vec<u64> = REACHED.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+        let refused = REFUSED.load(Ordering::Relaxed);
+        eprintln!("reached-per-peer={reached:?} refused={refused}");
+
+        // Per peer rather than in total: a run that only ever reached peer 0 would satisfy a total
+        // and say nothing about choosing between destinations, which is the whole property.
+        for (n, count) in reached.iter().enumerate() {
+            super::assert_covered(*count > 0, &format!("peer {n} was never reached"));
+        }
+        super::assert_covered(
+            refused > 0,
+            "no packet was ever aimed outside every peering, so the negative half is vacuous",
+        );
+    }
+}
+
 /// The whole pipeline, over a tunnel.
 ///
 /// Everything above this point hands the overlay slice a bare packet and stamps the metadata that
@@ -1547,7 +1738,7 @@ mod routed {
     }
 
     /// [`tunnelled_from`] for traffic originating in the local vpc, which is most of it.
-    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    pub(super) fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         tunnelled_from(vni(LOCAL_VNI), inner)
     }
 
@@ -1556,7 +1747,7 @@ mod routed {
     /// Everything a property here wants to say is about the inner packet, and everything the
     /// gateway hands to the wire is an outer one. Returns `None` if what came back was not
     /// tunnelled at all, which is a finding rather than a filter -- callers say so.
-    fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
+    pub(super) fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
         let mut copy = delivered.clone();
         matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
     }
@@ -1613,7 +1804,7 @@ mod routed {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_vlan_tag_is_refused_at_decapsulation() {
-        let tables = topology();
+        let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
         let mut pipeline = DynPipeline::new()
             .add_stage(Ingress::new("ingress", tables.interfaces()))
             .add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));

@@ -125,6 +125,29 @@ Interleaving matters for the same reason. The two rounds are separated by every 
 batch, and the second runs in reverse order, because "send the same packet twice in a row" is
 satisfied by an implementation that remembers only the last translation it made.
 
+### Let the input carry the answer
+
+The hardest oracle to write honestly is the one for "did this go to the right place", because the
+obvious way to write it is to ask the configuration -- which is the stage's own decision procedure,
+so a stage consulting the wrong table gets agreed with rather than caught.
+
+The way out is to make the input carry its own answer. In
+`destination::a_packet_leaves_for_the_vpc_that_exposes_its_destination`, peer `n` exposes
+`10.<n+1>.0.0/16`, so a destination address _names_ the vpc it belongs to. The expected vni is read
+off the address the test itself chose, before the pipeline saw it, and nothing in the oracle looks
+at a peering table. It is the same move as the ACL property, where the protocol is known because
+the test built the packet rather than read back through the accessor the filter uses.
+
+Two details that are not incidental:
+
+- **Three destinations, not two.** With two peers, an off-by-one in a table walk and a swap are the
+  same observation. With three, a lookup that lands on peer 1 is distinguishable from one that
+  simply picked the other.
+- **The negative half is load-bearing.** "Addressed to peer `n`, leaves for peer `n`" is satisfied
+  by a filter that says yes to everything, so it is paired with "addressed outside every peering,
+  leaves for nobody". Both were break-tested against the stage: pinning the chosen vpc to a
+  constant fails the first, and routing a destination miss instead of dropping it fails the second.
+
 ### Redundant defences need one property each
 
 The VLAN refusal in `IpForwarder` is not the only thing that stops a tagged frame -- the filters
