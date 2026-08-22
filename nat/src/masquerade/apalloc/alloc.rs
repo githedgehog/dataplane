@@ -7,10 +7,10 @@ use super::region::AddrInterval;
 use super::reserved::{ReservedForAddr, ReservedPorts};
 use super::{NatIpWithBitmap, port_alloc};
 use crate::masquerade::allocation::AllocatorError;
-use crate::masquerade::natip::NatIp;
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use net::ip::IpAddress;
 use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -369,7 +369,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // out of memory long before allocating four billion addresses.
         let span = range.len().saturating_sub(1).min(u128::from(u32::MAX));
         let to_offset = |bits: u128| {
-            let address = I::try_from_bits(bits).unwrap_or_else(|()| unreachable!());
+            let address = I::try_from_bits(bits).unwrap_or_else(|_| unreachable!());
             I::try_to_offset(address, &reverse_bitmap_mapping).unwrap_or_else(|_| unreachable!())
         };
 
@@ -525,7 +525,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
 
         let to_addr = |offset: u32| {
             I::try_from_offset(offset, &self.bitmap_mapping)
-                .map(|ip| ip.to_ip_addr())
+                .map(IpAddress::to_ip_addr)
                 .map_err(|_| ())
         };
 
@@ -588,8 +588,8 @@ pub(crate) fn map_offset(
             ))?;
 
     // Generate the IPv6 address: prefix network address - prefix offset + address offset
-    NatIp::try_from_bits(prefix_start_bits + u128::from(offset - prefix_offset))
-        .map_err(|()| AllocatorError::InternalIssue("Failed to convert offset to IPv6".to_string()))
+    IpAddress::try_from_bits(prefix_start_bits + u128::from(offset - prefix_offset))
+        .map_err(|_| AllocatorError::InternalIssue("Failed to convert offset to IPv6".to_string()))
 }
 
 // Reverse operation from map_offset()
