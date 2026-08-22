@@ -154,7 +154,8 @@ impl IpForwarder {
                 debug!("Next fib/vrf is {next_vrf}");
 
                 /* At this point decapsulation has already happened and `Packet` refers to
-                the innner packet. */
+                the innner packet. Annotate the incoming vni and the corresponding vrf to
+                make lookups from */
 
                 if !packet.headers().vlan().is_empty() {
                     debug!(
