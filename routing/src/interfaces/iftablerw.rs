@@ -169,9 +169,12 @@ impl IfTableWriter {
     ) -> Result<(), RouterError> {
         // FIXME(fredi): this can be significantly simplified
         let fibkey = self.interface_attach_check(ifindex, vrfid, vrftable)?;
+        self.attach_interface_to_fib(ifindex, fibkey);
+        Ok(())
+    }
+    pub(crate) fn attach_interface_to_fib(&mut self, ifindex: InterfaceIndex, fibkey: FibKey) {
         self.0.append(IfTableChange::Attach((ifindex, fibkey)));
         self.0.publish();
-        Ok(())
     }
     pub fn detach_interface(&mut self, ifindex: InterfaceIndex) {
         self.0.append(IfTableChange::Detach(ifindex));
