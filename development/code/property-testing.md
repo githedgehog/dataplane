@@ -148,6 +148,38 @@ Two details that are not incidental:
   leaves for nobody". Both were break-tested against the stage: pinning the chosen vpc to a
   constant fails the first, and routing a destination miss instead of dropping it fails the second.
 
+### Traffic that knows what it sent
+
+Properties that build their packets inline and judge them inline work while there is one
+conversation at a time. They stop working the moment two are interleaved: the packets belong to
+different senders with different expectations, and a loop that is generating them cannot also be in
+the middle of judging them.
+
+A `Load` is one sender -- a state machine rather than a generator, because the properties worth
+having are _reactive_. `routed::Conversation` cannot build its reply until it has read the public
+tuple its request was given, and that is exactly what keeps the oracle honest: the load is not told
+what the translation should be, it reads what the translation was and requires it to reverse.
+
+**The oracle lives in the load, and that is the load-bearing choice.** The alternative is a global
+oracle -- given this configuration and this interleaving, what should have happened? -- which is the
+dataplane written a second time. A load judges only its own traffic against what it itself chose, so
+the oracle stays local however many loads run at once, and the joint claim is just "every load was
+satisfied". That decomposition is what lets superposition scale without anybody writing a model of
+the whole system.
+
+Three smaller things that turned out to matter:
+
+- **`next` returning `None` means "waiting", not "finished".** A load that has sent a request and
+  needs to see it come back can offer nothing until it does. That is the load's own back-pressure,
+  rather than a rule a scheduler has to know about it.
+- **`checked` is separate from `finished`.** A load may legitimately give up -- a configuration that
+  does not carry its traffic is not a defect -- and a run made entirely of loads that gave up has
+  checked nothing. That distinction is what a coverage guard counts.
+- **`describe` is built in from the start, not added after the first hour lost to a failure.** Every
+  assertion carries it, so a failure reads
+  `[conversation 1.1.0.0:1 -> 3.3.3.1:1 | request left as 2.2.0.0:1024]` rather than naming a line
+  number in a loop.
+
 ### Pay for diagnosis when something breaks, not before
 
 The bigger a harness gets, the harder its failures are to read, and the obvious answer -- record
