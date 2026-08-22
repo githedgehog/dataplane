@@ -13,8 +13,9 @@ attributes cannot be looped over -- so `for_each_shape!` expands one definition 
 criterion and into attributes for callgrind.
 
 ```sh
-just bench            # criterion: wall-clock on this machine
-just bench-callgrind  # iai-callgrind: instructions and modelled cache traffic
+just bench criterion  # wall-clock on this machine
+just bench callgrind  # instructions and modelled cache traffic
+just bench compare    # the above against a baseline, as a markdown report
 ```
 
 `valgrind` and `iai-callgrind-runner` come from the dev shell. The runner's version must equal the
@@ -182,7 +183,7 @@ starting until there is a reason to trust the answer.
 
 ## Reporting a run in CI
 
-`just bench-compare` runs the callgrind benches, compares them against a baseline, and prints a
+`just bench compare` runs the callgrind benches, compares them against a baseline, and prints a
 markdown report: a one-line headline, a table of every metric, and -- only when something moved
 past the threshold -- a bar chart. `scripts/bench-report.ts` does the rendering and can be pointed
 at any iai-callgrind JSON run.
@@ -199,9 +200,9 @@ the base commit with `--save-baseline`, run the head commit with `--baseline`, b
 
 ```sh
 git checkout "$BASE_SHA" -- .
-just bench-compare base --headline-only >/dev/null   # records
+just bench baseline base        # records
 git checkout "$HEAD_SHA" -- .
-just bench-compare base > report.md                  # compares
+just bench compare base > report.md   # compares
 ```
 
 iai-callgrind keeps the baseline under `target/iai` for the length of the job, each record already

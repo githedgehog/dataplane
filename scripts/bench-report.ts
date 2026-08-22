@@ -29,10 +29,9 @@ type Metric = { Int: number } | { Float: number };
  * `Both` carries a two-element array; `Left` and `Right` carry the metric directly rather than a
  * one-element array, so they are not simply the degenerate case of `Both`.
  */
-type Metrics =
-  | { Both: [Metric, Metric] }
-  | { Left: Metric }
-  | { Right: Metric };
+type Metrics = { Both: [Metric, Metric] } | { Left: Metric } | {
+  Right: Metric;
+};
 
 interface Record_ {
   id: string | null;
@@ -42,10 +41,16 @@ interface Record_ {
     tool: string;
     summaries: {
       total: {
-        summary: Record<string, Record<string, {
-          diffs?: { diff_pct?: string };
-          metrics: Metrics;
-        }>>;
+        summary: Record<
+          string,
+          Record<
+            string,
+            {
+              diffs?: { diff_pct?: string };
+              metrics: Metrics;
+            }
+          >
+        >;
       };
     };
   }>;
@@ -88,9 +93,15 @@ function rows(records: Record_[]): Row[] {
         const entry = summary[metric];
         if (!entry) continue;
         const m = entry.metrics;
-        const now = "Both" in m ? value(m.Both[0]) : "Left" in m ? value(m.Left) : value(m.Right);
+        const now = "Both" in m
+          ? value(m.Both[0])
+          : "Left" in m
+          ? value(m.Left)
+          : value(m.Right);
         const before = "Both" in m ? value(m.Both[1]) : null;
-        const pct = before === null || before === 0 ? null : ((now - before) / before) * 100;
+        const pct = before === null || before === 0
+          ? null
+          : ((now - before) / before) * 100;
         out.push({ bench, tool: profile.tool, metric, now, before, pct });
       }
     }
@@ -99,7 +110,8 @@ function rows(records: Record_[]): Row[] {
 }
 
 const fmt = (n: number) => n.toLocaleString("en-US");
-const pct = (p: number | null) => (p === null ? "—" : `${p >= 0 ? "+" : ""}${p.toFixed(2)}%`);
+const pct = (p: number | null) =>
+  p === null ? "—" : `${p >= 0 ? "+" : ""}${p.toFixed(2)}%`;
 
 /** A fixed-width bar, so the table reads at a glance without needing a chart to render. */
 function bar(p: number | null, worst: number): string {
@@ -110,9 +122,13 @@ function bar(p: number | null, worst: number): string {
 
 function table(rs: Row[]): string {
   const worst = Math.max(0, ...rs.map((r) => Math.abs(r.pct ?? 0)));
-  const head = "| benchmark | tool | metric | before | after | change | |\n|---|---|---|---:|---:|---:|---|";
-  const body = rs.map((r) =>
-    `| ${r.bench} | ${r.tool} | ${r.metric} | ${r.before === null ? "—" : fmt(r.before)} | ${fmt(r.now)} | ${pct(r.pct)} | ${bar(r.pct, worst)} |`
+  const head =
+    "| benchmark | tool | metric | before | after | change | |\n|---|---|---|---:|---:|---:|---|";
+  const body = rs.map(
+    (r) =>
+      `| ${r.bench} | ${r.tool} | ${r.metric} | ${
+        r.before === null ? "—" : fmt(r.before)
+      } | ${fmt(r.now)} | ${pct(r.pct)} | ${bar(r.pct, worst)} |`,
   );
   return [head, ...body].join("\n");
 }
@@ -124,7 +140,9 @@ function table(rs: Row[]): string {
  * a code fence rather than breaking the page. The table above it is the load-bearing part.
  */
 function chart(rs: Row[]): string {
-  const shown = rs.filter((r) => r.tool === "Callgrind" && r.metric === "Ir" && r.pct !== null);
+  const shown = rs.filter(
+    (r) => r.tool === "Callgrind" && r.metric === "Ir" && r.pct !== null,
+  );
   if (shown.length === 0) return "";
   const labels = shown.map((r) => `"${r.bench.replace(/"/g, "")}"`).join(", ");
   const values = shown.map((r) => (r.pct ?? 0).toFixed(2)).join(", ");
@@ -149,7 +167,9 @@ function main() {
   const headlineOnly = flags.includes("--headline-only");
 
   if (args.length !== 1) {
-    console.error("usage: bench-report.ts <run.jsonl> [--threshold=N] [--headline-only]");
+    console.error(
+      "usage: bench-report.ts <run.jsonl> [--threshold=N] [--headline-only]",
+    );
     Deno.exit(2);
   }
 
@@ -166,18 +186,23 @@ function main() {
   // anything; letting it win the headline just puts the least trustworthy metric at the top.
   const worstOf = (subset: Row[]) =>
     subset.reduce(
-      (acc: Row | null, r) => (acc === null || Math.abs(r.pct!) > Math.abs(acc.pct!) ? r : acc),
+      (acc: Row | null, r) =>
+        acc === null || Math.abs(r.pct!) > Math.abs(acc.pct!) ? r : acc,
       null,
     );
-  const worst = worstOf(compared.filter((r) => r.tool === "Callgrind" && r.metric === "Ir")) ??
-    worstOf(compared);
+  const worst = worstOf(
+    compared.filter((r) => r.tool === "Callgrind" && r.metric === "Ir"),
+  ) ?? worstOf(compared);
   const stark = worst !== null && Math.abs(worst.pct!) >= threshold;
 
   // Instruction counts cannot see a change in how data is laid out; allocation totals can. When
   // the two disagree -- less work but more memory -- that is the shape of change most likely to
   // read as a win here and lose on a real machine, so say both rather than only the flattering one.
   const alloc = worstOf(
-    compared.filter((r) => r.tool === "DHAT" && r.metric === "TotalBytes" && Math.abs(r.pct!) >= 1),
+    compared.filter(
+      (r) =>
+        r.tool === "DHAT" && r.metric === "TotalBytes" && Math.abs(r.pct!) >= 1,
+    ),
   );
   const allocNote = alloc === null
     ? ""
@@ -185,15 +210,21 @@ function main() {
 
   // The headline is what a sticky comment shows without being unfolded.
   if (compared.length === 0) {
-    console.log("**Benchmarks**: no baseline to compare against; recorded a new one.");
+    console.log(
+      "**Benchmarks**: no baseline to compare against; recorded a new one.",
+    );
   } else if (!stark) {
     console.log(
-      `**Benchmarks**: no change beyond ${threshold}% (largest: ${worst!.bench} ${worst!.metric} ${pct(worst!.pct)})${allocNote}.`,
+      `**Benchmarks**: no change beyond ${threshold}% (largest: ${
+        worst!.bench
+      } ${worst!.metric} ${pct(worst!.pct)})${allocNote}.`,
     );
   } else {
     const dir = worst!.pct! > 0 ? "more" : "less";
     console.log(
-      `**Benchmarks**: ${worst!.bench} does ${pct(worst!.pct)} ${dir} work (${worst!.metric})${allocNote}.`,
+      `**Benchmarks**: ${worst!.bench} does ${pct(worst!.pct)} ${dir} work (${
+        worst!.metric
+      })${allocNote}.`,
     );
   }
   if (headlineOnly) return;
