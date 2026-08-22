@@ -145,8 +145,24 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .map_err(|_| PacketUtilError::IpVersionMismatch(ip))
     }
 
-    /// Get the Ip protocol / next-header of an IPv4 / IPv6 [`Packet`]
-    /// Returns None if the packet does not have an IP header
+    /// The upper-layer protocol the packet carries, walking past any IPv6 extension headers.
+    ///
+    /// See [`crate::headers::Headers::upper_layer_proto`]. This, not [`Self::ip_proto`], is what a
+    /// filter matching on protocol wants.
+    #[must_use]
+    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+        self.headers.upper_layer_proto()
+    }
+
+    /// Get the Ip protocol / next-header field of an IPv4 / IPv6 [`Packet`]
+    ///
+    /// Returns None if the packet does not have an IP header.
+    ///
+    /// <div class="warning">
+    /// This is the header field, verbatim. For an IPv6 packet carrying extension headers it names
+    /// the first extension header rather than the transport; use
+    /// [`Self::upper_layer_proto`] to ask what the packet carries.
+    /// </div>
     pub fn ip_proto(&self) -> Option<NextHeader> {
         self.try_ip().map(|net| match net {
             Ipv4(ipv4) => NextHeader(ipv4.protocol()),

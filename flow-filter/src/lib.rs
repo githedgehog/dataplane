@@ -140,12 +140,21 @@ impl FlowFilter {
             return Classification::Drop;
         };
 
+        // See the note in `acl-filter`: for IPv6 the IP header's next-header field names the first
+        // extension header, not the transport, so a peering lookup keyed on it would classify a
+        // packet with extension headers as a protocol nobody configured.
+        let Some(proto) = packet.upper_layer_proto() else {
+            debug!("{nfi}: Could not determine the upper-layer protocol, dropping packet");
+            packet.done(DoneReason::Malformed);
+            return Classification::Drop;
+        };
+
         let input = LookupInput {
             src_vpcd,
             dst_vpcd: revalidation_dst_vpcd,
             src_ip: net.src_addr(),
             dst_ip: net.dst_addr(),
-            proto: net.next_header(),
+            proto,
             ports: packet
                 .try_transport()
                 .and_then(|t| t.src_port().zip(t.dst_port())),
