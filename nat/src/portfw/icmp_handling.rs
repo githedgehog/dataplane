@@ -43,19 +43,21 @@ use super::flow_state::PortFwState;
 use super::packet::nat_packet;
 use crate::common::{NatAction, NatFlowStatus};
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
-use crate::{NatPort, NatTranslationData};
+use crate::{NatEndpoint, NatPort, NatTranslationData};
 
 use tracing::debug;
 
 // Build `NatTranslationData` from `PortFwState` to translate the packet embedded in the ICMP error
 fn as_nat_translation(pfw_state: &PortFwState) -> NatTranslationData {
     match pfw_state.action {
-        NatAction::SrcNat => NatTranslationData::default()
-            .dst_addr(pfw_state.use_ip().inner())
-            .dst_port(NatPort::Port(pfw_state.use_port())),
-        NatAction::DstNat => NatTranslationData::default()
-            .src_addr(pfw_state.use_ip().inner())
-            .src_port(NatPort::Port(pfw_state.use_port())),
+        NatAction::SrcNat => NatTranslationData::default().with_dst(NatEndpoint::with_port(
+            pfw_state.use_ip().inner(),
+            NatPort::Port(pfw_state.use_port()),
+        )),
+        NatAction::DstNat => NatTranslationData::default().with_src(NatEndpoint::with_port(
+            pfw_state.use_ip().inner(),
+            NatPort::Port(pfw_state.use_port()),
+        )),
     }
 }
 
