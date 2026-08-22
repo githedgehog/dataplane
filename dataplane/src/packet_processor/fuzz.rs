@@ -5,7 +5,7 @@
 #![cfg(not(miri))]
 
 use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Mutex};
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
@@ -44,6 +44,8 @@ pub(crate) struct Fabric {
     _portfw: PortFwTableWriter,
     _masquerade: NatAllocatorWriter,
     _tables: Option<RouterTables>,
+    translations: Arc<Mutex<Translations>>,
+    next_id: u64,
 }
 
 impl Fabric {
@@ -83,6 +85,7 @@ impl Fabric {
     }
 
     fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
+        let translations = Arc::new(Mutex::new(Translations::default()));
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
@@ -139,10 +142,25 @@ impl Fabric {
             "before masquerade",
             contract::ready_to_translate,
         ));
+        let recording = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            move |_: &str, packet: &Packet<TestBuffer>| {
+                recording.lock().before(packet);
+            },
+        ));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),
             masquerade.get_reader(),
+        ));
+
+        let checking = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "after masquerade",
+            move |at: &str, packet: &Packet<TestBuffer>| {
+                checking.lock().after(at, packet);
+            },
         ));
 
         if let Some(tables) = &tables {
@@ -164,6 +182,8 @@ impl Fabric {
             _portfw: portfw,
             _masquerade: masquerade,
             _tables: tables,
+            translations,
+            next_id: 0,
         }
     }
 
@@ -179,9 +199,15 @@ impl Fabric {
 
     pub(crate) fn send_batch(
         &mut self,
-        packets: Vec<Packet<TestBuffer>>,
+        mut packets: Vec<Packet<TestBuffer>>,
     ) -> Vec<Packet<TestBuffer>> {
         let sent = packets.len();
+        for packet in &mut packets {
+            self.next_id += 1;
+            packet.meta_mut().test = Some(Box::new(net::packet::TestMeta { id: self.next_id }));
+        }
+        self.translations.lock().clear();
+
         let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
         assert_eq!(out.len(), sent, "the pipeline did not return every packet");
         out
@@ -286,6 +312,55 @@ fn assert_covered(covered: bool, what: &str) {
          one can spend the budget on inputs chosen for being unusual. Move it aside and re-run to \
          tell that apart from a real gap."
     );
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Translations {
+    was: std::collections::HashMap<u64, net::FlowKey>,
+    given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
+}
+
+#[cfg(test)]
+impl Translations {
+    fn before<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().requires_masquerade() {
+            return;
+        }
+        let (Some(test), Ok(key)) = (packet.meta().test.as_ref(), net::FlowKey::try_from(packet))
+        else {
+            return;
+        };
+        self.was.insert(test.id, key);
+    }
+
+    fn after<Buf: PacketBufferMut>(&mut self, at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() {
+            return;
+        }
+        let Some(test) = packet.meta().test.as_ref() else {
+            return;
+        };
+        let Some(was) = self.was.get(&test.id).copied() else {
+            return;
+        };
+        let (Some(source), Some(port)) = (packet.ip_source(), packet.transport_src_port()) else {
+            return;
+        };
+        let now = (source, port.get());
+        if let Some(before) = self.given.insert(was, now) {
+            assert_eq!(
+                before, now,
+                "{at}: two packets of one flow in one burst were given different public tuples, \
+                 so the burst allocated more than once for it"
+            );
+        }
+    }
+
+    fn clear(&mut self) {
+        self.was.clear();
+        self.given.clear();
+    }
 }
 
 pub(crate) struct Checkpoint<F> {

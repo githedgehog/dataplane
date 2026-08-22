@@ -151,6 +151,14 @@ pub struct PacketMeta {
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
     pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
+    #[cfg(feature = "test_meta")]
+    pub test: Option<Box<TestMeta>>,
+}
+
+#[cfg(feature = "test_meta")]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TestMeta {
+    pub id: u64,
 }
 impl PacketMeta {
     #[must_use]
