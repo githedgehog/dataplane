@@ -1,0 +1,38 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.3"
+
+# NAT Sessions Pertaining to ICMP Error Payload
+#
+#    While processing an ICMP Error packet pertaining to an ICMP Query or
+#    Query response message, a NAT device MUST NOT refresh or delete the
+#    NAT Session that pertains to the embedded payload within the ICMP
+#    Error packet.  This is in spite of the fact that the NAT device uses
+#    the NAT Session to translate the embedded payload.  This ensures that
+#    the NAT Session will not be modified if someone is able to spoof ICMP
+#    Error messages for the session.  [ICMP-ATK] lists a number of
+#    potential ICMP attacks that may be attempted by malicious users on
+#    the network.  This requirement is necessary for current applications
+#    to work correctly.
+# 
+#    REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+#           Query or Query response message, a NAT device MUST NOT refresh
+#           or delete the NAT Session that pertains to the embedded
+#           payload within the ICMP Error packet.
+
+[[spec]]
+level = "MUST"
+quote = '''
+While processing an ICMP Error packet pertaining to an ICMP Query or
+Query response message, a NAT device MUST NOT refresh or delete the
+NAT Session that pertains to the embedded payload within the ICMP
+Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+Query or Query response message, a NAT device MUST NOT refresh
+or delete the NAT Session that pertains to the embedded
+payload within the ICMP Error packet.
+'''
+

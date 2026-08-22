@@ -1,0 +1,64 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-6"
+
+# Rejection of Outbound Flows Disallowed by NAT
+#
+#    A NAT device typically permits all outbound sessions.  However, a NAT
+#    device may disallow some outbound sessions due to resource
+#    constraints or administration considerations.  For example, a NAT
+#    device may not permit the first packet of a new outbound session if
+#    the NAT device is out of resources (out of addresses or TCP/UDP
+#    ports, or NAT Session resources) to set up a state for the session,
+#    or, if the specific session is administratively restricted by the NAT
+#    device.
+# 
+#    When a NAT device is unable to establish a NAT Session for a new
+#    transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+#    constraints or administrative restrictions, the NAT device SHOULD
+#    send an ICMP destination unreachable message, with a code of 13
+#    (Communication administratively prohibited) to the sender, and drop
+#    the original packet.  This requirement is meant primarily for future
+#    use.  Current applications do not require this for them to work
+#    correctly.  The justification for using ICMP code 13 in the ICMP
+#    Error message is as follows: Section 5.2.7.1 of [RFC1812] recommends
+#    routers use ICMP code 13 (Communication administratively prohibited)
+#    when they administratively filter packets.  ICMP code 13 is a soft
+#    error and is on par with other soft error codes generated in response
+#    to transient events such as "network unreachable" (ICMP type=3,
+#    code=0).
+# 
+#    Some NAT designers opt to never reject an outbound flow.  When a NAT
+#    runs short of resources, they prefer to steal a resource from an
+#    existing NAT Session rather than reject the outbound flow.  Such a
+#    design choice may appear conformant to REQ-8 below.  However, the
+#    design choice is in violation of the spirit of both REQ-8 and REQ-2.
+#    Such a design choice is strongly discouraged.
+# 
+#    REQ-8: When a NAT device is unable to establish a NAT Session for a
+#    new transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+#    constraints or administrative restrictions, the NAT device SHOULD
+#    send an ICMP destination unreachable message, with a code of 13
+#    (Communication administratively prohibited) to the sender, and drop
+#    the original packet.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a NAT device is unable to establish a NAT Session for a new
+transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+constraints or administrative restrictions, the NAT device SHOULD
+send an ICMP destination unreachable message, with a code of 13
+(Communication administratively prohibited) to the sender, and drop
+the original packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-8: When a NAT device is unable to establish a NAT Session for a
+new transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+constraints or administrative restrictions, the NAT device SHOULD
+send an ICMP destination unreachable message, with a code of 13
+(Communication administratively prohibited) to the sender, and drop
+the original packet.
+'''
+
