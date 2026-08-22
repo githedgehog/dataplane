@@ -132,6 +132,51 @@ That rules out running it per pull request in full. Two modes make sense:
 - `--in-diff` on a branch, when you want to know whether what you just wrote is tested.
 - A full sweep on a schedule -- a weekly job on an otherwise idle runner, finishing before Monday.
 
+## Whole-crate sweeps, 2026-08-22
+
+Three sweeps at the tip of the specification-compliance branch, run before that day's test
+work, so they are a baseline rather than a current reading. Raw output is under
+`.scratch/mutants/`; `caught.txt` is only there, since the console prints only misses.
+
+| crate     | mutants | missed | caught | unviable | timeouts | wall |
+| --------- | ------- | ------ | ------ | -------- | -------- | ---- |
+| `nat`     | 1,538   | 217    | 804    | 502      | 15       | 22m  |
+| `routing` | 1,652   | 372    | 523    | 675      | 82       | 28m  |
+| `net`     | 2,319   | 777    | 886    | 656      | 0        | 53m  |
+
+Measured on the files that were then worked, re-running per file:
+
+| file                                       | before | after |
+| ------------------------------------------ | ------ | ----- |
+| `nat/src/masquerade/apalloc/port_alloc.rs` | 40     | 16    |
+| `nat/src/icmp_handler/nf.rs`               | 10     | 2     |
+
+Both remainders in the second are equivalent, and the reasoning is next to the code rather
+than in a list -- which is the shape [classifying](#classifying-in-practice) should take when
+the answer is a property of the code's shape rather than of one mutant.
+
+### What they say to do next
+
+Ranked by signal rather than by count, since the largest clusters are the least interesting.
+
+1. **`net/src/headers/embedded.rs`, 52.** ICMP-error embedded header parsing, and where the
+   RFC 4884 defect lived. The highest-value target in the tree.
+2. **`net/src/tcp/mod.rs`, 46**, with `net/src/flows/flow_key.rs`, 31. Flag and option
+   accessors that connection tracking reads through the flow key.
+3. **`net/src/icmp6/{mod,truncated}.rs`, 62 together.** Two defects were found in this family
+   in one day; it is undertested rather than unlucky.
+4. **`routing/src/router/cpi.rs`, 29** and **`routing/src/rib/vrf.rs`, 17.** The control-plane
+   interface and the RIB.
+
+Two things to fix about the sweeps themselves before the report becomes a routine:
+
+- **Printers dominate `routing`.** `cli/display.rs`, `cli/handler.rs` and `bmp/bmp_render.rs`
+  are 138 of its 372. `exclude_re` in `.cargo/mutants.toml` covers `impl Display` and
+  `impl Debug`, which does not reach a render free function. Widen it, or the standing rule is
+  followed everywhere except in the report that measures it.
+- **`net/src/buffer/test_buffer.rs`, 29** is test scaffolding compiled into the library. This
+  document already names it as the case belonging in the exclusions; it is still not there.
+
 ## The weekly report (to be written)
 
 The job should produce two artifacts from the same run:
