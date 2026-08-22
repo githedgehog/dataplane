@@ -74,9 +74,9 @@ use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
-use crate::masquerade::natip::NatIp;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use config::GenId;
+use net::ip::IpAddress;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -108,7 +108,7 @@ pub use port_alloc::AllocatedPort;
 ///
 /// Both VPC discriminants precede the address so range lookup stays within one VPC pair.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct PoolTableKey<I: NatIp> {
+struct PoolTableKey<I: IpAddress> {
     protocol: NextHeader,
     src_vpcd: VpcDiscriminant,
     dst_vpcd: VpcDiscriminant,
@@ -116,7 +116,7 @@ struct PoolTableKey<I: NatIp> {
     addr_range_end: I,
 }
 
-impl<I: NatIp> PoolTableKey<I> {
+impl<I: IpAddress> PoolTableKey<I> {
     fn new(
         protocol: NextHeader,
         src_vpcd: VpcDiscriminant,
@@ -361,7 +361,7 @@ impl NatAllocator {
                 next_header,
                 src_vpcd,
                 dst_vpcd,
-                NatIp::try_from_addr(src_ip).map_err(|()| {
+                IpAddress::try_from_addr(src_ip).map_err(|_| {
                     AllocatorError::InternalIssue("Failed to convert src IP address".to_string())
                 })?,
             )
@@ -461,10 +461,10 @@ impl NatAllocator {
 // fields from the lookup key match exactly with the fields from a key in a table. To make sure we
 // pick the entry in this case, we need to ensure the value is always greater or equal to the one of
 // the key from the PoolTable. So we set it to the largest possible value.
-fn max_range<I: NatIp>() -> I {
+fn max_range<I: NatIpWithBitmap>() -> I {
     I::try_from_bits(u128::MAX)
         .or(I::try_from_bits(u32::MAX.into()))
-        .unwrap_or_else(|()| unreachable!()) // IPv4/IPv6 can always be built from u32::MAX
+        .unwrap_or_else(|_| unreachable!())
 }
 
 ///////////////////////////////////////////////////////////////////////////////
