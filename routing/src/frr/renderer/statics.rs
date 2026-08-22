@@ -16,7 +16,6 @@ impl Rendered for StaticRouteNhop {
             StaticRouteNhop::Null0 => "Null0".to_string(),
             StaticRouteNhop::Reject => "reject".to_string(),
             StaticRouteNhop::Blackhole => "blackhole".to_string(),
-            StaticRouteNhop::Unset => panic!("Missing next-hop"),
         }
     }
 }
@@ -62,36 +61,50 @@ pub mod tests {
 
     #[test]
     fn test_static_route_render() {
-        let route = StaticRoute::new(Prefix::expect_from(("192.168.1.0", 24)))
-            .nhop_addr(IpAddr::from_str("7.0.0.1").expect("Bad address"))
-            .nhop_vrf("default".to_owned())
-            .tag(1000);
+        let route = StaticRoute::new(
+            Prefix::expect_from(("192.168.1.0", 24)),
+            StaticRouteNhop::Address(IpAddr::from_str("7.0.0.1").expect("Bad address")),
+        )
+        .nhop_vrf("default".to_owned())
+        .tag(1000);
         print!("\n{}", route.render(&()));
 
-        let route = StaticRoute::new(Prefix::expect_from(("192.168.2.0", 24)))
-            .nhop_iface("Eth1.200".to_owned())
-            .tag(2000);
+        let route = StaticRoute::new(
+            Prefix::expect_from(("192.168.2.0", 24)),
+            StaticRouteNhop::Interface("Eth1.200".to_owned()),
+        )
+        .tag(2000);
         print!("{}", route.render(&()));
 
-        let route = StaticRoute::new(Prefix::expect_from(("192.168.3.0", 24))).nhop_blackhole();
+        let route = StaticRoute::new(
+            Prefix::expect_from(("192.168.3.0", 24)),
+            StaticRouteNhop::Blackhole,
+        );
         print!("{}", route.render(&()));
 
-        let route = StaticRoute::new(Prefix::expect_from(("192.168.4.0", 29))).nhop_reject();
+        let route = StaticRoute::new(
+            Prefix::expect_from(("192.168.4.0", 29)),
+            StaticRouteNhop::Reject,
+        );
         print!("{}", route.render(&()));
     }
 
     pub fn build_static_routes() -> BTreeSet<StaticRoute> {
         let mut statics = BTreeSet::new();
-        let route = StaticRoute::new(Prefix::expect_from(("192.168.1.0", 24)))
-            .nhop_addr(IpAddr::from_str("7.0.0.1").expect("Bad address"))
-            .nhop_vrf("VPC-1".to_owned())
-            .tag(1000);
+        let route = StaticRoute::new(
+            Prefix::expect_from(("192.168.1.0", 24)),
+            StaticRouteNhop::Address(IpAddr::from_str("7.0.0.1").expect("Bad address")),
+        )
+        .nhop_vrf("VPC-1".to_owned())
+        .tag(1000);
         statics.insert(route);
 
-        let route = StaticRoute::new(Prefix::expect_from(("192.168.2.0", 24)))
-            .nhop_addr(IpAddr::from_str("7.0.0.2").expect("Bad address"))
-            .nhop_vrf("VPC-2".to_owned())
-            .tag(1000);
+        let route = StaticRoute::new(
+            Prefix::expect_from(("192.168.2.0", 24)),
+            StaticRouteNhop::Address(IpAddr::from_str("7.0.0.2").expect("Bad address")),
+        )
+        .nhop_vrf("VPC-2".to_owned())
+        .tag(1000);
         statics.insert(route);
         statics
     }
