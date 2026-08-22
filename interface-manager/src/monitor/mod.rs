@@ -119,7 +119,9 @@ impl InterfaceMonitor {
     ///
     /// # Errors
     ///
-    /// This method fails if a netlink connection cannot be created.
+    /// This method fails if a netlink connection cannot be created, and says why: a caller that
+    /// spawns this and drops the result gets the log, but one that awaits it can now tell a
+    /// permissions problem from a missing interface.
     pub async fn run(monitor: Arc<Self>) -> std::io::Result<()> {
         info!("Starting interface monitor");
         for i in &monitor.tracked {
