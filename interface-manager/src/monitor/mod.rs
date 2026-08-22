@@ -119,7 +119,6 @@ impl InterfaceMonitor {
     ///
     /// # Errors
     ///
-    /// This method fails if a netlink connection cannot be created.
     pub async fn run(monitor: Arc<Self>) -> std::io::Result<()> {
         info!("Starting interface monitor");
         for i in &monitor.tracked {
