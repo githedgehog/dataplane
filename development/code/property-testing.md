@@ -28,6 +28,14 @@ little more knowledge of the implementation. For those cases, build the input fr
 operations instead, and derive the oracles from the same algebra -- see
 [testing a config-driven dataplane with an operation algebra](./config-algebra-testing.md).
 
+A large input also costs bytes, and running out of them is silent. `bolero`'s byte driver truncates
+at 4096 by default and **fills the shortfall with zeros** rather than failing, so a generator that
+outgrows its budget goes on producing values -- the tail of each one a run of defaults that looks
+like coverage. Batched generators reach that point quickly, because a configuration and a batch of
+inputs come out of the same bytes. Measure and assert, as
+`dataplane::packet_processor::fuzz::assert_within_budget` does; see
+[running tests](./running-tests.md) for the two separate limits involved.
+
 ## Three altitudes, and what only the top one can say
 
 Property tests in this tree sit at three heights, and the useful question about a new one is which
