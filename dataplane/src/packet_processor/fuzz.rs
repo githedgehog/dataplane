@@ -283,10 +283,23 @@ fn topology() -> RouterTables {
     );
 
     tables.vrf(LOCAL_VRF, Some(vni(LOCAL_VNI)));
+    encapsulate_out_of(&mut tables, LOCAL_VRF, vni(LOCAL_VNI));
 
     tables.vrf(REMOTE_VRF, Some(vni(REMOTE_VNI)));
+    encapsulate_out_of(&mut tables, REMOTE_VRF, vni(REMOTE_VNI));
+
+    tables.adjacency(
+        PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+        uplink(),
+        PEER_MAC,
+    );
+
+    tables
+}
+
+fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
     tables.vtep(
-        REMOTE_VRF,
+        vrfid,
         Vtep::with_ip_and_mac(
             LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
             GATEWAY_MAC,
@@ -295,7 +308,7 @@ fn topology() -> RouterTables {
     let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
     let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
         ResolvedVxlan {
-            vni: vni(REMOTE_VNI),
+            vni: out_vni,
             remote: peer,
             dmac: PEER_MAC,
         },
@@ -305,15 +318,11 @@ fn topology() -> RouterTables {
         Some(peer),
     )));
     tables.route_via(
-        REMOTE_VRF,
+        vrfid,
         Prefix::root_v4(),
         nhop(&peer),
         &FibGroup::with_entry(out),
     );
-
-    tables.adjacency(peer, uplink(), PEER_MAC);
-
-    tables
 }
 
 fn nhop(address: &IpAddr) -> NhopKey {
@@ -676,7 +685,12 @@ mod round_trip {
         }
     }
 
-    fn udp(src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Option<Packet<TestBuffer>> {
+    pub(super) fn udp(
+        src: IpAddr,
+        dst: IpAddr,
+        sport: u16,
+        dport: u16,
+    ) -> Option<Packet<TestBuffer>> {
         let sport = UdpPort::new_checked(sport).ok()?;
         let dport = UdpPort::new_checked(dport).ok()?;
         let headers = match (src, dst) {
@@ -687,6 +701,7 @@ mod round_trip {
                     .ipv4(|ip| {
                         ip.set_source(src);
                         ip.set_destination(dst);
+                        ip.set_ttl(64);
                     })
                     .udp(|udp| {
                         udp.set_source(sport);
@@ -702,6 +717,7 @@ mod round_trip {
                     .ipv6(|ip| {
                         ip.set_source(src);
                         ip.set_destination(dst);
+                        ip.set_hop_limit(64);
                     })
                     .udp(|udp| {
                         udp.set_source(sport);
@@ -1123,18 +1139,52 @@ mod acl {
 
 #[cfg(test)]
 mod routed {
+    use super::round_trip::udp;
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
     use net::buffer::TestBuffer;
-    use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryVxlan};
+    use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::ip::dscp::Dscp;
     use net::ip::ecn::Ecn;
     use net::packet::test_utils::{
-        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying,
+        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
     };
+    use net::parse::DeParse;
     use net::vlan::Vid;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Debug, Clone, Copy)]
+    struct Flow {
+        host: u8,
+        sport: u16,
+        dport: u16,
+    }
+
+    struct Flows;
+
+    const FLOWS_PER_FABRIC: usize = 8;
+
+    impl bolero::ValueGenerator for Flows {
+        type Output = Vec<Flow>;
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Vec<Flow>> {
+            (0..FLOWS_PER_FABRIC)
+                .map(|_| {
+                    Some(Flow {
+                        host: driver.produce()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("routed::Flows", &Flows);
+    }
 
     fn exposes() -> Vec<VpcExpose> {
         vec![
@@ -1147,20 +1197,33 @@ mod routed {
         ]
     }
 
-    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let bytes = inner
             .clone()
             .serialize()
             .expect("the inner frame serializes");
-        let mut packet =
-            build_test_vxlan_ipv4_packet_carrying(Dscp::default(), Ecn::default(), bytes.as_ref())
-                .expect("a well-formed tunnelled frame");
+        let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
+            from,
+            Dscp::default(),
+            Ecn::default(),
+            bytes.as_ref(),
+        )
+        .expect("a well-formed tunnelled frame");
         packet
             .set_eth_destination(GATEWAY_MAC)
             .expect("the frame has an ethernet header");
         packet.meta_mut().iif = Some(uplink());
         packet.meta_mut().set_keep(true);
         packet
+    }
+
+    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+        tunnelled_from(vni(LOCAL_VNI), inner)
+    }
+
+    fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
+        let mut copy = delivered.clone();
+        matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
     }
 
     fn inner() -> Packet<TestBuffer> {
@@ -1300,6 +1363,128 @@ mod routed {
 
         super::assert_covered(delivered > 0, "nothing ever reached the wire");
         super::assert_covered(tagged > 0, "no tagged shape was ever generated");
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_tunnelled_flow_comes_back_through_the_tunnel() {
+        static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NOT_DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Flows)
+            .for_each(|flows| {
+                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                    return;
+                };
+
+                for flow in flows {
+                    let src: IpAddr = format!("1.1.0.{}", flow.host)
+                        .parse()
+                        .unwrap_or_else(|_| unreachable!());
+                    let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                    let Some(request) = udp(src, dst, flow.sport, flow.dport) else {
+                        continue;
+                    };
+                    let sent_payload = payload_of(&request);
+                    let ttl_sent = ttl_of(&request);
+
+                    let out = fabric.send(tunnelled(&request));
+                    if !matches!(verdict(&out), Verdict::Delivered { .. }) {
+                        NOT_DELIVERED.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    assert_eq!(
+                        out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                        Some(vni(REMOTE_VNI)),
+                        "the request left tunnelled towards the wrong vpc"
+                    );
+
+                    let translated = inside(&out).expect("a delivered request was not tunnelled");
+                    assert_eq!(
+                        payload_of(&translated),
+                        sent_payload,
+                        "the tenant payload did not survive the round of decap, nat and encap"
+                    );
+                    assert_eq!(
+                        ttl_of(&translated).map(|t| t + 1),
+                        ttl_sent,
+                        "the tenant packet was not charged exactly one hop"
+                    );
+
+                    let (Some(public_src), Some(reached)) =
+                        (translated.ip_source(), translated.ip_destination())
+                    else {
+                        continue;
+                    };
+                    let public_port = translated
+                        .transport_src_port()
+                        .unwrap_or_else(|| unreachable!("a udp packet has a source port"))
+                        .get();
+
+                    let Some(reply) = udp(reached, public_src, flow.dport, public_port) else {
+                        continue;
+                    };
+                    let back = fabric.send(tunnelled_from(vni(REMOTE_VNI), &reply));
+
+                    let verdict = verdict(&back);
+                    assert!(
+                        matches!(verdict, Verdict::Delivered { .. }),
+                        "the reply of a delivered flow did not reach the wire: {verdict:?} \
+                         (request {src}:{sport} -> {dst}:{dport} left as \
+                         {public_src}:{public_port})",
+                        sport = flow.sport,
+                        dport = flow.dport
+                    );
+                    assert_eq!(
+                        back.try_vxlan().map(net::vxlan::Vxlan::vni),
+                        Some(vni(LOCAL_VNI)),
+                        "the reply went back into the wrong vpc"
+                    );
+
+                    let returned = inside(&back).expect("a delivered reply was not tunnelled");
+                    assert_eq!(
+                        returned.ip_destination(),
+                        Some(src),
+                        "the reply did not come back to the host that sent the request"
+                    );
+                    assert_eq!(
+                        returned.ip_source(),
+                        Some(dst),
+                        "the reply's source was rewritten"
+                    );
+                    assert_eq!(
+                        returned.transport_dst_port().map(std::num::NonZero::get),
+                        Some(flow.sport),
+                        "the reply did not get the original source port back"
+                    );
+                    ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let round_tripped = ROUND_TRIPPED.load(Ordering::Relaxed);
+        eprintln!(
+            "tunnelled-round-trips={round_tripped} not-delivered={}",
+            NOT_DELIVERED.load(Ordering::Relaxed)
+        );
+        super::assert_covered(
+            round_tripped > 0,
+            "no flow ever reached the wire, so no reply was ever checked to come back",
+        );
+    }
+
+    fn payload_of(packet: &Packet<TestBuffer>) -> Vec<u8> {
+        let bytes = packet
+            .clone()
+            .serialize()
+            .expect("a packet in hand serializes");
+        let headers = packet.headers().size().get() as usize;
+        bytes.as_ref().get(headers..).unwrap_or_default().to_vec()
+    }
+
+    fn ttl_of(packet: &Packet<TestBuffer>) -> Option<u8> {
+        packet.try_ipv4().map(net::ipv4::Ipv4::ttl)
     }
 
     fn one(
