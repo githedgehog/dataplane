@@ -568,7 +568,7 @@ mod fib_properties {
 
     fn entry_pool() -> Vec<FibEntry> {
         (1..=u32::from(NUM_ENTRIES))
-            .map(|i| build_fib_entry_egress(i, &format!("10.0.9.{i}"), &format!("eth{i}")))
+            .map(|i| build_fib_entry_egress(i, &format!("10.0.9.{i}")))
             .collect()
     }
 
