@@ -27,12 +27,13 @@ use net::headers::TryTcpMut;
 use net::headers::{
     EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
 };
-use net::icmp4::Icmp4Type;
 use net::icmp4::TruncatedIcmp4;
+use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::ip::NextHeader;
 use net::packet::test_utils::build_test_tcp_ipv4_packet;
 use net::packet::test_utils::{
-    IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
+    IcmpEchoDirection, IcmpErrorAddrs, build_test_icmp4_destination_unreachable_packet,
+    build_test_icmp4_destination_unreachable_packet_with_code, build_test_icmp4_echo,
     build_test_udp_ipv4_frame, build_test_udp_ipv4_packet,
 };
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -1778,6 +1779,102 @@ async fn test_masquerade_tcp_reset() {
     // flows get expired
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(flow_table.active_len(), Some(0));
+}
+
+// Establish a one-way masqueraded TCP flow and hand back the flow, the public tuple it was given,
+// and the address it is talking to.
+fn one_way_tcp_flow(
+    pipeline: &mut DynPipeline<TestBuffer>,
+) -> (Arc<FlowInfo>, Ipv4Addr, u16, Ipv4Addr) {
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(pipeline, syn);
+    assert!(!out.is_done());
+    let (public, public_port) = translation(&out);
+    let target = out.try_ipv4().unwrap().destination();
+
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(pipeline, syn);
+    let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
+    assert!(flow.is_active());
+    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+
+    (flow, public, public_port, target)
+}
+
+// Feed the pipeline a Destination Unreachable with the given code, reporting on a TCP flow.
+fn icmp_unreachable_about_tcp(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    unreachable: Icmp4DestUnreachable,
+    public: Ipv4Addr,
+    public_port: u16,
+    target: Ipv4Addr,
+) -> Option<DoneReason> {
+    let mut packet = build_test_icmp4_destination_unreachable_packet_with_code(
+        unreachable,
+        IcmpErrorAddrs {
+            outer_src: addr_v4("1.2.2.18"),
+            outer_dst: public,
+            inner_src: public,
+            inner_dst: target,
+        },
+        NextHeader::TCP,
+        public_port,
+        80,
+    )
+    .unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(false);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+
+    let out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    out[0].get_done()
+}
+
+/// Path MTU Discovery must not cost the flow that triggered it.
+///
+/// `Fragmentation Needed` is the one Destination Unreachable code that reports a *recoverable*
+/// condition: the sender is expected to retry the same flow with a smaller packet. Tearing the
+/// flow down instead means the retry arrives to no state, and under masquerade it also means a
+/// different public port -- so the far end sees a new connection rather than a resumed one.
+///
+/// Paired with the `Network` case so that the assertion is about the code and not about ICMP
+/// errors in general: the two differ in exactly one argument.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+    let (flow, public, public_port, target) = one_way_tcp_flow(&mut pipeline);
+
+    let done = icmp_unreachable_about_tcp(
+        &mut pipeline,
+        Icmp4DestUnreachable::FragmentationNeeded {
+            next_hop_mtu: Some(1400.try_into().unwrap()),
+        },
+        public,
+        public_port,
+        target,
+    );
+    assert_eq!(done, None);
+    assert!(
+        flow.is_active(),
+        "Fragmentation Needed tore down the flow that is about to retry"
+    );
+
+    // The same flow, the same handler, the same everything but the code.
+    let done = icmp_unreachable_about_tcp(
+        &mut pipeline,
+        Icmp4DestUnreachable::Network,
+        public,
+        public_port,
+        target,
+    );
+    assert_eq!(done, None);
+    assert!(
+        !flow.is_active(),
+        "Network Unreachable no longer tears the flow down"
+    );
 }
 
 // Walk the client-initiated graceful-close states.
