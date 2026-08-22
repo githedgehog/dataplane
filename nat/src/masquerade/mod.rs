@@ -8,7 +8,6 @@ mod expiry;
 pub(crate) mod flows;
 mod fuzz;
 pub(crate) mod icmp_handling;
-mod natip;
 mod nf;
 mod packet;
 mod probe;
