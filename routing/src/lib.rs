@@ -40,7 +40,9 @@ pub use interfaces::iftable::IfTable;
 pub use interfaces::iftablerw::IfTableReader;
 pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig};
 pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
-pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+pub use rib::encapsulation::{
+    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
+};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
 pub use bmp::spawn_bmp_server;
