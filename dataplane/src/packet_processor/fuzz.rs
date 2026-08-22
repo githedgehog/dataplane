@@ -37,7 +37,7 @@ use super::ipforward::IpForwarder;
 
 pub(crate) struct Fabric {
     pipeline: DynPipeline<TestBuffer>,
-    _flow_table: Arc<FlowTable>,
+    flow_table: Arc<FlowTable>,
     _flow_filter: FlowFilterContextWriter,
     _acl: AclFilterContextWriter,
     _static_nat: NatTablesWriter,
@@ -147,7 +147,7 @@ impl Fabric {
 
         Self {
             pipeline,
-            _flow_table: flow_table,
+            flow_table,
             _flow_filter: flow_filter,
             _acl: acl,
             _static_nat: static_nat,
@@ -161,6 +161,10 @@ impl Fabric {
         let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+
+    pub(crate) fn flows(&self) -> Option<usize> {
+        self.flow_table.len()
     }
 
     pub(crate) fn send_batch(
@@ -1160,7 +1164,7 @@ mod acl {
 #[cfg(test)]
 mod burst {
     use super::round_trip::udp;
-    use super::routed::{exposes, inside, tunnelled};
+    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
     use super::*;
     use net::headers::TryVxlan;
     use std::sync::LazyLock;
@@ -1217,6 +1221,71 @@ mod burst {
                 .and_then(Packet::transport_src_port)
                 .map(std::num::NonZero::get),
         }
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_burst_of_one_flow_allocates_once() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Burst)
+            .for_each(|members| {
+                let m = members[0];
+                let src: IpAddr = format!("1.1.0.{}", m.host)
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
+                let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                let packet = || udp(src, dst, 4000, m.dport).map(|p| tunnelled(&p));
+
+                let (Some(mut alone), Some(mut burst)) = (
+                    Fabric::routed(&exposes(), None),
+                    Fabric::routed(&exposes(), None),
+                ) else {
+                    return;
+                };
+                let Some(one) = packet() else { return };
+                let single = treatment(&alone.send(one));
+                if !matches!(single.verdict, Verdict::Delivered { .. }) {
+                    return;
+                }
+                let cost_of_one = alone.flows();
+
+                let Some(together) = (0..BURST).map(|_| packet()).collect::<Option<Vec<_>>>()
+                else {
+                    return;
+                };
+                let out = burst.send_batch(together);
+
+                for (i, packet) in out.iter().enumerate() {
+                    let t = treatment(packet);
+                    assert_eq!(
+                        t.inner_sport, single.inner_sport,
+                        "packet {i} of a burst of one flow was given a different public port \
+                         from the same packet sent alone: the burst allocated more than once"
+                    );
+                    assert_eq!(
+                        t.inner_src, single.inner_src,
+                        "packet {i} of a burst of one flow left under a different public address"
+                    );
+                    assert_eq!(
+                        t.verdict, single.verdict,
+                        "packet {i} of a burst of one flow reached a different verdict"
+                    );
+                }
+                assert_eq!(
+                    burst.flows(),
+                    cost_of_one,
+                    "a burst of {BURST} packets of one flow cost more flow-table entries than \
+                     one packet of it did"
+                );
+                CHECKED.fetch_add(1, Ordering::Relaxed);
+            });
+
+        let checked = CHECKED.load(Ordering::Relaxed);
+        eprintln!("single-flow-bursts={checked}");
+        super::assert_covered(checked > 0, "no burst of a single flow was ever delivered");
     }
 
     #[tokio::test]
@@ -1488,7 +1557,7 @@ mod routed {
         ]
     }
 
-    fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let bytes = inner
             .clone()
             .serialize()
