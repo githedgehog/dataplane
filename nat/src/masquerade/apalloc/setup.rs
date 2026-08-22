@@ -12,9 +12,9 @@ use super::region::{AddrInterval, Region, decompose, regions_by_owner};
 use super::reserved::ReservedPorts;
 use super::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use crate::masquerade::allocator_writer::MasqueradeConfig;
-use crate::masquerade::natip::NatIp;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
 use lpm::prefix::{L4Protocol, PrefixPortsSet, PrefixWithOptionalPorts};
+use net::ip::IpAddress;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -98,7 +98,7 @@ fn gather_exposes<'a, J, F, FIter, P, PIter>(
     port_forwarding_filter: &P,
 ) -> BTreeMap<VpcDiscriminant, Vec<GatheredExpose<'a>>>
 where
-    J: NatIp,
+    J: IpAddress,
     F: Fn(&'a ValidatedManifest) -> FIter,
     FIter: Iterator<Item = &'a ValidatedExpose>,
     P: Fn(&'a ValidatedManifest) -> PIter,
@@ -138,7 +138,7 @@ where
 
 // Convert a set of public prefixes into raw address intervals, dropping any that are not of the
 // version being built.
-fn public_intervals<J: NatIp>(ranges: &PrefixPortsSet) -> Vec<AddrInterval> {
+fn public_intervals<J: IpAddress>(ranges: &PrefixPortsSet) -> Vec<AddrInterval> {
     ranges
         .iter()
         .filter_map(|prefix| {
@@ -308,7 +308,7 @@ fn build_region_allocators<J: NatIpWithBitmap>(
         .collect()
 }
 
-fn pool_table_key_for_expose<I: NatIp>(
+fn pool_table_key_for_expose<I: IpAddress>(
     prefix: &PrefixWithOptionalPorts,
     protocol: NextHeader,
     src_vpc_id: VpcDiscriminant,
@@ -332,10 +332,10 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     }
 }
 
-fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> (I, I) {
-    let addr = I::try_from_addr(prefix.prefix().as_address()).unwrap_or_else(|()| unreachable!());
+fn prefix_bounds<I: IpAddress>(prefix: &PrefixWithOptionalPorts) -> (I, I) {
+    let addr = I::try_from_addr(prefix.prefix().as_address()).unwrap_or_else(|_| unreachable!());
     let addr_range_end =
-        I::try_from_addr(prefix.prefix().last_address()).unwrap_or_else(|()| unreachable!());
+        I::try_from_addr(prefix.prefix().last_address()).unwrap_or_else(|_| unreachable!());
     // FIXME: Account for port ranges
     (addr, addr_range_end)
 }

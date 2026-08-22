@@ -5,7 +5,7 @@
 
 use super::alloc::{AllocatedIp, IpAllocator, NatPool, PoolSet};
 use super::port_alloc::PortAllocator;
-use super::{NatAllocator, NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
+use super::{IpAddress, NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
 use concurrency::sync::{Arc, Weak};
 use indenter::indented;
@@ -53,7 +53,7 @@ where
 
 impl<I> Display for PoolTableKey<I>
 where
-    I: NatIp + Display,
+    I: IpAddress,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(
@@ -74,8 +74,8 @@ where
         for region in self.regions() {
             empty = false;
             let range = region.range();
-            let start = I::try_from_bits(range.start).map_err(|()| Error)?;
-            let end = I::try_from_bits(range.end).map_err(|()| Error)?;
+            let start = I::try_from_bits(range.start).map_err(|_| Error)?;
+            let end = I::try_from_bits(range.end).map_err(|_| Error)?;
             writeln!(f, "region [ {start} .. {end} ]:")?;
             write!(with_indent!(f), "{}", region.allocator())?;
         }
