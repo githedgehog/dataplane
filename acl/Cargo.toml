@@ -27,7 +27,7 @@ clock = { workspace = true, features = ["virtual"] }
 # differential-test against it, so make it available whenever test/bench targets are built.
 dataplane-acl = { path = ".", features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
-criterion = { workspace = true, features = ["cargo_bench_support"] }
+criterion = { workspace = true }
 dpdk = { workspace = true, features = ["test"] }
 match-action = { workspace = true, features = ["derive", "bolero"] }
 net = { workspace = true, features = ["test_buffer", "builder"] }
