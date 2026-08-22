@@ -8,7 +8,7 @@ use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig}
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::flows::{FlowInfo, FlowStatus};
-use net::headers::{TryIp, TryTransport};
+use net::headers::{TryHeaders, TryIp};
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use tracectl::trace_target;
@@ -129,9 +129,21 @@ impl FlowFilter {
                 self.flow_revalidation_data(flow_summary, genid);
         }
 
-        let Some(net) = packet.try_ip() else {
-            debug!("{nfi}: No IP headers found, dropping packet");
-            packet.done(DoneReason::NotIp);
+        let Some((_eth, net, transport)) = packet
+            .headers()
+            .pat()
+            .opt_eth()
+            .net()
+            .opt_transport()
+            .done()
+        else {
+            if packet.try_ip().is_none() {
+                debug!("{nfi}: No IP headers found, dropping packet");
+                packet.done(DoneReason::NotIp);
+            } else {
+                debug!("{nfi}: Header chain carries a layer this stage cannot account for");
+                packet.done(DoneReason::Unhandled);
+            }
             return Classification::Drop;
         };
         let Some(src_vpcd) = packet.meta().src_vpcd else {
@@ -152,9 +164,7 @@ impl FlowFilter {
             src_ip: net.src_addr(),
             dst_ip: net.dst_addr(),
             proto,
-            ports: packet
-                .try_transport()
-                .and_then(|t| t.src_port().zip(t.dst_port())),
+            ports: transport.and_then(|t| t.src_port().zip(t.dst_port())),
             gate: revalidation_gate,
         };
         Classification::Lookup {
