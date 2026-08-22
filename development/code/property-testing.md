@@ -38,13 +38,44 @@ height it belongs at.
    `nat::{static_nat,masquerade,portfw}::probe`, `acl_filter::nf_fuzz`, `flow_filter`'s adversarial
    header stacks. These say a stage does its own job.
 3. **The pipeline.** `dataplane::packet_processor::fuzz`. Stages in production order, sharing a
-   flow table, with the production `rte_acl` classifier.
+   flow table, with the production `rte_acl` classifier. In two depths: `Fabric::build` wires the
+   overlay slice, and `Fabric::routed` wires the whole thing including `Ingress`, both
+   `IpForwarder`s and `Egress`, over an underlay built with `routing::testing::RouterTables`.
 
 The third exists because the defects have been at the seams. An IPv6 extension header carried a
 packet past an ACL rule because the _reading_ of a legal shape was wrong, not the shape; a VLAN tag
 was forwarded onto a segment its sender named because no single stage did anything wrong -- the tag
 simply survived all of them. A stage-level harness cannot generate the first, and cannot observe
 the second.
+
+### Stamped arrival versus earned arrival
+
+The overlay slice is handed a bare inner packet with a helper that stamps the metadata
+decapsulation would have set. That is the right trade for a property about the overlay stages -- it
+keeps them cheap to run and the failure attributable -- but the stamp is then an assumption, and
+the two stages that produce it in production are not under test.
+
+`Fabric::routed` removes the assumption: the frame arrives on an interface, addressed to the
+gateway's vtep, and every annotation the overlay stages read was made by `Ingress` and
+`IpForwarder`. The cost is a topology to keep correct, and the way that cost is contained is a
+fixture test asserting an ordinary frame goes all the way through and out again. Every negative
+test at this altitude depends on it: a topology with a wrong route, a missing adjacency or an
+unattached interface drops _everything_, and each of those failures reads exactly like the refusal
+a negative test is looking for.
+
+### Redundant defences need one property each
+
+The VLAN refusal in `IpForwarder` is not the only thing that stops a tagged frame -- the filters
+match with `Headers::pat`, which is strict about VLANs, so they refuse the shape too. That is the
+design working. It also means a single end-to-end property cannot notice one layer going missing:
+delete the `IpForwarder` guard and an end-to-end assertion still passes.
+
+So the behaviour gets two properties, at deliberately different depths.
+`a_vlan_tag_is_refused_at_decapsulation` runs two stages and says _where_ the decision is made;
+`a_tagged_shape_never_reaches_the_wire` runs the whole pipeline over generated shapes and
+configurations and says what the gateway _does_. The first fails when a layer is removed, the
+second when the class defence is lost entirely. Neither subsumes the other, and a harness with only
+the second would have reported a defence that was no longer there.
 
 **Cost, and how it is paid.** Building a pipeline compiles `rte_acl` tables, which dwarfs pushing a
 packet through one: a fabric per input spent the whole budget on configuration, at 21 packets a
