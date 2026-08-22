@@ -5,7 +5,7 @@
 
 #![allow(clippy::similar_names)]
 
-use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
+use net::headers::{TryHeaders, TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
@@ -154,8 +154,25 @@ impl IpForwarder {
                 debug!("Next fib/vrf is {next_vrf}");
 
                 /* At this point decapsulation has already happened and `Packet` refers to
-                the innner packet. Annotate the incoming vni and the corresponding vrf to
-                make lookups from */
+                the innner packet. */
+
+                // The inner frame is whatever the far side put in the tunnel, and a VLAN tag in it
+                // is a forwarding decision nobody here made: no configuration expresses one, and
+                // nothing downstream reads `headers.vlan` -- `Egress` rewrites the MACs and leaves
+                // it in place, and a re-encapsulation puts the outer headers in front of it. A tag
+                // would therefore be carried out onto whatever segment it names.
+                //
+                // Refused here, where the frame becomes ours, rather than at whichever stage first
+                // happens to look at it. The overlay stages match with `Headers::pat` and so refuse
+                // it too; that is the structural guarantee that a stage never acts on a chain it
+                // did not account for, and this is where the policy lives.
+                if !packet.headers().vlan().is_empty() {
+                    debug!("{nfi}: Decapsulated frame carries a VLAN tag; not supported");
+                    packet.done(DoneReason::Unhandled);
+                    return;
+                }
+
+                /* Annotate the incoming vni and the corresponding vrf to make lookups from */
                 packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
                 packet.meta_mut().vrf = Some(next_vrf);
                 packet.meta_mut().set_overlay(true);
