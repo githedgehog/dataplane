@@ -740,7 +740,6 @@ impl Display for FibKey {
         match self {
             FibKey::Id(vrfid) => write!(f, "vrfid: {vrfid}")?,
             FibKey::Vni(vni) => write!(f, "vni: {vni:?}")?,
-            FibKey::Unset => write!(f, "Unset!")?,
         }
         Ok(())
     }
