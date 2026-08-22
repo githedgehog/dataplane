@@ -46,8 +46,24 @@ Read the top two rows. Callgrind reports an improvement; the machine is slower. 
 instructions, which is all callgrind can see, but it also grows `FibRoute` from 24 to 32 bytes --
 costing more in the trie that holds the routes than the removed walk saves -- and the walk it
 removed was hitting L1 anyway, because with one group both traversals touch the same cache lines.
-None of that is visible to an instruction count, and the modelled cache does not catch it either:
-its L1 is a fixed generic configuration, and this fixture fits in it whichever layout is used.
+None of that is visible to an instruction count, and the modelled cache does not catch it either
+-- but not for the reason one might guess. Callgrind auto-detects L1 through `CPUID` and gets it
+right: it modelled `D1 32768 B, 64 B, 8-way`, which is exactly this machine's L1d. What it cannot
+help with is that the fixture never leaves L1 in the first place. The run reports `D1mr 0`: zero
+data misses, at either layout. A cache model has nothing to say about a working set that fits in
+L1, however well it is parameterised.
+
+Which leaves the wall-clock difference needing another explanation, and the honest answer is that
+we do not have one. With the data in L1 and fewer instructions executed, the residual is most
+likely layout bias -- the rebuilt binary placing code or data slightly differently, shifting
+alignment and branch-predictor aliasing. That is a real effect on a real machine and it is why the
+change is not worth making, but it is a property of one binary rather than of the change, and a
+recompile could move it. Treat a few percent on a microbenchmark as a reason to look closer, not
+as a measurement of the edit.
+
+One place the model _is_ simply wrong: valgrind collapses L2 and L3 into a single "LL" and
+modelled 8 MB where this machine has a 32 MB L3. That does not matter for a fixture living in L1;
+it would matter for one that does not.
 
 Lower down, where the change is algorithmic rather than structural, the two agree on sign and land
 within a small factor on magnitude.
@@ -69,6 +85,68 @@ model better than absolute claims do.
   above, and it should not be read as a time.
 - Its cache model is a simplification of any real hierarchy, so cache-driven effects are exactly
   the ones to distrust.
+
+## The rest of the valgrind family
+
+iai-callgrind can drive any of callgrind, cachegrind, DHAT, massif, memcheck, helgrind, DRD and
+BBV, configured per benchmark:
+
+```rust
+#[library_benchmark(
+    config = LibraryBenchmarkConfig::default()
+        .tool(Cachegrind::default().args(["--D1=32768,8,64", "--LL=33554432,16,64"]))
+        .tool(Dhat::default())
+)]
+```
+
+`under_other_tools` in `fib_lookup_callgrind.rs` keeps that wiring exercised, so reaching for one
+of these is a two-line edit rather than an afternoon.
+
+One difference matters more than the rest: **only callgrind scopes to the benchmark function.** It
+has a call graph and iai-callgrind uses `--toggle-collect` to fence the measured region. Cachegrind
+has no call graph and counts the whole process; on the same benchmark it reported 453,358
+instructions where callgrind reported 349, the difference being process startup and fixture
+construction. Neither number is wrong -- they answer different questions -- but do not read them
+side by side as if they measure the same thing. The same applies to DHAT and massif: whole process,
+setup included.
+
+DHAT is the most immediately useful of the others here, because it counts allocations rather than
+time: the one-group fixture makes 42 allocations totalling 7,226 bytes, the sixteen-group one 377
+totalling 27,488. That is a cheap way to notice a path allocating when it should not.
+
+### Giving cachegrind the real cache
+
+Cachegrind takes `--D1`, `--I1` and `--LL` as `size,associativity,line_size`; `lscpu --caches`
+prints all three. The bench passes this machine's values. Two things worth knowing before assuming
+that fixes anything:
+
+- Callgrind and cachegrind already read `CPUID` and get **L1 right** without being told.
+- Valgrind models a two-level hierarchy, so L2 and L3 collapse into a single "LL". On this host it
+  guessed 8 MB against a real 32 MB L3, which is the one worth correcting by hand.
+
+Neither changed the result that prompted the exercise, because that benchmark's working set never
+leaves L1. Parameterising the model only helps a benchmark whose data does not fit -- which is an
+argument for making benchmark fixtures realistically large, not for tuning the model.
+
+## Vectorised code, and DPDK in particular
+
+Valgrind does not fall over on `rte_acl`: the whole DPDK ACL benchmark suite runs to completion
+under callgrind, v4 and v6, up to 16384 rules, 39.5 billion instructions, no crash.
+
+What it does instead is quieter and worse. DPDK picks its classify implementation at runtime from
+`CPUID`, and valgrind reports a CPU it can emulate rather than the one underneath. On a
+Threadripper PRO 7975WX -- Zen 4, full AVX-512 -- the run executed `rte_acl_classify_scalar` and
+`rte_acl_classify_avx2`, and **zero AVX-512 instructions**. Production on that same host would use
+`rte_acl_classify_avx512x16` or `x32`, which process 16 or 32 flows per iteration against AVX2's 8
+or 16.
+
+So a callgrind measurement of `rte_acl` is a measurement of an algorithm that will not run. It is
+not a small modelling error to correct for; it is a different function. Do not use these tools to
+compare ACL classification strategies, size a rule table, or decide whether a vectorised path is
+worth writing. Use wall clock on the target hardware for that.
+
+The same caution applies anywhere runtime dispatch picks an implementation from CPU features,
+which in this tree means most things that reach DPDK.
 
 ## Writing a benchmark that measures what you think
 
