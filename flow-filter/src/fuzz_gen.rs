@@ -414,7 +414,7 @@ fn derive_routing_probes(
 
     // (address, port, protocol, revalidated source NAT mode) of every source the peering routes.
     // A protocol of None leaves the choice to the destination.
-    let mut sources: Vec<(IpAddr, NonZero<u16>, Option<FwProto>, SourceGate)> = Vec::new();
+    let mut sources: Vec<Source> = Vec::new();
     for (li, lspec) in local.expose_specs().enumerate() {
         let block = local_base + li as u8;
         if lspec.source_capable() {
@@ -437,12 +437,7 @@ fn derive_routing_probes(
 
     // (address, port, protocol, revalidated destination VPC) of every destination the peering
     // routes.
-    let mut destinations: Vec<(
-        IpAddr,
-        NonZero<u16>,
-        Option<FwProto>,
-        Option<VpcDiscriminant>,
-    )> = Vec::new();
+    let mut destinations: Vec<Destination> = Vec::new();
     for (ri, rspec) in remote.expose_specs().enumerate() {
         let block = remote_base + ri as u8;
         if let Some(dst_public) = rspec.dest_public_space() {
@@ -658,6 +653,15 @@ pub(crate) enum PortSel {
     /// A port inside (or at the edge of) the shared port-forwarding public range.
     FwPublic(u8),
 }
+
+type Source = (IpAddr, NonZero<u16>, Option<FwProto>, SourceGate);
+
+type Destination = (
+    IpAddr,
+    NonZero<u16>,
+    Option<FwProto>,
+    Option<VpcDiscriminant>,
+);
 
 pub(crate) fn nz(port: u16) -> NonZero<u16> {
     NonZero::new(port).unwrap_or_else(|| unreachable!("fixture ports are non-zero"))
