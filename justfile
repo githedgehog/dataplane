@@ -54,6 +54,8 @@ features := ""
 
 fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
 
+fuzz_jobs := env("FUZZ_JOBS", `echo $(( ($(nproc) + 1) / 2 ))`)
+
 fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
 
 # whether to include default cargo features for this workspace (set to "false" to disable)
@@ -204,6 +206,7 @@ fuzz target time="60s" *args="":
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
         -l '{{ fuzz_max_input_length }}' \
         -E='-len_control={{ fuzz_len_control }}' \
+        -j '{{ fuzz_jobs }}' \
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
