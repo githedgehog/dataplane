@@ -570,8 +570,35 @@ pub fn build_test_vxlan_ipv4_packet_carrying(
     ecn: Ecn,
     inner_bytes: &[u8],
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    build_test_vxlan_ipv4_packet_carrying_vni(
+        Vni::new_checked(100).unwrap_or_else(|_| unreachable!()),
+        dscp,
+        ecn,
+        inner_bytes,
+    )
+}
+
+#[must_use]
+/// As [`build_test_vxlan_ipv4_packet_carrying`], tunnelling for a given [`Vni`] rather than a
+/// fixed one.
+///
+/// The vni is what decides which fib a decapsulated frame lands in, so a test that cannot vary it
+/// can only ever exercise traffic in one direction. Answering a request needs the peer's.
+///
+/// # Errors
+///
+/// Returns an error if the packet cannot be parsed back after being built.
+///
+/// # Panics
+///
+/// Panics if the resulting frame does not fit a `u16` length field.
+pub fn build_test_vxlan_ipv4_packet_carrying_vni(
+    vni: Vni,
+    dscp: Dscp,
+    ecn: Ecn,
+    inner_bytes: &[u8],
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     // VXLAN header bytes
-    let vni = Vni::new_checked(100).unwrap();
     let vxlan = Vxlan::new(vni);
     let vxlan_len = Vxlan::MIN_LENGTH.get() as usize;
 

@@ -71,6 +71,33 @@ test at this altitude depends on it: a topology with a wrong route, a missing ad
 unattached interface drops _everything_, and each of those failures reads exactly like the refusal
 a negative test is looking for.
 
+### The oracle a round trip gives you for free
+
+The strongest property at pipeline altitude is not an assertion about one packet, it is a
+_reversal_: send a flow out, build the reply **from what came out rather than from what went in**,
+and require the pipeline to undo itself. Nothing in the test then knows or computes what the
+translation should have been -- only that whatever it was has to reverse. Every address and port
+asserted is one the test chose before the pipeline saw it.
+
+`round_trip::a_translated_flow_comes_back_to_where_it_started` makes that claim at the overlay
+slice; `routed::a_tunnelled_flow_comes_back_through_the_tunnel` makes it where the reply arrives as
+a real tunnelled frame carrying the peer's vni. The second is not a duplicate: the reply-side
+decapsulation has no other test, and the same helper that built usable traffic for the first built
+packets with a hop count of zero, which the slice never noticed because it has no forwarding stage
+to decrement.
+
+Following a packet the whole way also makes riders cheap, and each is worth stating separately: the
+tenant payload must survive byte for byte, the hop count must fall by exactly one, the frame must
+leave tunnelled to the vpc it was addressed to. They cost a few lines each on a fixture that
+already exists.
+
+**State what a rider actually catches, not what it sounds like.** "The hop count falls by exactly
+one across two forwarder passes" sounds like it guards against double-charging. It does not: the
+two passes act on different headers -- the first on the outer frame, which decapsulation discards,
+the second on the inner one. Break-testing said so, both ways: removing the decrement fails the
+property, adding one to the first pass does not. The rider is still worth having, and the comment
+now says which half it holds.
+
 ### Redundant defences need one property each
 
 The VLAN refusal in `IpForwarder` is not the only thing that stops a tagged frame -- the filters
