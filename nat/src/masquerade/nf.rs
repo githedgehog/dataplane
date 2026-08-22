@@ -39,6 +39,8 @@ pub(crate) enum MasqueradeError {
     BadTransportHeader,
     #[error("failure to build flow key")]
     FlowKeyError,
+    #[error("pool handed out {0}, which cannot be a source address")]
+    PoolAddressNotUnicast(IpAddr),
     #[error("no allocator available")]
     NoAllocator,
     #[error("packet reached masquerade without a VPC discriminant")]
@@ -333,8 +335,10 @@ impl Masquerade {
         write_guard.dst_vpcd = Some(dst_vpcd);
     }
 
-    fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), MasqueradeError> {
-        let src_ip = flow_key.src_ip();
+    fn get_reverse_mapping(
+        flow_key: &FlowKey,
+    ) -> Result<(UnicastIpAddr, NatPort), MasqueradeError> {
+        let src_ip = flow_key.addrs().src_unicast();
         let src_port = match flow_key.proto_key_info() {
             IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
             IpProtoKey::Udp(udp) => udp.src_port.into(),
@@ -375,7 +379,7 @@ impl Masquerade {
 
         // build NAT state for both flows
         let (forward_state, reverse_state) =
-            MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout);
+            MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout)?;
 
         // build a flow pair from the keys (without NAT state)
         let expires_at = clock::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
@@ -665,6 +669,7 @@ impl From<&MasqueradeError> for DoneReason {
             MasqueradeError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
             MasqueradeError::MissingDiscriminant => DoneReason::Unroutable,
             MasqueradeError::NoAllocator
+            | MasqueradeError::PoolAddressNotUnicast(_)
             | MasqueradeError::UnexpectedKeyVariant
             | MasqueradeError::IcmpUnsupportedCategory
             | MasqueradeError::IcmpError
