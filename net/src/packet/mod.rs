@@ -850,6 +850,58 @@ mod qos_roundtrip_tests {
     }
 
     #[test]
+    fn decapsulation_hands_on_a_vlan_tag_it_was_given() {
+        use crate::buffer::TestBuffer;
+        use crate::eth::ethtype::EthType;
+        use crate::headers::TryHeaders;
+        use crate::headers::builder::HeaderStack;
+        use crate::ipv4::UnicastIpv4Addr;
+        use crate::packet::Packet;
+        use crate::packet::test_utils::build_test_vxlan_ipv4_packet_carrying;
+        use crate::parse::DeParse;
+        use crate::vlan::Vid;
+        use std::net::Ipv4Addr;
+
+        let tagged = HeaderStack::new()
+            .eth(|eth| {
+                eth.set_ether_type(EthType::VLAN);
+            })
+            .vlan(|v| {
+                v.set_vid(Vid::new(4000).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(10, 0, 0, 5)).unwrap());
+                ip.set_destination(Ipv4Addr::new(20, 0, 0, 5));
+                ip.set_ttl(64);
+            })
+            .build_headers()
+            .unwrap();
+        let mut buffer = TestBuffer::new();
+        tagged.deparse(buffer.as_mut()).unwrap();
+        let inner = Packet::new(buffer).unwrap();
+        let inner_buf = inner.serialize().unwrap();
+
+        let mut outer = build_test_vxlan_ipv4_packet_carrying(
+            Dscp::new(0).unwrap(),
+            Ecn::new(0).unwrap(),
+            inner_buf.as_ref(),
+        )
+        .unwrap();
+        assert!(
+            outer.headers().vlan().is_empty(),
+            "the tunnel's own frame is untagged"
+        );
+
+        outer.vxlan_decap().unwrap().unwrap();
+        assert_eq!(
+            outer.headers().vlan().len(),
+            1,
+            "the inner frame's tag did not survive decapsulation, so nothing downstream can refuse it"
+        );
+        assert_eq!(outer.headers().vlan()[0].vid(), Vid::new(4000).unwrap());
+    }
+
+    #[test]
     fn vxlan_decap_then_encap_preserves_outer_qos_ipv4_underlay() {
         let in_dscp = Dscp::new(46).unwrap();
         let in_ecn = Ecn::new(3).unwrap();
