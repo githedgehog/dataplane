@@ -1,0 +1,164 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.1"
+
+# ICMP Error Payload Validation
+#
+#    An ICMP Error message checksum covers the entire ICMP message,
+#    including the payload.  When an ICMP Error packet is received, if the
+#    ICMP checksum fails to validate, the NAT SHOULD silently drop the
+#    ICMP Error packet.  This is because NAT uses the embedded IP and
+#    transport headers for forwarding and translating the ICMP Error
+#    message (described in Section 4.2).  When the ICMP checksum is
+#    invalid, the embedded IP and transport headers, which are covered by
+#    the ICMP checksum, are also suspect.
+# 
+#    [RFC1812] and [RFC1122] require a router or an end host that receives
+#    an IP packet with an invalid IP header checksum to silently drop the
+#    IP packet.  As such, end hosts and routers do not generate an ICMP
+#    Error message in response to IP packets with invalid IP header
+#    checksums.  For this reason, if the IP checksum of the embedded
+#    packet within an ICMP Error message fails to validate, the NAT SHOULD
+#    silently drop the Error packet.
+# 
+#    When the IP packet embedded within the ICMP Error message includes IP
+#    options, the NAT device must not assume that the transport header of
+#    the embedded packet is at a fixed offset (as would be the case when
+#    there are no IP options associated with the packet) from the start of
+# 
+#    the embedded packet.  Specifically, if the embedded packet includes
+#    IP options, the NAT device MUST traverse past the IP options to
+#    locate the start of transport header for the embedded packet.
+# 
+#    It is possible to compute the transport checksum of the embedded
+#    packet within an ICMP Error message when the ICMP Error message
+#    contains the entire transport segment.  However, ICMP Error messages
+#    do not contain the entire transport segment in many cases.  This is
+#    because [ICMP] stipulates that an ICMP Error message should embed an
+#    IP header and only a minimum of 64 bits of the IP payload.  Even
+#    though Section 4.3.2.3 of [RFC1812] recommends an ICMP Error
+#    originator include as much of the original packet as possible in the
+#    payload, the length of the resulting ICMP datagram cannot exceed 576
+#    bytes.  ICMP Error originators truncate IP packets that do not fit
+#    within the stipulations.
+# 
+#    A NAT device SHOULD NOT validate the transport checksum of the
+#    embedded packet within an ICMP Error message, even when it is
+#    possible to do so.  This is because a NAT dropping an ICMP Error
+#    message due to an invalid transport checksum will make it harder for
+#    end hosts to receive error reporting for certain types of corruption.
+#    End-to-end validation of ICMP Error messages is best left to end
+#    hosts.  Many newer revision end host TCP/IP stacks implement the
+#    improvements in [TCP-SOFT] and do not accept ICMP Error messages with
+#    a mismatched IP or TCP checksum in the embedded packet, if the
+#    embedded datagram contains a full IP packet and the TCP checksum can
+#    be calculated.
+# 
+#    In the case that the ICMP Error payload includes ICMP extensions
+#    [ICMP-EXT], the NAT device MUST exclude the optional zero-padding and
+#    the ICMP extensions when evaluating transport checksum for the
+#    embedded packet.  Readers are urged to refer to [ICMP-EXT] for
+#    information on identifying the presence of ICMP extensions in an ICMP
+#    message.
+# 
+#    REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+#           fails to validate, the NAT SHOULD silently drop the ICMP Error
+#           packet.  If the ICMP checksum is valid, do the following:
+# 
+#           a) If the IP checksum of the embedded packet fails to
+#              validate, the NAT SHOULD silently drop the Error packet;
+#              and
+# 
+#           b) If the embedded packet includes IP options, the NAT device
+#              MUST traverse past the IP options to locate the start of
+#              the transport header for the embedded packet; and
+# 
+#           c) The NAT device SHOULD NOT validate the transport checksum
+#              of the embedded packet within an ICMP Error message, even
+#              when it is possible to do so; and
+# 
+#           d) If the ICMP Error payload contains ICMP extensions
+#              [ICMP-EXT], the NAT device MUST exclude the optional zero-
+#              padding and the ICMP extensions when evaluating transport
+#              checksum for the embedded packet.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When an ICMP Error packet is received, if the
+ICMP checksum fails to validate, the NAT SHOULD silently drop the
+ICMP Error packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+For this reason, if the IP checksum of the embedded
+packet within an ICMP Error message fails to validate, the NAT SHOULD
+silently drop the Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Specifically, if the embedded packet includes
+IP options, the NAT device MUST traverse past the IP options to
+locate the start of transport header for the embedded packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A NAT device SHOULD NOT validate the transport checksum of the
+embedded packet within an ICMP Error message, even when it is
+possible to do so.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In the case that the ICMP Error payload includes ICMP extensions
+[ICMP-EXT], the NAT device MUST exclude the optional zero-padding and
+the ICMP extensions when evaluating transport checksum for the
+embedded packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+fails to validate, the NAT SHOULD silently drop the ICMP Error
+packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) If the IP checksum of the embedded packet fails to
+validate, the NAT SHOULD silently drop the Error packet;
+and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+b) If the embedded packet includes IP options, the NAT device
+MUST traverse past the IP options to locate the start of
+the transport header for the embedded packet; and
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+c) The NAT device SHOULD NOT validate the transport checksum
+of the embedded packet within an ICMP Error message, even
+when it is possible to do so; and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+d) If the ICMP Error payload contains ICMP extensions
+[ICMP-EXT], the NAT device MUST exclude the optional zero-
+padding and the ICMP extensions when evaluating transport
+checksum for the embedded packet.
+'''
+

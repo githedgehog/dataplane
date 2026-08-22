@@ -1,0 +1,29 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-8"
+
+# Non-QueryError ICMP Messages
+#
+#    In the preceding sections, ICMP requirements were identified for NAT
+#    devices, with a primary focus on ICMP Query and ICMP Error messages,
+#    as defined in the Terminology Section (see Section 2).  This document
+#    provides no guidance on the handling of Non-QueryError ICMP messages
+#    by the NAT devices.  A NAT MAY drop or appropriately handle Non-
+#    QueryError ICMP messages.
+# 
+#        REQ-11: A NAT MAY drop or appropriately handle Non-QueryError
+#            ICMP messages.  The semantics of Non-QueryError ICMP messages
+#            is defined in Section 2.
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT MAY drop or appropriately handle Non-
+QueryError ICMP messages.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-11: A NAT MAY drop or appropriately handle Non-QueryError
+ICMP messages.
+'''
+

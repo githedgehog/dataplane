@@ -1,0 +1,55 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-10"
+
+# Security Considerations
+#
+#    This document does not introduce any new security concerns related to
+#    ICMP message handling in the NAT devices.  However, the requirements
+#    in the document do mitigate some security concerns known to exist
+#    with ICMP messages.
+# 
+#    [ICMP-ATK] lists a number of ICMP attacks that can be directed
+#    against end host TCP stacks.  For example, a rogue entity could
+#    bombard the NAT device with a large number of ICMP Errors.  If the
+#    NAT device did not validate the legitimacy of the ICMP Error packets,
+#    the ICMP Errors would be forwarded directly to the end nodes.  End
+#    hosts not capable of defending themselves against such bogus ICMP
+#    Error attacks could be adversely impacted by such attacks.  Req-3
+#    recommends validating the ICMP checksum and the IP checksum of the
+# 
+#    embedded payload prior to forwarding.  These checksum validations by
+#    themselves do not protect end hosts from attacks.  However, checksum
+#    validation mitigates end hosts from malformed ICMP Error attacks.
+#    Req-4 and Req-5 further mandate that when a NAT device does not find
+#    a mapping selection for the embedded payload, the NAT should drop the
+#    ICMP Error packets, without forwarding.
+# 
+#    A rogue source could also try to send bogus ICMP Error messages for
+#    the active NAT sessions, with intent to destroy the sessions.  Req-6
+#    averts such an attack by ensuring that an ICMP Error message does not
+#    affect the state of a session on the NAT device.
+# 
+#    Req-8 recommends a NAT device sending an ICMP Error message when the
+#    NAT device is unable to create a NAT session due to lack of
+#    resources.  Some administrators may choose not to have the NAT device
+#    send an ICMP Error message, as doing so could confirm to a malicious
+#    attacker that the attack has succeeded.  For this reason, sending of
+#    the specific ICMP Error message stated in REQ-8 is left to the
+#    discretion of the NAT device administrator.
+# 
+#    Unfortunately, ICMP messages are sometimes blocked at network
+#    boundaries due to local security policy.  Thus, some of the
+#    requirements in this document allow local policy to override the
+#    recommendations of this document.  Blocking such ICMP messages is
+#    known to break some protocol features (most notably path MTU
+#    Discovery) and some applications (e.g., ping, traceroute), and such
+#    blocking is NOT RECOMMENDED.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Blocking such ICMP messages is
+known to break some protocol features (most notably path MTU
+Discovery) and some applications (e.g., ping, traceroute), and such
+blocking is NOT RECOMMENDED.
+'''
+
