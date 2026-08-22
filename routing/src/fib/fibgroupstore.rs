@@ -266,13 +266,11 @@ pub mod tests {
     use std::str::FromStr;
 
     // builds fib entry with single egress instruction
-    pub(crate) fn build_fib_entry_egress(ifindex: u32, address: &str, ifname: &str) -> FibEntry {
+    pub(crate) fn build_fib_entry_egress(ifindex: u32, address: &str) -> FibEntry {
         let addr = Some(IpAddr::from_str(address).unwrap());
-        let ifname = Some(ifname.to_string());
         let inst = PktInstruction::Egress(EgressObject::new(
             InterfaceIndex::try_new(ifindex).ok(),
             addr,
-            ifname,
         ));
         FibEntry::with_inst(inst)
     }
@@ -289,7 +287,7 @@ pub mod tests {
         let mut store = FibGroupStore::new();
 
         // build fibgroup with one fib entry
-        let entry = build_fib_entry_egress(99, "10.0.1.1", "eth0");
+        let entry = build_fib_entry_egress(99, "10.0.1.1");
         let fibgroup = FibGroup::with_entry(entry.clone());
 
         // nhop key to store the fibgroup at
@@ -319,7 +317,7 @@ pub mod tests {
         fibroute2.add_fibgroup_ref(store.get_ref(&nhkey).unwrap());
 
         // mutate/replace fibgroup, without modifying fibroute
-        let entry2 = build_fib_entry_egress(100, "10.0.2.2", "eth1");
+        let entry2 = build_fib_entry_egress(100, "10.0.2.2");
         let fibgroup = FibGroup::with_entry(entry2.clone());
         store.add_mod_group(&nhkey, fibgroup);
 
@@ -335,14 +333,14 @@ pub mod tests {
     #[test]
     fn test_fibgroup_multigroup_route_entry_selection() {
         // create multiple fib entries
-        let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
-        let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
-        let e3 = build_fib_entry_egress(3, "10.0.3.1", "eth3");
-        let e4 = build_fib_entry_egress(4, "10.0.3.4", "eth4");
-        let e5 = build_fib_entry_egress(5, "10.0.3.5", "eth5");
-        let e6 = build_fib_entry_egress(6, "10.0.3.6", "eth6");
-        let e7 = build_fib_entry_egress(7, "10.0.3.7", "eth7");
-        let e8 = build_fib_entry_egress(8, "10.0.3.8", "eth8");
+        let e1 = build_fib_entry_egress(1, "10.0.1.1");
+        let e2 = build_fib_entry_egress(2, "10.0.2.1");
+        let e3 = build_fib_entry_egress(3, "10.0.3.1");
+        let e4 = build_fib_entry_egress(4, "10.0.3.4");
+        let e5 = build_fib_entry_egress(5, "10.0.3.5");
+        let e6 = build_fib_entry_egress(6, "10.0.3.6");
+        let e7 = build_fib_entry_egress(7, "10.0.3.7");
+        let e8 = build_fib_entry_egress(8, "10.0.3.8");
 
         // create several fibgroups of distinct sizes
         let g1 = build_fibgroup(&[e1.clone(), e2.clone()]);
@@ -422,14 +420,14 @@ pub mod tests {
     #[test]
     fn test_fibroute_from_nhopkeys() {
         // create multiple fib entries
-        let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
-        let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
-        let e3 = build_fib_entry_egress(3, "10.0.3.1", "eth3");
-        let e4 = build_fib_entry_egress(4, "10.0.3.4", "eth4");
-        let e5 = build_fib_entry_egress(5, "10.0.3.5", "eth5");
-        let e6 = build_fib_entry_egress(6, "10.0.3.6", "eth6");
-        let e7 = build_fib_entry_egress(7, "10.0.3.7", "eth7");
-        let e8 = build_fib_entry_egress(8, "10.0.3.8", "eth8");
+        let e1 = build_fib_entry_egress(1, "10.0.1.1");
+        let e2 = build_fib_entry_egress(2, "10.0.2.1");
+        let e3 = build_fib_entry_egress(3, "10.0.3.1");
+        let e4 = build_fib_entry_egress(4, "10.0.3.4");
+        let e5 = build_fib_entry_egress(5, "10.0.3.5");
+        let e6 = build_fib_entry_egress(6, "10.0.3.6");
+        let e7 = build_fib_entry_egress(7, "10.0.3.7");
+        let e8 = build_fib_entry_egress(8, "10.0.3.8");
 
         // create several fibgroups of distinct sizes
         let g1 = build_fibgroup(&[e1.clone(), e2.clone()]);

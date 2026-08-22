@@ -60,8 +60,6 @@ pub struct NhopKey {
     pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
-    /// Optional diagnostic name. Mutable interface metadata must not affect key identity.
-    pub ifname: Option<String>,
 }
 
 impl NhopKey {
@@ -75,7 +73,6 @@ impl NhopKey {
         ifindex: Option<InterfaceIndex>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
-        ifname: Option<String>,
     ) -> Self {
         Self {
             origin,
@@ -83,7 +80,6 @@ impl NhopKey {
             ifindex,
             encap,
             fwaction,
-            ifname,
         }
     }
     #[must_use]
@@ -94,7 +90,6 @@ impl NhopKey {
             ifindex: None,
             encap: None,
             fwaction: FwAction::Drop,
-            ifname: None,
         }
     }
     #[cfg(test)]
@@ -317,7 +312,6 @@ impl Nhop {
                         Some(i),
                         self.key.encap,
                         self.key.fwaction,
-                        self.key.ifname.clone(),
                     ));
                 } else {
                     r.quick_resolve_rec(result, visited);
