@@ -56,7 +56,8 @@ pub trait IpAddress:
     /// Derived from `FixedSize::SIZE` rather than written per implementation, so it cannot
     /// disagree with the wire size the same type serialises to. A hand-written constant is one
     /// edit away from a prefix length that means something different from the bytes on the wire.
-    const BITS: u8 = const { <Self as FixedSize>::SIZE as u8 * 8 };
+    #[allow(clippy::cast_possible_truncation)]
+    const BITS: u8 = const { (<Self as FixedSize>::SIZE * 8) as u8 };
 
     /// Widen to the standard-library enum, keeping the version.
     fn to_ip_addr(self) -> IpAddr;
