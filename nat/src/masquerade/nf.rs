@@ -39,6 +39,8 @@ pub(crate) enum MasqueradeError {
     BadTransportHeader,
     #[error("failure to build flow key")]
     FlowKeyError,
+    #[error("pool handed out {0}, which cannot be a source address")]
+    PoolAddressNotUnicast(IpAddr),
     #[error("no allocator available")]
     NoAllocator,
     #[error("packet reached masquerade without a VPC discriminant")]
@@ -300,8 +302,10 @@ impl Masquerade {
         write_guard.dst_vpcd = Some(dst_vpcd);
     }
 
-    fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), MasqueradeError> {
-        let src_ip = flow_key.src_ip();
+    fn get_reverse_mapping(
+        flow_key: &FlowKey,
+    ) -> Result<(UnicastIpAddr, NatPort), MasqueradeError> {
+        let src_ip = flow_key.addrs().src_unicast();
         let src_port = match flow_key.proto_key_info() {
             IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
             IpProtoKey::Udp(udp) => udp.src_port.into(),
@@ -342,7 +346,7 @@ impl Masquerade {
 
         // build NAT state for both flows
         let (forward_state, reverse_state) =
-            MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout);
+            MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout)?;
 
         // build a flow pair from the keys (without NAT state)
         let expires_at = clock::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
@@ -506,11 +510,10 @@ impl Masquerade {
         };
         debug!("{nfi}: Allocated: {alloc}");
 
-        // Forbid addresses we won't know how to translate. This is a work around of a larger change
-        if let Err(addr) = UnicastIpAddr::try_from(alloc.allocation.ip()) {
-            error!("Allocated address {addr} won't be usable: not unicast");
-            return Err(MasqueradeError::Bug("allocated unusable ip"));
-        }
+        // The unicast check this used to do lives in `MasqueradeState::snat`, which is reached
+        // from `create_flow_pair` below and reports which address failed. Leaving both in place
+        // made the named error unreachable: the check here ran first and returned
+        // `Bug("allocated unusable ip")`, which is the message the move existed to replace.
 
         // The generation the installed allocator serves
         let genid = allocator.genid();
@@ -634,6 +637,7 @@ impl From<&MasqueradeError> for DoneReason {
             MasqueradeError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
             MasqueradeError::MissingDiscriminant => DoneReason::Unroutable,
             MasqueradeError::NoAllocator
+            | MasqueradeError::PoolAddressNotUnicast(_)
             | MasqueradeError::UnexpectedKeyVariant
             | MasqueradeError::IcmpUnsupportedCategory
             | MasqueradeError::IcmpError
