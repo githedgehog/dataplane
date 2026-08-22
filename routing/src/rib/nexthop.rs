@@ -92,13 +92,25 @@ impl NhopKey {
             fwaction: FwAction::Drop,
         }
     }
+    /// Build a next-hop key from an address in string form.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `address` does not parse as an IP address.
     #[cfg(test)]
+    #[must_use]
     pub fn from_address(address: &str) -> Self {
         Self {
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ..Default::default()
         }
     }
+    /// Build a next-hop key from an address in string form and an interface index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `address` does not parse as an IP address, or if `ifindex` is not a
+    /// valid interface index.
     #[cfg(test)]
     #[must_use]
     pub fn with_addr_ifindex(address: &str, ifindex: u32) -> Self {
@@ -116,6 +128,11 @@ impl NhopKey {
             ..Default::default()
         }
     }
+    /// Build a next-hop key from an interface index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ifindex` is not a valid interface index.
     #[cfg(test)]
     #[must_use]
     pub fn with_ifindex(ifindex: u32) -> Self {
