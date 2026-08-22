@@ -98,6 +98,33 @@ the second on the inner one. Break-testing said so, both ways: removing the decr
 property, adding one to the first pass does not. The rider is still worth having, and the comment
 now says which half it holds.
 
+### Break-test to find out what a property is really about
+
+A property that holds is evidence of nothing until something that should break it does. The useful
+version of that is not one break test but two, chosen so that the pair _distinguishes_ which claim
+the property is making.
+
+`routed::a_flow_keeps_its_translation_and_does_not_share_it` says a flow's second packet is
+translated the way its first was. Read on its own that could be a claim about the flow table, or it
+could be a claim about the allocator being deterministic -- and only one of those is worth having.
+Two break tests separate them:
+
+- Dropping the line in `FlowLookup` that attaches flow state **fails** it, with the second packet a
+  port further along the pool cursor than the first.
+- Turning masquerade's randomised port selection back on **does not** fail it. A randomly chosen
+  port comes back identically the second time, because the table is what is consulted.
+
+The second is the informative one. Had the property been resting on determinism it would have
+failed there, and the comment claiming it tested the table would have been wrong for as long as
+anybody cared to read it.
+
+The same technique corrected the hop-count rider above: adding a decrement where there should not
+be one did not fail it, which is how the comment came to say which half it holds.
+
+Interleaving matters for the same reason. The two rounds are separated by every other flow in the
+batch, and the second runs in reverse order, because "send the same packet twice in a row" is
+satisfied by an implementation that remembers only the last translation it made.
+
 ### Redundant defences need one property each
 
 The VLAN refusal in `IpForwarder` is not the only thing that stops a tagged frame -- the filters
