@@ -69,7 +69,7 @@ fn re_reserve_ip_and_port(
         );
         return Err(());
     };
-    let src_ip = *flow_key.src_ip();
+    let src_ip = flow_key.src_ip();
     let port_u16 = port.as_u16();
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
@@ -152,7 +152,7 @@ pub(crate) fn check_masquerading_flow(
             if expose
                 .ips()
                 .iter()
-                .any(|pfx| pfx.prefix().covers_addr(src_ip))
+                .any(|pfx| pfx.prefix().covers_addr(&src_ip))
             {
                 debug!("Flow source {src_ip} is still allowed over peering {pname}");
                 compatible_expose_found = true;

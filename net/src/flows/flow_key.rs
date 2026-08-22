@@ -11,15 +11,17 @@ use std::num::NonZero;
 
 use crate::buffer::PacketBufferMut;
 use crate::headers::{
-    EmbeddedTransport, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryHeaders, TryInnerIp,
-    TryIp, TryTransport,
+    EmbeddedTransport, Net, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryHeaders,
+    TryInnerIp, TryIp, TryTransport,
 };
 use crate::icmp_any::TruncatedIcmpAny;
 use crate::icmp4::Icmp4Type;
 use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::icmp6::Icmp6Type;
 use crate::icmp6::{Icmp6, TruncatedIcmp6};
-use crate::ip::NextHeader;
+use crate::ip::{NextHeader, UnicastIpAddr};
+use crate::ipv4::UnicastIpv4Addr;
+use crate::ipv6::UnicastIpv6Addr;
 use crate::packet::Packet;
 use crate::packet::VpcDiscriminant;
 use crate::packet::icmp_err::IcmpErrorPacket;
@@ -39,6 +41,8 @@ pub enum FlowKeyError {
     EmbeddedMissingHeader(&'static str),
     #[error("Failed to build key for embedded: inner icmp has no identifier")]
     EmbeddedMissingIcmpId,
+    #[error("Failed to build flow key: {0} is not a unicast address")]
+    NotUnicast(IpAddr),
 }
 
 trait HashSrc {
@@ -247,10 +251,158 @@ impl From<InnerIpProtoKey> for IpProtoKey {
     }
 }
 
+/// The address pair of a flow.
+///
+/// One variant per family, because a flow's two addresses always share one: they are read from a
+/// single IP header. Representing them as two [`IpAddr`]s let a key pair a v4 source with a v6
+/// destination, and [`FlowKey::proto`] then had to choose between `ICMP` and `ICMPv6` by asking the
+/// *source* alone.
+///
+/// Both are unicast, because a flow is a bidirectional object: the table exists to match return
+/// traffic, and [`reverse`](Self::reverse) makes the destination into a source. A packet whose
+/// destination is multicast or broadcast has no return direction, so it has no flow -- which is
+/// why [`from_net`](Self::from_net) rejects one rather than producing a key that can never match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FlowAddrs {
+    /// An IPv4 flow.
+    V4 {
+        /// The source, which a parsed header has already proven unicast.
+        src: UnicastIpv4Addr,
+        /// The destination, which a flow's reversibility requires be unicast too.
+        dst: UnicastIpv4Addr,
+    },
+    /// An IPv6 flow.
+    V6 {
+        /// The source, which a parsed header has already proven unicast.
+        src: UnicastIpv6Addr,
+        /// The destination, which a flow's reversibility requires be unicast too.
+        dst: UnicastIpv6Addr,
+    },
+}
+
+impl FlowAddrs {
+    /// The addresses of a parsed IP header.
+    ///
+    /// The source needs no check -- the header already holds it as a unicast address, in a family
+    /// this reads off the same header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowKeyError::NotUnicast`] if the destination is not unicast. Such a packet has
+    /// no return direction and so no flow; see the type docs.
+    pub fn from_net(net: &Net) -> Result<Self, FlowKeyError> {
+        match net {
+            Net::Ipv4(ip) => {
+                let dst = ip.destination();
+                Ok(FlowAddrs::V4 {
+                    src: ip.source(),
+                    dst: UnicastIpv4Addr::new(dst)
+                        .map_err(|_| FlowKeyError::NotUnicast(IpAddr::V4(dst)))?,
+                })
+            }
+            Net::Ipv6(ip) => {
+                let dst = ip.destination();
+                Ok(FlowAddrs::V6 {
+                    src: ip.source(),
+                    dst: UnicastIpv6Addr::new(dst)
+                        .map_err(|_| FlowKeyError::NotUnicast(IpAddr::V6(dst)))?,
+                })
+            }
+        }
+    }
+
+    /// Pair a source with a destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if the two are of different families.
+    #[must_use]
+    pub fn new(src: UnicastIpAddr, dst: UnicastIpAddr) -> Option<Self> {
+        match (src, dst) {
+            (UnicastIpAddr::V4(src), UnicastIpAddr::V4(dst)) => Some(FlowAddrs::V4 { src, dst }),
+            (UnicastIpAddr::V6(src), UnicastIpAddr::V6(dst)) => Some(FlowAddrs::V6 { src, dst }),
+            _ => None,
+        }
+    }
+
+    /// Replace the destination, keeping the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if the new destination is of the other family.
+    #[must_use]
+    pub fn with_dst(self, dst: UnicastIpAddr) -> Option<Self> {
+        Self::new(self.src_unicast(), dst)
+    }
+
+    /// Swap source and destination.
+    ///
+    /// Total: both ends are unicast, so either can be the other's source.
+    #[must_use]
+    pub fn reverse(self) -> Self {
+        match self {
+            FlowAddrs::V4 { src, dst } => FlowAddrs::V4 { src: dst, dst: src },
+            FlowAddrs::V6 { src, dst } => FlowAddrs::V6 { src: dst, dst: src },
+        }
+    }
+
+    /// The source address.
+    #[must_use]
+    pub fn src(&self) -> IpAddr {
+        match self {
+            FlowAddrs::V4 { src, .. } => IpAddr::V4(src.inner()),
+            FlowAddrs::V6 { src, .. } => IpAddr::V6(src.inner()),
+        }
+    }
+
+    /// The source address, keeping the constraint a source satisfies.
+    #[must_use]
+    pub fn src_unicast(&self) -> UnicastIpAddr {
+        match self {
+            FlowAddrs::V4 { src, .. } => UnicastIpAddr::V4(*src),
+            FlowAddrs::V6 { src, .. } => UnicastIpAddr::V6(*src),
+        }
+    }
+
+    /// The destination address.
+    #[must_use]
+    pub fn dst(&self) -> IpAddr {
+        match self {
+            FlowAddrs::V4 { dst, .. } => IpAddr::V4(dst.inner()),
+            FlowAddrs::V6 { dst, .. } => IpAddr::V6(dst.inner()),
+        }
+    }
+
+    /// The destination address, keeping the constraint a flow's destination satisfies.
+    #[must_use]
+    pub fn dst_unicast(&self) -> UnicastIpAddr {
+        match self {
+            FlowAddrs::V4 { dst, .. } => UnicastIpAddr::V4(*dst),
+            FlowAddrs::V6 { dst, .. } => UnicastIpAddr::V6(*dst),
+        }
+    }
+
+    /// Whether this is an IPv4 flow.
+    #[must_use]
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, FlowAddrs::V4 { .. })
+    }
+
+    // Hashed as `IpAddr` rather than by variant so that the values are the ones the two-`IpAddr`
+    // form produced: the address halves interleave with the port halves (see `Hash for FlowKey`),
+    // and keeping the encoding identical keeps that test meaningful.
+    fn hash_src<H: Hasher>(&self, state: &mut H) {
+        self.src().hash(state);
+    }
+
+    fn hash_dst<H: Hasher>(&self, state: &mut H) {
+        self.dst().hash(state);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EmbeddedPacketData {
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
+    addrs: FlowAddrs,
     proto_key_info: InnerIpProtoKey,
 }
 
@@ -258,9 +410,7 @@ impl EmbeddedPacketData {
     pub fn try_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<Self> {
         let headers = packet.embedded_headers()?;
 
-        let ip = headers.try_inner_ip()?;
-        let src_ip = ip.src_addr();
-        let dst_ip = ip.dst_addr();
+        let addrs = FlowAddrs::from_net(headers.try_inner_ip()?).ok()?;
 
         let transport = headers.try_embedded_transport()?;
         let proto_key_info = match transport {
@@ -280,28 +430,31 @@ impl EmbeddedPacketData {
             }
         };
         Some(Self {
-            src_ip,
-            dst_ip,
+            addrs,
             proto_key_info,
         })
     }
     #[must_use]
-    pub fn src_ip(&self) -> &IpAddr {
-        &self.src_ip
+    pub fn addrs(&self) -> FlowAddrs {
+        self.addrs
     }
     #[must_use]
-    pub fn dst_ip(&self) -> &IpAddr {
-        &self.dst_ip
+    pub fn src_ip(&self) -> IpAddr {
+        self.addrs.src()
+    }
+    #[must_use]
+    pub fn dst_ip(&self) -> IpAddr {
+        self.addrs.dst()
     }
     #[must_use]
     pub fn proto_key_info(&self) -> &InnerIpProtoKey {
         &self.proto_key_info
     }
+    /// Swap source and destination.
     #[must_use]
     pub fn reverse(&self) -> Self {
         Self {
-            src_ip: self.dst_ip,
-            dst_ip: self.src_ip,
+            addrs: self.addrs.reverse(),
             proto_key_info: self.proto_key_info.reverse(),
         }
     }
@@ -457,8 +610,7 @@ impl HashDst for IpProtoKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub struct FlowKey {
     src_vpcd: Option<VpcDiscriminant>,
-    src_ip: IpAddr,
-    dst_ip: IpAddr,
+    addrs: FlowAddrs,
     proto_key_info: IpProtoKey,
 }
 
@@ -470,16 +622,19 @@ impl FlowKey {
     #[must_use]
     pub fn new(
         src_vpcd: Option<VpcDiscriminant>,
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
+        addrs: FlowAddrs,
         proto_key_info: IpProtoKey,
     ) -> Self {
         Self {
             src_vpcd,
-            src_ip,
-            dst_ip,
+            addrs,
             proto_key_info,
         }
+    }
+
+    #[must_use]
+    pub fn addrs(&self) -> FlowAddrs {
+        self.addrs
     }
 
     #[must_use]
@@ -488,13 +643,13 @@ impl FlowKey {
     }
 
     #[must_use]
-    pub fn src_ip(&self) -> &IpAddr {
-        &self.src_ip
+    pub fn src_ip(&self) -> IpAddr {
+        self.addrs.src()
     }
 
     #[must_use]
-    pub fn dst_ip(&self) -> &IpAddr {
-        &self.dst_ip
+    pub fn dst_ip(&self) -> IpAddr {
+        self.addrs.dst()
     }
 
     #[must_use]
@@ -538,7 +693,7 @@ impl FlowKey {
             IpProtoKey::Tcp(_) => NextHeader::TCP,
             IpProtoKey::Udp(_) => NextHeader::UDP,
             IpProtoKey::Icmp(_) => {
-                if self.src_ip().is_ipv4() {
+                if self.addrs.is_ipv4() {
                     NextHeader::ICMP
                 } else {
                     NextHeader::ICMP6
@@ -547,12 +702,16 @@ impl FlowKey {
         }
     }
 
-    pub fn set_src_ip(&mut self, address: IpAddr) {
-        self.src_ip = address;
-    }
-
-    pub fn set_dst_ip(&mut self, address: IpAddr) {
-        self.dst_ip = address;
+    /// Replace the destination address, keeping the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if the new destination is of the other family. A key whose two addresses
+    /// disagree is not representable, so this reports rather than producing one.
+    #[must_use]
+    pub fn with_dst_ip(mut self, address: UnicastIpAddr) -> Option<Self> {
+        self.addrs = self.addrs.with_dst(address)?;
+        Some(self)
     }
 
     pub fn set_ip_proto_key(&mut self, proto_key_info: IpProtoKey) {
@@ -564,13 +723,12 @@ impl FlowKey {
         &self.proto_key_info
     }
 
-    /// Creates a new flow key with src and dst swapped
+    /// Creates a new flow key with src and dst swapped.
     #[must_use]
     pub fn reverse(&self, src_vpcd: Option<VpcDiscriminant>) -> Self {
         Self {
             src_vpcd,
-            src_ip: self.dst_ip,
-            dst_ip: self.src_ip,
+            addrs: self.addrs.reverse(),
             proto_key_info: self.proto_key_info.reverse(),
         }
     }
@@ -579,9 +737,9 @@ impl FlowKey {
 impl Hash for FlowKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.src_vpcd.hash(state);
-        self.src_ip.hash(state);
+        self.addrs.hash_src(state);
         self.proto_key_info.hash_src(state);
-        self.dst_ip.hash(state);
+        self.addrs.hash_dst(state);
         self.proto_key_info.hash_dst(state);
     }
 }
@@ -589,12 +747,12 @@ impl Hash for FlowKey {
 impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for FlowKey {
     type Error = FlowKeyError;
     fn try_from(packet: &Packet<Buf>) -> Result<Self, Self::Error> {
-        let ip = packet
-            .headers()
-            .try_ip()
-            .ok_or(FlowKeyError::NoFlowKeyData)?;
-        let src_ip = ip.src_addr();
-        let dst_ip = ip.dst_addr();
+        let addrs = FlowAddrs::from_net(
+            packet
+                .headers()
+                .try_ip()
+                .ok_or(FlowKeyError::NoFlowKeyData)?,
+        )?;
 
         let transport = packet
             .headers()
@@ -616,7 +774,7 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for FlowKey {
         };
 
         let src_vpcd = packet.meta().src_vpcd;
-        Ok(FlowKey::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
+        Ok(FlowKey::new(src_vpcd, addrs, ip_proto_key))
     }
 }
 
@@ -633,8 +791,7 @@ impl IcmpErrorPacket<'_> {
     ///
     /// This function returns a `FlowKey` on success and `FlowKeyError` otherwise.
     pub fn embedded_flowkey(&self) -> Result<FlowKey, FlowKeyError> {
-        let src_ip = self.inner_net().src_addr();
-        let dst_ip = self.inner_net().dst_addr();
+        let addrs = FlowAddrs::from_net(self.inner_net())?;
 
         // build the protocol key
         let proto_key = match self.inner_transport() {
@@ -656,19 +813,16 @@ impl IcmpErrorPacket<'_> {
                 return Err(FlowKeyError::EmbeddedMissingIcmpId);
             }
         };
-        Ok(FlowKey::new(None, src_ip, dst_ip, proto_key))
+        Ok(FlowKey::new(None, addrs, proto_key))
     }
 }
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::{
-        EmbeddedPacketData, FlowKey, IcmpProtoKey, InnerIcmpProtoKey, InnerIpProtoKey, IpProtoKey,
-        TcpProtoKey, UdpProtoKey,
+        EmbeddedPacketData, FlowAddrs, FlowKey, IcmpProtoKey, InnerIcmpProtoKey, InnerIpProtoKey,
+        IpProtoKey, TcpProtoKey, UdpProtoKey,
     };
-    use crate::ip::UnicastIpAddr;
-    use crate::ipv4::addr::UnicastIpv4Addr;
-    use crate::ipv6::addr::UnicastIpv6Addr;
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for TcpProtoKey {
@@ -718,14 +872,31 @@ mod contract {
         }
     }
 
+    impl TypeGenerator for FlowAddrs {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            // The family is drawn once for the pair, and the source is drawn unicast, because a
+            // flow's addresses are read from one IP header. That is not a restriction on reach:
+            // the pairs this no longer produces are ones no parser can build.
+            if driver.produce::<bool>()? {
+                Some(FlowAddrs::V6 {
+                    src: driver.produce()?,
+                    dst: driver.produce()?,
+                })
+            } else {
+                Some(FlowAddrs::V4 {
+                    src: driver.produce()?,
+                    dst: driver.produce()?,
+                })
+            }
+        }
+    }
+
     impl TypeGenerator for EmbeddedPacketData {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let src_ip = driver.produce()?;
-            let dst_ip = driver.produce()?;
+            let addrs = FlowAddrs::generate(driver)?;
             let proto_key_info = InnerIpProtoKey::generate(driver)?;
             Some(EmbeddedPacketData {
-                src_ip,
-                dst_ip,
+                addrs,
                 proto_key_info,
             })
         }
@@ -776,21 +947,9 @@ mod contract {
     impl TypeGenerator for FlowKey {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
             let src_vpcd = driver.produce();
-            let v6 = driver.produce::<bool>()?;
-            // In theory, src_ip and dst_ip could have different versions, e.g., for NAT64, but we don't support that yet
-            let (src_ip, dst_ip) = if v6 {
-                (
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
-                )
-            } else {
-                (
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
-                )
-            };
+            let addrs = FlowAddrs::generate(driver)?;
             let proto_key_info = super::IpProtoKey::generate(driver)?;
-            Some(FlowKey::new(src_vpcd, src_ip, dst_ip, proto_key_info))
+            Some(FlowKey::new(src_vpcd, addrs, proto_key_info))
         }
     }
 }
@@ -800,21 +959,26 @@ mod tests {
     use super::*;
     use crate::buffer::TestBuffer;
     use crate::headers::{EmbeddedTransport, TryInnerIpMut, TryIpv6};
-    use crate::ip::UnicastIpAddr;
     use crate::ipv4::addr::UnicastIpv4Addr;
-    use crate::ipv6::addr::UnicastIpv6Addr;
     use crate::packet::contract::{CommonPacket, IcmpErrorMsg};
     use crate::packet::{Packet, VpcDiscriminant};
     use crate::vxlan::Vni;
     use ahash::AHasher;
     use bolero::{Driver, ValueGenerator};
 
+    /// A v4 address pair for the fixtures. The source must be unicast, which every fixture's is.
+    fn v4_addrs(src: &str, dst: &str) -> FlowAddrs {
+        FlowAddrs::V4 {
+            src: UnicastIpv4Addr::new(src.parse().unwrap()).unwrap(),
+            dst: UnicastIpv4Addr::new(dst.parse().unwrap()).unwrap(),
+        }
+    }
+
     #[test]
     fn test_flow_key_reverse() {
         let flow_key = FlowKey::new(
             Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            "4.5.6.7".parse::<IpAddr>().unwrap(),
+            v4_addrs("1.2.3.4", "4.5.6.7"),
             IpProtoKey::Tcp(TcpProtoKey {
                 src_port: TcpPort::new_checked(1025).unwrap(),
                 dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -822,8 +986,8 @@ mod tests {
         );
 
         let reverse_flow_key = flow_key.reverse(None);
-        assert_eq!(flow_key.src_ip, reverse_flow_key.dst_ip);
-        assert_eq!(flow_key.dst_ip, reverse_flow_key.src_ip);
+        assert_eq!(flow_key.src_ip(), reverse_flow_key.dst_ip());
+        assert_eq!(flow_key.dst_ip(), reverse_flow_key.src_ip());
         assert_eq!(
             flow_key.proto_key_info,
             reverse_flow_key.proto_key_info.reverse()
@@ -834,8 +998,7 @@ mod tests {
     fn test_flow_key_uni_hash() {
         let flow_key = FlowKey::new(
             None,
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            "4.5.6.7".parse::<IpAddr>().unwrap(),
+            v4_addrs("1.2.3.4", "4.5.6.7"),
             IpProtoKey::Tcp(TcpProtoKey {
                 src_port: TcpPort::new_checked(1025).unwrap(),
                 dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -855,6 +1018,21 @@ mod tests {
         assert_ne!(hash.finish(), reverse_hash.finish());
     }
 
+    /// A generated address pair in the family the fixture's packet uses.
+    fn addrs_for<D: Driver>(v6: bool, driver: &mut D) -> Option<FlowAddrs> {
+        if v6 {
+            Some(FlowAddrs::V6 {
+                src: driver.produce()?,
+                dst: driver.produce()?,
+            })
+        } else {
+            Some(FlowAddrs::V4 {
+                src: driver.produce()?,
+                dst: driver.produce()?,
+            })
+        }
+    }
+
     /// Set the packet fields based on the flow key
     ///
     /// # Panics
@@ -862,10 +1040,12 @@ mod tests {
     /// This function panics if the packet has a different transport protocol than the flow key.
     /// It also panics if the packet IP address family does not match the flow key.
     fn set_packet_fields(packet: &mut Packet<TestBuffer>, flow_key: &FlowKey) {
+        // No `try_into` here any more: the key holds the source as a `UnicastIpAddr`, which is
+        // exactly what `set_ip_source` wants.
         packet
-            .set_ip_source(flow_key.src_ip.try_into().unwrap())
+            .set_ip_source(flow_key.addrs().src_unicast())
             .unwrap();
-        packet.set_ip_destination(flow_key.dst_ip).unwrap();
+        packet.set_ip_destination(flow_key.dst_ip()).unwrap();
         match flow_key.proto_key_info {
             IpProtoKey::Tcp(tcp) => {
                 packet.set_tcp_source_port(tcp.src_port).unwrap();
@@ -884,8 +1064,8 @@ mod tests {
                         InnerIpProtoKey::Tcp(tcp) => {
                             packet
                                 .set_icmp_error_message_data_with_ports(
-                                    data.src_ip(),
-                                    data.dst_ip(),
+                                    &data.src_ip(),
+                                    &data.dst_ip(),
                                     (*tcp.src_port()).into(),
                                     (*tcp.dst_port()).into(),
                                 )
@@ -894,8 +1074,8 @@ mod tests {
                         InnerIpProtoKey::Udp(udp) => {
                             packet
                                 .set_icmp_error_message_data_with_ports(
-                                    data.src_ip(),
-                                    data.dst_ip(),
+                                    &data.src_ip(),
+                                    &data.dst_ip(),
                                     (*udp.src_port()).into(),
                                     (*udp.dst_port()).into(),
                                 )
@@ -905,8 +1085,8 @@ mod tests {
                             InnerIcmpProtoKey::QueryMsgData(id) => {
                                 packet
                                     .set_icmp_error_message_data_with_identifier(
-                                        data.src_ip(),
-                                        data.dst_ip(),
+                                        &data.src_ip(),
+                                        &data.dst_ip(),
                                         *id,
                                     )
                                     .unwrap();
@@ -915,9 +1095,8 @@ mod tests {
                                 // Still need to set inner IPs so extraction
                                 // finds the addresses we expect.
                                 let ip = packet.try_inner_ip_mut().unwrap();
-                                ip.try_set_source(UnicastIpAddr::try_from(*data.src_ip()).unwrap())
-                                    .unwrap();
-                                ip.try_set_destination(*data.dst_ip()).unwrap();
+                                ip.try_set_source(data.addrs().src_unicast()).unwrap();
+                                ip.try_set_destination(data.dst_ip()).unwrap();
                             }
                         },
                     }
@@ -966,20 +1145,9 @@ mod tests {
                     }
                 }
             };
-            let (src_ip, dst_ip) = if v6 {
-                (
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
-                )
-            } else {
-                (
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
-                )
-            };
+            let addrs = addrs_for(v6, driver)?;
             Some(EmbeddedPacketData {
-                src_ip,
-                dst_ip,
+                addrs,
                 proto_key_info,
             })
         }
@@ -996,17 +1164,7 @@ mod tests {
                 CommonPacket.generate(driver)?
             };
             let v6 = packet.headers().try_ipv6().is_some();
-            let (src_ip, dst_ip) = if v6 {
-                (
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv6Addr>()?).into(),
-                )
-            } else {
-                (
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
-                    UnicastIpAddr::from(driver.produce::<UnicastIpv4Addr>()?).into(),
-                )
-            };
+            let addrs = addrs_for(v6, driver)?;
 
             let src_vpcd = packet.meta().src_vpcd;
 
@@ -1042,8 +1200,7 @@ mod tests {
                 },
             };
             if let Some(proto) = proto {
-                let (flow_key, mut packet) =
-                    (FlowKey::new(src_vpcd, src_ip, dst_ip, proto), packet);
+                let (flow_key, mut packet) = (FlowKey::new(src_vpcd, addrs, proto), packet);
                 set_packet_fields(&mut packet, &flow_key);
                 Some((Some(flow_key), packet))
             } else {

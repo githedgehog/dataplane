@@ -122,8 +122,9 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     let proto = current_flow_key.proto();
     let src_port = current_flow_key.src_port().ok_or(())?;
 
-    let mut key_forward_dnated = current_flow_key;
-    key_forward_dnated.set_dst_ip(new_dst_ip.inner());
+    // `new_dst_ip` is already a `UnicastIpAddr`, which is exactly what a flow's destination has to
+    // be; only the family still has to agree with the key's.
+    let mut key_forward_dnated = current_flow_key.with_dst_ip(new_dst_ip).ok_or(())?;
     key_forward_dnated.set_ip_proto_key(IpProtoKey::from((proto, src_port, new_dst_port)));
     let key_reverse = key_forward_dnated.reverse(Some(dst_vpcd));
 
