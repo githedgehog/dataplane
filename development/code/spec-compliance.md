@@ -1,7 +1,8 @@
 # Specification compliance with duvet
 
 Status: **four specifications tracked, the RFC corpus and its errata audited, the citation
-interlock built. The fourth found a live defect and one open gap.**
+interlock built; eleven cited requirements, all holding. The fourth specification found a live
+defect.**
 The open-questions list below is expected to grow; it is written down so that it grows in one place
 rather than in four people's heads.
 
@@ -266,6 +267,30 @@ a match has nothing to reach it, because the nat crate had no IPv6 test of any k
 pools, allocator and stage are all generic over the address family, and "it is generic" had been
 doing the work a test should do.
 
+### REQ-3, and two limits the second run surfaced
+
+REQ-3 was already implemented and already named in a comment; tracking the specification turned
+that into three citations and found two things about the method rather than about the code.
+
+**The interlock cannot check a citation that spans crates, and says so.** The implementation is
+`IcmpErrorPacket::validate_checksums` in `net`; the test that named it lived in `nat`. The run
+reports `unsupported` -- a distinct outcome, not a pass and not a failure -- because it filters
+mutants and tests by package and cannot do so with two. The fix was to state the property in `net`,
+which is where it belongs anyway. Worth knowing before writing a citation: **put the test in the
+crate that holds the code, or the interlock will decline to look.**
+
+**A sub-clause can be unreachable without arranging for it.** REQ-3(a) and (c) are both about the
+embedded packet's checksums, and the ICMP checksum covers the embedded packet. Break the embedded
+transport checksum and the ICMP checksum fails; break the embedded IP checksum and the ICMP check
+fires first. So a test that breaks one field and looks at the result is testing the main clause
+three times over.
+
+Both clauses have to recompute the ICMP checksum after breaking the field under test. That is not
+a contrivance to reach an assertion -- it is the packet a real reporter emits. It builds its error
+around whatever bytes it received, correct or not, and checksums the result. **(a) is about a
+reporter that copies a corrupt header; (c) is about one that copies a truncated datagram.** Neither
+is reachable from a packet that is simply wrong all over, which is what the pre-existing test built.
+
 ### A specification can state each requirement twice
 
 RFC 5508 restates all eleven requirements verbatim in Section 9, *Summary of Requirements*. duvet
@@ -498,8 +523,8 @@ Expected to expand. Nothing here is scheduled.
    RFC 8200 is the known case and the most consequential one.
 3. ~~**Is a citation true?**~~ Built; see [the interlock](#is-a-citation-true-the-interlock). The
    prediction that its next real test was the next citation somebody writes has been run: the
-   RFC 5508 REQ-6 citation failed it twice over, and both findings are recorded above. Seven of
-   eight requirements hold; the eighth is the IPv6 gap. What remains is whether it becomes a gate:
+   RFC 5508 REQ-6 citation failed it twice over, and both findings are recorded above. All eleven
+   requirements now hold. What remains is whether it becomes a gate:
    a full run is too slow per pull request, but `--only` on a changed citation is cheap, and
    `uncovered` is reachable without building a single mutant.
 4. **Errata.** Mostly settled; see [Errata](#errata) below. What remains is the 847 RFCs whose
