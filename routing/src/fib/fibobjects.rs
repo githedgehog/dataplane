@@ -295,7 +295,7 @@ mod squash_properties {
     }
 
     #[derive(Debug, Clone, Copy, Default)]
-    struct Entry;
+    pub(super) struct Entry;
 
     impl ValueGenerator for Entry {
         type Output = FibEntry;
@@ -404,6 +404,47 @@ mod squash_properties {
                 let mut twice = once.clone();
                 twice.squash();
                 assert_eq!(twice, once, "for {entry:?}");
+            });
+    }
+}
+
+#[cfg(test)]
+mod classification_properties {
+    use super::squash_properties::Entry;
+    use super::*;
+
+    #[test]
+    fn an_entry_is_ip_local_exactly_when_delivering_locally_is_all_it_does() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                let locals = entry
+                    .iter()
+                    .filter(|inst| matches!(inst, PktInstruction::Local(_)))
+                    .count();
+                assert_eq!(
+                    entry.is_iplocal(),
+                    locals == 1 && entry.iter().count() == 1,
+                    "for {entry:?}"
+                );
+            });
+    }
+
+    #[test]
+    fn asking_about_one_vni_agrees_with_asking_which_vni() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                for raw in 1..=4u32 {
+                    let vni = Vni::new_checked(raw).unwrap_or_else(|_| unreachable!());
+                    assert_eq!(
+                        entry.is_vxlan_with_vni(vni),
+                        entry.is_vxlan() == Some(vni),
+                        "vni {raw} for {entry:?}"
+                    );
+                }
             });
     }
 }
