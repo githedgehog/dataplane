@@ -124,22 +124,34 @@ the difference, a property that manages a few thousand cases per second under `j
 several hundred thousand per minute here, because libfuzzer mutates towards inputs that reach new
 code rather than sampling blindly.
 
-Findings are written to a `__fuzz__` directory beside the test. That directory is gitignored: the
-corpus is a local artifact that seeds later runs on the same machine, not something to commit.
+A campaign writes two things, in two places, and the split is deliberate:
 
-`just test` replays that corpus too, before it explores randomly, which is usually what you want --
-the entries are inputs that once reached somewhere new, so replaying them is regression coverage
-for free. It has one consequence worth knowing. A property with a coverage guard on it ("some
-packet was forwarded", "some flow came back") can start failing after a campaign, because a
-coverage-guided corpus is selected for the _unusual_: entries earn their place by reaching an edge
-nothing else reached, which in a pipeline means error paths. A large one eats the one-second budget
-before the random phase begins, and a run made entirely of interesting inputs can contain no
-ordinary ones at all.
+- **Crashes** go to `__fuzz__/<target>/crashes` beside the test. `just test` replays those on every
+  run, which is the regression coverage worth having, and the directory stays small.
+- **The coverage corpus** goes to `.fuzz-corpus/<target>` at the repo root, set by
+  `fuzz_corpus_root`. Override with `FUZZ_CORPUS_ROOT`.
 
-Measured on `routed::a_tagged_shape_never_reaches_the_wire` with a 146-entry corpus: 25 packets
-reached the wire without it and between 0 and 3 with it, so the guard failed intermittently. CI
-never sees this, because CI has no corpus. `assert_covered` in that module says so in the failure
-message; move `__fuzz__` aside and re-run to tell a corpus effect from a real gap.
+Both are gitignored. Corpora seed later runs on the same machine; they are not something to commit.
+
+The corpus lives outside the source tree because `just test` would otherwise replay it before
+exploring randomly, sharing one one-second budget with it. That reads like free regression coverage
+and is not. A coverage-guided corpus is selected for the _unusual_ -- an entry earns its place by
+reaching an edge nothing else reached, which in a pipeline means error paths -- so a large one
+spends the budget on those and the random phase never runs.
+
+The properties that notice are the ones with coverage guards on them ("some packet was forwarded",
+"some flow came back"), and they notice by failing. Measured on
+`routed::a_tagged_shape_never_reaches_the_wire`, whose guard counts packets that reached the wire:
+
+| corpus replayed | packets reaching the wire |
+| --- | --- |
+| none | 25 |
+| 146 entries | 0 to 3, failing intermittently |
+| 367 entries | 2 |
+
+Every campaign made the next `just test` more likely to fail on a guard that was working correctly.
+`assert_covered` in that module still names this possibility in its failure message, in case a
+corpus finds its way back in.
 
 `just fuzz` spreads a campaign over half the machine's cores; set `FUZZ_JOBS` to change it. Workers
 are independent processes sharing one corpus directory, which is the cheapest way to reach deeper:
