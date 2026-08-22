@@ -95,8 +95,8 @@ impl Ipv4 {
     ///
     /// Returns [`Ipv4OptionsLenError`] if `data` is longer than the options field can hold.
     pub fn set_options(&mut self, data: &[u8]) -> Result<&mut Self, Ipv4OptionsLenError> {
-        self.0
-            .set_options(data)
+        self.0.options = data
+            .try_into()
             .map_err(|_| Ipv4OptionsLenError { len: data.len() })?;
         Ok(self)
     }
