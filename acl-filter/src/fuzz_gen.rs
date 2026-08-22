@@ -20,6 +20,8 @@ use config::external::overlay::acl::{
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use config::external::overlay::{Overlay, ValidatedOverlay};
+use std::num::NonZero;
+
 use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::vxlan::Vni;
@@ -490,12 +492,18 @@ pub(crate) enum ProbePort {
 }
 
 impl ProbePort {
-    fn resolve(self) -> u16 {
-        match self {
+    /// Resolve to a port a packet could actually carry.
+    ///
+    /// Zero is folded to one rather than drawn: `TcpPort` and `UdpPort` are `NonZero`, so a probe
+    /// with port zero would test an input no parser can produce -- and the key encoding spends
+    /// zero on "this packet has no ports" (see [`KeyPort`](lpm::prefix::with_ports::KeyPort)).
+    fn resolve(self) -> NonZero<u16> {
+        let port = match self {
             ProbePort::Exact(p) => p,
             ProbePort::WellKnown(k) => 1 + u16::from(k) * 4,
             ProbePort::Nested(k) => 499 + u16::from(k),
-        }
+        };
+        NonZero::new(port).unwrap_or(NonZero::<u16>::MIN)
     }
 }
 

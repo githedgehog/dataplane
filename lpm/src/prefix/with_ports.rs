@@ -5,9 +5,10 @@ use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
 use bnum::cast::CastFrom;
 use bnum::{n, t};
-use match_action::RangeSpec;
+use match_action::{FixedSize, RangeSpec};
 use std::collections::BTreeSet;
 use std::fmt::Display;
+use std::num::NonZero;
 use std::ops::{Bound, RangeBounds};
 use std::str::FromStr;
 
@@ -642,29 +643,96 @@ impl RangeBounds<u16> for PortRange {
     }
 }
 
-// Build RangeSpec<u16> from relevant types - This is used with ACLs
+// Build RangeSpec<KeyPort> from relevant types - This is used with ACLs
 
-pub const PORT_RANGE_WILDCARD: RangeSpec<u16> = RangeSpec::new(0, u16::MAX);
+/// The port field of a match key, and of the rule ranges it is compared against.
+///
+/// A packet with no transport ports -- ICMP, or a protocol whose ports we do not parse -- still
+/// has to produce a key, because an `rte_acl` match field is fixed width and cannot be absent. So
+/// the field carries a sentinel, and the sentinel is zero.
+///
+/// Zero is available for that, rather than merely unlikely to collide, and both halves of the
+/// argument are worth stating because neither is local:
+///
+/// - No packet can present it. `TcpPort` and `UdpPort` are `NonZero<u16>`, so a parsed port is
+///   never zero, which is why this wraps an `Option<NonZero<u16>>` rather than a bare `u16`.
+/// - No configured range can start at it. `VpcExpose::validate` rejects port 0 in an expose's
+///   ranges.
+///
+/// The one range that does contain zero is [`PORT_RANGE_WILDCARD`], which is what a rule with no
+/// port constraint lowers to -- and matching exactly those rules is what a portless packet should
+/// do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct KeyPort(Option<NonZero<u16>>);
 
-impl From<PortRange> for RangeSpec<u16> {
-    fn from(range: PortRange) -> Self {
-        RangeSpec::new(range.start, range.end)
+impl KeyPort {
+    /// The key port of a packet that carries no transport ports.
+    pub const NONE: Self = Self(None);
+
+    /// The largest port.
+    pub const MAX: Self = Self(Some(NonZero::<u16>::MAX));
+
+    /// The key port of a packet, taken from its parsed transport header.
+    #[must_use]
+    pub const fn new(port: Option<NonZero<u16>>) -> Self {
+        Self(port)
+    }
+
+    /// A port as a configuration range spells it, where zero can only be the wildcard's lower
+    /// bound (validation having rejected it anywhere else).
+    #[must_use]
+    pub const fn from_raw(port: u16) -> Self {
+        Self(NonZero::new(port))
+    }
+
+    /// The wire encoding: the port, or zero for a packet that has none.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        match self.0 {
+            Some(port) => port.get(),
+            None => 0,
+        }
     }
 }
 
-impl From<&Prefix> for RangeSpec<u16> {
+impl Display for KeyPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(port) => write!(f, "{port}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
+impl FixedSize for KeyPort {
+    const SIZE: usize = size_of::<u16>();
+    fn write_be(&self, out: &mut [u8]) {
+        self.get().write_be(out);
+    }
+}
+
+pub const PORT_RANGE_WILDCARD: RangeSpec<KeyPort> = RangeSpec::new(KeyPort::NONE, KeyPort::MAX);
+
+impl From<PortRange> for RangeSpec<KeyPort> {
+    fn from(range: PortRange) -> Self {
+        RangeSpec::new(KeyPort::from_raw(range.start), KeyPort::from_raw(range.end))
+    }
+}
+
+impl From<&Prefix> for RangeSpec<KeyPort> {
     fn from(_: &Prefix) -> Self {
         PORT_RANGE_WILDCARD
     }
 }
 
-impl From<&PrefixWithPorts> for RangeSpec<u16> {
+impl From<&PrefixWithPorts> for RangeSpec<KeyPort> {
     fn from(prefix_with_ports: &PrefixWithPorts) -> Self {
         prefix_with_ports.ports().into()
     }
 }
 
-impl From<&PrefixWithOptionalPorts> for RangeSpec<u16> {
+impl From<&PrefixWithOptionalPorts> for RangeSpec<KeyPort> {
     fn from(pwop: &PrefixWithOptionalPorts) -> Self {
         (&PrefixWithPorts::from(*pwop)).into()
     }

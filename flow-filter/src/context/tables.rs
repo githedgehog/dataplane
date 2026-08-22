@@ -45,7 +45,7 @@ use dpdk::acl::{CategoryMask, Priority};
 #[cfg(test)]
 use lookup::Lookup;
 use lpm::prefix::Prefix;
-use lpm::prefix::with_ports::{L4Protocol, PORT_RANGE_WILDCARD};
+use lpm::prefix::with_ports::{KeyPort, L4Protocol, PORT_RANGE_WILDCARD};
 use match_action::{
     Erased, ExactSpec, FieldPredicate, FixedSize, MaskSpec, MatchKey, PrefixSpec, RangeSpec,
 };
@@ -87,7 +87,7 @@ pub(crate) struct LookupInput {
     pub(crate) src_ip: IpAddr,
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
-    pub(crate) ports: Option<(u16, u16)>,
+    pub(crate) ports: Option<(NonZero<u16>, NonZero<u16>)>,
     pub(crate) gate: SourceGate,
 }
 
@@ -106,8 +106,8 @@ struct Query<I> {
     proto: NextHeader,
     src_ip: I,
     dst_ip: I,
-    src_port: u16,
-    dst_port: u16,
+    src_port: KeyPort,
+    dst_port: KeyPort,
     gate: SourceGate,
 }
 
@@ -203,7 +203,7 @@ pub(super) struct RemoteKey<I> {
     dst_ip: I,
     #[range]
     #[cli(column_name = "dst-port")]
-    dst_port: u16,
+    dst_port: KeyPort,
 }
 
 /// Stage-2 key: "is this source allowed to reach that peer, and with what source NAT?"
@@ -222,7 +222,7 @@ pub(super) struct LocalKey<I> {
     src_ip: I,
     #[range]
     #[cli(column_name = "src-port")]
-    src_port: u16,
+    src_port: KeyPort,
     #[exact]
     #[cli(column_name = "gate")]
     gate: SourceGate,
@@ -461,7 +461,7 @@ fn emit_remote(
     src_vni: Vni,
     dst_vni: GateVni,
     ip_range: Prefix,
-    port_range: RangeSpec<u16>,
+    port_range: RangeSpec<KeyPort>,
     proto: MaskSpec<NextHeader>,
     action: Verdict,
 ) {
@@ -511,7 +511,7 @@ fn emit_local(
     src_vni: Vni,
     dst_vni: Vni,
     ip_range: Prefix,
-    port_range: RangeSpec<u16>,
+    port_range: RangeSpec<KeyPort>,
     proto: MaskSpec<NextHeader>,
     gate: SourceGate,
     action: NatMode,
@@ -725,14 +725,13 @@ impl FlowFilterContext {
         src_ip: IpAddr,
         dst_ip: IpAddr,
         proto: NextHeader,
-        ports: Option<(u16, u16)>,
+        ports: Option<(NonZero<u16>, NonZero<u16>)>,
         gate: SourceGate,
     ) -> LookupResult {
         let src_vni = key_vni(src_vpcd);
         let dst_vni = GateVni::from(dst_vpcd.map(key_vni));
         let (src_port, dst_port) = ports.unzip();
-        let src_port = src_port.unwrap_or(0);
-        let dst_port = dst_port.unwrap_or(0);
+        let (src_port, dst_port) = (KeyPort::new(src_port), KeyPort::new(dst_port));
 
         match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
@@ -810,7 +809,8 @@ impl FlowFilterContext {
             let proto = input.proto;
             let src_vni = key_vni(input.src_vpcd);
             let dst_vni = GateVni::from(input.dst_vpcd.map(key_vni));
-            let (src_port, dst_port) = input.ports.unwrap_or((0, 0));
+            let (src_port, dst_port) = input.ports.unzip();
+            let (src_port, dst_port) = (KeyPort::new(src_port), KeyPort::new(dst_port));
             let gate = input.gate;
             match (input.src_ip, input.dst_ip) {
                 (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {

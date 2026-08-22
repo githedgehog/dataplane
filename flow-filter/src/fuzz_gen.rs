@@ -28,6 +28,8 @@ use bolero::TypeGenerator;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use config::external::overlay::{Overlay, ValidatedOverlay};
+use std::num::NonZero;
+
 use lpm::prefix::{L4Protocol, PortRange, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -412,13 +414,13 @@ fn derive_routing_probes(
 
     // (address, port, protocol, revalidated source NAT mode) of every source the peering routes.
     // A protocol of None leaves the choice to the destination.
-    let mut sources: Vec<(IpAddr, u16, Option<FwProto>, SourceGate)> = Vec::new();
+    let mut sources: Vec<(IpAddr, NonZero<u16>, Option<FwProto>, SourceGate)> = Vec::new();
     for (li, lspec) in local.expose_specs().enumerate() {
         let block = local_base + li as u8;
         if lspec.source_capable() {
             sources.push((
                 block_addr(block, 1, false, v6),
-                1,
+                nz(1),
                 None,
                 SourceGate::Ungated,
             ));
@@ -426,7 +428,7 @@ fn derive_routing_probes(
         for (proto, host) in lspec.port_fw_sources().into_iter().flatten() {
             sources.push((
                 block_addr(block, host, false, v6),
-                FW_PRIVATE_PORTS.0,
+                nz(FW_PRIVATE_PORTS.0),
                 Some(proto),
                 SourceGate::PortFwdReply,
             ));
@@ -435,17 +437,27 @@ fn derive_routing_probes(
 
     // (address, port, protocol, revalidated destination VPC) of every destination the peering
     // routes.
-    let mut destinations: Vec<(IpAddr, u16, Option<FwProto>, Option<VpcDiscriminant>)> = Vec::new();
+    let mut destinations: Vec<(
+        IpAddr,
+        NonZero<u16>,
+        Option<FwProto>,
+        Option<VpcDiscriminant>,
+    )> = Vec::new();
     for (ri, rspec) in remote.expose_specs().enumerate() {
         let block = remote_base + ri as u8;
         if let Some(dst_public) = rspec.dest_public_space() {
             let revalidated = rspec.dest_needs_revalidation().then_some(dst_vpcd);
-            destinations.push((block_addr(block, 1, dst_public, v6), 1, None, revalidated));
+            destinations.push((
+                block_addr(block, 1, dst_public, v6),
+                nz(1),
+                None,
+                revalidated,
+            ));
         }
         for proto in rspec.portfw_protos() {
             destinations.push((
                 block_addr(block, FW_HOST, true, v6),
-                FW_PUBLIC_PORTS.0,
+                nz(FW_PUBLIC_PORTS.0),
                 Some(proto),
                 None,
             ));
@@ -647,14 +659,25 @@ pub(crate) enum PortSel {
     FwPublic(u8),
 }
 
+/// A fixture port literal. The fixtures never use zero -- a packet cannot carry it.
+pub(crate) fn nz(port: u16) -> NonZero<u16> {
+    NonZero::new(port).unwrap_or_else(|| unreachable!("fixture ports are non-zero"))
+}
+
 impl PortSel {
-    fn resolve(self) -> u16 {
+    /// Resolve to a port a packet could actually carry.
+    ///
+    /// Zero is folded to one rather than drawn: `TcpPort` and `UdpPort` are `NonZero`, so a probe
+    /// with port zero would be testing an input no parser can produce -- and the key encoding
+    /// spends zero on "this packet has no ports" (see [`KeyPort`](lpm::prefix::with_ports::KeyPort)).
+    fn resolve(self) -> NonZero<u16> {
         let span = |(lo, hi): (u16, u16), k: u8| lo + u16::from(k) % (hi - lo + 2); // +1 past end
-        match self {
+        let port = match self {
             PortSel::Exact(p) => p,
             PortSel::FwPrivate(k) => span(FW_PRIVATE_PORTS, k),
             PortSel::FwPublic(k) => span(FW_PUBLIC_PORTS, k),
-        }
+        };
+        NonZero::new(port).unwrap_or(NonZero::<u16>::MIN)
     }
 }
 
@@ -708,7 +731,7 @@ pub(crate) struct Probe {
     pub(crate) src_ip: IpAddr,
     pub(crate) dst_ip: IpAddr,
     pub(crate) proto: NextHeader,
-    pub(crate) ports: Option<(u16, u16)>,
+    pub(crate) ports: Option<(NonZero<u16>, NonZero<u16>)>,
     pub(crate) gate: SourceGate,
 }
 
