@@ -434,6 +434,60 @@ pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
     panic!("a load did not finish in 64 steps: {}", load.describe());
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pick {
+    pub(crate) load: u8,
+    pub(crate) take: u8,
+}
+
+#[cfg(test)]
+pub(crate) type Poll = Vec<Pick>;
+
+#[cfg(test)]
+pub(crate) fn run_schedule(fabric: &mut Fabric, loads: &mut [Box<dyn Load>], schedule: &[Poll]) {
+    for poll in schedule {
+        let mut burst = Vec::new();
+        let mut origin = Vec::new();
+        for pick in poll {
+            if loads.is_empty() {
+                break;
+            }
+            let which = usize::from(pick.load) % loads.len();
+            for _ in 0..pick.take {
+                let Some(packet) = loads[which].next() else {
+                    break;
+                };
+                burst.push(packet);
+                origin.push(which);
+            }
+        }
+        if burst.is_empty() {
+            continue;
+        }
+        for (answer, which) in fabric.send_batch(burst).iter().zip(origin) {
+            loads[which].observe(answer);
+        }
+    }
+
+    for load in loads {
+        drive(fabric, load.as_mut());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn mixed_polls(schedule: &[Poll]) -> usize {
+    schedule
+        .iter()
+        .filter(|poll| {
+            let mut seen: Vec<u8> = poll.iter().map(|p| p.load).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len() > 1
+        })
+        .count()
+}
+
 pub(crate) struct Checkpoint<F> {
     at: &'static str,
     check: F,
@@ -1702,6 +1756,108 @@ mod port_forward {
 }
 
 #[cfg(test)]
+mod interleaved {
+    use super::routed::{Conversation, exposes};
+    use super::*;
+    use std::ops::Bound::Included;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const CONVERSATIONS: usize = 6;
+    const POLLS: usize = 10;
+
+    struct Interleaving;
+
+    impl bolero::ValueGenerator for Interleaving {
+        type Output = (Vec<(u8, u16, u16)>, Vec<Poll>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let flows = (0..CONVERSATIONS)
+                .map(|_| {
+                    Some((
+                        driver.produce::<u8>()?,
+                        driver.produce::<u16>()?.max(1),
+                        driver.produce::<u16>()?.max(1),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            let schedule = (0..POLLS)
+                .map(|_| {
+                    let picks = driver.gen_u8(Included(&1), Included(&3))?;
+                    (0..picks)
+                        .map(|_| {
+                            Some(Pick {
+                                load: driver.produce::<u8>()?,
+                                take: driver.gen_u8(Included(&1), Included(&3))?,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some((flows, schedule))
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("interleaved::Interleaving", &Interleaving);
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn interleaved_conversations_are_each_satisfied() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Interleaving)
+            .for_each(|(flows, schedule)| {
+                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                    return;
+                };
+
+                let mut loads: Vec<Box<dyn Load>> = flows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, (host, sport, dport))| {
+                        let src: IpAddr = format!("1.1.{i}.{host}").parse().ok()?;
+                        let dst: IpAddr = "3.3.3.1".parse().ok()?;
+                        Some(Box::new(Conversation::new(src, dst, *sport, *dport)) as Box<dyn Load>)
+                    })
+                    .collect();
+
+                run_schedule(&mut fabric, &mut loads, schedule);
+
+                MIXED.fetch_add(mixed_polls(schedule) as u64, Ordering::Relaxed);
+                for load in &loads {
+                    if load.checked() {
+                        CHECKED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (checked, abandoned, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        eprintln!("checked={checked} abandoned={abandoned} mixed-polls={mixed}");
+        super::assert_covered(checked > 0, "no conversation ever completed");
+        super::assert_covered(
+            mixed > 0,
+            "no poll ever drew from more than one load, so nothing was interleaved and this is \
+             the single-conversation property in a costlier harness",
+        );
+    }
+}
+
+#[cfg(test)]
 mod burst {
     use super::round_trip::udp;
     use super::routed::{exposes, inside, tunnelled, tunnelled_from};
@@ -2321,7 +2477,9 @@ mod routed {
     #[derive(Debug, PartialEq, Eq)]
     enum State {
         Opening,
+        AwaitingRequest,
         Replying { public: (IpAddr, u16) },
+        AwaitingReply,
         Closed,
         Abandoned,
     }
@@ -2428,21 +2586,29 @@ mod routed {
                 State::Opening => {
                     let request = udp(self.src, self.dst, self.sport, self.dport)?;
                     self.sent = Some(request.clone());
+                    self.state = State::AwaitingRequest;
                     Some(tunnelled(&request))
                 }
                 State::Replying { public: (ip, port) } => {
                     let reply = udp(self.dst, ip, self.dport, port)?;
+                    self.state = State::AwaitingReply;
                     Some(tunnelled_from(vni(REMOTE_VNI), &reply))
                 }
-                State::Closed | State::Abandoned => None,
+                State::AwaitingRequest
+                | State::AwaitingReply
+                | State::Closed
+                | State::Abandoned => None,
             }
         }
 
         fn observe(&mut self, got: &Packet<TestBuffer>) {
             match self.state {
-                State::Opening => self.judge_request(got),
-                State::Replying { .. } => self.judge_reply(got),
-                State::Closed | State::Abandoned => {}
+                State::AwaitingRequest => self.judge_request(got),
+                State::AwaitingReply => self.judge_reply(got),
+                ref state => panic!(
+                    "a load was given an answer it was not waiting for (state {state:?}). {}",
+                    self.describe()
+                ),
             }
         }
 
