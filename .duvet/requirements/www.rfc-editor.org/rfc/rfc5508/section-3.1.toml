@@ -1,0 +1,109 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-3.1"
+
+# ICMP Query Mapping
+#
+#    Unless explicitly overridden by local policy, a NAT device MUST
+#    permit ICMP Queries and their associated responses, when the Query is
+#    initiated from a private host to the external hosts.  ICMP Query
+#    mapping by NAT devices is necessary for current ICMP-Query-based
+#    applications to work.  This entails a NAT device to transparently
+#    forward ICMP Query packets initiated from the nodes behind NAT, and
+#    the responses to these Query packets in the opposite direction.  As
+#    specified in [NAT-TRAD], this requires translating the IP header.  A
+#    NAPT device further translates the ICMP Query Id and the associated
+#    checksum in the ICMP header prior to forwarding.
+# 
+#    NAT mapping of ICMP Query Identifiers SHOULD be external-host
+#    independent.  Say, an internal host A sent an ICMP Query out to an
+#    external host B using Query Id X.  And, say, the NAT assigned this an
+#    external mapping of Query Id X' on the NAT's public address.  If host
+#    A reused the Query Id X to send ICMP Queries to the same or different
+#    external host, the NAT device SHOULD reuse the same Query Id mapping
+#    (i.e., map the private host's Query Id X to Query Id X' on NAT's
+#    public IP address) instead of assigning a different mapping.  This is
+#    similar to the "endpoint independent mapping" requirement specified
+#    in the TCP and UDP requirement documents [BEH-UDP], [BEH-TCP].
+# 
+#    Below is justification for making the endpoint-independent mapping
+#    for ICMP Query Id a SHOULD [RFC2119] requirement.  ICMP Ping
+#    [RFC1470] and ICMP traceroute [MS-TRCRT] are two most commonly known
+#    legacy applications built on top of ICMP Query messages.  Neither of
+#    these applications require the ICMP Query Id to be retained across
+#    different sessions with external hosts.  But, that may not be the
+#    case with future applications.  In the future, when an end host
+#    application reuses the same Query Identifier in sessions with
+#    different target hosts, the end host application might require that
+#    the endpoint identity (i.e., the tuple of IP address and Query
+#    Identifier) appears the same across all its target hosts.  In an IP
+#    network without NAT requirements, such a requirement will be valid.
+# 
+#    In a world with NAT devices, the above assumption will be valid when
+#    NAT devices enforce endpoint mapping that is external-host
+#    independent.  Given the dichotomy between legacy applications not
+#    requiring endpoint-independent mapping and future applications that
+#    might require it, the requirement level is kept at SHOULD [RFC2119].
+# 
+#    REQ-1: Unless explicitly overridden by local policy, a NAT device
+#           MUST permit ICMP Queries and their associated responses, when
+#           the Query is initiated from a private host to the external
+#           hosts.
+# 
+#           a) NAT mapping of ICMP Query Identifiers SHOULD be external-
+#              host independent.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Unless explicitly overridden by local policy, a NAT device MUST
+permit ICMP Queries and their associated responses, when the Query is
+initiated from a private host to the external hosts.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+NAT mapping of ICMP Query Identifiers SHOULD be external-host
+independent.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If host
+A reused the Query Id X to send ICMP Queries to the same or different
+external host, the NAT device SHOULD reuse the same Query Id mapping
+(i.e., map the private host's Query Id X to Query Id X' on NAT's
+public IP address) instead of assigning a different mapping.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Below is justification for making the endpoint-independent mapping
+for ICMP Query Id a SHOULD [RFC2119] requirement.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Given the dichotomy between legacy applications not
+requiring endpoint-independent mapping and future applications that
+might require it, the requirement level is kept at SHOULD [RFC2119].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-1: Unless explicitly overridden by local policy, a NAT device
+MUST permit ICMP Queries and their associated responses, when
+the Query is initiated from a private host to the external
+hosts.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) NAT mapping of ICMP Query Identifiers SHOULD be external-
+host independent.
+'''
+
