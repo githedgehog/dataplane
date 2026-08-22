@@ -815,7 +815,10 @@ pub mod tests {
         let key = NhopKey::new(
             RouteOrigin::default(),
             address.map(mk_addr),
-            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()), encap,FwAction::Forward, None);
+            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()),
+            encap,
+            FwAction::Forward,
+        );
 
         RouteNhop {
             vrfid,

@@ -57,8 +57,7 @@ impl Nhop {
             };
             if ok {
                 instructions.push(PktInstruction::Encap(encap_instr));
-                let egress =
-                    EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
+                let egress = EgressObject::new(self.key.ifindex, self.key.address);
                 instructions.push(PktInstruction::Egress(egress));
             } else {
                 // resolution of encap instructions failed. Keep the route with action drop and mark the nhop as invalid
@@ -82,8 +81,7 @@ impl Nhop {
         // never reach the fib and the egress stage would resolve the destination of the packet instead
         // which is only correct if it is directly connected.
         if self.key.ifindex.is_some() || self.key.address.is_some() {
-            let egress =
-                EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
+            let egress = EgressObject::new(self.key.ifindex, self.key.address);
             instructions.push(PktInstruction::Egress(egress));
         }
         instructions

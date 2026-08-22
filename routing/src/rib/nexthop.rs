@@ -60,13 +60,6 @@ pub struct NhopKey {
     pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
-    /// The name of `ifindex`'s interface, for diagnostics only.
-    ///
-    /// Not populated when a next-hop is learned over the CPI, and it must not be: the name has to
-    /// be looked up against the interface table, which is populated out of band, so a key carrying
-    /// one would differ before and after we learn about the interface -- two next-hops where there
-    /// is one. See `RouteNhop::from_rpc_nhop`, and the same argument for a vxlan dmac above it.
-    pub ifname: Option<String>,
 }
 
 impl NhopKey {
@@ -80,7 +73,6 @@ impl NhopKey {
         ifindex: Option<InterfaceIndex>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
-        ifname: Option<String>,
     ) -> Self {
         Self {
             origin,
@@ -88,7 +80,6 @@ impl NhopKey {
             ifindex,
             encap,
             fwaction,
-            ifname,
         }
     }
     #[must_use]
@@ -99,7 +90,6 @@ impl NhopKey {
             ifindex: None,
             encap: None,
             fwaction: FwAction::Drop,
-            ifname: None,
         }
     }
     #[cfg(test)]
@@ -345,7 +335,6 @@ impl Nhop {
                         Some(i),
                         self.key.encap,
                         self.key.fwaction,
-                        self.key.ifname.clone(),
                     ));
                 } else {
                     r.quick_resolve_rec(result, visited);

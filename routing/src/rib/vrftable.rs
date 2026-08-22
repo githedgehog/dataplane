@@ -857,10 +857,10 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9"))))),
                 _ => unreachable!(),
             }
         }
@@ -884,8 +884,8 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9"))))),
                 _ => unreachable!(),
             }
         }
@@ -908,7 +908,7 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
                 _ => unreachable!(),
             }
         }
@@ -928,10 +928,10 @@ mod tests {
             assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
             assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9"))))),
                 _ => unreachable!(),
             }
         }
@@ -1475,7 +1475,6 @@ mod crossvrf_properties {
                 FibEntry::with_inst(PktInstruction::Egress(EgressObject::new(
                     InterfaceIndex::try_new(ifindex).ok(),
                     Some(address),
-                    None,
                 )))
             }
             None => FibEntry::drop_fibentry(),

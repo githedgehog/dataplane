@@ -102,9 +102,6 @@ impl Display for NhopKey {
         if let Some(address) = self.address {
             write!(f, " via {address}")?;
         }
-        if let Some(ifname) = &self.ifname {
-            write!(f, " interface {ifname}")?;
-        }
         if let Some(ifindex) = self.ifindex {
             write!(f, " (idx {ifindex})")?;
         }
@@ -748,7 +745,6 @@ impl Display for FibKey {
 }
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_opt_value(f, " interface", self.ifname.as_ref(), false)?;
         fmt_opt_value(f, " idx", self.ifindex.as_ref(), false)?;
         fmt_opt_value(f, " addr", self.address.as_ref(), false)
     }

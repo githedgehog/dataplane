@@ -123,21 +123,13 @@ impl RouteNhop {
             None => None,
         };
 
-        // build key for this next hop.
-        //
-        // No interface name: it would have to be looked up from `ifindex` against the interface
-        // table, which is populated out of band, so the same next-hop off the wire would key
-        // differently before and after we learn about the interface -- two `Nhop`s, two fib groups,
-        // for one next-hop. This is the same reasoning that keeps a vxlan dmac out of the key,
-        // written down above: a next-hop key has to be immutable for keying purposes, so nothing
-        // derived from mutable state outside it belongs in one.
+        // build key for this next hop
         let key = NhopKey::new(
             origin,
             nh.address,
             ifindex,
             encap,
             FwAction::from(nh.fwaction),
-            None,
         );
 
         // validate next hop from its key
@@ -472,11 +464,7 @@ mod rpc_properties {
             return None;
         }
 
-        // no interface name: the conversion has no interface table to look one up in, which is
-        // what keeps one wire next-hop from keying two ways
-        Some(NhopKey::new(
-            origin, address, ifindex, encap, fwaction, None,
-        ))
+        Some(NhopKey::new(origin, address, ifindex, encap, fwaction))
     }
 
     fn test_vrf() -> Vrf {
