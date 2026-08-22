@@ -61,7 +61,7 @@ netdev = { workspace = true }
 dataplane-routing = { path = ".", features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }
 clock = { workspace = true, features = ["virtual"] }
-criterion = { workspace = true, features = ["cargo_bench_support"] }
+criterion = { workspace = true }
 iai-callgrind = { workspace = true }
 bolero = { workspace = true, default-features = false }
 concurrency = { workspace = true }

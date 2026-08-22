@@ -133,7 +133,14 @@ chrono = { version = "0.4.45", default-features = false, features = [] }
 clap = { version = "4.6.6", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.1.1", default-features = false, features = [] }
-criterion = { version = "0.8.2", default-features = false, features = [] }
+# `html_reports` writes target/criterion/report/index.html; `plotters` is the chart backend it
+# draws with (pure Rust, so no gnuplot in the dev shell). `rayon` stays off: it parallelises
+# sampling, which trades a little run-to-run stability for wall-clock we do not need back.
+criterion = { version = "0.8.2", default-features = false, features = [
+  "cargo_bench_support",
+  "html_reports",
+  "plotters",
+] }
 # Must match the `iai-callgrind-runner` version in nix/overlays/dataplane-dev.nix; the library
 # refuses to run against a different runner.
 #
