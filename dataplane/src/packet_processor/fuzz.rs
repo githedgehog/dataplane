@@ -445,7 +445,12 @@ pub(crate) struct Pick {
 pub(crate) type Poll = Vec<Pick>;
 
 #[cfg(test)]
-pub(crate) fn run_schedule(fabric: &mut Fabric, loads: &mut [Box<dyn Load>], schedule: &[Poll]) {
+pub(crate) fn run_schedule(
+    fabric: &mut Fabric,
+    loads: &mut [Box<dyn Load>],
+    schedule: &[Poll],
+) -> Vec<Vec<usize>> {
+    let mut bursts = Vec::new();
     for poll in schedule {
         let mut burst = Vec::new();
         let mut origin = Vec::new();
@@ -465,27 +470,16 @@ pub(crate) fn run_schedule(fabric: &mut Fabric, loads: &mut [Box<dyn Load>], sch
         if burst.is_empty() {
             continue;
         }
-        for (answer, which) in fabric.send_batch(burst).iter().zip(origin) {
-            loads[which].observe(answer);
+        for (answer, which) in fabric.send_batch(burst).iter().zip(&origin) {
+            loads[*which].observe(answer);
         }
+        bursts.push(origin);
     }
 
     for load in loads {
         drive(fabric, load.as_mut());
     }
-}
-
-#[cfg(test)]
-pub(crate) fn mixed_polls(schedule: &[Poll]) -> usize {
-    schedule
-        .iter()
-        .filter(|poll| {
-            let mut seen: Vec<u8> = poll.iter().map(|p| p.load).collect();
-            seen.sort_unstable();
-            seen.dedup();
-            seen.len() > 1
-        })
-        .count()
+    bursts
 }
 
 pub(crate) struct Checkpoint<F> {
@@ -1757,28 +1751,49 @@ mod port_forward {
 
 #[cfg(test)]
 mod interleaved {
-    use super::routed::{Conversation, exposes};
+    use super::routed::{Blast, Conversation, exposes};
     use super::*;
     use std::ops::Bound::Included;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    const CONVERSATIONS: usize = 6;
+    const LOADS: usize = 6;
     const POLLS: usize = 10;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Conversation,
+        Blast,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Sender {
+        kind: Kind,
+        host: u8,
+        sport: u16,
+        dport: u16,
+        count: u8,
+    }
 
     struct Interleaving;
 
     impl bolero::ValueGenerator for Interleaving {
-        type Output = (Vec<(u8, u16, u16)>, Vec<Poll>);
+        type Output = (Vec<Sender>, Vec<Poll>);
 
         fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-            let flows = (0..CONVERSATIONS)
+            let senders = (0..LOADS)
                 .map(|_| {
-                    Some((
-                        driver.produce::<u8>()?,
-                        driver.produce::<u16>()?.max(1),
-                        driver.produce::<u16>()?.max(1),
-                    ))
+                    Some(Sender {
+                        kind: if driver.produce::<bool>()? {
+                            Kind::Conversation
+                        } else {
+                            Kind::Blast
+                        },
+                        host: driver.produce::<u8>()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                        count: driver.gen_u8(Included(&2), Included(&5))?,
+                    })
                 })
                 .collect::<Option<Vec<_>>>()?;
 
@@ -1796,7 +1811,7 @@ mod interleaved {
                 })
                 .collect::<Option<Vec<_>>>()?;
 
-            Some((flows, schedule))
+            Some((senders, schedule))
         }
     }
 
@@ -1807,32 +1822,57 @@ mod interleaved {
 
     #[tokio::test]
     #[dpdk::with_eal]
-    async fn interleaved_conversations_are_each_satisfied() {
+    async fn interleaved_traffic_is_each_satisfied() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED_LOADS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED_KINDS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Interleaving)
-            .for_each(|(flows, schedule)| {
+            .for_each(|(senders, schedule)| {
                 let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
                     return;
                 };
 
-                let mut loads: Vec<Box<dyn Load>> = flows
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, (host, sport, dport))| {
-                        let src: IpAddr = format!("1.1.{i}.{host}").parse().ok()?;
-                        let dst: IpAddr = "3.3.3.1".parse().ok()?;
-                        Some(Box::new(Conversation::new(src, dst, *sport, *dport)) as Box<dyn Load>)
-                    })
-                    .collect();
+                let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                let mut kinds = Vec::new();
+                let mut loads: Vec<Box<dyn Load>> = Vec::new();
+                for (i, sender) in senders.iter().enumerate() {
+                    let Ok(src) = format!("1.1.{i}.{}", sender.host).parse::<IpAddr>() else {
+                        continue;
+                    };
+                    kinds.push(sender.kind);
+                    loads.push(match sender.kind {
+                        Kind::Conversation => {
+                            Box::new(Conversation::new(src, dst, sender.sport, sender.dport))
+                        }
+                        Kind::Blast => Box::new(Blast::new(
+                            src,
+                            dst,
+                            sender.sport,
+                            sender.dport,
+                            sender.count,
+                        )) as Box<dyn Load>,
+                    });
+                }
 
-                run_schedule(&mut fabric, &mut loads, schedule);
+                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                    let mut loads_in: Vec<usize> = burst.clone();
+                    loads_in.sort_unstable();
+                    loads_in.dedup();
+                    if loads_in.len() > 1 {
+                        MIXED_LOADS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let mut kinds_in: Vec<Kind> = burst.iter().map(|i| kinds[*i]).collect();
+                    kinds_in.sort_unstable_by_key(|k| format!("{k:?}"));
+                    kinds_in.dedup();
+                    if kinds_in.len() > 1 {
+                        MIXED_KINDS.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
 
-                MIXED.fetch_add(mixed_polls(schedule) as u64, Ordering::Relaxed);
                 for load in &loads {
                     if load.checked() {
                         CHECKED.fetch_add(1, Ordering::Relaxed);
@@ -1842,17 +1882,24 @@ mod interleaved {
                 }
             });
 
-        let (checked, abandoned, mixed) = (
+        let (checked, abandoned, mixed_loads, mixed_kinds) = (
             CHECKED.load(Ordering::Relaxed),
             ABANDONED.load(Ordering::Relaxed),
-            MIXED.load(Ordering::Relaxed),
+            MIXED_LOADS.load(Ordering::Relaxed),
+            MIXED_KINDS.load(Ordering::Relaxed),
         );
-        eprintln!("checked={checked} abandoned={abandoned} mixed-polls={mixed}");
-        super::assert_covered(checked > 0, "no conversation ever completed");
+        eprintln!(
+            "checked={checked} abandoned={abandoned} mixed-loads={mixed_loads} \
+             mixed-kinds={mixed_kinds}"
+        );
+        super::assert_covered(checked > 0, "no sender ever completed its business");
         super::assert_covered(
-            mixed > 0,
-            "no poll ever drew from more than one load, so nothing was interleaved and this is \
-             the single-conversation property in a costlier harness",
+            mixed_loads > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+        super::assert_covered(
+            mixed_kinds > 0,
+            "no burst ever mixed a conversation with a blast, so the two shapes never met",
         );
     }
 }
@@ -2627,6 +2674,109 @@ mod routed {
                 self.sport,
                 self.dst,
                 self.dport,
+                if self.log.is_empty() {
+                    "nothing yet".to_owned()
+                } else {
+                    self.log.join("; ")
+                }
+            )
+        }
+    }
+
+    pub(super) struct Blast {
+        src: IpAddr,
+        dst: IpAddr,
+        sport: u16,
+        dport: u16,
+        to_send: u8,
+        in_flight: u8,
+        given: Option<(IpAddr, u16)>,
+        delivered: u8,
+        log: Vec<String>,
+    }
+
+    impl Blast {
+        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16, count: u8) -> Self {
+            Self {
+                src,
+                dst,
+                sport,
+                dport,
+                to_send: count.max(2),
+                in_flight: 0,
+                given: None,
+                delivered: 0,
+                log: Vec::new(),
+            }
+        }
+    }
+
+    impl Load for Blast {
+        fn next(&mut self) -> Option<Packet<TestBuffer>> {
+            if self.to_send == 0 {
+                return None;
+            }
+            let packet = udp(self.src, self.dst, self.sport, self.dport)?;
+            self.to_send -= 1;
+            self.in_flight += 1;
+            Some(tunnelled(&packet))
+        }
+
+        fn observe(&mut self, got: &Packet<TestBuffer>) {
+            assert!(
+                self.in_flight > 0,
+                "a blast was given an answer it was not waiting for. {}",
+                self.describe()
+            );
+            self.in_flight -= 1;
+
+            if !matches!(verdict(got), Verdict::Delivered { .. }) {
+                self.log.push(format!("not delivered: {:?}", verdict(got)));
+                return;
+            }
+            let Some(carried) = inside(got) else {
+                self.log.push("delivered but not tunnelled".to_owned());
+                return;
+            };
+            let (Some(source), Some(port)) = (carried.ip_source(), carried.transport_src_port())
+            else {
+                return;
+            };
+            let now = (source, port.get());
+            self.delivered += 1;
+            match self.given {
+                None => {
+                    self.log.push(format!("left as {source}:{}", port.get()));
+                    self.given = Some(now);
+                }
+                Some(first) => assert_eq!(
+                    now,
+                    first,
+                    "packets of one flow were given different public tuples, so the flow was \
+                     allocated for more than once. {}",
+                    self.describe()
+                ),
+            }
+        }
+
+        fn finished(&self) -> bool {
+            self.to_send == 0 && self.in_flight == 0
+        }
+
+        fn checked(&self) -> bool {
+            self.delivered >= 2
+        }
+
+        fn describe(&self) -> String {
+            format!(
+                "[blast {}:{} -> {}:{} | {} left, {} in flight, {} delivered | {}]",
+                self.src,
+                self.sport,
+                self.dst,
+                self.dport,
+                self.to_send,
+                self.in_flight,
+                self.delivered,
                 if self.log.is_empty() {
                     "nothing yet".to_owned()
                 } else {
