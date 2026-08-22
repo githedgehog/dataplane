@@ -1,7 +1,10 @@
 **.profraw
 **/__fuzz__/**
+# `just fuzz` keeps its coverage corpus here rather than in __fuzz__, so that `just test` does not
+# replay it; see the fuzz_corpus_root comment in the justfile.
+.fuzz-corpus/
 # libfuzzer writes one of these per worker into the working directory when
-# `just fuzz` is given -j; the corpus itself lives under __fuzz__.
+# `just fuzz` is given -j.
 fuzz-*.log
 # qemu-user core dumps from SIGABRT under emulated tests.
 **/qemu_*.core
