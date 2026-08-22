@@ -186,7 +186,10 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
 
         let src_ip = net.src_addr();
         let dst_ip = net.dst_addr();
-        let proto = net.next_header();
+        let Some(proto) = packet.upper_layer_proto() else {
+            debug!("Could not determine the upper-layer protocol, dropping packet");
+            return Err(DoneReason::Malformed);
+        };
         let ports = packet
             .try_transport()
             .and_then(|t| t.src_port().zip(t.dst_port()));
