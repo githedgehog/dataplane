@@ -51,13 +51,6 @@ impl TryFrom<&VxlanEncap> for VxlanEncapsulation {
                 RouterError::VniInvalid(vxlan.vni)
             })?,
             remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            // Note: dmac is not set in nhops, because it may not be known when the
-            // next-hop is added and the encapsulation is part of the next-hop key
-            // which should be immutable for keying purposes.
-            // We ALWAYS set it to None when learning about next-hops via the CPI.
-            // This happens because we want to reuse the VxlanEncapsulation type for other
-            // purposes outside the Nhops. An alternative is to define yet another type.
-            dmac: None,
         })
     }
 }
@@ -404,7 +397,6 @@ mod rpc_properties {
             Some(vni) => Some(Encapsulation::Vxlan(VxlanEncapsulation {
                 vni: Vni::new_checked(vni).ok()?,
                 remote: address?,
-                dmac: None,
             })),
         };
 
