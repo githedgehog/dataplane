@@ -11,7 +11,6 @@ use net::flows::{FlowInfo, FlowStatus};
 use net::headers::{TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
-use std::num::NonZero;
 use tracectl::trace_target;
 use tracing::debug;
 
@@ -147,11 +146,9 @@ impl FlowFilter {
             src_ip: net.src_addr(),
             dst_ip: net.dst_addr(),
             proto: net.next_header(),
-            ports: packet.try_transport().and_then(|t| {
-                t.src_port()
-                    .map(NonZero::get)
-                    .zip(t.dst_port().map(NonZero::get))
-            }),
+            ports: packet
+                .try_transport()
+                .and_then(|t| t.src_port().zip(t.dst_port())),
             gate: revalidation_gate,
         };
         Classification::Lookup {
