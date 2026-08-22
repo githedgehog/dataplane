@@ -224,6 +224,25 @@ and mermaid, it is permalinked to the run that produced it, and it needs no secr
 `GITHUB_TOKEN` **cannot create gists** -- that requires a personal access token with `gist` scope,
 which is a credential to manage and rotate in exchange for a worse artifact.
 
+### What the report caught that callgrind alone would not
+
+Running the report over the caching change from earlier -- the one that reads as an improvement by
+instruction count and is slower on the machine -- produces this headline:
+
+> **Benchmarks**: `lpm_entry_prefix g16_e1` does -11.91% less work (Ir); bytes allocated +1.77%
+> (DHAT).
+
+The second clause is the interesting one. Growing `FibRoute` from 24 bytes to 32 is invisible to
+an instruction count and is the whole reason the change loses on a real machine, but it is not
+invisible to an allocation profiler: DHAT reports 7,226 bytes against 7,354.
+
+So the pairing to watch for is **less work, more memory**. That is the shape of change most likely
+to read as a win under callgrind and lose in production, and it is why the headline names both
+rather than only the flattering number. It is not a substitute for a wall-clock check -- allocation
+totals say nothing about _where_ the bytes land -- but it is a signal that arrives free, is
+deterministic enough to gate, and points at the one thing instruction counting is structurally
+blind to.
+
 ### Gating
 
 `Ir` is bit-identical run to run, so it can gate. iai-callgrind takes `--regression=Ir=5` to fail a
