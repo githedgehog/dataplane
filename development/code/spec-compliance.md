@@ -327,6 +327,27 @@ citation and one test. The RFC 4884 finding above is what the alternative costs:
 290 of `embedded.rs` are the same check written twice, once for ICMPv4 and once for ICMPv6, and
 the v6 copy went untested and uncaught. Duplication is what hid it.
 
+### The dangerous duplicate is the one the specification asks for
+
+The RFC 4884 finding above is duplication hiding a bug: the same check written twice, tested once.
+RFC 4884 section 4.6 is the other half of the lesson, and the more expensive one.
+
+It gives one list of extendable message types per address family, and **they are not the same
+list**. ICMPv4 Parameter Problem may carry an extension structure; ICMPv6 Parameter Problem may
+not, and the RFC says why -- its bytes 4..8 are the Pointer, so there is nowhere to put a length
+attribute. Our IPv6 list was the IPv4 list, and the consequence was a pointer read as a length: an
+`ICMPv6` Parameter Problem with a pointer above 255 announced an "original datagram" of up to 2040
+octets, and the fullness check believed it.
+
+Abstraction could not have prevented this one -- the two really do differ, so there is nothing to
+share. What prevents it is the citation, and specifically **a citation that needs a test per
+family**. Section 4.6 now carries two implementations and two tests, and the interlock says so:
+citing only the IPv6 side left both IPv4 mutants alive and reported `unreached`, which is the
+tool telling you which half of a requirement you have written down.
+
+So the rule to add to the one above: **where a specification is asymmetric between two cases, cite
+both cases.** A single citation on a near-duplicate reads as coverage of the pair.
+
 ### Delegation: cite the delegate, and mind the return type
 
 Two separate things, which the REQ-3 result ran together.
