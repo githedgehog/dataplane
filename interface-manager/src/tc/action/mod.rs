@@ -369,7 +369,7 @@ impl Reconcile for Manager<Action> {
 
 impl Observe for Manager<Action> {
     type Observation<'a>
-        = Result<ActionBase, ()>
+        = ActionBase
     where
         Self: 'a;
 
@@ -409,6 +409,6 @@ impl Observe for Manager<Action> {
                 }
             }
         }
-        Ok(actions)
+        actions
     }
 }
