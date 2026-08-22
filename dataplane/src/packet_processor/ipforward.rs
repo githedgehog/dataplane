@@ -323,11 +323,7 @@ impl IpForwarder {
         meta.oif = *egress.ifindex(); // may be None
         meta.nh_addr = *egress.address(); // may be None
         if meta.oif.is_some() {
-            debug!(
-                "Marked packet to send via interface {:?} ({:?})",
-                meta.oif,
-                egress.ifname()
-            );
+            debug!("Marked packet to send via interface {:?}", meta.oif);
         } else {
             // We should not see this log if we squash all of the
             // egress instructions and have one with an outgoing interface
