@@ -21,10 +21,12 @@
 //! `IcmpErrorHandler`, `FlowLookup`, `FlowFilter`, `AclFilter`, `StaticNat`, `PortForwarder`,
 //! `Masquerade`. See `start_router` in the parent module for the whole list.
 //!
-//! `Ingress`, the two `IpForwarder` stages and `Egress` are **not** here. They need an interface
-//! table, a FIB table and an adjacency table, and `routing::testing` exposes a `FibWriter` but not
-//! the table readers those stages take. Closing that is the next step, and it matters: the VLAN
-//! refusal lives in `IpForwarder` and has no test here for exactly this reason.
+//! `Fabric::build` wires that slice alone; `Fabric::routed` wires the whole pipeline, `Ingress`,
+//! both `IpForwarder`s and `Egress` included, over the underlay in `topology`. The difference is
+//! whether a packet's arrival is stamped or earned -- see the `routed` module.
+//!
+//! Building the underlay needs the three tables those stages read populated to a known shape,
+//! which is what `routing::testing::RouterTables` is for.
 //!
 //! # What the properties here do and do not catch
 //!
@@ -38,6 +40,10 @@
 //!   `the_acl_verdict_follows_the_protocol_the_packet_carries`. That is the bypass itself, caught
 //!   at the altitude it lived at: a rule naming TCP, a TCP packet behind an extension header, and
 //!   a filter reading the protocol out of a field that names the extension.
+//! - Removing the VLAN guard in `IpForwarder` fails `a_vlan_tag_is_refused_at_decapsulation`, and
+//!   *not* `a_tagged_shape_never_reaches_the_wire`, because the filters refuse the shape too. Two
+//!   properties about one behaviour, kept apart on purpose: one says where the decision is made,
+//!   the other says what the gateway does. Only the first can notice a layer going missing.
 //!
 //! `every_shape_leaves_the_pipeline_with_a_verdict` is deliberately weak: it says a verdict was
 //! reached and attributed, not that it was right. It catches a lost packet, a panic, and a packet
@@ -69,11 +75,21 @@ use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::static_nat::NatTablesWriter;
 use nat::static_nat::setup::build_nat_configuration;
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
+use lpm::prefix::Prefix;
 use net::buffer::TestBuffer;
+use net::eth::mac::{Mac, SourceMac};
+use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
+use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
+use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use pipeline::{DynPipeline, NetworkFunction};
+use routing::testing::RouterTables;
 use std::net::IpAddr;
+
+use super::egress::Egress;
+use super::ingress::Ingress;
+use super::ipforward::IpForwarder;
 
 /// A configured overlay pipeline, and the handles that keep its tables alive.
 ///
@@ -87,6 +103,9 @@ pub(crate) struct Fabric {
     _static_nat: NatTablesWriter,
     _portfw: PortFwTableWriter,
     _masquerade: NatAllocatorWriter,
+    /// Held for the same reason as the writers above: the fib writers live in here, and a fib
+    /// whose writer is dropped is torn down. `None` for an overlay-slice fabric.
+    _tables: Option<RouterTables>,
 }
 
 impl Fabric {
@@ -103,6 +122,26 @@ impl Fabric {
 
     /// As [`Self::build`], with an ACL on the peering.
     pub(crate) fn build_with_acl(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        Self::assemble(exposes, acl, None)
+    }
+
+    /// The whole pipeline, not just the overlay slice: `Ingress`, both `IpForwarder`s and `Egress`
+    /// as well, over the topology in [`topology`].
+    ///
+    /// The difference this makes is that a packet has to *earn* its arrival. An overlay-slice
+    /// fabric is handed a bare inner packet with [`arrive`] stamping the metadata that
+    /// decapsulation would have set; here the metadata is set by decapsulating a real tunnelled
+    /// frame, and everything that stamp asserts -- that the vni names a fib, that the frame parses
+    /// back, that nothing in it disqualifies it -- is under test rather than assumed.
+    pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        Self::assemble(exposes, acl, Some(topology()))
+    }
+
+    fn assemble(
+        exposes: &[VpcExpose],
+        acl: Option<&Acl>,
+        tables: Option<RouterTables>,
+    ) -> Option<Self> {
         let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
             .ok()?
             .validate()
@@ -110,6 +149,11 @@ impl Fabric {
 
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
+
+        if let Some(tables) = &tables {
+            pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+        }
 
         pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
         pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
@@ -160,6 +204,15 @@ impl Fabric {
             masquerade.get_reader(),
         ));
 
+        if let Some(tables) = &tables {
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
+            pipeline = pipeline.add_stage(Egress::new(
+                "egress",
+                tables.interfaces(),
+                tables.adjacencies(),
+            ));
+        }
+
         Some(Self {
             pipeline,
             _flow_table: flow_table,
@@ -168,6 +221,7 @@ impl Fabric {
             _static_nat: static_nat,
             _portfw: portfw,
             _masquerade: masquerade,
+            _tables: tables,
         })
     }
 
@@ -209,8 +263,21 @@ pub(crate) fn arrive(packet: &mut Packet<TestBuffer>, src: VpcDiscriminant) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
     /// Forwarded, with the VPC the flow filter chose.
+    ///
+    /// This is what the *overlay slice* produces, because it has no egress stage to hand the
+    /// packet to. A routed fabric never returns it.
     Forwarded {
         dst_vpcd: Option<VpcDiscriminant>,
+        src: Option<IpAddr>,
+        dst: Option<IpAddr>,
+    },
+    /// Framed and handed to an interface, with what it looked like on the wire.
+    ///
+    /// `Egress` finishes a packet with `DoneReason::Delivered`, which is a success and not a drop.
+    /// Kept distinct from [`Verdict::Dropped`] so that a test cannot assert "not dropped" and
+    /// accidentally accept a delivery, or the other way about.
+    Delivered {
+        oif: Option<InterfaceIndex>,
         src: Option<IpAddr>,
         dst: Option<IpAddr>,
     },
@@ -220,6 +287,11 @@ pub(crate) enum Verdict {
 
 pub(crate) fn verdict(packet: &Packet<TestBuffer>) -> Verdict {
     match packet.get_done() {
+        Some(DoneReason::Delivered) => Verdict::Delivered {
+            oif: packet.meta().oif,
+            src: packet.ip_source(),
+            dst: packet.ip_destination(),
+        },
         Some(reason) => Verdict::Dropped(reason),
         None => Verdict::Forwarded {
             dst_vpcd: packet.meta().dst_vpcd,
@@ -227,6 +299,111 @@ pub(crate) fn verdict(packet: &Packet<TestBuffer>) -> Verdict {
             dst: packet.ip_destination(),
         },
     }
+}
+
+/// The underlay the routed fabric sits on.
+///
+/// One uplink, carrying tunnelled traffic in both directions. The addresses are the ones
+/// `net`'s vxlan fixture already uses, so that a frame built by
+/// `build_test_vxlan_ipv4_packet_carrying` is addressed to this gateway without the test having to
+/// rewrite the outer header -- and, more usefully, so that a test that *does* rewrite it is saying
+/// something.
+pub(crate) const UPLINK: u32 = 1;
+/// The address the fixture's tunnelled frames are sent to: this gateway's vtep.
+pub(crate) const LOCAL_VTEP: &str = "5.6.7.8";
+/// The vtep on the other end, which is both where frames come from and where they go back to.
+pub(crate) const PEER_VTEP: &str = "1.2.3.4";
+/// This gateway's mac, used as the uplink's and as the vtep's.
+pub(crate) const GATEWAY_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xaa]);
+/// The peer's mac, which is what an adjacency for [`PEER_VTEP`] resolves to.
+pub(crate) const PEER_MAC: Mac = Mac([0x02, 0, 0, 0, 0, 0xbb]);
+
+/// The vrf a tunnelled frame arrives in, before it is anybody's overlay traffic.
+const UNDERLAY_VRF: u32 = 0;
+/// The vrf the local vpc's vni resolves to.
+const LOCAL_VRF: u32 = LOCAL_VNI;
+/// The vrf the peer vpc's vni resolves to, and the one that encapsulates on the way out.
+const REMOTE_VRF: u32 = REMOTE_VNI;
+
+pub(crate) fn uplink() -> InterfaceIndex {
+    InterfaceIndex::try_new(UPLINK).unwrap_or_else(|_| unreachable!())
+}
+
+/// Build the tables the underlay stages read.
+///
+/// Three fibs. The underlay one has a single host route for this gateway's vtep whose instruction
+/// is `Local`, which is what makes `IpForwarder` decapsulate rather than route onward -- the
+/// tunnel endpoint is not a special case in the forwarding path, it is a route. The two overlay
+/// fibs are reached by vni, and only the peer's carries an encapsulation, because only traffic
+/// leaving towards the peer is tunnelled by this gateway.
+fn topology() -> RouterTables {
+    let mut tables = RouterTables::new();
+
+    tables.vrf(UNDERLAY_VRF, None);
+    tables.interface(
+        uplink(),
+        "uplink",
+        SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
+    );
+    tables.attach(uplink(), UNDERLAY_VRF);
+    tables.route_via(
+        UNDERLAY_VRF,
+        Prefix::expect_from((LOCAL_VTEP, 32)),
+        nhop(&LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!())),
+        &FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink()))),
+    );
+
+    tables.vrf(LOCAL_VRF, Some(vni(LOCAL_VNI)));
+
+    tables.vrf(REMOTE_VRF, Some(vni(REMOTE_VNI)));
+    tables.vtep(
+        REMOTE_VRF,
+        Vtep::with_ip_and_mac(
+            LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+            GATEWAY_MAC,
+        ),
+    );
+    let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
+    let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+        ResolvedVxlan {
+            vni: vni(REMOTE_VNI),
+            remote: peer,
+            dmac: PEER_MAC,
+        },
+    )));
+    out.add(PktInstruction::Egress(EgressObject::new(
+        Some(uplink()),
+        Some(peer),
+    )));
+    // A default route rather than the peering's translated range: what a masquerading expose turns
+    // an address into is the nat stages' business, and a topology that had to agree with them
+    // would be a second copy of the translation to keep correct.
+    tables.route_via(
+        REMOTE_VRF,
+        Prefix::root_v4(),
+        nhop(&peer),
+        &FibGroup::with_entry(out),
+    );
+
+    tables.adjacency(peer, uplink(), PEER_MAC);
+
+    tables
+}
+
+/// A next hop is only an identity here: it names the group a route resolves to, and the tests
+/// install one group per route, so an address is enough to keep them apart.
+fn nhop(address: &IpAddr) -> NhopKey {
+    NhopKey::new(
+        RouteOrigin::default(),
+        Some(*address),
+        None,
+        None,
+        FwAction::Forward,
+    )
+}
+
+fn vni(raw: u32) -> Vni {
+    Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
 }
 
 #[cfg(test)]
@@ -268,11 +445,17 @@ mod smoke {
                 assert_eq!(dst, Some("3.3.3.1".parse().unwrap()));
             }
             Verdict::Dropped(reason) => panic!("the packet was dropped: {reason:?}"),
+            Verdict::Delivered { .. } => {
+                unreachable!("the overlay slice has no egress stage")
+            }
         }
     }
 }
 
 /// Header shapes fed through the whole pipeline.
+///
+/// The generator here is reused by [`super::routed`], which runs the same shapes through the full
+/// pipeline inside a tunnel.
 ///
 /// Deliberately not "arbitrary bytes". The interesting shapes are the ones that parse into
 /// something legal and unusual -- a tag, an extension header chain, a transport nobody has a
@@ -300,7 +483,7 @@ mod shapes {
     /// `Vlan*` and `*Ext*` are the two that motivated this harness: both were legal, both were
     /// read wrong, and neither was reachable from a single stage's own generator.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Shape {
+    pub(super) enum Shape {
         V4Tcp,
         V4Udp,
         V4Icmp,
@@ -313,7 +496,7 @@ mod shapes {
     }
 
     impl Shape {
-        const ALL: [Shape; 9] = [
+        pub(super) const ALL: [Shape; 9] = [
             Shape::V4Tcp,
             Shape::V4Udp,
             Shape::V4Icmp,
@@ -394,7 +577,7 @@ mod shapes {
     }
 
     /// One configuration and the stacks to run against it.
-    struct Batch;
+    pub(super) struct Batch;
 
     impl ValueGenerator for Batch {
         type Output = (Vec<VpcExpose>, Vec<(Shape, Headers)>);
@@ -414,7 +597,7 @@ mod shapes {
     /// Addresses drawn independently of the overlay miss every table, and a property driven by one
     /// explores the miss path and nothing else -- the argument `nat::static_nat::probe` makes about
     /// packets, applied to whole stacks.
-    fn aim(headers: &mut Headers, private: Option<Prefix>) {
+    pub(super) fn aim(headers: &mut Headers, private: Option<Prefix>) {
         let Some(private) = private else { return };
         match private.as_address() {
             IpAddr::V4(addr) => {
@@ -444,7 +627,7 @@ mod shapes {
         }
     }
 
-    fn wire(headers: &Headers) -> Option<Packet<TestBuffer>> {
+    pub(super) fn wire(headers: &Headers) -> Option<Packet<TestBuffer>> {
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).ok()?;
         Packet::new(buffer).ok()
@@ -505,6 +688,9 @@ mod shapes {
                         }
                         Verdict::Dropped(_) => {
                             DROPPED.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Verdict::Delivered { .. } => {
+                            unreachable!("the overlay slice has no egress stage")
                         }
                     }
                 }
@@ -757,6 +943,9 @@ mod round_trip {
                             "the reply of a forwarded flow was dropped: {reason:?} \
                              (request {src} -> {dst} became {public_src}:{public_port})"
                         ),
+                        Verdict::Delivered { .. } => {
+                            unreachable!("the overlay slice has no egress stage")
+                        }
                     }
                 }
             });
@@ -1103,5 +1292,263 @@ mod acl {
             behind > 0,
             "no packet was ever sent behind an extension header, which is the shape this exists for"
         );
+    }
+}
+
+/// The whole pipeline, over a tunnel.
+///
+/// Everything above this point hands the overlay slice a bare packet and stamps the metadata that
+/// decapsulation would have produced. That is the right trade for a property about the overlay
+/// stages -- it makes them cheap to run and keeps the failure attributable -- but it means the
+/// stamp is an assumption, and the two stages that produce it in production are untested by it.
+///
+/// This module removes the assumption. A frame arrives on an interface, addressed to this
+/// gateway's vtep, and every annotation the overlay stages read is one that `Ingress` and
+/// `IpForwarder` actually made.
+#[cfg(test)]
+mod routed {
+    use super::*;
+    use super::shapes::{Batch, Shape, aim, wire};
+    use net::buffer::TestBuffer;
+    use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryVxlan};
+    use net::ip::dscp::Dscp;
+    use net::ip::ecn::Ecn;
+    use net::packet::test_utils::{
+        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying,
+    };
+    use net::vlan::Vid;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// The one peering every test here uses: a private range masqueraded into a public one.
+    fn exposes() -> Vec<VpcExpose> {
+        vec![
+            VpcExpose::empty()
+                .make_masquerade(None)
+                .unwrap()
+                .ip("1.1.0.0/16".parse::<Prefix>().unwrap().into())
+                .as_range("2.2.0.0/16".parse::<Prefix>().unwrap().into())
+                .unwrap(),
+        ]
+    }
+
+    /// Wrap `inner` in a vxlan frame addressed to this gateway, arriving on the uplink.
+    ///
+    /// The outer addresses and the vni come from the fixture rather than from here, and the
+    /// topology was chosen to match them. Deliberately: a helper that rewrote the outer header to
+    /// whatever the topology wanted could not be used to build a frame the topology should
+    /// *refuse*.
+    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+        let bytes = inner.clone().serialize().expect("the inner frame serializes");
+        let mut packet =
+            build_test_vxlan_ipv4_packet_carrying(Dscp::default(), Ecn::default(), bytes.as_ref())
+                .expect("a well-formed tunnelled frame");
+        packet
+            .set_eth_destination(GATEWAY_MAC)
+            .expect("the frame has an ethernet header");
+        packet.meta_mut().iif = Some(uplink());
+        // Kept so a drop can be attributed rather than swallowed by `enforce`, as elsewhere here.
+        packet.meta_mut().set_keep(true);
+        packet
+    }
+
+    /// A tenant packet from the private range to somewhere outside it.
+    fn inner() -> Packet<TestBuffer> {
+        build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
+    }
+
+    /// The fixture: the topology forwards, so a test that expects a drop is saying something.
+    ///
+    /// Every negative test in this module is only as good as this one. A topology with a wrong
+    /// route, a missing adjacency or an unattached interface drops *everything*, and each of those
+    /// failures reads exactly like the refusal the tests below are looking for.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_tunnelled_frame_is_decapsulated_translated_and_sent_back_out_tunnelled() {
+        let mut fabric = Fabric::routed(&exposes(), None).expect("a valid configuration");
+
+        let out = fabric.send(tunnelled(&inner()));
+
+        match verdict(&out) {
+            Verdict::Delivered { oif, src, dst } => {
+                assert_eq!(oif, Some(uplink()), "delivered over the wrong interface");
+                assert_eq!(
+                    src,
+                    Some(LOCAL_VTEP.parse().unwrap()),
+                    "the outer source is not this gateway's vtep: it did not get re-encapsulated"
+                );
+                assert_eq!(dst, Some(PEER_VTEP.parse().unwrap()));
+                assert_eq!(
+                    out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                    Some(vni(REMOTE_VNI)),
+                    "encapsulated towards the wrong vpc"
+                );
+                assert_eq!(
+                    out.try_eth().map(|eth| eth.destination().inner()),
+                    Some(PEER_MAC),
+                    "the frame was not addressed to the resolved next hop"
+                );
+            }
+            other => panic!("the frame did not leave the gateway: {other:?}"),
+        }
+    }
+
+    /// A VLAN tag inside the tunnel is refused at decapsulation, by `IpForwarder`.
+    ///
+    /// Two stages down to the boundary, so that the refusal is attributed. Reading the code says
+    /// the guard is there; what this says is that it is *reached* -- that `Ingress` accepts the
+    /// frame, that decapsulation gets far enough to see the inner headers, and that no earlier
+    /// stage has already made the decision.
+    ///
+    /// Break test: removing the `vlan().is_empty()` guard fails this.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_vlan_tag_is_refused_at_decapsulation() {
+        let tables = topology();
+        let mut pipeline = DynPipeline::new()
+            .add_stage(Ingress::new("ingress", tables.interfaces()))
+            .add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+
+        let plain = one(&mut pipeline, tunnelled(&inner()));
+        assert_eq!(
+            verdict(&plain),
+            Verdict::Forwarded {
+                dst_vpcd: None,
+                src: Some("1.1.0.1".parse().unwrap()),
+                dst: Some("3.3.3.1".parse().unwrap()),
+            },
+            "an untagged frame did not survive decapsulation: the fixture is refusing everything"
+        );
+
+        let tagged = one(&mut pipeline, tunnelled(&tagged_inner()));
+        assert_eq!(
+            verdict(&tagged),
+            Verdict::Dropped(DoneReason::Unhandled),
+            "a tagged frame survived decapsulation"
+        );
+    }
+
+    /// And, whatever refuses it, it does not leave the gateway.
+    ///
+    /// Deliberately weaker than the test above and kept anyway, because it is the claim that
+    /// matters: the concern was a tag chosen by whoever built the inner frame being carried out
+    /// onto whatever segment it names. The two tests differ in what they would survive -- removing
+    /// the guard in `IpForwarder` fails the one above and *not* this one, because the overlay
+    /// stages match with `Headers::pat` and refuse a shape they were not taught. That redundancy
+    /// is the design working (see `development/code/header-chain-matching.md`), and it is also
+    /// exactly why a single end-to-end assertion could not have told anyone the guard was gone.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_vlan_tag_inside_the_tunnel_never_leaves_the_gateway() {
+        let mut fabric = Fabric::routed(&exposes(), None).expect("a valid configuration");
+
+        let out = fabric.send(tunnelled(&tagged_inner()));
+
+        assert!(
+            !matches!(verdict(&out), Verdict::Delivered { .. }),
+            "a tagged frame was sent out onto the wire: {:?}",
+            verdict(&out)
+        );
+    }
+
+    /// [`inner`], with a VLAN tag on it.
+    ///
+    /// Read back through a serialise/parse round trip rather than trusting `push_vlan`'s effect on
+    /// the header struct: what reaches the pipeline is bytes, and a tag that the builder recorded
+    /// but did not write would make both tests above pass for the wrong reason.
+    fn tagged_inner() -> Packet<TestBuffer> {
+        let mut inner = inner();
+        inner
+            .headers_mut()
+            .push_vlan(Vid::new(42).expect("a valid vlan id"))
+            .expect("the inner frame has an ethernet header");
+
+        let bytes = inner.serialize().expect("a tagged frame serializes");
+        let reparsed = Packet::new(TestBuffer::from_raw_data(bytes.as_ref()))
+            .expect("a tagged frame parses back");
+        assert!(
+            !reparsed.headers().vlan().is_empty(),
+            "the fixture did not actually tag the frame"
+        );
+        reparsed
+    }
+
+    /// No shape carrying a VLAN tag ever reaches the wire, whatever the configuration.
+    ///
+    /// The two tests above are one tag, one peering, one route. This is the class: every shape the
+    /// [`shapes`] generator produces, tunnelled, over a generated set of exposes. It is the claim
+    /// the VLAN work was actually making -- not "this frame is refused" but "a tag chosen by
+    /// whoever built the inner frame does not get carried out onto a segment nobody chose".
+    ///
+    /// What it would take to fail this is losing the class defence entirely, not losing one layer
+    /// of it: with the `IpForwarder` guard removed a tagged frame still dies in the filters, with
+    /// `DoneReason::Unhandled`, because their patterns do not name a VLAN. The realistic way to
+    /// fail it is somebody naming one there to make a drop go away -- step five of the checklist in
+    /// `development/code/header-chain-matching.md` without steps two through four.
+    ///
+    /// [`shapes`]: super::shapes
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_tagged_shape_never_reaches_the_wire() {
+        static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_generator(Batch)
+            .for_each(|(exposes, stacks)| {
+                let Some(mut fabric) = Fabric::routed(exposes, None) else {
+                    return;
+                };
+                let private = exposes.first().and_then(|e| {
+                    e.ips
+                        .first()
+                        .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                });
+
+                for (shape, headers) in stacks {
+                    let mut headers = headers.clone();
+                    aim(&mut headers, private);
+                    let Some(frame) = wire(&headers) else {
+                        continue;
+                    };
+                    // The tag is read off the shape rather than off the packet that comes back:
+                    // a delivered packet has been re-encapsulated, so its headers are the outer
+                    // ones and any inner tag is no longer visible from here. Asking the output
+                    // would be asking the wrong packet.
+                    let tagged = *shape == Shape::VlanV4Tcp;
+                    if tagged {
+                        TAGGED.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let out = fabric.send(tunnelled(&frame));
+                    if matches!(verdict(&out), Verdict::Delivered { .. }) {
+                        assert!(!tagged, "a tagged frame was sent out onto the wire");
+                        DELIVERED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let delivered = DELIVERED.load(Ordering::Relaxed);
+        let tagged = TAGGED.load(Ordering::Relaxed);
+        eprintln!("delivered={delivered} tagged={tagged}");
+
+        // Both guards, because either alone can be satisfied by the pipeline doing nothing: a
+        // fabric that refused everything would never deliver, and a generator that never drew a
+        // tag would make the assertion above unreachable.
+        assert!(
+            delivered > 0,
+            "nothing ever reached the wire: the property is vacuous"
+        );
+        assert!(tagged > 0, "no tagged shape was ever generated");
+    }
+
+    /// Push one packet through a bare pipeline and take back the one that comes out.
+    fn one(
+        pipeline: &mut DynPipeline<TestBuffer>,
+        packet: Packet<TestBuffer>,
+    ) -> Packet<TestBuffer> {
+        let mut out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+        assert_eq!(out.len(), 1, "the pipeline did not return the packet");
+        out.pop().unwrap_or_else(|| unreachable!())
     }
 }
