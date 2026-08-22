@@ -148,6 +148,33 @@ Two details that are not incidental:
   leaves for nobody". Both were break-tested against the stage: pinning the chosen vpc to a
   constant fails the first, and routing a destination miss instead of dropping it fails the second.
 
+### Pay for diagnosis when something breaks, not before
+
+The bigger a harness gets, the harder its failures are to read, and the obvious answer -- record
+everything as it happens, behind a feature -- pays on every case for evidence almost none of them
+will need.
+
+It is also unnecessary here, because the pipeline is **replayable**: the same input gives the same
+answer, verified by `smoke::the_same_input_twice_gives_the_same_answer` within a process and by
+digesting a fixed scenario across four separate processes. So a failing case can be re-run with as
+much instrumentation as it takes. The backhoe can be bought _after_ finding the buried thing and
+still dig it up.
+
+That property is load-bearing for a second reason worth knowing: `bolero` diagnoses by shrinking and
+replaying, so a pipeline that answered differently on the second run would shrink towards nothing and
+report a case that does not fail. Nondeterminism would not merely make digging harder, it would make
+the tool lie.
+
+**Most archaeology is pre-empted by where the assertions live, not by how much is recorded.** A
+contract that fires at a stage boundary names the stage; an oracle that lives with the traffic that
+generated it names the session. Both are free. Recording is what is left over after those, and it is
+much less than it first appears.
+
+One measurement worth having before trusting any of this: what a fixed input actually produces.
+`BOLERO_RANDOM_SEED` does **not** make a run reproducible -- per-iteration seeds come from
+`StdRng::from_os_rng()`, and the variable is only one extra case -- so comparing whole-run counters
+across runs measures nothing at all.
+
 ### Contracts as stages
 
 The pipeline is a chain of `NetworkFunction`s and nothing says a stage has to _do_ anything, so a
