@@ -263,6 +263,27 @@ fn build_tcp_packet_v6(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> 
         .unwrap()
 }
 
+fn build_tcp_packet_v6_with_hop_by_hop(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+) -> Headers {
+    HeaderStack::new()
+        .eth(|_| {})
+        .ipv6(|ip| {
+            ip.set_source(UnicastIpv6Addr::new(src).unwrap());
+            ip.set_destination(dst);
+        })
+        .hop_by_hop(|_| {})
+        .tcp(|tcp| {
+            tcp.set_source(TcpPort::try_from(sport).unwrap());
+            tcp.set_destination(TcpPort::try_from(dport).unwrap());
+        })
+        .build_headers()
+        .unwrap()
+}
+
 // ICMP (IP protocol 1): a non-TCP/UDP protocol, used to exercise the `Other(n)` and `Any` tables.
 fn build_icmp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> Headers {
     HeaderStack::new()
@@ -1213,4 +1234,35 @@ mod dpdk_backend {
             )
         });
     }
+}
+
+#[test]
+fn an_extension_header_does_not_evade_a_protocol_rule() {
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![rule(
+            "deny-tcp",
+            AclAction::Deny,
+            AclScope::Packet,
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+
+    let plain = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet_v6(v6("2001:db8::5"), v6("2001:db9::5"), 1234, 80),
+    );
+    assert!(is_denied(&run(&mut filter, plain)));
+
+    let stuffed = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet_v6_with_hop_by_hop(v6("2001:db8::5"), v6("2001:db9::5"), 1234, 80),
+    );
+    assert!(
+        is_denied(&run(&mut filter, stuffed)),
+        "a Hop-by-Hop header carried TCP past a rule denying TCP"
+    );
 }
