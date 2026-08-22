@@ -1391,7 +1391,7 @@ mod tests {
     /// As `v4_with_field_of`, for `ICMPv6`.
     ///
     /// `check_full_payload` implements the 128-octet minimum twice, once per address family, and
-    /// the two copies are not reachable by the same fixture. Without this one the ICMPv6 arm has
+    /// the two copies are not reachable by the same fixture. Without this one the `ICMPv6` arm has
     /// no test at all.
     fn v6_with_field_of(field_len: usize, padding_byte: u8) -> (EmbeddedHeaders, usize, Vec<u8>) {
         let mut buf = create_full_ipv6_tcp_packet_with_payload();
