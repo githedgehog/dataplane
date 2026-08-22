@@ -695,6 +695,84 @@ pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
     panic!("a load did not finish in 64 steps: {}", load.describe());
 }
 
+/// Which load to draw from, and how many packets to take from it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pick {
+    pub(crate) load: u8,
+    pub(crate) take: u8,
+}
+
+/// One poll of the driver: whatever several loads had to offer, sent as one burst.
+///
+/// Deliberately several loads per burst rather than one. A real rx burst carries traffic from
+/// everybody at once, and one-load-per-burst would never produce the shape that matters -- a reply
+/// for one conversation in the same burst as a request from another. The allocation defect this
+/// harness already found lived in exactly that region.
+#[cfg(test)]
+pub(crate) type Poll = Vec<Pick>;
+
+/// Run a schedule of polls against a set of loads, then let the unfinished ones finish.
+///
+/// A load offers what it can without hearing back -- `next` returning `None` means waiting, not
+/// finished -- so a pick asking for more than a load can give simply gets less. The scheduler needs
+/// to know nothing about any load's protocol.
+///
+/// The tail matters as much as the schedule. A conversation cut off mid-flight has checked nothing,
+/// so a run whose schedule happened to be short would be a run that verified almost nothing while
+/// looking busy. Draining afterwards means the interleaving decides *when* things happen and the
+/// drain decides that they all eventually do.
+#[cfg(test)]
+pub(crate) fn run_schedule(fabric: &mut Fabric, loads: &mut [Box<dyn Load>], schedule: &[Poll]) {
+    for poll in schedule {
+        let mut burst = Vec::new();
+        let mut origin = Vec::new();
+        for pick in poll {
+            if loads.is_empty() {
+                break;
+            }
+            let which = usize::from(pick.load) % loads.len();
+            for _ in 0..pick.take {
+                let Some(packet) = loads[which].next() else {
+                    break;
+                };
+                burst.push(packet);
+                origin.push(which);
+            }
+        }
+        if burst.is_empty() {
+            continue;
+        }
+        // Order is relied on to route each answer back to the load that sent it. The pipeline
+        // preserves it -- `burst::a_burst_is_treated_the_same_as_one_packet_at_a_time` compares
+        // element-wise and would fail otherwise -- and `send_batch` asserts the count.
+        for (answer, which) in fabric.send_batch(burst).iter().zip(origin) {
+            loads[which].observe(answer);
+        }
+    }
+
+    for load in loads {
+        drive(fabric, load.as_mut());
+    }
+}
+
+/// How many packets of one poll came from more than one load.
+///
+/// The measure of whether a schedule interleaved anything at all. A run of polls that each drew
+/// from a single load is a run of the properties we already had, in a costlier harness.
+#[cfg(test)]
+pub(crate) fn mixed_polls(schedule: &[Poll]) -> usize {
+    schedule
+        .iter()
+        .filter(|poll| {
+            let mut seen: Vec<u8> = poll.iter().map(|p| p.load).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len() > 1
+        })
+        .count()
+}
+
 /// A stage that changes nothing and checks something.
 ///
 /// The pipeline is a chain of [`NetworkFunction`]s and nothing says a stage has to *do* anything,
@@ -2265,6 +2343,136 @@ mod port_forward {
     }
 }
 
+/// Several conversations at once, in an order the fuzzer chooses.
+///
+/// The first property here that is about *superposition* rather than about a stage. Every claim
+/// above holds for one conversation at a time; this asks whether they still hold when several are
+/// in flight together, sharing a flow table, a port pool and a burst.
+///
+/// It needs no new oracle, and that is the whole argument for the [`Load`] decomposition: each
+/// conversation already knows what it sent and therefore what must come back, so the joint claim is
+/// just "every one of them was satisfied". Nobody had to write down what N interleaved
+/// conversations should do.
+#[cfg(test)]
+mod interleaved {
+    use super::routed::{Conversation, exposes};
+    use super::*;
+    use std::ops::Bound::Included;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const CONVERSATIONS: usize = 6;
+    const POLLS: usize = 10;
+
+    /// A set of conversations and an order to run them in.
+    struct Interleaving;
+
+    impl bolero::ValueGenerator for Interleaving {
+        type Output = (Vec<(u8, u16, u16)>, Vec<Poll>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let flows = (0..CONVERSATIONS)
+                .map(|_| {
+                    Some((
+                        driver.produce::<u8>()?,
+                        driver.produce::<u16>()?.max(1),
+                        driver.produce::<u16>()?.max(1),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            let schedule = (0..POLLS)
+                .map(|_| {
+                    // One to three loads per poll. More than one is the point; the fuzzer still
+                    // gets to choose single-load polls, which are the degenerate case and worth
+                    // reaching.
+                    let picks = driver.gen_u8(Included(&1), Included(&3))?;
+                    (0..picks)
+                        .map(|_| {
+                            Some(Pick {
+                                load: driver.produce::<u8>()?,
+                                take: driver.gen_u8(Included(&1), Included(&3))?,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some((flows, schedule))
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("interleaved::Interleaving", &Interleaving);
+    }
+
+    /// Interleaving conversations does not stop any of them working.
+    ///
+    /// What could break it, none of which a single-conversation property can reach: state one
+    /// conversation creates being found by another; two of them given public tuples that collide,
+    /// so a reply cannot be attributed; a reply arriving in the same burst as somebody else's
+    /// request, which is the region the allocation defect lived in.
+    ///
+    /// The guards below are unusually load-bearing. A schedule that happened to draw every poll
+    /// from one load would run the existing properties in a costlier harness and pass; so would a
+    /// run in which every conversation gave up before sending anything. Both are counted.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn interleaved_conversations_are_each_satisfied() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Interleaving)
+            .for_each(|(flows, schedule)| {
+                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                    return;
+                };
+
+                let mut loads: Vec<Box<dyn Load>> = flows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, (host, sport, dport))| {
+                        // Position decides the host, so distinct conversations stay distinct and a
+                        // collision between two of them is the pipeline's doing rather than the
+                        // generator's. The drawn value still varies which host.
+                        let src: IpAddr = format!("1.1.{i}.{host}").parse().ok()?;
+                        let dst: IpAddr = "3.3.3.1".parse().ok()?;
+                        Some(Box::new(Conversation::new(src, dst, *sport, *dport))
+                            as Box<dyn Load>)
+                    })
+                    .collect();
+
+                run_schedule(&mut fabric, &mut loads, schedule);
+
+                MIXED.fetch_add(mixed_polls(schedule) as u64, Ordering::Relaxed);
+                for load in &loads {
+                    if load.checked() {
+                        CHECKED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (checked, abandoned, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        eprintln!("checked={checked} abandoned={abandoned} mixed-polls={mixed}");
+        super::assert_covered(checked > 0, "no conversation ever completed");
+        super::assert_covered(
+            mixed > 0,
+            "no poll ever drew from more than one load, so nothing was interleaved and this is \
+             the single-conversation property in a costlier harness",
+        );
+    }
+}
+
 /// A burst, against the same packets sent one at a time.
 ///
 /// The driver hands the pipeline one bounded rx burst per poll, and `FlowFilter::process` collects
@@ -3098,12 +3306,25 @@ mod routed {
         log: Vec<String>,
     }
 
+    /// A request/response load has four states, not two, and the difference is the whole of the
+    /// `next` contract.
+    ///
+    /// Collapsing `Opening` into `Awaiting` -- advancing only when an answer arrives -- looks
+    /// harmless and is not. `next` is then willing to produce a *second* request while the first is
+    /// still in flight, so a scheduler asking for two packets gets the same request twice, and the
+    /// second answer is judged as though it were the reply. That is not hypothetical: it is what
+    /// this load did when the scheduler first ran it, and it read as a dataplane fault -- "the
+    /// reply went back into the wrong vpc" -- rather than as a test one.
     #[derive(Debug, PartialEq, Eq)]
     enum State {
         /// About to send the request.
         Opening,
-        /// The request is out; the reply is built from `public` once it comes back.
+        /// The request is in flight. Nothing more to send until it comes back.
+        AwaitingRequest,
+        /// The request came back; the reply is built from `public`.
         Replying { public: (IpAddr, u16) },
+        /// The reply is in flight.
+        AwaitingReply,
         /// Checked, both ways.
         Closed,
         /// Gave up, for a reason that is not a defect. See [`Load::checked`].
@@ -3214,21 +3435,32 @@ mod routed {
                 State::Opening => {
                     let request = udp(self.src, self.dst, self.sport, self.dport)?;
                     self.sent = Some(request.clone());
+                    self.state = State::AwaitingRequest;
                     Some(tunnelled(&request))
                 }
                 State::Replying { public: (ip, port) } => {
                     let reply = udp(self.dst, ip, self.dport, port)?;
+                    self.state = State::AwaitingReply;
                     Some(tunnelled_from(vni(REMOTE_VNI), &reply))
                 }
-                State::Closed | State::Abandoned => None,
+                State::AwaitingRequest
+                | State::AwaitingReply
+                | State::Closed
+                | State::Abandoned => None,
             }
         }
 
         fn observe(&mut self, got: &Packet<TestBuffer>) {
             match self.state {
-                State::Opening => self.judge_request(got),
-                State::Replying { .. } => self.judge_reply(got),
-                State::Closed | State::Abandoned => {}
+                State::AwaitingRequest => self.judge_request(got),
+                State::AwaitingReply => self.judge_reply(got),
+                // An answer this load is not waiting for means the scheduler handed it somebody
+                // else's packet. Loud, because silently ignoring it is what made the same mistake
+                // read as a dataplane fault the first time.
+                ref state => panic!(
+                    "a load was given an answer it was not waiting for (state {state:?}). {}",
+                    self.describe()
+                ),
             }
         }
 
