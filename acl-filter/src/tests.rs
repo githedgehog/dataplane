@@ -1266,3 +1266,64 @@ fn an_extension_header_does_not_evade_a_protocol_rule() {
         "a Hop-by-Hop header carried TCP past a rule denying TCP"
     );
 }
+
+#[test]
+fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
+    const HOP_BY_HOP: u8 = 0;
+    const TCP: u8 = 6;
+
+    let mut chain = Vec::new();
+    for i in 0..4 {
+        let next = if i == 3 { TCP } else { HOP_BY_HOP };
+        chain.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]);
+    }
+
+    let mut tcp = vec![0u8; 20];
+    tcp[0..2].copy_from_slice(&1234u16.to_be_bytes());
+    tcp[2..4].copy_from_slice(&80u16.to_be_bytes());
+    tcp[12] = 0x50;
+    tcp[13] = 0x02;
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    bytes.extend_from_slice(&0x86DDu16.to_be_bytes());
+    bytes.extend_from_slice(&[0x60, 0, 0, 0]);
+    #[allow(clippy::cast_possible_truncation)]
+    bytes.extend_from_slice(&((chain.len() + tcp.len()) as u16).to_be_bytes());
+    bytes.push(HOP_BY_HOP);
+    bytes.push(64);
+    bytes.extend_from_slice(&v6("2001:db8::5").octets());
+    bytes.extend_from_slice(&v6("2001:db9::5").octets());
+    bytes.extend_from_slice(&chain);
+    bytes.extend_from_slice(&tcp);
+
+    let mut buffer = TestBuffer::from_raw_data(&bytes);
+    let mut over_limit = Packet::new(buffer.clone()).unwrap();
+    assert_eq!(
+        over_limit.upper_layer_proto(),
+        None,
+        "the parser stopped mid-chain but a protocol was reported anyway"
+    );
+    let _ = &mut buffer;
+
+    over_limit.meta_mut().set_overlay(true);
+    over_limit.meta_mut().src_vpcd = Some(vpcd(VNI1));
+    over_limit.meta_mut().dst_vpcd = Some(vpcd(VNI2));
+
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![rule(
+            "allow-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+    let out = run(&mut filter, over_limit);
+    assert!(
+        out.is_done(),
+        "a packet whose header chain was never fully read went through"
+    );
+}
