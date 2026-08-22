@@ -621,12 +621,21 @@ impl Icmp6 {
         })
     }
 
+    /// Whether this message type may carry an ICMP Extension Structure, and so whether the octet
+    /// [`Self::payload_length`] reads is a length attribute at all.
+    ///
+    /// The `ICMPv6` list is **not** the `ICMPv4` list. RFC 4884 leaves Parameter Problem out here
+    /// and says why: the message has no room for a length attribute, because bytes 4..8 are the
+    /// Pointer. Reading a length out of them turns a pointer into a claim about how much of the
+    /// offending datagram was included, and `check_full_payload` believes it.
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4.6
+    //# The ICMP Extension Structure MUST NOT be appended to any of the other
+    //# ICMP messages mentioned in Section 4.
     #[must_use]
     pub(crate) fn supports_extensions(&self) -> bool {
-        // See RFC 4884.
         matches!(
             self.icmp_type(),
-            Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_) | Icmp6Type::ParamProblem(_)
+            Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_)
         )
     }
 
@@ -1201,6 +1210,84 @@ mod contract {
 mod test {
     use crate::icmp6::{Icmp6, Icmp6Type};
     use crate::parse::{DeParse, Parse};
+
+    use etherparse::{Icmpv6Header, Icmpv6Type};
+
+    fn icmp6(icmp_type: Icmpv6Type) -> Icmp6 {
+        Icmp6(Icmpv6Header {
+            icmp_type,
+            checksum: 0,
+        })
+    }
+
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4.6
+    //= type=test
+    //# The ICMP Extension Structure MUST NOT be appended to any of the other
+    //# ICMP messages mentioned in Section 4.
+    /// The `ICMPv6` types that may carry an extension structure, and the ones that may not.
+    ///
+    /// Stated as a closed list rather than as "the error messages", because that is the mistake
+    /// this replaces: Parameter Problem is an error message, is on the `ICMPv4` list, and is
+    /// excluded here -- RFC 4884 says so, and says it is because bytes 4..8 are the Pointer and
+    /// there is nowhere to put a length attribute.
+    #[test]
+    fn only_two_icmpv6_types_can_carry_an_extension_structure() {
+        assert!(
+            icmp6(Icmpv6Type::DestinationUnreachable(
+                etherparse::icmpv6::DestUnreachableCode::NoRoute
+            ))
+            .supports_extensions()
+        );
+        assert!(
+            icmp6(Icmpv6Type::TimeExceeded(
+                etherparse::icmpv6::TimeExceededCode::HopLimitExceeded
+            ))
+            .supports_extensions()
+        );
+
+        assert!(
+            !icmp6(Icmpv6Type::ParameterProblem(
+                etherparse::icmpv6::ParameterProblemHeader {
+                    code: etherparse::icmpv6::ParameterProblemCode::ErroneousHeaderField,
+                    pointer: 0x0100,
+                }
+            ))
+            .supports_extensions(),
+            "ICMPv6 Parameter Problem has no room for a length attribute; its bytes 4..8 are the \
+             Pointer, and reading a length out of them makes a large pointer look like a claim \
+             about how much of the offending datagram was included"
+        );
+        assert!(!icmp6(Icmpv6Type::PacketTooBig { mtu: 1500 }).supports_extensions());
+        assert!(
+            !icmp6(Icmpv6Type::EchoRequest(etherparse::IcmpEchoHeader {
+                id: 1,
+                seq: 1
+            }))
+            .supports_extensions()
+        );
+    }
+
+    /// The length attribute counts 64-bit words for `ICMPv6`, and lives at octet 4.
+    ///
+    /// `ICMPv4` counts 32-bit words at octet 5. The two differ in both the offset and the
+    /// multiplier, which is exactly the kind of near-duplicate the original RFC 4884 defect on
+    /// this codebase lived in.
+    #[test]
+    fn the_icmpv6_length_attribute_counts_64_bit_words() {
+        let unreachable = icmp6(Icmpv6Type::DestinationUnreachable(
+            etherparse::icmpv6::DestUnreachableCode::NoRoute,
+        ));
+        // Octet 4 holds the length; octet 5 is not it.
+        let mut buf = [0u8; 8];
+        buf[4] = 17;
+        buf[5] = 200;
+        assert_eq!(unreachable.payload_length(&buf), 17 * 8);
+
+        // A type that cannot carry an extension structure reports no length, whatever the octet
+        // happens to hold.
+        let too_big = icmp6(Icmpv6Type::PacketTooBig { mtu: 1500 });
+        assert_eq!(too_big.payload_length(&buf), 0);
+    }
 
     /// A Packet Too Big with MTU below 1280 should be treated as unknown
     /// `ICMPv6`, since RFC 8200 section 5 sets 1280 as the IPv6 minimum.
