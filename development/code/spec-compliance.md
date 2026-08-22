@@ -1,7 +1,7 @@
 # Specification compliance with duvet
 
-Status: **three specifications tracked, the RFC corpus and its errata audited, the citation
-interlock built; every cited requirement now holds.**
+Status: **four specifications tracked, the RFC corpus and its errata audited, the citation
+interlock built. The fourth found a live defect and one open gap.**
 The open-questions list below is expected to grow; it is written down so that it grows in one place
 rather than in four people's heads.
 
@@ -214,6 +214,71 @@ Three things generalise, and all three are invisible to duvet:
   property states port overloading where it is observable -- two flows, one reply path. The
   exhaustion walk reaches the code that would commit it. Neither is sufficient; both are cited.
 
+## RFC 5508, the fourth specification, and what a second run of the method looks like
+
+The first three specifications were tracked against code written without reference to them. RFC
+5508 is different in one useful way: the ICMP handler already argued from it, in ordinary comments
+duvet cannot see -- `nat/src/icmp_handler/nf.rs` named REQ-3 for the checksum drop and
+`icmp_error_msg.rs` named REQ-4 for the embedded-header rewrite. So the question was not "does
+anyone know about this document" but "is what it says still true of the code".
+
+### REQ-6, a live defect
+
+**MUST NOT refresh or delete the NAT Session that pertains to the embedded payload**, when the ICMP
+error reports on an ICMP Query. We deleted it.
+
+The ICMP handler carries an optimization: an error that looks unrecoverable invalidates the flow
+pair, which under masquerade also releases the public address and port. It keyed that on the
+*outer* ICMP type and never looked at what the error was about, so a Destination Unreachable
+carrying an Echo Request tore down the ping's session.
+
+The RFC's stated reason for the requirement is that ICMP errors are trivially spoofable, and this
+is the shape that gives it teeth here: an off-path attacker who can guess the tuple can break a
+ping it cannot observe, and -- because the allocation goes with the flow -- churn the port pool
+while doing it. Fixed by asking what the embedded payload is.
+
+Note what the requirement does **not** say. It is one-sided: it forbids deleting a Query's session
+and asks nothing about TCP or UDP, and RFC 5382 explicitly leaves the TCP case to us. A NAT that
+deleted nothing would conform. That asymmetry is why the fix needed two tests, and why only one of
+them is cited -- see below.
+
+### The interlock's next real test was the next citation, and it failed it
+
+The open question left after the first round was that all seven cited requirements held, so the
+interlock had nothing to say until somebody wrote a new citation. The first new citation produced
+two findings immediately:
+
+| survivor                                        | what it was                                    |
+| ----------------------------------------------- | ---------------------------------------------- |
+| `replace embeds_icmp_query -> bool with true`   | equivalent *with respect to REQ-6*, accepted   |
+| `delete match arm Some(EmbeddedTransport::Icmp6(...))` | a real gap: no IPv6 test exists at all  |
+
+The first is a new shape for the `ACCEPTED` list and worth naming: **a one-sided requirement makes
+one direction of its predicate unfalsifiable.** Forcing `embeds_icmp_query` to `true` is a NAT that
+never invalidates, which REQ-6 permits. What it costs is our optimization, which is ours rather than
+the RFC's -- so the test that catches it is deliberately **not** cited as a REQ-6 test. Citing it
+would be the entrenchment failure in its cleanest form: the interlock would go green and the reason
+would be that we had quietly widened the requirement to mean what the code does.
+
+The second is the RFC 4884 finding again, in a different crate: **a citation covering two address
+families, tested in one.** There the v6 copy of a duplicated check went uncaught; here the v6 arm of
+a match has nothing to reach it, because the nat crate had no IPv6 test of any kind. Masquerade's
+pools, allocator and stage are all generic over the address family, and "it is generic" had been
+doing the work a test should do.
+
+### A specification can state each requirement twice
+
+RFC 5508 restates all eleven requirements verbatim in Section 9, *Summary of Requirements*. duvet
+keys requirements by section anchor, so it extracts each one twice and a citation matches only the
+copy it quotes. Citing REQ-6 at section 4.3 leaves an identical REQ-6 at section 9 permanently
+uncited.
+
+This is milder than the [BCP composite](#do-not-cite-a-composite-bcp) failure -- nothing is silently
+lost, and the report is over- rather than under-stated -- but it bears on the scoping question,
+because it means the uncited remainder of a specification is not a work list. Half of RFC 5508's
+numbered requirements will never move, by construction. **Cite the normative section, not the
+summary**, and expect the snapshot to carry a permanent uncited shadow of whatever is cited.
+
 ## Where a citation goes, and what that costs an abstraction
 
 The rule is one sentence: **cite the narrowest region whose mutation would violate the
@@ -403,7 +468,7 @@ Twenty-eight RFCs, of which three are tracked.
 | 5382 (NAT/TCP) | `nat` | tracked |
 | 792, 1812, 1122, 1191 | `net`, `dataplane` | foundational; expect the same lowercase problem as 8200 |
 | 9293 (TCP), 2018, 7323, 3168, 6946, 3540, 2675 | `net` | TCP option and fragmentation behaviour |
-| 5508 (NAT/ICMP) | `nat`, `net` | duvet-friendly, on-topic, untracked -- 92 requirements |
+| 5508 (NAT/ICMP) | `nat`, `net` | tracked; found the REQ-6 defect |
 | 6437, 4861, 6918 | `net` | IPv6 flow label, ND |
 | 1624 | `net` | checksum update |
 | 7854, 8671 | `routing` | BMP |
@@ -416,8 +481,8 @@ What this changes about the plan:
   lowercase-normative, foundational documents. Extending compliance tracking to the whole codebase
   is therefore mostly a _synthesis_ problem, not a configuration problem, and synthesis is the part
   of this method with a hazard attached.
-- **The cheap wins are still in NAT.** RFC 5508 is duvet-friendly, on-topic, and one config edit
-  from being tracked.
+- ~~**The cheap wins are still in NAT.**~~ RFC 5508 is tracked, and was: one config edit, one
+  defect. RFC 6888 and RFC 7857 are the remaining duvet-friendly NAT documents.
 - **Most crates have no external specification at all.** `lpm`, `acl`, `flow-filter`, `config`,
   `mgmt` and roughly thirty others implement internal semantics. duvet has nothing to say about
   them; bolero and cargo-mutants have everything to say. Whether to synthesize in-repo
@@ -431,12 +496,12 @@ Expected to expand. Nothing here is scheduled.
    the specifications that constrain us and that nothing in the tree mentions.
 2. **Which of those are not RFC 2119 conforming**, and so need synthesis per the section above.
    RFC 8200 is the known case and the most consequential one.
-3. ~~**Is a citation true?**~~ Built; see [the interlock](#is-a-citation-true-the-interlock). All
-   seven cited requirements hold, which means the tool currently has nothing to say and its next
-   real test is the next citation somebody writes. What remains is whether it becomes a gate:
-   seven minutes for seven requirements is too slow per pull request over everything, but
-   `--only` on a changed citation is cheap, and `uncovered` is now reachable without building a
-   single mutant.
+3. ~~**Is a citation true?**~~ Built; see [the interlock](#is-a-citation-true-the-interlock). The
+   prediction that its next real test was the next citation somebody writes has been run: the
+   RFC 5508 REQ-6 citation failed it twice over, and both findings are recorded above. Seven of
+   eight requirements hold; the eighth is the IPv6 gap. What remains is whether it becomes a gate:
+   a full run is too slow per pull request, but `--only` on a changed citation is cheap, and
+   `uncovered` is reachable without building a single mutant.
 4. **Errata.** Mostly settled; see [Errata](#errata) below. What remains is the 847 RFCs whose
    errata exist but are not Verified, for which the corpus holds no body. None of them is tracked
    today; RFC 4443 and RFC 3022 are both in that set and both plausible future targets.
@@ -450,7 +515,11 @@ Expected to expand. Nothing here is scheduled.
 7. **A scoping policy, before the first large specification lands.** Adding STUN drops 200 uncited
    requirements into the snapshot in one commit; QUIC would add 522. Without a rule for scoping
    _within_ a specification the report becomes wallpaper on the day it gets interesting -- the same
-   lesson as "do not test printers" and "classify, do not eliminate".
+   lesson as "do not test printers" and "classify, do not eliminate". RFC 5508 added 313 snapshot
+   lines for eleven requirements and sharpened the question rather than answering it: a summary
+   section duplicates every requirement, so the uncited remainder is not even in principle a work
+   list. Whatever the policy is, it has to say which sections of a document are in scope, not just
+   which documents.
 8. ~~**Should the snapshot be a blocking gate?**~~ Yes, and it is: `just duvet-check`. The snapshot
    had drifted two commits after being introduced, which settled the argument -- a
    regenerate-by-hand rule is one nobody runs. What remains is wiring it into CI.
