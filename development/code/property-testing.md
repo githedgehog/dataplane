@@ -216,6 +216,28 @@ look like. The load now advances on emission, and an answer arriving in a state 
 for one panics rather than being ignored. Silently ignoring it is what made a test bug wear a
 dataplane bug's clothes.
 
+### Let the configuration aim the traffic
+
+Every property up to this point names its addresses -- `1.1.0.5`, `3.3.3.1`, ports chosen to suit
+the fixture. That works while the fixture is fixed and stops the moment it is not: a generated
+configuration exposes prefixes nobody wrote down, and hand-aimed traffic would miss all of them and
+explore the drop path forever.
+
+`derive::loads_for` walks what a configuration advertises and produces, per expose, a sender
+carrying the traffic that expose exists to carry. Nothing in the property that uses it names an
+address. Change the configuration and the traffic follows.
+
+It is not a model of the dataplane, and the distinction is the same one that has kept every oracle
+here honest: it reads what the configuration _offers_ -- which prefixes, which ports, which
+direction -- while each load still judges only its own traffic against what it itself chose.
+Deciding what the dataplane should do with that traffic remains nobody's job.
+
+**Guard per flavour, not per total.** The fixture offers a masquerade expose and a port-forwarding
+one, so the derivation has to tell them apart; a total count of derived loads would be satisfied by
+a derivation that silently skipped one flavour entirely, which is the most likely way for it to be
+quietly wrong. That guard was written into the doc comment before it was written into the code, and
+counting the flavours separately is what turned the claim into a check.
+
 ### Pay for diagnosis when something breaks, not before
 
 The bigger a harness gets, the harder its failures are to read, and the obvious answer -- record
