@@ -18,7 +18,7 @@ use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
-use net::flow_key::IcmpProtoKey;
+use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
 use net::headers::{TryIp, TryTcp};
 use net::ip::{NextHeader, UnicastIpAddr};
@@ -331,11 +331,10 @@ impl Masquerade {
     pub(crate) fn get_session(
         &self,
         src_vpcd: Option<VpcDiscriminant>,
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
+        addrs: FlowAddrs,
         proto_key_info: IpProtoKey,
     ) -> Option<(NatTranslate, Duration)> {
-        let flow_key = FlowKey::new(src_vpcd, src_ip, dst_ip, proto_key_info);
+        let flow_key = FlowKey::new(src_vpcd, addrs, proto_key_info);
         let flow_info = self.flow_table.lookup(&flow_key)?;
         let value = flow_info.locked.read();
         let state = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>()?;
@@ -356,7 +355,7 @@ impl Masquerade {
     }
 
     fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), MasqueradeError> {
-        let src_ip = *flow_key.src_ip();
+        let src_ip = flow_key.src_ip();
         let src_port = match flow_key.proto_key_info() {
             IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
             IpProtoKey::Udp(udp) => udp.src_port.into(),
@@ -449,7 +448,7 @@ impl Masquerade {
         // So we want:
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
-        let reverse_src_addr = *flow_key.dst_ip();
+        let reverse_src_addr = flow_key.addrs().dst_unicast();
         let reverse_dst_addr = alloc.allocation.ip();
         let dst_port = alloc.allocation.port();
 
@@ -477,8 +476,14 @@ impl Masquerade {
 
         Ok(FlowKey::new(
             Some(dst_vpc_id),
-            reverse_src_addr,
-            reverse_dst_addr,
+            // The allocated public address is the reverse destination, and a flow's destination
+            // has to be unicast; a pool that handed out anything else could not serve a flow.
+            FlowAddrs::new(
+                reverse_src_addr,
+                UnicastIpAddr::try_from(reverse_dst_addr)
+                    .map_err(|_| MasqueradeError::FlowKeyError)?,
+            )
+            .ok_or(MasqueradeError::FlowKeyError)?,
             reverse_proto_key,
         ))
     }
@@ -538,7 +543,7 @@ impl Masquerade {
         }
 
         // allocate an ip and port for this flow
-        let src_ip = *initial_flow_key.src_ip();
+        let src_ip = initial_flow_key.src_ip();
         let alloc = match allocator.allocate(src_vpcd, dst_vpcd, src_ip, proto) {
             Ok(alloc) => alloc,
             Err(e) => {
