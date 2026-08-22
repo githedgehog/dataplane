@@ -8,6 +8,7 @@
 use super::LookupResult;
 use super::tables::RuleRow;
 use super::tables::SourceGate;
+use crate::fuzz_gen::nz;
 use crate::test_utils::*;
 use crate::{FlowFilterContext, NatMode, NatRequirement};
 use lpm::prefix::L4Protocol;
@@ -53,11 +54,9 @@ fn route_lookup(
     let src_ip = net.src_addr();
     let dst_ip = net.dst_addr();
     let proto = net.next_header();
-    let ports = headers.transport().and_then(|t| {
-        t.src_port()
-            .map(NonZero::get)
-            .zip(t.dst_port().map(NonZero::get))
-    });
+    let ports = headers
+        .transport()
+        .and_then(|t| t.src_port().zip(t.dst_port()));
     context.lookup(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports, gate)
 }
 
@@ -697,7 +696,13 @@ fn reference_and_dpdk_backends_agree() {
     let dpdk = FlowFilterContext::build(&ov, Backend::Dpdk).expect("dpdk build");
 
     // (src vni, src ip, dst ip, protocol, optional (src, dst) ports)
-    type Probe = (u32, IpAddr, IpAddr, NextHeader, Option<(u16, u16)>);
+    type Probe = (
+        u32,
+        IpAddr,
+        IpAddr,
+        NextHeader,
+        Option<(NonZero<u16>, NonZero<u16>)>,
+    );
     let ip = |s: &str| s.parse::<IpAddr>().unwrap();
     let probes: &[Probe] = &[
         // v4 hits, NAT variants, protocol variants, default expose, and misses.
@@ -706,14 +711,14 @@ fn reference_and_dpdk_backends_agree() {
             ip("1.0.0.5"),
             ip("5.0.0.10"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
         (
             100,
             ip("1.0.0.5"),
             ip("5.0.0.10"),
             NextHeader::UDP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
         (100, ip("1.0.0.5"), ip("5.0.0.10"), NextHeader::ICMP, None),
         (
@@ -721,35 +726,35 @@ fn reference_and_dpdk_backends_agree() {
             ip("2.0.0.5"),
             ip("5.0.0.10"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
         (
             100,
             ip("1.0.0.5"),
             ip("99.0.0.10"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ), // default dst
         (
             100,
             ip("9.9.9.9"),
             ip("5.0.0.10"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ), // src miss
         (
             100,
             ip("1.0.0.5"),
             ip("6.6.6.6"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ), // caught by default
         (
             999,
             ip("1.0.0.5"),
             ip("5.0.0.10"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ), // unknown src vpc
         // masquerade: outbound from the masquerade source, and reply traffic toward the
         // masquerade public range (stage-1 marker rule).
@@ -758,14 +763,14 @@ fn reference_and_dpdk_backends_agree() {
             ip("3.0.0.5"),
             ip("5.0.0.10"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
         (
             200,
             ip("5.0.0.10"),
             ip("30.0.0.5"),
             NextHeader::TCP,
-            Some((5678, 1234)),
+            Some((nz(5678), nz(1234))),
         ),
         (200, ip("5.0.0.10"), ip("30.0.0.5"), NextHeader::ICMP, None),
         // v6 hit + miss.
@@ -774,14 +779,14 @@ fn reference_and_dpdk_backends_agree() {
             ip("2001:db8::1"),
             ip("2001:db9::1"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
         (
             100,
             ip("2001:db8::1"),
             ip("2001:dba::1"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
         // mixed IP version.
         (
@@ -789,7 +794,7 @@ fn reference_and_dpdk_backends_agree() {
             ip("1.0.0.5"),
             ip("2001:db9::1"),
             NextHeader::TCP,
-            Some((1234, 5678)),
+            Some((nz(1234), nz(5678))),
         ),
     ];
 
