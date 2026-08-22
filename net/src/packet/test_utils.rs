@@ -17,7 +17,7 @@ use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
 use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, HeadersBuilder, Net, Transport};
-use crate::icmp4::{Icmp4, TruncatedIcmp4};
+use crate::icmp4::{Icmp4, Icmp4DestUnreachable, TruncatedIcmp4};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
@@ -320,6 +320,41 @@ pub fn build_test_icmp4_destination_unreachable_packet(
     inner_param_1: u16,
     inner_param_2: u16,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    build_test_icmp4_destination_unreachable_packet_with_code(
+        Icmp4DestUnreachable::Network,
+        IcmpErrorAddrs {
+            outer_src: outer_src_ip,
+            outer_dst: outer_dst_ip,
+            inner_src: inner_src_ip,
+            inner_dst: inner_dst_ip,
+        },
+        next_header,
+        inner_param_1,
+        inner_param_2,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IcmpErrorAddrs {
+    pub outer_src: Ipv4Addr,
+    pub outer_dst: Ipv4Addr,
+    pub inner_src: Ipv4Addr,
+    pub inner_dst: Ipv4Addr,
+}
+
+pub fn build_test_icmp4_destination_unreachable_packet_with_code(
+    unreachable: Icmp4DestUnreachable,
+    addrs: IcmpErrorAddrs,
+    next_header: NextHeader,
+    inner_param_1: u16,
+    inner_param_2: u16,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let IcmpErrorAddrs {
+        outer_src: outer_src_ip,
+        outer_dst: outer_dst_ip,
+        inner_src: inner_src_ip,
+        inner_dst: inner_dst_ip,
+    } = addrs;
     let mut headers = HeadersBuilder::default();
 
     // Ethernet
@@ -365,7 +400,7 @@ pub fn build_test_icmp4_destination_unreachable_packet(
 
     // ICMP
     let icmp = Icmp4(Icmpv4Header::new(Icmpv4Type::DestinationUnreachable(
-        DestUnreachableHeader::Network,
+        DestUnreachableHeader::from(unreachable),
     )));
 
     // Outer IPv4
