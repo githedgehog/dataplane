@@ -28,18 +28,13 @@ pub(crate) enum NatPacketError {
     UpdateIcmpv6(#[from] Icmp6Error),
     #[error("Failed to NAT packet: unsupported traffic")]
     UnsupportedTraffic,
-    #[error("Failed to NAT packet: unusable source IP")]
-    UnusableAddress,
 }
 
 fn snat<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
-    new_src_ip: IpAddr,
+    new_src: UnicastIpAddr,
     natport: NatPort,
 ) -> Result<(), NatPacketError> {
-    let new_src =
-        UnicastIpAddr::try_from(new_src_ip).map_err(|_| NatPacketError::UnusableAddress)?;
-
     let mut modified = false;
     match packet
         .headers_mut()
@@ -50,7 +45,7 @@ fn snat<Buf: PacketBufferMut>(
         .done()
     {
         Some((_, ip, tp)) if matches!(tp, Transport::Udp(_) | Transport::Tcp(_)) => {
-            if ip.src_addr() != new_src_ip {
+            if ip.src_addr() != new_src.inner() {
                 ip.try_set_source(new_src)?;
                 modified = true;
             }
@@ -63,7 +58,7 @@ fn snat<Buf: PacketBufferMut>(
             return Err(NatPacketError::UnsupportedTraffic);
         }
         Some((_, ip, Transport::Icmp4(icmp))) => {
-            if ip.src_addr() != new_src_ip {
+            if ip.src_addr() != new_src.inner() {
                 ip.try_set_source(new_src)?;
                 modified = true;
             }
@@ -76,7 +71,7 @@ fn snat<Buf: PacketBufferMut>(
             }
         }
         Some((_, ip, Transport::Icmp6(icmp))) => {
-            if ip.src_addr() != new_src_ip {
+            if ip.src_addr() != new_src.inner() {
                 ip.try_set_source(new_src)?;
                 modified = true;
             }
@@ -169,7 +164,7 @@ fn dnat<Buf: PacketBufferMut>(
 #[derive(Debug)]
 pub(crate) struct NatTranslate {
     pub action: NatAction,
-    pub use_ip: IpAddr,
+    pub use_ip: UnicastIpAddr,
     pub nat_port: NatPort,
 }
 
@@ -190,6 +185,6 @@ pub(super) fn masquerade<Buf: PacketBufferMut>(
     debug!("Natting packet using {xlate} (masquerading flow)");
     match xlate.action {
         NatAction::SrcNat => snat(packet, xlate.use_ip, xlate.nat_port),
-        NatAction::DstNat => dnat(packet, xlate.use_ip, xlate.nat_port),
+        NatAction::DstNat => dnat(packet, xlate.use_ip.inner(), xlate.nat_port),
     }
 }
