@@ -46,9 +46,14 @@ both -- they answer different questions.
 
 ## Adding a layer we do not handle yet
 
-Today the overlay refuses VLAN-tagged frames, at the decapsulation boundary in `IpForwarder`. That
-is a statement about what this dataplane is currently equipped to do, **not** an architectural
-position. VLAN inside VXLAN is logically valid traffic. So is MPLS, and so is whatever we have not
+Today the overlay refuses VLAN-tagged frames, at the decapsulation boundary in `IpForwarder`, and
+`dataplane::packet_processor::fuzz`'s `routed` module is what says so: two stages down to the
+boundary for the attributed claim, and the whole pipeline over generated shapes for the claim that
+one never reaches the wire. Both, because the filters refuse the shape as well -- see
+[property testing](./property-testing.md) on why a redundant defence needs a property per layer.
+
+That refusal is a statement about what this dataplane is currently equipped to do, **not** an
+architectural position. VLAN inside VXLAN is logically valid traffic. So is MPLS, and so is whatever we have not
 thought of; the parser already has somewhere to put a tag, and decapsulation already hands one on.
 
 The reason a strict pattern is the right way to say "not yet" is that it makes the eventual "yes"
