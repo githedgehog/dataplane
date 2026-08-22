@@ -1185,6 +1185,7 @@ dependencies = [
  "arrayvec",
  "axum",
  "axum-server",
+ "bolero",
  "dataplane-acl-filter",
  "dataplane-args",
  "dataplane-clock",
@@ -1196,6 +1197,7 @@ dependencies = [
  "dataplane-flow-filter",
  "dataplane-id",
  "dataplane-lifecycle",
+ "dataplane-lpm",
  "dataplane-mgmt",
  "dataplane-nat",
  "dataplane-net",
@@ -1224,6 +1226,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]
