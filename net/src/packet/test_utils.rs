@@ -537,8 +537,22 @@ pub fn build_test_vxlan_ipv4_packet_carrying(
     ecn: Ecn,
     inner_bytes: &[u8],
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    build_test_vxlan_ipv4_packet_carrying_vni(
+        Vni::new_checked(100).unwrap_or_else(|_| unreachable!()),
+        dscp,
+        ecn,
+        inner_bytes,
+    )
+}
+
+#[must_use]
+pub fn build_test_vxlan_ipv4_packet_carrying_vni(
+    vni: Vni,
+    dscp: Dscp,
+    ecn: Ecn,
+    inner_bytes: &[u8],
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     // VXLAN header bytes
-    let vni = Vni::new_checked(100).unwrap();
     let vxlan = Vxlan::new(vni);
     let vxlan_len = Vxlan::MIN_LENGTH.get() as usize;
 
