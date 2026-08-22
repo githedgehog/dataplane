@@ -1100,6 +1100,27 @@ coverage *args:
     cargo llvm-cov report --branch --lcov --output-path="${out}/lcov.info"
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
+    echo
+    echo "html report: ${out}/html/index.html  (\`just serve-coverage\` to browse it)"
+
+# Serve a directory of generated html over http.
+#
+# The reports llvm-cov and criterion produce are multi-page and fetch siblings relatively, which
+# a `file://` origin refuses; the index looks fine and everything under it is empty. Serving them
+# is the difference between a report you can read and one you can only open.
+[doc("Serve a directory of generated html over http")]
+[script]
+serve dir port="8080":
+    {{ _just_debuggable_ }}
+    if [ ! -d '{{ dir }}' ]; then
+      echo "error: no such directory: {{ dir }}" >&2
+      exit 1
+    fi
+    echo "serving {{ dir }} at http://127.0.0.1:{{ port }} (ctrl-c to stop)"
+    static-web-server --root '{{ dir }}' --port '{{ port }}' --log-level warn
+
+# Browse the coverage report from `just coverage`
+serve-coverage port="8080": (serve "./target/nextest/coverage/html" port)
 
 # Report specification compliance. See development/code/spec-compliance.md
 [script]

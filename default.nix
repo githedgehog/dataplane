@@ -191,6 +191,9 @@ let
       shellcheck
       skim # the `just debug` picker
       skopeo
+      # Serves the html that `just coverage` and `just bench criterion` produce. Opening those
+      # from file:// works for the index but breaks the sub-pages' relative fetches.
+      static-web-server
       # callgrind/cachegrind, for benchmarks that count work instead of timing it.
       # See development/code/benchmarking.md for what that does and does not tell you.
       valgrind

@@ -18,6 +18,17 @@ just bench callgrind  # instructions and modelled cache traffic
 just bench compare    # the above against a baseline, as a markdown report
 ```
 
+Criterion also writes an html report -- `just bench serve` puts it on a local port, which is worth
+doing rather than opening the file directly: the pages fetch their siblings relatively and a
+`file://` origin refuses, so the index renders and everything under it comes up empty. The same
+recipe shape serves the coverage report, as `just serve-coverage`.
+
+The report is at `target/criterion/report/index.html` -- distribution and
+regression plots for every benchmark, which is where to look when a number is surprising. A
+bimodal distribution or a cluster of outliers usually means the machine interfered rather than the
+code changed, and that is invisible in the three numbers the terminal prints. In CI it is worth
+uploading as an artifact; the markdown report from `compare` is the thing that belongs inline.
+
 `valgrind` and `iai-callgrind-runner` come from the dev shell. The runner's version must equal the
 `iai-callgrind` version in the workspace `Cargo.toml`; it is set in
 `nix/overlays/dataplane-dev.nix`, and a mismatch fails loudly rather than quietly.
@@ -270,3 +281,10 @@ The fixture is leaked in `setup` so the drop is a no-op.
 **Sanity-check the magnitude against a hand estimate.** A lookup that takes 17 ns cannot be 9,000
 instructions. Knowing roughly what a number should be is what turns a wrong benchmark into an
 obviously wrong benchmark.
+
+**Check you are benchmarking an optimised build.** `just bench criterion` goes through the nix
+build, which defaults to the `debug` profile for everything else in this repository; it used to
+inherit that. The same lookup measured about nine times slower and with none of the inlining that
+makes the release build's shape worth reasoning about -- numbers that are wrong in a way that
+still looks like a measurement. The recipe now asks for `release` explicitly. `cargo bench` is
+unaffected: its `bench` profile inherits from `release` already.
