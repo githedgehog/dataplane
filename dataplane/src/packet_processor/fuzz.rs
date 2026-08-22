@@ -1162,6 +1162,211 @@ mod acl {
 }
 
 #[cfg(test)]
+mod port_forward {
+    use super::round_trip::udp;
+    use super::routed::{inside, tunnelled_from};
+    use super::*;
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
+    use net::headers::TryVxlan;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const INTERNAL_NET: &str = "10.0.5.0/28";
+    const EXTERNAL_NET: &str = "172.16.5.0/28";
+    const HOSTS: u8 = 16;
+    const INTERNAL_PORT: u16 = 8000;
+    const EXTERNAL_PORT: u16 = 9000;
+    const PORTS: u16 = 8;
+
+    fn expose() -> VpcExpose {
+        VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Udp))
+            .unwrap_or_else(|_| unreachable!("udp port forwarding is a valid flavour"))
+            .ip(PrefixWithOptionalPorts::new(
+                INTERNAL_NET
+                    .parse::<Prefix>()
+                    .unwrap_or_else(|_| unreachable!()),
+                Some(
+                    PortRange::new(INTERNAL_PORT, INTERNAL_PORT + PORTS - 1)
+                        .unwrap_or_else(|_| unreachable!()),
+                ),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                EXTERNAL_NET
+                    .parse::<Prefix>()
+                    .unwrap_or_else(|_| unreachable!()),
+                Some(
+                    PortRange::new(EXTERNAL_PORT, EXTERNAL_PORT + PORTS - 1)
+                        .unwrap_or_else(|_| unreachable!()),
+                ),
+            ))
+            .unwrap_or_else(|_| unreachable!("the two ranges are the same size"))
+    }
+
+    fn outside() -> IpAddr {
+        "3.3.3.7".parse().unwrap_or_else(|_| unreachable!())
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Reach {
+        host: u8,
+        port: u16,
+        src_port: u16,
+        past_the_range: bool,
+    }
+
+    struct Reaches;
+
+    const REACHES_PER_FABRIC: usize = 8;
+
+    impl bolero::ValueGenerator for Reaches {
+        type Output = Vec<Reach>;
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Vec<Reach>> {
+            (0..REACHES_PER_FABRIC)
+                .map(|_| {
+                    let choice = driver.produce::<u8>()?;
+                    Some(Reach {
+                        host: driver.produce::<u8>()? % HOSTS,
+                        port: driver.produce::<u16>()? % PORTS,
+                        src_port: driver.produce::<u16>()?.max(1),
+                        past_the_range: choice % 4 == 3,
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("port_forward::Reaches", &Reaches);
+    }
+
+    fn answers(
+        fabric: &mut Fabric,
+        host: IpAddr,
+        reach: Reach,
+        external: IpAddr,
+        dport: u16,
+    ) -> bool {
+        let Some(reply) = udp(host, outside(), INTERNAL_PORT + reach.port, reach.src_port) else {
+            return false;
+        };
+        let back = fabric.send(tunnelled_from(vni(LOCAL_VNI), &reply));
+        assert!(
+            matches!(verdict(&back), Verdict::Delivered { .. }),
+            "the service's reply did not get out: {:?}",
+            verdict(&back)
+        );
+        assert_eq!(
+            back.try_vxlan().map(net::vxlan::Vxlan::vni),
+            Some(vni(REMOTE_VNI)),
+            "the reply went back into the wrong vpc"
+        );
+        let answered = inside(&back).expect("a delivered reply was not tunnelled");
+        assert_eq!(
+            answered.ip_source(),
+            Some(external),
+            "the reply was sourced from the internal address, which the outside host never \
+             addressed"
+        );
+        assert_eq!(
+            answered.transport_src_port().map(std::num::NonZero::get),
+            Some(dport),
+            "the reply came from the right address on the wrong port"
+        );
+        assert_eq!(
+            answered.ip_destination(),
+            Some(outside()),
+            "the reply did not reach the host that made the request"
+        );
+        true
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_forwarded_port_reaches_the_host_behind_it() {
+        static FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ANSWERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Reaches)
+            .for_each(|reaches| {
+                let Some(mut fabric) = Fabric::routed(&[expose()], None) else {
+                    unreachable!("the port-forwarding fixture does not configure")
+                };
+
+                for reach in reaches {
+                    let external: IpAddr = format!("172.16.5.{}", reach.host)
+                        .parse()
+                        .unwrap_or_else(|_| unreachable!());
+                    let dport = if reach.past_the_range {
+                        EXTERNAL_PORT + PORTS + (reach.port % PORTS)
+                    } else {
+                        EXTERNAL_PORT + reach.port
+                    };
+
+                    let Some(inbound) = udp(outside(), external, reach.src_port, dport) else {
+                        continue;
+                    };
+                    let out = fabric.send(tunnelled_from(vni(REMOTE_VNI), &inbound));
+
+                    if reach.past_the_range {
+                        assert!(
+                            !matches!(verdict(&out), Verdict::Delivered { .. }),
+                            "a packet to {external}:{dport}, past the declared range, was \
+                             forwarded anyway"
+                        );
+                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+
+                    assert!(
+                        matches!(verdict(&out), Verdict::Delivered { .. }),
+                        "a packet to the declared {external}:{dport} was not forwarded: {:?}",
+                        verdict(&out)
+                    );
+                    let arrived = inside(&out).expect("a forwarded packet was not tunnelled");
+                    let expected_host: IpAddr = format!("10.0.5.{}", reach.host)
+                        .parse()
+                        .unwrap_or_else(|_| unreachable!());
+                    assert_eq!(
+                        arrived.ip_destination(),
+                        Some(expected_host),
+                        "{external}:{dport} reached the wrong host"
+                    );
+                    assert_eq!(
+                        arrived.transport_dst_port().map(std::num::NonZero::get),
+                        Some(INTERNAL_PORT + reach.port),
+                        "{external}:{dport} reached the right host on the wrong port"
+                    );
+                    FORWARDED.fetch_add(1, Ordering::Relaxed);
+
+                    if answers(&mut fabric, expected_host, *reach, external, dport) {
+                        ANSWERED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (forwarded, answered, refused) = (
+            FORWARDED.load(Ordering::Relaxed),
+            ANSWERED.load(Ordering::Relaxed),
+            REFUSED.load(Ordering::Relaxed),
+        );
+        eprintln!("forwarded={forwarded} answered={answered} refused={refused}");
+        super::assert_covered(forwarded > 0, "no packet was ever forwarded to the service");
+        super::assert_covered(answered > 0, "the service never answered");
+        super::assert_covered(
+            refused > 0,
+            "no packet was ever aimed past the declared range, so the negative half is vacuous",
+        );
+    }
+}
+
+#[cfg(test)]
 mod burst {
     use super::round_trip::udp;
     use super::routed::{exposes, inside, tunnelled, tunnelled_from};
