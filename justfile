@@ -52,6 +52,10 @@ bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 # comma-separated list of cargo features to enable (e.g. "shuttle")
 features := ""
 
+fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
+
+fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
+
 # whether to include default cargo features for this workspace (set to "false" to disable)
 default_features := "true"
 
@@ -198,6 +202,8 @@ fuzz target time="60s" *args="":
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        -l '{{ fuzz_max_input_length }}' \
+        -E='-len_control={{ fuzz_len_control }}' \
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}

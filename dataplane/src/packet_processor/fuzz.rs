@@ -196,6 +196,61 @@ pub(crate) fn verdict(packet: &Packet<TestBuffer>) -> Verdict {
     }
 }
 
+pub(crate) const MAX_INPUT_LEN: usize = 65536;
+
+#[cfg(test)]
+fn largest_draw<G: bolero::ValueGenerator>(generator: &G) -> usize {
+    use bolero::generator::bolero_generator::driver::{Options, bytes::Driver};
+
+    const SAMPLES: usize = 64;
+    const UNLIMITED: usize = 1 << 20;
+
+    let options = Options::default().with_max_len(UNLIMITED);
+    let mut state: u64 = 0x243f_6a88_85a3_08d3;
+    let mut bytes = vec![0u8; UNLIMITED];
+    (0..SAMPLES)
+        .map(|_| {
+            for byte in &mut bytes {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    *byte = (state >> 33) as u8;
+                }
+            }
+            let mut driver = Driver::new(&bytes[..], &options);
+            assert!(
+                generator.generate(&mut driver).is_some(),
+                "the generator gave up on a budget it cannot exhaust"
+            );
+            UNLIMITED - driver.as_slice().len()
+        })
+        .max()
+        .unwrap_or_else(|| unreachable!("SAMPLES is not zero"))
+}
+
+#[cfg(test)]
+fn assert_within_budget<G: bolero::ValueGenerator>(name: &str, generator: &G) {
+    let largest = largest_draw(generator);
+    eprintln!("{name}: largest draw {largest} of {MAX_INPUT_LEN} bytes");
+    assert!(
+        largest * 2 <= MAX_INPUT_LEN,
+        "{name} drew {largest} bytes, over half of the {MAX_INPUT_LEN} budget. Raise \
+         MAX_INPUT_LEN and `just fuzz`'s `-l`, or the tail of every batch will be zeros."
+    );
+}
+
+#[cfg(test)]
+fn assert_covered(covered: bool, what: &str) {
+    assert!(
+        covered,
+        "{what}. Check for a `__fuzz__` corpus beside this test before reading further: replaying \
+         one can spend the budget on inputs chosen for being unusual. Move it aside and re-run to \
+         tell that apart from a real gap."
+    );
+}
+
 pub(crate) const UPLINK: u32 = 1;
 pub(crate) const LOCAL_VTEP: &str = "5.6.7.8";
 pub(crate) const PEER_VTEP: &str = "1.2.3.4";
@@ -471,6 +526,11 @@ mod shapes {
         Packet::new(buffer).ok()
     }
 
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("shapes::Batch", &Batch);
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn every_shape_leaves_the_pipeline_with_a_verdict() {
@@ -480,6 +540,7 @@ mod shapes {
             LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
 
         bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, stacks)| {
                 let Some(mut fabric) = Fabric::build(exposes) else {
@@ -533,15 +594,15 @@ mod shapes {
             by_shape.join(" ")
         );
 
-        assert!(
+        super::assert_covered(
             forwarded > 0,
-            "no packet was ever forwarded: the harness is exercising the drop path only"
+            "no packet was ever forwarded: the harness is exercising the drop path only",
         );
-        assert!(dropped > 0, "no packet was ever dropped");
+        super::assert_covered(dropped > 0, "no packet was ever dropped");
         for shape in Shape::ALL {
-            assert!(
+            super::assert_covered(
                 BY_SHAPE[shape as usize].load(Ordering::Relaxed) > 0,
-                "no {shape:?} packet ever reached the pipeline"
+                &format!("no {shape:?} packet ever reached the pipeline"),
             );
         }
     }
@@ -656,6 +717,11 @@ mod round_trip {
         Packet::new(buffer).ok()
     }
 
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("round_trip::Batch", &Batch);
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_translated_flow_comes_back_to_where_it_started() {
@@ -663,6 +729,7 @@ mod round_trip {
         static NOT_FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, flows)| {
                 let Some(mut fabric) = Fabric::build(exposes) else {
@@ -749,9 +816,9 @@ mod round_trip {
             "round-tripped={round_tripped} not-forwarded={}",
             NOT_FORWARDED.load(Ordering::Relaxed)
         );
-        assert!(
+        super::assert_covered(
             round_tripped > 0,
-            "no flow was ever forwarded, so nothing was ever checked to come back"
+            "no flow was ever forwarded, so nothing was ever checked to come back",
         );
     }
 }
@@ -944,6 +1011,11 @@ mod acl {
         }
     }
 
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("acl::Batch", &Batch);
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
@@ -953,8 +1025,10 @@ mod acl {
         static PERMITTED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DENIED_BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
-        bolero::check!().with_generator(Batch).for_each(
-            |(exposes, default_allow, rule_proto, packets)| {
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Batch)
+            .for_each(|(exposes, default_allow, rule_proto, packets)| {
                 let default = if *default_allow {
                     AclAction::Allow
                 } else {
@@ -1016,8 +1090,7 @@ mod acl {
                         }
                     }
                 }
-            },
-        );
+            });
 
         let (permitted, permitted_out, denied, denied_by_acl, behind) = (
             PERMITTED.load(Ordering::Relaxed),
@@ -1030,20 +1103,20 @@ mod acl {
             "permitted={permitted} (forwarded {permitted_out}) denied={denied} \
              (by the acl {denied_by_acl}) behind-extension={behind}"
         );
-        assert!(permitted > 0, "no packet was ever permitted");
-        assert!(denied > 0, "no packet was ever denied");
-        assert!(
+        super::assert_covered(permitted > 0, "no packet was ever permitted");
+        super::assert_covered(denied > 0, "no packet was ever denied");
+        super::assert_covered(
             permitted_out > 0,
-            "no permitted packet was ever forwarded: the permit direction is vacuous"
+            "no permitted packet was ever forwarded: the permit direction is vacuous",
         );
-        assert!(
+        super::assert_covered(
             denied_by_acl > 0,
             "no denial ever came from the acl: the deny direction is being satisfied by stages \
-             ahead of it, and would hold with the acl removed"
+             ahead of it, and would hold with the acl removed",
         );
-        assert!(
+        super::assert_covered(
             behind > 0,
-            "no packet was ever sent behind an extension header, which is the shape this exists for"
+            "no packet was ever sent behind an extension header, which is the shape this exists for",
         );
     }
 }
@@ -1190,6 +1263,7 @@ mod routed {
         static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, stacks)| {
                 let Some(mut fabric) = Fabric::routed(exposes, None) else {
@@ -1224,11 +1298,8 @@ mod routed {
         let tagged = TAGGED.load(Ordering::Relaxed);
         eprintln!("delivered={delivered} tagged={tagged}");
 
-        assert!(
-            delivered > 0,
-            "nothing ever reached the wire: the property is vacuous"
-        );
-        assert!(tagged > 0, "no tagged shape was ever generated");
+        super::assert_covered(delivered > 0, "nothing ever reached the wire");
+        super::assert_covered(tagged > 0, "no tagged shape was ever generated");
     }
 
     fn one(
