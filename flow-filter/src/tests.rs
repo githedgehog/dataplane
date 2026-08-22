@@ -1472,11 +1472,12 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
     })
 }
 
-/// Layers the classifier does not account for, and so refuses ahead of any table lookup.
+/// Layers the classifier has not been taught about, and so refuses ahead of any table lookup.
 ///
-/// A VLAN tag is the case this generator produces. Nothing downstream of the classifier reads one
-/// -- `Egress` rewrites the MACs and leaves it in place -- so forwarding a tagged frame would put
-/// it on whatever segment its sender named.
+/// A VLAN tag is the case this generator produces, and the only one today. The oracle asks the
+/// question this way round -- "is there a layer nobody accounted for" rather than "is there a
+/// tag" -- because that is the contract: when the classifier learns a layer, it stops being
+/// unaccounted and this predicate stops naming it, without the outcome table changing shape.
 fn carries_unaccounted_layers(pkt: &Packet<TestBuffer>) -> bool {
     use net::headers::TryHeaders;
     !pkt.headers().vlan().is_empty()

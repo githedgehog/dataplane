@@ -181,12 +181,12 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
 
         // Match the shape of the header chain rather than reaching into it for the two layers
         // this stage happens to care about. `pat` fails when the packet carries a layer the
-        // pattern does not name, and VLAN tags are always strict -- which is the point here.
-        // Nothing downstream of this stage looks at a tag: `Egress` rewrites the MACs and leaves
-        // `headers.vlan` alone, and VXLAN re-encapsulation puts the outer headers in front of it.
-        // A tag a remote sender placed inside a tunnelled frame would therefore be forwarded onto
-        // whatever segment it names, decided by nobody. There is no configuration that expresses
-        // an opinion about one, so the honest answer is that we do not handle it.
+        // pattern does not name, so a rule is never applied to a packet whose shape nobody
+        // considered. See `development/code/header-chain-matching.md`.
+        //
+        // Naming a layer here is how this stage says it has been taught about one. It has not been
+        // taught about VLAN tags, which is a gap rather than a position -- the layer is legitimate
+        // and the pattern is where accepting it would be spelled out.
         let Some((_eth, net, transport)) = packet
             .headers()
             .pat()

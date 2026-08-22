@@ -129,9 +129,10 @@ impl FlowFilter {
                 self.flow_revalidation_data(flow_summary, genid);
         }
 
-        // Matched as a whole chain rather than reached into: see the note in `acl-filter`. A VLAN
-        // tag on an overlay packet is a forwarding decision nobody made, and this stage is where
-        // the VPC a packet belongs to is settled, so it is the right place to refuse one.
+        // Matched as a whole chain rather than reached into: see
+        // `development/code/header-chain-matching.md`. This stage settles which VPC a packet
+        // belongs to, so a layer it has not been taught about is one it must not answer over.
+        // Nothing here has been taught about VLAN tags yet.
         let Some((_eth, net, transport)) = packet
             .headers()
             .pat()

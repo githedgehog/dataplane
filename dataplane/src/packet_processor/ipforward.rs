@@ -156,18 +156,24 @@ impl IpForwarder {
                 /* At this point decapsulation has already happened and `Packet` refers to
                 the innner packet. */
 
-                // The inner frame is whatever the far side put in the tunnel, and a VLAN tag in it
-                // is a forwarding decision nobody here made: no configuration expresses one, and
-                // nothing downstream reads `headers.vlan` -- `Egress` rewrites the MACs and leaves
-                // it in place, and a re-encapsulation puts the outer headers in front of it. A tag
-                // would therefore be carried out onto whatever segment it names.
+                // A VLAN tag inside a VXLAN frame is legitimate traffic, and this refusal is not
+                // an argument that it is not. It says only that nothing here is equipped to carry
+                // one yet: no configuration expresses which tags a VPC may carry, `FlowKey` does
+                // not distinguish two flows that differ only in one, and nothing decides whether
+                // egress should preserve, rewrite or strip it -- `Egress` rewrites the MACs and
+                // leaves the rest, and re-encapsulation puts the outer headers in front of it. So
+                // a tag would be carried out onto whatever segment it names, by default rather
+                // than by decision. `Unhandled` is the accurate word for that.
                 //
-                // Refused here, where the frame becomes ours, rather than at whichever stage first
-                // happens to look at it. The overlay stages match with `Headers::pat` and so refuse
-                // it too; that is the structural guarantee that a stage never acts on a chain it
-                // did not account for, and this is where the policy lives.
+                // What it would take to change the answer is written down in
+                // `development/code/header-chain-matching.md`. Refused here, where the frame
+                // becomes ours, rather than at whichever stage first happens to look: the overlay
+                // stages match with `Headers::pat` and refuse it too, but `IcmpErrorHandler` and
+                // `FlowLookup` run ahead of them.
                 if !packet.headers().vlan().is_empty() {
-                    debug!("{nfi}: Decapsulated frame carries a VLAN tag; not supported");
+                    debug!(
+                        "{nfi}: Decapsulated frame carries a VLAN tag, which nothing downstream is equipped to carry"
+                    );
                     packet.done(DoneReason::Unhandled);
                     return;
                 }
