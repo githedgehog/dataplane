@@ -12,6 +12,7 @@ netdevsim = []
 
 bolero = ["dep:bolero", "id/bolero"]
 test_buffer = []
+test_meta = []
 builder = []
 
 [target.'cfg(unix)'.dependencies]
