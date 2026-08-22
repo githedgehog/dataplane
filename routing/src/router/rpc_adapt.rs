@@ -123,13 +123,13 @@ impl RouteNhop {
             None => None,
         };
 
+        // build key for this next hop
         let key = NhopKey::new(
             origin,
             nh.address,
             ifindex,
             encap,
             FwAction::from(nh.fwaction),
-            None,
         );
 
         // validate next hop from its key
@@ -431,9 +431,7 @@ mod rpc_properties {
             return None;
         }
 
-        Some(NhopKey::new(
-            origin, address, ifindex, encap, fwaction, None,
-        ))
+        Some(NhopKey::new(origin, address, ifindex, encap, fwaction))
     }
 
     fn test_vrf() -> Vrf {

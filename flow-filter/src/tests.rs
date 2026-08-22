@@ -1451,7 +1451,6 @@ fn expected_outcome(result: LookupResult) -> NfOutcome {
 /// Returns `None` for packets without an IP layer.
 fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Option<Probe> {
     use net::headers::{TryIp, TryTransport};
-    use std::num::NonZero;
 
     let net = pkt.try_ip()?;
     Some(Probe {
