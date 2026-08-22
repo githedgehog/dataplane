@@ -16,6 +16,7 @@ use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
 use config::external::overlay::vpc::ValidatedPeering;
+use lpm::prefix::with_ports::KeyPort;
 use lpm::prefix::{IpPrefix, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::vxlan::Vni;
@@ -73,7 +74,8 @@ fn rule_matches(rule: &ValidatedAclRule, packet: &PacketSummary) -> bool {
         return false;
     }
     let pattern = rule.pattern();
-    let (sport, dport) = packet.ports.unwrap_or((0, 0));
+    let (sport, dport) = packet.ports.unzip();
+    let (sport, dport) = (KeyPort::new(sport).get(), KeyPort::new(dport).get());
     proto_allows(pattern.proto(), packet.proto)
         && side_allows(pattern.src(), packet.src_ip, sport)
         && side_allows(pattern.dst(), packet.dst_ip, dport)

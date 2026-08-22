@@ -5,9 +5,10 @@ use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
 use bnum::cast::CastFrom;
 use bnum::{n, t};
-use match_action::RangeSpec;
+use match_action::{FixedSize, RangeSpec};
 use std::collections::BTreeSet;
 use std::fmt::Display;
+use std::num::NonZero;
 use std::ops::{Bound, RangeBounds};
 use std::str::FromStr;
 
@@ -642,29 +643,71 @@ impl RangeBounds<u16> for PortRange {
     }
 }
 
-// Build RangeSpec<u16> from relevant types - This is used with ACLs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct KeyPort(Option<NonZero<u16>>);
 
-pub const PORT_RANGE_WILDCARD: RangeSpec<u16> = RangeSpec::new(0, u16::MAX);
+impl KeyPort {
+    pub const NONE: Self = Self(None);
 
-impl From<PortRange> for RangeSpec<u16> {
-    fn from(range: PortRange) -> Self {
-        RangeSpec::new(range.start, range.end)
+    pub const MAX: Self = Self(Some(NonZero::<u16>::MAX));
+
+    #[must_use]
+    pub const fn new(port: Option<NonZero<u16>>) -> Self {
+        Self(port)
+    }
+
+    #[must_use]
+    pub const fn from_raw(port: u16) -> Self {
+        Self(NonZero::new(port))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        match self.0 {
+            Some(port) => port.get(),
+            None => 0,
+        }
     }
 }
 
-impl From<&Prefix> for RangeSpec<u16> {
+impl Display for KeyPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(port) => write!(f, "{port}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
+impl FixedSize for KeyPort {
+    const SIZE: usize = size_of::<u16>();
+    fn write_be(&self, out: &mut [u8]) {
+        self.get().write_be(out);
+    }
+}
+
+pub const PORT_RANGE_WILDCARD: RangeSpec<KeyPort> = RangeSpec::new(KeyPort::NONE, KeyPort::MAX);
+
+impl From<PortRange> for RangeSpec<KeyPort> {
+    fn from(range: PortRange) -> Self {
+        RangeSpec::new(KeyPort::from_raw(range.start), KeyPort::from_raw(range.end))
+    }
+}
+
+impl From<&Prefix> for RangeSpec<KeyPort> {
     fn from(_: &Prefix) -> Self {
         PORT_RANGE_WILDCARD
     }
 }
 
-impl From<&PrefixWithPorts> for RangeSpec<u16> {
+impl From<&PrefixWithPorts> for RangeSpec<KeyPort> {
     fn from(prefix_with_ports: &PrefixWithPorts) -> Self {
         prefix_with_ports.ports().into()
     }
 }
 
-impl From<&PrefixWithOptionalPorts> for RangeSpec<u16> {
+impl From<&PrefixWithOptionalPorts> for RangeSpec<KeyPort> {
     fn from(pwop: &PrefixWithOptionalPorts) -> Self {
         (&PrefixWithPorts::from(*pwop)).into()
     }
