@@ -160,23 +160,40 @@ function main() {
 
   const rs = rows(records);
   const compared = rs.filter((r) => r.pct !== null);
-  const worst = compared.reduce(
-    (acc: Row | null, r) => (acc === null || Math.abs(r.pct!) > Math.abs(acc.pct!) ? r : acc),
-    null,
-  );
+
+  // Headline on instructions retired, not on whichever number moved most. `EstimatedCycles` is a
+  // formula over the counters rather than a time, and it moves alongside `Ir` without adding
+  // anything; letting it win the headline just puts the least trustworthy metric at the top.
+  const worstOf = (subset: Row[]) =>
+    subset.reduce(
+      (acc: Row | null, r) => (acc === null || Math.abs(r.pct!) > Math.abs(acc.pct!) ? r : acc),
+      null,
+    );
+  const worst = worstOf(compared.filter((r) => r.tool === "Callgrind" && r.metric === "Ir")) ??
+    worstOf(compared);
   const stark = worst !== null && Math.abs(worst.pct!) >= threshold;
+
+  // Instruction counts cannot see a change in how data is laid out; allocation totals can. When
+  // the two disagree -- less work but more memory -- that is the shape of change most likely to
+  // read as a win here and lose on a real machine, so say both rather than only the flattering one.
+  const alloc = worstOf(
+    compared.filter((r) => r.tool === "DHAT" && r.metric === "TotalBytes" && Math.abs(r.pct!) >= 1),
+  );
+  const allocNote = alloc === null
+    ? ""
+    : `; bytes allocated ${pct(alloc.pct)} (DHAT)`;
 
   // The headline is what a sticky comment shows without being unfolded.
   if (compared.length === 0) {
     console.log("**Benchmarks**: no baseline to compare against; recorded a new one.");
   } else if (!stark) {
     console.log(
-      `**Benchmarks**: no change beyond ${threshold}% (largest: ${worst!.bench} ${worst!.metric} ${pct(worst!.pct)}).`,
+      `**Benchmarks**: no change beyond ${threshold}% (largest: ${worst!.bench} ${worst!.metric} ${pct(worst!.pct)})${allocNote}.`,
     );
   } else {
     const dir = worst!.pct! > 0 ? "more" : "less";
     console.log(
-      `**Benchmarks**: ${worst!.bench} does ${pct(worst!.pct)} ${dir} work (${worst!.metric}).`,
+      `**Benchmarks**: ${worst!.bench} does ${pct(worst!.pct)} ${dir} work (${worst!.metric})${allocNote}.`,
     );
   }
   if (headlineOnly) return;
