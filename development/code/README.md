@@ -9,7 +9,8 @@
 - Enforce invariants at compile time when the language or framework supports it.
 - Require runtime validation and for invariants which cannot be compile-time enforced
 - Performance is important, but it is less important than correctness; it does not matter how quickly you can do the
-  wrong thing.
+  wrong thing. When it does matter, measure it: see the [benchmarking note][benchmarking] for the
+  two harnesses, and for how far apart their answers can be.
 
 If you need to write a test, prefer [property-based tests] over simple unit tests.
 To find out what your tests are _not_ saying, see the [mutation testing note][mutants]; it is a
@@ -39,6 +40,7 @@ If you need to [handle an error][error], follow the guidelines.
 [duvet]: ./spec-compliance.md
 [clock]: ../../clock/src/lib.rs
 [error]: ./error-handling.md
+[benchmarking]: ./benchmarking.md
 
 ## Testing instructions
 

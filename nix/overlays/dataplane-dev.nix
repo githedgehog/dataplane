@@ -27,6 +27,11 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  # Keep in step with the `iai-callgrind` version in `Cargo.toml`; see the package's comment.
+  iai-callgrind-runner = final.callPackage ../pkgs/iai-callgrind-runner {
+    inherit (override-packages) rustPlatform;
+    version = "0.16.1";
+  };
   # cargoDeps must be fetched from the overridden source too.
   bugstalker = prev.bugstalker.overrideAttrs (orig: {
     version = final.lib.removePrefix "v" sources.bugstalker.version;

@@ -170,6 +170,8 @@ let
       duvet
       gateway-crd
       gettext
+      # The binary half of the iai-callgrind bench harness; see nix/pkgs/iai-callgrind-runner.
+      iai-callgrind-runner
       jq
       just
       kopium
@@ -189,6 +191,9 @@ let
       shellcheck
       skim # the `just debug` picker
       skopeo
+      # callgrind/cachegrind, for benchmarks that count work instead of timing it.
+      # See development/code/benchmarking.md for what that does and does not tell you.
+      valgrind
       wasmtime
       wget
       yq
