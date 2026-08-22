@@ -1240,6 +1240,68 @@ mod dpdk_backend {
 // -------------------------------------------------------------------------------------------------
 // IPv6 extension headers
 
+/// A VLAN-tagged frame is refused, whatever an ACL rule would have said about it.
+///
+/// The tag is not an evasion -- it sits ahead of the IP header, so the rules still see the right
+/// protocol and ports, and this test's `allow-tcp` rule would match. The problem is the other
+/// side of that: the verdict is reached without anybody looking at the tag, and nothing after this
+/// stage looks at it either. `Egress` rewrites the MACs and leaves `headers.vlan` alone, and VXLAN
+/// re-encapsulation puts the outer headers in front of it, so a tag a remote sender chose inside a
+/// tunnelled frame would be forwarded onto whatever segment it names.
+///
+/// The `overlay` flag is what makes this reachable: an overlay packet is the inner frame of a
+/// VXLAN decapsulation, and its contents are the remote sender's to pick.
+#[test]
+fn a_vlan_tagged_overlay_frame_is_refused() {
+    use net::vlan::Vid;
+
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![rule(
+            "allow-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter_v4(Some(acl));
+
+    // The untagged frame the rule was written for.
+    let plain = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+    );
+    assert!(is_allowed(&run(&mut filter, plain)));
+
+    // The same frame with one 802.1Q tag in front of it.
+    let tagged = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(Vid::new(4000).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(v4("10.0.0.5")).unwrap());
+                ip.set_destination(v4("20.0.0.5"));
+            })
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(1234u16).unwrap());
+                tcp.set_destination(TcpPort::try_from(80u16).unwrap());
+            })
+            .build_headers()
+            .unwrap(),
+    );
+    let out = run(&mut filter, tagged);
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Unhandled),
+        "a VLAN-tagged overlay frame was forwarded on the strength of its inner headers"
+    );
+}
+
 /// An IPv6 extension header does not carry a packet past a rule that names its protocol.
 ///
 /// RFC 8200 puts extension headers between the IP header and the transport, so the IP header's

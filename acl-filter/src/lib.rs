@@ -6,7 +6,7 @@ use config::external::overlay::acl::{AclAction, AclScope};
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
 use net::flows::FlowStatus;
-use net::headers::{TryIp, TryTransport};
+use net::headers::{TryHeaders, TryIp};
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, PacketMeta, VpcDiscriminant};
 use net::vxlan::Vni;
@@ -179,9 +179,28 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
         let VpcDiscriminant::VNI(src_vni) = src_vpcd;
         let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
 
-        let Some(net) = packet.try_ip() else {
-            debug!("No IP headers found, dropping packet");
-            return Err(DoneReason::NotIp);
+        // Match the shape of the header chain rather than reaching into it for the two layers
+        // this stage happens to care about. `pat` fails when the packet carries a layer the
+        // pattern does not name, and VLAN tags are always strict -- which is the point here.
+        // Nothing downstream of this stage looks at a tag: `Egress` rewrites the MACs and leaves
+        // `headers.vlan` alone, and VXLAN re-encapsulation puts the outer headers in front of it.
+        // A tag a remote sender placed inside a tunnelled frame would therefore be forwarded onto
+        // whatever segment it names, decided by nobody. There is no configuration that expresses
+        // an opinion about one, so the honest answer is that we do not handle it.
+        let Some((_eth, net, transport)) = packet
+            .headers()
+            .pat()
+            .opt_eth()
+            .net()
+            .opt_transport()
+            .done()
+        else {
+            if packet.try_ip().is_none() {
+                debug!("No IP headers found, dropping packet");
+                return Err(DoneReason::NotIp);
+            }
+            debug!("Header chain carries a layer this stage cannot account for, dropping packet");
+            return Err(DoneReason::Unhandled);
         };
 
         let src_ip = net.src_addr();
@@ -189,13 +208,16 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
         // The protocol the packet carries, not the IP header's next-header field: for IPv6
         // those differ whenever an extension header is present, and a rule naming a protocol would
         // never match such a packet -- so one Hop-by-Hop header carries it past a Deny rule.
+        //
+        // Not something the pattern above can answer. It skips extension headers at the network
+        // position deliberately -- they are not a layer this stage has an opinion about -- so a
+        // chain that ran past `MAX_NET_EXTENSIONS` still matches, and only this says the transport
+        // was never reached.
         let Some(proto) = packet.upper_layer_proto() else {
             debug!("Could not determine the upper-layer protocol, dropping packet");
             return Err(DoneReason::Malformed);
         };
-        let ports = packet
-            .try_transport()
-            .and_then(|t| t.src_port().zip(t.dst_port()));
+        let ports = transport.and_then(|t| t.src_port().zip(t.dst_port()));
 
         Ok(Self {
             src_vni,

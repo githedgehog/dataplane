@@ -1461,11 +1461,25 @@ fn probe_from_packet(pkt: &Packet<TestBuffer>, src_vpcd: VpcDiscriminant) -> Opt
         gate: SourceGate::Ungated,
         src_ip: net.src_addr(),
         dst_ip: net.dst_addr(),
-        proto: net.next_header(),
+        // The protocol the packet carries, as the classifier reads it. Taking the IP header's
+        // next-header field here instead would make the oracle agree with the classifier only on
+        // stacks without extension headers, and this generator produces three shapes that have
+        // them.
+        proto: pkt.upper_layer_proto()?,
         ports: pkt
             .try_transport()
             .and_then(|t| t.src_port().zip(t.dst_port())),
     })
+}
+
+/// Layers the classifier does not account for, and so refuses ahead of any table lookup.
+///
+/// A VLAN tag is the case this generator produces. Nothing downstream of the classifier reads one
+/// -- `Egress` rewrites the MACs and leaves it in place -- so forwarding a tagged frame would put
+/// it on whatever segment its sender named.
+fn carries_unaccounted_layers(pkt: &Packet<TestBuffer>) -> bool {
+    use net::headers::TryHeaders;
+    !pkt.headers().vlan().is_empty()
 }
 
 fn observed_outcome(pkt: &Packet<TestBuffer>) -> NfOutcome {
@@ -1625,7 +1639,8 @@ fn nf_metadata_matches_config_oracle() {
 
 mod adversarial_headers {
     use super::{
-        NfOutcome, expected_outcome, make_flow_filter, observed_outcome, probe_from_packet,
+        NfOutcome, carries_unaccounted_layers, expected_outcome, make_flow_filter,
+        observed_outcome, probe_from_packet,
     };
     use crate::context::FlowFilterContext;
     use crate::context::fuzz::oracle_lookup;
@@ -1736,6 +1751,14 @@ mod adversarial_headers {
         V4Icmp,
         /// A VLAN tag between the Ethernet and IP layers.
         VlanV4Tcp,
+        /// An IPv4 packet whose protocol is one the parser has no transport for.
+        ///
+        /// Genuinely exotic, unlike the extension-header shapes below. Those used to be counted as
+        /// exotic because the oracle read the protocol out of the IP header's next-header field,
+        /// where an extension header sits -- so the only "non-transport protocol" packets this
+        /// suite ever saw were TCP and UDP being misread. Reading the protocol correctly left the
+        /// case with no coverage at all, which is what this shape supplies.
+        V4ExoticProto,
         /// An IPv4 authentication header ahead of the transport.
         V4AuthTcp,
         V6Tcp,
@@ -1747,12 +1770,13 @@ mod adversarial_headers {
 
     impl Shape {
         /// Every shape, in selector and counter order.
-        const ALL: [Shape; 10] = [
+        const ALL: [Shape; 11] = [
             Shape::NoIp,
             Shape::V4Tcp,
             Shape::V4Udp,
             Shape::V4Icmp,
             Shape::VlanV4Tcp,
+            Shape::V4ExoticProto,
             Shape::V4AuthTcp,
             Shape::V6Tcp,
             Shape::V6Udp,
@@ -1793,6 +1817,15 @@ mod adversarial_headers {
                     .vlan(|_| {})
                     .ipv4(pin_v4)
                     .tcp(|_| {})
+                    .generate(driver),
+                // SCTP: a real IANA protocol number the dataplane has no transport parser for, so
+                // the chain ends at the IP header with no ports and a protocol no expose names.
+                Shape::V4ExoticProto => ChainBase::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        pin_v4(ip);
+                        ip.set_next_header(net::ip::NextHeader::new(132));
+                    })
                     .generate(driver),
                 Shape::V4AuthTcp => ChainBase::new()
                     .eth(|_| {})
@@ -1868,6 +1901,7 @@ mod adversarial_headers {
 
                 // Extract the key before the NF consumes the packet.
                 let probe = probe_from_packet(&packet, src_vpcd());
+                let unaccounted = carries_unaccounted_layers(&packet);
                 if let Some(probe) = probe.as_ref() {
                     if probe.ports.is_none() {
                         PORTLESS.fetch_add(1, Ordering::Relaxed);
@@ -1890,6 +1924,9 @@ mod adversarial_headers {
                 let expected = match probe.as_ref() {
                     // No IP layer: dropped before any table is consulted.
                     None => NfOutcome::Dropped(Some(DoneReason::NotIp)),
+                    // Nor is a chain carrying a layer the classifier cannot account for, and that
+                    // answer comes before the configuration rather than from it.
+                    Some(_) if unaccounted => NfOutcome::Dropped(Some(DoneReason::Unhandled)),
                     Some(probe) => expected_outcome(oracle_lookup(&overlay, probe)),
                 };
                 assert_eq!(
