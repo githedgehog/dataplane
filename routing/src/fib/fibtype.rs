@@ -28,7 +28,6 @@ use tracing::{debug, error, info, trace, warn};
 // A type used to access a [`Fib`] or to identify it.
 // As an identifier, only the variant `FibKey::Id` is allowed.
 pub enum FibKey {
-    Unset,
     Id(VrfId),
     Vni(Vni),
 }
@@ -46,13 +45,17 @@ impl FibKey {
         match self {
             FibKey::Id(value) => *value,
             FibKey::Vni(value) => value.as_u32(),
-            FibKey::Unset => unreachable!(),
         }
     }
 }
 
 pub struct Fib {
-    id: FibKey,
+    /// `None` only between `Fib::default` and `FibWriter::new` setting it.
+    ///
+    /// A fib is always created for a vrf; a [`FibKey::Vni`] is an alias the fib *table* holds
+    /// pointing at one, never a fib's own identity. Naming the narrower type here is what keeps
+    /// that out of [`FibKey`], which every lookup has to match on.
+    id: Option<VrfId>,
     routesv4: PrefixMapTrie<Ipv4Prefix, FibRoute>,
     routesv6: PrefixMapTrie<Ipv6Prefix, FibRoute>,
     groupstore: FibGroupStore,
@@ -76,7 +79,7 @@ impl Identity<FibKey> for Fib {
 impl Default for Fib {
     fn default() -> Self {
         let mut fib = Self {
-            id: FibKey::Unset,
+            id: None,
             routesv4: PrefixMapTrie::create(),
             routesv6: PrefixMapTrie::create(),
             groupstore: FibGroupStore::new(),
@@ -96,22 +99,18 @@ pub type FibRouteV6Filter = Box<dyn Fn(&(Ipv6Prefix, &FibRoute)) -> bool>;
 
 impl Fib {
     /// Set the id for this [`Fib`]
-    fn set_id(&mut self, id: FibKey) {
-        assert!(
-            matches!(id, FibKey::Id(_)),
-            "Attempting to set invalid Id of {id} to fib"
-        );
-        self.id = id;
+    fn set_id(&mut self, vrfid: VrfId) {
+        self.id = Some(vrfid);
     }
 
     #[must_use]
     /// Get the id for this [`Fib`]
     pub fn get_id(&self) -> FibKey {
-        if !matches!(self.id, FibKey::Id(_)) {
-            error!("Hit fib with invalid Id {}", self.id);
+        let Some(vrfid) = self.id else {
+            error!("Hit fib whose id was never set");
             unreachable!()
-        }
-        self.id
+        };
+        FibKey::Id(vrfid)
     }
 
     /// Add a [`FibRoute`]
@@ -314,9 +313,9 @@ impl Absorb<FibChange> for Fib {
         }
     }
     fn sync_with(&mut self, first: &Self) {
-        assert_ne!(self.id, FibKey::Unset);
+        assert!(self.id.is_some());
         assert_eq!(self.id, first.id);
-        debug!("Internal LR state for fib {} is now synced", self.id);
+        debug!("Internal LR state for fib {} is now synced", self.get_id());
     }
 }
 
@@ -324,19 +323,21 @@ pub struct FibWriter(WriteHandle<Fib, FibChange>);
 impl FibWriter {
     /// create a fib, providing a writer and a reader
     #[must_use]
-    pub fn new(id: FibKey) -> (FibWriter, FibReader) {
+    pub fn new(vrfid: VrfId) -> (FibWriter, FibReader) {
         let (mut w, r) = left_right::new::<Fib, FibChange>();
-        // Set the Id in the read and write copies, created Fib::default() that sets it to FibKey::Unset.
+        // `left_right::new` builds both copies from `Fib::default`, which cannot know the id;
+        // `new_from_empty` would take a built one but wants `Clone`, which a `Fib` must not have
+        // (its `FibGroupStore` holds `Rc`s the two copies may not share). So set it on both.
         unsafe {
             // It is safe to call raw_handle() and raw_write_handle() here
             let fib_rcopy = r.raw_handle().unwrap_or_else(|| unreachable!()).as_mut();
             let fib_wcopy = w.raw_write_handle().as_mut();
-            fib_rcopy.set_id(id);
-            fib_wcopy.set_id(id);
+            fib_rcopy.set_id(vrfid);
+            fib_wcopy.set_id(vrfid);
             // this is needed to avoid needing to clone the fib
             w.publish();
         }
-        info!("Created Fib with id {id}");
+        info!("Created Fib with id {vrfid}");
         (FibWriter(w), FibReader(r))
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
@@ -807,7 +808,7 @@ mod fib_properties {
             .with_generator(ChangeSequences)
             .cloned()
             .for_each(|changes: Vec<Change>| {
-                let (mut writer, _reader) = FibWriter::new(FibKey::from_vrfid(1));
+                let (mut writer, _reader) = FibWriter::new(1);
                 let mut model = Model::new();
 
                 for (step, change) in changes.iter().enumerate() {
@@ -855,7 +856,7 @@ mod fib_properties {
             .with_generator(ChangeSequences)
             .cloned()
             .for_each(|changes: Vec<Change>| {
-                let (mut writer, _reader) = FibWriter::new(FibKey::from_vrfid(1));
+                let (mut writer, _reader) = FibWriter::new(1);
                 for change in &changes {
                     apply_to_fib(&mut writer, change, &pool, &keys);
                 }
@@ -883,7 +884,7 @@ mod fib_properties {
             .with_generator(ChangeSequences)
             .cloned()
             .for_each(|changes: Vec<Change>| {
-                let (mut writer, reader) = FibWriter::new(FibKey::from_vrfid(1));
+                let (mut writer, reader) = FibWriter::new(1);
                 for change in &changes {
                     apply_to_fib(&mut writer, change, &pool, &keys);
                 }

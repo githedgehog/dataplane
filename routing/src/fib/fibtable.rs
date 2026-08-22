@@ -129,7 +129,7 @@ impl FibTableWriter {
     #[must_use]
     pub fn add_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) -> FibWriter {
         let fibid = FibKey::from_vrfid(vrfid);
-        let (fibw, fibr) = FibWriter::new(fibid);
+        let (fibw, fibr) = FibWriter::new(vrfid);
         let entry = Arc::new(FibTableEntry::new(fibid, fibr.factory()));
         self.0.append(FibTableChange::Add((fibid, entry)));
         if let Some(vni) = vni {
