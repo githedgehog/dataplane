@@ -62,7 +62,7 @@
 #![cfg(not(miri))]
 
 use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Mutex};
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::{Overlay, ValidatedOverlay};
@@ -107,6 +107,10 @@ pub(crate) struct Fabric {
     /// Held for the same reason as the writers above: the fib writers live in here, and a fib
     /// whose writer is dropped is torn down. `None` for an overlay-slice fabric.
     _tables: Option<RouterTables>,
+    /// Shared with the two checkpoints straddling masquerade, so a burst can be given a clean one.
+    translations: Arc<Mutex<Translations>>,
+    /// Distinguishes the packets this fabric has been given, for those checkpoints.
+    next_id: u64,
 }
 
 impl Fabric {
@@ -163,6 +167,7 @@ impl Fabric {
     }
 
     fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
+        let translations = Arc::new(Mutex::new(Translations::default()));
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
@@ -223,11 +228,20 @@ impl Fabric {
             "before masquerade",
             contract::ready_to_translate,
         ));
+        let recording = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new("before masquerade", move |_: &str, packet: &Packet<TestBuffer>| {
+            recording.lock().before(packet);
+        }));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),
             masquerade.get_reader(),
         ));
+
+        let checking = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new("after masquerade", move |at: &str, packet: &Packet<TestBuffer>| {
+            checking.lock().after(at, packet);
+        }));
 
         if let Some(tables) = &tables {
             pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
@@ -248,6 +262,8 @@ impl Fabric {
             _portfw: portfw,
             _masquerade: masquerade,
             _tables: tables,
+            translations,
+            next_id: 0,
         }
     }
 
@@ -276,9 +292,18 @@ impl Fabric {
     /// pipeline: one bounded rx burst per poll.
     pub(crate) fn send_batch(
         &mut self,
-        packets: Vec<Packet<TestBuffer>>,
+        mut packets: Vec<Packet<TestBuffer>>,
     ) -> Vec<Packet<TestBuffer>> {
         let sent = packets.len();
+        // A fresh identity per packet, and a clean slate per burst: the contract straddling
+        // masquerade is about one burst, and carrying a previous burst's allocations into this one
+        // would report a legitimately re-allocated flow as a violation.
+        for packet in &mut packets {
+            self.next_id += 1;
+            packet.meta_mut().test = Some(Box::new(net::packet::TestMeta { id: self.next_id }));
+        }
+        self.translations.lock().clear();
+
         let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
         assert_eq!(out.len(), sent, "the pipeline did not return every packet");
         out
@@ -449,6 +474,81 @@ fn assert_covered(covered: bool, what: &str) {
          one can spend the budget on inputs chosen for being unusual. Move it aside and re-run to \
          tell that apart from a real gap."
     );
+}
+
+/// What a burst has translated so far, shared between the two checkpoints that straddle masquerade.
+///
+/// Masquerade rewrites the source, so `FlowKey::try_from` on the way out describes the *translated*
+/// packet -- a different key per allocation, which is exactly the thing being checked and so no use
+/// for grouping. The flow a packet belonged to has to be read before the stage and recognised
+/// after, which is what [`TestMeta`] is for and the only reason it exists.
+///
+/// Scoped to a burst rather than to the fabric, and the difference is not caution. Across bursts a
+/// flow may legitimately be invalidated -- by an ICMP error, by a configuration change -- and
+/// reallocated to a different port, so a fabric-lifetime memory would report correct behaviour as a
+/// violation. Within a burst nothing does: `IcmpErrorHandler` runs ahead of the barrier, so any
+/// invalidation it causes has happened before the first allocation of that burst.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Translations {
+    /// The flow each packet belonged to before masquerade rewrote it.
+    was: std::collections::HashMap<u64, net::FlowKey>,
+    /// The public tuple each of those flows has been given in this burst.
+    given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
+}
+
+#[cfg(test)]
+impl Translations {
+    /// Remember which flow this packet belongs to, before the stage that will disguise it.
+    fn before<Buf: PacketBufferMut>(&mut self, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().requires_masquerade() {
+            return;
+        }
+        let (Some(test), Ok(key)) = (packet.meta().test.as_ref(), net::FlowKey::try_from(packet))
+        else {
+            return;
+        };
+        self.was.insert(test.id, key);
+    }
+
+    /// One flow gets one public tuple, however many of its packets are in the burst.
+    ///
+    /// The defect this exists for: `FlowLookup` stamps each packet with the flow state it found,
+    /// `FlowFilter` collects the whole burst before anything downstream runs, so every packet of a
+    /// burst was stamped before any of them was masqueraded. Reading only that stamp meant a burst
+    /// of sixteen packets of one flow took sixteen ports out of the pool.
+    ///
+    /// `burst::a_burst_of_one_flow_allocates_once` says the same thing, and this does not replace
+    /// it -- that property drives the case deliberately, where this notices it in whatever traffic
+    /// any property happens to generate. The property is the alarm you set; this is the one that
+    /// goes off in a room nobody was watching.
+    fn after<Buf: PacketBufferMut>(&mut self, at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() {
+            return;
+        }
+        let Some(test) = packet.meta().test.as_ref() else {
+            return;
+        };
+        let Some(was) = self.was.get(&test.id).copied() else {
+            return;
+        };
+        let (Some(source), Some(port)) = (packet.ip_source(), packet.transport_src_port()) else {
+            return;
+        };
+        let now = (source, port.get());
+        if let Some(before) = self.given.insert(was, now) {
+            assert_eq!(
+                before, now,
+                "{at}: two packets of one flow in one burst were given different public tuples, \
+                 so the burst allocated more than once for it"
+            );
+        }
+    }
+
+    fn clear(&mut self) {
+        self.was.clear();
+        self.given.clear();
+    }
 }
 
 /// A stage that changes nothing and checks something.
