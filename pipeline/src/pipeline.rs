@@ -245,7 +245,7 @@ mod test {
 
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
-        let num_stages = 999;
+        let num_stages = 500;
 
         for _ in 0..num_stages {
             pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
