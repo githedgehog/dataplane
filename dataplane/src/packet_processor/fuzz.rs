@@ -85,7 +85,7 @@ impl Fabric {
     }
 
     fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
-        let translations = Arc::new(Mutex::new(Translations::default()));
+        let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
@@ -318,7 +318,9 @@ fn assert_covered(covered: bool, what: &str) {
 #[derive(Default)]
 pub(crate) struct Translations {
     was: std::collections::HashMap<u64, net::FlowKey>,
+    from: std::collections::HashMap<u64, IpAddr>,
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
+    declared: Vec<Prefix>,
 }
 
 #[cfg(test)]
@@ -332,6 +334,9 @@ impl Translations {
             return;
         };
         self.was.insert(test.id, key);
+        if let Some(source) = packet.ip_source() {
+            self.from.insert(test.id, source);
+        }
     }
 
     fn after<Buf: PacketBufferMut>(&mut self, at: &str, packet: &Packet<Buf>) {
@@ -355,11 +360,46 @@ impl Translations {
                  so the burst allocated more than once for it"
             );
         }
+
+        if self
+            .from
+            .get(&test.id)
+            .is_some_and(|before| *before != source)
+        {
+            assert!(
+                self.declared.iter().any(|p| p.covers_addr(&source)),
+                "{at}: masquerade rewrote a source to {source}, which no declared public range \
+                 covers"
+            );
+        }
     }
 
     fn clear(&mut self) {
         self.was.clear();
+        self.from.clear();
         self.given.clear();
+    }
+
+    fn declaring(overlay: &ValidatedOverlay) -> Self {
+        let mut declared = Vec::new();
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
+                for manifest in [peering.local(), peering.remote()] {
+                    for expose in manifest.valexp() {
+                        declared.extend(
+                            expose
+                                .public_ips()
+                                .into_iter()
+                                .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
+                        );
+                    }
+                }
+            }
+        }
+        Self {
+            declared,
+            ..Self::default()
+        }
     }
 }
 
