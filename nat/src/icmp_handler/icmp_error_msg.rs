@@ -249,6 +249,14 @@ mod bolero_tests {
             .and_then(|ip| ip.set_checksum(Ipv4Checksum::new(0xffff)));
     }
 
+    /// An all-wrong packet is refused and a repaired one is accepted.
+    ///
+    /// The RFC 5508 REQ-3 citations are on `net`'s
+    /// `only_the_icmp_and_embedded_ip_checksums_decide_an_icmp_error` rather than here, for two
+    /// reasons. `just spec-interlock` cannot check a citation whose implementation and test are in
+    /// different crates, and it says so rather than passing. And this test breaks every checksum at
+    /// once, which cannot distinguish a validator that checks too much from one that checks too
+    /// little -- which is the whole of REQ-3(c).
     #[test]
     fn test_checksum_validation() {
         let generator = IcmpErrorMsg {};
