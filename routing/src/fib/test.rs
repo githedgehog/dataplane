@@ -400,6 +400,52 @@ mod tests {
 
     // Tests fib reader utilities returning guards
     #[test]
+    fn ecmp_uses_the_whole_group_and_picks_the_same_entry_for_a_packet() {
+        let (mut fibw, fibr) = FibWriter::new(0);
+
+        let prefix = Prefix::from("192.168.1.0/24");
+        let nhkey = NhopKey::with_address(&IpAddr::from_str("7.0.0.1").unwrap());
+        let entries: Vec<FibEntry> = (1..=5)
+            .map(|i| build_fib_entry_egress(i, &format!("10.0.{i}.1")))
+            .collect();
+        let fibgroup = build_fibgroup(&entries);
+        fibw.register_fibgroup(&nhkey, &fibgroup, false);
+        fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
+        fibw.publish();
+
+        let mut chosen: HashMap<u16, FibEntry> = HashMap::new();
+        for port in 1024u16..1224 {
+            let mut packet = test_packet();
+            packet
+                .set_udp_destination_port(UdpPort::new_checked(port).unwrap())
+                .unwrap();
+            let (matched, entry) = fibr.lpm_entry_prefix(&packet).unwrap();
+            assert_eq!(matched, prefix);
+            assert!(
+                entries.contains(&entry),
+                "the selected entry is not in the group"
+            );
+            chosen.insert(port, (*entry).clone());
+        }
+
+        let distinct: HashSet<&FibEntry> = chosen.values().collect();
+        assert!(
+            distinct.len() > 1,
+            "every one of 200 flows took the same one of {} paths",
+            entries.len()
+        );
+
+        for (port, expected) in &chosen {
+            let mut packet = test_packet();
+            packet
+                .set_udp_destination_port(UdpPort::new_checked(*port).unwrap())
+                .unwrap();
+            let (_, entry) = fibr.lpm_entry_prefix(&packet).unwrap();
+            assert_eq!(&*entry, expected, "the entry chosen for port {port} moved");
+        }
+    }
+
+    #[test]
     fn test_fib_guards() {
         // create fib
         let (mut fibw, fibr) = FibWriter::new(0);
