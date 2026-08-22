@@ -180,6 +180,33 @@ Three smaller things that turned out to matter:
   `[conversation 1.1.0.0:1 -> 3.3.3.1:1 | request left as 2.2.0.0:1024]` rather than naming a line
   number in a loop.
 
+### Superposition needs no new oracle
+
+`interleaved::interleaved_conversations_are_each_satisfied` runs several conversations at once in an
+order the fuzzer chooses, and asserts nothing new. Each conversation already knows what it sent and
+therefore what must come back, so the joint claim is just "every one of them was satisfied". Nobody
+had to write down what N interleaved conversations should do, which is the entire argument for
+putting the oracle in the load.
+
+Two things the scheduler does that are worth copying:
+
+- **A burst draws from several loads, not one.** A real rx burst carries everybody's traffic at
+  once, and one-load-per-burst would never produce the shape that matters -- a reply for one
+  conversation in the same burst as a request from another. `mixed_polls` counts how many polls
+  actually drew from more than one load, because a schedule that happened not to would be the
+  single-conversation property in a costlier harness, passing.
+- **Drain the unfinished loads afterwards.** A conversation cut off mid-flight has checked nothing.
+  The schedule decides _when_ things happen; the drain makes sure they all eventually do.
+
+**`next` returning `None` while waiting has to be enforced by the load, and getting it wrong reads
+like a dataplane fault.** `Conversation` first advanced its state only when an answer arrived, so
+`next` would hand out a _second_ request while the first was in flight. A poll asking for two
+packets got the same request twice, and the second answer was judged as though it were the reply --
+surfacing as "the reply went back into the wrong vpc", which is exactly what a real misrouting would
+look like. The load now advances on emission, and an answer arriving in a state that is not waiting
+for one panics rather than being ignored. Silently ignoring it is what made a test bug wear a
+dataplane bug's clothes.
+
 ### Pay for diagnosis when something breaks, not before
 
 The bigger a harness gets, the harder its failures are to read, and the obvious answer -- record
