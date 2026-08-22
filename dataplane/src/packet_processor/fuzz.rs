@@ -34,10 +34,10 @@
 //!   `a_translated_flow_comes_back_to_where_it_started`. That is the claim this harness exists to
 //!   make: a one-line change in a different crate, in a stage that decides nothing by itself, is
 //!   caught because five stages have to agree for a flow to come back.
-//! - Reverting the `acl_filter` extension-header fix does **not** fail anything here. The
-//!   generated overlays carry no ACL rules, so no verdict depends on the protocol. An ACL
-//!   generator is the obvious next property, and until there is one this harness says nothing
-//!   about ACL correctness -- `acl_filter::nf_fuzz` does.
+//! - Reverting the `acl_filter` extension-header fix fails
+//!   `the_acl_verdict_follows_the_protocol_the_packet_carries`. That is the bypass itself, caught
+//!   at the altitude it lived at: a rule naming TCP, a TCP packet behind an extension header, and
+//!   a filter reading the protocol out of a field that names the extension.
 //!
 //! `every_shape_leaves_the_pipeline_with_a_verdict` is deliberately weak: it says a verdict was
 //! reached and attributed, not that it was right. It catches a lost packet, a panic, and a packet
@@ -57,9 +57,10 @@
 
 use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
 use concurrency::sync::Arc;
+use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
-    LOCAL_VNI, REMOTE_VNI, overlay_with_exposes,
+    LOCAL_VNI, REMOTE_VNI, overlay_with_exposes_and_acl,
 };
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
@@ -97,7 +98,12 @@ impl Fabric {
     /// validates and then cannot be lowered into tables, so that step is an `expect` rather than a
     /// `?`.
     pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
-        let overlay = overlay_with_exposes(exposes.to_vec())
+        Self::build_with_acl(exposes, None)
+    }
+
+    /// As [`Self::build`], with an ACL on the peering.
+    pub(crate) fn build_with_acl(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
             .ok()?
             .validate()
             .ok()?;
@@ -763,6 +769,339 @@ mod round_trip {
         assert!(
             round_tripped > 0,
             "no flow was ever forwarded, so nothing was ever checked to come back"
+        );
+    }
+}
+
+/// ACL verdicts, read at the end of the pipeline rather than at the filter.
+///
+/// The configuration is shaped so its answer is knowable without evaluating it: one rule, matching
+/// all of the peering's traffic in the request direction, discriminating only on protocol. The
+/// oracle is then "does this packet's protocol match the rule's", and the packet's protocol is
+/// known because the test built it -- not read back through the accessor the filter uses.
+///
+/// That narrowness is the point. The extension-header bypass was a stage reading the protocol out
+/// of a field that names something else, and no property whose oracle asks the same accessor the
+/// same question can see it.
+#[cfg(test)]
+mod acl {
+    use super::*;
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use config::external::overlay::acl::{AclAction, AclProtoMatch};
+    use config::external::overlay::vpcpeering::contract::{MasqueradeExposes, peering_acl};
+    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use net::headers::builder::ChainBase;
+    use net::headers::{Headers, TryIpv4Mut, TryIpv6Mut};
+    use net::ip::NextHeader;
+    use net::ipv4::UnicastIpv4Addr;
+    use net::ipv6::UnicastIpv6Addr;
+    use net::parse::DeParse;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const MAX_EXPOSES: u8 = 2;
+    const PACKETS_PER_FABRIC: usize = 12;
+
+    /// What the packet actually carries, and how it is wrapped.
+    ///
+    /// `behind_extension` is the whole reason this property exists: the protocol is the same, the
+    /// rule's answer must be the same, and the field a careless reader would look at is different.
+    #[derive(Debug, Clone, Copy, TypeGenerator)]
+    struct PacketSpec {
+        proto: Proto,
+        behind_extension: bool,
+        host: u8,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, TypeGenerator)]
+    enum Proto {
+        Tcp,
+        Udp,
+        Icmp,
+    }
+
+    impl Proto {
+        /// The rule shape that names this protocol.
+        fn as_match(self) -> AclProtoMatch {
+            match self {
+                Proto::Tcp => AclProtoMatch::Tcp,
+                Proto::Udp => AclProtoMatch::Udp,
+                // ICMP is not a first-class variant; it is matched by number, and the number
+                // differs by address family.
+                Proto::Icmp => AclProtoMatch::Other(NextHeader::ICMP.as_u8()),
+            }
+        }
+    }
+
+    /// Which protocol the generated rule names.
+    #[derive(Debug, Clone, Copy, TypeGenerator)]
+    enum RuleProto {
+        Tcp,
+        Udp,
+        Icmp,
+        Icmp6,
+        Any,
+    }
+
+    impl RuleProto {
+        fn as_match(self) -> AclProtoMatch {
+            match self {
+                RuleProto::Tcp => AclProtoMatch::Tcp,
+                RuleProto::Udp => AclProtoMatch::Udp,
+                RuleProto::Icmp => AclProtoMatch::Other(NextHeader::ICMP.as_u8()),
+                RuleProto::Icmp6 => AclProtoMatch::Other(NextHeader::ICMP6.as_u8()),
+                RuleProto::Any => AclProtoMatch::Any,
+            }
+        }
+    }
+
+    struct Batch;
+
+    impl ValueGenerator for Batch {
+        type Output = (Vec<VpcExpose>, bool, RuleProto, Vec<(PacketSpec, Headers)>);
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let exposes = MasqueradeExposes(MAX_EXPOSES).generate(driver)?;
+            // The packets have to be the family the exposes are, or they miss every table and the
+            // ACL is never consulted.
+            let v6 = exposes
+                .first()
+                .and_then(|e| e.ips.first())
+                .is_some_and(|p| p.prefix().as_address().is_ipv6());
+            let default_allow = driver.produce()?;
+            let rule_proto = RuleProto::generate(driver)?;
+            let mut packets = Vec::with_capacity(PACKETS_PER_FABRIC);
+            for _ in 0..PACKETS_PER_FABRIC {
+                let spec = PacketSpec::generate(driver)?;
+                packets.push((spec, stack(driver, spec, v6)?));
+            }
+            Some((exposes, default_allow, rule_proto, packets))
+        }
+    }
+
+    /// The protocol number a packet of this spec carries, in this address family.
+    fn carried(proto: Proto, v6: bool) -> AclProtoMatch {
+        match (proto, v6) {
+            (Proto::Icmp, true) => AclProtoMatch::Other(NextHeader::ICMP6.as_u8()),
+            (p, _) => p.as_match(),
+        }
+    }
+
+    /// Whether the generated rule matches a packet carrying `carried`.
+    fn rule_matches(rule: AclProtoMatch, carried: AclProtoMatch) -> bool {
+        matches!(rule, AclProtoMatch::Any) || rule == carried
+    }
+
+    /// Build a header stack carrying `proto`, optionally behind an extension header.
+    ///
+    /// Done in the generator because that is where a driver exists; the address family is decided
+    /// here too, since an IPv4 chain and an IPv6 chain are different types.
+    fn stack<D: Driver>(driver: &mut D, spec: PacketSpec, v6: bool) -> Option<Headers> {
+        if v6 {
+            let chain = ChainBase::new().eth(|_| {}).ipv6(|_| {});
+            if spec.behind_extension {
+                let chain = chain.hop_by_hop(|_| {});
+                match spec.proto {
+                    Proto::Tcp => chain.tcp(|_| {}).generate(driver),
+                    Proto::Udp => chain.udp(|_| {}).generate(driver),
+                    Proto::Icmp => chain.icmp6(|_| {}).generate(driver),
+                }
+            } else {
+                match spec.proto {
+                    Proto::Tcp => chain.tcp(|_| {}).generate(driver),
+                    Proto::Udp => chain.udp(|_| {}).generate(driver),
+                    Proto::Icmp => chain.icmp6(|_| {}).generate(driver),
+                }
+            }
+        } else {
+            let chain = ChainBase::new().eth(|_| {}).ipv4(|_| {});
+            if spec.behind_extension {
+                // RFC 4302 Authentication Header: an IPv4 packet whose protocol field names the
+                // extension rather than the transport, which is the v4 shape of the bug.
+                let chain = chain.ipv4_auth(|_| {});
+                match spec.proto {
+                    Proto::Tcp => chain.tcp(|_| {}).generate(driver),
+                    Proto::Udp => chain.udp(|_| {}).generate(driver),
+                    Proto::Icmp => chain.icmp4(|_| {}).generate(driver),
+                }
+            } else {
+                match spec.proto {
+                    Proto::Tcp => chain.tcp(|_| {}).generate(driver),
+                    Proto::Udp => chain.udp(|_| {}).generate(driver),
+                    Proto::Icmp => chain.icmp4(|_| {}).generate(driver),
+                }
+            }
+        }
+    }
+
+    fn wire(
+        headers: &Headers,
+        spec: PacketSpec,
+        src: IpAddr,
+        dst: IpAddr,
+    ) -> Option<Packet<TestBuffer>> {
+        let mut headers = headers.clone();
+        aim(&mut headers, src, dst, spec.host);
+        let mut buffer = TestBuffer::new();
+        headers.deparse(buffer.as_mut()).ok()?;
+        Packet::new(buffer).ok()
+    }
+
+    fn aim(headers: &mut Headers, src: IpAddr, dst: IpAddr, host: u8) {
+        match (src, dst) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => {
+                if let Some(ip) = headers.try_ipv4_mut() {
+                    let mut o = src.octets();
+                    o[3] = o[3].wrapping_add(host % 8);
+                    if let Ok(src) = UnicastIpv4Addr::new(Ipv4Addr::from(o)) {
+                        ip.set_source(src);
+                    }
+                    ip.set_destination(dst);
+                }
+            }
+            (IpAddr::V6(src), IpAddr::V6(dst)) => {
+                if let Some(ip) = headers.try_ipv6_mut() {
+                    let mut o = src.octets();
+                    o[15] = o[15].wrapping_add(host % 8);
+                    if let Ok(src) = UnicastIpv6Addr::new(Ipv6Addr::from(o)) {
+                        ip.set_source(src);
+                    }
+                    ip.set_destination(dst);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn peer(family_of: IpAddr) -> IpAddr {
+        match family_of {
+            IpAddr::V4(_) => IpAddr::V4(
+                "3.3.3.1"
+                    .parse::<Ipv4Addr>()
+                    .unwrap_or_else(|_| unreachable!()),
+            ),
+            IpAddr::V6(_) => IpAddr::V6(
+                "2001:db8:ffff::1"
+                    .parse::<Ipv6Addr>()
+                    .unwrap_or_else(|_| unreachable!()),
+            ),
+        }
+    }
+
+    /// A packet the ACL denies never leaves, and one it permits is never dropped by the ACL.
+    ///
+    /// Two one-way claims rather than "forwarded iff permitted", because the ACL is not the only
+    /// stage with an opinion and the ones ahead of it are allowed to have theirs. A generated
+    /// ICMP error whose embedded packet does not parse is refused by `IcmpErrorHandler` before the
+    /// ACL is consulted; a permitted packet can still fail to find a translation. Neither is the
+    /// ACL letting something through.
+    ///
+    /// So: the deny direction is stated as "not forwarded", which is what a bypass violates, and
+    /// the permit direction as "not `AclDropped`", which is what an over-strict filter violates.
+    /// The counters below then have to show that some denial actually came *from* the ACL --
+    /// otherwise a pipeline that dropped everything early would satisfy the deny direction
+    /// vacuously.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
+        static DENIED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PERMITTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static BEHIND_EXT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PERMITTED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DENIED_BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!().with_generator(Batch).for_each(
+            |(exposes, default_allow, rule_proto, packets)| {
+                let default = if *default_allow {
+                    AclAction::Allow
+                } else {
+                    AclAction::Deny
+                };
+                let rule = rule_proto.as_match();
+                let Some(mut fabric) =
+                    Fabric::build_with_acl(exposes, Some(&peering_acl(default, rule)))
+                else {
+                    return;
+                };
+                let Some(private) = exposes
+                    .iter()
+                    .flat_map(|e| e.ips.iter().map(PrefixWithOptionalPorts::prefix))
+                    .next()
+                    .map(|p: Prefix| p.as_address())
+                else {
+                    return;
+                };
+                let v6 = private.is_ipv6();
+                let dst = peer(private);
+
+                for (spec, headers) in packets {
+                    let Some(mut packet) = wire(headers, *spec, private, dst) else {
+                        continue;
+                    };
+                    arrive(&mut packet, local());
+                    let out = fabric.send(packet);
+
+                    let permitted = rule_matches(rule, carried(spec.proto, v6)) != *default_allow;
+                    if spec.behind_extension {
+                        BEHIND_EXT.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let seen = verdict(&out);
+                    let acl_dropped = seen == Verdict::Dropped(DoneReason::AclDropped);
+                    let forwarded = matches!(seen, Verdict::Forwarded { .. });
+                    if permitted {
+                        assert!(
+                            !acl_dropped,
+                            "the acl dropped a {:?} packet it permits (rule={rule:?} \
+                             default={default:?} behind_extension={})",
+                            spec.proto, spec.behind_extension
+                        );
+                        PERMITTED.fetch_add(1, Ordering::Relaxed);
+                        if forwarded {
+                            PERMITTED_OUT.fetch_add(1, Ordering::Relaxed);
+                        }
+                    } else {
+                        assert!(
+                            !forwarded,
+                            "a {:?} packet the acl denies was forwarded (rule={rule:?} \
+                             default={default:?} behind_extension={})",
+                            spec.proto, spec.behind_extension
+                        );
+                        DENIED.fetch_add(1, Ordering::Relaxed);
+                        if acl_dropped {
+                            DENIED_BY_ACL.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            },
+        );
+
+        let (permitted, permitted_out, denied, denied_by_acl, behind) = (
+            PERMITTED.load(Ordering::Relaxed),
+            PERMITTED_OUT.load(Ordering::Relaxed),
+            DENIED.load(Ordering::Relaxed),
+            DENIED_BY_ACL.load(Ordering::Relaxed),
+            BEHIND_EXT.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "permitted={permitted} (forwarded {permitted_out}) denied={denied} \
+             (by the acl {denied_by_acl}) behind-extension={behind}"
+        );
+        assert!(permitted > 0, "no packet was ever permitted");
+        assert!(denied > 0, "no packet was ever denied");
+        assert!(
+            permitted_out > 0,
+            "no permitted packet was ever forwarded: the permit direction is vacuous"
+        );
+        assert!(
+            denied_by_acl > 0,
+            "no denial ever came from the acl: the deny direction is being satisfied by stages \
+             ahead of it, and would hold with the acl removed"
+        );
+        assert!(
+            behind > 0,
+            "no packet was ever sent behind an extension header, which is the shape this exists for"
         );
     }
 }

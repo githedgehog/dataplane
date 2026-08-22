@@ -1142,9 +1142,13 @@ pub mod contract {
 
     use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
     use crate::ConfigError;
+    use crate::external::overlay::acl::{
+        Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    };
     use crate::external::overlay::vpc::{Vpc, VpcTable};
     use crate::external::overlay::{Overlay, ValidatedOverlay};
     use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::PrefixPortsSet;
     use lpm::prefix::{
         IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
     };
@@ -1732,6 +1736,61 @@ pub mod contract {
         ))?;
 
         Ok(Overlay::new(vpc_table, peerings))
+    }
+
+    /// An ACL over the peering that permits exactly one protocol in the request direction.
+    ///
+    /// Deliberately the simplest shape that constrains anything, because the point of an ACL in a
+    /// *pipeline* property is to have a verdict the test can predict without evaluating the ACL. A
+    /// generator rich enough to need an evaluator to predict would need that evaluator written a
+    /// second time, and a second copy of a decision procedure is the thing an oracle is supposed
+    /// to avoid being. `acl_filter`'s own generator is the rich one; it is aimed at lookup and
+    /// ordering, which are its to check.
+    ///
+    /// Empty `src`/`dst` mean "all traffic of the peering in this direction", so the only thing
+    /// the rule discriminates on is the protocol -- which is exactly the field a stage reading the
+    /// wrong header would get wrong.
+    #[must_use]
+    pub fn peering_acl(default: AclAction, allow: AclProtoMatch) -> Acl {
+        Acl::new(
+            default,
+            vec![AclRule {
+                name: "allow-one-protocol".to_owned(),
+                from: "VPC-1".to_owned(),
+                to: "VPC-2".to_owned(),
+                action: match default {
+                    AclAction::Allow => AclAction::Deny,
+                    AclAction::Deny => AclAction::Allow,
+                },
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: allow,
+                },
+                // Packet scope: a flow-scoped rule authorises replies by flow membership, which is
+                // a second thing to predict. The reply direction is not what this shape is for.
+                scope: AclScope::Packet,
+                log: false,
+            }],
+        )
+    }
+
+    /// As [`overlay_with_exposes`], with an ACL on the peering.
+    ///
+    /// # Errors
+    ///
+    /// As [`overlay_with_exposes`].
+    pub fn overlay_with_exposes_and_acl(
+        exposes: Vec<VpcExpose>,
+        acl: Option<&Acl>,
+    ) -> Result<Overlay, ConfigError> {
+        let mut overlay = overlay_with_exposes(exposes)?;
+        for peering in overlay.peering_table.values_mut() {
+            peering.acl = acl.cloned();
+        }
+        Ok(overlay)
     }
 
     /// Which NAT flavour a generated expose uses, for a caller that wants to branch on it.

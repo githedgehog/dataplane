@@ -52,6 +52,25 @@ second. Generating one configuration and a batch of packets for it -- the shape
 `nat::masquerade::fuzz` already uses -- brought that to 400, and bought something else: the stages
 share a flow table, so later packets in a batch meet the state earlier ones created.
 
+**An oracle has to be cheaper than the thing it checks.** The pipeline's ACL property generates a
+configuration whose verdict is knowable without evaluating it: one rule, matching all of the
+peering's traffic in one direction, discriminating only on protocol. Then the oracle is "does this
+packet's protocol match the rule's", and the protocol is known because the test _built_ the packet
+-- not read back through the accessor the filter uses, which is the accessor that was wrong.
+`acl_filter`'s own generator is much richer, and rightly so: ordering and lookup are its to check,
+and it has an evaluator to predict them. Reusing that evaluator here would have meant a second copy
+of the decision procedure, which is exactly what an oracle is supposed not to be. The shared piece
+is the _builder_, in `config`'s `contract` module next to the type, not the evaluator.
+
+**Expect the first version of an end-to-end oracle to be wrong about the other stages.** The ACL
+property first asserted that a denied packet is dropped _by the ACL_, and immediately failed on a
+generated ICMP error that `IcmpErrorHandler` refuses before the ACL is consulted -- correct
+behaviour, and no business of the ACL's. The fix is two one-way claims: a denied packet is not
+forwarded, which is what a bypass violates, and a permitted one is not `AclDropped`, which is what
+an over-strict filter violates. Weakening the deny direction that way costs something, so a counter
+requires that some denial actually came from the ACL; without it a pipeline that dropped everything
+early would satisfy the claim vacuously.
+
 **Say which kind of property you wrote.** The pipeline harness has one of each and the difference
 is load-bearing. `a_translated_flow_comes_back_to_where_it_started` is a _correctness_ property
 with a real oracle -- the reply is built from what came out, so nothing in the test knows what the
