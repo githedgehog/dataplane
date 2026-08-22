@@ -20,32 +20,15 @@ use dataplane_acl::reference::{Erased, RefRule, ReferenceTable};
 use dpdk::acl::{CategoryMask, Priority};
 use lookup::Lookup;
 use match_action::{
-    ExactSpec, FieldHit, FieldMiss, FixedSize, IsUniversal, MaskSpec, MatchKey, PrefixSpec,
-    RangeSpec,
+    ExactSpec, FieldHit, FieldMiss, IsUniversal, MaskSpec, MatchKey, PrefixSpec, RangeSpec,
 };
+use net::ip::IpAddress;
 
-mod sealed {
-    use core::net::{Ipv4Addr, Ipv6Addr};
-    pub trait Sealed {}
-    impl Sealed for Ipv4Addr {}
-    impl Sealed for Ipv6Addr {}
-}
-pub trait IpAddress:
-    FixedSize + sealed::Sealed + TypeGenerator + Copy + core::fmt::Debug + 'static + Send + Sync
-{
-    const BITS: u8;
-}
-
-impl IpAddress for Ipv4Addr {
-    const BITS: u8 = 32;
-}
-
-impl IpAddress for Ipv6Addr {
-    const BITS: u8 = 128;
-}
+trait KeyAddr: IpAddress + TypeGenerator {}
+impl<A: IpAddress + TypeGenerator> KeyAddr for A {}
 
 #[derive(MatchKey, Debug, Clone, Copy)]
-struct FiveTuple<A: IpAddress> {
+struct FiveTuple<A: KeyAddr> {
     #[exact]
     proto: u8,
     // A masked byte alongside the exact one: the flow-filter's keys rely on #[mask] for
@@ -84,7 +67,7 @@ fn minmax<T: Ord>(a: T, b: T) -> (T, T) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
-fn build_rule<A: IpAddress>(raw: &RawRule<A>) -> FiveTupleRule<A> {
+fn build_rule<A: KeyAddr>(raw: &RawRule<A>) -> FiveTupleRule<A> {
     let (sport_lo, sport_hi) = minmax(raw.sport_a, raw.sport_b);
     let (dport_lo, dport_hi) = minmax(raw.dport_a, raw.dport_b);
     let bits = u16::from(A::BITS) + 1;
@@ -100,11 +83,11 @@ fn build_rule<A: IpAddress>(raw: &RawRule<A>) -> FiveTupleRule<A> {
     }
 }
 
-struct HitsGen<A: IpAddress> {
+struct HitsGen<A: KeyAddr> {
     rule: FiveTupleRule<A>,
 }
 
-impl<A: IpAddress> ValueGenerator for HitsGen<A>
+impl<A: KeyAddr> ValueGenerator for HitsGen<A>
 where
     PrefixSpec<A>: FieldHit<A>,
 {
@@ -122,11 +105,11 @@ where
     }
 }
 
-struct MissesGen<A: IpAddress> {
+struct MissesGen<A: KeyAddr> {
     rule: FiveTupleRule<A>,
 }
 
-impl<A: IpAddress> ValueGenerator for MissesGen<A>
+impl<A: KeyAddr> ValueGenerator for MissesGen<A>
 where
     PrefixSpec<A>: FieldHit<A> + FieldMiss<A> + IsUniversal,
 {
@@ -232,7 +215,7 @@ fn run_property<A, T>(
     name_prefix: &str,
     install_dpdk: impl Fn(String, &FiveTupleRule<A>) -> T + core::panic::RefUnwindSafe,
 ) where
-    A: IpAddress,
+    A: KeyAddr,
     PrefixSpec<A>: FieldHit<A> + FieldMiss<A> + IsUniversal,
     T: Lookup<FiveTuple<A>, Verdict>,
     RawRule<A>: TypeGenerator,
