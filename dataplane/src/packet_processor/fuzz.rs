@@ -158,9 +158,19 @@ impl Fabric {
     }
 
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let mut out: Vec<_> = self.pipeline.process(std::iter::once(packet)).collect();
+        let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+
+    pub(crate) fn send_batch(
+        &mut self,
+        packets: Vec<Packet<TestBuffer>>,
+    ) -> Vec<Packet<TestBuffer>> {
+        let sent = packets.len();
+        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
+        assert_eq!(out.len(), sent, "the pipeline did not return every packet");
+        out
     }
 }
 
@@ -1148,6 +1158,139 @@ mod acl {
 }
 
 #[cfg(test)]
+mod burst {
+    use super::round_trip::udp;
+    use super::routed::{exposes, inside, tunnelled};
+    use super::*;
+    use net::headers::TryVxlan;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const BURST: usize = 8;
+
+    #[derive(Debug, Clone, Copy)]
+    struct Member {
+        host: u8,
+        dport: u16,
+    }
+
+    struct Burst;
+
+    impl bolero::ValueGenerator for Burst {
+        type Output = Vec<Member>;
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Vec<Member>> {
+            (0..BURST)
+                .map(|_| {
+                    Some(Member {
+                        host: driver.produce()?,
+                        dport: driver.produce::<u16>()?.max(1),
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("burst::Burst", &Burst);
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Treatment {
+        verdict: Verdict,
+        vni: Option<u32>,
+        inner_src: Option<IpAddr>,
+        inner_dst: Option<IpAddr>,
+        inner_sport: Option<u16>,
+    }
+
+    fn treatment(packet: &Packet<TestBuffer>) -> Treatment {
+        let carried = inside(packet);
+        Treatment {
+            verdict: verdict(packet),
+            vni: packet.try_vxlan().map(|v| v.vni().as_u32()),
+            inner_src: carried.as_ref().and_then(Packet::ip_source),
+            inner_dst: carried.as_ref().and_then(Packet::ip_destination),
+            inner_sport: carried
+                .as_ref()
+                .and_then(Packet::transport_src_port)
+                .map(std::num::NonZero::get),
+        }
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_burst_is_treated_the_same_as_one_packet_at_a_time() {
+        static COMPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Burst)
+            .for_each(|members| {
+                let packets = || {
+                    members
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| {
+                            let src: IpAddr = format!("1.1.{i}.{}", m.host)
+                                .parse()
+                                .unwrap_or_else(|_| unreachable!());
+                            let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                            udp(src, dst, 1024 + u16::try_from(i).unwrap_or(0), m.dport)
+                                .map(|p| tunnelled(&p))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                };
+                let (Some(singly), Some(together)) = (packets(), packets()) else {
+                    return;
+                };
+
+                let (Some(mut a), Some(mut b)) = (
+                    Fabric::routed(&exposes(), None),
+                    Fabric::routed(&exposes(), None),
+                ) else {
+                    return;
+                };
+
+                let one_at_a_time: Vec<_> =
+                    singly.into_iter().map(|p| treatment(&a.send(p))).collect();
+                let in_a_burst: Vec<_> = b.send_batch(together).iter().map(treatment).collect();
+
+                assert_eq!(
+                    one_at_a_time.len(),
+                    in_a_burst.len(),
+                    "a burst did not return as many packets as it was given"
+                );
+                for (i, (alone, batched)) in one_at_a_time.iter().zip(in_a_burst.iter()).enumerate()
+                {
+                    assert_eq!(
+                        alone, batched,
+                        "packet {i} of the burst was treated differently from the same packet \
+                         sent on its own"
+                    );
+                    COMPARED.fetch_add(1, Ordering::Relaxed);
+                    if matches!(alone.verdict, Verdict::Delivered { .. }) {
+                        DELIVERED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (compared, delivered) = (
+            COMPARED.load(Ordering::Relaxed),
+            DELIVERED.load(Ordering::Relaxed),
+        );
+        eprintln!("compared={compared} delivered={delivered}");
+        super::assert_covered(compared > 0, "no burst was ever compared");
+        super::assert_covered(
+            delivered > 0,
+            "no packet of any burst ever reached the wire, so the comparison is between drops",
+        );
+    }
+}
+
+#[cfg(test)]
 mod destination {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled};
@@ -1334,7 +1477,7 @@ mod routed {
         super::assert_within_budget("routed::Flows", &Flows);
     }
 
-    fn exposes() -> Vec<VpcExpose> {
+    pub(super) fn exposes() -> Vec<VpcExpose> {
         vec![
             VpcExpose::empty()
                 .make_masquerade(None)
