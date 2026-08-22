@@ -1,0 +1,34 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.4"
+
+# Address Mask Request/Reply Messages
+#
+#    Section 4.3.3.9 of [RFC1812] says an IP router MUST implement support
+#    for receiving ICMP Address Mask Request messages and responding with
+#    ICMP Address Mask Reply messages.  However, several years (more than
+#    13 years at the time of this document) have elapsed since the text in
+#    RFC 1812 was written.  In the intervening time, DHCP [DHCP] has
+#    replaced the use of address mask request/reply.  At the current time,
+# 
+#    there is rarely any host that does not meet host requirements
+#    [RFC1122] and needs a NAT device to support address mask
+#    request/reply.
+# 
+#    For this reason, a NAT device is not required to support this ICMP
+#    message.
+# 
+#    A NAT device MAY support address mask request/reply messages.
+
+[[spec]]
+level = "MUST"
+quote = '''
+Section 4.3.3.9 of [RFC1812] says an IP router MUST implement support
+for receiving ICMP Address Mask Request messages and responding with
+ICMP Address Mask Reply messages.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT device MAY support address mask request/reply messages.
+'''
+
