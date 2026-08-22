@@ -526,11 +526,17 @@ pub fn build_test_vxlan_ipv4_packet_with_outer_qos(
     dscp: Dscp,
     ecn: Ecn,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
-    // Inner ethernet frame bytes
     let inner = build_test_ipv4_packet(64).unwrap();
     let inner_buf = inner.serialize().unwrap();
-    let inner_bytes = inner_buf.as_ref();
+    build_test_vxlan_ipv4_packet_carrying(dscp, ecn, inner_buf.as_ref())
+}
 
+#[must_use]
+pub fn build_test_vxlan_ipv4_packet_carrying(
+    dscp: Dscp,
+    ecn: Ecn,
+    inner_bytes: &[u8],
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     // VXLAN header bytes
     let vni = Vni::new_checked(100).unwrap();
     let vxlan = Vxlan::new(vni);
@@ -567,17 +573,12 @@ pub fn build_test_vxlan_ipv4_packet_with_outer_qos(
     let headers = headers.build().unwrap();
 
     // Buffer: outer headers + vxlan bytes + inner bytes
-    let total_len = headers.size().get() as usize + udp_payload_len;
+    let total_len = headers.size().get() as usize + inner_bytes.len();
     let mut data = vec![0u8; total_len];
 
     headers.deparse(data.as_mut()).unwrap();
 
-    let hdr_off = headers.size().get() as usize;
-    vxlan
-        .deparse(&mut data[hdr_off..hdr_off + vxlan_len])
-        .unwrap();
-
-    let inner_off = hdr_off + vxlan_len;
+    let inner_off = headers.size().get() as usize;
     data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
 
     Packet::new(TestBuffer::from_raw_data(&data))
@@ -628,17 +629,12 @@ pub fn build_test_vxlan_ipv6_packet_with_outer_qos(
     headers.udp_encap(Some(UdpEncap::Vxlan(vxlan)));
     let headers = headers.build().unwrap();
 
-    let total_len = headers.size().get() as usize + udp_payload_len;
+    let total_len = headers.size().get() as usize + inner_bytes.len();
     let mut data = vec![0u8; total_len];
 
     headers.deparse(data.as_mut()).unwrap();
 
-    let hdr_off = headers.size().get() as usize;
-    vxlan
-        .deparse(&mut data[hdr_off..hdr_off + vxlan_len])
-        .unwrap();
-
-    let inner_off = hdr_off + vxlan_len;
+    let inner_off = headers.size().get() as usize;
     data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
 
     Packet::new(TestBuffer::from_raw_data(&data))
