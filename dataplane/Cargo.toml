@@ -58,11 +58,23 @@ vpcmap = { workspace = true }
 [dev-dependencies]
 clock = { workspace = true, features = ["virtual"] }
 # internal
-net = { workspace = true, features = ["test_buffer"] }
+# `config`'s generators are what lets the pipeline harness be driven by generated overlays rather
+# than by a handful of hand-written ones; `net`'s `builder` is what lets it be driven by generated
+# header stacks.
+config = { workspace = true, features = ["bolero"] }
+lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["bolero", "builder", "test_buffer"] }
 routing = { workspace = true, features = ["testing"] }
 
 # external
+bolero = { workspace = true, default-features = false, features = ["alloc"] }
 n-vm = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true, features = [] }
+
+# The flow filter's production classifier is rte_acl, so the pipeline harness needs the EAL to
+# build one -- which is the point of an end-to-end harness: it exercises the backend that ships.
+[target.'cfg(not(miri))'.dev-dependencies]
+dpdk = { workspace = true, features = ["test"] }
