@@ -20,7 +20,7 @@ use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::static_nat::NatTablesWriter;
 use nat::static_nat::setup::build_nat_configuration;
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
-use net::buffer::TestBuffer;
+use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -89,6 +89,10 @@ impl Fabric {
         if let Some(tables) = &tables {
             pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
             pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+            pipeline = pipeline.add_stage(Checkpoint::new(
+                "after ip-forward-1",
+                contract::decapsulated,
+            ));
         }
 
         pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
@@ -99,6 +103,7 @@ impl Fabric {
             FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
         );
         pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", flow_filter.get_reader()));
+        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
 
         let acl = AclFilterContextWriter::new();
         acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
@@ -130,6 +135,10 @@ impl Fabric {
             1,
             &flow_table,
         );
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            contract::ready_to_translate,
+        ));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),
@@ -143,6 +152,7 @@ impl Fabric {
                 tables.interfaces(),
                 tables.adjacencies(),
             ));
+            pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
         }
 
         Self {
@@ -278,6 +288,92 @@ fn assert_covered(covered: bool, what: &str) {
     );
 }
 
+pub(crate) struct Checkpoint<F> {
+    at: &'static str,
+    check: F,
+}
+
+impl<F> Checkpoint<F> {
+    pub(crate) fn new(at: &'static str, check: F) -> Self {
+        Self { at, check }
+    }
+}
+
+impl<Buf: PacketBufferMut, F: Fn(&str, &Packet<Buf>) + 'static> NetworkFunction<Buf>
+    for Checkpoint<F>
+{
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        input.inspect(move |packet| (self.check)(self.at, packet))
+    }
+}
+
+mod contract {
+    use super::*;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static JUDGED: LazyLock<[AtomicU64; 4]> =
+        LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+
+    pub(super) const DECAPSULATED: usize = 0;
+    pub(super) const PLACED: usize = 1;
+    pub(super) const READY: usize = 2;
+    pub(super) const FINISHED: usize = 3;
+
+    fn judged(which: usize) {
+        JUDGED[which].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn decapsulated<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().is_overlay() {
+            return;
+        }
+        judged(DECAPSULATED);
+        assert!(
+            packet.meta().src_vpcd.is_some(),
+            "{at}: overlay traffic with no source vpc discriminant"
+        );
+        assert!(
+            packet.meta().vrf.is_some(),
+            "{at}: overlay traffic with no vrf to route it in"
+        );
+    }
+
+    pub(super) fn placed<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().is_overlay() {
+            return;
+        }
+        judged(PLACED);
+        assert!(
+            packet.meta().dst_vpcd.is_some(),
+            "{at}: forwarded without a destination vpc: nothing chose where this packet goes"
+        );
+    }
+
+    pub(super) fn ready_to_translate<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().requires_masquerade() {
+            return;
+        }
+        judged(READY);
+        assert!(
+            packet.meta().src_vpcd.is_some() && packet.meta().dst_vpcd.is_some(),
+            "{at}: a packet is to be masqueraded without both discriminants, which masquerade \
+             itself calls a bug"
+        );
+    }
+
+    pub(super) fn finished<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        judged(FINISHED);
+        assert!(
+            packet.is_done(),
+            "{at}: a packet left the last stage of the pipeline without a verdict"
+        );
+    }
+}
+
 pub(crate) const UPLINK: u32 = 1;
 pub(crate) const LOCAL_VTEP: &str = "5.6.7.8";
 pub(crate) const PEER_VTEP: &str = "1.2.3.4";
@@ -376,6 +472,38 @@ mod smoke {
             .ip("1.1.0.0/16".parse::<Prefix>().unwrap().into())
             .as_range("2.2.0.0/16".parse::<Prefix>().unwrap().into())
             .unwrap()
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn every_contract_is_reached() {
+        use net::packet::test_utils::build_test_udp_ipv4_packet;
+
+        let before: Vec<u64> = contract::JUDGED
+            .iter()
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .collect();
+
+        let mut fabric = Fabric::routed(&routed::exposes(), None).expect("a valid configuration");
+        let inner = build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80);
+        let out = fabric.send(routed::tunnelled(&inner));
+        assert!(
+            matches!(verdict(&out), Verdict::Delivered { .. }),
+            "the fixture packet did not reach the wire: {:?}",
+            verdict(&out)
+        );
+
+        for (i, name) in ["decapsulated", "placed", "ready_to_translate", "finished"]
+            .iter()
+            .enumerate()
+        {
+            let after = contract::JUDGED[i].load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                after > before[i],
+                "the `{name}` contract judged no packet of an ordinary delivered flow: its guard \
+                 excuses everything, so it holds without ever having been evaluated"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1706,7 +1834,7 @@ mod routed {
     use super::round_trip::udp;
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
-    use net::buffer::TestBuffer;
+    use net::buffer::{PacketBufferMut, TestBuffer};
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::ip::dscp::Dscp;
     use net::ip::ecn::Ecn;
