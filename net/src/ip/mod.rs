@@ -64,6 +64,12 @@ impl NextHeader {
     /// IP Authentication Header (RFC 4302)
     pub const AUTH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
 
+    #[must_use]
+    #[allow(missing_docs)]
+    pub const fn is_ipv6_extension(self) -> bool {
+        matches!(self.as_u8(), 0 | 43 | 44 | 51 | 60)
+    }
+
     /// Generate a new [`NextHeader`]
     ///
     /// `const` so callers can build associated constants from it (see this type's `MaskBits`
