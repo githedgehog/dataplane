@@ -141,14 +141,21 @@ reached the wire without it and between 0 and 3 with it, so the guard failed int
 never sees this, because CI has no corpus. `assert_covered` in that module says so in the failure
 message; move `__fuzz__` aside and re-run to tell a corpus effect from a real gap.
 
-Pass `-j` to spread the campaign over more cores, which is the cheapest way to reach deeper:
+`just fuzz` spreads a campaign over half the machine's cores; set `FUZZ_JOBS` to change it. Workers
+are independent processes sharing one corpus directory, which is the cheapest way to reach deeper:
+on `routed::a_tagged_shape_never_reaches_the_wire`, 32 workers for four minutes reached 33797
+features against the 24247 a single worker managed, and grew the corpus from 145 entries to 367.
 
-```shell
-just fuzz 'some::module::tests::some_property' 10min -p some-package -j 60
-```
+What bounds this is memory rather than cores. A worker on the pipeline targets settles near 1.8 GB,
+because each initialises its own EAL and builds `rte_acl` tables; 32 of them is around 57 GB. The
+single-value targets cost a fraction of that and can take far more workers.
 
-Each worker then writes a `fuzz-<n>.log` into the directory you ran from, rather than into
-`__fuzz__`. Those are gitignored too, and are only worth reading when a run reports a crash.
+Parallel workers are safe for the EAL targets because `dpdk::test_support` starts the EAL with
+`--in-memory`, `--no-shconf` and a per-process `--file-prefix`. A target that took DPDK's defaults
+could not be run this way -- the processes would collide over shared memory.
+
+Each worker writes a `fuzz-<n>.log` into the directory you ran from, rather than into `__fuzz__`.
+Those are gitignored too, and are only worth reading when a run reports a crash.
 
 ### Input length, and a way to test less than you think
 

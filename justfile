@@ -61,6 +61,22 @@ features := ""
 # to the limit, so a limit above what any generator wants costs nothing.
 fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
 
+# How many libfuzzer workers `just fuzz` runs. Set FUZZ_JOBS to override.
+#
+# Half the machine. Workers are independent processes sharing one corpus directory, so this is the
+# cheapest way to reach deeper: on the whole-pipeline target, 32 workers for four minutes found 39%
+# more features than one worker could, and grew the corpus from 145 entries to 367.
+#
+# Memory is what bounds it, not cores. Each worker initialises its own EAL and builds rte_acl
+# tables, and on the pipeline targets settles near 1.8 GB -- so 32 of them is around 57 GB. Half the
+# machine is the setting that keeps that proportionate on a box sized for the build. The small
+# single-value targets cost a fraction of it and can take far more.
+#
+# Parallel workers are safe for the EAL targets specifically because `dpdk::test_support` starts
+# the EAL with `--in-memory --no-shconf` and a per-process `--file-prefix`, so nothing is shared
+# between them. A target that took the default EAL configuration could not be run this way.
+fuzz_jobs := env("FUZZ_JOBS", `echo $(( ($(nproc) + 1) / 2 ))`)
+
 # libfuzzer's `-len_control`, which we turn off. Set FUZZ_LEN_CONTROL to restore it.
 #
 # The default heuristic starts inputs at a handful of bytes and lengthens them only after coverage
@@ -226,6 +242,7 @@ fuzz target time="60s" *args="":
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
         -l '{{ fuzz_max_input_length }}' \
         -E='-len_control={{ fuzz_len_control }}' \
+        -j '{{ fuzz_jobs }}' \
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
