@@ -76,8 +76,7 @@ use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
 use config::GenId;
-use net::ip::IpAddress;
-use net::ip::NextHeader;
+use net::ip::{IpAddress, NextHeader, Unicast};
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display};
@@ -239,6 +238,62 @@ impl Display for Allocation {
     }
 }
 
+trait MasqueradePools: NatIpWithBitmap {
+    fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self>;
+    fn into_allocation(port: AllocatedPort<Self>) -> Allocation;
+}
+
+impl MasqueradePools for Ipv4Addr {
+    fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self> {
+        &allocator.pools_src44
+    }
+    fn into_allocation(port: AllocatedPort<Self>) -> Allocation {
+        Allocation::V4(port)
+    }
+}
+
+impl MasqueradePools for Ipv6Addr {
+    fn pools(allocator: &NatAllocator) -> &PoolTable<Self, Self> {
+        &allocator.pools_src66
+    }
+    fn into_allocation(port: AllocatedPort<Self>) -> Allocation {
+        Allocation::V6(port)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Reservation<Ip: IpAddress> {
+    private: Unicast<Ip>,
+    public: Ip,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AnyReservation {
+    V4(Reservation<Ipv4Addr>),
+    V6(Reservation<Ipv6Addr>),
+}
+
+impl AnyReservation {
+    pub(crate) fn new(private: IpAddr, public: IpAddr) -> Result<Self, AllocatorError> {
+        let unicast = |private: IpAddr| {
+            AllocatorError::InternalIssue(format!("private source {private} is not unicast"))
+        };
+        match (private, public) {
+            (IpAddr::V4(v4_private), IpAddr::V4(public)) => Ok(Self::V4(Reservation {
+                private: Unicast::<Ipv4Addr>::new(v4_private).map_err(|_| unicast(private))?,
+                public,
+            })),
+            (IpAddr::V6(v6_private), IpAddr::V6(public)) => Ok(Self::V6(Reservation {
+                private: Unicast::<Ipv6Addr>::new(v6_private).map_err(|_| unicast(private))?,
+                public,
+            })),
+            _ => Err(AllocatorError::InternalIssue(format!(
+                "IP version mismatch: src={private} allocated={public}"
+            ))),
+        }
+    }
+}
+
 /// [`NatAllocator`] is the IP addresses and ports allocator for masquerade.
 ///
 /// Internally, it contains various bitmap-based IP pools, and each IP address allocated from these
@@ -381,78 +436,47 @@ impl NatAllocator {
         })
     }
 
-    fn reserve_ipv4_port(
-        &self,
-        protocol: NextHeader,
-        src_vpcd: VpcDiscriminant,
-        dst_vpcd: VpcDiscriminant,
-        src_ip: Ipv4Addr,
-        ip: Ipv4Addr,
-        port: NatPort,
-    ) -> Result<AllocatedPort<Ipv4Addr>, AllocatorError> {
-        let Some(pool) = self
-            .pools_src44
-            .get_entry(protocol, src_vpcd, dst_vpcd, src_ip)
-        else {
-            warn!(
-                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{src_ip}"
-            );
-            return Err(AllocatorError::NoPoolFound);
-        };
-
-        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {src_ip}");
-        pool.reserve(ip, port)
-            .inspect_err(|e| error!("Failed to reserve ip {ip} port {port}: {e}"))
-    }
-    fn reserve_ipv6_port(
-        &self,
-        protocol: NextHeader,
-        src_vpcd: VpcDiscriminant,
-        dst_vpcd: VpcDiscriminant,
-        src_ip: Ipv6Addr,
-        ip: Ipv6Addr,
-        port: NatPort,
-    ) -> Result<AllocatedPort<Ipv6Addr>, AllocatorError> {
-        let Some(pool) = self
-            .pools_src66
-            .get_entry(protocol, src_vpcd, dst_vpcd, src_ip)
-        else {
-            warn!(
-                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{src_ip}"
-            );
-            return Err(AllocatorError::NoPoolFound);
-        };
-
-        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {src_ip}");
-        pool.reserve(ip, port)
-            .inspect_err(|e| error!("Failed to reserve ip {ip} port {port}: {e}"))
-    }
-    /// Re-reserve a specific IP and port in the new allocator during a config change
-    /// depending on the ip version of the address
     pub(crate) fn reserve_port(
         &self,
         protocol: NextHeader,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
-        src_ip: IpAddr,
-        ip: IpAddr,
+        reservation: AnyReservation,
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
-        debug!("Re-reserving {ip} {protocol}:{port}, src_vpcd:{src_vpcd} dst_vpcd:{dst_vpcd}");
-        let allocation = match (src_ip, ip) {
-            (IpAddr::V4(src), IpAddr::V4(allocated)) => self
-                .reserve_ipv4_port(protocol, src_vpcd, dst_vpcd, src, allocated, port)
-                .map(Allocation::V4)?,
-            (IpAddr::V6(src), IpAddr::V6(allocated)) => self
-                .reserve_ipv6_port(protocol, src_vpcd, dst_vpcd, src, allocated, port)
-                .map(Allocation::V6)?,
-            _ => {
-                return Err(AllocatorError::InternalIssue(format!(
-                    "IP version mismatch: src={src_ip} allocated={ip}"
-                )));
+        match reservation {
+            AnyReservation::V4(reservation) => {
+                self.reserve(protocol, src_vpcd, dst_vpcd, reservation, port)
             }
+            AnyReservation::V6(reservation) => {
+                self.reserve(protocol, src_vpcd, dst_vpcd, reservation, port)
+            }
+        }
+    }
+
+    fn reserve<I: MasqueradePools>(
+        &self,
+        protocol: NextHeader,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+        reservation: Reservation<I>,
+        port: NatPort,
+    ) -> Result<Allocation, AllocatorError> {
+        let Reservation { private, public } = reservation;
+        let private = private.into();
+        debug!("Re-reserving {public} {protocol}:{port}, src_vpcd:{src_vpcd} dst_vpcd:{dst_vpcd}");
+
+        let Some(pool) = I::pools(self).get_entry(protocol, src_vpcd, dst_vpcd, private) else {
+            warn!(
+                "No pool found for proto:{protocol} src-vpcd:{src_vpcd} dst-vpcd:{dst_vpcd} and src:{private}"
+            );
+            return Err(AllocatorError::NoPoolFound);
         };
-        Ok(allocation)
+
+        debug!("Pool found for {protocol} {src_vpcd} {dst_vpcd} {private}");
+        pool.reserve(public, port)
+            .inspect_err(|e| error!("Failed to reserve ip {public} port {port}: {e}"))
+            .map(I::into_allocation)
     }
 }
 
