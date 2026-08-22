@@ -20,7 +20,9 @@ use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
 use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
 use crate::rib::VrfTable;
-use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::rib::encapsulation::{
+    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
+};
 use crate::rib::nexthop::{FwAction, Nhop, NhopKey, NhopStore, Visited};
 use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
@@ -68,8 +70,26 @@ impl Display for VxlanEncapsulation {
             "Vxlan (vni {}), remote {}",
             self.vni.as_u32(),
             self.remote
-        )?;
-        fmt_opt_value(f, " dmac", self.dmac.as_ref(), false)
+        )
+    }
+}
+impl Display for ResolvedVxlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Vxlan (vni {}), remote {} dmac {}",
+            self.vni.as_u32(),
+            self.remote,
+            self.dmac
+        )
+    }
+}
+impl Display for ResolvedEncapsulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolvedEncapsulation::Vxlan(encap) => encap.fmt(f),
+            ResolvedEncapsulation::Mpls(label) => write!(f, "MPLS (label:{label})"),
+        }
     }
 }
 impl Display for Encapsulation {

@@ -15,22 +15,30 @@ pub type MplsLabel = u32;
 pub struct VxlanEncapsulation {
     pub vni: Vni,
     pub remote: IpAddr,
-    pub dmac: Option<Mac>,
 }
 
 impl VxlanEncapsulation {
     #[must_use]
     pub fn new(vni: Vni, remote: IpAddr) -> Self {
-        Self {
-            vni,
-            remote,
-            dmac: None,
-        }
+        Self { vni, remote }
     }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]
+pub struct ResolvedVxlan {
+    pub vni: Vni,
+    pub remote: IpAddr,
+    pub dmac: Mac,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]
 pub enum Encapsulation {
     Vxlan(VxlanEncapsulation),
+    Mpls(MplsLabel),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash, PartialOrd, Ord)]
+pub enum ResolvedEncapsulation {
+    Vxlan(ResolvedVxlan),
     Mpls(MplsLabel),
 }

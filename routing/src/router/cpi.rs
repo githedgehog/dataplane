@@ -501,6 +501,7 @@ pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: 
 #[cfg(test)]
 mod cpi_properties {
     use super::*;
+    use crate::ResolvedEncapsulation;
     use crate::atable::atablerw::AtableWriter;
     use crate::config::RouterConfig;
     use crate::evpn::RmacStore;
@@ -508,7 +509,6 @@ mod cpi_properties {
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::interfaces::tests::build_test_iftable;
-    use crate::rib::encapsulation::Encapsulation;
     use crate::rib::vrf::tests::{build_test_nhop, build_test_route};
     use crate::rib::vrf::{RouteOrigin, RouterVrfConfig, VrfStatus};
     use bolero::{Driver, ValueGenerator};
@@ -690,10 +690,10 @@ mod cpi_properties {
                 for entry in &after {
                     let mut instructions = entry.iter();
                     match instructions.next() {
-                        Some(PktInstruction::Encap(Encapsulation::Vxlan(vxlan))) => {
+                        Some(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))) => {
                             assert_eq!(vxlan.vni.as_u32(), OVERLAY_VNI, "vni in {entry:?}");
                             assert_eq!(vxlan.remote, vtep, "remote in {entry:?}");
-                            assert_eq!(vxlan.dmac, Some(expected_mac), "dmac in {entry:?}");
+                            assert_eq!(vxlan.dmac, expected_mac, "dmac in {entry:?}");
                         }
                         other => panic!("expected an encapsulation first, got {other:?}"),
                     }
