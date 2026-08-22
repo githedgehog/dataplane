@@ -177,6 +177,26 @@ impl IcmpErrorHandler {
         // if the problem is hardly recoverable. This expedites removing those flows, which would probably
         // be never hit again and, in case of masquerading, releases the allocated ports sooner.
         // This optimization is only applied if the `NatFlowStatus` is one-way.
+        //
+        // Both requirements below are unconditional, and RFC 5382's justification names the
+        // case this breaks by name: a remote NAT signalling a transient ICMP error during a
+        // TCP simultaneous-open. A one-way flow is exactly a handshake in progress, so the
+        // packet that says "try again" is the packet that removes the mapping to try again
+        // with. `path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it` in
+        // `masquerade::test` measures it: Fragmentation Needed is spared, Network
+        // Unreachable is not. Kept because port pressure is the failure this dataplane
+        // actually meets; recorded because a compliance report that calls it satisfied is
+        // worth less than no report.
+        //= https://www.rfc-editor.org/rfc/rfc5382#section-7.3
+        //= type=exception
+        //= reason=a hard ICMP error against a one-way flow releases its mapping so the ports return to the pool, which costs a TCP simultaneous-open that would have recovered
+        //# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+        //# NAT mapping or TCP connection for which the ICMP was generated.
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-9
+        //= type=exception
+        //= reason=see REQ-10 above; the same call terminates UDP and ICMP query mappings on a hard error
+        //# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+        //# NAT mapping.
         let embeds_query = embeds_icmp_query(packet);
         let (unrecoverable, reason) = is_icmp_unrecoverable(packet);
         let reason = reason.unwrap_or("unspecified");
