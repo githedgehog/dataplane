@@ -72,6 +72,31 @@ model better than absolute claims do.
 - Its cache model is a simplification of any real hierarchy, so cache-driven effects are exactly
   the ones to distrust.
 
+## The other valgrind tools, and where they lie
+
+The tool family is wired up in `fib_lookup_callgrind.rs`, so reaching for DHAT or massif is a
+two-line edit. Three things to know before doing that in a hurry.
+
+**Only callgrind scopes to the benchmark function.** Cachegrind has no call graph and counts the
+whole process: 453,358 instructions against callgrind's 349 for the same benchmark. Comparing the
+two tools' numbers without knowing that leads somewhere wildly wrong.
+
+**Cachegrind's cache geometry is a guess unless you hand it one.** It reads CPUID and gets L1
+right unaided; what it gets wrong is collapsing L2 and L3 into a single "LL" and guessing 8 MB
+against this host's 32 MB. It is given the real geometry here, which changed nothing, because the
+fixture never leaves L1 -- an argument for realistic fixture sizes rather than for tuning the
+model. The geometry in the file is this machine's, so it is a fixed reference point for
+comparability, not a description of wherever you are running.
+
+**Valgrind changes what DPDK executes.** This is the one that matters. It does not fall over on
+`rte_acl` -- the whole ACL suite runs, 39.5 billion instructions, no crash -- which is exactly
+what makes it dangerous. It reports a CPU it can emulate, so DPDK's runtime dispatch chose scalar
+and AVX2 and executed no AVX-512 at all, on a Zen 4 part that has it and would use
+`avx512x16`/`avx512x32` in production. That is not a modelling error to correct for; it is a
+measurement of a different function. Pointing callgrind at the `acl` benches is the obvious next
+step from here, and it is the step that produces plausible numbers for a CPU nobody is shipping
+to.
+
 ## Writing a benchmark that measures what you think
 
 Both benchmarks in this repository were wrong the first time, in ways that produced plausible
