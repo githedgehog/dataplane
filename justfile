@@ -5,6 +5,7 @@ set unstable := true
 set shell := ["/usr/bin/env", "bash", "-euo", "pipefail", "-c"]
 set script-interpreter := ["/usr/bin/env", "bash", "-euo", "pipefail"]
 
+mod bench
 mod ci
 mod miri
 
@@ -200,45 +201,6 @@ fuzz target time="60s" *args="":
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
-
-# Build and run the criterion benches. The rte_acl benches are gated behind the
-# `dpdk` feature, so run `just features=dpdk bench` to exercise them; a plain
-# `just bench` builds them as empty `main()` and only runs the reference benches.
-[script]
-bench: (build "benches")
-    {{ _just_debuggable_ }}
-    shopt -s nullglob
-    for bench in ./results/benches/bin/*; do "$bench" --bench; done
-
-# Run the iai-callgrind benches: instructions retired and modelled cache traffic, rather than
-# wall-clock. Bit-for-bit repeatable run to run, which is what makes them gateable in CI -- and
-# blind to anything that changes data layout rather than instruction count. Read
-# `development/code/benchmarking.md` before drawing a conclusion from one.
-#
-# Callgrind benches are named `*_callgrind`; add new ones to this list.
-[script]
-bench-callgrind *args:
-    {{ _just_debuggable_ }}
-    cargo bench -p dataplane-routing --bench fib_lookup_callgrind {{ args }}
-
-# Compare the callgrind benches against a baseline and print a markdown report.
-#
-# `just bench-compare` on its own records a baseline from the current tree and reports nothing to
-# compare against; run it once on the base commit and again on your branch. CI does exactly that,
-# both times on the same runner, which is what makes the comparison meaningful without anything
-# being stored between jobs.
-[script]
-bench-compare baseline="base" *args:
-    {{ _just_debuggable_ }}
-    mkdir -p results/bench
-    if [ -d "target/iai" ] && cargo bench -p dataplane-routing --bench fib_lookup_callgrind -- \
-        --baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl 2>/dev/null; then
-      ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
-    else
-      cargo bench -p dataplane-routing --bench fib_lookup_callgrind -- \
-        --save-baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
-      ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
-    fi
 
 [script]
 build-each *args: (build "workspace" args)
