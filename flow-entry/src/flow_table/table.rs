@@ -483,7 +483,6 @@ impl FlowTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
     use std::time::Duration;
 
     use concurrency::concurrency_mode;
@@ -491,7 +490,16 @@ mod tests {
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
 
+    use net::flows::flow_key::FlowAddrs;
+    use net::ipv4::UnicastIpv4Addr;
     use net::{FlowKey, IpProtoKey, TcpProtoKey};
+
+    fn v4_addrs(src: &str, dst: &str) -> FlowAddrs {
+        FlowAddrs::V4 {
+            src: UnicastIpv4Addr::new(src.parse().unwrap()).unwrap(),
+            dst: UnicastIpv4Addr::new(dst.parse().unwrap()).unwrap(),
+        }
+    }
 
     #[concurrency_mode(std)]
     mod std_tests {
@@ -509,8 +517,7 @@ mod tests {
             let flow_table = FlowTable::default();
             let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                "1.2.3.4".parse::<IpAddr>().unwrap(),
-                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                v4_addrs("1.2.3.4", "4.5.6.7"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -537,8 +544,7 @@ mod tests {
             let flow_table = FlowTable::default();
             let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
-                "10.0.0.1".parse::<IpAddr>().unwrap(),
-                "10.0.0.2".parse::<IpAddr>().unwrap(),
+                v4_addrs("10.0.0.1", "10.0.0.2"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1234).unwrap(),
                     dst_port: TcpPort::new_checked(5678).unwrap(),
@@ -569,8 +575,7 @@ mod tests {
             let flow_table = FlowTable::default();
             let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                "1.2.3.4".parse::<IpAddr>().unwrap(),
-                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                v4_addrs("1.2.3.4", "4.5.6.7"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -654,8 +659,7 @@ mod tests {
             for src_port in 1..=NUM_FLOWS {
                 let flow_key = FlowKey::new(
                     Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                    "1.2.3.4".parse::<IpAddr>().unwrap(),
-                    "4.5.6.7".parse::<IpAddr>().unwrap(),
+                    v4_addrs("1.2.3.4", "4.5.6.7"),
                     IpProtoKey::Tcp(TcpProtoKey {
                         src_port: TcpPort::new_checked(src_port).unwrap(),
                         dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -695,8 +699,7 @@ mod tests {
 
             let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                "1.2.3.4".parse::<IpAddr>().unwrap(),
-                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                v4_addrs("1.2.3.4", "4.5.6.7"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -718,8 +721,7 @@ mod tests {
         fn key_for(src_port: u16) -> FlowKey {
             FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                "1.2.3.4".parse::<IpAddr>().unwrap(),
-                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                v4_addrs("1.2.3.4", "4.5.6.7"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(src_port).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -848,8 +850,7 @@ mod tests {
             flow_table.set_capacity(2);
 
             let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
-            let src_ip: IpAddr = "1.2.3.4".parse().unwrap();
-            let dst_ip: IpAddr = "5.6.7.8".parse().unwrap();
+            let addrs = v4_addrs("1.2.3.4", "5.6.7.8");
             let far_future = clock::now() + Duration::from_hours(1);
 
             // Insert up to the capacity limit — both should succeed.
@@ -858,8 +859,7 @@ mod tests {
                 let dst_port = TcpPort::new_checked(80).unwrap();
                 let flow_key = FlowKey::new(
                     Some(src_vpcd),
-                    src_ip,
-                    dst_ip,
+                    addrs,
                     IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
                 );
                 flow_table
@@ -870,8 +870,7 @@ mod tests {
             // One more insert must fail with CapacityExceeded.
             let overflow_key = FlowKey::new(
                 Some(src_vpcd),
-                src_ip,
-                dst_ip,
+                addrs,
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(9999).unwrap(),
                     dst_port: TcpPort::new_checked(80).unwrap(),
@@ -1019,8 +1018,7 @@ mod tests {
             let five_seconds_from_now = clock::now() + Duration::from_secs(5);
             let flow_key1 = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                "1.2.3.4".parse::<IpAddr>().unwrap(),
-                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                v4_addrs("1.2.3.4", "4.5.6.7"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
@@ -1029,8 +1027,7 @@ mod tests {
 
             let flow_key2 = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(10).unwrap())),
-                "10.2.3.4".parse::<IpAddr>().unwrap(),
-                "40.5.6.7".parse::<IpAddr>().unwrap(),
+                v4_addrs("10.2.3.4", "40.5.6.7"),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
