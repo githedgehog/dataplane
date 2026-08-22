@@ -154,6 +154,17 @@ impl Fabric {
         ))
     }
 
+    /// As [`Self::routed_over`], for a caller that validated once and reuses the result.
+    ///
+    /// Validation is not cheap and a property that rebuilds a fabric per case would otherwise pay
+    /// for it every time, which at ten executions a second is most of the budget.
+    pub(crate) fn routed_over_validated(
+        overlay: &ValidatedOverlay,
+        tables: RouterTables,
+    ) -> Self {
+        Self::with_overlay(overlay, Some(tables))
+    }
+
     fn assemble(
         exposes: &[VpcExpose],
         acl: Option<&Acl>,
@@ -766,6 +777,159 @@ pub(crate) fn run_schedule(
         drive(fabric, load.as_mut());
     }
     bursts
+}
+
+/// Traffic a configuration says should work, derived from the configuration itself.
+///
+/// Every property before this aimed its packets by hand: `1.1.0.5`, `3.3.3.1`, ports chosen to suit
+/// the fixture. That works while the fixture is fixed and stops the moment it is not -- a generated
+/// configuration exposes prefixes nobody wrote down, and hand-aimed traffic would miss all of them
+/// and explore the drop path forever.
+///
+/// [`loads_for`] closes that: it walks what the configuration advertises and produces, for each
+/// expose, a sender carrying the traffic that expose exists to carry. Nothing in it names an
+/// address. When the configuration changes, the traffic follows.
+///
+/// It is deliberately not a model of the dataplane. It reads what the configuration *offers* --
+/// which prefixes, which ports, which direction -- and each load then judges only its own traffic
+/// against what it itself chose. Deciding what the dataplane should do with that traffic is still
+/// nobody's job here.
+#[cfg(test)]
+pub(crate) mod derive {
+    use super::routed::{Blast, Conversation, Inbound};
+    use super::*;
+    use config::external::overlay::ValidatedOverlay;
+    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+
+    /// How one sender should vary, drawn by the fuzzer and applied to whatever the config offers.
+    ///
+    /// Offsets rather than addresses: the configuration decides *where*, this decides *which one*.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Vary {
+        pub(crate) host: u8,
+        pub(crate) port: u8,
+        pub(crate) sport: u16,
+        pub(crate) dport: u16,
+        pub(crate) burst: u8,
+        pub(crate) blast: bool,
+    }
+
+    /// The first address of a prefix, offset by `n` within it.
+    ///
+    /// Stays inside the prefix by masking the offset to its host bits, so a drawn value can never
+    /// aim traffic at somebody else's range and turn a coverage question into a routing one.
+    fn host_in(prefix: Prefix, n: u8) -> Option<IpAddr> {
+        let full = if matches!(prefix.as_address(), IpAddr::V4(_)) {
+            32
+        } else {
+            128
+        };
+        let width = u32::from(full - prefix.length());
+        if width == 0 {
+            return Some(prefix.as_address());
+        }
+        let span = 1u128.checked_shl(width.min(7))?;
+        let offset = u128::from(n) % span;
+        match prefix.as_address() {
+            IpAddr::V4(base) => {
+                let raw = u32::from(base).checked_add(u32::try_from(offset).ok()?)?;
+                Some(IpAddr::V4(raw.into()))
+            }
+            IpAddr::V6(base) => {
+                let raw = u128::from(base).checked_add(offset)?;
+                Some(IpAddr::V6(raw.into()))
+            }
+        }
+    }
+
+    /// A port inside whatever range an expose declares for a prefix, or any port if it declares
+    /// none.
+    fn port_in(entry: &PrefixWithOptionalPorts, n: u8, fallback: u16) -> u16 {
+        entry.ports().map_or(fallback.max(1), |range| {
+            let span = u32::from(range.end()) - u32::from(range.start()) + 1;
+            let offset = u32::from(n) % span;
+            u16::try_from(u32::from(range.start()) + offset).unwrap_or(range.start())
+        })
+    }
+
+    /// Where the far side of a peering lives, as the configuration advertises it.
+    fn peer_of(peering: &config::external::overlay::vpc::ValidatedPeering, n: u8) -> Option<IpAddr> {
+        peering
+            .remote()
+            .valexp()
+            .iter()
+            .flat_map(|expose| expose.public_ips().into_iter())
+            .find_map(|entry| host_in(entry.prefix(), n))
+    }
+
+    /// One load per expose the configuration offers, carrying that expose's traffic.
+    ///
+    /// # Panics
+    ///
+    /// Never; an expose it cannot build traffic for is skipped, which is a gap in this function
+    /// rather than a defect in the configuration. [`unsupported`] counts them so the gap is
+    /// visible instead of silent.
+    pub(crate) fn loads_for(overlay: &ValidatedOverlay, vary: &[Vary]) -> Vec<Box<dyn Load>> {
+        let mut loads: Vec<Box<dyn Load>> = Vec::new();
+        let mut nth = 0usize;
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
+                for expose in peering.local().valexp() {
+                    let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
+                        continue;
+                    };
+                    nth += 1;
+                    let Some(peer) = peer_of(peering, v.host) else {
+                        continue;
+                    };
+
+                    if expose.has_port_forwarding() {
+                        // Reached from outside on the advertised tuple, expected to land on the
+                        // internal one at the same offset. Offset-preserving is the mapping the
+                        // configuration describes, and it is read off the two prefixes here
+                        // rather than looked up in the table the stage reads.
+                        let (Some(outside), Some(inside_entry)) = (
+                            expose.public_ips().into_iter().next(),
+                            expose.ips().into_iter().next(),
+                        ) else {
+                            continue;
+                        };
+                        let (Some(external), Some(internal)) = (
+                            host_in(outside.prefix(), v.host),
+                            host_in(inside_entry.prefix(), v.host),
+                        ) else {
+                            continue;
+                        };
+                        loads.push(Box::new(Inbound::new(
+                            peer,
+                            external,
+                            port_in(outside, v.port, v.dport),
+                            internal,
+                            port_in(inside_entry, v.port, v.dport),
+                            v.sport,
+                        )));
+                    } else if expose.has_masquerade() {
+                        // Opened from inside the vpc, towards whatever the far side advertises.
+                        let Some(src) = expose
+                            .ips()
+                            .into_iter()
+                            .next()
+                            .and_then(|entry| host_in(entry.prefix(), v.host))
+                        else {
+                            continue;
+                        };
+                        loads.push(if v.blast {
+                            Box::new(Blast::new(src, peer, v.sport, v.dport, v.burst))
+                        } else {
+                            Box::new(Conversation::new(src, peer, v.sport, v.dport))
+                                as Box<dyn Load>
+                        });
+                    }
+                }
+            }
+        }
+        loads
+    }
 }
 
 /// A stage that changes nothing and checks something.
@@ -2528,6 +2692,206 @@ mod interleaved {
     }
 }
 
+/// Whatever a configuration offers, working, and working all at once.
+///
+/// The step where the traffic stops being hand-aimed. Every property above names its addresses;
+/// this one is handed an overlay and asks [`derive::loads_for`] what traffic that overlay claims to
+/// carry, then runs all of it interleaved. Nothing in the property names an address, so a change to
+/// the configuration changes what is tested without anybody editing the test.
+///
+/// The configuration here is still fixed. Generating it is the next step and the one this exists to
+/// make possible: hand-aimed traffic against a generated config would miss every prefix and explore
+/// the drop path forever.
+#[cfg(test)]
+mod offers {
+    use super::derive::{Vary, loads_for};
+    use super::*;
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::overlay_with_exposes;
+    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
+    use std::ops::Bound::Included;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const SENDERS: usize = 6;
+    const POLLS: usize = 10;
+
+    /// A configuration offering two different things, so the derivation has to tell them apart.
+    ///
+    /// One masquerade expose -- traffic that opens from inside and is answered -- and one port
+    /// forwarding expose -- a service reached from outside. A configuration offering only one kind
+    /// would let `loads_for` be right by accident.
+    fn overlay() -> config::external::overlay::ValidatedOverlay {
+        let masquerade = VpcExpose::empty()
+            .make_masquerade(None)
+            .unwrap_or_else(|_| unreachable!())
+            .ip("1.1.0.0/16"
+                .parse::<Prefix>()
+                .unwrap_or_else(|_| unreachable!())
+                .into())
+            .as_range(
+                "2.2.0.0/16"
+                    .parse::<Prefix>()
+                    .unwrap_or_else(|_| unreachable!())
+                    .into(),
+            )
+            .unwrap_or_else(|_| unreachable!());
+
+        let forwarded = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Udp))
+            .unwrap_or_else(|_| unreachable!())
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.5.0/28"
+                    .parse::<Prefix>()
+                    .unwrap_or_else(|_| unreachable!()),
+                Some(PortRange::new(8000, 8007).unwrap_or_else(|_| unreachable!())),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "172.16.5.0/28"
+                    .parse::<Prefix>()
+                    .unwrap_or_else(|_| unreachable!()),
+                Some(PortRange::new(9000, 9007).unwrap_or_else(|_| unreachable!())),
+            ))
+            .unwrap_or_else(|_| unreachable!());
+
+        overlay_with_exposes(vec![masquerade, forwarded])
+            .unwrap_or_else(|e| unreachable!("the fixture does not assemble: {e}"))
+            .validate()
+            .unwrap_or_else(|e| unreachable!("the fixture does not validate: {e}"))
+    }
+
+    struct Offered;
+
+    impl bolero::ValueGenerator for Offered {
+        type Output = (Vec<Vary>, Vec<Poll>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let vary = (0..SENDERS)
+                .map(|_| {
+                    Some(Vary {
+                        host: driver.produce::<u8>()?,
+                        port: driver.produce::<u8>()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                        burst: driver.gen_u8(Included(&2), Included(&5))?,
+                        blast: driver.produce::<bool>()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            let schedule = (0..POLLS)
+                .map(|_| {
+                    let picks = driver.gen_u8(Included(&1), Included(&3))?;
+                    (0..picks)
+                        .map(|_| {
+                            Some(Pick {
+                                load: driver.produce::<u8>()?,
+                                take: driver.gen_u8(Included(&1), Included(&3))?,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some((vary, schedule))
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("offers::Offered", &Offered);
+    }
+
+    /// Everything a configuration offers works, and goes on working when run together.
+    ///
+    /// The guards are what stop this being weaker than the properties it generalises. A derivation
+    /// that produced no loads would pass; one that produced only masquerade loads would pass while
+    /// silently dropping the port-forwarding half; and a schedule that never mixed would be the
+    /// single-sender properties in a costlier harness. All three are counted.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_configuration_carries_everything_it_offers() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static OUTBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let overlay = overlay();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Offered)
+            .for_each(|(vary, schedule)| {
+                let mut fabric = Fabric::routed_over_validated(
+                    &overlay,
+                    topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]),
+                );
+
+                let mut loads = loads_for(&overlay, vary);
+                DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+                // Which kinds the derivation actually produced. Counting only the total would let
+                // a derivation that silently skipped an entire expose flavour pass, which is the
+                // most likely way for `loads_for` to be quietly wrong.
+                for load in &loads {
+                    if load.describe().starts_with("[inbound") {
+                        INBOUND.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        OUTBOUND.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                    let mut seen = burst.clone();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    if seen.len() > 1 {
+                        MIXED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                for load in &loads {
+                    if load.checked() {
+                        CHECKED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (checked, abandoned, derived, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+            DERIVED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        let (inbound, outbound) = (
+            INBOUND.load(Ordering::Relaxed),
+            OUTBOUND.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "checked={checked} abandoned={abandoned} derived={derived} \
+             (inbound {inbound}, outbound {outbound}) mixed-bursts={mixed}"
+        );
+        super::assert_covered(derived > 0, "the configuration implied no traffic at all");
+        super::assert_covered(
+            inbound > 0,
+            "the derivation produced no inbound traffic, so the port-forwarding expose this \
+             fixture carries was skipped rather than tested",
+        );
+        super::assert_covered(
+            outbound > 0,
+            "the derivation produced no outbound traffic, so the masquerade expose was skipped",
+        );
+        super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            mixed > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+    }
+}
+
 /// A burst, against the same packets sent one at a time.
 ///
 /// The driver hands the pipeline one bounded rx burst per poll, and `FlowFilter::process` collects
@@ -3650,6 +4014,168 @@ mod routed {
                 self.to_send,
                 self.in_flight,
                 self.delivered,
+                if self.log.is_empty() {
+                    "nothing yet".to_owned()
+                } else {
+                    self.log.join("; ")
+                }
+            )
+        }
+    }
+
+    /// A service reached from outside on a forwarded port, and its answer getting back out.
+    ///
+    /// The third load kind, and the only one whose traffic starts outside the fabric. Everything
+    /// else here opens from within a vpc and is answered; this arrives from the peer, is translated
+    /// inwards, and has to leave again under the address the outside host used.
+    pub(super) struct Inbound {
+        /// Where outside.
+        from: IpAddr,
+        /// The advertised address and port, which is what the outside host knows.
+        external: IpAddr,
+        external_port: u16,
+        /// Where it must land, which the test derives from the configuration's own offsets.
+        internal: IpAddr,
+        internal_port: u16,
+        sport: u16,
+        state: InboundState,
+        log: Vec<String>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum InboundState {
+        Reaching,
+        AwaitingArrival,
+        Answering,
+        AwaitingAnswer,
+        Closed,
+        Abandoned,
+    }
+
+    impl Inbound {
+        pub(super) fn new(
+            from: IpAddr,
+            external: IpAddr,
+            external_port: u16,
+            internal: IpAddr,
+            internal_port: u16,
+            sport: u16,
+        ) -> Self {
+            Self {
+                from,
+                external,
+                external_port,
+                internal,
+                internal_port,
+                sport,
+                state: InboundState::Reaching,
+                log: Vec::new(),
+            }
+        }
+
+        fn judge_arrival(&mut self, got: &Packet<TestBuffer>) {
+            if !matches!(verdict(got), Verdict::Delivered { .. }) {
+                self.log
+                    .push(format!("not forwarded: {:?}", verdict(got)));
+                self.state = InboundState::Abandoned;
+                return;
+            }
+            let arrived = inside(got).expect("a forwarded packet was not tunnelled");
+            assert_eq!(
+                arrived.ip_destination(),
+                Some(self.internal),
+                "reached the wrong host. {}",
+                self.describe()
+            );
+            assert_eq!(
+                arrived.transport_dst_port().map(std::num::NonZero::get),
+                Some(self.internal_port),
+                "reached the right host on the wrong port. {}",
+                self.describe()
+            );
+            self.log.push("arrived inside".to_owned());
+            self.state = InboundState::Answering;
+        }
+
+        fn judge_answer(&mut self, got: &Packet<TestBuffer>) {
+            assert!(
+                matches!(verdict(got), Verdict::Delivered { .. }),
+                "the service's answer did not get out: {:?}. {}",
+                verdict(got),
+                self.describe()
+            );
+            let answered = inside(got).expect("a delivered answer was not tunnelled");
+            assert_eq!(
+                answered.ip_source(),
+                Some(self.external),
+                "the answer was sourced from the internal address, which the outside host never \
+                 addressed. {}",
+                self.describe()
+            );
+            assert_eq!(
+                answered.transport_src_port().map(std::num::NonZero::get),
+                Some(self.external_port),
+                "the answer came from the right address on the wrong port. {}",
+                self.describe()
+            );
+            assert_eq!(
+                answered.ip_destination(),
+                Some(self.from),
+                "the answer did not reach the host that made the request. {}",
+                self.describe()
+            );
+            self.log.push("answered".to_owned());
+            self.state = InboundState::Closed;
+        }
+    }
+
+    impl Load for Inbound {
+        fn next(&mut self) -> Option<Packet<TestBuffer>> {
+            match self.state {
+                InboundState::Reaching => {
+                    let request =
+                        udp(self.from, self.external, self.sport, self.external_port)?;
+                    self.state = InboundState::AwaitingArrival;
+                    Some(tunnelled_from(vni(REMOTE_VNI), &request))
+                }
+                InboundState::Answering => {
+                    let answer =
+                        udp(self.internal, self.from, self.internal_port, self.sport)?;
+                    self.state = InboundState::AwaitingAnswer;
+                    Some(tunnelled_from(vni(LOCAL_VNI), &answer))
+                }
+                _ => None,
+            }
+        }
+
+        fn observe(&mut self, got: &Packet<TestBuffer>) {
+            match self.state {
+                InboundState::AwaitingArrival => self.judge_arrival(got),
+                InboundState::AwaitingAnswer => self.judge_answer(got),
+                ref state => panic!(
+                    "a load was given an answer it was not waiting for (state {state:?}). {}",
+                    self.describe()
+                ),
+            }
+        }
+
+        fn finished(&self) -> bool {
+            matches!(self.state, InboundState::Closed | InboundState::Abandoned)
+        }
+
+        fn checked(&self) -> bool {
+            self.state == InboundState::Closed
+        }
+
+        fn describe(&self) -> String {
+            format!(
+                "[inbound {}:{} -> {}:{} (expects {}:{}) | {}]",
+                self.from,
+                self.sport,
+                self.external,
+                self.external_port,
+                self.internal,
+                self.internal_port,
                 if self.log.is_empty() {
                     "nothing yet".to_owned()
                 } else {
