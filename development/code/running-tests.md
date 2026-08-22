@@ -127,6 +127,20 @@ code rather than sampling blindly.
 Findings are written to a `__fuzz__` directory beside the test. That directory is gitignored: the
 corpus is a local artifact that seeds later runs on the same machine, not something to commit.
 
+`just test` replays that corpus too, before it explores randomly, which is usually what you want --
+the entries are inputs that once reached somewhere new, so replaying them is regression coverage
+for free. It has one consequence worth knowing. A property with a coverage guard on it ("some
+packet was forwarded", "some flow came back") can start failing after a campaign, because a
+coverage-guided corpus is selected for the _unusual_: entries earn their place by reaching an edge
+nothing else reached, which in a pipeline means error paths. A large one eats the one-second budget
+before the random phase begins, and a run made entirely of interesting inputs can contain no
+ordinary ones at all.
+
+Measured on `routed::a_tagged_shape_never_reaches_the_wire` with a 146-entry corpus: 25 packets
+reached the wire without it and between 0 and 3 with it, so the guard failed intermittently. CI
+never sees this, because CI has no corpus. `assert_covered` in that module says so in the failure
+message; move `__fuzz__` aside and re-run to tell a corpus effect from a real gap.
+
 Pass `-j` to spread the campaign over more cores, which is the cheapest way to reach deeper:
 
 ```shell
@@ -135,6 +149,54 @@ just fuzz 'some::module::tests::some_property' 10min -p some-package -j 60
 
 Each worker then writes a `fuzz-<n>.log` into the directory you ran from, rather than into
 `__fuzz__`. Those are gitignored too, and are only worth reading when a run reports a crash.
+
+### Input length, and a way to test less than you think
+
+There are **two** limits on how many bytes a property gets, they are set in different places, and
+exceeding either fails silently.
+
+- **The engine's.** How long an input libfuzzer will build. `just fuzz` passes
+  `-l {{fuzz_max_input_length}}`, which defaults to 65536; libfuzzer's own default is 4096. Override
+  with `FUZZ_MAX_INPUT_LENGTH`.
+- **The driver's.** How much of that input `bolero` will read, set per property with
+  `.with_max_len(...)` and defaulting to 4096.
+
+Raising one without the other does nothing: the driver reads
+`min(its own limit, the input it was given)`.
+
+And raising both does nothing either, unless `-len_control` is off -- which is why `just fuzz`
+passes `-len_control=0` and why `FUZZ_LEN_CONTROL` exists to put it back. libfuzzer's default is to
+start inputs at a handful of bytes and lengthen them only once coverage stalls, on a schedule driven
+by execution count. That is right for a fuzzer whose input is a file. A bolero target's input is not
+a file, it is a tape of generator decisions, and a short tape is not a simpler case -- it is a
+truncated one.
+
+The effect is worst where a campaign is most expensive, because the schedule is measured in
+executions. `packet_processor::fuzz::routed::a_tagged_shape_never_reaches_the_wire` builds a
+pipeline per execution and manages about ten a second:
+
+| | runs | `cov` | `ft` | corpus | length limit reached |
+| --- | --- | --- | --- | --- | --- |
+| default `len_control`, 120s | 2330 | 13722 | 18655 | 72 / 315 B | **8 bytes** |
+| `-len_control=0`, 60s | 596 | 14467 | 24247 | 145 / 14218 B | 65536 |
+
+Two minutes of the default reached a length limit of eight bytes. Every input in that run was
+almost entirely zeros, at a nominal 2330 executions a lot of which were the same degenerate case.
+
+What makes this worth knowing is the failure mode. A generator that asks for more bytes than remain
+does not error and does not return `None` -- bolero's byte driver fills the shortfall with **zeros**
+and carries on. The property runs, passes, and reports a case; the tail of that case is a run of
+all-zero draws, which for most generators means one repeated default value. It looks like coverage.
+
+A single-value generator rarely gets near 4096. A batched one -- a configuration plus a batch of
+inputs drawn from the same bytes, which is how the pipeline properties amortise an expensive
+fixture -- gets there easily. `dataplane::packet_processor::fuzz`'s ACL batch wanted a median of
+3001 bytes and a maximum of 7272, so at the default more than half its inputs were being cut short,
+and the half being cut were the rich ones.
+
+If you write a batched generator, measure it. `assert_within_budget` in that module is the pattern:
+run the generator against a budget it cannot exhaust, take the largest draw, and fail if it is
+within a factor of two of the limit.
 
 ### Sanitizers
 

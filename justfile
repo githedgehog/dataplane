@@ -56,6 +56,34 @@ bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 # comma-separated list of cargo features to enable (e.g. "shuttle")
 features := ""
 
+# Longest input `just fuzz` lets libfuzzer build, in bytes.
+#
+# libfuzzer's own default is 4096, and a target whose generator wants more than that does not fail
+# -- bolero's driver fills the shortfall with zeros, so the tail of the input becomes a run of
+# default values that looks like coverage. The pipeline properties in
+# `dataplane::packet_processor::fuzz` draw a whole configuration plus a batch of header stacks from
+# one input and want up to ~7k of it; see MAX_INPUT_LEN there, which is the same limit on the
+# driver side and has to be raised with this.
+#
+# Generous rather than measured: libfuzzer grows input length from the corpus rather than jumping
+# to the limit, so a limit above what any generator wants costs nothing.
+fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
+
+# libfuzzer's `-len_control`, which we turn off. Set FUZZ_LEN_CONTROL to restore it.
+#
+# The default heuristic starts inputs at a handful of bytes and lengthens them only after coverage
+# stalls, on an executions-driven schedule. That is right for a fuzzer whose input is a file, where
+# a short input really is a simpler input. It is wrong for a bolero target, whose input is a tape of
+# generator decisions: a short tape is not a simpler case, it is a truncated one with zeros in the
+# tail, and the generator reports it as an ordinary case.
+#
+# It is worst exactly where a campaign is most expensive. Measured on
+# `packet_processor::fuzz::routed::a_tagged_shape_never_reaches_the_wire`, which manages ~19
+# executions a second because each one builds a pipeline: two minutes of the default reached a
+# length limit of 8 bytes, so every input was almost entirely zeros. The same target with
+# `-len_control=0` reached 745 more edges and 30% more features in half the time.
+fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
+
 # whether to include default cargo features for this workspace (set to "false" to disable)
 default_features := "true"
 
@@ -202,6 +230,8 @@ fuzz target time="60s" *args="":
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        -l '{{ fuzz_max_input_length }}' \
+        -E='-len_control={{ fuzz_len_control }}' \
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
