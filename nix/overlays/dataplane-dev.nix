@@ -25,6 +25,16 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  # The runner binary and the `iai-callgrind` crate must be the same version: a mismatch is a
+  # hard error at bench time, not a degraded run, and no CI job runs a bench -- so it would
+  # surface months later on a developer's machine as what looks like a broken dev shell. Read
+  # the version rather than restate it, so `cargo upgrade` and dependabot move both halves.
+  iai-callgrind-runner = final.callPackage ../pkgs/iai-callgrind-runner {
+    inherit (override-packages) rustPlatform;
+    version =
+      (builtins.fromTOML (builtins.readFile ../../Cargo.toml))
+      .workspace.dependencies.iai-callgrind.version;
+  };
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
