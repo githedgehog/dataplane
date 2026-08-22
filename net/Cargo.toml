@@ -12,6 +12,10 @@ netdevsim = []
 
 bolero = ["dep:bolero", "id/bolero"]
 test_buffer = []
+# A single `Option<Box<TestMeta>>` on `PacketMeta`, so a test can recognise a packet across
+# pipeline stages. Not `cfg(test)`: that is unset for this crate when a *dependent* crate's tests
+# are what need it.
+test_meta = []
 builder = []
 
 [target.'cfg(unix)'.dependencies]
