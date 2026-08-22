@@ -606,9 +606,16 @@ impl Icmp4 {
         })
     }
 
+    /// Whether this message type may carry an ICMP Extension Structure, and so whether the octet
+    /// [`Self::payload_length`] reads is a length attribute at all.
+    ///
+    /// Parameter Problem is on the `ICMPv4` list and off the `ICMPv6` one; see
+    /// [`crate::icmp6::Icmp6::supports_extensions`] for why.
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4.6
+    //# The ICMP Extension Structure MUST NOT be appended to any of the other
+    //# ICMP messages mentioned in Section 4.
     #[must_use]
     pub(crate) fn supports_extensions(&self) -> bool {
-        // See RFC 4884. Redirect does not get an optional length field.
         matches!(
             self.icmp_type(),
             Icmp4Type::DestUnreachable(_) | Icmp4Type::TimeExceeded(_) | Icmp4Type::ParamProblem(_)
@@ -1131,6 +1138,87 @@ mod test {
     use crate::icmp4::{Icmp4, Icmp4Type};
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse};
     use etherparse::Icmpv4Header;
+
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4.6
+    //= type=test
+    //# The ICMP Extension Structure MUST NOT be appended to any of the other
+    //# ICMP messages mentioned in Section 4.
+    /// The `ICMPv4` types that may carry an extension structure, and the ones that may not.
+    ///
+    /// The counterpart of `only_two_icmpv6_types_can_carry_an_extension_structure`, and the
+    /// citation needs both: RFC 4884 gives one list per family and they differ, so a test of
+    /// either one alone says nothing about the other. That is how Parameter Problem came to be on
+    /// the IPv6 list.
+    #[test]
+    fn only_three_icmpv4_types_can_carry_an_extension_structure() {
+        use etherparse::{Icmpv4Type, icmpv4};
+
+        fn icmp4(icmp_type: Icmpv4Type) -> Icmp4 {
+            Icmp4(Icmpv4Header {
+                icmp_type,
+                checksum: 0,
+            })
+        }
+
+        assert!(
+            icmp4(Icmpv4Type::DestinationUnreachable(
+                icmpv4::DestUnreachableHeader::Network
+            ))
+            .supports_extensions()
+        );
+        assert!(
+            icmp4(Icmpv4Type::TimeExceeded(
+                icmpv4::TimeExceededCode::TtlExceededInTransit
+            ))
+            .supports_extensions()
+        );
+        assert!(
+            icmp4(Icmpv4Type::ParameterProblem(
+                icmpv4::ParameterProblemHeader::PointerIndicatesError(4)
+            ))
+            .supports_extensions(),
+            "unlike ICMPv6, ICMPv4 Parameter Problem does carry a length attribute"
+        );
+
+        assert!(
+            !icmp4(Icmpv4Type::EchoRequest(etherparse::IcmpEchoHeader {
+                id: 1,
+                seq: 1
+            }))
+            .supports_extensions()
+        );
+        assert!(
+            !icmp4(Icmpv4Type::Redirect(icmpv4::RedirectHeader {
+                code: icmpv4::RedirectCode::RedirectForNetwork,
+                gateway_internet_address: [10, 0, 0, 1],
+            }))
+            .supports_extensions()
+        );
+    }
+
+    /// The length attribute counts 32-bit words for `ICMPv4`, and lives at octet 5.
+    ///
+    /// The `ICMPv6` counterpart uses octet 4 and 64-bit words; see
+    /// `the_icmpv6_length_attribute_counts_64_bit_words`.
+    #[test]
+    fn the_icmpv4_length_attribute_counts_32_bit_words() {
+        use etherparse::{Icmpv4Type, icmpv4};
+
+        let unreachable = Icmp4(Icmpv4Header {
+            icmp_type: Icmpv4Type::DestinationUnreachable(icmpv4::DestUnreachableHeader::Network),
+            checksum: 0,
+        });
+        let mut buf = [0u8; 8];
+        buf[4] = 200;
+        buf[5] = 17;
+        assert_eq!(unreachable.payload_length(&buf), 17 * 4);
+
+        let echo = Icmp4(Icmpv4Header {
+            icmp_type: Icmpv4Type::EchoRequest(etherparse::IcmpEchoHeader { id: 1, seq: 1 }),
+            checksum: 0,
+        });
+        assert_eq!(echo.payload_length(&buf), 0);
+    }
 
     /// A redirect with a multicast gateway should be treated as unknown
     /// ICMP, since RFC 1122 section 3.2.2.2 requires unicast.
