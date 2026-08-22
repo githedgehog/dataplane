@@ -189,6 +189,7 @@ let
       rust-toolchain
       shellcheck
       skopeo
+      static-web-server
       valgrind
       wasmtime
       wget
