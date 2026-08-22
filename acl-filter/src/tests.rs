@@ -1280,3 +1280,77 @@ fn an_extension_header_does_not_evade_a_protocol_rule() {
         "a Hop-by-Hop header carried TCP past a rule denying TCP"
     );
 }
+
+/// A header chain longer than the parser will walk is not classified as some plausible protocol.
+///
+/// `MAX_NET_EXTENSIONS` is 3, and the parse stops at the fourth extension header -- so the
+/// transport is never reached and there is nothing to match a protocol rule against. Guessing
+/// would reproduce the evasion this test's sibling closes, one header further out, so
+/// `upper_layer_proto` reports that it does not know and the filter drops.
+///
+/// Built as bytes because the header builder caps at `MAX_NET_EXTENSIONS`: the case exists only
+/// on the wire, which is the only place an attacker writes.
+#[test]
+fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
+    const HOP_BY_HOP: u8 = 0;
+    const TCP: u8 = 6;
+
+    // Four minimal Hop-by-Hop headers: next-header, length in 8-octet units beyond the first
+    // eight (so zero), then six octets of Pad6.
+    let mut chain = Vec::new();
+    for i in 0..4 {
+        let next = if i == 3 { TCP } else { HOP_BY_HOP };
+        chain.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]);
+    }
+
+    let mut tcp = vec![0u8; 20];
+    tcp[0..2].copy_from_slice(&1234u16.to_be_bytes());
+    tcp[2..4].copy_from_slice(&80u16.to_be_bytes());
+    tcp[12] = 0x50; // data offset 5, no flags set beyond the header length
+    tcp[13] = 0x02; // SYN
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]); // destination MAC
+    bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]); // source MAC
+    bytes.extend_from_slice(&0x86DDu16.to_be_bytes()); // IPv6
+    bytes.extend_from_slice(&[0x60, 0, 0, 0]); // version 6, no traffic class or flow label
+    #[allow(clippy::cast_possible_truncation)]
+    bytes.extend_from_slice(&((chain.len() + tcp.len()) as u16).to_be_bytes());
+    bytes.push(HOP_BY_HOP);
+    bytes.push(64); // hop limit
+    bytes.extend_from_slice(&v6("2001:db8::5").octets());
+    bytes.extend_from_slice(&v6("2001:db9::5").octets());
+    bytes.extend_from_slice(&chain);
+    bytes.extend_from_slice(&tcp);
+
+    let mut buffer = TestBuffer::from_raw_data(&bytes);
+    let mut over_limit = Packet::new(buffer.clone()).unwrap();
+    assert_eq!(
+        over_limit.upper_layer_proto(),
+        None,
+        "the parser stopped mid-chain but a protocol was reported anyway"
+    );
+    let _ = &mut buffer;
+
+    over_limit.meta_mut().set_overlay(true);
+    over_limit.meta_mut().src_vpcd = Some(vpcd(VNI1));
+    over_limit.meta_mut().dst_vpcd = Some(vpcd(VNI2));
+
+    // An ACL that permits everything it can classify. The packet is dropped because it cannot be
+    // classified, not because a rule said so.
+    let acl = Acl::new(
+        AclAction::Allow,
+        vec![rule(
+            "allow-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS_V6], &[V2_IPS_V6], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter(V1_IPS_V6, V2_IPS_V6, Some(acl));
+    let out = run(&mut filter, over_limit);
+    assert!(
+        out.is_done(),
+        "a packet whose header chain was never fully read went through"
+    );
+}
