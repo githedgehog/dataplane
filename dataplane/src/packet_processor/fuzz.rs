@@ -167,7 +167,7 @@ impl Fabric {
     }
 
     fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
-        let translations = Arc::new(Mutex::new(Translations::default()));
+        let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
         let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
@@ -493,8 +493,12 @@ fn assert_covered(covered: bool, what: &str) {
 pub(crate) struct Translations {
     /// The flow each packet belonged to before masquerade rewrote it.
     was: std::collections::HashMap<u64, net::FlowKey>,
+    /// The source each packet had before masquerade, so a rewrite can be recognised as one.
+    from: std::collections::HashMap<u64, IpAddr>,
     /// The public tuple each of those flows has been given in this burst.
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
+    /// Every address range the configuration declares as public. See [`Translations::after`].
+    declared: Vec<Prefix>,
 }
 
 #[cfg(test)]
@@ -509,6 +513,9 @@ impl Translations {
             return;
         };
         self.was.insert(test.id, key);
+        if let Some(source) = packet.ip_source() {
+            self.from.insert(test.id, source);
+        }
     }
 
     /// One flow gets one public tuple, however many of its packets are in the burst.
@@ -543,11 +550,66 @@ impl Translations {
                  so the burst allocated more than once for it"
             );
         }
+
+        // A source this stage changed must be one the configuration says it may hand out.
+        //
+        // Stated as "changed" rather than "is in the pool" because masquerade is not always
+        // rewriting the source: on the return path it puts the destination back and leaves the
+        // source, which belongs to the far side and is in no pool of ours. A contract phrased the
+        // other way would fail on correct reply traffic. Earlier stages that rewrite a source --
+        // static nat, and port forwarding on its reverse path -- run ahead of the checkpoint that
+        // records `from`, so what is compared here is masquerade's own doing and nothing else's.
+        //
+        // Reading the ranges out of the configuration is not the allocator's decision procedure
+        // written twice: choosing *which* address and port is the allocator's job, and all this
+        // asks is that the answer lie in a set the configuration named. A pool built from the
+        // wrong prefix, or an allocator handing out an address it does not own, fails it.
+        //
+        // The limit is that "named" means named *anywhere* in the configuration, so this does not
+        // catch one peering's range being handed to another peering's traffic. Narrowing it to the
+        // peering the packet belongs to would mean resolving that peering here, which is the flow
+        // filter's decision procedure -- and `destination::a_packet_leaves_for_the_vpc_that_
+        // exposes_its_destination` is what covers the misrouting this would otherwise catch.
+        //
+        // It stays reachable because `smoke::the_harness_builds_a_pipeline_that_translates`
+        // asserts the fixture masquerades at all; a pipeline that quietly stopped rewriting
+        // sources would fail there rather than leave this silently judging nothing.
+        if self.from.get(&test.id).is_some_and(|before| *before != source) {
+            assert!(
+                self.declared.iter().any(|p| p.covers_addr(&source)),
+                "{at}: masquerade rewrote a source to {source}, which no declared public range \
+                 covers"
+            );
+        }
     }
 
     fn clear(&mut self) {
         self.was.clear();
+        self.from.clear();
         self.given.clear();
+    }
+
+    /// The public ranges of every expose in the configuration, in both directions of every peering.
+    fn declaring(overlay: &ValidatedOverlay) -> Self {
+        let mut declared = Vec::new();
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
+                for manifest in [peering.local(), peering.remote()] {
+                    for expose in manifest.valexp() {
+                        declared.extend(
+                            expose
+                                .public_ips()
+                                .into_iter()
+                                .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
+                        );
+                    }
+                }
+            }
+        }
+        Self {
+            declared,
+            ..Self::default()
+        }
     }
 }
 
