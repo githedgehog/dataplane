@@ -25,6 +25,11 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  # Keep in step with the `iai-callgrind` version in `Cargo.toml`; see the package's comment.
+  iai-callgrind-runner = final.callPackage ../pkgs/iai-callgrind-runner {
+    inherit (override-packages) rustPlatform;
+    version = "0.16.1";
+  };
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
