@@ -3,7 +3,7 @@
 
 //! Module that contains definitions and methods for fib objects
 
-use crate::rib::encapsulation::Encapsulation;
+use crate::rib::encapsulation::ResolvedEncapsulation;
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::net::IpAddr;
@@ -218,7 +218,7 @@ impl FibEntry {
     #[must_use]
     pub fn is_vxlan(&self) -> Option<Vni> {
         for inst in &self.instructions {
-            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
+            if let PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan)) = inst {
                 return Some(vxlan.vni);
             }
         }
@@ -227,7 +227,7 @@ impl FibEntry {
     #[must_use]
     pub fn is_vxlan_with_vni(&self, vni: Vni) -> bool {
         for inst in &self.instructions {
-            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
+            if let PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan)) = inst {
                 return vxlan.vni == vni;
             }
         }
@@ -242,16 +242,17 @@ impl FibEntry {
 pub enum PktInstruction {
     #[default]
     Drop, /* drop the packet */
-    Local(InterfaceIndex), /* packet is destined to gw */
-    Encap(Encapsulation),  /* encapsulate the packet */
-    Egress(EgressObject),  /* send the packet over interface to some ip */
+    Local(InterfaceIndex),
+    Encap(ResolvedEncapsulation),
+    Egress(EgressObject),
 }
 
 #[cfg(test)]
 mod squash_properties {
     use super::*;
-    use crate::rib::encapsulation::VxlanEncapsulation;
+    use crate::rib::encapsulation::ResolvedVxlan;
     use bolero::{Driver, ValueGenerator};
+    use net::eth::mac::Mac;
     use std::net::Ipv4Addr;
     use std::num::NonZero;
     use std::ops::Bound::Included;
@@ -283,11 +284,12 @@ mod squash_properties {
         Some(match driver.gen_u8(Included(&0), Included(&3))? {
             0 => PktInstruction::Local(index(driver.gen_u8(Included(&1), Included(&3))?)),
             1 => PktInstruction::Drop,
-            2 => PktInstruction::Encap(Encapsulation::Vxlan(VxlanEncapsulation::new(
-                Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
+            2 => PktInstruction::Encap(ResolvedEncapsulation::Vxlan(ResolvedVxlan {
+                vni: Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
                     .unwrap_or_else(|_| unreachable!()),
-                ADDRESSES[0],
-            ))),
+                remote: ADDRESSES[0],
+                dmac: Mac::from([0x02, 0, 0, 0, 0, 1]),
+            })),
             _ => PktInstruction::Egress(egress(driver)?),
         })
     }
