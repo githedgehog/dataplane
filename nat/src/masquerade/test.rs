@@ -30,6 +30,7 @@ use net::headers::{
 use net::icmp4::TruncatedIcmp4;
 use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::ip::NextHeader;
+use net::packet::test_utils::build_test_ipv6_packet_with_transport;
 use net::packet::test_utils::build_test_tcp_ipv4_packet;
 use net::packet::test_utils::{
     IcmpEchoDirection, IcmpErrorAddrs, build_test_icmp4_destination_unreachable_packet,
@@ -43,7 +44,7 @@ use net::vxlan::Vni;
 use net::{FlowKey, IpProtoKey, UdpProtoKey};
 use pipeline::DynPipeline;
 use pipeline::NetworkFunction;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::time::Duration;
 use tracectl::get_trace_ctl;
@@ -316,6 +317,32 @@ fn build_overlay_2vpcs() -> Overlay {
 }
 
 // identical to build_overlay_2vpcs() but masquerading with 4.4.0.0/16
+// The IPv6 counterpart of `build_overlay_2vpcs`. Masquerade's pools are generic over the address
+// family and `build_pool66` is a full mirror of `build_pool44`, so nothing here is a special case
+// -- which is exactly why the family had no test.
+fn build_overlay_2vpcs_v6() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+
+    let expose121 = VpcExpose::empty()
+        .make_masquerade(None)
+        .unwrap()
+        .ip("2001:db8:1::/48".into())
+        .as_range("2001:db8:2::/48".into())
+        .unwrap();
+    let expose211 = VpcExpose::empty().ip("2001:db8:3::/48".into());
+
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
+    let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
+    let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering12).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
 fn build_overlay_2vpcs_modified() -> Overlay {
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
@@ -2535,4 +2562,83 @@ async fn an_icmp_error_about_a_tcp_flow_still_tears_it_down() {
         "an ICMP error about a one-way TCP flow no longer invalidates it"
     );
     assert_eq!(flow_table.active_len(), Some(0));
+}
+
+fn addr_v6(addr: &str) -> Ipv6Addr {
+    Ipv6Addr::from_str(addr).expect("Failed to create IPv6 address")
+}
+
+// A masqueradable IPv6 TCP packet. `build_test_ipv6_packet_with_transport` fixes the addresses and
+// ports, so they are overwritten here rather than parameterised into the builder.
+fn tcp_v6_to_masquerade(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    sport: u16,
+    dport: u16,
+) -> Packet<TestBuffer> {
+    let mut packet =
+        build_test_ipv6_packet_with_transport(64, Some(NextHeader::TCP)).expect("bad fixture");
+    packet
+        .set_ip_source(IpAddr::V6(src).try_into().unwrap())
+        .unwrap();
+    packet.set_ip_destination(IpAddr::V6(dst)).unwrap();
+    packet.set_source_port(sport.try_into().unwrap()).unwrap();
+    packet
+        .set_destination_port(dport.try_into().unwrap())
+        .unwrap();
+
+    let tcp = packet.try_tcp_mut().unwrap();
+    tcp.set_syn(true);
+    tcp.set_ack(false);
+    tcp.set_fin(false);
+    tcp.set_rst(false);
+
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().src_vpcd = Some(vpcd(100));
+    packet.meta_mut().set_masquerade(true);
+    packet
+}
+
+/// Masquerade translates IPv6 the same way it translates IPv4.
+///
+/// The pools, the allocator and the stage are all generic over the address family, and until this
+/// test nothing exercised the IPv6 instantiation of any of them -- so "generic" was an argument
+/// rather than a measurement.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn masquerade_translates_ipv6() {
+    let (_flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs_v6());
+
+    let (host, target) = (addr_v6("2001:db8:1::1"), addr_v6("2001:db8:3::1"));
+    let public_range = "2001:db8:2::".parse::<Ipv6Addr>().unwrap();
+
+    let out = process_packet(&mut pipeline, tcp_v6_to_masquerade(host, target, 4321, 80));
+    assert!(
+        !out.is_done(),
+        "the packet was dropped: {:?}",
+        out.get_done()
+    );
+
+    let IpAddr::V6(src) = out.ip_source().unwrap() else {
+        panic!("the packet came out IPv4");
+    };
+    let IpAddr::V6(dst) = out.ip_destination().unwrap() else {
+        panic!("the packet came out IPv4");
+    };
+
+    assert_ne!(src, host, "the source was not translated");
+    assert_eq!(
+        src.segments()[..3],
+        public_range.segments()[..3],
+        "the source was translated outside the configured public range"
+    );
+    assert_eq!(dst, target, "the destination was translated");
+
+    // The reverse direction undoes it, which is the property the whole allocator exists for.
+    let reply = build_reply(&out);
+    let back = process_packet(&mut pipeline, reply);
+    assert!(!back.is_done());
+    assert_eq!(back.ip_destination().unwrap(), IpAddr::V6(host));
+    assert_eq!(back.ip_source().unwrap(), IpAddr::V6(target));
+    assert_eq!(nat_flow_status(&back), Some(NatFlowStatus::TwoWay));
 }
