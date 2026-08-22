@@ -52,6 +52,11 @@ fn is_icmp_unrecoverable<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> (boo
         IcmpAny::V6(icmp6) if let Icmp6Type::DestUnreachable(unreach) = icmp6.icmp_type() => {
             (true, unreach.get_message())
         }
+        // Not `unrecoverable`, and neither is the fallback below, so this arm decides nothing --
+        // it names the reason for the log line. Its guard is therefore an equivalent mutant in
+        // both directions, and that is a property of the shape rather than a gap: IPv6 splits
+        // Path MTU Discovery out into its own type, where IPv4 hides it in a Destination
+        // Unreachable code that the arm above has to look at.
         IcmpAny::V6(icmp6) if let Icmp6Type::PacketTooBig(_) = icmp6.icmp_type() => {
             (false, Some("Packet too big"))
         }

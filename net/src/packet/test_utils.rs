@@ -18,6 +18,7 @@ use crate::eth::ethtype::EthType;
 use crate::eth::mac::{DestinationMac, Mac, SourceMac};
 use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, HeadersBuilder, Net, Transport};
 use crate::icmp4::{Icmp4, Icmp4DestUnreachable, TruncatedIcmp4};
+use crate::icmp6::{Icmp6, Icmp6Type, TruncatedIcmp6};
 use crate::ip::NextHeader;
 use crate::ipv4::Ipv4;
 use crate::ipv4::addr::UnicastIpv4Addr;
@@ -30,7 +31,7 @@ use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
 use crate::udp::port::UdpPort;
 use crate::udp::{TruncatedUdp, Udp, UdpChecksum, UdpChecksumPayload, UdpEncap};
 use etherparse::icmpv4::DestUnreachableHeader;
-use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type};
+use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type, Icmpv6Header, Icmpv6Type};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
@@ -661,4 +662,170 @@ pub fn build_test_vxlan_ipv6_packet_with_outer_qos(
     data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
 
     Packet::new(TestBuffer::from_raw_data(&data))
+}
+
+/// The four addresses an `ICMPv6` error fixture needs, in the same shape as [`IcmpErrorAddrs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Icmp6ErrorAddrs {
+    /// Source of the ICMP error packet -- whatever reported the problem.
+    pub outer_src: Ipv6Addr,
+    /// Destination of the ICMP error packet -- whatever sent the offending datagram.
+    pub outer_dst: Ipv6Addr,
+    /// Source of the embedded datagram, as it appeared on the wire.
+    pub inner_src: Ipv6Addr,
+    /// Destination of the embedded datagram, as it appeared on the wire.
+    pub inner_dst: Ipv6Addr,
+}
+
+#[must_use]
+/// Builds a test `ICMPv6` error packet with embedded headers.
+///
+/// The `ICMPv4` counterpart is [`build_test_icmp4_destination_unreachable_packet_with_code`]; the
+/// two are deliberately the same shape, because the thing worth testing is that the NAT paths
+/// treat them the same way.
+///
+/// # Errors
+///
+/// Returns an error if the packet cannot be parsed back after being built.
+///
+/// # Panics
+///
+/// Panics if `next_header` is not TCP, UDP or `ICMPv6`, if `icmp_type` is not an error message,
+/// or if any header field is out of range.
+pub fn build_test_icmp6_error_packet(
+    icmp_type: Icmp6Type,
+    addrs: Icmp6ErrorAddrs,
+    next_header: NextHeader,
+    inner_param_1: u16,
+    inner_param_2: u16,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
+
+    // Inner transport
+    let mut inner_transport = match next_header {
+        NextHeader::TCP => EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(Tcp::new(
+            inner_param_1.try_into().unwrap(),
+            inner_param_2.try_into().unwrap(),
+        ))),
+        NextHeader::UDP => EmbeddedTransport::Udp(TruncatedUdp::FullHeader(Udp::new(
+            inner_param_1.try_into().unwrap(),
+            inner_param_2.try_into().unwrap(),
+        ))),
+        NextHeader::ICMP6 => EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(Icmp6(
+            Icmpv6Header::new(Icmpv6Type::EchoRequest(IcmpEchoHeader {
+                id: inner_param_1,
+                seq: inner_param_2,
+            })),
+        ))),
+        _ => panic!("Unsupported next header: {next_header:?}"),
+    };
+
+    // Inner IPv6. No checksum to maintain, unlike the v4 fixture.
+    let mut inner_ipv6 = Ipv6::default();
+    inner_ipv6.set_source(UnicastIpv6Addr::new(addrs.inner_src).unwrap());
+    inner_ipv6.set_destination(addrs.inner_dst);
+    inner_ipv6.set_hop_limit(4);
+    inner_ipv6.set_next_header(next_header);
+    inner_ipv6.set_payload_length(inner_transport.size().get());
+    let inner_net = Net::Ipv6(inner_ipv6);
+
+    let described = format!("{icmp_type:?}");
+    let icmp = Icmp6(Icmpv6Header::new(icmp_type.into()));
+    assert!(
+        icmp.is_error_message(),
+        "not an ICMPv6 error message: {described}"
+    );
+
+    // Outer IPv6
+    let mut outer_ipv6 = Ipv6::default();
+    outer_ipv6.set_source(UnicastIpv6Addr::new(addrs.outer_src).unwrap());
+    outer_ipv6.set_destination(addrs.outer_dst);
+    outer_ipv6.set_hop_limit(8);
+    outer_ipv6.set_next_header(NextHeader::ICMP6);
+    outer_ipv6.set_payload_length(
+        icmp.size().get() + inner_net.size().get() + inner_transport.size().get(),
+    );
+    let outer_net = Net::Ipv6(outer_ipv6);
+
+    match &mut inner_transport {
+        EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)) => {
+            tcp.update_checksum(&TcpChecksumPayload::new(&inner_net, &[]))
+                .unwrap();
+        }
+        EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)) => {
+            udp.update_checksum(&UdpChecksumPayload::new(&inner_net, &[]))
+                .unwrap();
+        }
+        // The embedded ICMPv6 checksum is left alone on purpose: RFC 5508 REQ-3(c) says a NAT
+        // should not validate the embedded transport checksum, and a fixture that supplies a
+        // correct one cannot tell whether we obey that.
+        _ => {}
+    }
+
+    let mut embedded_headers = EmbeddedHeadersBuilder::default();
+    embedded_headers.net(Some(inner_net));
+    embedded_headers.transport(Some(inner_transport));
+    let embedded_headers = embedded_headers.build().unwrap();
+
+    let mut icmp_transport = Transport::Icmp6(icmp);
+    icmp_transport.update_checksum(&outer_net, Some(&embedded_headers), []);
+
+    headers.net(Some(outer_net));
+    headers.transport(Some(icmp_transport));
+    headers.embedded_ip(Some(embedded_headers));
+    let headers = headers.build().unwrap();
+
+    let data = vec![0u8; headers.size().get() as usize];
+    let mut buffer = TestBuffer::from_raw_data(&data);
+    headers.deparse(buffer.as_mut()).unwrap();
+    Packet::new(buffer)
+}
+
+#[must_use]
+/// Builds a test `ICMPv6` Echo Request or Reply packet.
+///
+/// # Errors
+///
+/// Returns an error if the packet cannot be parsed back after being built.
+///
+/// # Panics
+///
+/// Panics if any header field is out of range.
+pub fn build_test_icmp6_echo(
+    src_ip: Ipv6Addr,
+    dst_ip: Ipv6Addr,
+    identifier: u16,
+    direction: IcmpEchoDirection,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
+
+    let echo_header = IcmpEchoHeader {
+        id: identifier,
+        seq: 0,
+    };
+    let icmp = Icmp6(Icmpv6Header::new(match direction {
+        IcmpEchoDirection::Request => Icmpv6Type::EchoRequest(echo_header),
+        IcmpEchoDirection::Reply => Icmpv6Type::EchoReply(echo_header),
+    }));
+
+    let mut ipv6 = Ipv6::default();
+    ipv6.set_source(UnicastIpv6Addr::new(src_ip).unwrap());
+    ipv6.set_destination(dst_ip);
+    ipv6.set_hop_limit(8);
+    ipv6.set_next_header(NextHeader::ICMP6);
+    ipv6.set_payload_length(icmp.size().get());
+    let net = Net::Ipv6(ipv6);
+
+    let mut icmp_transport = Transport::Icmp6(icmp);
+    icmp_transport.update_checksum(&net, None, []);
+
+    headers.net(Some(net));
+    headers.transport(Some(icmp_transport));
+    let headers = headers.build().unwrap();
+
+    let mut buffer: TestBuffer = TestBuffer::new();
+    headers.deparse(buffer.as_mut()).unwrap();
+    Packet::new(buffer)
 }
