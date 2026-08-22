@@ -10,22 +10,18 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 
 use dataplane_acl::reference::{Erased, RefRule, ReferenceTable};
 use lookup::Lookup;
-use match_action::{ExactSpec, FixedSize, MatchKey, PrefixSpec, RangeSpec};
+use match_action::{ExactSpec, MatchKey, PrefixSpec, RangeSpec};
+use net::ip::IpAddress;
 
-mod sealed {
-    use core::net::{Ipv4Addr, Ipv6Addr};
-    pub trait Sealed {}
-    impl Sealed for Ipv4Addr {}
-    impl Sealed for Ipv6Addr {}
-}
-
-trait IpAddress: FixedSize + sealed::Sealed {
+/// The bench needs a `const` "any address" to build wildcard rules with; the rest of the address
+/// trait comes from [`IpAddress`].
+trait KeyAddr: IpAddress {
     const UNSPECIFIED: Self;
 }
-impl IpAddress for Ipv4Addr {
+impl KeyAddr for Ipv4Addr {
     const UNSPECIFIED: Self = Ipv4Addr::UNSPECIFIED;
 }
-impl IpAddress for Ipv6Addr {
+impl KeyAddr for Ipv6Addr {
     const UNSPECIFIED: Self = Ipv6Addr::UNSPECIFIED;
 }
 const RULE_COUNTS: [usize; 15] = [
@@ -33,7 +29,7 @@ const RULE_COUNTS: [usize; 15] = [
 ];
 
 #[derive(MatchKey)]
-struct FiveTuple<A: IpAddress> {
+struct FiveTuple<A: KeyAddr> {
     #[exact]
     proto: u8,
     #[prefix]
@@ -45,11 +41,7 @@ struct FiveTuple<A: IpAddress> {
     #[range]
     dport: u16,
 }
-fn deep_scan_table<A: IpAddress>(
-    n: usize,
-    src: A,
-    src_len: u8,
-) -> ReferenceTable<FiveTuple<A>, u32> {
+fn deep_scan_table<A: KeyAddr>(n: usize, src: A, src_len: u8) -> ReferenceTable<FiveTuple<A>, u32> {
     let rules = (0..n)
         .map(|i| {
             RefRule::new(
@@ -67,7 +59,7 @@ fn deep_scan_table<A: IpAddress>(
         .collect();
     ReferenceTable::new(rules)
 }
-fn bench_width<A: IpAddress>(
+fn bench_width<A: KeyAddr>(
     c: &mut Criterion,
     name: &str,
     prefix: A,
