@@ -209,6 +209,11 @@ bench: (build "benches")
     for bench in ./results/benches/bin/*; do "$bench" --bench; done
 
 [script]
+bench-callgrind *args:
+    {{ _just_debuggable_ }}
+    cargo bench -p dataplane-routing --bench fib_lookup_callgrind {{ args }}
+
+[script]
 build-each *args: (build "workspace" args)
     {{ _just_debuggable_ }}
 
