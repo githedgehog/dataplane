@@ -148,6 +148,39 @@ Two details that are not incidental:
   leaves for nobody". Both were break-tested against the stage: pinning the chosen vpc to a
   constant fails the first, and routing a destination miss instead of dropping it fails the second.
 
+### Contracts as stages
+
+The pipeline is a chain of `NetworkFunction`s and nothing says a stage has to _do_ anything, so a
+contract between two stages can itself be a stage. `Checkpoint` in
+`dataplane::packet_processor::fuzz` is one: it is handed a shared reference, returns nothing, and
+is wired into every routed fabric, so each contract is checked on every packet of every property
+rather than needing one of its own.
+
+What that reaches which an end-of-pipeline assertion cannot:
+
+- **Attribution.** A violation names the boundary. "after ip-forward-1: overlay traffic with no vrf
+  to route it in" is a finding; "the frame did not leave the gateway" is an investigation.
+- **Facts a later stage destroys.** The inner packet exists only between decapsulation and
+  re-encapsulation; `dst_vpcd` is set by `FlowFilter` and consumed by `IpForwarder`.
+- **Sharper claims.** `every_shape_leaves_the_pipeline_with_a_verdict` asserts a forwarded packet
+  has a destination vpc at the _end_ of the pipeline, which a later stage setting it would satisfy.
+  The same claim at `FlowFilter`'s boundary is about the stage that owes it.
+
+Two rules, both structural rather than by convention. A checkpoint **is lazy**: `FlowFilter::process`
+collects its whole input, and that barrier decides which packets can see each other's effects -- a
+checkpoint that collected would introduce a second one and change what it is observing. And a
+checkpoint **cannot modify or drop**: `inspect`, not `filter_map` and `enforce`, so the signature
+enforces it.
+
+**Contracts go vacuous the way properties do.** Every one begins by excusing packets it does not
+apply to, and a guard that excuses everything looks exactly like a contract that always holds.
+`every_contract_is_reached` counts what each has actually judged.
+
+**Vacuous and unfalsifiable are different, and worth separating.** One contract here judges ordinary
+traffic on every run -- so it is not vacuous -- and yet has no reachable violation, because every
+way of breaking it is caught by a stage in between. That is a claim about the pipeline's shape, not
+about the contract, and it is written at the contract rather than left to be rediscovered.
+
 ### Redundant defences need one property each
 
 The VLAN refusal in `IpForwarder` is not the only thing that stops a tagged frame -- the filters

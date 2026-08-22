@@ -77,7 +77,7 @@ use nat::static_nat::NatTablesWriter;
 use nat::static_nat::setup::build_nat_configuration;
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use lpm::prefix::Prefix;
-use net::buffer::TestBuffer;
+use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -169,6 +169,10 @@ impl Fabric {
         if let Some(tables) = &tables {
             pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
             pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
+            pipeline = pipeline.add_stage(Checkpoint::new(
+                "after ip-forward-1",
+                contract::decapsulated,
+            ));
         }
 
         pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
@@ -179,6 +183,7 @@ impl Fabric {
             FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
         );
         pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", flow_filter.get_reader()));
+        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
 
         let acl = AclFilterContextWriter::new();
         acl.store(
@@ -214,6 +219,10 @@ impl Fabric {
             1,
             &flow_table,
         );
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            contract::ready_to_translate,
+        ));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),
@@ -227,6 +236,7 @@ impl Fabric {
                 tables.interfaces(),
                 tables.adjacencies(),
             ));
+            pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
         }
 
         Self {
@@ -441,6 +451,155 @@ fn assert_covered(covered: bool, what: &str) {
     );
 }
 
+/// A stage that changes nothing and checks something.
+///
+/// The pipeline is a chain of [`NetworkFunction`]s and nothing says a stage has to *do* anything,
+/// so a contract between two stages can be a stage. What that buys over asserting at the end of
+/// the pipeline is three things: attribution, because a violation names the boundary it happened
+/// at; reach, because facts a later stage destroys are visible here and nowhere else -- the inner
+/// packet exists only between decapsulation and re-encapsulation, and `dst_vpcd` is set by
+/// `FlowFilter` and consumed by `IpForwarder`; and leverage, because a contract asserted here is
+/// asserted on every packet of every property in this module rather than needing a property of its
+/// own.
+///
+/// # Two rules, both structural
+///
+/// **A checkpoint is lazy.** `FlowFilter::process` collects its whole input, and that barrier is
+/// what decides which packets can see each other's effects -- it is the mechanism behind the
+/// allocation defect in `a_burst_of_one_flow_allocates_once`. A checkpoint that collected would
+/// introduce a second barrier and change the behaviour it is supposed to be observing.
+///
+/// **A checkpoint cannot drop or modify a packet.** Hence `inspect` rather than the `filter_map`
+/// and `enforce` every real stage uses: the signature is what enforces it, not a comment. A checkpoint must also not
+/// serialize a packet, because `Packet::serialize` recomputes checksums -- an observer that
+/// repaired what it was watching for.
+pub(crate) struct Checkpoint<F> {
+    at: &'static str,
+    check: F,
+}
+
+impl<F> Checkpoint<F> {
+    pub(crate) fn new(at: &'static str, check: F) -> Self {
+        Self { at, check }
+    }
+}
+
+impl<Buf: PacketBufferMut, F: Fn(&str, &Packet<Buf>) + 'static> NetworkFunction<Buf>
+    for Checkpoint<F>
+{
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        // `inspect` rather than `map`: the signature is the guarantee. A checkpoint is handed a
+        // shared reference and returns nothing, so it cannot modify a packet, and `inspect` cannot
+        // drop one.
+        input.inspect(move |packet| (self.check)(self.at, packet))
+    }
+}
+
+/// The contracts every routed fabric checks at every stage boundary.
+///
+/// Each is a promise made by the stage before it, taken from that stage's code rather than from
+/// what it would be nice for it to do -- a contract a stage does not actually make turns a working
+/// pipeline into a failing test, which is worse than no contract at all.
+mod contract {
+    use super::*;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// How many packets each contract has actually judged, as opposed to waved past its guard.
+    ///
+    /// A contract is a property, and it goes vacuous the same way: every one here begins by
+    /// excusing packets it does not apply to, and a guard that excuses *everything* is a contract
+    /// that has never once been evaluated while looking exactly like one that always holds.
+    /// [`every_contract_is_reached`] is what says otherwise.
+    pub(super) static JUDGED: LazyLock<[AtomicU64; 4]> =
+        LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
+
+    pub(super) const DECAPSULATED: usize = 0;
+    pub(super) const PLACED: usize = 1;
+    pub(super) const READY: usize = 2;
+    pub(super) const FINISHED: usize = 3;
+
+    fn judged(which: usize) {
+        JUDGED[which].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `IpForwarder` decapsulates and annotates. A frame it has made overlay traffic knows which
+    /// vpc it came from and which fib to route it in; the overlay stages downstream read both, and
+    /// `arrive` in this module fakes exactly this stamp for the fabrics that skip the forwarder.
+    /// So this is also what says that fake is faithful.
+    pub(super) fn decapsulated<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().is_overlay() {
+            return;
+        }
+        judged(DECAPSULATED);
+        assert!(
+            packet.meta().src_vpcd.is_some(),
+            "{at}: overlay traffic with no source vpc discriminant"
+        );
+        assert!(
+            packet.meta().vrf.is_some(),
+            "{at}: overlay traffic with no vrf to route it in"
+        );
+    }
+
+    /// `FlowFilter` is what decides where a packet goes. A packet it lets past has been given a
+    /// destination; one it could not place is dropped, not forwarded.
+    ///
+    /// `shapes::every_shape_leaves_the_pipeline_with_a_verdict` asserts this at the *end* of the
+    /// pipeline, which is weaker: a later stage setting `dst_vpcd` would satisfy it. Here it is a
+    /// claim about the stage that owes it.
+    pub(super) fn placed<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().is_overlay() {
+            return;
+        }
+        judged(PLACED);
+        assert!(
+            packet.meta().dst_vpcd.is_some(),
+            "{at}: forwarded without a destination vpc: nothing chose where this packet goes"
+        );
+    }
+
+    /// What `Masquerade::process_packet` calls a bug in a `debug_assert` and then drops.
+    ///
+    /// **This one has no reachable violation today, and that is worth saying rather than leaving
+    /// to be discovered.** Every way of removing a discriminant before masquerade is caught by a
+    /// stage in between -- `StaticNat` and `PortForwarder` finish such a packet, so it arrives here
+    /// already `done` and the guard correctly excuses it. Break-tested: clearing `src_vpcd` in
+    /// `FlowFilter` produces `done=true, masq=true, src=None` at this boundary.
+    ///
+    /// Two different things get confused here and the distinction matters. It is *not vacuous* --
+    /// [`super::smoke::every_contract_is_reached`] shows it judges ordinary traffic, so its guard
+    /// is not excusing everything. It is *unfalsifiable*, which is a claim about the pipeline
+    /// rather than about the contract: no current arrangement of stages can violate it.
+    ///
+    /// Kept, because what it guards is a reordering. Move masquerade ahead of the stages that
+    /// currently catch this, or drop their checks, and this is what notices.
+    pub(super) fn ready_to_translate<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        if packet.is_done() || !packet.meta().requires_masquerade() {
+            return;
+        }
+        judged(READY);
+        assert!(
+            packet.meta().src_vpcd.is_some() && packet.meta().dst_vpcd.is_some(),
+            "{at}: a packet is to be masqueraded without both discriminants, which masquerade \
+             itself calls a bug"
+        );
+    }
+
+    /// `Egress` frames a packet and finishes it, one way or another. A packet leaving it unfinished
+    /// is one nothing further will look at and nothing has sent.
+    pub(super) fn finished<Buf: PacketBufferMut>(at: &str, packet: &Packet<Buf>) {
+        judged(FINISHED);
+        assert!(
+            packet.is_done(),
+            "{at}: a packet left the last stage of the pipeline without a verdict"
+        );
+    }
+}
+
 /// The underlay the routed fabric sits on.
 ///
 /// One uplink, carrying tunnelled traffic in both directions. The addresses are the ones
@@ -566,6 +725,52 @@ mod smoke {
             .ip("1.1.0.0/16".parse::<Prefix>().unwrap().into())
             .as_range("2.2.0.0/16".parse::<Prefix>().unwrap().into())
             .unwrap()
+    }
+
+    /// Every contract is actually evaluated by an ordinary routed fabric.
+    ///
+    /// Each contract begins by excusing packets it does not apply to, so each can go vacuous
+    /// without saying so: a guard that excuses everything looks exactly like a contract that always
+    /// holds. This runs one packet all the way through and requires all four to have judged it.
+    ///
+    /// It is also what caught the one that was not being reached. `ready_to_translate` guards on
+    /// `requires_masquerade()`, and a fabric whose peering does not masquerade never sets it -- so
+    /// the contract sat in the pipeline judging nothing.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn every_contract_is_reached() {
+        use net::packet::test_utils::build_test_udp_ipv4_packet;
+
+        let before: Vec<u64> = contract::JUDGED
+            .iter()
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .collect();
+
+        let mut fabric = Fabric::routed(&routed::exposes(), None).expect("a valid configuration");
+        let inner = build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80);
+        let out = fabric.send(routed::tunnelled(&inner));
+        assert!(
+            matches!(verdict(&out), Verdict::Delivered { .. }),
+            "the fixture packet did not reach the wire: {:?}",
+            verdict(&out)
+        );
+
+        for (i, name) in [
+            "decapsulated",
+            "placed",
+            "ready_to_translate",
+            "finished",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let after = contract::JUDGED[i].load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                after > before[i],
+                "the `{name}` contract judged no packet of an ordinary delivered flow: its guard \
+                 excuses everything, so it holds without ever having been evaluated"
+            );
+        }
     }
 
     /// The harness wires a pipeline that behaves like the one in `start_router`.
@@ -2186,7 +2391,7 @@ mod destination {
 mod routed {
     use super::*;
     use super::shapes::{Batch, Shape, aim, wire};
-    use net::buffer::TestBuffer;
+    use net::buffer::{PacketBufferMut, TestBuffer};
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::parse::DeParse;
     use net::ip::dscp::Dscp;
