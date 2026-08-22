@@ -1,0 +1,30 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-3.2"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+An ICMP Query session timer MUST NOT expire in less than 60 seconds.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+It is RECOMMENDED that the ICMP Query session timer be made
+configurable.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-2: An ICMP Query session timer MUST NOT expire in less than 60
+seconds.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) It is RECOMMENDED that the ICMP Query session timer be made
+configurable.
+'''
+

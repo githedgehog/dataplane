@@ -1,0 +1,25 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-6"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When a NAT device is unable to establish a NAT Session for a new
+transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+constraints or administrative restrictions, the NAT device SHOULD
+send an ICMP destination unreachable message, with a code of 13
+(Communication administratively prohibited) to the sender, and drop
+the original packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-8: When a NAT device is unable to establish a NAT Session for a
+new transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+constraints or administrative restrictions, the NAT device SHOULD
+send an ICMP destination unreachable message, with a code of 13
+(Communication administratively prohibited) to the sender, and drop
+the original packet.
+'''
+

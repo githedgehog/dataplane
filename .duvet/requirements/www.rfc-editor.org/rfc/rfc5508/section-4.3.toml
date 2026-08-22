@@ -1,0 +1,21 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.3"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+While processing an ICMP Error packet pertaining to an ICMP Query or
+Query response message, a NAT device MUST NOT refresh or delete the
+NAT Session that pertains to the embedded payload within the ICMP
+Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+Query or Query response message, a NAT device MUST NOT refresh
+or delete the NAT Session that pertains to the embedded
+payload within the ICMP Error packet.
+'''
+

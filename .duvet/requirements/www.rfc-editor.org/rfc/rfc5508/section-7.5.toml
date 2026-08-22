@@ -1,0 +1,17 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.5"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+Section 4.3.3.5 of [RFC1812] says an IP router MUST generate a
+Parameter Problem message for any error not specifically covered by
+another ICMP message.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT device MAY support parameter problem messages.
+'''
+

@@ -1,0 +1,37 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.1.1"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+Further, [PMTU] states
+that the router MUST include the MTU of that next-hop network in the
+low-order 16 bits of the ICMP header field that is labeled "unused"
+in the ICMP specification [ICMP].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A NAT device MUST honor the DF bit in the IP header of the packets
+that transit the device.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If
+the DF bit is set on a transit IP packet and the NAT device cannot
+forward the packet without fragmentation, the NAT device MUST send a
+"Packet Too Big" ICMP message (ICMP type 3, code 4) with the next-hop
+MTU back to the sender and drop the original IP packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the DF bit is not set and the MTU on the forwarding interface of
+the NAT device mandates fragmentation, the NAT device MUST fragment
+the packet and forward the fragments [RFC1812].
+'''
+

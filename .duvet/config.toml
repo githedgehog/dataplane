@@ -17,3 +17,6 @@ enabled = true
 
 [[specification]]
 source = "https://www.rfc-editor.org/rfc/rfc4787"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc5508"

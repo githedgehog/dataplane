@@ -1,0 +1,19 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.2"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+A NAT device MUST generate a "Time Exceeded" ICMP Error message when
+it discards a packet due to an expired Time to Live (TTL) field.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+A
+NAT device MAY have a per-interface option to disable origination of
+these messages on that interface, but that option MUST default to
+allowing the messages to be originated.
+'''
+

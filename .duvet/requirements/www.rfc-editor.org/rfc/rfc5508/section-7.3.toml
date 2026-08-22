@@ -1,0 +1,20 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.3"
+
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT device MAY support modifying IP addresses in the source route
+option so the IP addresses in the source route option are realm
+relevant.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a NAT device does not support forwarding packets with
+the source route option, the NAT device SHOULD NOT forward outbound
+ICMP messages that contain the source route option in the outer or
+inner IP header.
+'''
+
