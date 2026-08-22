@@ -45,6 +45,14 @@ pub use rib::encapsulation::{
 };
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    pub use crate::fib::fibobjects::FibGroup;
+    pub use crate::fib::fibtype::{Fib, FibReader, FibWriter};
+    pub use crate::rib::nexthop::{FwAction, NhopKey};
+    pub use crate::rib::vrf::RouteOrigin;
+}
+
 pub use bmp::spawn_bmp_server;
 pub use router::ctl::RouterCtlSender;
 pub use router::{BmpServerParams, CliSources, Router, RouterParams, RouterParamsBuilder};
