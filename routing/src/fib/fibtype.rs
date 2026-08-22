@@ -384,6 +384,12 @@ impl FibWriter {
     pub fn as_fibreader(&self) -> FibReader {
         FibReader::new(self.0.clone())
     }
+    /// Invalidate this fib and take it back from the readers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the taken fib is not the invalidated one, which would mean the change published
+    /// above was not the change absorbed.
     pub fn destroy(mut self) {
         self.0.append(FibChange::Invalidate);
         self.0.publish();
