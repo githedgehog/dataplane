@@ -11,7 +11,6 @@
 
 use crate::errors::RouterError;
 use crate::evpn::{RmacEntry, RmacStore};
-use crate::interfaces::iftablerw::IfTableReader;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
 use crate::rib::vrf::{Route, RouteFlags, RouteNhop, RouteOrigin, Vrf};
@@ -99,11 +98,7 @@ impl TryFrom<&Rmac> for RmacEntry {
 
 impl RouteNhop {
     #[tracing::instrument(level = "debug")]
-    fn from_rpc_nhop(
-        nh: &NextHop,
-        origin: RouteOrigin,
-        iftabler: &IfTableReader,
-    ) -> Result<Self, RouterError> {
+    fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Result<Self, RouterError> {
         let mut ifindex = nh
             .ifindex
             .map(|i| match InterfaceIndex::try_new(i) {
@@ -128,14 +123,6 @@ impl RouteNhop {
             None => None,
         };
 
-        // lookup interface name
-        let ifname = match ifindex {
-            None => None,
-            Some(k) => iftabler
-                .enter()
-                .and_then(|iftable| iftable.get_interface(k).map(|iface| iface.name.clone())),
-        };
-
         // build key for this next hop
         let key = NhopKey::new(
             origin,
@@ -143,7 +130,6 @@ impl RouteNhop {
             ifindex,
             encap,
             FwAction::from(nh.fwaction),
-            ifname,
         );
 
         // validate next hop from its key
@@ -179,13 +165,7 @@ impl Route {
 }
 
 impl Vrf {
-    pub fn add_route_rpc(
-        &mut self,
-        iproute: &IpRoute,
-        vrf0: Option<&Vrf>,
-        rstore: &RmacStore,
-        iftabler: &IfTableReader,
-    ) {
+    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
         let prefix = match Prefix::try_from((iproute.prefix, iproute.prefix_len)) {
             Ok(p) => p,
             Err(e) => {
@@ -215,7 +195,7 @@ impl Vrf {
         let route = Route::from_iproute(&prefix, iproute);
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
-            match RouteNhop::from_rpc_nhop(nhop, route.origin, iftabler) {
+            match RouteNhop::from_rpc_nhop(nhop, route.origin) {
                 Ok(nh) => nhops.push(nh),
                 Err(e) => error!("Omitting next-hop {nhop} in route to {prefix}: {e}"),
             }
