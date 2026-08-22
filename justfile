@@ -746,6 +746,21 @@ coverage *args:
     cargo llvm-cov report --branch --lcov --output-path="${out}/lcov.info"
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
+    echo
+    echo "html report: ${out}/html/index.html  (\`just serve-coverage\` to browse it)"
+
+[doc("Serve a directory of generated html over http")]
+[script]
+serve dir port="8080":
+    {{ _just_debuggable_ }}
+    if [ ! -d '{{ dir }}' ]; then
+      echo "error: no such directory: {{ dir }}" >&2
+      exit 1
+    fi
+    echo "serving {{ dir }} at http://127.0.0.1:{{ port }} (ctrl-c to stop)"
+    static-web-server --root '{{ dir }}' --port '{{ port }}' --log-level warn
+
+serve-coverage port="8080": (serve "./target/nextest/coverage/html" port)
 
 [script]
 duvet *args:
