@@ -722,8 +722,18 @@ pub(crate) type Poll = Vec<Pick>;
 /// so a run whose schedule happened to be short would be a run that verified almost nothing while
 /// looking busy. Draining afterwards means the interleaving decides *when* things happen and the
 /// drain decides that they all eventually do.
+///
+/// Returns which loads each burst actually drew from. Reporting what happened rather than what was
+/// asked for is the difference between a coverage guard that means something and one that does not:
+/// a poll naming three loads that all had nothing to offer is not an interleaving, and counting the
+/// schedule would call it one.
 #[cfg(test)]
-pub(crate) fn run_schedule(fabric: &mut Fabric, loads: &mut [Box<dyn Load>], schedule: &[Poll]) {
+pub(crate) fn run_schedule(
+    fabric: &mut Fabric,
+    loads: &mut [Box<dyn Load>],
+    schedule: &[Poll],
+) -> Vec<Vec<usize>> {
+    let mut bursts = Vec::new();
     for poll in schedule {
         let mut burst = Vec::new();
         let mut origin = Vec::new();
@@ -746,31 +756,16 @@ pub(crate) fn run_schedule(fabric: &mut Fabric, loads: &mut [Box<dyn Load>], sch
         // Order is relied on to route each answer back to the load that sent it. The pipeline
         // preserves it -- `burst::a_burst_is_treated_the_same_as_one_packet_at_a_time` compares
         // element-wise and would fail otherwise -- and `send_batch` asserts the count.
-        for (answer, which) in fabric.send_batch(burst).iter().zip(origin) {
-            loads[which].observe(answer);
+        for (answer, which) in fabric.send_batch(burst).iter().zip(&origin) {
+            loads[*which].observe(answer);
         }
+        bursts.push(origin);
     }
 
     for load in loads {
         drive(fabric, load.as_mut());
     }
-}
-
-/// How many packets of one poll came from more than one load.
-///
-/// The measure of whether a schedule interleaved anything at all. A run of polls that each drew
-/// from a single load is a run of the properties we already had, in a costlier harness.
-#[cfg(test)]
-pub(crate) fn mixed_polls(schedule: &[Poll]) -> usize {
-    schedule
-        .iter()
-        .filter(|poll| {
-            let mut seen: Vec<u8> = poll.iter().map(|p| p.load).collect();
-            seen.sort_unstable();
-            seen.dedup();
-            seen.len() > 1
-        })
-        .count()
+    bursts
 }
 
 /// A stage that changes nothing and checks something.
@@ -2355,29 +2350,56 @@ mod port_forward {
 /// conversations should do.
 #[cfg(test)]
 mod interleaved {
-    use super::routed::{Conversation, exposes};
+    use super::routed::{Blast, Conversation, exposes};
     use super::*;
     use std::ops::Bound::Included;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    const CONVERSATIONS: usize = 6;
+    const LOADS: usize = 6;
     const POLLS: usize = 10;
 
-    /// A set of conversations and an order to run them in.
+    /// What kind of sender a slot holds.
+    ///
+    /// Two kinds rather than one because they stress different things about a burst. A
+    /// conversation can only ever offer one packet, so a poll of conversations is a poll of
+    /// singletons; a blast offers as many as asked for, which is what makes several packets of one
+    /// flow share a burst with somebody else's traffic.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Conversation,
+        Blast,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Sender {
+        kind: Kind,
+        host: u8,
+        sport: u16,
+        dport: u16,
+        /// How many packets a blast sends. Ignored by a conversation.
+        count: u8,
+    }
+
     struct Interleaving;
 
     impl bolero::ValueGenerator for Interleaving {
-        type Output = (Vec<(u8, u16, u16)>, Vec<Poll>);
+        type Output = (Vec<Sender>, Vec<Poll>);
 
         fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-            let flows = (0..CONVERSATIONS)
+            let senders = (0..LOADS)
                 .map(|_| {
-                    Some((
-                        driver.produce::<u8>()?,
-                        driver.produce::<u16>()?.max(1),
-                        driver.produce::<u16>()?.max(1),
-                    ))
+                    Some(Sender {
+                        kind: if driver.produce::<bool>()? {
+                            Kind::Conversation
+                        } else {
+                            Kind::Blast
+                        },
+                        host: driver.produce::<u8>()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                        count: driver.gen_u8(Included(&2), Included(&5))?,
+                    })
                 })
                 .collect::<Option<Vec<_>>>()?;
 
@@ -2398,7 +2420,7 @@ mod interleaved {
                 })
                 .collect::<Option<Vec<_>>>()?;
 
-            Some((flows, schedule))
+            Some((senders, schedule))
         }
     }
 
@@ -2407,48 +2429,74 @@ mod interleaved {
         super::assert_within_budget("interleaved::Interleaving", &Interleaving);
     }
 
-    /// Interleaving conversations does not stop any of them working.
+    /// Interleaving traffic does not stop any of it working.
     ///
-    /// What could break it, none of which a single-conversation property can reach: state one
-    /// conversation creates being found by another; two of them given public tuples that collide,
-    /// so a reply cannot be attributed; a reply arriving in the same burst as somebody else's
-    /// request, which is the region the allocation defect lived in.
+    /// What could break it, none of which a single-sender property can reach: state one sender
+    /// creates being found by another; two of them given public tuples that collide, so a reply
+    /// cannot be attributed; several packets of one flow sharing a burst with somebody else's,
+    /// which is the region the allocation defect lived in.
     ///
-    /// The guards below are unusually load-bearing. A schedule that happened to draw every poll
-    /// from one load would run the existing properties in a costlier harness and pass; so would a
-    /// run in which every conversation gave up before sending anything. Both are counted.
+    /// The guards below are unusually load-bearing, and they count what the run *did* rather than
+    /// what its schedule asked for. A poll naming three loads that all had nothing to offer is not
+    /// an interleaving; a run of single-load polls is the properties we already had, in a costlier
+    /// harness; and a run in which every sender gave up has checked nothing. All three would pass
+    /// unguarded.
     #[tokio::test]
     #[dpdk::with_eal]
-    async fn interleaved_conversations_are_each_satisfied() {
+    async fn interleaved_traffic_is_each_satisfied() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED_LOADS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED_KINDS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Interleaving)
-            .for_each(|(flows, schedule)| {
+            .for_each(|(senders, schedule)| {
                 let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
                     return;
                 };
 
-                let mut loads: Vec<Box<dyn Load>> = flows
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, (host, sport, dport))| {
-                        // Position decides the host, so distinct conversations stay distinct and a
-                        // collision between two of them is the pipeline's doing rather than the
-                        // generator's. The drawn value still varies which host.
-                        let src: IpAddr = format!("1.1.{i}.{host}").parse().ok()?;
-                        let dst: IpAddr = "3.3.3.1".parse().ok()?;
-                        Some(Box::new(Conversation::new(src, dst, *sport, *dport))
-                            as Box<dyn Load>)
-                    })
-                    .collect();
+                let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                let mut kinds = Vec::new();
+                let mut loads: Vec<Box<dyn Load>> = Vec::new();
+                for (i, sender) in senders.iter().enumerate() {
+                    // Position decides the host, so distinct senders stay distinct and a collision
+                    // between two of them is the pipeline's doing rather than the generator's.
+                    let Ok(src) = format!("1.1.{i}.{}", sender.host).parse::<IpAddr>() else {
+                        continue;
+                    };
+                    kinds.push(sender.kind);
+                    loads.push(match sender.kind {
+                        Kind::Conversation => {
+                            Box::new(Conversation::new(src, dst, sender.sport, sender.dport))
+                        }
+                        Kind::Blast => Box::new(Blast::new(
+                            src,
+                            dst,
+                            sender.sport,
+                            sender.dport,
+                            sender.count,
+                        )) as Box<dyn Load>,
+                    });
+                }
 
-                run_schedule(&mut fabric, &mut loads, schedule);
+                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                    let mut loads_in: Vec<usize> = burst.clone();
+                    loads_in.sort_unstable();
+                    loads_in.dedup();
+                    if loads_in.len() > 1 {
+                        MIXED_LOADS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let mut kinds_in: Vec<Kind> =
+                        burst.iter().map(|i| kinds[*i]).collect();
+                    kinds_in.sort_unstable_by_key(|k| format!("{k:?}"));
+                    kinds_in.dedup();
+                    if kinds_in.len() > 1 {
+                        MIXED_KINDS.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
 
-                MIXED.fetch_add(mixed_polls(schedule) as u64, Ordering::Relaxed);
                 for load in &loads {
                     if load.checked() {
                         CHECKED.fetch_add(1, Ordering::Relaxed);
@@ -2458,17 +2506,24 @@ mod interleaved {
                 }
             });
 
-        let (checked, abandoned, mixed) = (
+        let (checked, abandoned, mixed_loads, mixed_kinds) = (
             CHECKED.load(Ordering::Relaxed),
             ABANDONED.load(Ordering::Relaxed),
-            MIXED.load(Ordering::Relaxed),
+            MIXED_LOADS.load(Ordering::Relaxed),
+            MIXED_KINDS.load(Ordering::Relaxed),
         );
-        eprintln!("checked={checked} abandoned={abandoned} mixed-polls={mixed}");
-        super::assert_covered(checked > 0, "no conversation ever completed");
+        eprintln!(
+            "checked={checked} abandoned={abandoned} mixed-loads={mixed_loads} \
+             mixed-kinds={mixed_kinds}"
+        );
+        super::assert_covered(checked > 0, "no sender ever completed its business");
         super::assert_covered(
-            mixed > 0,
-            "no poll ever drew from more than one load, so nothing was interleaved and this is \
-             the single-conversation property in a costlier harness",
+            mixed_loads > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+        super::assert_covered(
+            mixed_kinds > 0,
+            "no burst ever mixed a conversation with a blast, so the two shapes never met",
         );
     }
 }
@@ -3479,6 +3534,122 @@ mod routed {
                 self.sport,
                 self.dst,
                 self.dport,
+                if self.log.is_empty() {
+                    "nothing yet".to_owned()
+                } else {
+                    self.log.join("; ")
+                }
+            )
+        }
+    }
+
+    /// One flow, several packets, sent without waiting for any of them.
+    ///
+    /// The counterpart to [`Conversation`], and the reason for having a second load kind at all: a
+    /// conversation can never give a scheduler more than one packet, because it has to see its
+    /// request come back before it can build anything else. A load that never waits is what makes
+    /// `take` mean something, and what puts several packets of one flow into a single burst --
+    /// which is the shape the allocation defect lived in.
+    ///
+    /// Its claim is that one flow gets one translation, stated across the whole blast rather than
+    /// within a burst. That is the stronger form and it holds for the same reason: the first packet
+    /// establishes the flow and every later one finds it. It assumes nothing invalidates the flow
+    /// underneath -- no icmp error for it, no configuration change -- which is true of every
+    /// property that runs this load and would not be true of one that generated either.
+    pub(super) struct Blast {
+        src: IpAddr,
+        dst: IpAddr,
+        sport: u16,
+        dport: u16,
+        to_send: u8,
+        in_flight: u8,
+        given: Option<(IpAddr, u16)>,
+        delivered: u8,
+        log: Vec<String>,
+    }
+
+    impl Blast {
+        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16, count: u8) -> Self {
+            Self {
+                src,
+                dst,
+                sport,
+                dport,
+                to_send: count.max(2),
+                in_flight: 0,
+                given: None,
+                delivered: 0,
+                log: Vec::new(),
+            }
+        }
+    }
+
+    impl Load for Blast {
+        fn next(&mut self) -> Option<Packet<TestBuffer>> {
+            if self.to_send == 0 {
+                return None;
+            }
+            let packet = udp(self.src, self.dst, self.sport, self.dport)?;
+            self.to_send -= 1;
+            self.in_flight += 1;
+            Some(tunnelled(&packet))
+        }
+
+        fn observe(&mut self, got: &Packet<TestBuffer>) {
+            assert!(
+                self.in_flight > 0,
+                "a blast was given an answer it was not waiting for. {}",
+                self.describe()
+            );
+            self.in_flight -= 1;
+
+            if !matches!(verdict(got), Verdict::Delivered { .. }) {
+                self.log.push(format!("not delivered: {:?}", verdict(got)));
+                return;
+            }
+            let Some(carried) = inside(got) else {
+                self.log.push("delivered but not tunnelled".to_owned());
+                return;
+            };
+            let (Some(source), Some(port)) = (carried.ip_source(), carried.transport_src_port())
+            else {
+                return;
+            };
+            let now = (source, port.get());
+            self.delivered += 1;
+            match self.given {
+                None => {
+                    self.log.push(format!("left as {source}:{}", port.get()));
+                    self.given = Some(now);
+                }
+                Some(first) => assert_eq!(
+                    now, first,
+                    "packets of one flow were given different public tuples, so the flow was \
+                     allocated for more than once. {}",
+                    self.describe()
+                ),
+            }
+        }
+
+        fn finished(&self) -> bool {
+            self.to_send == 0 && self.in_flight == 0
+        }
+
+        fn checked(&self) -> bool {
+            // One delivered packet says nothing: the claim is about agreement between two.
+            self.delivered >= 2
+        }
+
+        fn describe(&self) -> String {
+            format!(
+                "[blast {}:{} -> {}:{} | {} left, {} in flight, {} delivered | {}]",
+                self.src,
+                self.sport,
+                self.dst,
+                self.dport,
+                self.to_send,
+                self.in_flight,
+                self.delivered,
                 if self.log.is_empty() {
                     "nothing yet".to_owned()
                 } else {

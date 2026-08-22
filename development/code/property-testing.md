@@ -188,15 +188,24 @@ therefore what must come back, so the joint claim is just "every one of them was
 had to write down what N interleaved conversations should do, which is the entire argument for
 putting the oracle in the load.
 
-Two things the scheduler does that are worth copying:
+Three things the scheduler does that are worth copying:
 
 - **A burst draws from several loads, not one.** A real rx burst carries everybody's traffic at
   once, and one-load-per-burst would never produce the shape that matters -- a reply for one
-  conversation in the same burst as a request from another. `mixed_polls` counts how many polls
-  actually drew from more than one load, because a schedule that happened not to would be the
-  single-conversation property in a costlier harness, passing.
+  conversation in the same burst as a request from another.
 - **Drain the unfinished loads afterwards.** A conversation cut off mid-flight has checked nothing.
   The schedule decides _when_ things happen; the drain makes sure they all eventually do.
+- **It reports which loads each burst actually drew from, not which the schedule named.** A poll
+  naming three loads that all had nothing to offer is not an interleaving, and a guard counting the
+  schedule would call it one. Counting intent instead of effect is the easiest way to build a
+  coverage guard that cannot fail.
+
+**More than one kind of load, or `take` means nothing.** A request/response load can never offer a
+scheduler more than one packet -- it has to see its request come back first -- so a run of them is a
+run of singleton bursts however generous the schedule. `routed::Blast` never waits, which is what
+makes several packets of one flow share a burst with somebody else's traffic. The guards count
+bursts that mixed _kinds_ as well as bursts that mixed loads, because the two shapes meeting is the
+thing neither alone can produce.
 
 **`next` returning `None` while waiting has to be enforced by the load, and getting it wrong reads
 like a dataplane fault.** `Conversation` first advanced its state only when an answer arrived, so
