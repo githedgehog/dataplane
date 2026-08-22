@@ -6,6 +6,7 @@
 #![allow(clippy::single_match_else)]
 
 use net::buffer::PacketBufferMut;
+use net::flow_key::FlowKeyError;
 use net::flows::{ExtractRef, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
@@ -98,15 +99,24 @@ impl Display for PortFwState {
     }
 }
 
-// Build the flow keys for a port-forwarding flow
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PortFwKeyError {
+    #[error("packet has no flow key: {0}")]
+    NoFlowKey(FlowKeyError),
+    #[error("packet has no source port to forward")]
+    NoSourcePort,
+    #[error("forward target {0} is not of the flow's address family")]
+    TargetFamilyMismatch(UnicastIpAddr),
+}
+
 pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>, // packet to be port-forwarded (in the forward path)
     new_dst_ip: UnicastIpAddr, // destination ip to forward to
     new_dst_port: NonZero<u16>, // destination port to forward to
     dst_vpcd: VpcDiscriminant, // destination VPC to forward to
-) -> Result<(FlowKey, FlowKey), ()> {
+) -> Result<(FlowKey, FlowKey), PortFwKeyError> {
     // Extract flow key for the current packet
-    let current_flow_key = FlowKey::try_from(&*packet).map_err(|_| ())?;
+    let current_flow_key = FlowKey::try_from(&*packet).map_err(PortFwKeyError::NoFlowKey)?;
 
     // Retrieve initial flow key for the current packet (before any other NAT translation); if
     // we don't have the information, we didn't populate it because we don't need it and fall
@@ -120,9 +130,13 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
 
     // Build the key for the reverse path
     let proto = current_flow_key.proto();
-    let src_port = current_flow_key.src_port().ok_or(())?;
+    let src_port = current_flow_key
+        .src_port()
+        .ok_or(PortFwKeyError::NoSourcePort)?;
 
-    let mut key_forward_dnated = current_flow_key.with_dst_ip(new_dst_ip).ok_or(())?;
+    let mut key_forward_dnated = current_flow_key
+        .with_dst_ip(new_dst_ip)
+        .ok_or(PortFwKeyError::TargetFamilyMismatch(new_dst_ip))?;
     key_forward_dnated.set_ip_proto_key(IpProtoKey::from((proto, src_port, new_dst_port)));
     let key_reverse = key_forward_dnated.reverse(Some(dst_vpcd));
 
