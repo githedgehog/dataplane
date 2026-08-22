@@ -399,6 +399,65 @@ mod tests {
     }
 
     // Tests fib reader utilities returning guards
+    /// A route with several entries uses several of them, and uses the same one for a given packet.
+    ///
+    /// Both halves matter and neither implies the other. Spreading is the point of ECMP -- a
+    /// selector that always answers 0 is a router quietly forwarding everything down one path,
+    /// which looks like a working router until a link saturates. Stability is what makes the
+    /// spread safe: a flow whose packets take different paths reorders itself, and anything
+    /// downstream that keys on the path -- connection tracking, NAT -- sees two flows.
+    ///
+    /// Stated over packets that differ only in a transport port, which is the case a selector
+    /// hashing addresses alone would get wrong and which no test made.
+    #[test]
+    fn ecmp_uses_the_whole_group_and_picks_the_same_entry_for_a_packet() {
+        let (mut fibw, fibr) = FibWriter::new(0);
+
+        let prefix = Prefix::from("192.168.1.0/24");
+        let nhkey = NhopKey::with_address(&IpAddr::from_str("7.0.0.1").unwrap());
+        let entries: Vec<FibEntry> = (1..=5)
+            .map(|i| build_fib_entry_egress(i, &format!("10.0.{i}.1")))
+            .collect();
+        let fibgroup = build_fibgroup(&entries);
+        fibw.register_fibgroup(&nhkey, &fibgroup, false);
+        fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
+        fibw.publish();
+
+        // One packet per source port, and the choice each one gets.
+        let mut chosen: HashMap<u16, FibEntry> = HashMap::new();
+        for port in 1024u16..1224 {
+            let mut packet = test_packet();
+            packet
+                .set_udp_destination_port(UdpPort::new_checked(port).unwrap())
+                .unwrap();
+            let (matched, entry) = fibr.lpm_entry_prefix(&packet).unwrap();
+            assert_eq!(matched, prefix);
+            assert!(
+                entries.contains(&entry),
+                "the selected entry is not in the group"
+            );
+            chosen.insert(port, (*entry).clone());
+        }
+
+        let distinct: HashSet<&FibEntry> = chosen.values().collect();
+        assert!(
+            distinct.len() > 1,
+            "every one of 200 flows took the same one of {} paths",
+            entries.len()
+        );
+
+        // Same packet, same answer -- asked after the spread, so a selector that varied with
+        // anything but the packet would have been caught above and here.
+        for (port, expected) in &chosen {
+            let mut packet = test_packet();
+            packet
+                .set_udp_destination_port(UdpPort::new_checked(*port).unwrap())
+                .unwrap();
+            let (_, entry) = fibr.lpm_entry_prefix(&packet).unwrap();
+            assert_eq!(&*entry, expected, "the entry chosen for port {port} moved");
+        }
+    }
+
     #[test]
     fn test_fib_guards() {
         // create fib

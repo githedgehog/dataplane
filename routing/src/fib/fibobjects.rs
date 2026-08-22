@@ -303,7 +303,7 @@ mod squash_properties {
     }
 
     #[derive(Debug, Clone, Copy, Default)]
-    struct Entry;
+    pub(super) struct Entry;
 
     impl ValueGenerator for Entry {
         type Output = FibEntry;
@@ -434,6 +434,64 @@ mod squash_properties {
                 let mut twice = once.clone();
                 twice.squash();
                 assert_eq!(twice, once, "for {entry:?}");
+            });
+    }
+}
+
+/// The two questions the forwarding path asks a `FibEntry` about itself.
+///
+/// Split from `squash_properties` because they are about classification rather than about merging,
+/// but they draw entries from the same generator: an entry with no instruction, several, or a
+/// repeated one is exactly where a predicate written for the common shape goes wrong.
+#[cfg(test)]
+mod classification_properties {
+    use super::squash_properties::Entry;
+    use super::*;
+
+    /// An entry is "IP local" when delivering to this box is the whole of what it says.
+    ///
+    /// The `&&` is load-bearing in both directions and the two halves fail differently. Dropping
+    /// the count admits an entry that is local *and* something else -- delivered locally and
+    /// forwarded, a duplicate. Dropping the match admits any single-instruction entry, including
+    /// `Drop`, which would deliver a discarded packet to the control plane.
+    #[test]
+    fn an_entry_is_ip_local_exactly_when_delivering_locally_is_all_it_does() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                let locals = entry
+                    .iter()
+                    .filter(|inst| matches!(inst, PktInstruction::Local(_)))
+                    .count();
+                assert_eq!(
+                    entry.is_iplocal(),
+                    locals == 1 && entry.iter().count() == 1,
+                    "for {entry:?}"
+                );
+            });
+    }
+
+    /// Asking whether an entry encapsulates into a given VNI agrees with asking which VNI it uses.
+    ///
+    /// Stated against `is_vxlan` rather than against the instruction list, because the pair are two
+    /// readings of the same fact and the interesting failure is them disagreeing: `is_vxlan` picks
+    /// the first VXLAN encapsulation, and a predicate that scanned for *any* matching one would
+    /// answer yes about a VNI the packet will not be sent to.
+    #[test]
+    fn asking_about_one_vni_agrees_with_asking_which_vni() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                for raw in 1..=4u32 {
+                    let vni = Vni::new_checked(raw).unwrap_or_else(|_| unreachable!());
+                    assert_eq!(
+                        entry.is_vxlan_with_vni(vni),
+                        entry.is_vxlan() == Some(vni),
+                        "vni {raw} for {entry:?}"
+                    );
+                }
             });
     }
 }
