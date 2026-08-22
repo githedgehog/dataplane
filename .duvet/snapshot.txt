@@ -210,8 +210,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
   SECTION: [ICMP Messages That Can Be Extended](#section-4.6)
     TEXT[!MAY]:    The ICMP Extension Structure MAY be appended to messages of the
     TEXT[!MAY]:    following types:
-    TEXT[!MUST]:    The ICMP Extension Structure MUST NOT be appended to any of the other
-    TEXT[!MUST]:    ICMP messages mentioned in Section 4.
+    TEXT[!MUST,implementation,test]:    The ICMP Extension Structure MUST NOT be appended to any of the other
+    TEXT[!MUST,implementation,test]:    ICMP messages mentioned in Section 4.
 
   SECTION: [Compliant Application Receives ICMP Message with No Extensions](#section-5.4)
     TEXT[!MUST]: If the length attribute is zero, the compliant application

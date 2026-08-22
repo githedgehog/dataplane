@@ -1199,6 +1199,70 @@ mod test {
     use crate::icmp6::{Icmp6, Icmp6Type};
     use crate::parse::{DeParse, Parse};
 
+    use etherparse::{Icmpv6Header, Icmpv6Type};
+
+    fn icmp6(icmp_type: Icmpv6Type) -> Icmp6 {
+        Icmp6(Icmpv6Header {
+            icmp_type,
+            checksum: 0,
+        })
+    }
+
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-4.6
+    //= type=test
+    //# The ICMP Extension Structure MUST NOT be appended to any of the other
+    //# ICMP messages mentioned in Section 4.
+    #[test]
+    fn only_two_icmpv6_types_can_carry_an_extension_structure() {
+        assert!(
+            icmp6(Icmpv6Type::DestinationUnreachable(
+                etherparse::icmpv6::DestUnreachableCode::NoRoute
+            ))
+            .supports_extensions()
+        );
+        assert!(
+            icmp6(Icmpv6Type::TimeExceeded(
+                etherparse::icmpv6::TimeExceededCode::HopLimitExceeded
+            ))
+            .supports_extensions()
+        );
+
+        assert!(
+            !icmp6(Icmpv6Type::ParameterProblem(
+                etherparse::icmpv6::ParameterProblemHeader {
+                    code: etherparse::icmpv6::ParameterProblemCode::ErroneousHeaderField,
+                    pointer: 0x0100,
+                }
+            ))
+            .supports_extensions(),
+            "ICMPv6 Parameter Problem has no room for a length attribute; its bytes 4..8 are the \
+             Pointer, and reading a length out of them makes a large pointer look like a claim \
+             about how much of the offending datagram was included"
+        );
+        assert!(!icmp6(Icmpv6Type::PacketTooBig { mtu: 1500 }).supports_extensions());
+        assert!(
+            !icmp6(Icmpv6Type::EchoRequest(etherparse::IcmpEchoHeader {
+                id: 1,
+                seq: 1
+            }))
+            .supports_extensions()
+        );
+    }
+
+    #[test]
+    fn the_icmpv6_length_attribute_counts_64_bit_words() {
+        let unreachable = icmp6(Icmpv6Type::DestinationUnreachable(
+            etherparse::icmpv6::DestUnreachableCode::NoRoute,
+        ));
+        let mut buf = [0u8; 8];
+        buf[4] = 17;
+        buf[5] = 200;
+        assert_eq!(unreachable.payload_length(&buf), 17 * 8);
+
+        let too_big = icmp6(Icmpv6Type::PacketTooBig { mtu: 1500 });
+        assert_eq!(too_big.payload_length(&buf), 0);
+    }
+
     /// A Packet Too Big with MTU below 1280 should be treated as unknown
     /// `ICMPv6`, since RFC 8200 section 5 sets 1280 as the IPv6 minimum.
     #[test]
