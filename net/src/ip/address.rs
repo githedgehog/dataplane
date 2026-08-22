@@ -98,7 +98,13 @@ pub trait IpAddress:
     type Unicast: IpAddress<Unicast = Self::Unicast> + Into<Self>;
 
     /// Width of the address, in bits.
-    const BITS: u8 = const { <Self as FixedSize>::SIZE as u8 * 8 };
+    ///
+    /// Derived from the wire size rather than restated by each implementor, so the two cannot
+    /// drift apart.
+    // The seal is what makes the cast safe: `SIZE` is 4 or 16 across every implementor, so the
+    // product is 32 or 128. A wider one would fail const evaluation here rather than truncate.
+    #[allow(clippy::cast_possible_truncation)]
+    const BITS: u8 = const { (<Self as FixedSize>::SIZE * 8) as u8 };
 
     /// Widen to the version-erased [`IpAddr`].
     fn to_ip_addr(self) -> IpAddr;
