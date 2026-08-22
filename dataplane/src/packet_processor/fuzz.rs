@@ -435,9 +435,13 @@ pub(crate) fn uplink() -> InterfaceIndex {
 ///
 /// Three fibs. The underlay one has a single host route for this gateway's vtep whose instruction
 /// is `Local`, which is what makes `IpForwarder` decapsulate rather than route onward -- the
-/// tunnel endpoint is not a special case in the forwarding path, it is a route. The two overlay
-/// fibs are reached by vni, and only the peer's carries an encapsulation, because only traffic
-/// leaving towards the peer is tunnelled by this gateway.
+/// tunnel endpoint is not a special case in the forwarding path, it is a route.
+///
+/// The two overlay fibs are reached by vni and are deliberately symmetric: each carries an
+/// encapsulation back out towards [`PEER_VTEP`]. Both vpcs living behind one remote endpoint is a
+/// simplification -- a real fabric would have a vtep per host -- but it is the simplification that
+/// keeps the *asymmetry under test* in the pipeline rather than in the topology. A fixture that
+/// could only encapsulate one way would make a reply fail for a reason no property is about.
 fn topology() -> RouterTables {
     let mut tables = RouterTables::new();
 
@@ -456,10 +460,28 @@ fn topology() -> RouterTables {
     );
 
     tables.vrf(LOCAL_VRF, Some(vni(LOCAL_VNI)));
+    encapsulate_out_of(&mut tables, LOCAL_VRF, vni(LOCAL_VNI));
 
     tables.vrf(REMOTE_VRF, Some(vni(REMOTE_VNI)));
+    encapsulate_out_of(&mut tables, REMOTE_VRF, vni(REMOTE_VNI));
+
+    tables.adjacency(
+        PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+        uplink(),
+        PEER_MAC,
+    );
+
+    tables
+}
+
+/// Give `vrfid` a vtep and a route that tunnels everything leaving it towards [`PEER_VTEP`].
+///
+/// A default route rather than the peering's translated range: what a masquerading expose turns an
+/// address into is the nat stages' business, and a topology that had to agree with them would be a
+/// second copy of the translation to keep correct.
+fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
     tables.vtep(
-        REMOTE_VRF,
+        vrfid,
         Vtep::with_ip_and_mac(
             LOCAL_VTEP.parse().unwrap_or_else(|_| unreachable!()),
             GATEWAY_MAC,
@@ -468,7 +490,7 @@ fn topology() -> RouterTables {
     let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
     let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
         ResolvedVxlan {
-            vni: vni(REMOTE_VNI),
+            vni: out_vni,
             remote: peer,
             dmac: PEER_MAC,
         },
@@ -477,19 +499,7 @@ fn topology() -> RouterTables {
         Some(uplink()),
         Some(peer),
     )));
-    // A default route rather than the peering's translated range: what a masquerading expose turns
-    // an address into is the nat stages' business, and a topology that had to agree with them
-    // would be a second copy of the translation to keep correct.
-    tables.route_via(
-        REMOTE_VRF,
-        Prefix::root_v4(),
-        nhop(&peer),
-        &FibGroup::with_entry(out),
-    );
-
-    tables.adjacency(peer, uplink(), PEER_MAC);
-
-    tables
+    tables.route_via(vrfid, Prefix::root_v4(), nhop(&peer), &FibGroup::with_entry(out));
 }
 
 /// A next hop is only an identity here: it names the group a route resolves to, and the tests
@@ -913,7 +923,19 @@ mod round_trip {
         }
     }
 
-    fn udp(src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Option<Packet<TestBuffer>> {
+    /// A UDP packet, ready to be routed.
+    ///
+    /// The hop count is set because `Ipv4::default()` and `Ipv6::default()` leave it at zero, and
+    /// a packet with no hops left is not traffic anybody sends -- it is a packet that has already
+    /// expired. The overlay slice does not care, having no forwarding stage to decrement it, which
+    /// is exactly why the omission survived here: `routed`'s properties put the same packets
+    /// through `IpForwarder` and every one of them died at the first decrement.
+    pub(super) fn udp(
+        src: IpAddr,
+        dst: IpAddr,
+        sport: u16,
+        dport: u16,
+    ) -> Option<Packet<TestBuffer>> {
         // Validated out here: the header-stack closures cannot fail, so anything that can reject
         // an input has to reject it before the stack is built.
         let sport = UdpPort::new_checked(sport).ok()?;
@@ -926,6 +948,7 @@ mod round_trip {
                     .ipv4(|ip| {
                         ip.set_source(src);
                         ip.set_destination(dst);
+                        ip.set_ttl(64);
                     })
                     .udp(|udp| {
                         udp.set_source(sport);
@@ -941,6 +964,7 @@ mod round_trip {
                     .ipv6(|ip| {
                         ip.set_source(src);
                         ip.set_destination(dst);
+                        ip.set_hop_limit(64);
                     })
                     .udp(|udp| {
                         udp.set_source(sport);
@@ -1432,15 +1456,58 @@ mod routed {
     use super::*;
     use super::shapes::{Batch, Shape, aim, wire};
     use net::buffer::TestBuffer;
-    use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryVxlan};
+    use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
+    use net::parse::DeParse;
     use net::ip::dscp::Dscp;
     use net::ip::ecn::Ecn;
     use net::packet::test_utils::{
-        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying,
+        build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
     };
     use net::vlan::Vid;
+    use super::round_trip::udp;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A flow to try, as a host in the private range and the ports it uses.
+    #[derive(Debug, Clone, Copy)]
+    struct Flow {
+        host: u8,
+        sport: u16,
+        dport: u16,
+    }
+
+    /// A batch of flows to run against one fabric.
+    ///
+    /// One configuration rather than a generated one: this property is about the journey, and a
+    /// generated peering mostly varies which translation is applied -- which
+    /// `round_trip::a_translated_flow_comes_back_to_where_it_started` already explores far more
+    /// cheaply at the overlay slice. What is scarce here is executions, so they are spent on flows.
+    struct Flows;
+
+    const FLOWS_PER_FABRIC: usize = 8;
+
+    impl bolero::ValueGenerator for Flows {
+        type Output = Vec<Flow>;
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Vec<Flow>> {
+            (0..FLOWS_PER_FABRIC)
+                .map(|_| {
+                    Some(Flow {
+                        host: driver.produce()?,
+                        // Port 0 is not a port; masquerade would refuse it for reasons that have
+                        // nothing to do with whether a translation reverses.
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("routed::Flows", &Flows);
+    }
 
     /// The one peering every test here uses: a private range masqueraded into a public one.
     fn exposes() -> Vec<VpcExpose> {
@@ -1454,17 +1521,21 @@ mod routed {
         ]
     }
 
-    /// Wrap `inner` in a vxlan frame addressed to this gateway, arriving on the uplink.
+    /// Wrap `inner` in a vxlan frame addressed to this gateway, arriving on the uplink from the
+    /// vpc named by `from`.
     ///
-    /// The outer addresses and the vni come from the fixture rather than from here, and the
-    /// topology was chosen to match them. Deliberately: a helper that rewrote the outer header to
-    /// whatever the topology wanted could not be used to build a frame the topology should
-    /// *refuse*.
-    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    /// The outer addresses come from the fixture rather than from here, and the topology was
+    /// chosen to match them. Deliberately: a helper that rewrote the outer header to whatever the
+    /// topology wanted could not be used to build a frame the topology should *refuse*.
+    fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let bytes = inner.clone().serialize().expect("the inner frame serializes");
-        let mut packet =
-            build_test_vxlan_ipv4_packet_carrying(Dscp::default(), Ecn::default(), bytes.as_ref())
-                .expect("a well-formed tunnelled frame");
+        let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
+            from,
+            Dscp::default(),
+            Ecn::default(),
+            bytes.as_ref(),
+        )
+        .expect("a well-formed tunnelled frame");
         packet
             .set_eth_destination(GATEWAY_MAC)
             .expect("the frame has an ethernet header");
@@ -1472,6 +1543,21 @@ mod routed {
         // Kept so a drop can be attributed rather than swallowed by `enforce`, as elsewhere here.
         packet.meta_mut().set_keep(true);
         packet
+    }
+
+    /// [`tunnelled_from`] for traffic originating in the local vpc, which is most of it.
+    fn tunnelled(inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+        tunnelled_from(vni(LOCAL_VNI), inner)
+    }
+
+    /// Peel the tunnel off a delivered frame to see the tenant packet inside it.
+    ///
+    /// Everything a property here wants to say is about the inner packet, and everything the
+    /// gateway hands to the wire is an outer one. Returns `None` if what came back was not
+    /// tunnelled at all, which is a finding rather than a filter -- callers say so.
+    fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
+        let mut copy = delivered.clone();
+        matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
     }
 
     /// A tenant packet from the private range to somewhere outside it.
@@ -1660,6 +1746,156 @@ mod routed {
         // tag would make the assertion above unreachable.
         super::assert_covered(delivered > 0, "nothing ever reached the wire");
         super::assert_covered(tagged > 0, "no tagged shape was ever generated");
+    }
+
+    /// A tunnelled flow comes back through the tunnel to where it started.
+    ///
+    /// The same claim as `round_trip::a_translated_flow_comes_back_to_where_it_started`, made where
+    /// the packet has to earn every step. There, both directions had their arrival stamped by
+    /// hand; here the request is decapsulated, translated, re-encapsulated and framed, and the
+    /// reply arrives as a real tunnelled frame carrying the *peer's* vni and has to make the whole
+    /// journey back. The reply-side decapsulation has no other test at all.
+    ///
+    /// The oracle costs nothing, which is why this is the property worth having: the reply is built
+    /// from what came out rather than from what went in, so nothing here knows or computes what the
+    /// translation should have been -- only that whatever it was has to reverse. Every address and
+    /// port asserted below is one the test itself chose before the pipeline saw it.
+    ///
+    /// Three riders come free once a packet is followed end to end, and each is a separate claim:
+    ///
+    /// - **The tenant payload survives.** Decapsulate, translate, re-encapsulate -- the bytes
+    ///   behind the headers must be the bytes that arrived. This is the class the doubled VXLAN
+    ///   header in the fixtures belonged to, and byte comparison is the only thing that sees it.
+    /// - **The tenant packet is charged exactly one hop.** Narrower than it first looks, and worth
+    ///   stating precisely: the two `IpForwarder` passes act on *different* headers -- the first on
+    ///   the outer frame, which decapsulation then discards, the second on the inner one -- so this
+    ///   does not catch the first pass decrementing when it should not. Break-tested both ways.
+    ///   What it does catch is a forwarder that stops decrementing at all, and decapsulation moving
+    ///   to where the inner packet would be charged twice.
+    /// - **It leaves tunnelled to the right vpc.** A reply is only correct if it went back into the
+    ///   vni it came from.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_tunnelled_flow_comes_back_through_the_tunnel() {
+        static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NOT_DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Flows)
+            .for_each(|flows| {
+                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                    return;
+                };
+
+                for flow in flows {
+                    let src: IpAddr = format!("1.1.0.{}", flow.host)
+                        .parse()
+                        .unwrap_or_else(|_| unreachable!());
+                    let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                    let Some(request) = udp(src, dst, flow.sport, flow.dport) else {
+                        continue;
+                    };
+                    let sent_payload = payload_of(&request);
+                    let ttl_sent = ttl_of(&request);
+
+                    let out = fabric.send(tunnelled(&request));
+                    if !matches!(verdict(&out), Verdict::Delivered { .. }) {
+                        NOT_DELIVERED.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    assert_eq!(
+                        out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                        Some(vni(REMOTE_VNI)),
+                        "the request left tunnelled towards the wrong vpc"
+                    );
+
+                    let translated = inside(&out).expect("a delivered request was not tunnelled");
+                    assert_eq!(
+                        payload_of(&translated),
+                        sent_payload,
+                        "the tenant payload did not survive the round of decap, nat and encap"
+                    );
+                    assert_eq!(
+                        ttl_of(&translated).map(|t| t + 1),
+                        ttl_sent,
+                        "the tenant packet was not charged exactly one hop"
+                    );
+
+                    // What the far side saw, and so what it would answer.
+                    let (Some(public_src), Some(reached)) =
+                        (translated.ip_source(), translated.ip_destination())
+                    else {
+                        continue;
+                    };
+                    let public_port = translated
+                        .transport_src_port()
+                        .unwrap_or_else(|| unreachable!("a udp packet has a source port"))
+                        .get();
+
+                    let Some(reply) = udp(reached, public_src, flow.dport, public_port) else {
+                        continue;
+                    };
+                    let back = fabric.send(tunnelled_from(vni(REMOTE_VNI), &reply));
+
+                    let verdict = verdict(&back);
+                    assert!(
+                        matches!(verdict, Verdict::Delivered { .. }),
+                        "the reply of a delivered flow did not reach the wire: {verdict:?} \
+                         (request {src}:{sport} -> {dst}:{dport} left as \
+                         {public_src}:{public_port})",
+                        sport = flow.sport,
+                        dport = flow.dport
+                    );
+                    assert_eq!(
+                        back.try_vxlan().map(net::vxlan::Vxlan::vni),
+                        Some(vni(LOCAL_VNI)),
+                        "the reply went back into the wrong vpc"
+                    );
+
+                    let returned = inside(&back).expect("a delivered reply was not tunnelled");
+                    assert_eq!(
+                        returned.ip_destination(),
+                        Some(src),
+                        "the reply did not come back to the host that sent the request"
+                    );
+                    assert_eq!(
+                        returned.ip_source(),
+                        Some(dst),
+                        "the reply's source was rewritten"
+                    );
+                    assert_eq!(
+                        returned.transport_dst_port().map(std::num::NonZero::get),
+                        Some(flow.sport),
+                        "the reply did not get the original source port back"
+                    );
+                    ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let round_tripped = ROUND_TRIPPED.load(Ordering::Relaxed);
+        eprintln!(
+            "tunnelled-round-trips={round_tripped} not-delivered={}",
+            NOT_DELIVERED.load(Ordering::Relaxed)
+        );
+        super::assert_covered(
+            round_tripped > 0,
+            "no flow ever reached the wire, so no reply was ever checked to come back",
+        );
+    }
+
+    /// The tenant payload: what is left once every header has been accounted for.
+    fn payload_of(packet: &Packet<TestBuffer>) -> Vec<u8> {
+        let bytes = packet
+            .clone()
+            .serialize()
+            .expect("a packet in hand serializes");
+        let headers = packet.headers().size().get() as usize;
+        bytes.as_ref().get(headers..).unwrap_or_default().to_vec()
+    }
+
+    fn ttl_of(packet: &Packet<TestBuffer>) -> Option<u8> {
+        packet.try_ipv4().map(net::ipv4::Ipv4::ttl)
     }
 
     /// Push one packet through a bare pipeline and take back the one that comes out.
