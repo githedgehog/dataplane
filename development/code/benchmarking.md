@@ -20,6 +20,14 @@ but do not predict elapsed time.
 Fewer instructions can still mean slower execution after a data-layout change.
 "Estimated Cycles" is derived from counters, not a measured cycle count.
 
+Callgrind scopes measurements to the benchmark function.
+Cachegrind counts the whole process, so its totals are not directly comparable.
+The cache geometry in `fib_lookup_callgrind.rs` is a fixed reference configuration,
+not a description of the current host.
+
+Valgrind can change DPDK's CPU dispatch.
+Confirm which implementation ran before comparing its results with native measurements.
+
 ## Fixtures
 
 The shared fixture asserts that the packet matches the installed prefix.
