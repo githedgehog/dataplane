@@ -169,9 +169,17 @@ impl IfTableWriter {
     ) -> Result<(), RouterError> {
         // FIXME(fredi): this can be significantly simplified
         let fibkey = self.interface_attach_check(ifindex, vrfid, vrftable)?;
+        self.attach_interface_to_fib(ifindex, fibkey);
+        Ok(())
+    }
+    /// Attach an interface to the fib named by `fibkey`, without consulting a [`VrfTable`].
+    ///
+    /// The vrf table is how the router finds a vrf's fib; a caller that already holds the key has
+    /// nothing to look up. Crate-private because skipping the lookup also skips the check that the
+    /// key names a fib that exists.
+    pub(crate) fn attach_interface_to_fib(&mut self, ifindex: InterfaceIndex, fibkey: FibKey) {
         self.0.append(IfTableChange::Attach((ifindex, fibkey)));
         self.0.publish();
-        Ok(())
     }
     pub fn detach_interface(&mut self, ifindex: InterfaceIndex) {
         self.0.append(IfTableChange::Detach(ifindex));
