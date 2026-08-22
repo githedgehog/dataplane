@@ -1100,9 +1100,13 @@ pub mod contract {
 
     use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
     use crate::ConfigError;
+    use crate::external::overlay::acl::{
+        Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    };
     use crate::external::overlay::vpc::{Vpc, VpcTable};
     use crate::external::overlay::{Overlay, ValidatedOverlay};
     use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::PrefixPortsSet;
     use lpm::prefix::{
         IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
     };
@@ -1586,6 +1590,42 @@ pub mod contract {
         ))?;
 
         Ok(Overlay::new(vpc_table, peerings))
+    }
+
+    #[must_use]
+    pub fn peering_acl(default: AclAction, allow: AclProtoMatch) -> Acl {
+        Acl::new(
+            default,
+            vec![AclRule {
+                name: "allow-one-protocol".to_owned(),
+                from: "VPC-1".to_owned(),
+                to: "VPC-2".to_owned(),
+                action: match default {
+                    AclAction::Allow => AclAction::Deny,
+                    AclAction::Deny => AclAction::Allow,
+                },
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: allow,
+                },
+                scope: AclScope::Packet,
+                log: false,
+            }],
+        )
+    }
+
+    pub fn overlay_with_exposes_and_acl(
+        exposes: Vec<VpcExpose>,
+        acl: Option<&Acl>,
+    ) -> Result<Overlay, ConfigError> {
+        let mut overlay = overlay_with_exposes(exposes)?;
+        for peering in overlay.peering_table.values_mut() {
+            peering.acl = acl.cloned();
+        }
+        Ok(overlay)
     }
 
     #[must_use]
