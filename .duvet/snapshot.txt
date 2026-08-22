@@ -405,18 +405,18 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5508
     TEXT[!MUST]:    [ICMP-EXT], the NAT device MUST exclude the optional zero-padding and
     TEXT[!MUST]:    the ICMP extensions when evaluating transport checksum for the
     TEXT[!MUST]:    embedded packet.
-    TEXT[!SHOULD]:    REQ-3: When an ICMP Error packet is received, if the ICMP checksum
-    TEXT[!SHOULD]:           fails to validate, the NAT SHOULD silently drop the ICMP Error
-    TEXT[!SHOULD]:           packet.
-    TEXT[!SHOULD]:           a) If the IP checksum of the embedded packet fails to
-    TEXT[!SHOULD]:              validate, the NAT SHOULD silently drop the Error packet;
-    TEXT[!SHOULD]:              and
+    TEXT[!SHOULD,implementation,test]:    REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+    TEXT[!SHOULD,implementation,test]:           fails to validate, the NAT SHOULD silently drop the ICMP Error
+    TEXT[!SHOULD,implementation,test]:           packet.
+    TEXT[!SHOULD,implementation,test]:           a) If the IP checksum of the embedded packet fails to
+    TEXT[!SHOULD,implementation,test]:              validate, the NAT SHOULD silently drop the Error packet;
+    TEXT[!SHOULD,implementation,test]:              and
     TEXT[!MUST]:           b) If the embedded packet includes IP options, the NAT device
     TEXT[!MUST]:              MUST traverse past the IP options to locate the start of
     TEXT[!MUST]:              the transport header for the embedded packet; and
-    TEXT[!SHOULD]:           c) The NAT device SHOULD NOT validate the transport checksum
-    TEXT[!SHOULD]:              of the embedded packet within an ICMP Error message, even
-    TEXT[!SHOULD]:              when it is possible to do so; and
+    TEXT[!SHOULD,implementation,test]:           c) The NAT device SHOULD NOT validate the transport checksum
+    TEXT[!SHOULD,implementation,test]:              of the embedded packet within an ICMP Error message, even
+    TEXT[!SHOULD,implementation,test]:              when it is possible to do so; and
     TEXT[!MUST]:           d) If the ICMP Error payload contains ICMP extensions
     TEXT[!MUST]:              [ICMP-EXT], the NAT device MUST exclude the optional zero-
     TEXT[!MUST]:              padding and the ICMP extensions when evaluating transport
