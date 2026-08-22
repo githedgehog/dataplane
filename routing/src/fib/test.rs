@@ -119,7 +119,7 @@ mod tests {
         let done = Arc::new(AtomicU16::new(0));
 
         // create fib with writer and readers
-        let (mut fibw, fibr) = FibWriter::new(FibKey::Id(0));
+        let (mut fibw, fibr) = FibWriter::new(0);
 
         // the prefix of the route that will be used to process a packet
         let prefix = Prefix::from("192.168.1.0/24");
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn test_fib_guards() {
         // create fib
-        let (mut fibw, fibr) = FibWriter::new(FibKey::Id(0));
+        let (mut fibw, fibr) = FibWriter::new(0);
 
         // add a route
         let prefix = Prefix::from("192.168.1.0/24");
