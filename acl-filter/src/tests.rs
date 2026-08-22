@@ -1237,6 +1237,55 @@ mod dpdk_backend {
 }
 
 #[test]
+fn a_vlan_tagged_overlay_frame_is_refused() {
+    use net::vlan::Vid;
+
+    let acl = Acl::new(
+        AclAction::Deny,
+        vec![rule(
+            "allow-tcp",
+            AclAction::Allow,
+            AclScope::Packet,
+            pattern(&[V1_IPS], &[V2_IPS], AclProtoMatch::Tcp),
+        )],
+    );
+    let mut filter = build_filter_v4(Some(acl));
+
+    let plain = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        build_tcp_packet(v4("10.0.0.5"), v4("20.0.0.5"), 1234, 80),
+    );
+    assert!(is_allowed(&run(&mut filter, plain)));
+
+    let tagged = packet(
+        vpcd(VNI1),
+        Some(vpcd(VNI2)),
+        HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(Vid::new(4000).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(v4("10.0.0.5")).unwrap());
+                ip.set_destination(v4("20.0.0.5"));
+            })
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(1234u16).unwrap());
+                tcp.set_destination(TcpPort::try_from(80u16).unwrap());
+            })
+            .build_headers()
+            .unwrap(),
+    );
+    let out = run(&mut filter, tagged);
+    assert_eq!(
+        out.get_done(),
+        Some(DoneReason::Unhandled),
+        "a VLAN-tagged overlay frame was forwarded on the strength of its inner headers"
+    );
+}
+
+#[test]
 fn an_extension_header_does_not_evade_a_protocol_rule() {
     let acl = Acl::new(
         AclAction::Allow,
