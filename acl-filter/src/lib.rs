@@ -186,7 +186,13 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
 
         let src_ip = net.src_addr();
         let dst_ip = net.dst_addr();
-        let proto = net.next_header();
+        // The protocol the packet carries, not the IP header's next-header field: for IPv6
+        // those differ whenever an extension header is present, and a rule naming a protocol would
+        // never match such a packet -- so one Hop-by-Hop header carries it past a Deny rule.
+        let Some(proto) = packet.upper_layer_proto() else {
+            debug!("Could not determine the upper-layer protocol, dropping packet");
+            return Err(DoneReason::Malformed);
+        };
         let ports = packet
             .try_transport()
             .and_then(|t| t.src_port().zip(t.dst_port()));

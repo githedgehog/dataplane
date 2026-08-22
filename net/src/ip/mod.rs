@@ -63,6 +63,24 @@ impl NextHeader {
     /// IP Authentication Header (RFC 4302)
     pub const AUTH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
 
+    /// Whether this names an IPv6 extension header rather than an upper-layer protocol.
+    ///
+    /// The set is the one [`crate::headers::Headers`] can parse into `net_ext`, which is what
+    /// makes it the right question to ask when deciding whether a header chain was walked to its
+    /// end: a value outside it is either a transport we understand or one we do not, and in both
+    /// cases it is the protocol the packet carries.
+    #[must_use]
+    pub const fn is_ipv6_extension(self) -> bool {
+        matches!(
+            self.as_u8(),
+            0  /* HOP_BY_HOP  */
+            | 43 /* ROUTING     */
+            | 44 /* FRAGMENT    */
+            | 51 /* AUTH        */
+            | 60 /* DEST_OPTS   */
+        )
+    }
+
     /// Generate a new [`NextHeader`]
     ///
     /// `const` so callers can build associated constants from it (see this type's `MaskBits`

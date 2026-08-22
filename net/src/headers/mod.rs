@@ -756,6 +756,35 @@ impl Headers {
         &self.net_ext
     }
 
+    /// The upper-layer protocol the packet carries, walking past any IPv6 extension headers.
+    ///
+    /// This is what a filter means when it says "TCP", and it is **not**
+    /// [`Net::next_header`]: for an IPv6 packet carrying extension headers, the IP header's
+    /// next-header field names the first extension header, not the transport. Matching a rule
+    /// against it lets one Hop-by-Hop header carry a packet past a protocol-specific rule
+    /// untouched.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the chain could not be walked to its end -- there is no IP header at all, or
+    /// the last header parsed points at another extension header that was not. The second case is
+    /// [`MAX_NET_EXTENSIONS`] being exceeded, and it is deliberately not reported as some
+    /// plausible protocol: a caller filtering on protocol has to decide what to do about a chain
+    /// nobody read, and it cannot decide what it is not told.
+    #[must_use]
+    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+        let next = match self.net_ext.last() {
+            Some(NetExt::HopByHop(h)) => h.next_header(),
+            Some(NetExt::DestOpts(h)) => h.next_header(),
+            Some(NetExt::Routing(h)) => h.next_header(),
+            Some(NetExt::Fragment(h)) => h.next_header(),
+            Some(NetExt::Ipv4Auth(h)) => h.next_header(),
+            Some(NetExt::Ipv6Auth(h)) => h.next_header(),
+            None => self.net.as_ref()?.next_header(),
+        };
+        (!next.is_ipv6_extension()).then_some(next)
+    }
+
     /// Get a reference to the transport header, if present.
     #[must_use]
     pub fn transport(&self) -> Option<&Transport> {
