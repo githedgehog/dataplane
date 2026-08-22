@@ -4,6 +4,14 @@ Two harnesses, measuring different things. Both live under `routing/benches/` as
 `fib_lookup.rs` (criterion) and `fib_lookup_callgrind.rs` (iai-callgrind) run the same fixtures
 against the same code so their answers can be compared.
 
+They do not each define those fixtures. `benches/common/mod.rs` holds the fixture builder, the
+measured body, and the list of route shapes, and both harnesses consume it. This is not tidiness:
+two benchmarks that have drifted apart do not fail, they quietly answer different questions, and
+the comparison between them becomes a lie that still compiles. The shape list is a macro rather
+than a `const` because the callgrind harness needs one `#[bench::id(...)]` attribute per shape and
+attributes cannot be looped over -- so `for_each_shape!` expands one definition into an array for
+criterion and into attributes for callgrind.
+
 ```sh
 just bench            # criterion: wall-clock on this machine
 just bench-callgrind  # iai-callgrind: instructions and modelled cache traffic
@@ -41,6 +49,11 @@ groups once instead of twice -- and measuring it both ways:
 | 8 groups, 1 entry | −7.7% | −6.7% |
 | 16 groups, 1 entry | −11.9% | −16.1% |
 | 16 groups, 4 entries | −11.1% | −21.8% |
+
+(Those wall-clock figures were taken in one sitting with the read guard hoisted out of the
+measured region. Both harnesses now include it, with `enter_only` to subtract; and absolute
+nanoseconds move between sessions on a busy machine -- a rebuild of this table shifted every row,
+the untouched trie floor included, by about a third. Only the ratios travel.)
 
 Read the top two rows. Callgrind reports an improvement; the machine is slower. The change removes
 instructions, which is all callgrind can see, but it also grows `FibRoute` from 24 to 32 bytes --
@@ -147,6 +160,25 @@ worth writing. Use wall clock on the target hardware for that.
 
 The same caution applies anywhere runtime dispatch picks an implementation from CPU features,
 which in this tree means most things that reach DPDK.
+
+AVX-512 under valgrind has been outstanding for years and may never land, so this is a constraint
+to live with rather than a bug to wait out. It has a design consequence worth stating plainly:
+**be wary of code whose behaviour depends sharply on one CPU feature.** Depending on something
+ubiquitous is fine -- AES-NI is on everything we will ever run on. An algorithm that only works,
+or only performs, under AVX-512 is hostile to the machines developers actually have, cannot be
+profiled with these tools, and should be a deliberate and argued decision rather than a
+consequence of writing the fastest thing that worked on one workstation.
+
+### Why the cache parameters are hard-coded
+
+The values passed to cachegrind are this workstation's, written out rather than probed. Reading
+them from the host -- the `hardware` crate could -- would make a CI result depend on whichever
+runner the job landed on, which is worse than a number that is at least consistently one machine's.
+
+What would actually be worth building, later, is a small set of named geometries matching the CPUs
+we are deployed on, so a benchmark can be run against a customer's cache rather than against
+whatever is under it. That is a different job from asking the local machine, and it is not worth
+starting until there is a reason to trust the answer.
 
 ## Writing a benchmark that measures what you think
 
