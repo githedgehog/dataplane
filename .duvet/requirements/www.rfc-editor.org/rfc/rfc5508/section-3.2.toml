@@ -1,0 +1,78 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-3.2"
+
+# ICMP Query Session Timeouts
+#
+#    NATs maintain a mapping timeout for the ICMP Queries that traverse
+#    them.  The mapping timeout is the time a mapping will stay active
+#    without packets traversing the NAT.  There is great variation in the
+#    values used by different NATs.  The ICMP Query session timeout
+#    requirement is necessary for current ICMP Query applications to work.
+#    Query response times can vary.  ICMP-Query-based applications are
+#    primarily request/response driven.
+# 
+#    Ideally, the timeout should be set to Maximum Round Trip Time
+#    (Maximum RTT).  For the purposes of constraining the maximum RTT, the
+#    Maximum Segment Lifetime (MSL), defined in [RFC793], could be
+#    considered a guideline to set packet lifetime.  Per [RFC793], MSL is
+#    the maximum amount of time a TCP segment can exist in a network
+#    before being delivered to the intended recipient.  This is the
+#    maximum duration an IP packet can be assumed to take to reach the
+#    intended destination node before declaring that the packet will no
+#    longer be delivered.  For an application initiating an ICMP Query
+#    message and waiting for a response for the Query, the Maximum RTT
+#    could in practice be constrained to be the sum total of MSL for the
+#    Query message and MSL for the response message.  In other words,
+#    Maximum RTT could be constrained to no more than 2x MSL.  The
+#    recommended value for MSL in [RFC793] is 120 seconds, even though
+#    several implementations set this to 60 seconds or 30 seconds.  When
+#    MSL is 120 seconds, the Maximum RTT (2x MSL) would be 240 seconds.
+# 
+#    In practice, ICMP Ping [RFC1470] and ICMP traceroute [MS-TRCRT], the
+#    two most commonly known legacy applications built on top of ICMP
+#    Query messages, take less than 10 seconds to complete a round trip
+#    when the target node is operational on the network.
+# 
+#    Setting the ICMP NAT session timeout to a very large duration (say,
+#    240 seconds) could potentially tie up precious NAT resources such as
+#    Query mappings and NAT Sessions for the whole duration.  On the other
+#    hand, setting the timeout very low can result in premature freeing of
+#    NAT resources and applications failing to complete gracefully.  The
+#    ICMP Query session timeout needs to be a balance between the two
+#    extremes.  A 60-second timeout is a balance between the two extremes.
+#    An ICMP Query session timer MUST NOT expire in less than 60 seconds.
+#    It is RECOMMENDED that the ICMP Query session timer be made
+#    configurable.
+# 
+#    REQ-2: An ICMP Query session timer MUST NOT expire in less than 60
+#           seconds.
+# 
+#           a) It is RECOMMENDED that the ICMP Query session timer be made
+#              configurable.
+
+[[spec]]
+level = "MUST"
+quote = '''
+An ICMP Query session timer MUST NOT expire in less than 60 seconds.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+It is RECOMMENDED that the ICMP Query session timer be made
+configurable.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-2: An ICMP Query session timer MUST NOT expire in less than 60
+seconds.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) It is RECOMMENDED that the ICMP Query session timer be made
+configurable.
+'''
+

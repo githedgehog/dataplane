@@ -1,0 +1,119 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.2.1"
+
+# ICMP Error Packet Received from the External Realm
+#
+#    Say, a packet from Host-y to Host-x triggered an ICMP Error message
+#    from one of Router-x or Host-x (both of which are in the external
+#    domain).  Such an ICMP Error packet will have one of Router-x or
+#    Host-x as the source IP address and Host-y' as the destination IP
+#    address as described in Figure 2 below.
+# 
+#                                Host-x
+#                                   |
+#                           ---------------+-------------------
+#                                          |
+#                                   +-------------+
+#                                   |  Router-x   |
+#                                   +-------------+
+#             External Network             |
+#             --------------------+--------+-------------------
+#                                 |
+#                                 |  | ICMP Error Packet to Host-y'
+#                                 |  v
+#                           +-------------+
+#                           |    NAT-xy   |
+#                           +-------------+
+#     Private Network             |
+#    ----------------+------------+----------------
+#                    |
+#             +-------------+
+#             | Router-y    |
+#             +-------------+
+#                    |
+#    ----------------+-------+--------
+#                            |
+#                          Host-y
+# 
+#         Figure 2.  ICMP Error Packet Received from External Network
+# 
+#    When the NAT device receives the ICMP Error packet, the NAT device
+#    uses the packet embedded within the ICMP Error message (i.e., the IP
+#    packet from Host-y' to Host-x) to look up the NAT Session to which
+#    the embedded packet belongs.  If the NAT device does not have an
+#    active mapping for the embedded packet, the NAT SHOULD silently drop
+#    the ICMP Error packet.  Otherwise, the NAT device MUST use the
+#    matching NAT Session to translate the embedded packet; that is,
+#    translate the source IP address of the embedded packet (e.g., Host-y'
+#    -> Host-y) and transport headers.
+# 
+#    The ICMP Error payload may contain ICMP extension objects [ICMP-EXT].
+#    NATs are encouraged to support ICMP extension objects.  At the time
+#    of this writing, the authors are not aware of any standard ICMP
+#    extension objects containing realm-specific information.
+# 
+#    The NAT device MUST also use the matching NAT Session to translate
+#    the destination IP address in the outer IP header.  In the outer
+#    header, the source IP address will remain unchanged because the
+#    originator of the ICMP Error message (Host-x or Router-x) is in an
+#    external domain and is routable from the private domain.
+# 
+#    REQ-4: If a NAT device receives an ICMP Error packet from an external
+#           realm, and the NAT device does not have an active mapping for
+#           the embedded payload, the NAT SHOULD silently drop the ICMP
+#           Error packet.  If the NAT has active mapping for the embedded
+#           payload, then the NAT MUST do the following prior to
+#           forwarding the packet, unless explicitly overridden by local
+#           policy:
+# 
+#           a) Revert the IP and transport headers of the embedded IP
+#              packet to their original form, using the matching mapping;
+#              and
+# 
+#           b) Leave the ICMP Error type and code unchanged; and
+# 
+#           c) Modify the destination IP address of the outer IP header to
+#              be the same as the source IP address of the embedded packet
+#              after translation.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the NAT device does not have an
+active mapping for the embedded packet, the NAT SHOULD silently drop
+the ICMP Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise, the NAT device MUST use the
+matching NAT Session to translate the embedded packet; that is,
+translate the source IP address of the embedded packet (e.g., Host-y'
+-> Host-y) and transport headers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The NAT device MUST also use the matching NAT Session to translate
+the destination IP address in the outer IP header.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-4: If a NAT device receives an ICMP Error packet from an external
+realm, and the NAT device does not have an active mapping for
+the embedded payload, the NAT SHOULD silently drop the ICMP
+Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the NAT has active mapping for the embedded
+payload, then the NAT MUST do the following prior to
+forwarding the packet, unless explicitly overridden by local
+policy:
+'''
+
