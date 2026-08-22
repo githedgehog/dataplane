@@ -1240,17 +1240,18 @@ mod dpdk_backend {
 // -------------------------------------------------------------------------------------------------
 // IPv6 extension headers
 
-/// A VLAN-tagged frame is refused, whatever an ACL rule would have said about it.
+/// This stage does not answer over a layer it has not been taught about.
 ///
-/// The tag is not an evasion -- it sits ahead of the IP header, so the rules still see the right
-/// protocol and ports, and this test's `allow-tcp` rule would match. The problem is the other
-/// side of that: the verdict is reached without anybody looking at the tag, and nothing after this
-/// stage looks at it either. `Egress` rewrites the MACs and leaves `headers.vlan` alone, and VXLAN
-/// re-encapsulation puts the outer headers in front of it, so a tag a remote sender chose inside a
-/// tunnelled frame would be forwarded onto whatever segment it names.
+/// A VLAN tag is the layer to hand, and the assertion is about the *shape* of the chain rather
+/// than about VLANs: the tag is not an evasion -- it sits ahead of the IP header, so the rules see
+/// the right protocol and ports and this test's `allow-tcp` rule would match on the merits. What
+/// is wrong is reaching a verdict without having considered a layer that is there.
 ///
-/// The `overlay` flag is what makes this reachable: an overlay packet is the inner frame of a
-/// VXLAN decapsulation, and its contents are the remote sender's to pick.
+/// **This is a gap, not a position.** VLAN inside VXLAN is legitimate traffic. Teaching this stage
+/// to carry it means naming the layer in the pattern below, and the other four things
+/// `development/code/header-chain-matching.md` lists. When that happens, change this test rather
+/// than deleting it: what it should then say is that a tag the configuration does not cover is
+/// still refused.
 #[test]
 fn a_vlan_tagged_overlay_frame_is_refused() {
     use net::vlan::Vid;

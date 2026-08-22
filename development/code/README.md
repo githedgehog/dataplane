@@ -6,6 +6,10 @@
 - **High priority**: robust error handling rather than relying on "being careful."
 - Create property-based tests in preference to simple unit tests when the problem domain allows.
 - Document and exploit invariant properties of types and functions.
+- A stage that decides something about a packet must [match the shape of its header
+  chain][chain-matching] rather than reach in for the fields it wants. A pattern that does not name
+  a layer misses when that layer is present, which is how a stage says it has not been taught about
+  one yet.
 - Enforce invariants at compile time when the language or framework supports it.
 - Require runtime validation and for invariants which cannot be compile-time enforced
 - Performance is important, but it is less important than correctness; it does not matter how quickly you can do the
@@ -41,6 +45,7 @@ If you need to [handle an error][error], follow the guidelines.
 [clock]: ../../clock/src/lib.rs
 [error]: ./error-handling.md
 [benchmarking]: ./benchmarking.md
+[chain-matching]: ./header-chain-matching.md
 
 ## Testing instructions
 
