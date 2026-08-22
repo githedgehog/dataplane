@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! `NatIpWithBitmap` is a trait to augment [`NatIp`] with bitmap operations. Our default,
+//! `NatIpWithBitmap` is a trait to augment [`IpAddress`] with bitmap operations. Our default,
 //! bitmap-based NAT allocator requires this trait to be implementated for the type parameters
 //! (`Ipv4Addr` and `Ipv6Addr`) that it works with.
 
 use super::super::allocation::AllocatorError;
 use super::alloc::{map_address, map_offset};
-use crate::masquerade::natip::NatIp;
+use net::ip::IpAddress;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-/// `NatIpWithBitmap` is a trait to augment [`NatIp`] with bitmap operations.
-pub trait NatIpWithBitmap: NatIp {
+/// `NatIpWithBitmap` is a trait to augment [`IpAddress`] with bitmap operations.
+pub trait NatIpWithBitmap: IpAddress {
     // Convert a u32 offset into an IP address, if possible.
     fn try_from_offset(
         offset: u32,
