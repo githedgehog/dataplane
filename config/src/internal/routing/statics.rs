@@ -8,7 +8,6 @@ use std::net::IpAddr;
 
 #[derive(Clone, Debug, Ord, Eq, PartialEq, PartialOrd)]
 pub enum StaticRouteNhop {
-    Unset,
     Interface(String),
     Address(IpAddr),
     Null0,
@@ -26,10 +25,10 @@ pub struct StaticRoute {
 
 impl StaticRoute {
     #[must_use]
-    pub fn new(prefix: Prefix) -> Self {
+    pub fn new(prefix: Prefix, next_hop: StaticRouteNhop) -> Self {
         Self {
             prefix,
-            next_hop: StaticRouteNhop::Unset,
+            next_hop,
             next_hop_vrf: None,
             tag: None,
         }
