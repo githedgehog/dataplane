@@ -1161,7 +1161,7 @@ pub mod tests {
 #[cfg(test)]
 mod vrf_properties {
     use super::*;
-    use crate::fib::fibtype::{FibKey, FibWriter};
+    use crate::fib::fibtype::FibWriter;
     use crate::rib::nexthop::NhopKey;
     use bolero::{Driver, ValueGenerator};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1485,7 +1485,7 @@ mod vrf_properties {
             .for_each(|changes: Vec<Change>| {
                 let config = RouterVrfConfig::new(1, "test");
                 let mut vrf = Vrf::new(&config);
-                let (fibw, _fibr) = FibWriter::new(FibKey::from_vrfid(1));
+                let (fibw, _fibr) = FibWriter::new(1);
                 vrf.set_fibw(fibw);
                 let mut model = Model::new();
 
