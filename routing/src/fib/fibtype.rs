@@ -98,8 +98,8 @@ impl Fib {
         self.id = Some(vrfid);
     }
 
+    /// Returns this FIB's ID, panicking if it has not been set.
     #[must_use]
-    /// Get the id for this [`Fib`]
     pub fn get_id(&self) -> FibKey {
         let Some(vrfid) = self.id else {
             unreachable!(
