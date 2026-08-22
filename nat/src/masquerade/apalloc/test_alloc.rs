@@ -503,10 +503,10 @@ mod std_tests {
     use super::context::*;
     use crate::NatPort;
     use crate::masquerade::allocation::AllocatorError;
-    use crate::masquerade::apalloc::PoolTableKey;
     use crate::masquerade::apalloc::alloc::{IpAllocator, NatPool, PoolRegion};
     use crate::masquerade::apalloc::region::AddrInterval;
     use crate::masquerade::apalloc::reserved::ReservedPorts;
+    use crate::masquerade::apalloc::{AnyReservation, PoolTableKey};
     use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
     use net::ip::NextHeader;
     use std::net::{IpAddr, Ipv4Addr};
@@ -966,8 +966,8 @@ mod std_tests {
                 NextHeader::TCP,
                 vpcd1(),
                 vpcd2(),
-                IpAddr::V6(addr_v6("2001:db8:1::1")),
-                held,
+                AnyReservation::new(IpAddr::V6(addr_v6("2001:db8:1::1")), held)
+                    .expect("a v6 private source and a v6 allocation"),
                 port,
             )
             .expect("the next config still serves the tuple");
@@ -1103,6 +1103,41 @@ mod std_tests {
         assert!(ports.contains(&1399) && ports.contains(&1401));
     }
 
+    /// The two things `reserve_port` used to check for itself, checked once at the only place that
+    /// can still see them. Past this constructor the allocator has no arm for either, so if this
+    /// stops rejecting them the failure surfaces here rather than as a reserved tuple in the wrong
+    /// pool.
+    #[test]
+    fn a_reservation_refuses_a_pair_the_allocator_has_no_arm_for() {
+        let v4 = ipaddr("1.1.0.1");
+        let v6 = IpAddr::V6(addr_v6("2001:db8:1::1"));
+
+        for (private, public) in [(v4, v6), (v6, v4)] {
+            assert!(
+                matches!(
+                    AnyReservation::new(private, public),
+                    Err(AllocatorError::InternalIssue(_))
+                ),
+                "{private} paired with {public} names no pool"
+            );
+        }
+
+        // A parsed packet's source is unicast already -- `Ipv4::source` returns `UnicastIpv4Addr`
+        // -- but `FlowKey` stores it as an `IpAddr`, so this is the last place able to say so.
+        for private in [ipaddr("255.255.255.255"), ipaddr("224.0.0.1")] {
+            assert!(
+                matches!(
+                    AnyReservation::new(private, v4),
+                    Err(AllocatorError::InternalIssue(_))
+                ),
+                "{private} is not a source address"
+            );
+        }
+
+        assert!(AnyReservation::new(v4, v4).is_ok());
+        assert!(AnyReservation::new(v6, v6).is_ok());
+    }
+
     /// A forwarding rule claims tuples of the protocol it forwards. The address's other protocols
     /// have their own port space, which no flow of the forwarded protocol can collide with.
     #[test]
@@ -1110,6 +1145,7 @@ mod std_tests {
         let port = NatPort::new_port(NonZero::new(8080).unwrap());
         let public = ipaddr("10.1.0.0");
         let private = ipaddr("1.1.0.1");
+        let reservation = AnyReservation::new(private, public).expect("a v4 pair, unicast source");
 
         for (forwarded, claimed, untouched) in [
             (L4Protocol::Tcp, NextHeader::TCP, NextHeader::UDP),
@@ -1118,13 +1154,13 @@ mod std_tests {
             let allocator = build_allocator_port_forward_for(forwarded);
             assert!(
                 matches!(
-                    allocator.reserve_port(claimed, vpcd1(), vpcd2(), private, public, port),
+                    allocator.reserve_port(claimed, vpcd1(), vpcd2(), reservation, port),
                     Err(AllocatorError::Denied)
                 ),
                 "a {forwarded:?} rule must claim the {claimed} tuple"
             );
             allocator
-                .reserve_port(untouched, vpcd1(), vpcd2(), private, public, port)
+                .reserve_port(untouched, vpcd1(), vpcd2(), reservation, port)
                 .unwrap_or_else(|e| {
                     panic!("a {forwarded:?} rule must claim nothing from {untouched}: {e}")
                 });
