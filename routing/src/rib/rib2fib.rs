@@ -8,7 +8,9 @@ use tracing::{debug, trace, warn};
 
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
-use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
+use crate::rib::encapsulation::{
+    Encapsulation, ResolvedEncapsulation, ResolvedVxlan, VxlanEncapsulation,
+};
 use crate::rib::nexthop::{FwAction, Nhop, Visited};
 use crate::rib::vrf::RouteOrigin;
 
@@ -50,13 +52,15 @@ impl Nhop {
 
         // a nexthop with encapsulation info. Will add action encap and egress object
         if let Some(encap) = self.key.encap {
-            let mut encap_instr = encap;
-            let ok = match encap_instr {
-                Encapsulation::Vxlan(ref mut vxlan) => vxlan.resolve(rstore),
-                Encapsulation::Mpls(_) => true, // set to true for tests, actually unsupported
+            let resolved = match encap {
+                Encapsulation::Vxlan(vxlan) => {
+                    vxlan.resolve(rstore).map(ResolvedEncapsulation::Vxlan)
+                }
+                // set to Some for tests, actually unsupported
+                Encapsulation::Mpls(label) => Some(ResolvedEncapsulation::Mpls(label)),
             };
-            if ok {
-                instructions.push(PktInstruction::Encap(encap_instr));
+            if let Some(resolved) = resolved {
+                instructions.push(PktInstruction::Encap(resolved));
                 let egress = EgressObject::new(self.key.ifindex, self.key.address);
                 instructions.push(PktInstruction::Egress(egress));
             } else {
@@ -203,20 +207,26 @@ impl Nhop {
 }
 
 impl VxlanEncapsulation {
-    /// Resolve a Vxlan encapsulation object. The local vtep information is not used
-    /// in this process. We only resolve the destination mac. If no entry is found,
-    /// the vxlan object will have no MAC. If an entry is hit, the vxlan encap object
-    /// surely gets a MAC, whether the entry is stale or not.
-    pub(crate) fn resolve(&mut self, rstore: &RmacStore) -> bool {
-        self.dmac = rstore.get_rmac(self.vni, self.remote).map(|e| e.mac);
-        if self.dmac.is_none() {
+    /// Resolve a Vxlan encapsulation object. The local vtep information is not used in this
+    /// process; we only resolve the destination mac. A hit yields a [`ResolvedVxlan`] whether the
+    /// entry is stale or not.
+    ///
+    /// This returns the resolved form rather than filling a field in place. `self` is reachable
+    /// from a next-hop key that is live in a map, so resolving in place would mutate a stored
+    /// key -- something that only a `Copy` at the call site used to prevent.
+    pub(crate) fn resolve(&self, rstore: &RmacStore) -> Option<ResolvedVxlan> {
+        let Some(entry) = rstore.get_rmac(self.vni, self.remote) else {
             warn!(
                 "Router mac for vni {} and remote {} is not known!",
                 self.vni.as_u32(),
                 self.remote
             );
-        }
-        // ok if we found a mac, even if the entry is stale
-        self.dmac.is_some()
+            return None;
+        };
+        Some(ResolvedVxlan {
+            vni: self.vni,
+            remote: self.remote,
+            dmac: entry.mac,
+        })
     }
 }
