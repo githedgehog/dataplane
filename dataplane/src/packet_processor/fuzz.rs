@@ -613,6 +613,88 @@ impl Translations {
     }
 }
 
+/// Traffic that knows what it sent, and therefore what should come back.
+///
+/// Every property above builds its packets inline and judges them inline, which works while there
+/// is one conversation at a time. It stops working the moment two of them are interleaved: the
+/// packets belong to different senders with different expectations, and a loop that generated them
+/// cannot also be in the middle of judging them.
+///
+/// A [`Load`] is one sender. It is a state machine rather than a generator because the properties
+/// worth having are *reactive*: a reply has to be addressed to whatever the far side actually saw,
+/// which is knowable only after the request has come out the other end. That is also what keeps
+/// the oracle honest -- the load is not told what the translation should be, it reads what the
+/// translation was and requires it to reverse.
+///
+/// # The oracle lives here, and that is the point
+///
+/// The alternative is a global oracle: given this configuration and this interleaving, what should
+/// have happened? That is the dataplane written a second time, which is the thing every property in
+/// this module is built to avoid. A load judges only its own traffic, against what it itself chose,
+/// so the oracle stays local and knowable by construction however many loads are running. The joint
+/// claim is then just "every load was satisfied", and it needs no author.
+///
+/// # Describing itself is not optional
+///
+/// A failure under interleaved traffic is otherwise unreadable: the input is a schedule, and the
+/// packet that failed is one of hundreds. [`Load::describe`] is what turns that back into a
+/// sentence, and it is built in from the start rather than added after the first hour lost to it.
+#[cfg(test)]
+pub(crate) trait Load {
+    /// The next packet this load wants to send.
+    ///
+    /// `None` means it is waiting on an observation, not that it is finished -- ask
+    /// [`Load::finished`] for that. A scheduler draining several packets from one load therefore
+    /// gets as many as the load can offer without hearing back, which is the load's own
+    /// back-pressure rather than a rule the scheduler has to know.
+    fn next(&mut self) -> Option<Packet<TestBuffer>>;
+
+    /// Judge what came back for the packet most recently taken from [`Load::next`].
+    ///
+    /// # Panics
+    ///
+    /// If what came back is not what this load required. That is the assertion; a load that
+    /// returns quietly has accepted the answer.
+    fn observe(&mut self, got: &Packet<TestBuffer>);
+
+    /// Whether this load has finished its business, successfully or otherwise.
+    fn finished(&self) -> bool;
+
+    /// Whether it got far enough to make the claim it exists to make.
+    ///
+    /// Separate from [`Load::finished`] because a load can legitimately give up -- a configuration
+    /// that does not carry its traffic is not a defect -- and a run made entirely of loads that
+    /// gave up is a run that checked nothing. This is what a coverage guard counts.
+    fn checked(&self) -> bool;
+
+    /// What this load has done so far, for reading a failure.
+    fn describe(&self) -> String;
+}
+
+/// Run one load to completion against a fabric, one packet at a time.
+///
+/// Step A of the load design: enough to rewrite the existing properties on top of the trait and
+/// find out whether it expresses them. Interleaving several loads is a scheduler, and comes next.
+#[cfg(test)]
+pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
+    // A load that neither finishes nor offers a packet is a bug in the load, and an infinite loop
+    // is a bad way to report one.
+    for _ in 0..64 {
+        if load.finished() {
+            return;
+        }
+        let Some(packet) = load.next() else {
+            panic!(
+                "a load is neither finished nor willing to send: {}",
+                load.describe()
+            );
+        };
+        let out = fabric.send(packet);
+        load.observe(&out);
+    }
+    panic!("a load did not finish in 64 steps: {}", load.describe());
+}
+
 /// A stage that changes nothing and checks something.
 ///
 /// The pipeline is a chain of [`NetworkFunction`]s and nothing says a stage has to *do* anything,
@@ -2645,6 +2727,7 @@ mod routed {
     };
     use net::vlan::Vid;
     use super::round_trip::udp;
+    use super::{Load, drive};
     use std::collections::BTreeMap;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2959,7 +3042,7 @@ mod routed {
     #[dpdk::with_eal]
     async fn a_tunnelled_flow_comes_back_through_the_tunnel() {
         static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static NOT_DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -2974,90 +3057,22 @@ mod routed {
                         .parse()
                         .unwrap_or_else(|_| unreachable!());
                     let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-                    let Some(request) = udp(src, dst, flow.sport, flow.dport) else {
-                        continue;
-                    };
-                    let sent_payload = payload_of(&request);
-                    let ttl_sent = ttl_of(&request);
+                    let mut load = Conversation::new(src, dst, flow.sport, flow.dport);
 
-                    let out = fabric.send(tunnelled(&request));
-                    if !matches!(verdict(&out), Verdict::Delivered { .. }) {
-                        NOT_DELIVERED.fetch_add(1, Ordering::Relaxed);
-                        continue;
+                    drive(&mut fabric, &mut load);
+
+                    if load.checked() {
+                        ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
                     }
-                    assert_eq!(
-                        out.try_vxlan().map(net::vxlan::Vxlan::vni),
-                        Some(vni(REMOTE_VNI)),
-                        "the request left tunnelled towards the wrong vpc"
-                    );
-
-                    let translated = inside(&out).expect("a delivered request was not tunnelled");
-                    assert_eq!(
-                        payload_of(&translated),
-                        sent_payload,
-                        "the tenant payload did not survive the round of decap, nat and encap"
-                    );
-                    assert_eq!(
-                        ttl_of(&translated).map(|t| t + 1),
-                        ttl_sent,
-                        "the tenant packet was not charged exactly one hop"
-                    );
-
-                    // What the far side saw, and so what it would answer.
-                    let (Some(public_src), Some(reached)) =
-                        (translated.ip_source(), translated.ip_destination())
-                    else {
-                        continue;
-                    };
-                    let public_port = translated
-                        .transport_src_port()
-                        .unwrap_or_else(|| unreachable!("a udp packet has a source port"))
-                        .get();
-
-                    let Some(reply) = udp(reached, public_src, flow.dport, public_port) else {
-                        continue;
-                    };
-                    let back = fabric.send(tunnelled_from(vni(REMOTE_VNI), &reply));
-
-                    let verdict = verdict(&back);
-                    assert!(
-                        matches!(verdict, Verdict::Delivered { .. }),
-                        "the reply of a delivered flow did not reach the wire: {verdict:?} \
-                         (request {src}:{sport} -> {dst}:{dport} left as \
-                         {public_src}:{public_port})",
-                        sport = flow.sport,
-                        dport = flow.dport
-                    );
-                    assert_eq!(
-                        back.try_vxlan().map(net::vxlan::Vxlan::vni),
-                        Some(vni(LOCAL_VNI)),
-                        "the reply went back into the wrong vpc"
-                    );
-
-                    let returned = inside(&back).expect("a delivered reply was not tunnelled");
-                    assert_eq!(
-                        returned.ip_destination(),
-                        Some(src),
-                        "the reply did not come back to the host that sent the request"
-                    );
-                    assert_eq!(
-                        returned.ip_source(),
-                        Some(dst),
-                        "the reply's source was rewritten"
-                    );
-                    assert_eq!(
-                        returned.transport_dst_port().map(std::num::NonZero::get),
-                        Some(flow.sport),
-                        "the reply did not get the original source port back"
-                    );
-                    ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
                 }
             });
 
         let round_tripped = ROUND_TRIPPED.load(Ordering::Relaxed);
         eprintln!(
-            "tunnelled-round-trips={round_tripped} not-delivered={}",
-            NOT_DELIVERED.load(Ordering::Relaxed)
+            "tunnelled-round-trips={round_tripped} abandoned={}",
+            ABANDONED.load(Ordering::Relaxed)
         );
         super::assert_covered(
             round_tripped > 0,
@@ -3065,119 +3080,180 @@ mod routed {
         );
     }
 
-    /// Every packet of a flow is translated the same way, and no two flows are translated onto
-    /// each other.
+    /// One masqueraded conversation: a request out through the tunnel, and its reply back.
     ///
-    /// Two claims about the same round, because the data for both falls out of it.
-    ///
-    /// **Stability.** A flow's second packet has to be given the translation its first was given.
-    /// If it is not, the far side sees the connection change source port mid-conversation and the
-    /// pool leaks an allocation per packet. What makes this hold is that the flow table is
-    /// consulted before a new allocation is made, and a refactor of either is what would break it.
-    ///
-    /// The two rounds are deliberately **interleaved rather than back to back**: every other flow
-    /// in the batch is established in between, and the second round runs in reverse order. A
-    /// weaker version -- send the same packet twice in a row -- is satisfied by an implementation
-    /// that remembers only the last translation it made, and would say nothing about a table.
-    ///
-    /// Two discriminations, and the second is what says the claim is about state rather than
-    /// arithmetic. Dropping the line in `flow_entry`'s `FlowLookup` that attaches flow state fails
-    /// this, with the second packet a port further along the pool cursor than the first. Turning
-    /// masquerade's randomised port selection back *on* -- which the harness disables so two runs
-    /// of one configuration agree -- does **not** fail it: a randomly chosen port comes back
-    /// identically the second time, because the table is what is consulted. A property that merely
-    /// noticed a deterministic allocator would have failed that.
-    ///
-    /// **Injectivity.** Two distinct flows must not be given a public tuple that makes their
-    /// replies indistinguishable. A reply is matched on what the far side saw, so if two flows to
-    /// the same destination share a public address *and* port, no stage downstream can tell whose
-    /// reply is whose. `nat::masquerade::apalloc` checks its own pool for this; what is checked
-    /// here is the allocation the assembled pipeline actually handed out.
-    ///
-    /// Neither claim computes a translation. The oracle for the first is equality with what came
-    /// back earlier, and for the second that a map has no two keys sharing a value.
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_flow_keeps_its_translation_and_does_not_share_it() {
-        static STABLE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DISTINCT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-
-        bolero::check!()
-            .with_max_len(MAX_INPUT_LEN)
-            .with_generator(Flows)
-            .for_each(|flows| {
-                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
-                    return;
-                };
-
-                // Keyed by the flow, so that a batch which happens to draw the same flow twice is
-                // one flow rather than a false counterexample to either claim.
-                let mut first: BTreeMap<(u8, u16, u16), (IpAddr, u16)> = BTreeMap::new();
-                for flow in flows {
-                    if let Some(public) = translation_of(&mut fabric, *flow) {
-                        first.insert((flow.host, flow.sport, flow.dport), public);
-                    }
-                }
-
-                // Distinct flows to one destination must not collide. The destination is the same
-                // for every flow here, so the public tuple alone has to separate them.
-                let mut seen: BTreeMap<(IpAddr, u16), (u8, u16, u16)> = BTreeMap::new();
-                for (flow, public) in &first {
-                    if let Some(other) = seen.insert(*public, *flow) {
-                        assert_eq!(
-                            other, *flow,
-                            "two flows were given the same public tuple {public:?}: a reply to it \
-                             cannot be attributed to either"
-                        );
-                    }
-                    DISTINCT.fetch_add(1, Ordering::Relaxed);
-                }
-
-                // Reverse order, so a flow's two packets are separated by every other flow in the
-                // batch rather than adjacent to each other.
-                for flow in flows.iter().rev() {
-                    let key = (flow.host, flow.sport, flow.dport);
-                    let Some(expected) = first.get(&key) else {
-                        continue;
-                    };
-                    let again = translation_of(&mut fabric, *flow)
-                        .expect("a flow that was translated once stopped being translated");
-                    assert_eq!(
-                        again, *expected,
-                        "flow {key:?} was translated differently the second time: the established \
-                         flow was not found, so a fresh allocation was made"
-                    );
-                    STABLE.fetch_add(1, Ordering::Relaxed);
-                }
-            });
-
-        let (stable, distinct) = (
-            STABLE.load(Ordering::Relaxed),
-            DISTINCT.load(Ordering::Relaxed),
-        );
-        eprintln!("stable={stable} distinct-flows={distinct}");
-        super::assert_covered(stable > 0, "no flow was ever sent a second packet");
-        super::assert_covered(distinct > 0, "no flow was ever translated");
+    /// The first [`Load`], and written against the most demanding of the existing properties on
+    /// purpose -- if the trait could not express this one it could not express any of them. What
+    /// makes it demanding is that the reply is not knowable in advance: it has to be addressed to
+    /// the public tuple the request was given, which the load reads out of what came back.
+    pub(super) struct Conversation {
+        /// What the test chose, and therefore what the reply has to restore.
+        src: IpAddr,
+        dst: IpAddr,
+        sport: u16,
+        dport: u16,
+        /// The request as it was sent, kept so the riders can compare against it.
+        sent: Option<Packet<TestBuffer>>,
+        state: State,
+        log: Vec<String>,
     }
 
-    /// Send one packet of `flow` and report the public source it was given, or `None` if it did
-    /// not reach the wire.
-    fn translation_of(fabric: &mut Fabric, flow: Flow) -> Option<(IpAddr, u16)> {
-        let src: IpAddr = format!("1.1.0.{}", flow.host)
-            .parse()
-            .unwrap_or_else(|_| unreachable!());
-        let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-        let request = udp(src, dst, flow.sport, flow.dport)?;
+    #[derive(Debug, PartialEq, Eq)]
+    enum State {
+        /// About to send the request.
+        Opening,
+        /// The request is out; the reply is built from `public` once it comes back.
+        Replying { public: (IpAddr, u16) },
+        /// Checked, both ways.
+        Closed,
+        /// Gave up, for a reason that is not a defect. See [`Load::checked`].
+        Abandoned,
+    }
 
-        let out = fabric.send(tunnelled(&request));
-        if !matches!(verdict(&out), Verdict::Delivered { .. }) {
-            return None;
+    impl Conversation {
+        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Self {
+            Self {
+                src,
+                dst,
+                sport,
+                dport,
+                sent: None,
+                state: State::Opening,
+                log: Vec::new(),
+            }
         }
-        let translated = inside(&out).expect("a delivered request was not tunnelled");
-        Some((
-            translated.ip_source()?,
-            translated.transport_src_port()?.get(),
-        ))
+
+        fn note(&mut self, what: &str) {
+            self.log.push(what.to_owned());
+        }
+
+        /// What the far side saw, and so what it would answer.
+        fn judge_request(&mut self, got: &Packet<TestBuffer>) {
+            if !matches!(verdict(got), Verdict::Delivered { .. }) {
+                self.note(&format!("request not delivered: {:?}", verdict(got)));
+                self.state = State::Abandoned;
+                return;
+            }
+            assert_eq!(
+                got.try_vxlan().map(net::vxlan::Vxlan::vni),
+                Some(vni(REMOTE_VNI)),
+                "the request left tunnelled towards the wrong vpc. {}",
+                self.describe()
+            );
+
+            let carried = inside(got).expect("a delivered request was not tunnelled");
+            let sent = self.sent.as_ref().unwrap_or_else(|| unreachable!());
+            assert_eq!(
+                payload_of(&carried),
+                payload_of(sent),
+                "the tenant payload did not survive decap, nat and encap. {}",
+                self.describe()
+            );
+            assert_eq!(
+                ttl_of(&carried).map(|t| t + 1),
+                ttl_of(sent),
+                "the tenant packet was not charged exactly one hop. {}",
+                self.describe()
+            );
+
+            let (Some(public_src), Some(port)) =
+                (carried.ip_source(), carried.transport_src_port())
+            else {
+                self.note("the delivered request had no source tuple to answer");
+                self.state = State::Abandoned;
+                return;
+            };
+            self.note(&format!("request left as {public_src}:{}", port.get()));
+            self.state = State::Replying {
+                public: (public_src, port.get()),
+            };
+        }
+
+        /// The reply has to arrive at the host that opened the conversation, unchanged.
+        fn judge_reply(&mut self, got: &Packet<TestBuffer>) {
+            assert!(
+                matches!(verdict(got), Verdict::Delivered { .. }),
+                "the reply of a delivered flow did not reach the wire: {:?}. {}",
+                verdict(got),
+                self.describe()
+            );
+            assert_eq!(
+                got.try_vxlan().map(net::vxlan::Vxlan::vni),
+                Some(vni(LOCAL_VNI)),
+                "the reply went back into the wrong vpc. {}",
+                self.describe()
+            );
+
+            let returned = inside(got).expect("a delivered reply was not tunnelled");
+            assert_eq!(
+                returned.ip_destination(),
+                Some(self.src),
+                "the reply did not come back to the host that sent the request. {}",
+                self.describe()
+            );
+            assert_eq!(
+                returned.ip_source(),
+                Some(self.dst),
+                "the reply's source was rewritten. {}",
+                self.describe()
+            );
+            assert_eq!(
+                returned.transport_dst_port().map(std::num::NonZero::get),
+                Some(self.sport),
+                "the reply did not get the original source port back. {}",
+                self.describe()
+            );
+            self.note("reply came back");
+            self.state = State::Closed;
+        }
+    }
+
+    impl Load for Conversation {
+        fn next(&mut self) -> Option<Packet<TestBuffer>> {
+            match self.state {
+                State::Opening => {
+                    let request = udp(self.src, self.dst, self.sport, self.dport)?;
+                    self.sent = Some(request.clone());
+                    Some(tunnelled(&request))
+                }
+                State::Replying { public: (ip, port) } => {
+                    let reply = udp(self.dst, ip, self.dport, port)?;
+                    Some(tunnelled_from(vni(REMOTE_VNI), &reply))
+                }
+                State::Closed | State::Abandoned => None,
+            }
+        }
+
+        fn observe(&mut self, got: &Packet<TestBuffer>) {
+            match self.state {
+                State::Opening => self.judge_request(got),
+                State::Replying { .. } => self.judge_reply(got),
+                State::Closed | State::Abandoned => {}
+            }
+        }
+
+        fn finished(&self) -> bool {
+            matches!(self.state, State::Closed | State::Abandoned)
+        }
+
+        fn checked(&self) -> bool {
+            self.state == State::Closed
+        }
+
+        fn describe(&self) -> String {
+            format!(
+                "[conversation {}:{} -> {}:{} | {}]",
+                self.src,
+                self.sport,
+                self.dst,
+                self.dport,
+                if self.log.is_empty() {
+                    "nothing yet".to_owned()
+                } else {
+                    self.log.join("; ")
+                }
+            )
+        }
     }
 
     /// The tenant payload: what is left once every header has been accounted for.
