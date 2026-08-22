@@ -54,6 +54,8 @@ features := ""
 
 fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
 
+fuzz_corpus_root := env("FUZZ_CORPUS_ROOT", justfile_directory() / ".fuzz-corpus")
+
 fuzz_jobs := env("FUZZ_JOBS", `echo $(( ($(nproc) + 1) / 2 ))`)
 
 fuzz_len_control := env("FUZZ_LEN_CONTROL", "0")
@@ -203,7 +205,10 @@ fuzz target time="60s" *args="":
     # asan does not need that, and skipping the std rebuild keeps it far quicker.
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
+    corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
+    mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        --corpus-dir "${corpus_dir}" \
         -l '{{ fuzz_max_input_length }}' \
         -E='-len_control={{ fuzz_len_control }}' \
         -j '{{ fuzz_jobs }}' \
