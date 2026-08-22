@@ -44,3 +44,11 @@ enabled = true
 # where the three separately yield 129. See development/code/spec-compliance.md.
 [[specification]]
 source = "https://www.rfc-editor.org/rfc/rfc4787"
+
+# RFC 5508 states 11 numbered requirements for how a NAT must treat ICMP -- both Query sessions
+# (Echo) and Error messages carrying an embedded datagram. Tracked fourth because the tree already
+# argues from it in prose: `nat/src/icmp_handler/nf.rs` cites REQ-3 for the checksum drop and
+# `icmp_error_msg.rs` cites REQ-4 for the embedded-header rewrite, in ordinary comments duvet cannot
+# see. Converting those to citations is the point; what they leave uncited is the finding.
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc5508"

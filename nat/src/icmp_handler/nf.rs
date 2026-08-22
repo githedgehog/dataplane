@@ -6,7 +6,7 @@
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
-use net::headers::TryIcmpAny;
+use net::headers::{EmbeddedTransport, TryEmbeddedTransport, TryIcmpAny};
 use net::icmp_any::IcmpAny;
 use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::icmp6::Icmp6Type;
@@ -56,6 +56,32 @@ fn is_icmp_unrecoverable<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> (boo
             (false, Some("Packet too big"))
         }
         _ => (false, None),
+    }
+}
+
+/// Tell whether the offending packet embedded in this ICMP error is itself an ICMP Query -- an
+/// Echo or a Timestamp, or either of their replies.
+///
+/// This is the narrowest thing whose mutation would violate REQ-6: the invalidation below is the
+/// only place the ICMP path deletes a NAT Session, and this predicate is the only thing standing
+/// between it and a Query session. The requirement exists because an ICMP error is trivial to
+/// spoof, and the session it names is one an attacker chose; deleting it on request hands them a
+/// way to break a ping they cannot see, and -- since masquerade releases the allocation with the
+/// flow -- a way to churn the port pool.
+///
+/// Scoped to Query payloads because that is the scope of the requirement. RFC 5382 leaves the
+/// same question open for TCP ("NAT behavior for handling RST packets ... is left unspecified"),
+/// so the optimization stands for TCP and UDP.
+//= https://www.rfc-editor.org/rfc/rfc5508#section-4.3
+//# REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+//# Query or Query response message, a NAT device MUST NOT refresh
+//# or delete the NAT Session that pertains to the embedded
+//# payload within the ICMP Error packet.
+fn embeds_icmp_query<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+    match packet.try_embedded_transport() {
+        Some(EmbeddedTransport::Icmp4(icmp4)) => icmp4.is_query_message(),
+        Some(EmbeddedTransport::Icmp6(icmp6)) => icmp6.is_query_message(),
+        _ => false,
     }
 }
 
@@ -164,9 +190,12 @@ impl IcmpErrorHandler {
         // if the problem is hardly recoverable. This expedites removing those flows, which would probably
         // be never hit again and, in case of masquerading, releases the allocated ports sooner.
         // This optimization is only applied if the `NatFlowStatus` is one-way.
+        // Read before `is_icmp_unrecoverable`, which borrows the packet mutably and hands back a
+        // reason string that keeps the borrow alive to the end of the block.
+        let embeds_query = embeds_icmp_query(packet);
         let (unrecoverable, reason) = is_icmp_unrecoverable(packet);
         let reason = reason.unwrap_or("unspecified");
-        if unrecoverable && status == NatFlowStatus::OneWay {
+        if unrecoverable && status == NatFlowStatus::OneWay && !embeds_query {
             debug!("Invalidating flows due to ICMP error (reason={reason} flow-status={status})");
             flow.invalidate_pair();
         } else {

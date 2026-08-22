@@ -1,0 +1,30 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.7"
+
+# DS Field Usage
+#
+#    [RFC1812] refers to the Type of Service (TOS) octet in the IP header,
+#    which contains the TOS and IP precedence fields.  However, the TOS
+#    and IP precedence fields are no longer in use today.  [RFC2474]
+#    renamed the TOS octet as the DS field and defined diffserv classes
+#    within the DS field.
+# 
+#    When generating an ICMP message, a NAT device SHOULD copy the
+#    diffserv class of the message that causes the sending of the ICMP
+#    error message.  A NAT device MAY allow configuration of the diffserv
+#    class to be used for the different types of ICMP messages.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When generating an ICMP message, a NAT device SHOULD copy the
+diffserv class of the message that causes the sending of the ICMP
+error message.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT device MAY allow configuration of the diffserv
+class to be used for the different types of ICMP messages.
+'''
+

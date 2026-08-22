@@ -1,0 +1,22 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.1.2"
+
+# Forwarding "Packet Too Big" ICMP Error Message
+#
+#    This is the flip side of the argument for the above section.  By
+#    virtue of the address translation NAT performs, NAT may end up being
+#    the recipient of "Packet Too Big" messages.
+# 
+#    When the NAT device is the recipient of a "Packet Too Big" ICMP
+#    message from the network, the NAT device MUST forward the ICMP
+#    message back to the intended recipient, pursuant to the previously
+#    stated requirements (REQ-3, REQ-4, and REQ-5).
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the NAT device is the recipient of a "Packet Too Big" ICMP
+message from the network, the NAT device MUST forward the ICMP
+message back to the intended recipient, pursuant to the previously
+stated requirements (REQ-3, REQ-4, and REQ-5).
+'''
+
