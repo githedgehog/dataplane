@@ -209,8 +209,8 @@ impl PacketSummary {
         Some(PacketSummary {
             src_vni: self.dst_vni,
             dst_vni: self.src_vni,
-            src_ip: *flow_key.src_ip(),
-            dst_ip: *flow_key.dst_ip(),
+            src_ip: flow_key.src_ip(),
+            dst_ip: flow_key.dst_ip(),
             proto: flow_key.proto(),
             ports: flow_key.ports(),
         })
