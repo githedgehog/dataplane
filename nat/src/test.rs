@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::masquerade::allocation::AllocatorError;
+use crate::masquerade::apalloc::AnyReservation;
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::portfw::{PortForwarder, PortFwTableWriter};
 use crate::static_nat::NatTablesWriter;
@@ -229,8 +230,8 @@ async fn a_claimed_tuple_cannot_be_reserved_for_masquerade() {
                 NextHeader::UDP,
                 vni(200).into(),
                 vni(100).into(),
-                addr("192.168.0.9"),
-                addr("5.6.7.8"),
+                AnyReservation::new(addr("192.168.0.9"), addr("5.6.7.8"))
+                    .expect("a v4 pair, unicast source"),
                 NatPort::new_port_checked(1024).unwrap(),
             ),
             Err(AllocatorError::Denied)
