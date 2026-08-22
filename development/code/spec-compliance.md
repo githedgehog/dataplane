@@ -230,7 +230,7 @@ error reports on an ICMP Query. We deleted it.
 
 The ICMP handler carries an optimization: an error that looks unrecoverable invalidates the flow
 pair, which under masquerade also releases the public address and port. It keyed that on the
-*outer* ICMP type and never looked at what the error was about, so a Destination Unreachable
+_outer_ ICMP type and never looked at what the error was about, so a Destination Unreachable
 carrying an Echo Request tore down the ping's session.
 
 The RFC's stated reason for the requirement is that ICMP errors are trivially spoofable, and this
@@ -249,10 +249,10 @@ The open question left after the first round was that all seven cited requiremen
 interlock had nothing to say until somebody wrote a new citation. The first new citation produced
 two findings immediately:
 
-| survivor                                        | what it was                                    |
-| ----------------------------------------------- | ---------------------------------------------- |
-| `replace embeds_icmp_query -> bool with true`   | equivalent *with respect to REQ-6*, accepted   |
-| `delete match arm Some(EmbeddedTransport::Icmp6(...))` | a real gap: no IPv6 test exists at all  |
+| survivor                                               | what it was                                  |
+| ------------------------------------------------------ | -------------------------------------------- |
+| `replace embeds_icmp_query -> bool with true`          | equivalent _with respect to REQ-6_, accepted |
+| `delete match arm Some(EmbeddedTransport::Icmp6(...))` | a real gap: no IPv6 test exists at all       |
 
 The first is a new shape for the `ACCEPTED` list and worth naming: **a one-sided requirement makes
 one direction of its predicate unfalsifiable.** Forcing `embeds_icmp_query` to `true` is a NAT that
@@ -293,7 +293,7 @@ is reachable from a packet that is simply wrong all over, which is what the pre-
 
 ### A specification can state each requirement twice
 
-RFC 5508 restates all eleven requirements verbatim in Section 9, *Summary of Requirements*. duvet
+RFC 5508 restates all eleven requirements verbatim in Section 9, _Summary of Requirements_. duvet
 keys requirements by section anchor, so it extracts each one twice and a citation matches only the
 copy it quotes. Citing REQ-6 at section 4.3 leaves an identical REQ-6 at section 9 permanently
 uncited.

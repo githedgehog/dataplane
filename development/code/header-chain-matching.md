@@ -3,7 +3,7 @@
 A stage that makes a decision about a packet must match the **shape of its header chain**, not
 reach into the headers for the fields it happens to want. `Headers::pat` in
 [`net/src/headers/pat.rs`](../../net/src/headers/pat.rs) is what that looks like, and it exists for
-this reason: a pattern that does not name a layer *misses* when that layer is present, so a stage
+this reason: a pattern that does not name a layer _misses_ when that layer is present, so a stage
 cannot silently act on a packet whose shape it never considered.
 
 This is not a statement about which protocols we support. It is a statement about the difference
@@ -14,7 +14,7 @@ between "this stage handles this packet" and "this stage found the two fields it
 Two defects in the same week, from the same habit, failing in opposite directions.
 
 **Reading a field that means something else.** `Net::next_header()` is the IP header's next-header
-field. For IPv6 that names the *first extension header*, not the transport. `acl-filter` matched
+field. For IPv6 that names the _first extension header_, not the transport. `acl-filter` matched
 rules against it, so a Deny rule naming TCP stopped applying to any TCP packet with one Hop-by-Hop
 header in front of it -- and the sender chooses whether there is one. `flow-filter` made the same
 mistake and it failed the other way, dropping traffic a protocol-restricted expose was configured
@@ -39,7 +39,7 @@ Set by `ExtGapCheck` and the VLAN cursor in `pat.rs`, and worth knowing before w
   the transport, and **strict** once the pattern has entered the extension region. Skipping is the
   right default: an extension header is not a layer most stages have an opinion about.
 
-Because extensions are skipped, a pattern cannot tell you that the chain *ended* somewhere sensible.
+Because extensions are skipped, a pattern cannot tell you that the chain _ended_ somewhere sensible.
 A chain longer than `MAX_NET_EXTENSIONS` stops mid-parse and still matches. `Headers::upper_layer_proto`
 is the complement: it walks to the end of the chain and returns `None` when it cannot get there. Use
 both -- they answer different questions.

@@ -43,14 +43,14 @@ Two things follow, and the second is the one worth carrying:
 - **The guard worked.** It failed loudly the moment the misreading stopped, which is exactly what
   a vacuity guard is for. Contrast the
   [interaction with mutation testing](./mutation-testing.md#interaction-with-our-vacuity-guards),
-  where a guard tripping *inflates* a score; here it deflated a coverage claim, which is the
+  where a guard tripping _inflates_ a score; here it deflated a coverage claim, which is the
   direction you want.
 - **A guard measures that a bucket is non-empty, not that it holds what you meant.** "Some packet
   reached the non-transport-protocol path" was true throughout and useless throughout. When an
   oracle and the code under test read the same field, a bug in that read is invisible to every
   count derived from it -- the oracle is not independent, it is a second copy.
 
-So: when a shape-coverage counter is defined by a *derived* property rather than by the
+So: when a shape-coverage counter is defined by a _derived_ property rather than by the
 construction of the input, check that something constructs the case directly. `V4ExoticProto`
 builds an IPv4 packet whose protocol number the parser has no transport for, which is the case the
 counter claimed to be covering.
