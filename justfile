@@ -69,6 +69,21 @@ features := ""
 # to the limit, so a limit above what any generator wants costs nothing.
 fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
 
+# Where `just fuzz` keeps its coverage corpus. Set FUZZ_CORPUS_ROOT to move it.
+#
+# Outside the source tree on purpose. bolero's default puts it in `__fuzz__` beside the test, and
+# `just test` then replays every entry before it explores randomly, sharing one one-second budget.
+# That reads like free regression coverage and is not: a coverage-guided corpus is selected for the
+# *unusual*, since an entry earns its place by reaching an edge nothing else reached, so a large one
+# spends the budget on error paths and the random phase never runs. Measured on
+# `routed::a_tagged_shape_never_reaches_the_wire`, whose guard counts packets that reached the wire:
+# 25 with no corpus, between 0 and 3 with a 146-entry one, so the guard failed intermittently after
+# every campaign.
+#
+# `crashes` is deliberately left where it was. That is the replay worth having -- inputs that once
+# failed, replayed on every `just test` -- and it stays small.
+fuzz_corpus_root := env("FUZZ_CORPUS_ROOT", justfile_directory() / ".fuzz-corpus")
+
 # How many libfuzzer workers `just fuzz` runs. Set FUZZ_JOBS to override.
 #
 # Half the machine. Workers are independent processes sharing one corpus directory, so this is the
@@ -245,7 +260,13 @@ fuzz target time="60s" *args="":
     # asan does not need that, and skipping the std rebuild keeps it far quicker.
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
+    #
+    # One corpus directory per target: `--corpus-dir` takes a literal path rather than a root, so
+    # a shared one would pool inputs from unrelated targets.
+    corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
+    mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        --corpus-dir "${corpus_dir}" \
         -l '{{ fuzz_max_input_length }}' \
         -E='-len_control={{ fuzz_len_control }}' \
         -j '{{ fuzz_jobs }}' \
