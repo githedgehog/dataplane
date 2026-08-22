@@ -2289,3 +2289,153 @@ async fn test_recheck_flow_when_allocator_is_kept() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(flow_table.active_len(), Some(2));
 }
+
+// Send an ICMP Echo through the pipeline and hand back the whole output packet, so a caller can
+// reach the flow the masquerade stage attached to it. The narrower `check_packet_icmp_echo_new`
+// above projects out the four fields its callers compare and drops the metadata with them.
+fn icmp_echo_through(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    src_vni: Vni,
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    direction: IcmpEchoDirection,
+    identifier: u16,
+) -> Packet<TestBuffer> {
+    let mut packet: Packet<TestBuffer> =
+        build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_masquerade(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+
+    let packets_out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    packets_out.into_iter().next().unwrap()
+}
+
+//= https://www.rfc-editor.org/rfc/rfc5508#section-4.3
+//= type=test
+//# REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+//# Query or Query response message, a NAT device MUST NOT refresh
+//# or delete the NAT Session that pertains to the embedded
+//# payload within the ICMP Error packet.
+/// The ICMP Query session an ICMP Error message reports on must outlive the report.
+///
+/// A spoofable message must not be able to delete state. Masquerade releases the public address
+/// and port along with the flow, so a NAT that honoured every Destination Unreachable it received
+/// would let an off-path attacker both break a ping it cannot observe and churn the port pool.
+///
+/// Stated over packets rather than at the predicate, because the requirement is about a session
+/// surviving, and only the pipeline -- allocator, flow table, ICMP handler -- has a session.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn an_icmp_error_does_not_tear_down_the_query_session_it_reports_on() {
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+
+    let (host, target) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"));
+    let identifier = 1337;
+
+    // Host 1.1.2.3 pings 3.3.3.3. Masquerade allocates a public address and a translated
+    // identifier for the Query session.
+    let echo = icmp_echo_through(
+        &mut pipeline,
+        vni(100),
+        host,
+        target,
+        IcmpEchoDirection::Request,
+        identifier,
+    );
+    let public = echo.try_ipv4().unwrap().source().inner();
+    let translated_identifier = echo.try_icmp4().unwrap().identifier().unwrap();
+
+    // A second Echo Request over the same session, so that FlowLookup hands us the flow the
+    // first one created.
+    let echo = icmp_echo_through(
+        &mut pipeline,
+        vni(100),
+        host,
+        target,
+        IcmpEchoDirection::Request,
+        identifier,
+    );
+    let flow = echo
+        .meta()
+        .flow_info
+        .clone()
+        .expect("no flow for the Query");
+    assert_eq!(flow_status(&echo), Some(FlowStatus::Active));
+
+    // A router on the far side answers with Destination Unreachable, embedding the Echo Request
+    // as it appeared on the wire.
+    let (_, _, _, _, _, _, done_reason) = check_packet_icmp_error(
+        &mut pipeline,
+        vni(200),
+        vni(100),
+        addr_v4("1.2.2.18"),
+        public,
+        public,
+        target,
+        NextHeader::ICMP,
+        translated_identifier,
+        0,
+    );
+    assert_eq!(done_reason, None);
+
+    assert!(
+        flow.is_active(),
+        "the Query session was torn down by the Error message reporting on it"
+    );
+    let related = flow.related.as_ref().and_then(std::sync::Weak::upgrade);
+    assert!(
+        related.is_none_or(|related| related.is_active()),
+        "the Query session's reverse flow was torn down by the Error message"
+    );
+    assert_eq!(flow_table.active_len(), Some(2));
+}
+
+/// The same Destination Unreachable, about a TCP flow, still tears that flow down.
+///
+/// The companion to the REQ-6 test above, and the reason it is not vacuous. REQ-6 is scoped to
+/// ICMP Query payloads; the invalidation it forbids is an optimization we keep everywhere else,
+/// and a "fix" that simply stopped invalidating would satisfy the requirement while silently
+/// dropping the optimization. This is the assertion that says which of the two happened.
+#[tokio::test]
+#[cfg_attr(not(emulated), traced_test)]
+async fn an_icmp_error_about_a_tcp_flow_still_tears_it_down() {
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
+
+    // A lone SYN: the flow exists and is one-way, which is the state the optimization targets.
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(&mut pipeline, syn);
+    assert!(!out.is_done());
+    let (public, public_port) = translation(&out);
+    let target = out.try_ipv4().unwrap().destination();
+
+    // Ask again so FlowLookup hands us the flow the first packet created.
+    let mut syn = tcp_packet_to_masquerade();
+    syn.try_tcp_mut().unwrap().set_syn(true);
+    let out = process_packet(&mut pipeline, syn);
+    let flow = out.meta().flow_info.clone().expect("no flow for the SYN");
+    assert!(flow.is_active());
+    assert_eq!(nat_flow_status(&out), Some(NatFlowStatus::OneWay));
+
+    // A router on the far side reports the SYN undeliverable.
+    let (_, _, _, _, _, _, done_reason) = check_packet_icmp_error(
+        &mut pipeline,
+        vni(200),
+        vni(100),
+        addr_v4("1.2.2.18"),
+        public,
+        public,
+        target,
+        NextHeader::TCP,
+        public_port,
+        80,
+    );
+    assert_eq!(done_reason, None);
+
+    assert!(
+        !flow.is_active(),
+        "an ICMP error about a one-way TCP flow no longer invalidates it"
+    );
+    assert_eq!(flow_table.active_len(), Some(0));
+}
