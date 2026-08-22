@@ -100,15 +100,15 @@ compare baseline="base" *args:
 # Browse the criterion report: distribution and regression plots per benchmark.
 #
 # Delegates to the root `serve` recipe rather than starting its own server, so there is one place
-# that knows how these are served.
+# that knows how these are served -- including which address to bind, which is why the url is
+# printed there and not here.
 [doc("Serve the criterion html report over http")]
 [script]
 serve port="8080":
     {{ _just_debuggable_ }}
     # Serves the parent of `report/`, because the top-level index links sideways into each
     # benchmark's own directory; serving `report/` alone gives an index whose every link 404s.
-    echo "criterion index: http://127.0.0.1:{{ port }}/report/index.html"
-    just serve ./target/criterion '{{ port }}'
+    just serve ./target/criterion '{{ port }}' report/index.html
 
 # Record a baseline for `compare` to measure against, without reporting.
 #
