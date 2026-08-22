@@ -45,14 +45,14 @@ mod tests {
     impl RandomRouter {
         fn load() -> Self {
             let mut entries = HashSet::new();
-            let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
-            let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
-            let e3 = build_fib_entry_egress(3, "10.0.3.1", "eth3");
-            let e4 = build_fib_entry_egress(4, "10.0.3.4", "eth4");
-            let e5 = build_fib_entry_egress(5, "10.0.3.5", "eth5");
-            let e6 = build_fib_entry_egress(6, "10.0.3.6", "eth6");
-            let e7 = build_fib_entry_egress(7, "10.0.3.7", "eth7");
-            let e8 = build_fib_entry_egress(8, "10.0.3.8", "eth8");
+            let e1 = build_fib_entry_egress(1, "10.0.1.1");
+            let e2 = build_fib_entry_egress(2, "10.0.2.1");
+            let e3 = build_fib_entry_egress(3, "10.0.3.1");
+            let e4 = build_fib_entry_egress(4, "10.0.3.4");
+            let e5 = build_fib_entry_egress(5, "10.0.3.5");
+            let e6 = build_fib_entry_egress(6, "10.0.3.6");
+            let e7 = build_fib_entry_egress(7, "10.0.3.7");
+            let e8 = build_fib_entry_egress(8, "10.0.3.8");
 
             entries.insert(e1.clone());
             entries.insert(e2.clone());
@@ -407,7 +407,7 @@ mod tests {
         // add a route
         let prefix = Prefix::from("192.168.1.0/24");
         let nhkey = NhopKey::with_address(&IpAddr::from_str("7.0.0.1").unwrap());
-        let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
+        let e1 = build_fib_entry_egress(1, "10.0.1.1");
         let fibgroup1 = build_fibgroup(std::slice::from_ref(&e1));
         fibw.register_fibgroup(&nhkey, &fibgroup1, false);
         fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
@@ -427,7 +427,7 @@ mod tests {
         assert!(fibgroup1.entries().contains(&*entry1));
 
         // attempt to modify the route by modifying the fibgroup
-        let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
+        let e2 = build_fib_entry_egress(2, "10.0.2.1");
         let fibgroup2 = build_fibgroup(std::slice::from_ref(&e2));
         fibw.register_fibgroup(&nhkey, &fibgroup2, false);
         fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
