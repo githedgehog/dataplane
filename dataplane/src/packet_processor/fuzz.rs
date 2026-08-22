@@ -623,6 +623,67 @@ mod smoke {
 
     #[tokio::test]
     #[dpdk::with_eal]
+    async fn the_same_input_twice_gives_the_same_answer() {
+        let scenario = || {
+            let mut flows: Vec<_> = (0..12u8)
+                .flat_map(|host| (0..3u16).map(move |round| (host, round)))
+                .filter_map(|(host, round)| {
+                    let src: IpAddr = format!("1.1.0.{host}").parse().ok()?;
+                    let dst: IpAddr = "3.3.3.1".parse().ok()?;
+                    round_trip::udp(src, dst, 4000 + round, 80).map(|p| routed::tunnelled(&p))
+                })
+                .collect();
+            flows.extend((0..8u8).filter_map(|h| {
+                let src: IpAddr = format!("1.1.9.{h}").parse().ok()?;
+                let dst: IpAddr = "3.3.3.1".parse().ok()?;
+                round_trip::udp(src, dst, 5000, 80).map(|p| routed::tunnelled(&p))
+            }));
+            flows
+        };
+
+        let answers = |fabric: &mut Fabric| {
+            let mut seen = Vec::new();
+            let packets = scenario();
+            let (singly, burst) = packets.split_at(packets.len() - 8);
+            for packet in singly.iter().cloned() {
+                let out = fabric.send(packet);
+                seen.push(describe(&out));
+            }
+            for out in fabric.send_batch(burst.to_vec()) {
+                seen.push(describe(&out));
+            }
+            seen
+        };
+
+        let mut once = Fabric::routed(&routed::exposes(), None).expect("a valid configuration");
+        let mut again = Fabric::routed(&routed::exposes(), None).expect("a valid configuration");
+        let first = answers(&mut once);
+        let second = answers(&mut again);
+
+        assert!(
+            first.iter().any(|a| a.contains("Delivered")),
+            "the scenario delivered nothing, so this compares two pipelines doing nothing"
+        );
+        assert_eq!(
+            first, second,
+            "two runs of one scenario disagreed: replay-based diagnosis cannot be trusted, and \
+             neither can bolero's shrinking"
+        );
+    }
+
+    fn describe(packet: &Packet<TestBuffer>) -> String {
+        let carried = routed::inside(packet);
+        format!(
+            "{:?} {:?} {:?} {:?}",
+            verdict(packet),
+            carried.as_ref().and_then(Packet::ip_source),
+            carried.as_ref().and_then(Packet::ip_destination),
+            carried.as_ref().and_then(Packet::transport_src_port),
+        )
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
     async fn the_harness_builds_a_pipeline_that_translates() {
         let mut fabric = Fabric::build(&[masquerade_expose()]).expect("a valid configuration");
 
