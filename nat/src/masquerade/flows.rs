@@ -3,6 +3,7 @@
 
 use crate::NatPort;
 use crate::common::NatAction;
+use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::apalloc::{AnyReservation, NatAllocator};
 use crate::masquerade::state::MasqueradeState;
 
@@ -54,45 +55,49 @@ fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, Nat
     Some((alloc.ip(), alloc.port()))
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ReReserveError {
+    #[error("flow has no VPC discriminant. This is a bug")]
+    MissingDiscriminant,
+    #[error("{0}")]
+    Allocator(#[from] AllocatorError),
+    #[error("flow has no NAT state to re-associate. This is a bug")]
+    NoNatState,
+    #[error("flow's NAT state is not masquerade. This is a bug")]
+    NotMasquerade,
+}
+
 fn re_reserve_ip_and_port(
     new_allocator: &NatAllocator,
     flow_info: &FlowInfo,
     ip: IpAddr,
     port: NatPort,
-) -> Result<(), ()> {
+) -> Result<(), ReReserveError> {
     let flow_key = flow_info.flowkey();
     let proto = flow_key.proto();
     // A flow without both VPC identities cannot be carried into the replacement allocator.
     let (Some(src_vpcd), Some(dst_vpcd)) = (flow_key.src_vpcd(), flow_info.get_dst_vpcd()) else {
-        error!(
-            "Flow {flow_key} has no VPC discriminant, so it cannot be carried over. This is a bug"
-        );
-        return Err(());
+        return Err(ReReserveError::MissingDiscriminant);
     };
     let src_ip = flow_key.src_ip();
     let port_u16 = port.as_u16();
     debug!("Attempting to re-reserve {ip} {proto}:{port_u16} for flow {flow_key}");
 
-    let reservation = AnyReservation::new(src_ip, ip).map_err(|e| {
-        error!("Cannot re-reserve {ip} for flow {flow_key}: {e}. This is a bug");
-    })?;
+    let reservation = AnyReservation::new(src_ip, ip)?;
+    let alloc = new_allocator.reserve_port(proto, src_vpcd, dst_vpcd, reservation, port)?;
 
-    match new_allocator.reserve_port(proto, src_vpcd, dst_vpcd, reservation, port) {
-        Ok(alloc) => {
-            debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
-            let mut guard = flow_info.locked.write();
-            let nat_state = guard.nat_state.as_mut().ok_or(())?;
-            let nat_state = nat_state.extract_mut::<MasqueradeState>().ok_or(())?;
-            debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
-            nat_state.set_allocation(alloc);
-            debug!("Successfully associated ip {ip}, {proto}:{port_u16} to flow {flow_key}");
-            Ok(())
-        }
-        Err(e) => {
-            error!("Failed to re-reserve {ip}, {proto}:{port_u16} for flow {flow_key}: {e}");
-            Err(())
-        }
-    }
+    debug!("Successfully re-reserved ip {ip} port/Id {port_u16} ({proto})");
+    let mut guard = flow_info.locked.write();
+    let nat_state = guard
+        .nat_state
+        .as_mut()
+        .ok_or(ReReserveError::NoNatState)?
+        .extract_mut::<MasqueradeState>()
+        .ok_or(ReReserveError::NotMasquerade)?;
+    debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
+    nat_state.set_allocation(alloc);
+    debug!("Successfully associated ip {ip}, {proto}:{port_u16} to flow {flow_key}");
+    Ok(())
 }
 
 pub(crate) fn check_masquerading_flow(
@@ -169,11 +174,18 @@ pub(crate) fn check_masquerading_flow(
     }
 
     // Reserve the tuple in the replacement before advancing the flow generation.
-    if re_reserve_ip_and_port(allocator, flow_info, ip, port).is_ok() {
-        debug!("Upgrading flow {} to gen id {genid}...", flow_info.logfmt());
-        flow_info.set_genid_pair(genid);
-    } else {
-        flow_info.invalidate_pair();
+    match re_reserve_ip_and_port(allocator, flow_info, ip, port) {
+        Ok(()) => {
+            debug!("Upgrading flow {} to gen id {genid}...", flow_info.logfmt());
+            flow_info.set_genid_pair(genid);
+        }
+        Err(e) => {
+            error!(
+                "Cannot carry flow {} into the new allocator: {e}. Invalidating it",
+                flow_info.logfmt()
+            );
+            flow_info.invalidate_pair();
+        }
     }
 }
 
