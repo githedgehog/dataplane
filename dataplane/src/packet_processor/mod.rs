@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 mod egress;
+#[cfg(test)]
+mod fuzz;
 mod ingress;
 mod ipforward;
 
