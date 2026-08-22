@@ -247,9 +247,26 @@ impl Fabric {
     /// can be read, and a pipeline that returned nothing would be a packet that vanished. That is
     /// asserted here rather than in a property, because every property depends on it.
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let mut out: Vec<_> = self.pipeline.process(std::iter::once(packet)).collect();
+        let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+
+    /// Send several packets through as one burst, and hand back what came out.
+    ///
+    /// Not the same code path as calling [`Self::send`] repeatedly. `FlowFilter::process` collects
+    /// its whole input before doing anything, so that it can pool the classifications into batched
+    /// `rte_acl` calls -- which means that in a burst, every packet has been through `FlowLookup`
+    /// before any of them reaches the nat stages. This is how the driver actually feeds the
+    /// pipeline: one bounded rx burst per poll.
+    pub(crate) fn send_batch(
+        &mut self,
+        packets: Vec<Packet<TestBuffer>>,
+    ) -> Vec<Packet<TestBuffer>> {
+        let sent = packets.len();
+        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
+        assert_eq!(out.len(), sent, "the pipeline did not return every packet");
+        out
     }
 }
 
@@ -1454,6 +1471,183 @@ mod acl {
     }
 }
 
+/// A burst, against the same packets sent one at a time.
+///
+/// The driver hands the pipeline one bounded rx burst per poll, and `FlowFilter::process` collects
+/// that burst before doing anything so it can pool its classifications into batched `rte_acl`
+/// calls. Every property above sends one packet at a time, so none of them has ever exercised the
+/// shape the dataplane actually runs in.
+#[cfg(test)]
+mod burst {
+    use super::routed::{exposes, inside, tunnelled};
+    use super::round_trip::udp;
+    use super::*;
+    use net::headers::TryVxlan;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const BURST: usize = 8;
+
+    /// A flow to send. Distinct by construction -- see the property.
+    #[derive(Debug, Clone, Copy)]
+    struct Member {
+        host: u8,
+        dport: u16,
+    }
+
+    struct Burst;
+
+    impl bolero::ValueGenerator for Burst {
+        type Output = Vec<Member>;
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Vec<Member>> {
+            (0..BURST)
+                .map(|_| {
+                    Some(Member {
+                        host: driver.produce()?,
+                        dport: driver.produce::<u16>()?.max(1),
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("burst::Burst", &Burst);
+    }
+
+    /// What a packet is treated as, in enough detail to compare two runs.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Treatment {
+        verdict: Verdict,
+        vni: Option<u32>,
+        inner_src: Option<IpAddr>,
+        inner_dst: Option<IpAddr>,
+        inner_sport: Option<u16>,
+    }
+
+    fn treatment(packet: &Packet<TestBuffer>) -> Treatment {
+        let carried = inside(packet);
+        Treatment {
+            verdict: verdict(packet),
+            vni: packet.try_vxlan().map(|v| v.vni().as_u32()),
+            inner_src: carried.as_ref().and_then(Packet::ip_source),
+            inner_dst: carried.as_ref().and_then(Packet::ip_destination),
+            inner_sport: carried
+                .as_ref()
+                .and_then(Packet::transport_src_port)
+                .map(std::num::NonZero::get),
+        }
+    }
+
+    /// A burst is treated the same as the same packets sent one at a time.
+    ///
+    /// # Why the flows are distinct
+    ///
+    /// This is the strongest form of the claim that is actually true, and the limit is worth
+    /// stating rather than discovering. `FlowFilter` is a barrier: in a burst, every packet has
+    /// been through `FlowLookup` before any of them reaches the nat stages. Two packets of *one*
+    /// flow in one burst therefore both miss the flow table, where sent one at a time the second
+    /// would hit the state the first created. Whatever the right answer to that is, it is a
+    /// question about how a burst should handle a flow it is itself establishing -- not about
+    /// whether batching preserves per-packet behaviour, which is what this asks.
+    ///
+    /// So the members of a burst are made distinct by construction: one host and one destination
+    /// port each, assigned by position rather than drawn. A generator that could draw a collision
+    /// would make this property fail intermittently for a reason that is not a defect.
+    ///
+    /// # What it catches
+    ///
+    /// The batched `rte_acl` path disagreeing with the single-lookup one, which `flow_filter`'s
+    /// own `batched_lookup_matches_single_lookup` checks against a reference and this checks
+    /// against the assembled pipeline; a stage that indexes into a burst by position and gets the
+    /// position wrong; and any stage that starts leaking state between packets that have nothing
+    /// to do with each other.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_burst_is_treated_the_same_as_one_packet_at_a_time() {
+        static COMPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Burst)
+            .for_each(|members| {
+                let packets = || {
+                    members
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| {
+                            // Position decides the flow, so no two members of a burst collide.
+                            // The drawn values still vary which flows a run explores.
+                            let src: IpAddr = format!("1.1.{i}.{}", m.host)
+                                .parse()
+                                .unwrap_or_else(|_| unreachable!());
+                            let dst: IpAddr =
+                                "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                            udp(src, dst, 1024 + u16::try_from(i).unwrap_or(0), m.dport)
+                                .map(|p| tunnelled(&p))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                };
+                let (Some(singly), Some(together)) = (packets(), packets()) else {
+                    return;
+                };
+
+                // Two fabrics rather than one: a fabric that has already seen the packets is not
+                // the same fabric, so reusing one would compare a cold pipeline with a warm one
+                // and call the difference a batching bug.
+                let (Some(mut a), Some(mut b)) = (
+                    Fabric::routed(&exposes(), None),
+                    Fabric::routed(&exposes(), None),
+                ) else {
+                    return;
+                };
+
+                let one_at_a_time: Vec<_> =
+                    singly.into_iter().map(|p| treatment(&a.send(p))).collect();
+                let in_a_burst: Vec<_> = b
+                    .send_batch(together)
+                    .iter()
+                    .map(treatment)
+                    .collect();
+
+                assert_eq!(
+                    one_at_a_time.len(),
+                    in_a_burst.len(),
+                    "a burst did not return as many packets as it was given"
+                );
+                for (i, (alone, batched)) in
+                    one_at_a_time.iter().zip(in_a_burst.iter()).enumerate()
+                {
+                    assert_eq!(
+                        alone, batched,
+                        "packet {i} of the burst was treated differently from the same packet \
+                         sent on its own"
+                    );
+                    COMPARED.fetch_add(1, Ordering::Relaxed);
+                    if matches!(alone.verdict, Verdict::Delivered { .. }) {
+                        DELIVERED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (compared, delivered) = (
+            COMPARED.load(Ordering::Relaxed),
+            DELIVERED.load(Ordering::Relaxed),
+        );
+        eprintln!("compared={compared} delivered={delivered}");
+        super::assert_covered(compared > 0, "no burst was ever compared");
+        // Without this the property is satisfied by two pipelines that drop everything
+        // identically, which they would agree about perfectly and say nothing.
+        super::assert_covered(
+            delivered > 0,
+            "no packet of any burst ever reached the wire, so the comparison is between drops",
+        );
+    }
+}
+
 /// Where a packet goes, when there is more than one place it could.
 ///
 /// Every property above runs against one peering, so "was this routed to the right vpc" has only
@@ -1702,7 +1896,7 @@ mod routed {
     }
 
     /// The one peering every test here uses: a private range masqueraded into a public one.
-    fn exposes() -> Vec<VpcExpose> {
+    pub(super) fn exposes() -> Vec<VpcExpose> {
         vec![
             VpcExpose::empty()
                 .make_masquerade(None)
