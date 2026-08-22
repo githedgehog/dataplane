@@ -16,22 +16,12 @@ use std::net::IpAddr;
 pub struct EgressObject {
     pub(crate) ifindex: Option<InterfaceIndex>,
     pub(crate) address: Option<IpAddr>,
-    /// Optional interface name for diagnostics.
-    pub(crate) ifname: Option<String>,
 }
 
 impl EgressObject {
     #[must_use]
-    pub fn new(
-        ifindex: Option<InterfaceIndex>,
-        address: Option<IpAddr>,
-        ifname: Option<String>,
-    ) -> Self {
-        Self {
-            ifindex,
-            address,
-            ifname,
-        }
+    pub fn new(ifindex: Option<InterfaceIndex>, address: Option<IpAddr>) -> Self {
+        Self { ifindex, address }
     }
     #[must_use]
     pub fn ifindex(&self) -> &Option<InterfaceIndex> {
@@ -41,10 +31,6 @@ impl EgressObject {
     pub fn address(&self) -> &Option<IpAddr> {
         &self.address
     }
-    #[must_use]
-    pub fn ifname(&self) -> &Option<String> {
-        &self.ifname
-    }
     /// merge two egress objects appearing in a next-hop or a Fib entry. This is used as part
     /// of the resolution to ensure correctness
     pub fn merge(&mut self, other: &Self) {
@@ -53,9 +39,6 @@ impl EgressObject {
         }
         if other.address.is_some() {
             self.address = other.address;
-        }
-        if self.ifname.is_none() && other.ifname.is_some() {
-            self.ifname.clone_from(&other.ifname);
         }
     }
 }
@@ -279,7 +262,6 @@ mod squash_properties {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
     ];
-    const IFNAMES: [&str; 2] = ["eth0", "eth1"];
 
     fn index(raw: u8) -> InterfaceIndex {
         InterfaceIndex::new(NonZero::new(u32::from(raw)).unwrap_or_else(|| unreachable!()))
@@ -293,11 +275,9 @@ mod squash_properties {
     fn egress<D: Driver>(driver: &mut D) -> Option<EgressObject> {
         let ifindex = driver.gen_u8(Included(&0), Included(&3))?;
         let address = driver.gen_u8(Included(&0), Included(&3))?;
-        let ifname = driver.gen_u8(Included(&0), Included(&2))?;
         Some(EgressObject::new(
             choose(ifindex, &[index(1), index(2), index(3)]),
             choose(address, &ADDRESSES),
-            choose(ifname, &IFNAMES).map(str::to_string),
         ))
     }
 
@@ -401,7 +381,6 @@ mod squash_properties {
                 let inputs = egresses(&entry);
                 let ifindex = inputs.iter().find_map(|e| *e.ifindex());
                 let address = inputs.iter().rev().find_map(|e| *e.address());
-                let ifname = inputs.iter().find_map(|e| e.ifname().clone());
 
                 let mut squashed = entry.clone();
                 squashed.squash();
@@ -410,7 +389,6 @@ mod squash_properties {
                     Some(merged) => {
                         assert_eq!(*merged.ifindex(), ifindex, "interface, for {entry:?}");
                         assert_eq!(*merged.address(), address, "address, for {entry:?}");
-                        assert_eq!(*merged.ifname(), ifname, "name, for {entry:?}");
                     }
                     // An egress without an interface is unusable and removed.
                     None => assert!(ifindex.is_none(), "for {entry:?}"),
