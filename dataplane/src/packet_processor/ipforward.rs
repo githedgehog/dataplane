@@ -157,7 +157,9 @@ impl IpForwarder {
                 the innner packet. */
 
                 if !packet.headers().vlan().is_empty() {
-                    debug!("{nfi}: Decapsulated frame carries a VLAN tag; not supported");
+                    debug!(
+                        "{nfi}: Decapsulated frame carries a VLAN tag, which nothing downstream is equipped to carry"
+                    );
                     packet.done(DoneReason::Unhandled);
                     return;
                 }
