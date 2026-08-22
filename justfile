@@ -210,6 +210,17 @@ bench: (build "benches")
     shopt -s nullglob
     for bench in ./results/benches/bin/*; do "$bench" --bench; done
 
+# Run the iai-callgrind benches: instructions retired and modelled cache traffic, rather than
+# wall-clock. Bit-for-bit repeatable run to run, which is what makes them gateable in CI -- and
+# blind to anything that changes data layout rather than instruction count. Read
+# `development/code/benchmarking.md` before drawing a conclusion from one.
+#
+# Callgrind benches are named `*_callgrind`; add new ones to this list.
+[script]
+bench-callgrind *args:
+    {{ _just_debuggable_ }}
+    cargo bench -p dataplane-routing --bench fib_lookup_callgrind {{ args }}
+
 [script]
 build-each *args: (build "workspace" args)
     {{ _just_debuggable_ }}
