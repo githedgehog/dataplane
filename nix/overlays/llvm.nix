@@ -30,13 +30,19 @@ let
   }) final.llvmPackages'.stdenv;
   # note: rust-bin comes from oxa's overlay, not nixpkgs.  This overlay only works if you have a rust overlay as well.
   rust-toolchain = final.pkgsBuildHost.rust-bin.fromRustupToolchain {
+    # `components` are extensions *on top of* a profile, and the profile
+    # defaults to rustup's `default`, which already carries rust-docs.  Deleting
+    # "rust-docs" from the list below therefore removes nothing by itself -- the
+    # profile has to be named too, or the default puts it straight back.  That
+    # is 727MB of prebuilt HTML nothing in CI reads, in the closure every
+    # dev-shell job pulls over the network into a cold /nix.
+    profile = "minimal";
     channel = if nightly == "true" then "nightly" else sources.rust.version;
     components = [
       "cargo"
       "clippy"
       "llvm-tools"
       "rust-analyzer"
-      "rust-docs"
       "rust-src"
       "rust-std"
       "rustc"
