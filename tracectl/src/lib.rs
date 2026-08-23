@@ -6,6 +6,9 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]
 
+#[cfg(any(test, feature = "evidence"))]
+pub mod evidence;
+
 pub mod control;
 pub mod display;
 pub mod targets;
