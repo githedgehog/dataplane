@@ -73,7 +73,14 @@ impl GetDriver for PciNic {
     fn driver(&self) -> Result<Option<PciDriver>, DriverErr> {
         let device_path = self.device_path().map_err(DriverErr::Sysfs)?;
         info!("found device {self} under device path {:?}", device_path);
-        let driver_path = device_path.relative("driver").map_err(DriverErr::Sysfs)?;
+        let driver_path = match device_path.relative("driver") {
+            Ok(p) => p,
+            Err(SysfsErr::IoError(e)) if e.kind() == ErrorKind::NotFound => {
+                info!("no driver symlink for {self} (no driver bound)");
+                return Ok(None);
+            }
+            Err(e) => return Err(DriverErr::Sysfs(e)),
+        };
         info!("{self} is using driver path {driver_path:?}");
         match driver_path.inner().file_name() {
             Some(os_str) => match os_str.to_str() {
@@ -99,6 +106,10 @@ impl std::fmt::Display for PciNic {
 /// Enum describing supported PCI drivers.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr)]
 pub enum PciDriver {
+    #[strum(serialize = "e1000")]
+    E1000,
+    #[strum(serialize = "e1000e")]
+    E1000E,
     /// Intel's i40e driver.
     #[strum(serialize = "i40e")]
     I40e,
@@ -318,14 +329,7 @@ impl BindToVfioPci for PciNic {
                 }
             }
             Ok(None) => {
-                let msg = format!(
-                    "device {self} is unknown to the operating system.  You may need to load (modprobe) a driver"
-                );
-                error!("{msg}");
-                return Err(DriverErr::Sysfs(SysfsErr::IoError(std::io::Error::new(
-                    ErrorKind::Unsupported,
-                    msg,
-                ))));
+                info!("device {self} has no driver bound; proceeding to vfio-pci bind");
             }
             Err(err) => {
                 error!("failed to get device driver: {:?}", err);
