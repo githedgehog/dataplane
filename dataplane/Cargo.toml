@@ -69,6 +69,7 @@ routing = { workspace = true, features = ["testing"] }
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 n-vm = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tracectl = { workspace = true, features = ["evidence"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = [] }

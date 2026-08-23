@@ -3584,6 +3584,10 @@ mod model {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{LazyLock, OnceLock};
 
+    type Tuple = (Option<IpAddr>, Option<u16>);
+
+    type Reported = (Vec<Tuple>, tracectl::evidence::Evidence);
+
     fn on_two_threads(body: &(impl Fn() + Sync)) {
         thread::scope(|scope| {
             let handles: Vec<_> = (0..2)
@@ -3713,7 +3717,7 @@ mod model {
             let blueprint = fleet.blueprint();
 
             let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
-            let given: Vec<(Option<IpAddr>, Option<u16>)> = thread::scope(|scope| {
+            let given: Vec<Reported> = thread::scope(|scope| {
                 let running: Vec<_> = workers
                     .iter()
                     .map(|(host, first)| {
@@ -3722,6 +3726,8 @@ mod model {
                             .name(format!("worker-{host}"))
                             .spawn_scoped(scope, move || {
                                 let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let recording =
+                                    tracectl::evidence::capture(format!("worker-{host}"));
                                 let mut worker = blueprint.worker();
                                 let burst = (0..FLOWS)
                                     .map(|n| {
@@ -3733,7 +3739,7 @@ mod model {
                                         ))
                                     })
                                     .collect();
-                                worker
+                                let tuples = worker
                                     .send_batch(burst)
                                     .iter()
                                     .map(|out| {
@@ -3751,16 +3757,21 @@ mod model {
                                             tenant.transport_src_port().map(std::num::NonZero::get),
                                         )
                                     })
-                                    .collect::<Vec<_>>()
+                                    .collect::<Vec<_>>();
+                                (tuples, recording.evidence())
                             })
                             .expect("spawn worker")
                     })
                     .collect();
                 running
                     .into_iter()
-                    .flat_map(|worker| worker.join().expect("worker panicked"))
+                    .map(|worker| worker.join().expect("worker panicked"))
                     .collect()
             });
+
+            let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) = given.into_iter().unzip();
+            let given: Vec<_> = given.into_iter().flatten().collect();
+            let _explain = tracectl::evidence::dump_on_panic(evidence);
 
             let mut seen = std::collections::BTreeMap::new();
             for tuple in &given {
@@ -3840,6 +3851,8 @@ mod model {
                                     .spawn_scoped(scope, move || {
                                         let _guard =
                                             entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("worker-{which}"));
                                         let mut worker = blueprint.worker();
                                         let mut mine: Vec<Box<dyn Load>> =
                                             loads_for(validated, vary)

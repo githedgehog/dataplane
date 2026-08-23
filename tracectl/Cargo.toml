@@ -5,6 +5,9 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+evidence = []
+
 [dependencies]
 clock = { workspace = true }
 color-eyre = { workspace = true , features = [ "capture-spantrace", "color-spantrace", "tracing-error", "track-caller" ] }
