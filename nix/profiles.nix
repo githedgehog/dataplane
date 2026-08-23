@@ -165,8 +165,6 @@ let
   sanitize.thread.RUSTFLAGS = [
     "-Zsanitizer=thread"
     "-Zexternal-clangrt"
-    # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
-    "-Cunsafe-allow-abi-mismatch=sanitizer"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
   # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
