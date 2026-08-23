@@ -281,10 +281,33 @@ impl ProcessOutput {
     /// Formats stdout and stderr sections with the given label prefix.
     fn fmt_sections(&self, f: &mut std::fmt::Formatter<'_>, label: &str) -> std::fmt::Result {
         writeln!(f, "--------------- {label} stdout ---------------")?;
-        writeln!(f, "{}", self.stdout)?;
+        write_tagged(f, &format!("{label}.out"), &self.stdout)?;
         writeln!(f, "--------------- {label} stderr ---------------")?;
-        writeln!(f, "{}", self.stderr)
+        write_tagged(f, &format!("{label}.err"), &self.stderr)
     }
+}
+
+/// Write a captured stream with every line naming where it came from.
+///
+/// The section headers below are not enough on their own. This whole report is one string,
+/// printed after the guest has exited, while the host tier keeps writing to the same file
+/// descriptor -- so a line appearing between two headers is not evidence that it came from
+/// between them. That is not hypothetical: a libfuzzer banner belonging to a *host-side* target
+/// was read as the guest's, and the mistake survived several rounds of looking at it, because
+/// position inside the markers was the only evidence available.
+///
+/// Every channel here already arrives separately -- the guest's stdout, stderr, `n-it` trace and
+/// result each have their own vsock port, and the console and hypervisor are separate captures.
+/// They were only ever merged at this last step. Tagging costs one prefix per line and makes the
+/// merge reversible by anyone reading it, including with `grep`.
+fn write_tagged(f: &mut std::fmt::Formatter<'_>, tag: &str, body: &str) -> std::fmt::Result {
+    if body.is_empty() {
+        return Ok(());
+    }
+    for line in body.lines() {
+        writeln!(f, "[{tag}] {line}")?;
+    }
+    Ok(())
 }
 
 /// Parameters that vary per test invocation.
@@ -356,10 +379,10 @@ impl<B: HypervisorBackend> std::fmt::Display for VmTestOutput<B> {
         self.hypervisor.fmt_sections(f, B::NAME)?;
         self.virtiofsd.fmt_sections(f, "virtiofsd")?;
         writeln!(f, "--------------- linux console ---------------")?;
-        writeln!(f, "{}", self.console)?;
+        write_tagged(f, "console", &self.console)?;
         writeln!(f, "--------------- init system ---------------")?;
-        writeln!(f, "{}", self.init_trace)?;
-        self.test.fmt_sections(f, "test")?;
+        write_tagged(f, "n-it", &self.init_trace)?;
+        self.test.fmt_sections(f, "guest")?;
         Ok(())
     }
 }
