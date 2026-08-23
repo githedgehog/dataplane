@@ -160,8 +160,37 @@ impl IcmpErrorHandler {
             return;
         }
 
-        let flow_info_locked = flow.locked.read();
-        let Some(dst_vpcd) = flow_info_locked.dst_vpcd else {
+        // Read what is needed and release the lock *before* dispatching, rather than holding the
+        // guard across the call.
+        //
+        // Both handlers take `flow_info.locked.read()` themselves, and so does the `Display` for
+        // the `logfmt()` in their debug lines, so a guard held across the call is a recursive read
+        // on the same `RwLock`. `parking_lot` does not make that safe: a writer arriving between
+        // the two acquisitions is served first, and the inner read then waits on a writer that is
+        // waiting on the guard this thread already holds. Writers on this very lock are ordinary
+        // data-path traffic -- `masquerade::nf` and `portfw::nf` take one per packet they handle --
+        // so the window needs only an ICMP error about a flow that is still sending.
+        //
+        // Worse, one of the two acquisitions is a *log line*, so the deadlock appears when tracing
+        // is turned up and not otherwise. Compare the reentrancy note on `dpdk::acl::context`.
+        //
+        // Found by `dataplane::packet_processor::fuzz::model::
+        // an_icmp_teardown_leaves_another_workers_flow_alone` under shuttle, which refuses a
+        // recursive acquisition outright. Real threads had passed it every time.
+        //
+        // The snapshot means the state could change before the handler re-reads it. That is not a
+        // new race and not a worse one: the handlers already treat a missing NAT state as an error
+        // rather than assuming the caller's view still holds.
+        let (dst_vpcd, masquerading, port_forwarding) = {
+            let flow_info_locked = flow.locked.read();
+            (
+                flow_info_locked.dst_vpcd,
+                flow_info_locked.nat_state.is_some(),
+                flow_info_locked.port_fw_state.is_some(),
+            )
+        };
+
+        let Some(dst_vpcd) = dst_vpcd else {
             warn!("Flow for {rev_flow_key} has no dst VPC discriminant set. This is a bug");
             packet.done(DoneReason::InternalFailure);
             return;
@@ -171,10 +200,10 @@ impl IcmpErrorHandler {
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
 
         // process the packet depending on the flow info
-        let result = if flow_info_locked.nat_state.is_some() {
+        let result = if masquerading {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with masquerade state");
             handle_icmp_error_masquerading(packet, flow.as_ref())
-        } else if flow_info_locked.port_fw_state.is_some() {
+        } else if port_forwarding {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with port-forwarding state");
             handle_icmp_error_port_forwarding(packet, flow.as_ref())
         } else {

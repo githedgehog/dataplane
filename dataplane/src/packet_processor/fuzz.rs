@@ -5433,4 +5433,245 @@ mod model {
             "no conversation was ever answered by the other worker, so nothing crossed",
         );
     }
+
+    /// An ICMP Destination Unreachable from the far vpc, reporting on a datagram we masqueraded.
+    ///
+    /// The embedded datagram is the packet *as it left us* -- public source, real destination --
+    /// because that is what the far side saw and therefore what it quotes back. `IcmpErrorHandler`
+    /// builds a flow key from it and reverses it, which is how it finds the flow masquerade
+    /// inserted. Getting this backwards produces an error that matches nothing, and a property
+    /// resting on it would pass while tearing nothing down.
+    fn unreachable(
+        code: net::icmp4::Icmp4DestUnreachable,
+        public: (IpAddr, u16),
+        target: IpAddr,
+    ) -> Packet<TestBuffer> {
+        let (IpAddr::V4(public_v4), IpAddr::V4(target_v4)) = (public.0, target) else {
+            unreachable!("the fixture is v4 throughout")
+        };
+        let inner =
+            net::packet::test_utils::build_test_icmp4_destination_unreachable_packet_with_code(
+                code,
+                net::packet::test_utils::IcmpErrorAddrs {
+                    outer_src: target_v4,
+                    outer_dst: public_v4,
+                    inner_src: public_v4,
+                    inner_dst: target_v4,
+                },
+                net::ip::NextHeader::UDP,
+                public.1,
+                80,
+            )
+            .unwrap_or_else(|e| unreachable!("the icmp error builds: {e:?}"));
+        super::routed::tunnelled_from(vni(REMOTE_VNI), &inner)
+    }
+
+    /// Tearing one flow down does not disturb a flow another worker is using.
+    ///
+    /// `IcmpErrorHandler` is the pipeline's first stage, ahead of the barrier `FlowFilter` imposes,
+    /// and it is the only place the ICMP path deletes a session. Under masquerade the deletion also
+    /// releases the port allocation. So an ICMP error is a *write* to shared state -- the flow table
+    /// and the allocator both -- performed by whichever worker the error happens to land on, while
+    /// every other worker is reading the same two structures.
+    ///
+    /// This is the frame condition from `development/code/config-algebra-testing.md` applied to the
+    /// flow table: an operation changes nothing outside its write set. Both halves are asserted,
+    /// which is what makes it a frame condition rather than half of one:
+    ///
+    /// - the flow the error **names** is gone, so its own reply is refused;
+    /// - the flow it does **not** name, being answered on another worker at the same moment,
+    ///   completes exactly as it would have.
+    ///
+    /// The reasoning `Translations` relies on is explicitly single-threaded -- "within a burst
+    /// nothing invalidates: `IcmpErrorHandler` runs ahead of the barrier, so any invalidation it
+    /// causes has happened before the first allocation of that burst". That holds for one worker and
+    /// says nothing about two, because the other worker's burst is not ordered against this one's.
+    ///
+    /// # Why both codes are run
+    ///
+    /// `Network` tears down and `FragmentationNeeded` must not: the latter is Path MTU Discovery,
+    /// where the sender is about to retry the same flow with a smaller packet. Running both means
+    /// the claim is about the *teardown* rather than about ICMP errors in general -- without the
+    /// recoverable case, "the doomed reply was refused" would pass just as well if the error had
+    /// broken the flow for some reason having nothing to do with invalidation.
+    ///
+    /// `nat::masquerade::test::path_mtu_discovery_does_not_tear_down_the_flow_that_triggered_it`
+    /// makes the same distinction single-threaded, by reading the flow's own `is_active`. Here it
+    /// is stated over what the pipeline does with a packet instead, because that survives the flow
+    /// being torn down and re-established, and because it is the projection the rest of this module
+    /// judges by.
+    #[concurrency::model_test]
+    fn an_icmp_teardown_leaves_another_workers_flow_alone() {
+        /// Errors that found their flow and were translated, so a teardown was possible at all.
+        static REPORTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Conversations that survived a concurrent teardown of their neighbour.
+        static SURVIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let target: IpAddr = "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}"));
+
+            for (code, tears_down) in [
+                (net::icmp4::Icmp4DestUnreachable::Network, true),
+                (
+                    net::icmp4::Icmp4DestUnreachable::FragmentationNeeded {
+                        next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
+                    },
+                    false,
+                ),
+            ] {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                // A fleet per case, so the second case cannot inherit the first's flows.
+                let fleet = Fleet::lowering(
+                    &overlay,
+                    Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+                    Arc::new(FlowTable::default()),
+                );
+                let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+
+                // Phase one: two flows, opened on different workers, both live and both one-way.
+                let opening = entering.clone();
+                let answering = entering.clone();
+                let (doomed, mut spared): ((IpAddr, u16), Conversation) = thread::scope(|scope| {
+                    let doomed = thread::Builder::new()
+                        .name("open-doomed".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = opening.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("open-doomed");
+                            let mut worker = blueprint.worker();
+                            let request = super::round_trip::udp(
+                                "1.1.0.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                target,
+                                1000,
+                                80,
+                            )
+                            .unwrap_or_else(|| unreachable!("the fixture request builds"));
+                            let out = worker.send(tunnelled(&request));
+                            let carried = inside(&out).unwrap_or_else(|| {
+                                unreachable!(
+                                    "the request was not delivered tunnelled: {:?}",
+                                    verdict(&out)
+                                )
+                            });
+                            let (Some(public), Some(port)) =
+                                (carried.ip_source(), carried.transport_src_port())
+                            else {
+                                unreachable!("a delivered request had no public tuple")
+                            };
+                            (public, port.get())
+                        })
+                        .expect("spawn opener");
+
+                    let spared = thread::Builder::new()
+                        .name("open-spared".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = answering.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("open-spared");
+                            let mut worker = blueprint.worker();
+                            let mut convo = Conversation::new(
+                                super::routed::Path::fixture(),
+                                "1.1.0.2".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                target,
+                                2000,
+                                80,
+                            );
+                            step(&mut worker, &mut convo);
+                            convo
+                        })
+                        .expect("spawn opener");
+
+                    (
+                        doomed.join().expect("opener panicked"),
+                        spared.join().expect("opener panicked"),
+                    )
+                });
+
+                // Phase two: one worker reports the error while the other answers the flow it kept.
+                let tearing = entering.clone();
+                let keeping = entering.clone();
+                // Named for the message below, which outlives the closure that consumes the code.
+                let named = format!("{code:?}");
+                let spared = thread::scope(|scope| {
+                    let teardown = thread::Builder::new()
+                        .name("teardown".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = tearing.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("teardown");
+                            let mut worker = blueprint.worker();
+                            let out = worker.send(unreachable(code, doomed, target));
+                            // Delivery is a real vacuity guard: an error whose embedded datagram
+                            // matches no flow is *let through* rather than refused, so a mis-built
+                            // one would sail past every assertion here having done nothing.
+                            matches!(verdict(&out), Verdict::Delivered { .. })
+                        })
+                        .expect("spawn teardown");
+
+                    let answer = thread::Builder::new()
+                        .name("answer".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = keeping.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("answer");
+                            let mut worker = blueprint.worker();
+                            step(&mut worker, &mut spared);
+                            spared
+                        })
+                        .expect("spawn answer");
+
+                    assert!(
+                        teardown.join().expect("teardown panicked"),
+                        "the icmp error never reached the flow it named, so this raced against \
+                         nothing"
+                    );
+                    REPORTED.fetch_add(1, Ordering::Relaxed);
+                    answer.join().expect("answer panicked")
+                });
+
+                assert!(
+                    spared.checked(),
+                    "a flow was disturbed by an icmp teardown of a different flow on another \
+                     worker. {}",
+                    spared.describe()
+                );
+                SURVIVED.fetch_add(1, Ordering::Relaxed);
+
+                // And the other half of the frame condition: the flow the error *did* name.
+                let mut worker = blueprint.worker();
+                let reply = super::round_trip::udp(target, doomed.0, 80, doomed.1)
+                    .unwrap_or_else(|| unreachable!("the reply builds"));
+                let out = worker.send(super::routed::tunnelled_from(vni(REMOTE_VNI), &reply));
+                let delivered = matches!(verdict(&out), Verdict::Delivered { .. });
+                assert_eq!(
+                    delivered,
+                    !tears_down,
+                    "an icmp error with code {named} left the flow it named {}: {:?}",
+                    if delivered { "alive" } else { "torn down" },
+                    verdict(&out)
+                );
+            }
+        });
+
+        let (reported, survived) = (
+            REPORTED.load(Ordering::Relaxed),
+            SURVIVED.load(Ordering::Relaxed),
+        );
+        eprintln!("reported={reported} survived={survived}");
+        super::assert_covered(reported > 0, "no icmp error ever reached the flow it named");
+    }
 }
