@@ -580,13 +580,15 @@ mod tests {
         let params = sample_params();
         let payload = build_payload_config(&params);
         let cmdline = payload.cmdline.as_deref().expect("cmdline should be set");
+        // Against the config, not against a literal. This asserted `hugepages=1` and
+        // `hugepagesz=1G`, which is a copy of the default rather than a claim about the cmdline,
+        // and it failed the moment the default changed for reasons that had nothing to do with
+        // whether the reservation reaches the kernel.
+        let expected = params.vm_config.guest_hugepages.kernel_cmdline_fragment();
+        assert!(!expected.is_empty(), "the sample config reserves hugepages");
         assert!(
-            cmdline.contains("hugepages=1"),
-            "cmdline should configure hugepage count: {cmdline}",
-        );
-        assert!(
-            cmdline.contains("hugepagesz=1G"),
-            "cmdline should configure hugepage size: {cmdline}",
+            cmdline.contains(expected.trim_end()),
+            "cmdline should carry the configured reservation `{expected}`: {cmdline}",
         );
     }
 
