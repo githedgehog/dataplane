@@ -562,6 +562,42 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut sig = func.sig.clone();
     sig.asyncness = None;
 
+    // Tier 0, and only for a fuzz target.
+    //
+    // `cargo bolero list` runs this binary with `CARGO_BOLERO_SELECT=all` and collects a line that
+    // each `bolero::check!` prints *as it executes*. The body never executes on the host -- that is
+    // what this attribute is for -- so without this an in-VM fuzz target is invisible to the
+    // coverage-guided runner and can never be named to `cargo bolero test`.
+    //
+    // Answering here rather than by running the body is the point: a body may open netlink sockets,
+    // bind devices or assume it is root, none of which may happen on a developer's workstation
+    // merely because something asked what tests exist.
+    //
+    // Keyed on `#[corpus]` because that is what distinguishes a fuzz target from an ordinary guest
+    // test. Announcing every tiered test would put forty-odd entries containing no `check!` into a
+    // list whose whole purpose is naming things that can be fuzzed.
+    //
+    // `should_run` is `true` whenever `CARGO_BOLERO_SELECT` is unset, so an ordinary run falls
+    // straight through. `__item_path__!` must expand at the call site or it names a path inside
+    // `n-vm`; what it yields here is the *outer* test's path, which is the name libtest accepts as
+    // a filter when `cargo bolero test` selects it.
+    let discovery = corpus_attr.as_ref().map(|_| {
+        quote! {
+            let __n_vm_bolero_location = ::n_vm::bolero::TargetLocation {
+                package_name: ::core::env!("CARGO_PKG_NAME"),
+                manifest_dir: ::core::env!("CARGO_MANIFEST_DIR"),
+                module_path: ::core::module_path!(),
+                file: ::core::file!(),
+                line: ::core::line!(),
+                item_path: ::n_vm::bolero::__item_path__!(),
+                test_name: ::core::option::Option::None,
+            };
+            if !__n_vm_bolero_location.should_run() {
+                return;
+            }
+        }
+    });
+
     // The requested backend is resolved against the host architecture at
     // run time by the host tier (see `n_vm::RequestedBackend::resolve`):
     // a defaulted backend falls back to QEMU/TCG for a cross-arch guest,
@@ -683,6 +719,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         #[test]
         #(#harness_attrs)*
         #vis #sig {
+            #discovery
             // Tier 3: VM guest
             if ::n_vm::is_in_vm() {
                 { #tier3_body }
