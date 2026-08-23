@@ -11,6 +11,7 @@ pub mod setup;
 pub(crate) mod test;
 
 // re-exports
+pub use natrw::NatTablesReaderFactory;
 pub use nf::{NatTablesWriter, StaticNat};
 
 use tracectl::trace_target;
