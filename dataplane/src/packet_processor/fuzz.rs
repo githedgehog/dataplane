@@ -4311,4 +4311,213 @@ mod model {
             "either no conversation completed or no route was published, so nothing was raced",
         );
     }
+
+    #[concurrency::model_test]
+    fn a_next_hop_that_moves_is_never_seen_half_moved() {
+        const CHURN: u8 = 3;
+        const PER_ROUND: u8 = 2;
+
+        static FRESH: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static STALE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        type Seen = Result<u8, String>;
+
+        fn waypoint(nth: u8) -> (IpAddr, InterfaceIndex) {
+            if nth == 0 {
+                (
+                    PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+                    uplink(),
+                )
+            } else {
+                (
+                    IpAddr::from([10, 0, 0, nth]),
+                    InterfaceIndex::try_new(UPLINK + u32::from(nth))
+                        .unwrap_or_else(|_| unreachable!()),
+                )
+            }
+        }
+
+        fn framing(nth: u8) -> Mac {
+            Mac([0x02, 0, 0, 0, 0x11, nth])
+        }
+
+        fn towards(nth: u8) -> FibGroup {
+            let (remote, oif) = waypoint(nth);
+            let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+                ResolvedVxlan {
+                    vni: vni(REMOTE_VNI),
+                    remote,
+                    dmac: framing(nth),
+                },
+            )));
+            out.add(PktInstruction::Egress(EgressObject::new(
+                Some(oif),
+                Some(remote),
+            )));
+            FibGroup::with_entry(out)
+        }
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            for nth in 1..=CHURN {
+                let (_, oif) = waypoint(nth);
+                tables.interface(
+                    oif,
+                    &format!("uplink-{nth}"),
+                    SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
+                );
+                tables.attach(oif, UNDERLAY_VRF);
+            }
+            for to in 0..=CHURN {
+                for over in 0..=CHURN {
+                    tables.adjacency(waypoint(to).0, waypoint(over).1, framing(to));
+                }
+            }
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+            let mut reports = Vec::new();
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name(format!("probe-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("probe-{which}"));
+                                let mut worker = blueprint.worker();
+
+                                let mut port = u16::from(which) * 1000 + 1000;
+                                let send = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                    *port += 1;
+                                    let src = format!("1.1.{which}.1");
+                                    let out = worker.send(tunnelled(&build_test_udp_ipv4_packet(
+                                        &src, "3.3.3.1", *port, 80,
+                                    )));
+                                    let Verdict::Delivered {
+                                        oif: Some(oif),
+                                        dst: Some(dst),
+                                        ..
+                                    } = verdict(&out)
+                                    else {
+                                        return Err(format!(
+                                            "it did not leave the gateway: {:?}",
+                                            verdict(&out)
+                                        ));
+                                    };
+                                    (0..=CHURN)
+                                        .find(|nth| waypoint(*nth) == (dst, oif))
+                                        .ok_or_else(|| {
+                                            format!(
+                                                "it left over interface {oif} towards {dst}, which \
+                                                 is no published next hop: either the \
+                                                 encapsulation and the egress came from different \
+                                                 versions, or the group was read while it was \
+                                                 being written"
+                                            )
+                                        })
+                                };
+
+                                gate.wait();
+                                let mut seen = Vec::with_capacity(
+                                    usize::from(CHURN) * usize::from(PER_ROUND) + 1,
+                                );
+                                for _ in 1..=CHURN {
+                                    for _ in 0..PER_ROUND {
+                                        seen.push(send(&mut worker, &mut port));
+                                    }
+                                    gate.wait();
+                                }
+                                seen.push(send(&mut worker, &mut port));
+                                seen
+                            })
+                            .expect("spawn prober")
+                    })
+                    .collect();
+
+                let key = nhop(&PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()));
+                gate.wait();
+                for round in 1..=CHURN {
+                    tables.nexthop(REMOTE_VNI, &key, &towards(round));
+                    gate.wait();
+                }
+
+                for prober in running {
+                    reports.push(prober.join().expect("prober panicked"));
+                }
+            });
+
+            for seen in reports {
+                for (nth, observed) in seen.iter().enumerate() {
+                    let last = nth == seen.len() - 1;
+                    let round = if last {
+                        CHURN
+                    } else {
+                        u8::try_from(nth).unwrap_or_else(|_| unreachable!()) / PER_ROUND + 1
+                    };
+                    let version = match observed {
+                        Ok(version) => *version,
+                        Err(why) => panic!(
+                            "a probe sent in round {round}, while the next hop was moving, is not \
+                             attributable to any version: {why}"
+                        ),
+                    };
+                    if last {
+                        assert_eq!(
+                            version, CHURN,
+                            "a probe sent after the churn had finished was forwarded by version \
+                             {version}, not by version {CHURN}, the last one published. Every \
+                             publish returned before the barrier that released this probe, so a \
+                             reader still serving an earlier version is serving a next hop that \
+                             no longer exists"
+                        );
+                        continue;
+                    }
+                    assert!(
+                        version == round || version + 1 == round,
+                        "a probe sent in round {round} was forwarded by version {version}. \
+                         Version {} was published before this round opened, so no reader may \
+                         still be serving anything older, and version {round} is the newest that \
+                         exists",
+                        round - 1
+                    );
+                    if version == round {
+                        FRESH.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        STALE.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        let (fresh, stale) = (FRESH.load(Ordering::Relaxed), STALE.load(Ordering::Relaxed));
+        eprintln!("fresh={fresh} stale={stale}");
+        super::assert_covered(
+            fresh > 0,
+            "no probe was ever forwarded by the version published in its own round, so the publish \
+             never once landed inside the window it was racing",
+        );
+    }
 }
