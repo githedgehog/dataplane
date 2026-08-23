@@ -8,6 +8,7 @@ use acl_filter::{
     AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
 use concurrency::sync::{Arc, Mutex};
+use config::external::GenId;
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
@@ -34,8 +35,10 @@ use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+
+const FIRST_GENID: GenId = 1;
 
 use super::egress::Egress;
 use super::ingress::Ingress;
@@ -47,6 +50,7 @@ pub(crate) struct Fleet {
     static_nat: RefCell<NatTablesWriter>,
     portfw: RefCell<PortFwTableWriter>,
     masquerade: RefCell<NatAllocatorWriter>,
+    genid: Cell<GenId>,
     blueprint: Blueprint,
 }
 
@@ -107,7 +111,7 @@ impl Fleet {
         let mut masquerade = NatAllocatorWriter::new();
         masquerade.update_nat_allocator(
             MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
+            FIRST_GENID,
             &flow_table,
         );
 
@@ -132,6 +136,7 @@ impl Fleet {
             static_nat: RefCell::new(static_nat),
             portfw: RefCell::new(portfw),
             masquerade: RefCell::new(masquerade),
+            genid: Cell::new(FIRST_GENID),
             blueprint,
         }
     }
@@ -151,9 +156,10 @@ impl Fleet {
             .borrow_mut()
             .update_from_vpc_table(overlay.vpc_table())
             .expect("a validated overlay lowers to port forwarding");
+        self.genid.set(self.genid.get() + 1);
         self.masquerade.borrow_mut().update_nat_allocator(
             MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
+            self.genid.get(),
             &self.blueprint.flow_table,
         );
     }
@@ -684,10 +690,32 @@ pub(crate) mod derive {
     }
 
     pub(crate) fn loads_for(overlay: &ValidatedOverlay, vary: &[Vary]) -> Vec<Box<dyn Load>> {
+        loads_where(overlay, vary, &|_| true)
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Named<'a> {
+        pub(crate) local: &'a str,
+        pub(crate) remote: &'a str,
+        pub(crate) peering: &'a str,
+    }
+
+    pub(crate) fn loads_where(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        keep: &dyn Fn(Named<'_>) -> bool,
+    ) -> Vec<Box<dyn Load>> {
         let mut loads: Vec<Box<dyn Load>> = Vec::new();
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
+                if !keep(Named {
+                    local: vpc.name(),
+                    remote: peering.remote().name(),
+                    peering: peering.name(),
+                }) {
+                    continue;
+                }
                 let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
                 for expose in peering.local().valexp() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
@@ -3605,7 +3633,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::Sequence;
+    use config::external::overlay::algebra::{Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{LazyLock, OnceLock};
@@ -3901,6 +3929,20 @@ mod model {
             "no drawn configuration ever implied enough traffic to load two workers, so this ran \
              nothing concurrently",
         );
+    }
+
+    fn without_unwinding<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+        cfg_select! {
+            feature = "shuttle" => Ok(body()),
+            feature = "loom" => Ok(body()),
+            _ => std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|payload| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic carrying no message".to_owned())
+            }),
+        }
     }
 
     fn step(worker: &mut Worker, load: &mut dyn Load) {
@@ -4463,17 +4505,23 @@ mod model {
                                         })
                                 };
 
+                                let probe = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                    without_unwinding(|| send(worker, port)).unwrap_or_else(|why| {
+                                        Err(format!("sending it panicked: {why}"))
+                                    })
+                                };
+
                                 gate.wait();
                                 let mut seen = Vec::with_capacity(
                                     usize::from(CHURN) * usize::from(PER_ROUND) + 1,
                                 );
                                 for _ in 1..=CHURN {
                                     for _ in 0..PER_ROUND {
-                                        seen.push(send(&mut worker, &mut port));
+                                        seen.push(probe(&mut worker, &mut port));
                                     }
                                     gate.wait();
                                 }
-                                seen.push(send(&mut worker, &mut port));
+                                seen.push(probe(&mut worker, &mut port));
                                 seen
                             })
                             .expect("spawn prober")
@@ -4593,19 +4641,25 @@ mod model {
                                 let mut seen = Vec::new();
                                 for round in 1..=APPLIES {
                                     for nth in 0..FLOWS {
-                                        let src = format!("1.1.{which}.{}", nth + 1);
-                                        let mut convo = Conversation::new(
-                                            super::routed::Path::fixture(),
-                                            src.parse()
-                                                .unwrap_or_else(|e| unreachable!("{src}: {e}")),
-                                            "3.3.3.1"
-                                                .parse()
-                                                .unwrap_or_else(|e| unreachable!("{e}")),
-                                            u16::from(round) * 100 + u16::from(nth) + 1000,
-                                            80,
-                                        );
-                                        drive(&mut worker, &mut convo);
-                                        seen.push((round, convo.checked(), convo.describe()));
+                                        seen.push((
+                                            round,
+                                            without_unwinding(|| {
+                                                let src = format!("1.1.{which}.{}", nth + 1);
+                                                let mut convo = Conversation::new(
+                                                    super::routed::Path::fixture(),
+                                                    src.parse().unwrap_or_else(|e| {
+                                                        unreachable!("{src}: {e}")
+                                                    }),
+                                                    "3.3.3.1"
+                                                        .parse()
+                                                        .unwrap_or_else(|e| unreachable!("{e}")),
+                                                    u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                    80,
+                                                );
+                                                drive(&mut worker, &mut convo);
+                                                (convo.checked(), convo.describe())
+                                            }),
+                                        ));
                                     }
                                     gate.wait();
                                 }
@@ -4628,7 +4682,10 @@ mod model {
             });
 
             for seen in reports {
-                for (round, checked, described) in seen {
+                for (round, ran) in seen {
+                    let (checked, described) = ran.unwrap_or_else(|why| {
+                        panic!("a conversation in round {round} panicked mid-enactment: {why}")
+                    });
                     assert!(
                         checked,
                         "a conversation in round {round} did not survive the configuration it was \
@@ -4648,6 +4705,217 @@ mod model {
         super::assert_covered(
             completed > 0 && enacted > 0,
             "either no conversation completed or no configuration was enacted, so nothing was raced",
+        );
+    }
+
+    #[concurrency::model_test]
+    fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
+        const CASES: usize = 64;
+        const ROUNDS: u8 = 3;
+
+        static FRAMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static BARREN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ENGULFED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static FRAMED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static UNDISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
+            move |named| {
+                !footprint.touches_peering_named(named.peering)
+                    && !footprint.touches_vpc_named(named.local)
+                    && !footprint.touches_vpc_named(named.remote)
+            }
+        }
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(generated::Generated)
+            .with_iterations(CASES)
+            .for_each(|(ops, vary, _schedule)| {
+                let Some((change, built)) = ops.split_last() else {
+                    BARREN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                let before = Sequence::fold(built);
+                let footprint = change.writes(&before);
+
+                let assemble = |draft: &config::external::overlay::algebra::Draft| {
+                    draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"))
+                };
+                let running = assemble(&before);
+                let enacted = assemble(&Sequence::fold(ops));
+
+                let framed = derive::loads_where(&running, vary, &outside(&footprint)).len();
+                let total = derive::loads_for(&running, vary).len();
+                FRAMED_OUT.fetch_add(
+                    u64::try_from(total - framed).unwrap_or_else(|_| unreachable!()),
+                    Ordering::Relaxed,
+                );
+                if framed == 0 {
+                    if total == 0 { &BARREN } else { &ENGULFED }.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                FRAMED.fetch_add(1, Ordering::Relaxed);
+
+                let vnis: Vec<Vni> = enacted
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    BARREN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+
+                let drawn =
+                    std::sync::Arc::new((running, enacted, vnis, vary.clone(), footprint, *change));
+                let entering = handle.clone();
+
+                concurrency::stress(move || {
+                    let (running, enacted, vnis, vary, footprint, change) = &*drawn;
+                    let tables = topology(vnis);
+                    let fleet =
+                        Fleet::lowering(running, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
+                    let gate = Arc::new(concurrency::sync::Barrier::new(3));
+                    let mut reports = Vec::new();
+
+                    thread::scope(|scope| {
+                        let handles: Vec<_> = (0..2usize)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                let gate = gate.clone();
+                                thread::Builder::new()
+                                    .name(format!("framed-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("framed-{which}"));
+                                        let mut worker = blueprint.worker();
+                                        let outside = outside(footprint);
+                                        gate.wait();
+                                        let mut seen = Vec::new();
+                                        for round in 1..=ROUNDS {
+                                            let varied: Vec<derive::Vary> = vary
+                                                .iter()
+                                                .map(|v| derive::Vary {
+                                                    sport: v
+                                                        .sport
+                                                        .wrapping_add(u16::from(round) * 997)
+                                                        .wrapping_add(
+                                                            u16::try_from(which)
+                                                                .unwrap_or_else(|_| unreachable!())
+                                                                * 401,
+                                                        )
+                                                        .max(1),
+                                                    ..*v
+                                                })
+                                                .collect();
+                                            let mine =
+                                                derive::loads_where(running, &varied, &outside);
+                                            seen.push((
+                                                round,
+                                                without_unwinding(|| {
+                                                    let mut ran = Vec::new();
+                                                    for mut load in mine {
+                                                        for _ in 0..8 {
+                                                            let Some(packet) = load.next() else {
+                                                                break;
+                                                            };
+                                                            let out = worker.send(packet);
+                                                            load.observe(&out);
+                                                        }
+                                                        ran.push((load.checked(), load.describe()));
+                                                    }
+                                                    ran
+                                                }),
+                                            ));
+                                            gate.wait();
+                                        }
+                                        seen
+                                    })
+                                    .expect("spawn framed worker")
+                            })
+                            .collect();
+
+                        gate.wait();
+                        for _ in 0..ROUNDS {
+                            fleet.reconfigure(enacted);
+                            gate.wait();
+                        }
+
+                        for worker in handles {
+                            reports.push(worker.join().expect("framed worker panicked"));
+                        }
+                    });
+
+                    for seen in reports {
+                        for (round, ran) in seen {
+                            let ran = ran.unwrap_or_else(|why| {
+                                panic!(
+                                    "carrying traffic in round {round} panicked while {change:?} \
+                                     was being enacted: {why}"
+                                )
+                            });
+                            for (checked, described) in ran {
+                                if round == 1 {
+                                    if checked { &UNDISTURBED } else { &DISTURBED }
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    continue;
+                                }
+                                assert!(
+                                    checked,
+                                    "traffic outside the footprint of a configuration change did \
+                                     not survive it, in round {round}. The change was \
+                                     {change:?}, whose write set this load is outside of, so the \
+                                     configuration it ran against and the one enacted agree about \
+                                     it entirely -- and the enactment that carried the difference \
+                                     returned before this round opened. {described}"
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+
+        let (framed, barren, engulfed, framed_out, disturbed, undisturbed) = (
+            FRAMED.load(Ordering::Relaxed),
+            BARREN.load(Ordering::Relaxed),
+            ENGULFED.load(Ordering::Relaxed),
+            FRAMED_OUT.load(Ordering::Relaxed),
+            DISTURBED.load(Ordering::Relaxed),
+            UNDISTURBED.load(Ordering::Relaxed),
+        );
+        eprintln!("framed={framed} barren={barren} engulfed={engulfed} framed_out={framed_out}");
+        eprintln!("racing the change: disturbed={disturbed} undisturbed={undisturbed}");
+        super::assert_covered(
+            framed > 0,
+            "no draw left two loads outside the footprint of its last operation, so no \
+             configuration change was ever carried under traffic",
+        );
+        super::assert_covered(
+            framed_out > 0,
+            "no load was ever filtered out for being inside a footprint, so the frame was always \
+             the whole configuration and this property is the re-enactment one with extra steps",
         );
     }
 }
