@@ -63,6 +63,7 @@ pub(crate) struct Fleet {
     portfw: RefCell<PortFwTableWriter>,
     masquerade: RefCell<NatAllocatorWriter>,
     genid: Cell<GenId>,
+    randomize: Cell<bool>,
     blueprint: Blueprint,
 }
 
@@ -151,6 +152,7 @@ impl Fleet {
             portfw: RefCell::new(portfw),
             masquerade: RefCell::new(masquerade),
             genid: Cell::new(FIRST_GENID),
+            randomize: Cell::new(false),
             blueprint,
         }
     }
@@ -171,6 +173,11 @@ impl Fleet {
         }
         std::thread::sleep(gap);
         self.enact(overlay, Enact::Generation);
+    }
+
+    pub(crate) fn randomizing(&self, on: bool) -> &Self {
+        self.randomize.set(on);
+        self
     }
 
     pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
@@ -194,7 +201,7 @@ impl Fleet {
         if doing(Enact::Masquerade) {
             self.genid.set(self.genid.get() + 1);
             self.masquerade.borrow_mut().update_nat_allocator(
-                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
                 self.genid.get(),
                 &self.blueprint.flow_table,
             );
@@ -603,6 +610,10 @@ pub(crate) trait Load {
     fn checked(&self) -> bool;
 
     fn describe(&self) -> String;
+
+    fn public(&self) -> Option<(IpAddr, u16)> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -3215,6 +3226,7 @@ mod routed {
         dport: u16,
         sent: Option<Packet<TestBuffer>>,
         state: State,
+        public: Option<(IpAddr, u16)>,
         log: Vec<String>,
     }
 
@@ -3238,6 +3250,7 @@ mod routed {
                 dport,
                 sent: None,
                 state: State::Opening,
+                public: None,
                 log: Vec::new(),
             }
         }
@@ -3282,6 +3295,7 @@ mod routed {
                 return;
             };
             self.note(&format!("request left as {public_src}:{}", port.get()));
+            self.public = Some((public_src, port.get()));
             self.state = State::Replying {
                 public: (public_src, port.get()),
             };
@@ -3326,6 +3340,10 @@ mod routed {
     }
 
     impl Load for Conversation {
+        fn public(&self) -> Option<(IpAddr, u16)> {
+            self.public
+        }
+
         fn next(&mut self) -> Option<Packet<TestBuffer>> {
             match self.state {
                 State::Opening => {
@@ -5093,16 +5111,6 @@ mod model {
                         scope.spawn(move || {
                             let _guard = handle.enter();
                             let mut worker = blueprint.worker();
-                            let varied: Vec<derive::Vary> = vary
-                                .iter()
-                                .map(|v| derive::Vary {
-                                    sport: v.sport
-                                        + which * 401
-                                        + u16::try_from(round).unwrap_or(0) * 7,
-                                    ..*v
-                                })
-                                .collect();
-                            let mine = derive::loads_where(running, &varied, outside);
                             gate.wait();
                             for rep in 0..REPS {
                                 let mine = derive::loads_where(
@@ -5148,6 +5156,215 @@ mod model {
                 carried.load(Ordering::Relaxed),
                 disturbed.load(Ordering::Relaxed)
             );
+        }
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
+    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    async fn report_why_the_masquerade_swap_disturbs_traffic() {
+        use config::external::overlay::algebra::{
+            Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
+        };
+        use std::sync::atomic::AtomicBool;
+
+        fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
+            within + which * 32_768
+        }
+
+        const ROUNDS: [usize; 2] = [200, 6000];
+        const REPS: u8 = 24;
+
+        fn reason(how: &str) -> String {
+            how.lines()
+                .next()
+                .unwrap_or(how)
+                .rsplit('|')
+                .next()
+                .unwrap_or(how)
+                .trim()
+                .to_owned()
+        }
+
+        let vpc = VpcHandle;
+        let peering = PeeringHandle;
+        let built = vec![
+            Op::AddVpc(vpc(0)),
+            Op::AddVpc(vpc(1)),
+            Op::AddPeering {
+                handle: peering(0),
+                left: vpc(0),
+                right: vpc(1),
+            },
+            Op::SetFlavour {
+                peering: peering(0),
+                side: Side::Left,
+                slot: 0,
+                flavour: Flavour::Masquerade,
+            },
+            Op::AddVpc(vpc(2)),
+            Op::AddVpc(vpc(3)),
+            Op::AddPeering {
+                handle: peering(1),
+                left: vpc(2),
+                right: vpc(3),
+            },
+        ];
+        let change = Op::SetFlavour {
+            peering: peering(1),
+            side: Side::Left,
+            slot: 0,
+            flavour: Flavour::Masquerade,
+        };
+        let assemble = |draft: &Draft| {
+            draft
+                .overlay()
+                .expect("assembles")
+                .validate()
+                .expect("validates")
+        };
+        let before = Sequence::fold(&built);
+        let running = assemble(&before);
+        let mut after_draft = before.clone();
+        change.apply(&mut after_draft).expect("the change applies");
+        let enacted = assemble(&after_draft);
+        let footprint = change.writes(&before);
+
+        let vnis: Vec<Vni> = enacted
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect();
+        let vary: Vec<derive::Vary> = (0..2)
+            .map(|n| derive::Vary {
+                host: n,
+                port: 0,
+                sport: 30000,
+                dport: 80,
+                burst: 2,
+                blast: false,
+            })
+            .collect();
+        let outside = |named: derive::Named<'_>| {
+            !footprint.touches_peering_named(named.peering)
+                && !footprint.touches_vpc_named(named.local)
+                && !footprint.touches_vpc_named(named.remote)
+        };
+
+        let handle = tokio::runtime::Handle::current();
+        for (nth, randomize) in [false, true].into_iter().enumerate() {
+            eprintln!("\n== randomize={randomize} ==");
+            let explained = AtomicBool::new(false);
+            let carried = AtomicU64::new(0);
+            let disturbed = AtomicU64::new(0);
+            let why: Mutex<std::collections::BTreeMap<String, u64>> =
+                Mutex::new(std::collections::BTreeMap::new());
+            let mut duplicated = 0u64;
+
+            for round in 0..ROUNDS[nth] {
+                let tables = topology(&vnis);
+                let fleet =
+                    Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
+                fleet.randomizing(randomize);
+                if randomize {
+                    fleet.enact(&running, Enact::Masquerade);
+                }
+                let blueprint = fleet.blueprint();
+                let gate = std::sync::Barrier::new(3);
+                let handed: Mutex<Vec<(IpAddr, u16)>> = Mutex::new(Vec::new());
+                let writing = tracectl::evidence::Capture::new("config-apply")
+                    .depth(8192)
+                    .keeping(|target| target.starts_with("dataplane_nat"))
+                    .start();
+                let written = writing.evidence();
+                let traces: Mutex<Vec<tracectl::evidence::Evidence>> = Mutex::new(vec![written]);
+                std::thread::scope(|scope| {
+                    for which in 0..2u16 {
+                        let handle = handle.clone();
+                        let (gate, explained, carried, disturbed) =
+                            (&gate, &explained, &carried, &disturbed);
+                        let (running, vary, outside) = (&running, &vary, &outside);
+                        let (traces, why, handed) = (&traces, &why, &handed);
+                        scope.spawn(move || {
+                            let _guard = handle.enter();
+                            let recording =
+                                tracectl::evidence::Capture::new(format!("masq-{which}"))
+                                    .depth(8192)
+                                    .keeping(|target| target.starts_with("dataplane_nat"))
+                                    .start();
+                            traces.lock().push(recording.evidence());
+                            let mut worker = blueprint.worker();
+                            gate.wait();
+                            let mut given = Vec::new();
+                            for rep in 0..REPS {
+                                let mine = derive::loads_where(
+                                    running,
+                                    &vary
+                                        .iter()
+                                        .map(|v| derive::Vary {
+                                            sport: separate(v.sport, rep, which),
+                                            ..*v
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    outside,
+                                );
+                                for mut load in mine {
+                                    carried.fetch_add(1, Ordering::Relaxed);
+                                    let ran = without_unwinding(|| {
+                                        for _ in 0..8 {
+                                            let Some(packet) = load.next() else { break };
+                                            let out = worker.send(packet);
+                                            load.observe(&out);
+                                        }
+                                        load.checked()
+                                    });
+                                    given.extend(load.public());
+                                    let (ok, how) = match ran {
+                                        Ok(ok) => (ok, load.describe()),
+                                        Err(why) => (false, format!("{why}. {}", load.describe())),
+                                    };
+                                    if ok {
+                                        continue;
+                                    }
+                                    disturbed.fetch_add(1, Ordering::Relaxed);
+                                    *why.lock().entry(reason(&how)).or_default() += 1;
+                                    if !explained.swap(true, Ordering::Relaxed) {
+                                        eprintln!(
+                                            "\ndisturbed in round {round}, rep {rep}, worker \
+                                         {which}: {how}\n"
+                                        );
+                                        for trace in traces.lock().iter() {
+                                            trace.dump();
+                                        }
+                                    }
+                                }
+                            }
+                            handed.lock().extend(given);
+                        });
+                    }
+                    gate.wait();
+                    fleet.enact(&enacted, Enact::Masquerade);
+                });
+
+                let mut seen = std::collections::BTreeSet::new();
+                for tuple in handed.lock().iter() {
+                    if !seen.insert(*tuple) {
+                        duplicated += 1;
+                        eprintln!("  round {round}: {tuple:?} was handed to two live flows");
+                    }
+                }
+            }
+
+            eprintln!(
+                "carried={} disturbed={} duplicated={duplicated}",
+                carried.load(Ordering::Relaxed),
+                disturbed.load(Ordering::Relaxed),
+            );
+            for (reason, count) in why.lock().iter() {
+                eprintln!("  {count:>4}  {reason}");
+            }
         }
     }
 }
