@@ -469,6 +469,11 @@ impl Fabric {
         self.worker.send_batch(packets)
     }
 
+    /// The single pipeline this fabric drives, for [`drive`] and [`run_schedule`].
+    pub(crate) fn worker(&mut self) -> &mut Worker {
+        &mut self.worker
+    }
+
     /// How many entries the flow table holds, for a property about state rather than packets.
     pub(crate) fn flows(&self) -> Option<usize> {
         self.fleet.blueprint().flow_table.len()
@@ -856,7 +861,7 @@ pub(crate) trait Load {
 /// Step A of the load design: enough to rewrite the existing properties on top of the trait and
 /// find out whether it expresses them. Interleaving several loads is a scheduler, and comes next.
 #[cfg(test)]
-pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
+pub(crate) fn drive(worker: &mut Worker, load: &mut dyn Load) {
     // A load that neither finishes nor offers a packet is a bug in the load, and an infinite loop
     // is a bad way to report one.
     for _ in 0..64 {
@@ -869,7 +874,7 @@ pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
                 load.describe()
             );
         };
-        let out = fabric.send(packet);
+        let out = worker.send(packet);
         load.observe(&out);
     }
     panic!("a load did not finish in 64 steps: {}", load.describe());
@@ -909,7 +914,7 @@ pub(crate) type Poll = Vec<Pick>;
 /// schedule would call it one.
 #[cfg(test)]
 pub(crate) fn run_schedule(
-    fabric: &mut Fabric,
+    worker: &mut Worker,
     loads: &mut [Box<dyn Load>],
     schedule: &[Poll],
 ) -> Vec<Vec<usize>> {
@@ -936,14 +941,14 @@ pub(crate) fn run_schedule(
         // Order is relied on to route each answer back to the load that sent it. The pipeline
         // preserves it -- `burst::a_burst_is_treated_the_same_as_one_packet_at_a_time` compares
         // element-wise and would fail otherwise -- and `send_batch` asserts the count.
-        for (answer, which) in fabric.send_batch(burst).iter().zip(&origin) {
+        for (answer, which) in worker.send_batch(burst).iter().zip(&origin) {
             loads[*which].observe(answer);
         }
         bursts.push(origin);
     }
 
     for load in loads {
-        drive(fabric, load.as_mut());
+        drive(worker, load.as_mut());
     }
     bursts
 }
@@ -2870,7 +2875,7 @@ mod interleaved {
                     });
                 }
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut loads_in: Vec<usize> = burst.clone();
                     loads_in.sort_unstable();
                     loads_in.dedup();
@@ -3066,7 +3071,7 @@ mod offers {
                     }
                 }
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
                     seen.sort_unstable();
                     seen.dedup();
@@ -3145,7 +3150,10 @@ mod generated {
     /// Drawn together rather than in three properties because the interesting failures are between
     /// them: an expose the derivation cannot build traffic for, or a schedule that puts two vpcs'
     /// packets in one burst, are both invisible if the configuration is fixed.
-    struct Generated;
+    ///
+    /// Shared with `model`, which runs the same draw across two workers. One generator rather than
+    /// two so that a shape reachable single-threaded is reachable concurrently by construction.
+    pub(super) struct Generated;
 
     impl ValueGenerator for Generated {
         type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>);
@@ -3245,7 +3253,7 @@ mod generated {
                 let mut loads = loads_for(&validated, vary);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
                     seen.sort_unstable();
                     seen.dedup();
@@ -4141,7 +4149,7 @@ mod routed {
                     let mut load =
                         Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
 
-                    drive(&mut fabric, &mut load);
+                    drive(fabric.worker(), &mut load);
 
                     if load.checked() {
                         ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
@@ -4720,17 +4728,38 @@ mod routed {
 /// here speaks to races *within* `FlowFilter` or `AclFilter`. That is the sanitizer build's job, and
 /// it is why the std backend of [`a_pipeline_can_be_driven_inside_a_stress_run`], which runs on real
 /// OS threads under `just test sanitize=thread`, is not redundant with the shuttle one.
+///
+/// Shuttle also treats every atomic as `SeqCst` and says so on every run. The masquerade allocator
+/// uses `Relaxed` in a dozen places and carries a standing question about it -- see the `TODO` on
+/// `PortBlockList::deallocate_block` -- so a green run here is not an answer to that question.
+///
+/// # Reading a failure
+///
+/// Do not trust the first panic. The portfolio runs its schedulers in parallel, each reports
+/// independently, and a panic inside a task tends to draw a second one after it: unwinding drops
+/// the burst it was holding, every `Packet` carries an `Arc`, and `concurrency::sync::Arc` under
+/// shuttle is `shuttle::sync::Arc`, so the drop touches an instrumented atomic while shuttle
+/// already has its `ExecutionState` borrowed. That reads as `RefCell already borrowed` from inside
+/// shuttle and says nothing at all.
+///
+/// Capture the whole run and search it. The sentence that explains the failure is often several
+/// screens below the first panic -- the `table_name` defect that
+/// [`generated_traffic_survives_being_split_across_two_workers`] found was reported as `RefCell
+/// already borrowed` at the top and `An ACL context named 'flow_filter_remote_v4_7499' already
+/// exists` a hundred and fifty lines further down.
 #[cfg(test)]
 mod model {
+    use super::derive::loads_for;
     use super::routed::{exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
+    use config::external::overlay::algebra::Sequence;
     use net::packet::test_utils::build_test_udp_ipv4_packet;
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{LazyLock, OnceLock};
 
     /// Run `body` on two threads inside one execution, which is the least shuttle's PCT scheduler
     /// will accept -- it panics outright on a body that never has two threads runnable at once.
@@ -5020,5 +5049,157 @@ mod model {
                 );
             }
         });
+    }
+
+    /// A generated configuration's own traffic, split across two workers.
+    ///
+    /// The properties above this one fix the configuration and vary the schedule. This varies both:
+    /// bolero is the outer loop and draws a configuration together with the traffic it implies --
+    /// the same [`generated::Generated`] draw that
+    /// `generated::a_generated_configuration_carries_its_own_traffic` runs single-threaded -- and
+    /// the backend is the inner loop and explores the interleavings of each draw.
+    ///
+    /// Nothing new is asserted here. Every load judges itself exactly as it does single-threaded,
+    /// which is the point: the claim is that *splitting the traffic changes no answer*. A load that
+    /// passes on one thread and fails when its neighbour runs beside it has found something that
+    /// neither the configuration nor the packet shape explains.
+    ///
+    /// # What it has and has not caught
+    ///
+    /// It found the `table_name` defect in `flow_filter::context::tables`: an instrumented counter
+    /// in a `static`, restarting every execution while the process-global `rte_acl` registry it
+    /// names into did not. That is the kind of fault this shape is good for -- one that needs many
+    /// configurations, each lowered more than once.
+    ///
+    /// It is **not** sensitive to the allocator race that
+    /// [`two_workers_are_not_given_the_same_public_tuple`] catches. Measured: with that same
+    /// deliberate lost update in the port-block claim, this property passed 256 drawn
+    /// configurations while the targeted one failed on its first. A round trip survives a duplicate
+    /// public tuple more often than not, so judging by round trip is simply a blunter instrument
+    /// than reading the tuples out and comparing them. Breadth does not subsume a sharp assertion,
+    /// and the two are kept for different reasons.
+    ///
+    /// # Why each thread derives every load and keeps a share
+    ///
+    /// A `Load` owns packets, and `Packet<TestBuffer>` is not `Send`, so loads cannot be built on
+    /// one thread and dealt out to others. Deriving all of them on each worker and keeping the ones
+    /// whose index matches is the cheap way to get a deterministic disjoint split without sending
+    /// anything. Disjoint on purpose: two workers driving the *same* flow is a sharper question
+    /// than this one and cannot reuse a load's self-judging, because two identical 5-tuples are
+    /// genuinely ambiguous and a real gateway could not tell their replies apart either.
+    #[concurrency::model_test]
+    fn generated_traffic_survives_being_split_across_two_workers() {
+        /// Configurations drawn. Small on purpose: under shuttle each one costs 32 executions and
+        /// each execution lowers a configuration into `rte_acl` tables and builds two pipelines
+        /// from them, so the budget here buys schedules.
+        /// `generated::a_generated_configuration_carries_its_own_traffic` is where the
+        /// configuration space itself gets explored, at a thousand cases for the same money.
+        const CASES: usize = 64;
+
+        /// Draws that reached two loaded workers, which is the only shape that tests anything.
+        static SPLIT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Draws that did not, kept so the guard below can say how close it came.
+        static THIN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(generated::Generated)
+            .with_iterations(CASES)
+            .for_each(|(ops, vary, schedule)| {
+                // Validated out here rather than in the body: validation is not cheap, it is the
+                // same answer every execution, and a `ValidatedOverlay` is plain data. The tables
+                // lowered *from* it are not -- their write handles are `concurrency::sync`
+                // primitives, and a primitive that outlives its execution is the fault
+                // `a_lock_that_outlives_its_execution_is_not_model_checkable` is about -- so
+                // `Fleet::lowering` stays inside.
+                let validated = Sequence::fold(ops)
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                // Both workers need traffic. A draw that leaves one idle is not a weaker test, it
+                // is a rejected one: shuttle's PCT scheduler panics outright on a body that never
+                // has two threads runnable at once.
+                if vnis.is_empty() || loads_for(&validated, vary).len() < 2 {
+                    THIN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                SPLIT.fetch_add(1, Ordering::Relaxed);
+
+                // One allocation for the whole draw, shared by every execution: `stress` wants a
+                // `Fn`, so nothing here may be consumed.
+                let drawn = std::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let entering = handle.clone();
+
+                concurrency::stress(move || {
+                    let (validated, vnis, vary, schedule) = &*drawn;
+                    // The topology is built from the vnis the configuration names, so a fib exists
+                    // for every vpc it can route to.
+                    let fleet = Fleet::lowering(
+                        validated,
+                        Some(topology(vnis)),
+                        Arc::new(FlowTable::default()),
+                    );
+                    let blueprint = fleet.blueprint();
+
+                    thread::scope(|scope| {
+                        let running: Vec<_> = (0..2)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                thread::Builder::new()
+                                    .name(format!("worker-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let mut worker = blueprint.worker();
+                                        let mut mine: Vec<Box<dyn Load>> =
+                                            loads_for(validated, vary)
+                                                .into_iter()
+                                                .enumerate()
+                                                .filter(|(nth, _)| nth % 2 == which)
+                                                .map(|(_, load)| load)
+                                                .collect();
+                                        // Every assertion is inside here: a load panics on an
+                                        // answer it did not accept, and `run_schedule` panics on a
+                                        // load that will neither finish nor send.
+                                        run_schedule(&mut worker, &mut mine, schedule);
+                                    })
+                                    .expect("spawn worker")
+                            })
+                            .collect();
+                        for worker in running {
+                            worker.join().expect("worker panicked");
+                        }
+                    });
+                });
+            });
+
+        let (split, thin) = (SPLIT.load(Ordering::Relaxed), THIN.load(Ordering::Relaxed));
+        eprintln!("split={split} thin={thin}");
+        super::assert_covered(
+            split > 0,
+            "no drawn configuration ever implied enough traffic to load two workers, so this ran \
+             nothing concurrently",
+        );
     }
 }
