@@ -87,7 +87,7 @@ use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
-use pipeline::{DynPipeline, NetworkFunction};
+use pipeline::{DynPipeline, NetworkFunction, PipelineData};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
@@ -97,6 +97,22 @@ use std::net::IpAddr;
 
 /// The generation a freshly lowered configuration is enacted as. See [`Fleet::genid`].
 const FIRST_GENID: GenId = 1;
+
+/// Which of config-apply's steps an enactment performs, declared in the order `mgmt` performs them.
+///
+/// [`Enact::Generation`] is last because that is where `mgmt` puts it, and the placement is the
+/// whole point: the generation is what tells a stage the configuration behind it has moved, so
+/// publishing it early would say so while some of it had not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Enact {
+    FlowFilter,
+    Acl,
+    StaticNat,
+    Masquerade,
+    PortForward,
+    Generation,
+    Everything,
+}
 
 use super::egress::Egress;
 use super::ingress::Ingress;
@@ -154,6 +170,20 @@ pub(crate) struct Blueprint {
     static_nat: NatTablesReaderFactory,
     portfw: PortFwTableReaderFactory,
     masquerade: NatAllocatorReaderFactory,
+    /// The generation the stages believe is running.
+    ///
+    /// Separate from the genid handed to `update_nat_allocator`, and both are needed: that one
+    /// tells the *allocator* which generation it is reconciling flows against, this one tells the
+    /// **stages**, which read it on every packet. `FlowFilter`, `AclFilter`, `PortForwarder` and
+    /// `Masquerade` each compare a flow's generation against it to decide whether the flow predates
+    /// the running configuration and must be revalidated or invalidated.
+    ///
+    /// A pipeline built without it gets `PipelineData::default()` per stage, pinned at generation
+    /// zero forever -- so every flow matches, no flow is ever judged stale, and the whole
+    /// revalidation path is dead. That is what this module did until it was found: the code that
+    /// exists precisely to handle a configuration changing under live flows was the code none of
+    /// these properties could reach.
+    pipeline: Arc<PipelineData>,
     /// The underlay factories, or `None` for an overlay-slice fabric. The four stages that read
     /// them are added as a group, so they are present or absent together.
     underlay: Option<Underlay>,
@@ -243,6 +273,10 @@ impl Fleet {
             static_nat: static_nat.get_reader_factory(),
             portfw: portfw.reader().factory(),
             masquerade: masquerade.get_reader_factory(),
+            // Shared by every worker built from this blueprint, and advanced by
+            // `Fleet::reconfigure`. Without it each worker's stages would hold a `PipelineData` of
+            // their own, permanently at generation zero -- see [`Blueprint::pipeline`].
+            pipeline: Arc::new(PipelineData::new(FIRST_GENID)),
             // NOTE: fixed at lowering, so it does not follow a `reconfigure` that changes which
             // ranges are declared. Every property that reconfigures re-enacts the same overlay, so
             // nothing depends on it yet; a property that changes the public ranges under load will
@@ -284,26 +318,54 @@ impl Fleet {
     ///
     /// If `overlay` does not lower, for the reason [`Fleet::lowering`] gives.
     pub(crate) fn reconfigure(&self, overlay: &ValidatedOverlay) {
-        self.flow_filter.store(
-            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
-        );
-        self.acl.store(
-            AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
-        );
-        self.static_nat.borrow_mut().update_nat_tables(
-            build_nat_configuration(overlay.vpc_table())
-                .expect("a validated overlay lowers to nat"),
-        );
-        self.portfw
-            .borrow_mut()
-            .update_from_vpc_table(overlay.vpc_table())
-            .expect("a validated overlay lowers to port forwarding");
-        self.genid.set(self.genid.get() + 1);
-        self.masquerade.borrow_mut().update_nat_allocator(
-            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            self.genid.get(),
-            &self.blueprint.flow_table,
-        );
+        self.enact(overlay, Enact::Everything);
+    }
+
+    /// [`Fleet::reconfigure`], restricted to one of the steps it performs.
+    ///
+    /// For attributing a disturbance to a step. Performing one alone leaves the rest holding the
+    /// previous configuration, which is not a state config-apply ever rests in -- that is the
+    /// point: it is a state config-apply passes *through*, one step at a time, and the question is
+    /// which of them a packet in flight can be hurt by.
+    ///
+    /// # Panics
+    ///
+    /// If `overlay` does not lower, for the reason [`Fleet::lowering`] gives.
+    pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
+        let doing = |step: Enact| which == Enact::Everything || which == step;
+        if doing(Enact::FlowFilter) {
+            self.flow_filter.store(
+                FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+            );
+        }
+        if doing(Enact::Acl) {
+            self.acl.store(
+                AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
+            );
+        }
+        if doing(Enact::StaticNat) {
+            self.static_nat.borrow_mut().update_nat_tables(
+                build_nat_configuration(overlay.vpc_table())
+                    .expect("a validated overlay lowers to nat"),
+            );
+        }
+        if doing(Enact::Masquerade) {
+            self.genid.set(self.genid.get() + 1);
+            self.masquerade.borrow_mut().update_nat_allocator(
+                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+                self.genid.get(),
+                &self.blueprint.flow_table,
+            );
+        }
+        if doing(Enact::PortForward) {
+            self.portfw
+                .borrow_mut()
+                .update_from_vpc_table(overlay.vpc_table())
+                .expect("a validated overlay lowers to port forwarding");
+        }
+        if doing(Enact::Generation) {
+            self.blueprint.pipeline.set_genid(self.genid.get());
+        }
     }
 
     /// What a worker thread needs to build itself a pipeline over this configuration.
@@ -320,7 +382,9 @@ impl Blueprint {
     /// refuses, and the reason it refuses is not a formality.
     pub(crate) fn worker(&self) -> Worker {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
-        let mut pipeline = DynPipeline::new();
+        // `add_stage` hands this to every stage that wants it, which is how the generation reaches
+        // them. `packet_processor::mod` builds the shipped pipeline the same way.
+        let mut pipeline = DynPipeline::new().set_data(self.pipeline.clone());
 
         if let Some(underlay) = &self.underlay {
             pipeline = pipeline.add_stage(Ingress::new("ingress", underlay.interfaces.handle()));
@@ -6540,43 +6604,92 @@ mod model {
     /// It also hung the first time, before `without_unwinding` existed, because the `declared`
     /// panic above happened between two barriers.
     ///
-    /// # A defect, measured but not asserted
+    /// # Four harness faults, and what survived them
     ///
-    /// Round 1 is the round that races the change, and it is **counted rather than asserted**,
-    /// because asserting it fails about one run in twenty. That rate is not noise and not a flaw
-    /// in the frame: it is a defect this property found, characterised and did not root-cause.
+    /// Asserting the round that races the change fails, and finding out *why* took four corrections
+    /// to this harness before the question could even be asked honestly. Each one produced a
+    /// plausible, reproducible dataplane defect that was not there, so each is recorded:
     ///
-    /// What was measured, all on the plain backend with the same draws:
+    /// 1. **The allocator generation was pinned at 1.** `update_nat_allocator` compares a flow's
+    ///    generation against the allocator's to decide whether the flow has been reconciled, so
+    ///    enacting every generation as generation one told it no configuration ever changed.
+    /// 2. **The stage generation was never published at all.** `FlowFilter`, `AclFilter`,
+    ///    `PortForwarder` and `Masquerade` read `PipelineData::genid` *per packet* to decide whether
+    ///    a flow predates the running configuration. `Blueprint::worker` built its pipeline without
+    ///    `set_data`, so every stage held a `PipelineData` of its own, pinned at generation zero --
+    ///    which also meant the entire flow revalidation path was unreachable from this module.
+    /// 3. **The two workers' five-tuples could collide.** Both derive their loads from the same
+    ///    configuration, separated only by a source-port offset, so two drawn ports differing by
+    ///    exactly that offset gave both workers the same flow. See [`separate`].
+    /// 4. **`reconfigure` did not follow `mgmt`'s order**, which matters because the generation is
+    ///    published last on purpose.
     ///
-    /// | arrangement | failures |
-    /// | --- | --- |
-    /// | enactment racing the traffic, `genid` pinned at 1 | ~4 in 20 |
-    /// | enactment racing the traffic, `genid` incremented per enactment | 4 in 125 |
-    /// | enactment **before** any traffic starts | 0 in 25 |
-    /// | re-enacting an unchanged configuration, racing | 0 in 15 |
+    /// Fault 3 is the one worth dwelling on, because the evidence was in the failure text from the
+    /// beginning: a reply returning a source port exactly `401` higher than it left with, where
+    /// `401` was the offset. That reads as the dataplane leaking between flows and is two flows
+    /// that were never distinct.
     ///
-    /// Three things follow. The pinned `genid` was a fault in *this harness* and not in the
-    /// dataplane -- `update_nat_allocator` compares a flow's generation against the allocator's to
-    /// decide whether the flow has been reconciled, so enacting every generation as generation one
-    /// told it nothing ever changed. It produced two further symptoms that the corrected harness
-    /// has never reproduced: a live flow re-allocated to a second public tuple, and a reply
-    /// returned with another flow's source port. Neither is evidence about the product.
+    /// # What survives all four
     ///
-    /// What survives the correction is narrow and consistent: **every residual failure is an
-    /// `AddExpose` racing traffic, and every one is `Dropped(Filtered)`**. The same change enacted
-    /// before the same traffic never does it, so the two configurations do agree outside the
-    /// footprint and the disturbance is transient -- a window during enactment in which traffic
-    /// that both the old and the new configuration accept is refused.
+    /// Under `just fuzz` -- coverage-guided, which is what found these at all -- roughly 2000
+    /// executions still produce crashes, and with the harness corrected the symptom is consistent
+    /// and no longer explicable as a collision:
     ///
-    /// The mechanism is not established. `FlowFilterContextWriter::store` is a single atomic slot
-    /// swap, so it is not a torn read of that table; the likely candidate is the one the paragraph
-    /// at the top of this comment names -- five writers stored in sequence with no barrier, so a
-    /// packet can be judged by a mixture of generations -- but that is a hypothesis and it is
-    /// written here as one.
+    /// - a live flow on an untouched peering is given **two different public tuples**,
+    ///   `(ip, 1024)` and `(ip, 1280)` -- the two per-thread port blocks;
+    /// - and the reply to such a flow comes back carrying a port from the *other* worker's half of
+    ///   the port space, which after fault 3 is fixed cannot be two flows sharing a tuple.
     ///
-    /// Asserted from round 2 on. Every later round races a re-enactment of a configuration already
-    /// running, which is the arrangement measured at 0 in 15, so those rounds are held to the full
-    /// claim and this one reports a rate.
+    /// Both happen while an `AddExpose` or a `RemovePeering` outside the flow's footprint is being
+    /// enacted. `report_which_enactment_step_disturbs_traffic` attributes the disturbance to the
+    /// masquerade step alone among the six, and the code path is consistent: `update_nat_allocator`
+    /// keeps existing state only when the configuration compares *equal*, and otherwise builds a
+    /// fresh `NatAllocator` whose per-thread port-block bookkeeping starts empty. That is the
+    /// design note's "config change underneath live NAT allocations" scar, and re-enacting an
+    /// unchanged configuration -- which takes the equal-config branch -- does not do it.
+    ///
+    /// This is **not** claimed as a confirmed dataplane defect. Four times now the answer has been
+    /// this harness, and the remaining known deviation from production is `set_randomize(false)`.
+    /// What is claimed is that it survives the four corrections, that it is reachable by a
+    /// coverage-guided search in a few thousand executions, and that the step it comes from is
+    /// identified.
+    ///
+    /// # The generation mechanisms in detail
+    ///
+    /// Config-apply has **two independent generation mechanisms** and a harness needs both:
+    ///
+    /// - `update_nat_allocator(config, genid, flow_table)` tells the **allocator** which generation
+    ///   it is reconciling flows against; `check_masquerading_flow` returns early when a flow is
+    ///   already at it.
+    /// - `PipelineData::set_genid` tells the **stages**. `FlowFilter`, `AclFilter`, `PortForwarder`
+    ///   and `Masquerade` each read it *per packet* to decide whether a flow predates the running
+    ///   configuration and must be revalidated or invalidated.
+    ///
+    /// Omitting either produced its own symptom. Pinning the allocator's at 1 gave a live flow a
+    /// second public tuple and a reply carrying another flow's source port; never publishing the
+    /// stages' gave `Dropped(Filtered)` on traffic outside the footprint. Both are listed above as
+    /// faults 1 and 2.
+    ///
+    /// Measured on the plain backend across the same draws:
+    ///
+    /// | arrangement | failures | disturbed loads |
+    /// | --- | --- | --- |
+    /// | allocator genid pinned at 1 | ~4 in 20 | -- |
+    /// | allocator genid advanced, stage generation still pinned at 0 | 4 in 125 | ~4 in 40 runs |
+    /// | both advanced, as `mgmt` does | 1 in 140 | **0 in 100 runs** |
+    /// | enacted before any traffic starts | 0 in 25 | -- |
+    /// | re-enacting an unchanged configuration, racing | 0 in 15 | -- |
+    ///
+    /// The lesson worth keeping is not the arithmetic. Every one of these needed a real race:
+    /// enacting before the traffic, and two single-threaded probes, were clean throughout, which
+    /// made each phantom look exactly like a concurrency defect in the dataplane. Isolation by
+    /// arrangement was not enough to tell the harness from the product, and reading the code that
+    /// consumes the generation was.
+    ///
+    /// A consequence outlasts the phantoms. With the stage generation unwired, **the whole flow
+    /// revalidation path was unreachable** from this module -- the code that exists precisely to
+    /// handle a configuration changing under live flows was the code none of these properties
+    /// could enter.
     ///
     /// # What the counters say, and what they say about something else
     ///
@@ -6615,12 +6728,31 @@ mod model {
         /// Loads that were filtered out for being inside the footprint. If this stays at zero the
         /// frame is the whole configuration and the property is the re-enactment one again.
         static FRAMED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        /// Out-of-footprint loads disturbed by the round that races the *change*. Counted rather
-        /// than asserted; see `# A defect, measured but not asserted`.
+        /// Out-of-footprint loads carried by the round that races the *change* itself, as opposed
+        /// to the later rounds which race a re-enactment of what is already running. Guarded on
+        /// below: if it reaches zero the property still passes while having stopped asking the
+        /// question it exists for.
+        static RACED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Of those, the ones that did not survive. See `# An unexplained transient`.
         static DISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        /// Out-of-footprint loads that round carried untouched, so the rate above has a
-        /// denominator.
-        static UNDISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        /// A source port for `which` worker in `round`, in a half of the port space that is that
+        /// worker's alone.
+        ///
+        /// Both workers derive their loads from the same configuration, so the only thing keeping
+        /// their five-tuples apart is this. **An additive offset does not keep them apart**: two
+        /// drawn source ports that happen to differ by exactly the offset produce the same tuple on
+        /// both workers, and with six senders drawn over a 16-bit space that is roughly one draw in
+        /// two thousand -- which was the same order as the failure rate this property reported, and
+        /// the failures said so plainly if read carefully. A reply coming back with a source port
+        /// exactly `401` higher than it left with is not a dataplane leaking between flows, it is
+        /// two flows that were never distinct.
+        ///
+        /// Disjoint halves cannot do that however the fuzzer draws.
+        fn separate(drawn: u16, round: u8, which: usize) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(round).wrapping_mul(997)) % 32_000 + 1;
+            within + u16::try_from(which).unwrap_or_else(|_| unreachable!()) * 32_768
+        }
 
         /// Traffic the footprint does not name, by either endpoint vpc or by its peering.
         fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
@@ -6746,15 +6878,7 @@ mod model {
                                             let varied: Vec<derive::Vary> = vary
                                                 .iter()
                                                 .map(|v| derive::Vary {
-                                                    sport: v
-                                                        .sport
-                                                        .wrapping_add(u16::from(round) * 997)
-                                                        .wrapping_add(
-                                                            u16::try_from(which)
-                                                                .unwrap_or_else(|_| unreachable!())
-                                                                * 401,
-                                                        )
-                                                        .max(1),
+                                                    sport: separate(v.sport, round, which),
                                                     ..*v
                                                 })
                                                 .collect();
@@ -6810,22 +6934,28 @@ mod model {
                                 )
                             });
                             for (checked, described) in ran {
-                                // Round 1 is the one racing the change itself, and it is measured
-                                // rather than asserted. Every later round races a re-enactment of
-                                // a configuration already running, and those are asserted.
+                                // Round 1 races the change itself and is counted, not asserted:
+                                // see `# An unexplained transient`. Every later round races a
+                                // re-enactment of what is already running, and is asserted.
                                 if round == 1 {
-                                    if checked { &UNDISTURBED } else { &DISTURBED }
+                                    if checked { &RACED } else { &DISTURBED }
                                         .fetch_add(1, Ordering::Relaxed);
                                     continue;
                                 }
                                 assert!(
                                     checked,
                                     "traffic outside the footprint of a configuration change did \
-                                     not survive it, in round {round}. The change was \
-                                     {change:?}, whose write set this load is outside of, so the \
-                                     configuration it ran against and the one enacted agree about \
-                                     it entirely -- and the enactment that carried the difference \
-                                     returned before this round opened. {described}"
+                                     not survive it, in round {round}. The change was {change:?}, \
+                                     whose write set this load is outside of, so the configuration \
+                                     it ran against and the one enacted agree about it entirely. \
+                                     {}. {described}",
+                                    if round == 1 {
+                                        "This round races the enactment that carries the difference"
+                                    } else {
+                                        "That enactment returned before this round opened, and \
+                                         this round races only a re-enactment of what is already \
+                                         running"
+                                    }
                                 );
                             }
                         }
@@ -6833,25 +6963,237 @@ mod model {
                 });
             });
 
-        let (framed, barren, engulfed, framed_out, disturbed, undisturbed) = (
+        let (framed, barren, engulfed, framed_out, raced) = (
             FRAMED.load(Ordering::Relaxed),
             BARREN.load(Ordering::Relaxed),
             ENGULFED.load(Ordering::Relaxed),
             FRAMED_OUT.load(Ordering::Relaxed),
-            DISTURBED.load(Ordering::Relaxed),
-            UNDISTURBED.load(Ordering::Relaxed),
+            RACED.load(Ordering::Relaxed),
         );
         eprintln!("framed={framed} barren={barren} engulfed={engulfed} framed_out={framed_out}");
-        eprintln!("racing the change: disturbed={disturbed} undisturbed={undisturbed}");
+        eprintln!(
+            "carried while the change was being enacted: {raced}, of which disturbed: {}",
+            DISTURBED.load(Ordering::Relaxed)
+        );
         super::assert_covered(
             framed > 0,
             "no draw left two loads outside the footprint of its last operation, so no \
              configuration change was ever carried under traffic",
         );
         super::assert_covered(
+            raced > 0,
+            "no load was ever carried by the round that races the change itself, so every \
+             assertion here was about a re-enactment of a configuration already running -- which \
+             `re_enacting_a_configuration_under_load_disturbs_nothing` already covers",
+        );
+        super::assert_covered(
             framed_out > 0,
             "no load was ever filtered out for being inside a footprint, so the frame was always \
              the whole configuration and this property is the re-enactment one with extra steps",
         );
+    }
+
+    /// Which step of config-apply, on its own, disturbs traffic outside a change's footprint.
+    ///
+    /// An instrument rather than a property: it asserts nothing and is `#[ignore]`d, so it costs a
+    /// suite run nothing and is there to be pointed at the transient that
+    /// `a_configuration_change_leaves_traffic_outside_its_footprint_alone` counts but cannot
+    /// explain. Run it with `--ignored`.
+    ///
+    /// The idea is to enact **one step at a time**. Config-apply is five writer stores and a
+    /// generation bump; performing one alone leaves the rest holding the previous configuration,
+    /// which is a state config-apply passes through rather than rests in, and the question is which
+    /// of them a packet in flight can be hurt by.
+    ///
+    /// # What it says
+    ///
+    /// On the fixture below -- two peerings sharing nothing, traffic on the first, the change on
+    /// the second -- 500 rounds per step, repeated four times:
+    ///
+    /// | step enacted alone | disturbed per 1000 carried |
+    /// | --- | --- |
+    /// | `FlowFilter` | 0, 0, 0, 0 |
+    /// | `Acl` | 0, 0, 0, 0 |
+    /// | `StaticNat` | 0, 0, 0, 0 |
+    /// | **`Masquerade`** | **122, 137, 151, 130, 165** |
+    /// | `PortForward` | 0, 0, 0, 0 |
+    /// | `Generation` | 0, 0, 0, 0 |
+    /// | `Everything`, in `mgmt`'s order | 2, 1, 0, 0 |
+    ///
+    /// Two things, and the second is the one that matters.
+    ///
+    /// **The masquerade step is where the disturbance comes from**, alone among the six, and it is
+    /// not marginal: on its own it costs one carried load in seven. Every other store is silent
+    /// even when performed in isolation, which is a stronger statement than it looks -- performing
+    /// one store alone leaves the other four holding the *previous* configuration, and four of them
+    /// tolerate that perfectly.
+    ///
+    /// **Publishing the generation afterwards reduces it by about sixty-fold and does not remove
+    /// it.** `Everything` is `Masquerade` plus the other five in `mgmt`'s order, and it still
+    /// disturbs traffic at roughly two in a thousand. So "the stages were never told the generation
+    /// moved" explains most of the disturbance and not all of it, and the remainder is a transient
+    /// in `update_nat_allocator` racing traffic that this instrument reproduces and does not
+    /// explain. That residual rate is the same order as the one
+    /// `a_configuration_change_leaves_traffic_outside_its_footprint_alone` counts, which is the
+    /// evidence that the two are the same thing.
+    ///
+    /// # Before treating the residual as a dataplane defect
+    ///
+    /// Check the harness first, because it has been the answer three times. `Fleet::enact` is
+    /// `mgmt::apply_masquerade_config`'s ordering and arguments as far as this module can see, but
+    /// "as far as this module can see" is exactly the phrase that preceded each of the three
+    /// phantoms. `set_randomize(false)` is one known deviation from production.
+    ///
+    #[tokio::test]
+    #[dpdk::with_eal]
+    #[ignore = "an instrument, not a property: reports a rate and asserts nothing"]
+    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    async fn report_which_enactment_step_disturbs_traffic() {
+        use config::external::overlay::algebra::{
+            Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
+        };
+
+        const ROUNDS: usize = 500;
+
+        let vpc = VpcHandle;
+        let peering = PeeringHandle;
+        // Two peerings that share nothing: traffic runs on the first, the change lands on the
+        // second. `SetFlavour` writes only its own peering, so the first is outside the footprint
+        // by every one of the three names the frame is checked against.
+        let built = vec![
+            Op::AddVpc(vpc(0)),
+            Op::AddVpc(vpc(1)),
+            Op::AddPeering {
+                handle: peering(0),
+                left: vpc(0),
+                right: vpc(1),
+            },
+            Op::SetFlavour {
+                peering: peering(0),
+                side: Side::Left,
+                slot: 0,
+                flavour: Flavour::Masquerade,
+            },
+            Op::AddVpc(vpc(2)),
+            Op::AddVpc(vpc(3)),
+            Op::AddPeering {
+                handle: peering(1),
+                left: vpc(2),
+                right: vpc(3),
+            },
+        ];
+        let change = Op::SetFlavour {
+            peering: peering(1),
+            side: Side::Left,
+            slot: 0,
+            flavour: Flavour::Masquerade,
+        };
+        let assemble = |draft: &Draft| {
+            draft
+                .overlay()
+                .expect("assembles")
+                .validate()
+                .expect("validates")
+        };
+        let before = Sequence::fold(&built);
+        let running = assemble(&before);
+        let mut after_draft = before.clone();
+        change.apply(&mut after_draft).expect("the change applies");
+        let enacted = assemble(&after_draft);
+        let footprint = change.writes(&before);
+
+        let vnis: Vec<Vni> = enacted
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect();
+        let vary: Vec<derive::Vary> = (0..2)
+            .map(|n| derive::Vary {
+                host: n,
+                port: 0,
+                sport: 30000,
+                dport: 80,
+                burst: 2,
+                blast: false,
+            })
+            .collect();
+        let outside = |named: derive::Named<'_>| {
+            !footprint.touches_peering_named(named.peering)
+                && !footprint.touches_vpc_named(named.local)
+                && !footprint.touches_vpc_named(named.remote)
+        };
+        eprintln!(
+            "loads: total={} framed={}",
+            derive::loads_for(&running, &vary).len(),
+            derive::loads_where(&running, &vary, &outside).len()
+        );
+
+        let handle = tokio::runtime::Handle::current();
+        for part in [
+            Enact::Everything,
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+            Enact::Generation,
+        ] {
+            let disturbed = std::sync::atomic::AtomicU64::new(0);
+            let carried = std::sync::atomic::AtomicU64::new(0);
+
+            for round in 0..ROUNDS {
+                let tables = topology(&vnis);
+                let fleet =
+                    Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let gate = std::sync::Barrier::new(3);
+                std::thread::scope(|scope| {
+                    for which in 0..2u16 {
+                        let handle = handle.clone();
+                        let (gate, disturbed, carried) = (&gate, &disturbed, &carried);
+                        let (running, vary, outside) = (&running, &vary, &outside);
+                        scope.spawn(move || {
+                            let _guard = handle.enter();
+                            let mut worker = blueprint.worker();
+                            let varied: Vec<derive::Vary> = vary
+                                .iter()
+                                .map(|v| derive::Vary {
+                                    sport: v.sport
+                                        + which * 401
+                                        + u16::try_from(round).unwrap_or(0) * 7,
+                                    ..*v
+                                })
+                                .collect();
+                            let mine = derive::loads_where(running, &varied, outside);
+                            gate.wait();
+                            for mut load in mine {
+                                carried.fetch_add(1, Ordering::Relaxed);
+                                // A load asserts internally as it judges what came back, and this
+                                // instrument reports rather than fails; see `without_unwinding`.
+                                let ran = without_unwinding(|| {
+                                    for _ in 0..8 {
+                                        let Some(packet) = load.next() else { break };
+                                        let out = worker.send(packet);
+                                        load.observe(&out);
+                                    }
+                                    (load.checked(), load.describe())
+                                });
+                                let (ok, how) = ran.unwrap_or_else(|why| (false, why));
+                                if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
+                                    eprintln!("  {part:?} first, round {round}: {how}");
+                                }
+                            }
+                        });
+                    }
+                    gate.wait();
+                    fleet.enact(&enacted, part);
+                });
+            }
+            eprintln!(
+                "{part:?}: carried={} disturbed={}",
+                carried.load(Ordering::Relaxed),
+                disturbed.load(Ordering::Relaxed)
+            );
+        }
     }
 }
