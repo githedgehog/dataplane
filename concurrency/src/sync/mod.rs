@@ -36,8 +36,33 @@
 //!   `const fn`, but the facade exposes the lowest common
 //!   denominator. So `static M: Mutex<T> = Mutex::new(...)` compiles
 //!   under the default and `parking_lot` backends and fails to
-//!   typecheck under the model-checker backends. Workaround for
-//!   tests that need a static: wrap the static in `OnceLock`.
+//!   typecheck under the model-checker backends.
+//!
+//! * **A model-checked lock cannot live in a `static` at all, and
+//!   `OnceLock` does not rescue it.** Wrapping the static in a
+//!   `OnceLock` is the obvious answer to the previous point and it
+//!   fixes only the compile error. A loom or shuttle primitive belongs
+//!   to the *execution* that created it, and a `OnceLock` outlives
+//!   every execution, so the second one to take the lock is locking a
+//!   primitive registered with a scheduler that has already finished.
+//!   Shuttle aborts inside `batch_semaphore` with a **non-unwinding**
+//!   panic, which takes the whole test process down rather than
+//!   failing one test, and the panic names nothing in this workspace.
+//!
+//!   There is no workaround while `Mutex::new` stays non-`const`.
+//!   Either construct the lock inside the execution, or make its type
+//!   backend-dependent -- `concurrency::sync::Mutex` under
+//!   [`with_std`], `std::sync::Mutex` under [`with_loom`] and
+//!   [`with_shuttle`] -- and apply the poison-as-panic policy by hand
+//!   on the model-checker side. `dpdk::acl::context`'s registry lock
+//!   is the worked example; it guards an FFI seam a model checker
+//!   cannot see into anyway, so nothing is lost by leaving it
+//!   uninstrumented there. A lock whose *contention* is the thing
+//!   under test has no such escape and must not be a static.
+//!
+//!   [`with_std`]: crate::with_std
+//!   [`with_loom`]: crate::with_loom
+//!   [`with_shuttle`]: crate::with_shuttle
 //!
 //! * **`OnceLock` under `loom`/`shuttle*` is re-exported from
 //!   `std::sync` unchanged.** It is sound for laziness, but it uses
