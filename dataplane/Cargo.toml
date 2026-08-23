@@ -10,6 +10,8 @@ default = []
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
 loom = ["concurrency/loom"]
+shuttle = ["concurrency/shuttle", "nat/shuttle", "flow-entry/shuttle"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 acl-filter = { workspace = true }
