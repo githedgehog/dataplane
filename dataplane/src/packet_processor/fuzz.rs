@@ -4019,4 +4019,193 @@ mod model {
             "no conversation was ever answered by the other worker, so nothing crossed",
         );
     }
+
+    fn unreachable(
+        code: net::icmp4::Icmp4DestUnreachable,
+        public: (IpAddr, u16),
+        target: IpAddr,
+    ) -> Packet<TestBuffer> {
+        let (IpAddr::V4(public_v4), IpAddr::V4(target_v4)) = (public.0, target) else {
+            unreachable!("the fixture is v4 throughout")
+        };
+        let inner =
+            net::packet::test_utils::build_test_icmp4_destination_unreachable_packet_with_code(
+                code,
+                net::packet::test_utils::IcmpErrorAddrs {
+                    outer_src: target_v4,
+                    outer_dst: public_v4,
+                    inner_src: public_v4,
+                    inner_dst: target_v4,
+                },
+                net::ip::NextHeader::UDP,
+                public.1,
+                80,
+            )
+            .unwrap_or_else(|e| unreachable!("the icmp error builds: {e:?}"));
+        super::routed::tunnelled_from(vni(REMOTE_VNI), &inner)
+    }
+
+    #[concurrency::model_test]
+    fn an_icmp_teardown_leaves_another_workers_flow_alone() {
+        static REPORTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static SURVIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let target: IpAddr = "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}"));
+
+            for (code, tears_down) in [
+                (net::icmp4::Icmp4DestUnreachable::Network, true),
+                (
+                    net::icmp4::Icmp4DestUnreachable::FragmentationNeeded {
+                        next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
+                    },
+                    false,
+                ),
+            ] {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                let fleet = Fleet::lowering(
+                    &overlay,
+                    Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+                    Arc::new(FlowTable::default()),
+                );
+                let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+
+                let opening = entering.clone();
+                let answering = entering.clone();
+                let (doomed, mut spared): ((IpAddr, u16), Conversation) = thread::scope(|scope| {
+                    let doomed = thread::Builder::new()
+                        .name("open-doomed".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = opening.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("open-doomed");
+                            let mut worker = blueprint.worker();
+                            let request = super::round_trip::udp(
+                                "1.1.0.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                target,
+                                1000,
+                                80,
+                            )
+                            .unwrap_or_else(|| unreachable!("the fixture request builds"));
+                            let out = worker.send(tunnelled(&request));
+                            let carried = inside(&out).unwrap_or_else(|| {
+                                unreachable!(
+                                    "the request was not delivered tunnelled: {:?}",
+                                    verdict(&out)
+                                )
+                            });
+                            let (Some(public), Some(port)) =
+                                (carried.ip_source(), carried.transport_src_port())
+                            else {
+                                unreachable!("a delivered request had no public tuple")
+                            };
+                            (public, port.get())
+                        })
+                        .expect("spawn opener");
+
+                    let spared = thread::Builder::new()
+                        .name("open-spared".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = answering.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("open-spared");
+                            let mut worker = blueprint.worker();
+                            let mut convo = Conversation::new(
+                                super::routed::Path::fixture(),
+                                "1.1.0.2".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                target,
+                                2000,
+                                80,
+                            );
+                            step(&mut worker, &mut convo);
+                            convo
+                        })
+                        .expect("spawn opener");
+
+                    (
+                        doomed.join().expect("opener panicked"),
+                        spared.join().expect("opener panicked"),
+                    )
+                });
+
+                let tearing = entering.clone();
+                let keeping = entering.clone();
+                let named = format!("{code:?}");
+                let spared = thread::scope(|scope| {
+                    let teardown = thread::Builder::new()
+                        .name("teardown".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = tearing.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("teardown");
+                            let mut worker = blueprint.worker();
+                            let out = worker.send(unreachable(code, doomed, target));
+                            matches!(verdict(&out), Verdict::Delivered { .. })
+                        })
+                        .expect("spawn teardown");
+
+                    let answer = thread::Builder::new()
+                        .name("answer".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = keeping.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("answer");
+                            let mut worker = blueprint.worker();
+                            step(&mut worker, &mut spared);
+                            spared
+                        })
+                        .expect("spawn answer");
+
+                    assert!(
+                        teardown.join().expect("teardown panicked"),
+                        "the icmp error never reached the flow it named, so this raced against \
+                         nothing"
+                    );
+                    REPORTED.fetch_add(1, Ordering::Relaxed);
+                    answer.join().expect("answer panicked")
+                });
+
+                assert!(
+                    spared.checked(),
+                    "a flow was disturbed by an icmp teardown of a different flow on another \
+                     worker. {}",
+                    spared.describe()
+                );
+                SURVIVED.fetch_add(1, Ordering::Relaxed);
+
+                let mut worker = blueprint.worker();
+                let reply = super::round_trip::udp(target, doomed.0, 80, doomed.1)
+                    .unwrap_or_else(|| unreachable!("the reply builds"));
+                let out = worker.send(super::routed::tunnelled_from(vni(REMOTE_VNI), &reply));
+                let delivered = matches!(verdict(&out), Verdict::Delivered { .. });
+                assert_eq!(
+                    delivered,
+                    !tears_down,
+                    "an icmp error with code {named} left the flow it named {}: {:?}",
+                    if delivered { "alive" } else { "torn down" },
+                    verdict(&out)
+                );
+            }
+        });
+
+        let (reported, survived) = (
+            REPORTED.load(Ordering::Relaxed),
+            SURVIVED.load(Ordering::Relaxed),
+        );
+        eprintln!("reported={reported} survived={survived}");
+        super::assert_covered(reported > 0, "no icmp error ever reached the flow it named");
+    }
 }
