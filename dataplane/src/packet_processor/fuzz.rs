@@ -3723,7 +3723,7 @@ mod routed {
     }
 
     /// A tenant packet from the private range to somewhere outside it.
-    fn inner() -> Packet<TestBuffer> {
+    pub(super) fn inner() -> Packet<TestBuffer> {
         build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
     }
 
@@ -4494,5 +4494,149 @@ mod routed {
         let mut out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+}
+
+/// The pipeline under a model checker, with more than one worker.
+///
+/// Production builds **one pipeline per worker** -- `start_router` hands each worker a pipeline
+/// from the same builder closure, each taking its own reader from a factory -- and what they share
+/// is the `Arc<FlowTable>` and the read handles behind those factories. Every property above drives
+/// a single pipeline on one thread, so none of them has ever seen two workers at once.
+///
+/// That matters here more than it would in most harnesses. The allocation defect in
+/// `burst::a_burst_of_one_flow_allocates_once` was two packets of one flow racing through a stale
+/// flow stamp *within a burst*; two workers allocating for the same flow simultaneously is the same
+/// class of fault by a different mechanism, and nothing tests it.
+///
+/// bolero is the outer loop and picks the shape; the backend is the inner loop and explores
+/// interleavings of that shape. `#[concurrency::model_test]` dispatches to whichever is built: real
+/// OS threads by default (run under `just test sanitize=thread`), or shuttle's portfolio under
+/// `--features shuttle`. The layout to copy is `flow-entry/src/flow_table/concurrent_fuzz.rs`.
+///
+/// # The pipeline cannot be model-checked yet
+///
+/// [`Fabric`] cannot be built inside a shuttle execution, and the reason is not DPDK's opacity --
+/// it is a single process-global lock. `dpdk::acl::context` holds
+/// `static ACL_CREATE_LOCK: OnceLock<concurrency::sync::Mutex<()>>` to close a TOCTOU in
+/// `rte_acl_create`, and both `FlowFilter` and `AclFilter` build ACL contexts, so every `Fabric`
+/// touches it.
+///
+/// A shuttle primitive belongs to the execution that created it. `concurrency::stress` runs many
+/// executions, so the second one locks a `Mutex` registered with a scheduler that has finished, and
+/// shuttle aborts inside `batch_semaphore` -- a non-unwinding panic, so the whole test process dies.
+/// [`a_lock_that_outlives_its_execution_is_not_model_checkable`] holds the evidence.
+///
+/// This is worth stating precisely because the `OnceLock` wrapper is exactly what the concurrency
+/// crate's own documentation recommends -- "Workaround for tests that need a static: wrap the static
+/// in `OnceLock`" -- for the real problem that `Mutex::new` is not `const fn` under the model-checker
+/// backends. The workaround fixes the compile error and introduces a runtime one, and nothing warns
+/// about it.
+///
+/// # And when it can
+///
+/// Note what this does *not* block. `rte_acl` is opaque to shuttle regardless -- a model checker
+/// cannot see inside an FFI call -- so a green shuttle run would never have said anything about
+/// races within those stages. That is what the sanitizer build is for, and why the std backend of
+/// [`a_pipeline_can_be_driven_inside_a_stress_run`] is not redundant with the shuttle one.
+#[cfg(test)]
+mod model {
+    use super::routed::{exposes, inner, tunnelled};
+    use super::*;
+    use concurrency::sync::Mutex;
+    use concurrency::thread;
+    #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
+    use concurrency::thread::BuilderExt;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Run `body` on two threads inside one execution, which is the least shuttle's PCT scheduler
+    /// will accept -- it panics outright on a body that never has two threads runnable at once.
+    fn on_two_threads(body: &(impl Fn() + Sync)) {
+        thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    thread::Builder::new()
+                        .spawn_scoped(scope, body)
+                        .expect("spawn")
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("join");
+            }
+        });
+    }
+
+    /// Which locks a model checker can see, stated as three cases that differ in one thing.
+    ///
+    /// The two that pass are here so the third is attributable. A lock created inside the execution
+    /// is fine, and a `static` lock is fine for as long as one execution lasts -- so the fault is
+    /// neither "statics" nor "locks", it is *reuse across executions*, and that is the sentence a
+    /// reader needs. The failing case is written out rather than run, because shuttle aborts the
+    /// process rather than failing a test:
+    ///
+    /// ```ignore
+    /// static LOCK: OnceLock<Mutex<u32>> = OnceLock::new();
+    /// concurrency::stress(|| on_two_threads(|| *LOCK.get_or_init(|| Mutex::new(0)).lock() += 1));
+    /// // execution 2 panics in shuttle's batch_semaphore: the Mutex belongs to execution 1
+    /// ```
+    #[concurrency::model_test]
+    fn a_lock_that_outlives_its_execution_is_not_model_checkable() {
+        static LOCK: OnceLock<Mutex<u32>> = OnceLock::new();
+        // `RUNS` is a real `std::sync` atomic, which shuttle does not instrument, so it counts
+        // executions rather than taking part in one.
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+
+        // Created inside the execution: seen, and fine.
+        concurrency::stress(|| {
+            let lock = concurrency::sync::Arc::new(Mutex::new(0u32));
+            let inner = lock.clone();
+            let bump = move || *inner.lock() += 1;
+            on_two_threads(&bump);
+            assert_eq!(*lock.lock(), 2);
+        });
+
+        // A `static` lock, touched only while the execution that created it is still running.
+        concurrency::stress(|| {
+            let first = RUNS.fetch_add(1, Ordering::Relaxed) == 0;
+            let bump = move || {
+                if first {
+                    *LOCK.get_or_init(|| Mutex::new(0)).lock() += 1;
+                }
+            };
+            on_two_threads(&bump);
+        });
+    }
+
+    /// The pipeline can be assembled and driven inside a stress run.
+    ///
+    /// Not gated on shuttle, because it cannot pass there until `ACL_CREATE_LOCK` stops outliving
+    /// its execution -- see the module docs. On the std backend it is still worth having: it is the
+    /// entry point for `just test sanitize=thread`, which is the only tool that sees inside
+    /// `rte_acl` at all.
+    #[cfg(not(feature = "shuttle"))]
+    #[concurrency::model_test]
+    fn a_pipeline_can_be_driven_inside_a_stress_run() {
+        let _eal = dpdk::test_support::start_eal();
+
+        // `FlowTable::insert` schedules its expiry timer with `tokio::task::spawn`, which panics
+        // outside a runtime. The timer never fires here; the runtime only has to exist.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let handle = rt.handle().clone();
+
+        concurrency::stress(move || {
+            let _guard = tokio::runtime::Handle::enter(&handle);
+            let mut fabric = Fabric::routed(&exposes(), None)
+                .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
+            let out = fabric.send(tunnelled(&inner()));
+            assert!(
+                matches!(verdict(&out), Verdict::Delivered { .. }),
+                "a packet that is delivered single-threaded was not: {:?}",
+                verdict(&out)
+            );
+        });
     }
 }

@@ -10,6 +10,12 @@ default = []
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
 loom = ["concurrency/loom"]
+# Model-check the pipeline's shared state across workers, in `packet_processor::fuzz::model`.
+# Unlike loom, the binary is *not* gated out: it compiles under shuttle, and the pipeline is what
+# the tests need. `nat` and `flow-entry` are named explicitly because each has its own backend
+# switch -- `flow-entry` is where the per-flow tokio timer is compiled out.
+shuttle = ["concurrency/shuttle", "nat/shuttle", "flow-entry/shuttle"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 acl-filter = { workspace = true }
