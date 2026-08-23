@@ -94,6 +94,7 @@ use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::time::Duration;
 
 /// The generation a freshly lowered configuration is enacted as. See [`Fleet::genid`].
 const FIRST_GENID: GenId = 1;
@@ -331,6 +332,27 @@ impl Fleet {
     /// # Panics
     ///
     /// If `overlay` does not lower, for the reason [`Fleet::lowering`] gives.
+    /// `mgmt`'s whole sequence, with a pause where `mgmt` awaits the router configuration.
+    ///
+    /// `apply_config` stores the masquerade allocator, then port forwarding, then **awaits**
+    /// `apply_router_config`, and only then publishes the generation. Every property here closes
+    /// that gap in microseconds because it has no router to configure; production does not. If the
+    /// generation publish is what repairs an allocator swap, then in production the repair is late
+    /// by however long that await takes, and the traffic in between is the interesting traffic.
+    pub(crate) fn enact_with_router_gap(&self, overlay: &ValidatedOverlay, gap: Duration) {
+        for step in [
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+        ] {
+            self.enact(overlay, step);
+        }
+        std::thread::sleep(gap);
+        self.enact(overlay, Enact::Generation);
+    }
+
     pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
         let doing = |step: Enact| which == Enact::Everything || which == step;
         if doing(Enact::FlowFilter) {
@@ -6981,35 +7003,61 @@ mod model {
     ///
     /// # What it says
     ///
-    /// On the fixture below -- two peerings sharing nothing, traffic on the first, the change on
-    /// the second -- 500 rounds per step, repeated four times:
+    /// Two peerings sharing nothing, traffic on the first, the change on the second; 60 rounds of
+    /// 24 load sets per worker, so ~2880 loads carried per step:
     ///
-    /// | step enacted alone | disturbed per 1000 carried |
+    /// | step enacted alone | disturbed per 2880 carried |
     /// | --- | --- |
-    /// | `FlowFilter` | 0, 0, 0, 0 |
-    /// | `Acl` | 0, 0, 0, 0 |
-    /// | `StaticNat` | 0, 0, 0, 0 |
-    /// | **`Masquerade`** | **122, 137, 151, 130, 165** |
-    /// | `PortForward` | 0, 0, 0, 0 |
-    /// | `Generation` | 0, 0, 0, 0 |
-    /// | `Everything`, in `mgmt`'s order | 2, 1, 0, 0 |
+    /// | `FlowFilter` | 0 |
+    /// | `Acl` | 0 |
+    /// | `StaticNat` | 0 |
+    /// | **`Masquerade`** | **11** |
+    /// | `PortForward` | 0 |
+    /// | `Generation` | 0 |
+    /// | `Everything`, in `mgmt`'s order | 5 |
+    /// | `Everything`, with `mgmt`'s router-config await between the allocator swap and the \
+    ///   generation publish | 1 |
     ///
-    /// Two things, and the second is the one that matters.
+    /// **The masquerade step is the only one that disturbs anything**, alone among the six, and
+    /// `Everything` is the same order as `Masquerade` alone -- which is what "the masquerade step
+    /// is the cause" should look like. Every other store is silent even in isolation, and that is
+    /// stronger than it sounds: enacting one store alone leaves the other four holding the
+    /// *previous* configuration, and four of them tolerate that perfectly.
     ///
-    /// **The masquerade step is where the disturbance comes from**, alone among the six, and it is
-    /// not marginal: on its own it costs one carried load in seven. Every other store is silent
-    /// even when performed in isolation, which is a stronger statement than it looks -- performing
-    /// one store alone leaves the other four holding the *previous* configuration, and four of them
-    /// tolerate that perfectly.
+    /// # Two explanations this instrument killed
     ///
-    /// **Publishing the generation afterwards reduces it by about sixty-fold and does not remove
-    /// it.** `Everything` is `Masquerade` plus the other five in `mgmt`'s order, and it still
-    /// disturbs traffic at roughly two in a thousand. So "the stages were never told the generation
-    /// moved" explains most of the disturbance and not all of it, and the remainder is a transient
-    /// in `update_nat_allocator` racing traffic that this instrument reproduces and does not
-    /// explain. That residual rate is the same order as the one
-    /// `a_configuration_change_leaves_traffic_outside_its_footprint_alone` counts, which is the
-    /// evidence that the two are the same thing.
+    /// Both were mine, both were plausible, and the instrument is worth having because it settled
+    /// them in minutes rather than by argument.
+    ///
+    /// **"The generation publish repairs the swap, so a late publish widens the damage."** `mgmt`
+    /// awaits `apply_router_config` between storing the allocator and publishing the generation,
+    /// which in production is a real gap and here is microseconds. Adding a 500us gap changes
+    /// nothing at all -- 1 in 2880 against 5 without it. The lateness of the publish is not the
+    /// mechanism.
+    ///
+    /// **"`Everything` is fifty times safer than `Masquerade` alone."** It looked that way -- 2 in
+    /// 1000 against 107 -- and it was an artefact of *this instrument* sending a short burst right
+    /// after the barrier. `Everything` spends about a millisecond rebuilding `rte_acl` tables before
+    /// it reaches the allocator, by which time the burst had finished, so the round measured
+    /// nothing. Production traffic does not stop while a configuration is applied. With the traffic
+    /// sustained instead, the gap closes to 5 against 11: the same phenomenon, and the earlier
+    /// ratio was measuring when the store happened rather than what it did.
+    ///
+    /// # What thread sanitizer said
+    ///
+    /// Nothing, twice over. Built with `nix build -f default.nix tests.pkg.dataplane --argstr
+    /// sanitize thread` -- which instruments dpdk and rebuilds `std` too, so it is not blind
+    /// through the C -- it reported **no races**, and the disturbance did not reproduce at all:
+    /// every step showed zero. The instrumentation slows both threads by about twenty times and
+    /// the window closes.
+    ///
+    /// That is evidence, not a dead end. It says the disturbance is not an unsynchronised access
+    /// that a race detector would name; it is a narrow window in ordinary logic. Which fits the
+    /// code: `update_nat_allocator` keeps existing state only when the configuration compares
+    /// *equal*, and otherwise builds a fresh `NatAllocator` whose per-thread port-block
+    /// bookkeeping starts empty, so a live flow that re-allocates inside that window lands in a
+    /// different block. Re-enacting an unchanged configuration takes the equal branch and never
+    /// does it.
     ///
     /// # Before treating the residual as a dataplane defect
     ///
@@ -7027,7 +7075,17 @@ mod model {
             Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
         };
 
-        const ROUNDS: usize = 500;
+        /// A source port for `which` worker in `rep`, in a half of the port space that is that
+        /// worker's alone. The property has its own `separate` for the same reason: two workers
+        /// deriving loads from one configuration must not be able to produce the same five-tuple.
+        fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
+            within + which * 32_768
+        }
+
+        const ROUNDS: usize = 60;
+        /// Load sets each worker drives per round, so traffic spans the whole enactment.
+        const REPS: u8 = 24;
 
         let vpc = VpcHandle;
         let peering = PeeringHandle;
@@ -7103,7 +7161,7 @@ mod model {
         );
 
         let handle = tokio::runtime::Handle::current();
-        for part in [
+        let steps = [
             Enact::Everything,
             Enact::FlowFilter,
             Enact::Acl,
@@ -7111,7 +7169,14 @@ mod model {
             Enact::Masquerade,
             Enact::PortForward,
             Enact::Generation,
-        ] {
+            // Not a step: `Everything` again, but with `mgmt`'s await between the
+            // allocator swap and the generation publish. See `enact_with_router_gap`.
+            Enact::Everything,
+        ];
+        for (nth, part) in steps.into_iter().enumerate() {
+            // The list ends with a second `Everything`; that one, and only that one, gets the
+            // router gap.
+            let gapped = nth == steps.len() - 1;
             let disturbed = std::sync::atomic::AtomicU64::new(0);
             let carried = std::sync::atomic::AtomicU64::new(0);
 
@@ -7140,31 +7205,53 @@ mod model {
                                 .collect();
                             let mine = derive::loads_where(running, &varied, outside);
                             gate.wait();
-                            for mut load in mine {
-                                carried.fetch_add(1, Ordering::Relaxed);
-                                // A load asserts internally as it judges what came back, and this
-                                // instrument reports rather than fails; see `without_unwinding`.
-                                let ran = without_unwinding(|| {
-                                    for _ in 0..8 {
-                                        let Some(packet) = load.next() else { break };
-                                        let out = worker.send(packet);
-                                        load.observe(&out);
+                            // Sustained traffic, not a burst. `Everything` takes about a millisecond -- it
+                            // rebuilds rte_acl tables -- so with only a couple of packets per round the
+                            // allocator swap lands *after* the traffic has finished and the round measures
+                            // nothing. Production's traffic does not stop while a configuration is applied.
+                            for rep in 0..REPS {
+                                let mine = derive::loads_where(
+                                    running,
+                                    &vary
+                                        .iter()
+                                        .map(|v| derive::Vary {
+                                            sport: separate(v.sport, rep, which),
+                                            ..*v
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    outside,
+                                );
+                                for mut load in mine {
+                                    carried.fetch_add(1, Ordering::Relaxed);
+                                    // A load asserts internally as it judges what came back, and this
+                                    // instrument reports rather than fails; see `without_unwinding`.
+                                    let ran = without_unwinding(|| {
+                                        for _ in 0..8 {
+                                            let Some(packet) = load.next() else { break };
+                                            let out = worker.send(packet);
+                                            load.observe(&out);
+                                        }
+                                        (load.checked(), load.describe())
+                                    });
+                                    let (ok, how) = ran.unwrap_or_else(|why| (false, why));
+                                    if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
+                                        eprintln!("  {part:?} first, round {round}: {how}");
                                     }
-                                    (load.checked(), load.describe())
-                                });
-                                let (ok, how) = ran.unwrap_or_else(|why| (false, why));
-                                if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
-                                    eprintln!("  {part:?} first, round {round}: {how}");
                                 }
                             }
                         });
                     }
                     gate.wait();
-                    fleet.enact(&enacted, part);
+                    if gapped {
+                        fleet.enact_with_router_gap(&enacted, Duration::from_micros(500));
+                    } else {
+                        fleet.enact(&enacted, part);
+                    }
                 });
             }
             eprintln!(
-                "{part:?}: carried={} disturbed={}",
+                "{part:?}{}: carried={} disturbed={}",
+                if gapped { " (with the router gap)" } else { "" },
                 carried.load(Ordering::Relaxed),
                 disturbed.load(Ordering::Relaxed)
             );
