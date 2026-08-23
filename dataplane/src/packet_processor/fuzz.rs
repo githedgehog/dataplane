@@ -4756,7 +4756,7 @@ mod routed {
 #[cfg(test)]
 mod model {
     use super::derive::loads_for;
-    use super::routed::{exposes, inner, inside, tunnelled};
+    use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
@@ -5230,6 +5230,207 @@ mod model {
             split > 0,
             "no drawn configuration ever implied enough traffic to load two workers, so this ran \
              nothing concurrently",
+        );
+    }
+
+    /// Advance one load by exactly one packet: offer, send, judge.
+    ///
+    /// [`drive`] runs a load to completion, which is the wrong granularity here -- the whole point
+    /// is to stop halfway and change worker.
+    fn step(worker: &mut Worker, load: &mut dyn Load) {
+        let Some(packet) = load.next() else {
+            panic!(
+                "a load was asked for a packet it would not give: {}",
+                load.describe()
+            );
+        };
+        let out = worker.send(packet);
+        load.observe(&out);
+    }
+
+    /// A flow's reply is translated correctly by a worker that never saw its request.
+    ///
+    /// This is the arrangement production is *usually* in, not an unusual one. Receive-side
+    /// steering hashes the tuple, and a reply has the tuple reversed, so the return traffic of a
+    /// flow opened on one worker routinely lands on another. Everything the reverse path needs --
+    /// the flow table entry `FlowLookup` attaches, and the allocation `Masquerade` recovers from it
+    /// -- is therefore read by a thread that did not write it.
+    ///
+    /// Nothing above tests that. `round_trip::a_translated_flow_comes_back_to_where_it_started` and
+    /// `routed::a_tunnelled_flow_comes_back_through_the_tunnel` both drive request and reply through
+    /// one pipeline on one thread, which is the one arrangement in which the hand-off cannot fail.
+    ///
+    /// The oracle is [`Conversation::judge_reply`], unchanged: the reply must be delivered, go back
+    /// into the vpc that opened the flow, arrive at the host that opened it, keep the far side's
+    /// address, and get the original source port back. Reusing it rather than restating it is
+    /// deliberate -- if the single-threaded claim and this one ever disagree, it should be because
+    /// the dataplane behaved differently and not because two tests said different things.
+    ///
+    /// # What this does and does not establish
+    ///
+    /// Dropping the line in `flow_entry`'s `FlowLookup` that attaches flow state fails this on both
+    /// answering threads, with `the reply of a delivered flow did not reach the wire:
+    /// Dropped(Filtered)` and the conversation's own history attached. So the oracle does fire in
+    /// this arrangement, which is worth knowing and is not free -- a reply crafted from a public
+    /// tuple the answering worker was handed could easily have been wrong in a way that dropped
+    /// silently.
+    ///
+    /// It does not isolate the *cross-worker* part: that same break fails the single-threaded
+    /// `round_trip::a_translated_flow_comes_back_to_where_it_started` too. There is no break to hand
+    /// that would fail only here, because the fault this guards against -- a per-thread cache in
+    /// front of the flow table, a reverse translation that consulted `ThreadPortMap` -- is one
+    /// nobody has written yet. That is the honest description of the property: it exercises an
+    /// arrangement nothing else does, so that such a change cannot be made quietly.
+    ///
+    /// # Why the conversations are swapped rather than shared
+    ///
+    /// Each worker opens its own flows and then answers *the other's*. That keeps both threads
+    /// doing real work in both phases, which shuttle's PCT scheduler requires, and it means every
+    /// reply in the run crosses a worker boundary rather than only half of them.
+    ///
+    /// A `Conversation` can make that trip because it holds a `Packet<TestBuffer>` and nothing
+    /// thread-bound; the pipeline it is driven through cannot, which is why each phase builds its
+    /// own [`Worker`] from the shared [`Blueprint`].
+    #[concurrency::model_test]
+    fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
+        /// Flows opened per worker. Two, so the answering phase has more than one thing to do and
+        /// an interleaving between them exists at all.
+        const FLOWS: u8 = 2;
+
+        /// Conversations that completed both legs. Counts executions rather than cases -- the
+        /// stress body runs many times per test -- so it is a vacuity guard and not a measurement.
+        static CLOSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Conversations whose request was not delivered, so there was never a reply to split.
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let fleet = Fleet::lowering(
+                &overlay,
+                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+                Arc::new(FlowTable::default()),
+            );
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+
+            // Phase one: each worker opens its own flows and stops with the reply outstanding.
+            let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        thread::Builder::new()
+                            .name(format!("open-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("open-{which}"));
+                                let mut worker = blueprint.worker();
+                                (0..FLOWS)
+                                    .map(|nth| {
+                                        // A private host per worker per flow, so no two
+                                        // conversations in the run are the same flow.
+                                        let src = format!("1.1.{which}.{}", nth + 1);
+                                        let mut convo = Conversation::new(
+                                            super::routed::Path::fixture(),
+                                            src.parse().unwrap_or_else(|e| {
+                                                unreachable!("{src} is an address: {e}")
+                                            }),
+                                            "3.3.3.1"
+                                                .parse()
+                                                .unwrap_or_else(|e| unreachable!("{e}")),
+                                            u16::from(nth) + 1000,
+                                            80,
+                                        );
+                                        step(&mut worker, &mut convo);
+                                        convo
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .expect("spawn opener")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|opener| opener.join().expect("opener panicked"))
+                    .collect()
+            });
+
+            // Phase two: swap. Neither worker answers a flow it opened.
+            let second = opened
+                .pop()
+                .unwrap_or_else(|| unreachable!("two openers ran"));
+            let first = opened
+                .pop()
+                .unwrap_or_else(|| unreachable!("two openers ran"));
+
+            let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                let running: Vec<_> = [(0u8, second), (1u8, first)]
+                    .into_iter()
+                    .map(|(which, mut theirs)| {
+                        let entering = entering.clone();
+                        thread::Builder::new()
+                            .name(format!("answer-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("answer-{which}"));
+                                // A pipeline of its own, from the same tables: the flow state and
+                                // the allocation this thread is about to read were written through
+                                // a different one.
+                                let mut worker = blueprint.worker();
+                                for convo in &mut theirs {
+                                    // A request the configuration refused never reached the state
+                                    // that has a reply, and that is not a defect. See
+                                    // `Load::checked`.
+                                    if !convo.finished() {
+                                        step(&mut worker, convo);
+                                    }
+                                }
+                                theirs
+                            })
+                            .expect("spawn answerer")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|answerer| answerer.join().expect("answerer panicked"))
+                    .collect()
+            });
+
+            for convo in answered.into_iter().flatten() {
+                if convo.checked() {
+                    CLOSED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    ABANDONED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let (closed, abandoned) = (
+            CLOSED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+        );
+        eprintln!("closed={closed} abandoned={abandoned}");
+        super::assert_covered(
+            closed > 0,
+            "no conversation was ever answered by the other worker, so nothing crossed",
         );
     }
 }
