@@ -37,6 +37,7 @@ use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::time::Duration;
 
 const FIRST_GENID: GenId = 1;
 
@@ -156,6 +157,20 @@ impl Fleet {
 
     pub(crate) fn reconfigure(&self, overlay: &ValidatedOverlay) {
         self.enact(overlay, Enact::Everything);
+    }
+
+    pub(crate) fn enact_with_router_gap(&self, overlay: &ValidatedOverlay, gap: Duration) {
+        for step in [
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+        ] {
+            self.enact(overlay, step);
+        }
+        std::thread::sleep(gap);
+        self.enact(overlay, Enact::Generation);
     }
 
     pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
@@ -4970,7 +4985,13 @@ mod model {
             Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
         };
 
-        const ROUNDS: usize = 500;
+        fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
+            within + which * 32_768
+        }
+
+        const ROUNDS: usize = 60;
+        const REPS: u8 = 24;
 
         let vpc = VpcHandle;
         let peering = PeeringHandle;
@@ -5043,7 +5064,7 @@ mod model {
         );
 
         let handle = tokio::runtime::Handle::current();
-        for part in [
+        let steps = [
             Enact::Everything,
             Enact::FlowFilter,
             Enact::Acl,
@@ -5051,7 +5072,10 @@ mod model {
             Enact::Masquerade,
             Enact::PortForward,
             Enact::Generation,
-        ] {
+            Enact::Everything,
+        ];
+        for (nth, part) in steps.into_iter().enumerate() {
+            let gapped = nth == steps.len() - 1;
             let disturbed = std::sync::atomic::AtomicU64::new(0);
             let carried = std::sync::atomic::AtomicU64::new(0);
 
@@ -5080,29 +5104,47 @@ mod model {
                                 .collect();
                             let mine = derive::loads_where(running, &varied, outside);
                             gate.wait();
-                            for mut load in mine {
-                                carried.fetch_add(1, Ordering::Relaxed);
-                                let ran = without_unwinding(|| {
-                                    for _ in 0..8 {
-                                        let Some(packet) = load.next() else { break };
-                                        let out = worker.send(packet);
-                                        load.observe(&out);
+                            for rep in 0..REPS {
+                                let mine = derive::loads_where(
+                                    running,
+                                    &vary
+                                        .iter()
+                                        .map(|v| derive::Vary {
+                                            sport: separate(v.sport, rep, which),
+                                            ..*v
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    outside,
+                                );
+                                for mut load in mine {
+                                    carried.fetch_add(1, Ordering::Relaxed);
+                                    let ran = without_unwinding(|| {
+                                        for _ in 0..8 {
+                                            let Some(packet) = load.next() else { break };
+                                            let out = worker.send(packet);
+                                            load.observe(&out);
+                                        }
+                                        (load.checked(), load.describe())
+                                    });
+                                    let (ok, how) = ran.unwrap_or_else(|why| (false, why));
+                                    if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
+                                        eprintln!("  {part:?} first, round {round}: {how}");
                                     }
-                                    (load.checked(), load.describe())
-                                });
-                                let (ok, how) = ran.unwrap_or_else(|why| (false, why));
-                                if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
-                                    eprintln!("  {part:?} first, round {round}: {how}");
                                 }
                             }
                         });
                     }
                     gate.wait();
-                    fleet.enact(&enacted, part);
+                    if gapped {
+                        fleet.enact_with_router_gap(&enacted, Duration::from_micros(500));
+                    } else {
+                        fleet.enact(&enacted, part);
+                    }
                 });
             }
             eprintln!(
-                "{part:?}: carried={} disturbed={}",
+                "{part:?}{}: carried={} disturbed={}",
+                if gapped { " (with the router gap)" } else { "" },
                 carried.load(Ordering::Relaxed),
                 disturbed.load(Ordering::Relaxed)
             );
