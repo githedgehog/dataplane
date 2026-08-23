@@ -5832,4 +5832,324 @@ mod model {
             "either no conversation completed or no route was published, so nothing was raced",
         );
     }
+
+    /// A next hop that moves under live traffic is only ever seen at one of its published values.
+    ///
+    /// The property above churns a prefix nobody is addressed to, and so states a frame condition:
+    /// publishing does not corrupt what is already there. This one aims the churn at the route
+    /// every packet in it uses, which needs a different claim -- and gets a much sharper one.
+    ///
+    /// # A different mechanism, not just a different target
+    ///
+    /// The fib does not re-point routes when a next hop moves. Routes hold
+    /// `Rc<UnsafeCell<FibGroup>>` into a per-fib store, and `FibGroupStore::add_mod_group` writes
+    /// **through** that cell, so one publish moves every route resolving to that next hop at once.
+    /// That is the point -- it makes a next-hop change `O(nexthops)` rather than `O(routes)` -- and
+    /// it is also the sharpest edge in the fib: an `UnsafeCell` mutated in place while readers are
+    /// looking at the table. Its safety argument rests entirely on left-right handing the writer a
+    /// copy nobody is reading, and on the two copies never sharing an `Rc`.
+    ///
+    /// Nothing exercised that argument before this. `route_via` installs a *new* key each time, so
+    /// the churn property above only ever takes the `else` branch that allocates a fresh cell. This
+    /// one re-registers the key the default route already resolves to, which is the branch that
+    /// writes through.
+    ///
+    /// # The claim
+    ///
+    /// Each version encapsulates towards a waypoint of its own, so the outer destination of a
+    /// delivered frame names the version that forwarded it. Two things are asserted, and the second
+    /// is the one worth having:
+    ///
+    /// - **Whole.** The waypoint must be one that was published, *and* the frame's ethernet
+    ///   destination must name the same version. A packet carrying one version's tunnel and another
+    ///   version's framing is a half-applied change, which is exactly what writing through a cell
+    ///   under a live reader risks.
+    /// - **Fresh.** A probe sent in round `r` sees version `r-1` or version `r`, and nothing else.
+    ///   The lower bound is the interesting half: `publish` for version `r-1` *returned* before the
+    ///   barrier that opened this round, so a reader entering afterwards may not still be serving
+    ///   anything older. That is a liveness claim about the thread-local reader caches, and no
+    ///   frame condition can state it.
+    ///
+    /// # Why rounds rather than one free-running race
+    ///
+    /// A single publish racing a burst of probes is a race whose outcome nobody can bound: the
+    /// property would have to accept every version, which reduces it to the frame condition again.
+    /// Rebarriering each round costs the race nothing -- the publish and that round's probes are
+    /// still unsynchronised with each other -- and it buys the two-sided bound, because at a
+    /// barrier every earlier publish has provably returned.
+    ///
+    /// # It can see each failure it claims to
+    ///
+    /// One failure mode per assertion:
+    ///
+    /// - Publishing version `n`'s encapsulation with version `n-1`'s egress interface fails it in
+    ///   round 1, naming both halves. That one also earned the adjacency cross product below: the
+    ///   first attempt failed with `Dropped(MissL2resolution)` instead, because a mixed pair had no
+    ///   adjacency -- a symptom indistinguishable from a topology mistake.
+    /// - Publishing one version behind fails only the settled probe. Worth knowing: a reader a
+    ///   single version stale is *within* the round bound and invisible to it, so the probe after
+    ///   the last barrier is not a formality, it is the only thing that catches a lag of one.
+    /// - Publishing two versions behind fails the round bound in round 2.
+    ///
+    /// The mac is not among the observables for the same reason: publishing every version framed to
+    /// its predecessor's mac changed nothing at all.
+    #[concurrency::model_test]
+    fn a_next_hop_that_moves_is_never_seen_half_moved() {
+        /// Versions published after the fixture's own.
+        const CHURN: u8 = 3;
+        /// Probes each worker sends per round, alongside that round's publish.
+        const PER_ROUND: u8 = 2;
+
+        /// Probes served by the version published in their own round.
+        static FRESH: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Probes served by the version published in the round before.
+        static STALE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        /// Which version forwarded one probe, or why it could not be attributed to one.
+        ///
+        /// Carried back rather than asserted on the spot; see the judging loop for why.
+        type Seen = Result<u8, String>;
+
+        /// Where version `nth` sends traffic, and the interface it leaves by.
+        ///
+        /// Two observables rather than one, and deliberately ones written by *different
+        /// instructions* of the same fib entry: the address is what `Encap` puts in the outer
+        /// header, the interface is what `Egress` frames on. A group read while it was being
+        /// written can disagree with itself, and this pair is what would show it.
+        ///
+        /// The outer mac would not. It comes from the adjacency table, which this property does not
+        /// churn, and it is looked up by the very address `Encap` used -- so it agrees with the
+        /// address by construction and could never be the thing that disagreed. Establishing that
+        /// took checking: publishing every version with its predecessor's mac changes nothing.
+        ///
+        /// Version 0 is the fixture's own next hop, so the run starts from the topology every other
+        /// property here uses rather than from something this one arranged.
+        fn waypoint(nth: u8) -> (IpAddr, InterfaceIndex) {
+            if nth == 0 {
+                (
+                    PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+                    uplink(),
+                )
+            } else {
+                (
+                    IpAddr::from([10, 0, 0, nth]),
+                    InterfaceIndex::try_new(UPLINK + u32::from(nth))
+                        .unwrap_or_else(|_| unreachable!()),
+                )
+            }
+        }
+
+        /// The mac of version `nth`'s interface, which is also what its waypoint resolves to.
+        fn framing(nth: u8) -> Mac {
+            Mac([0x02, 0, 0, 0, 0x11, nth])
+        }
+
+        /// The group that tunnels the remote vpc's traffic out to `nth`'s waypoint.
+        ///
+        /// The same shape `encapsulate_out_of` builds, which is deliberate: a version that differed
+        /// from the fixture in any way other than where it points would make a mismatch attributable
+        /// to the difference rather than to the churn.
+        fn towards(nth: u8) -> FibGroup {
+            let (remote, oif) = waypoint(nth);
+            let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+                ResolvedVxlan {
+                    vni: vni(REMOTE_VNI),
+                    remote,
+                    dmac: framing(nth),
+                },
+            )));
+            out.add(PktInstruction::Egress(EgressObject::new(
+                Some(oif),
+                Some(remote),
+            )));
+            FibGroup::with_entry(out)
+        }
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            // Every waypoint is resolvable before anything moves. The adjacency table is not what
+            // is under test, and a version whose mac had not been learned yet would be dropped for
+            // a reason that has nothing to do with the fib.
+            for nth in 1..=CHURN {
+                let (_, oif) = waypoint(nth);
+                tables.interface(
+                    oif,
+                    &format!("uplink-{nth}"),
+                    SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
+                );
+                tables.attach(oif, UNDERLAY_VRF);
+            }
+            // Every waypoint address is resolvable on every waypoint interface, which is more than
+            // any version needs: a version only ever uses its own pair. The cross product is here
+            // so that a group mixing two versions would be *delivered* -- and so caught by the
+            // check below, which names both halves -- rather than dropped for want of an
+            // adjacency. A drop reads identically to a topology mistake, so leaving the mixed pairs
+            // unresolvable would turn the sharpest failure this property can have into its most
+            // ambiguous one. Established by break test; see the doc comment.
+            for to in 0..=CHURN {
+                for over in 0..=CHURN {
+                    tables.adjacency(waypoint(to).0, waypoint(over).1, framing(to));
+                }
+            }
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            // Two workers and this thread, rendezvousing once per round.
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+            let mut reports = Vec::new();
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name(format!("probe-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("probe-{which}"));
+                                let mut worker = blueprint.worker();
+
+                                // A fresh five-tuple per probe, so every one of them is a new flow
+                                // and has to consult the fib. Probes that shared a flow would say
+                                // nothing about a route published after the first of them.
+                                let mut port = u16::from(which) * 1000 + 1000;
+                                let send = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                    *port += 1;
+                                    let src = format!("1.1.{which}.1");
+                                    let out = worker.send(tunnelled(&build_test_udp_ipv4_packet(
+                                        &src, "3.3.3.1", *port, 80,
+                                    )));
+                                    let Verdict::Delivered {
+                                        oif: Some(oif),
+                                        dst: Some(dst),
+                                        ..
+                                    } = verdict(&out)
+                                    else {
+                                        return Err(format!(
+                                            "it did not leave the gateway: {:?}",
+                                            verdict(&out)
+                                        ));
+                                    };
+                                    (0..=CHURN)
+                                        .find(|nth| waypoint(*nth) == (dst, oif))
+                                        .ok_or_else(|| {
+                                            format!(
+                                                "it left over interface {oif} towards {dst}, which \
+                                                 is no published next hop: either the \
+                                                 encapsulation and the egress came from different \
+                                                 versions, or the group was read while it was \
+                                                 being written"
+                                            )
+                                        })
+                                };
+
+                                gate.wait();
+                                let mut seen = Vec::with_capacity(
+                                    usize::from(CHURN) * usize::from(PER_ROUND) + 1,
+                                );
+                                for _ in 1..=CHURN {
+                                    for _ in 0..PER_ROUND {
+                                        seen.push(send(&mut worker, &mut port));
+                                    }
+                                    gate.wait();
+                                }
+                                // Nothing is moving now: every publish returned before the last
+                                // barrier, so there is no version but the last one left to serve.
+                                seen.push(send(&mut worker, &mut port));
+                                seen
+                            })
+                            .expect("spawn prober")
+                    })
+                    .collect();
+
+                // This thread is the config-apply path: it owns the writers and moves the next hop
+                // the default route in the remote vpc's fib already resolves to. No route is
+                // touched -- re-registering the key is the whole change.
+                let key = nhop(&PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()));
+                gate.wait();
+                for round in 1..=CHURN {
+                    tables.nexthop(REMOTE_VNI, &key, &towards(round));
+                    gate.wait();
+                }
+
+                for prober in running {
+                    reports.push(prober.join().expect("prober panicked"));
+                }
+            });
+
+            // Judged here rather than in the probers, and that is not a stylistic choice. A prober
+            // that panicked mid-round would never reach the next barrier, so its two peers would
+            // wait on it forever: the property would hang instead of failing, which is the worst
+            // way for a test to be wrong. A prober therefore only observes.
+            for seen in reports {
+                for (nth, observed) in seen.iter().enumerate() {
+                    let last = nth == seen.len() - 1;
+                    let round = if last {
+                        CHURN
+                    } else {
+                        u8::try_from(nth).unwrap_or_else(|_| unreachable!()) / PER_ROUND + 1
+                    };
+                    let version = match observed {
+                        Ok(version) => *version,
+                        Err(why) => panic!(
+                            "a probe sent in round {round}, while the next hop was moving, is not \
+                             attributable to any version: {why}"
+                        ),
+                    };
+                    if last {
+                        assert_eq!(
+                            version, CHURN,
+                            "a probe sent after the churn had finished was forwarded by version \
+                             {version}, not by version {CHURN}, the last one published. Every \
+                             publish returned before the barrier that released this probe, so a \
+                             reader still serving an earlier version is serving a next hop that \
+                             no longer exists"
+                        );
+                        continue;
+                    }
+                    assert!(
+                        version == round || version + 1 == round,
+                        "a probe sent in round {round} was forwarded by version {version}. \
+                         Version {} was published before this round opened, so no reader may \
+                         still be serving anything older, and version {round} is the newest that \
+                         exists",
+                        round - 1
+                    );
+                    if version == round {
+                        FRESH.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        STALE.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        let (fresh, stale) = (FRESH.load(Ordering::Relaxed), STALE.load(Ordering::Relaxed));
+        eprintln!("fresh={fresh} stale={stale}");
+        super::assert_covered(
+            fresh > 0,
+            "no probe was ever forwarded by the version published in its own round, so the publish \
+             never once landed inside the window it was racing",
+        );
+    }
 }
