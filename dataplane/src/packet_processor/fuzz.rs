@@ -139,11 +139,31 @@ impl Fabric {
     /// frame, and everything that stamp asserts -- that the vni names a fib, that the frame parses
     /// back, that nothing in it disqualifies it -- is under test rather than assumed.
     pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
-        Self::assemble(
-            exposes,
-            acl,
+        Self::routed_sharing(exposes, acl, Arc::new(FlowTable::default()))
+    }
+
+    /// As [`Self::routed`], over a flow table the caller already holds.
+    ///
+    /// Production shares one `Arc<FlowTable>` across every worker's pipeline, so a test about what
+    /// two workers do to each other has to be able to say which table they share. It cannot do that
+    /// by building a fabric and handing it to a thread: `DynPipeline` is **not `Send`** -- the fib
+    /// readers cache `Rc<UnsafeCell<FibGroup>>` per thread -- which is exactly why `start_router`
+    /// passes each worker a *builder closure* rather than a built pipeline. A fabric has to be
+    /// constructed on the thread that will drive it, and this is what crosses the boundary instead.
+    pub(crate) fn routed_sharing(
+        exposes: &[VpcExpose],
+        acl: Option<&Acl>,
+        flow_table: Arc<FlowTable>,
+    ) -> Option<Self> {
+        let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
+            .ok()?
+            .validate()
+            .ok()?;
+        Some(Self::with_overlay_sharing(
+            &overlay,
             Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-        )
+            flow_table,
+        ))
     }
 
     /// A routed fabric over a configuration the caller built, rather than the two-vpc one.
@@ -179,8 +199,15 @@ impl Fabric {
     }
 
     fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
+        Self::with_overlay_sharing(overlay, tables, Arc::new(FlowTable::default()))
+    }
+
+    fn with_overlay_sharing(
+        overlay: &ValidatedOverlay,
+        tables: Option<RouterTables>,
+        flow_table: Arc<FlowTable>,
+    ) -> Self {
         let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
-        let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
         if let Some(tables) = &tables {
@@ -297,6 +324,15 @@ impl Fabric {
     /// How many entries the flow table holds, for a property about state rather than packets.
     pub(crate) fn flows(&self) -> Option<usize> {
         self.flow_table.len()
+    }
+
+    /// The flow table this fabric writes, for a second thread to read while it runs.
+    ///
+    /// Production shares exactly this between workers -- `start_router` builds one `Arc<FlowTable>`
+    /// and hands it to every pipeline it makes -- so handing out the `Arc` is the sharing under
+    /// test rather than a convenience.
+    pub(crate) fn shared_flow_table(&self) -> Arc<FlowTable> {
+        self.flow_table.clone()
     }
 
     /// Send several packets through as one burst, and hand back what came out.
@@ -4539,31 +4575,28 @@ mod routed {
 /// OS threads by default (run under `just test sanitize=thread`), or shuttle's portfolio under
 /// `--features shuttle`. The layout to copy is `flow-entry/src/flow_table/concurrent_fuzz.rs`.
 ///
-/// # The pipeline cannot be model-checked yet
+/// # Two constraints that shape everything here
 ///
-/// [`Fabric`] cannot be built inside a shuttle execution, and the reason is not DPDK's opacity --
-/// it is a single process-global lock. `dpdk::acl::context` holds
-/// `static ACL_CREATE_LOCK: OnceLock<concurrency::sync::Mutex<()>>` to close a TOCTOU in
-/// `rte_acl_create`, and both `FlowFilter` and `AclFilter` build ACL contexts, so every `Fabric`
-/// touches it.
+/// **A model-checked lock cannot live in a `static`.** It belongs to the execution that created it,
+/// and `concurrency::stress` runs many executions, so the second one to take it locks a primitive
+/// registered with a scheduler that has finished -- shuttle aborts inside `batch_semaphore` with a
+/// non-unwinding panic, which kills the process rather than failing a test. This blocked the whole
+/// module until `dpdk::acl::context`'s registry lock was made backend-dependent, because both
+/// `FlowFilter` and `AclFilter` create ACL contexts and so every `Fabric` took it.
+/// [`a_lock_that_outlives_its_execution_is_not_model_checkable`] keeps the evidence, since the raw
+/// symptom is a panic ten frames deep in shuttle that names nothing in this workspace.
 ///
-/// A shuttle primitive belongs to the execution that created it. `concurrency::stress` runs many
-/// executions, so the second one locks a `Mutex` registered with a scheduler that has finished, and
-/// shuttle aborts inside `batch_semaphore` -- a non-unwinding panic, so the whole test process dies.
-/// [`a_lock_that_outlives_its_execution_is_not_model_checkable`] holds the evidence.
+/// **`DynPipeline` is not `Send`.** The fib readers cache `Rc<UnsafeCell<FibGroup>>` per thread. So
+/// a worker cannot be handed a pipeline; it has to build its own, which is exactly why
+/// `start_router` gives each worker a builder closure. What crosses a thread boundary is the shared
+/// state -- see [`Fabric::routed_sharing`].
 ///
-/// This is worth stating precisely because the `OnceLock` wrapper is exactly what the concurrency
-/// crate's own documentation recommends -- "Workaround for tests that need a static: wrap the static
-/// in `OnceLock`" -- for the real problem that `Mutex::new` is not `const fn` under the model-checker
-/// backends. The workaround fixes the compile error and introduces a runtime one, and nothing warns
-/// about it.
+/// # What a green run here does and does not say
 ///
-/// # And when it can
-///
-/// Note what this does *not* block. `rte_acl` is opaque to shuttle regardless -- a model checker
-/// cannot see inside an FFI call -- so a green shuttle run would never have said anything about
-/// races within those stages. That is what the sanitizer build is for, and why the std backend of
-/// [`a_pipeline_can_be_driven_inside_a_stress_run`] is not redundant with the shuttle one.
+/// `rte_acl` is opaque to shuttle -- a model checker cannot see inside an FFI call -- so nothing
+/// here speaks to races *within* `FlowFilter` or `AclFilter`. That is the sanitizer build's job, and
+/// it is why the std backend of [`a_pipeline_can_be_driven_inside_a_stress_run`], which runs on real
+/// OS threads under `just test sanitize=thread`, is not redundant with the shuttle one.
 #[cfg(test)]
 mod model {
     use super::routed::{exposes, inner, tunnelled};
@@ -4633,35 +4666,80 @@ mod model {
         });
     }
 
-    /// The pipeline can be assembled and driven inside a stress run.
+    /// The pipeline can be assembled and driven while another thread reads its flow table.
     ///
-    /// Not gated on shuttle, because it cannot pass there until `ACL_CREATE_LOCK` stops outliving
-    /// its execution -- see the module docs. On the std backend it is still worth having: it is the
-    /// entry point for `just test sanitize=thread`, which is the only tool that sees inside
-    /// `rte_acl` at all.
-    #[cfg(not(feature = "shuttle"))]
+    /// A foundation rather than a property: it asserts almost nothing about the traffic, and exists
+    /// to establish that a real pipeline survives a model-checked execution at all -- the flow
+    /// table's tokio timers, the EAL, the ACL registry lock and `concurrency::sync` primitives all
+    /// have to tolerate it. Two workers each driving their own pipeline over shared tables is the
+    /// next step, and needs the writers hoisted out of [`Fabric`] so several can be built from one
+    /// set.
+    ///
+    /// The reader asserts nothing about *how many* entries it sees. That depends on the
+    /// interleaving, and asserting it would make the test a claim about the scheduler.
     #[concurrency::model_test]
     fn a_pipeline_can_be_driven_inside_a_stress_run() {
         let _eal = dpdk::test_support::start_eal();
 
         // `FlowTable::insert` schedules its expiry timer with `tokio::task::spawn`, which panics
-        // outside a runtime. The timer never fires here; the runtime only has to exist.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime");
-        let handle = rt.handle().clone();
+        // outside a runtime. Under shuttle that path is compiled out and no runtime is wanted; on
+        // the std backend one has to exist for the spawn to succeed, though the timer never fires.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
         concurrency::stress(move || {
-            let _guard = tokio::runtime::Handle::enter(&handle);
-            let mut fabric = Fabric::routed(&exposes(), None)
-                .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
-            let out = fabric.send(tunnelled(&inner()));
-            assert!(
-                matches!(verdict(&out), Verdict::Delivered { .. }),
-                "a packet that is delivered single-threaded was not: {:?}",
-                verdict(&out)
-            );
+            let table = Arc::new(FlowTable::default());
+            let sending = table.clone();
+            // Entered inside the sender rather than out here: tokio's context is thread-local, so a
+            // guard held by the spawning thread does nothing for the spawned one, and
+            // `FlowTable::insert`'s `tokio::task::spawn` panics on the thread that actually runs it.
+            let entering = handle.clone();
+
+            thread::scope(|scope| {
+                let sender = thread::Builder::new()
+                    .name("sender".to_owned())
+                    .spawn_scoped(scope, move || {
+                        let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                        let mut fabric = Fabric::routed_sharing(&exposes(), None, sending)
+                            .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
+                        let out = fabric.send(tunnelled(&inner()));
+                        assert!(
+                            matches!(verdict(&out), Verdict::Delivered { .. }),
+                            "a packet that is delivered single-threaded was not: {:?}",
+                            verdict(&out)
+                        );
+                    })
+                    .expect("spawn sender");
+
+                // Reads the table the sender is writing. It asserts nothing about *how many*
+                // entries it sees -- that depends on the interleaving and is not the question --
+                // only that every read returns something coherent, which is what a torn write or a
+                // use-after-free would break.
+                let reader = thread::Builder::new()
+                    .name("reader".to_owned())
+                    .spawn_scoped(scope, move || {
+                        for _ in 0..3 {
+                            let seen = table.len();
+                            assert!(seen.is_some(), "the flow table refused a concurrent read");
+                            table.for_each_flow(|_, flow| {
+                                let _ = flow.status();
+                            });
+                            thread::yield_now();
+                        }
+                    })
+                    .expect("spawn reader");
+
+                sender.join().expect("sender panicked");
+                reader.join().expect("reader panicked");
+            });
         });
     }
 }
