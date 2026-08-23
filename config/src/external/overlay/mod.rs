@@ -4,6 +4,8 @@
 //! Dataplane configuration model: overlay configuration
 
 pub mod acl;
+#[cfg(any(test, feature = "bolero"))]
+pub mod algebra;
 pub mod tests;
 pub mod validation_tests;
 pub mod vpc;
