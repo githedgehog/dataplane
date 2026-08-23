@@ -470,8 +470,35 @@ pub enum ConfigProblem {
 }
 
 impl VmConfig {
-    /// The default configuration: cloud-hypervisor's usual shape -- 1 GiB
-    /// host pages, one 1 GiB guest hugepage, virtio-net, no IOMMU.
+    /// The default configuration: 4 KiB host pages, 512 MiB of 2 MiB guest hugepages, virtio-net,
+    /// no IOMMU.
+    ///
+    /// # Why the host pages are small and the guest's are not
+    ///
+    /// These two settings look alike and are not. The guest hugepage is reserved *inside* the
+    /// guest, on its kernel command line, and a guest that wants one gets one however the host
+    /// backs the memory underneath. The host page size decides only whether that backing is
+    /// physically contiguous, which matters to exactly one thing: DPDK driving a real device
+    /// through an IOMMU. A test that boots a guest and does not do that cannot tell the
+    /// difference.
+    ///
+    /// So the host pool is a resource this default should not spend. It is small -- two 1 GiB
+    /// pages on the machine where this was found -- and nothing arbitrates it, so a default of
+    /// [`HostPageSize::Huge1G`] made every test that never overrode it contend for a page it had
+    /// no use for. Ten of eighteen integration tests failed that way in a parallel run, reporting
+    /// "the 1073741824-byte hugepage pool has 0 free page(s)", which reads as flakiness and is a
+    /// default asking for something it does not need.
+    ///
+    /// Tests that *do* drive DPDK through an IOMMU ask for [`HostPageSize::Huge1G`] explicitly,
+    /// and pay for it honestly.
+    ///
+    /// # Why the guest's reservation is 512 MiB of 2 MiB pages
+    ///
+    /// It used to be a single 1 GiB page, out of a guest with exactly 1 GiB of RAM, which the
+    /// guest kernel cannot satisfy -- it has already taken memory by the time it reserves. That
+    /// was invisible while the host handed over a contiguous 1 GiB page and became intermittent
+    /// as soon as it did not. [`VmConfig::check`] now requires the headroom, so this is a build
+    /// error rather than a console line forty lines into a failure dump.
     ///
     /// Spell overrides against this with struct update syntax, which works
     /// in a `const`:
@@ -484,10 +511,10 @@ impl VmConfig {
     /// ```
     pub const DEFAULT: Self = Self {
         iommu: false,
-        host_page_size: HostPageSize::Huge1G,
+        host_page_size: HostPageSize::Standard,
         guest_hugepages: GuestHugePageConfig::Allocate {
-            size: GuestHugePageSize::Huge1G,
-            count: 1,
+            size: GuestHugePageSize::Huge2M,
+            count: 256,
         },
         nic_model: NicModel::VirtioNet,
         kernel_features: &[],
@@ -511,7 +538,16 @@ impl VmConfig {
             // `as i64` rather than `i64::from`: trait methods are not
             // callable in a const fn, and this check must stay const.
             let required = size.bytes() * (count as i64);
-            if required > VM_MEMORY_BYTES {
+            // Strictly less, not `<=`. The guest kernel has already claimed memory by the time it
+            // reserves hugepages, so a reservation of *all* of RAM cannot be satisfied -- it
+            // reports "HugeTLB: allocating 1 of page size 1.00 GiB failed. Only allocated 0
+            // hugepages." on the console and boots without them, which surfaces much later as a
+            // test failure with nothing pointing here.
+            //
+            // `<=` accepted exactly that, and the default was exactly that: one 1 GiB page out of
+            // 1 GiB. It only ever worked because 1 GiB host pages handed the guest a contiguous
+            // block; it became intermittent the moment the host default stopped doing so.
+            if required + GUEST_KERNEL_HEADROOM_BYTES > VM_MEMORY_BYTES {
                 return Err(ConfigProblem::HugepagesExceedMemory);
             }
         }
@@ -536,7 +572,7 @@ impl VmConfig {
                  pick a host_page_size that divides the VM's memory"
             ),
             Err(ConfigProblem::HugepagesExceedMemory) => panic!(
-                "the guest hugepage reservation is larger than the VM's memory; \
+                "the guest hugepage reservation does not leave the guest kernel room; \
                  reduce hugepage_count, use a smaller hugepage size, or set \
                  guest_hugepages to GuestHugePageConfig::None"
             ),
@@ -678,6 +714,13 @@ pub(crate) const VM_MEMORY_MIB: u32 = 1024;
 
 /// Total guest memory in bytes (1 GiB).
 pub(crate) const VM_MEMORY_BYTES: i64 = (VM_MEMORY_MIB as i64) * 1024 * 1024;
+
+/// Guest memory a hugepage reservation must leave for the kernel that performs it.
+///
+/// Not a measurement -- a floor. The kernel reserves hugepages very early, but not before it
+/// exists, so a reservation may not name the whole of RAM. 128 MiB is enough for the kernels this
+/// boots and small enough not to constrain a reservation anybody would actually want.
+pub(crate) const GUEST_KERNEL_HEADROOM_BYTES: i64 = 128 * 1024 * 1024;
 
 // The topology must satisfy:
 //   VM_SOCKETS x VM_DIES_PER_PACKAGE x VM_CORES_PER_DIE x VM_THREADS_PER_CORE == VM_VCPUS
