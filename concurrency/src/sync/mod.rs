@@ -36,8 +36,6 @@
 //!   `const fn`, but the facade exposes the lowest common
 //!   denominator. So `static M: Mutex<T> = Mutex::new(...)` compiles
 //!   under the default and `parking_lot` backends and fails to
-//!   typecheck under the model-checker backends. Workaround for
-//!   tests that need a static: wrap the static in `OnceLock`.
 //!
 //! * **`OnceLock` under `loom`/`shuttle*` is re-exported from
 //!   `std::sync` unchanged.** It is sound for laziness, but it uses
