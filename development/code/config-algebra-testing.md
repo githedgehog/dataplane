@@ -5,9 +5,14 @@ reasoning that rejected the alternatives, so that the next attempt does not redi
 
 The per-packet half of the decomposition has a first worked example in `nat/src/static_nat/probe.rs`
 and `nat/src/static_nat/fuzz.rs`: packets drawn relative to a generated configuration, put through a
-real network function, and judged by metamorphic relations rather than by an oracle. The operation
-algebra itself -- sequences, undo, commutation from read and write sets -- is still unbuilt, and the
-enactment path refactor it implies is still deferred.
+real network function, and judged by metamorphic relations rather than by an oracle.
+
+The operation algebra is built for the overlay, in `config/src/external/overlay/algebra.rs`:
+sequences, undo as a state-dependent log, footprints, and commutation derived from read and write
+sets. Its vocabulary is vpcs, peerings, and exposes that forward or masquerade; static NAT, port
+forwarding and peering ACLs are not yet drawn. Nothing yet runs traffic against a generated
+configuration, so everything below about sessions, frames over traffic, and the state dispositions
+remains design. The enactment path refactor is still deferred.
 
 ## The problem
 
@@ -238,6 +243,18 @@ So the operation vocabulary needs to distinguish "peer two VPCs already in the s
 "peer across two components", and the generator has to be biased toward keeping several components
 alive. Count configurations with two or more components and assert on it; this is precisely the kind of
 reachability failure the [vacuity](#vacuity) guard exists to catch.
+
+That took four attempts to get above the noise, and the useful part is _which_ bias worked. Restricting
+a draw to the left VPC's own component does nothing on its own: an isolated VPC is a whole component,
+so every such draw finds nobody and falls back to peering with anyone. Refusing the merge once the
+configuration has as many components as the sequence asked for does nothing either, if the count
+includes unpeered VPCs -- it is then always well above the target. What moved the number from 1.5% to
+20% was stating the rule over _peered_ components and separating three cases: two unpeered VPCs may
+always pair off, because that starts a component rather than joining two; absorbing a lone VPC into an
+existing component is refused while more components are still wanted; and joining two established
+components is refused unless there are more than the target. The middle case is the one that was
+missing, and it was the whole leak, because with a handful of VPCs almost every lone VPC finds a
+partner already in the single component and is swallowed by it.
 
 ### Making an oracle composable
 
@@ -942,6 +959,41 @@ preconditions, say -- and a suite of claims that are never exercised passes beau
 Count what was actually reached and assert on it, as `agreement_is_not_vacuous` in
 `net/src/headers/view.rs` does. In this campaign that guard has repeatedly been the only thing
 standing between a green run and a meaningless one.
+
+### Falling through to another operation is how a vocabulary dies
+
+Some operations do not apply to some states -- there is nothing to remove from a blank configuration --
+so a generator that draws a _kind_ first needs somewhere to go when the kind it drew has nothing to work
+on. Falling through to the next kind is the obvious answer and it is a trap: whichever kind sits after a
+blocked one becomes its sink, so the drawn distribution has nothing to do with the weights.
+
+Two versions of `algebra.rs` were wrong this way and neither was visible by reading the code.
+
+- `AddVpc` as the last resort meant `RemoveVpc` -- which applies as soon as one VPC exists -- took every
+  draw. The draft ping-ponged between zero and one VPC and **no peering was ever drawn at all**, so the
+  entire peering half of the vocabulary was dead while every property passed.
+- Capping the VPC count fixed that and moved the same pathology one place along: `AddVpc` now blocked at
+  the cap, so its draws fell into `RemoveVpc`, which spent a third of every sequence tearing down what
+  the rest had built.
+
+Collect the applicable kinds first and draw among _those_. The applicability test may be approximate in
+one direction only -- a kind wrongly called applicable is caught when its draw returns nothing and can be
+struck off, whereas a kind wrongly called inapplicable is silently never drawn.
+
+A per-kind counter is what catches all of this, and it has to be per kind: a total operation count looks
+healthy in every one of the cases above.
+
+## Redundant guards hide from break tests
+
+The masquerade rule -- at most one stateful side per peering -- is enforced twice in `algebra.rs`, once
+where the flavour is drawn and once in `Op::apply`. Removing _either_ leaves every property green; only
+removing both produces a configuration the validator rejects.
+
+Neither guard is wrong and the redundancy is worth keeping: the draw-side check keeps an operation from
+being spent on something that will be refused, and the `apply`-side check is what makes the rule hold for
+a sequence assembled by hand. But a break test that removes one of a redundant pair and sees green has
+learned nothing, and it is easy to read that as "the property does not cover this rule". Break the pair
+together, and say in the code which one is load-bearing for which caller.
 
 ## Shrinking
 
