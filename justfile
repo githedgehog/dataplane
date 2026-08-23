@@ -263,6 +263,24 @@ fuzz target time="60s" *args="":
     #
     # One corpus directory per target: `--corpus-dir` takes a literal path rather than a root, so
     # a shared one would pool inputs from unrelated targets.
+    # A sanitizer only sees what it was compiled into. `--sanitizer` here instruments the *rust*
+    # side; the C dependencies -- dpdk above all -- come from the sysroot, and that is built by
+    # `default.nix`'s own `sanitize` argument, which nothing ties to this one. Asking for a
+    # sanitizer against a sysroot built without it links a half-instrumented binary and reports
+    # nothing, which is worse than not asking: it reads as evidence.
+    # See `development/code/sanitizer-build-audit.md`.
+    sysroot="${DATAPLANE_SYSROOT:-}"
+    if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
+      built_with="$(cat "${sysroot}/.sanitize")"
+      if [ "${built_with}" != "{{ sanitize }}" ]; then
+        printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot was built with sanitize=%s.\n' \
+          "{{ sanitize }}" "${built_with:-<none>}" >&2
+        printf 'the C dependencies would not be instrumented. Re-enter the shell with:\n' >&2
+        printf '  just sanitize=%s setup-roots && nix-shell --argstr sanitize %s\n' \
+          "{{ sanitize }}" "{{ sanitize }}" >&2
+        exit 1
+      fi
+    fi
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
