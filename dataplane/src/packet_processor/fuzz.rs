@@ -311,6 +311,10 @@ impl Fabric {
         self.worker.send_batch(packets)
     }
 
+    pub(crate) fn worker(&mut self) -> &mut Worker {
+        &mut self.worker
+    }
+
     pub(crate) fn flows(&self) -> Option<usize> {
         self.fleet.blueprint().flow_table.len()
     }
@@ -524,7 +528,7 @@ pub(crate) trait Load {
 }
 
 #[cfg(test)]
-pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
+pub(crate) fn drive(worker: &mut Worker, load: &mut dyn Load) {
     for _ in 0..64 {
         if load.finished() {
             return;
@@ -535,7 +539,7 @@ pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
                 load.describe()
             );
         };
-        let out = fabric.send(packet);
+        let out = worker.send(packet);
         load.observe(&out);
     }
     panic!("a load did not finish in 64 steps: {}", load.describe());
@@ -553,7 +557,7 @@ pub(crate) type Poll = Vec<Pick>;
 
 #[cfg(test)]
 pub(crate) fn run_schedule(
-    fabric: &mut Fabric,
+    worker: &mut Worker,
     loads: &mut [Box<dyn Load>],
     schedule: &[Poll],
 ) -> Vec<Vec<usize>> {
@@ -577,14 +581,14 @@ pub(crate) fn run_schedule(
         if burst.is_empty() {
             continue;
         }
-        for (answer, which) in fabric.send_batch(burst).iter().zip(&origin) {
+        for (answer, which) in worker.send_batch(burst).iter().zip(&origin) {
             loads[*which].observe(answer);
         }
         bursts.push(origin);
     }
 
     for load in loads {
-        drive(fabric, load.as_mut());
+        drive(worker, load.as_mut());
     }
     bursts
 }
@@ -2101,7 +2105,7 @@ mod interleaved {
                     });
                 }
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut loads_in: Vec<usize> = burst.clone();
                     loads_in.sort_unstable();
                     loads_in.dedup();
@@ -2273,7 +2277,7 @@ mod offers {
                     }
                 }
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
                     seen.sort_unstable();
                     seen.dedup();
@@ -2336,7 +2340,7 @@ mod generated {
     const SENDERS: usize = 6;
     const POLLS: usize = 8;
 
-    struct Generated;
+    pub(super) struct Generated;
 
     impl ValueGenerator for Generated {
         type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>);
@@ -2421,7 +2425,7 @@ mod generated {
                 let mut loads = loads_for(&validated, vary);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
                     seen.sort_unstable();
                     seen.dedup();
@@ -3082,7 +3086,7 @@ mod routed {
                     let mut load =
                         Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
 
-                    drive(&mut fabric, &mut load);
+                    drive(fabric.worker(), &mut load);
 
                     if load.checked() {
                         ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
@@ -3568,15 +3572,17 @@ mod routed {
 
 #[cfg(test)]
 mod model {
+    use super::derive::loads_for;
     use super::routed::{exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
+    use config::external::overlay::algebra::Sequence;
     use net::packet::test_utils::build_test_udp_ipv4_packet;
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{LazyLock, OnceLock};
 
     fn on_two_threads(body: &(impl Fn() + Sync)) {
         thread::scope(|scope| {
@@ -3769,5 +3775,97 @@ mod model {
                 );
             }
         });
+    }
+
+    #[concurrency::model_test]
+    fn generated_traffic_survives_being_split_across_two_workers() {
+        const CASES: usize = 64;
+
+        static SPLIT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static THIN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(generated::Generated)
+            .with_iterations(CASES)
+            .for_each(|(ops, vary, schedule)| {
+                let validated = Sequence::fold(ops)
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() || loads_for(&validated, vary).len() < 2 {
+                    THIN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                SPLIT.fetch_add(1, Ordering::Relaxed);
+
+                let drawn = std::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let entering = handle.clone();
+
+                concurrency::stress(move || {
+                    let (validated, vnis, vary, schedule) = &*drawn;
+                    let fleet = Fleet::lowering(
+                        validated,
+                        Some(topology(vnis)),
+                        Arc::new(FlowTable::default()),
+                    );
+                    let blueprint = fleet.blueprint();
+
+                    thread::scope(|scope| {
+                        let running: Vec<_> = (0..2)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                thread::Builder::new()
+                                    .name(format!("worker-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let mut worker = blueprint.worker();
+                                        let mut mine: Vec<Box<dyn Load>> =
+                                            loads_for(validated, vary)
+                                                .into_iter()
+                                                .enumerate()
+                                                .filter(|(nth, _)| nth % 2 == which)
+                                                .map(|(_, load)| load)
+                                                .collect();
+                                        run_schedule(&mut worker, &mut mine, schedule);
+                                    })
+                                    .expect("spawn worker")
+                            })
+                            .collect();
+                        for worker in running {
+                            worker.join().expect("worker panicked");
+                        }
+                    });
+                });
+            });
+
+        let (split, thin) = (SPLIT.load(Ordering::Relaxed), THIN.load(Ordering::Relaxed));
+        eprintln!("split={split} thin={thin}");
+        super::assert_covered(
+            split > 0,
+            "no drawn configuration ever implied enough traffic to load two workers, so this ran \
+             nothing concurrently",
+        );
     }
 }
