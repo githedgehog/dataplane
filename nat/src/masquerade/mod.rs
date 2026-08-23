@@ -36,7 +36,7 @@ mod test;
 // claims to be one.
 // re exports
 pub use allocator_writer::MasqueradeConfig;
-pub use allocator_writer::NatAllocatorWriter;
+pub use allocator_writer::{NatAllocatorReaderFactory, NatAllocatorWriter};
 pub use nf::Masquerade;
 
 use tracectl::trace_target;
