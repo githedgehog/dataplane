@@ -347,18 +347,37 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-// Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const
-// (each instance registers with the loom executor). The atomic itself is still the backend atomic,
-// so fetch_add() stays instrumented; only construction is deferred. On every other backend LazyLock
-// is a thin wrapper over an otherwise-const atomic.
-static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+concurrency::with_std! {
+    static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+concurrency::with_loom! {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        // nosemgrep: rust-no-direct-std-sync-import
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+concurrency::with_shuttle! {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        // nosemgrep: rust-no-direct-std-sync-import
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// A process-unique rte_acl context name (rte_acl rejects duplicate names).
 fn table_name(base: &str) -> String {
-    format!(
-        "flow_filter_{base}_{}",
-        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
-    )
+    format!("flow_filter_{base}_{}", next_in_sequence())
 }
 
 /// Build one table from backend-neutral rules using the selected backend.
