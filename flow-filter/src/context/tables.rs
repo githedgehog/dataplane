@@ -347,18 +347,59 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-// Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const
-// (each instance registers with the loom executor). The atomic itself is still the backend atomic,
-// so fetch_add() stays instrumented; only construction is deferred. On every other backend LazyLock
-// is a thin wrapper over an otherwise-const atomic.
-static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+concurrency::with_std! {
+    /// Lazily initialized because the facade's `AtomicU64::new` is not a `const fn` on every
+    /// backend. `LazyLock` is a thin wrapper over an otherwise-const atomic here.
+    static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+concurrency::with_loom! {
+    /// See [`table_name`]: an instrumented counter is not process-unique.
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+concurrency::with_shuttle! {
+    /// See [`table_name`]: an instrumented counter is not process-unique.
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// A process-unique rte_acl context name (rte_acl rejects duplicate names).
+///
+/// # Why the counter is not the facade's atomic under a model checker
+///
+/// "Process-unique" is the whole requirement, and a model checker's atomic cannot supply it. A loom
+/// or shuttle primitive belongs to the execution that created it, so the counter **restarts at zero
+/// every execution** -- while the `rte_acl` registry it is naming into is a real process-global
+/// structure that no execution resets. The second execution then asks for a name the first one
+/// already took, and rte_acl refuses it: observed from
+/// `dataplane::packet_processor::fuzz::model` as
+/// `failed to create ACL context: An ACL context named 'flow_filter_remote_v4_7499' already
+/// exists`, surfacing as an `expect` on a configuration that had validated. The same static is also
+/// reached after its execution has ended, which shuttle reports as `RefCell already borrowed` from
+/// inside its own atomic.
+///
+/// Nothing is lost by dropping the instrumentation. There is no race here to model: any atomic
+/// increment yields distinct names, so the only thing a scheduler could explore is an interleaving
+/// whose outcomes are all correct.
+///
+/// The same reasoning, and the same remedy, as `dpdk::acl::context`'s registry lock. See the
+/// `concurrency::sync` module docs for why a `static` is where this class of fault lives.
 fn table_name(base: &str) -> String {
-    format!(
-        "flow_filter_{base}_{}",
-        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
-    )
+    format!("flow_filter_{base}_{}", next_in_sequence())
 }
 
 /// Build one table from backend-neutral rules using the selected backend.
