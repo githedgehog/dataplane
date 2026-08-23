@@ -491,6 +491,7 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
+    use config::external::overlay::vpcpeering::ValidatedExpose;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 
     #[derive(Debug, Clone, Copy)]
@@ -538,11 +539,13 @@ pub(crate) mod derive {
     fn peer_of(
         peering: &config::external::overlay::vpc::ValidatedPeering,
         n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
     ) -> Option<IpAddr> {
         peering
             .remote()
             .valexp()
             .iter()
+            .filter(|expose| usable(expose))
             .flat_map(|expose| expose.public_ips().into_iter())
             .find_map(|entry| host_in(entry.prefix(), n))
     }
@@ -552,14 +555,16 @@ pub(crate) mod derive {
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
+                let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
                 for expose in peering.local().valexp() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
                         continue;
                     };
                     nth += 1;
-                    let Some(peer) = peer_of(peering, v.host) else {
-                        continue;
-                    };
+                    let outward = peer_of(peering, v.host, |expose| {
+                        expose.can_receive_connection() && !expose.has_port_forwarding()
+                    });
+                    let inward = peer_of(peering, v.host, ValidatedExpose::can_init_connection);
 
                     if expose.has_port_forwarding() {
                         let (Some(outside), Some(inside_entry)) = (
@@ -574,7 +579,11 @@ pub(crate) mod derive {
                         ) else {
                             continue;
                         };
+                        let Some(peer) = inward else {
+                            continue;
+                        };
                         loads.push(Box::new(Inbound::new(
+                            path,
                             peer,
                             external,
                             port_in(outside, v.port, v.dport),
@@ -582,19 +591,22 @@ pub(crate) mod derive {
                             port_in(inside_entry, v.port, v.dport),
                             v.sport,
                         )));
-                    } else if expose.has_masquerade() {
-                        let Some(src) = expose
-                            .ips()
-                            .into_iter()
-                            .next()
-                            .and_then(|entry| host_in(entry.prefix(), v.host))
-                        else {
+                    } else if expose.has_static_nat() || expose.is_default() {
+                    } else {
+                        let (Some(peer), Some(src)) = (
+                            outward,
+                            expose
+                                .ips()
+                                .into_iter()
+                                .next()
+                                .and_then(|entry| host_in(entry.prefix(), v.host)),
+                        ) else {
                             continue;
                         };
                         loads.push(if v.blast {
-                            Box::new(Blast::new(src, peer, v.sport, v.dport, v.burst))
+                            Box::new(Blast::new(path, src, peer, v.sport, v.dport, v.burst))
                         } else {
-                            Box::new(Conversation::new(src, peer, v.sport, v.dport))
+                            Box::new(Conversation::new(path, src, peer, v.sport, v.dport))
                                 as Box<dyn Load>
                         });
                     }
@@ -1874,7 +1886,7 @@ mod port_forward {
 
 #[cfg(test)]
 mod interleaved {
-    use super::routed::{Blast, Conversation, exposes};
+    use super::routed::{Blast, Conversation, Path, exposes};
     use super::*;
     use std::ops::Bound::Included;
     use std::sync::LazyLock;
@@ -1968,10 +1980,15 @@ mod interleaved {
                     };
                     kinds.push(sender.kind);
                     loads.push(match sender.kind {
-                        Kind::Conversation => {
-                            Box::new(Conversation::new(src, dst, sender.sport, sender.dport))
-                        }
+                        Kind::Conversation => Box::new(Conversation::new(
+                            Path::fixture(),
+                            src,
+                            dst,
+                            sender.sport,
+                            sender.dport,
+                        )),
                         Kind::Blast => Box::new(Blast::new(
+                            Path::fixture(),
                             src,
                             dst,
                             sender.sport,
@@ -2194,6 +2211,155 @@ mod offers {
         super::assert_covered(
             outbound > 0,
             "the derivation produced no outbound traffic, so the masquerade expose was skipped",
+        );
+        super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            mixed > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+    }
+}
+
+#[cfg(test)]
+mod generated {
+    use super::derive::{Vary, loads_for};
+    use super::*;
+    use bolero::ValueGenerator;
+    use config::external::overlay::algebra::{Op, Sequence};
+    use std::ops::Bound::Included;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const SENDERS: usize = 6;
+    const POLLS: usize = 8;
+
+    struct Generated;
+
+    impl ValueGenerator for Generated {
+        type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let ops = Sequence::default().generate(driver)?;
+
+            let vary = (0..SENDERS)
+                .map(|_| {
+                    Some(Vary {
+                        host: driver.produce::<u8>()?,
+                        port: driver.produce::<u8>()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                        burst: driver.gen_u8(Included(&2), Included(&5))?,
+                        blast: driver.produce::<bool>()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            let schedule = (0..POLLS)
+                .map(|_| {
+                    let picks = driver.gen_u8(Included(&1), Included(&3))?;
+                    (0..picks)
+                        .map(|_| {
+                            Some(Pick {
+                                load: driver.produce::<u8>()?,
+                                take: driver.gen_u8(Included(&1), Included(&3))?,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some((ops, vary, schedule))
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("generated::Generated", &Generated);
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_generated_configuration_carries_its_own_traffic() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, schedule)| {
+                let draft = Sequence::fold(ops);
+                let overlay = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+                let validated = overlay
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                if validated.vpc_table().peerings().next().is_some() {
+                    PEERED.fetch_add(1, Ordering::Relaxed);
+                }
+                if vnis.len() > 2 {
+                    MULTI.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+
+                let mut loads = loads_for(&validated, vary);
+                DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+
+                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                    let mut seen = burst.clone();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    if seen.len() > 1 {
+                        MIXED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                for load in &loads {
+                    if load.checked() {
+                        CHECKED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (checked, derived, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            DERIVED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        let (peered, multi) = (
+            PEERED.load(Ordering::Relaxed),
+            MULTI.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "checked={checked} abandoned={} derived={derived} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            ABANDONED.load(Ordering::Relaxed)
+        );
+        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        super::assert_covered(
+            multi > 0,
+            "no generated configuration ever had more than two vpcs, so this reached nothing the \
+             two-vpc fixtures do not",
+        );
+        super::assert_covered(
+            derived > 0,
+            "no generated configuration ever implied any traffic",
         );
         super::assert_covered(checked > 0, "no derived sender ever completed its business");
         super::assert_covered(
@@ -2600,6 +2766,26 @@ mod routed {
         ]
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Path {
+        pub(crate) from: Vni,
+        pub(crate) to: Vni,
+    }
+
+    impl Path {
+        pub(crate) fn new(from: Vni, to: Vni) -> Self {
+            Self { from, to }
+        }
+
+        pub(crate) fn fixture() -> Self {
+            Self::new(vni(LOCAL_VNI), vni(REMOTE_VNI))
+        }
+
+        fn reversed(self) -> Self {
+            Self::new(self.to, self.from)
+        }
+    }
+
     pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let bytes = inner
             .clone()
@@ -2787,7 +2973,8 @@ mod routed {
                         .parse()
                         .unwrap_or_else(|_| unreachable!());
                     let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-                    let mut load = Conversation::new(src, dst, flow.sport, flow.dport);
+                    let mut load =
+                        Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
 
                     drive(&mut fabric, &mut load);
 
@@ -2811,6 +2998,7 @@ mod routed {
     }
 
     pub(super) struct Conversation {
+        path: Path,
         src: IpAddr,
         dst: IpAddr,
         sport: u16,
@@ -2831,8 +3019,9 @@ mod routed {
     }
 
     impl Conversation {
-        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Self {
+        pub(super) fn new(path: Path, src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Self {
             Self {
+                path,
                 src,
                 dst,
                 sport,
@@ -2855,7 +3044,7 @@ mod routed {
             }
             assert_eq!(
                 got.try_vxlan().map(net::vxlan::Vxlan::vni),
-                Some(vni(REMOTE_VNI)),
+                Some(self.path.to),
                 "the request left tunnelled towards the wrong vpc. {}",
                 self.describe()
             );
@@ -2897,7 +3086,7 @@ mod routed {
             );
             assert_eq!(
                 got.try_vxlan().map(net::vxlan::Vxlan::vni),
-                Some(vni(LOCAL_VNI)),
+                Some(self.path.from),
                 "the reply went back into the wrong vpc. {}",
                 self.describe()
             );
@@ -2933,12 +3122,12 @@ mod routed {
                     let request = udp(self.src, self.dst, self.sport, self.dport)?;
                     self.sent = Some(request.clone());
                     self.state = State::AwaitingRequest;
-                    Some(tunnelled(&request))
+                    Some(tunnelled_from(self.path.from, &request))
                 }
                 State::Replying { public: (ip, port) } => {
                     let reply = udp(self.dst, ip, self.dport, port)?;
                     self.state = State::AwaitingReply;
-                    Some(tunnelled_from(vni(REMOTE_VNI), &reply))
+                    Some(tunnelled_from(self.path.reversed().from, &reply))
                 }
                 State::AwaitingRequest
                 | State::AwaitingReply
@@ -2987,6 +3176,7 @@ mod routed {
         dst: IpAddr,
         sport: u16,
         dport: u16,
+        path: Path,
         to_send: u8,
         in_flight: u8,
         given: Option<(IpAddr, u16)>,
@@ -2995,12 +3185,20 @@ mod routed {
     }
 
     impl Blast {
-        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16, count: u8) -> Self {
+        pub(super) fn new(
+            path: Path,
+            src: IpAddr,
+            dst: IpAddr,
+            sport: u16,
+            dport: u16,
+            count: u8,
+        ) -> Self {
             Self {
                 src,
                 dst,
                 sport,
                 dport,
+                path,
                 to_send: count.max(2),
                 in_flight: 0,
                 given: None,
@@ -3018,7 +3216,7 @@ mod routed {
             let packet = udp(self.src, self.dst, self.sport, self.dport)?;
             self.to_send -= 1;
             self.in_flight += 1;
-            Some(tunnelled(&packet))
+            Some(tunnelled_from(self.path.from, &packet))
         }
 
         fn observe(&mut self, got: &Packet<TestBuffer>) {
@@ -3086,6 +3284,7 @@ mod routed {
     }
 
     pub(super) struct Inbound {
+        path: Path,
         from: IpAddr,
         external: IpAddr,
         external_port: u16,
@@ -3108,6 +3307,7 @@ mod routed {
 
     impl Inbound {
         pub(super) fn new(
+            path: Path,
             from: IpAddr,
             external: IpAddr,
             external_port: u16,
@@ -3116,6 +3316,7 @@ mod routed {
             sport: u16,
         ) -> Self {
             Self {
+                path,
                 from,
                 external,
                 external_port,
@@ -3188,12 +3389,12 @@ mod routed {
                 InboundState::Reaching => {
                     let request = udp(self.from, self.external, self.sport, self.external_port)?;
                     self.state = InboundState::AwaitingArrival;
-                    Some(tunnelled_from(vni(REMOTE_VNI), &request))
+                    Some(tunnelled_from(self.path.to, &request))
                 }
                 InboundState::Answering => {
                     let answer = udp(self.internal, self.from, self.internal_port, self.sport)?;
                     self.state = InboundState::AwaitingAnswer;
-                    Some(tunnelled_from(vni(LOCAL_VNI), &answer))
+                    Some(tunnelled_from(self.path.from, &answer))
                 }
                 _ => None,
             }
