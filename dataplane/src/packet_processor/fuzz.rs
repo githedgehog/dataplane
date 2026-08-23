@@ -4,7 +4,9 @@
 #![cfg(test)]
 #![cfg(not(miri))]
 
-use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
+use acl_filter::{
+    AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
+};
 use concurrency::sync::{Arc, Mutex};
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
@@ -13,12 +15,14 @@ use config::external::overlay::vpcpeering::contract::{
 };
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
+use flow_filter::{
+    FlowFilter, FlowFilterContext, FlowFilterContextReaderFactory, FlowFilterContextWriter,
+};
 use lpm::prefix::Prefix;
-use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
-use nat::portfw::{PortForwarder, PortFwTableWriter};
-use nat::static_nat::NatTablesWriter;
+use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorWriter};
+use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::setup::build_nat_configuration;
+use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
@@ -28,6 +32,7 @@ use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
+use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use std::net::IpAddr;
 
@@ -35,17 +40,201 @@ use super::egress::Egress;
 use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
 
-pub(crate) struct Fabric {
-    pipeline: DynPipeline<TestBuffer>,
-    flow_table: Arc<FlowTable>,
+pub(crate) struct Fleet {
     _flow_filter: FlowFilterContextWriter,
     _acl: AclFilterContextWriter,
     _static_nat: NatTablesWriter,
     _portfw: PortFwTableWriter,
     _masquerade: NatAllocatorWriter,
     _tables: Option<RouterTables>,
+    blueprint: Blueprint,
+}
+
+pub(crate) struct Blueprint {
+    flow_filter: FlowFilterContextReaderFactory,
+    acl: AclFilterContextReaderFactory,
+    static_nat: NatTablesReaderFactory,
+    portfw: PortFwTableReaderFactory,
+    masquerade: NatAllocatorReaderFactory,
+    underlay: Option<Underlay>,
+    flow_table: Arc<FlowTable>,
+    declared: Arc<[Prefix]>,
+}
+
+struct Underlay {
+    interfaces: IfTableReaderFactory,
+    fibs: FibTableReaderFactory,
+    adjacencies: AtableReaderFactory,
+}
+
+pub(crate) struct Worker {
+    pipeline: DynPipeline<TestBuffer>,
     translations: Arc<Mutex<Translations>>,
     next_id: u64,
+}
+
+pub(crate) struct Fabric {
+    fleet: Fleet,
+    worker: Worker,
+}
+
+impl Fleet {
+    pub(crate) fn lowering(
+        overlay: &ValidatedOverlay,
+        tables: Option<RouterTables>,
+        flow_table: Arc<FlowTable>,
+    ) -> Self {
+        let flow_filter = FlowFilterContextWriter::new();
+        flow_filter.store(
+            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+        );
+
+        let acl = AclFilterContextWriter::new();
+        acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
+
+        let mut static_nat = NatTablesWriter::new();
+        static_nat.update_nat_tables(
+            build_nat_configuration(overlay.vpc_table())
+                .expect("a validated overlay lowers to nat"),
+        );
+
+        let mut portfw = PortFwTableWriter::new();
+        portfw
+            .update_from_vpc_table(overlay.vpc_table())
+            .expect("a validated overlay lowers to port forwarding");
+
+        let mut masquerade = NatAllocatorWriter::new();
+        masquerade.update_nat_allocator(
+            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+            1,
+            &flow_table,
+        );
+
+        let blueprint = Blueprint {
+            flow_filter: flow_filter.get_reader_factory(),
+            acl: acl.get_reader_factory(),
+            static_nat: static_nat.get_reader_factory(),
+            portfw: portfw.reader().factory(),
+            masquerade: masquerade.get_reader_factory(),
+            underlay: tables.as_ref().map(|tables| Underlay {
+                interfaces: tables.interface_factory(),
+                fibs: tables.fib_factory(),
+                adjacencies: tables.adjacency_factory(),
+            }),
+            flow_table,
+            declared: declared_public_ranges(overlay),
+        };
+
+        Self {
+            _flow_filter: flow_filter,
+            _acl: acl,
+            _static_nat: static_nat,
+            _portfw: portfw,
+            _masquerade: masquerade,
+            _tables: tables,
+            blueprint,
+        }
+    }
+
+    pub(crate) fn blueprint(&self) -> &Blueprint {
+        &self.blueprint
+    }
+}
+
+impl Blueprint {
+    pub(crate) fn worker(&self) -> Worker {
+        let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
+        let mut pipeline = DynPipeline::new();
+
+        if let Some(underlay) = &self.underlay {
+            pipeline = pipeline.add_stage(Ingress::new("ingress", underlay.interfaces.handle()));
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", underlay.fibs.handle()));
+            pipeline = pipeline.add_stage(Checkpoint::new(
+                "after ip-forward-1",
+                contract::decapsulated,
+            ));
+        }
+
+        pipeline = pipeline.add_stage(IcmpErrorHandler::new(self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", self.flow_filter.handle()));
+        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
+        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", self.acl.handle()));
+        pipeline = pipeline.add_stage(StaticNat::with_reader(
+            "static-nat",
+            self.static_nat.handle(),
+        ));
+        pipeline = pipeline.add_stage(PortForwarder::new(
+            "port-forwarder",
+            self.portfw.handle(),
+            self.flow_table.clone(),
+        ));
+
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            contract::ready_to_translate,
+        ));
+        let recording = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            move |_: &str, packet: &Packet<TestBuffer>| {
+                recording.lock().before(packet);
+            },
+        ));
+        pipeline = pipeline.add_stage(Masquerade::new(
+            "masquerade",
+            self.flow_table.clone(),
+            self.masquerade.handle(),
+        ));
+
+        let checking = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "after masquerade",
+            move |at: &str, packet: &Packet<TestBuffer>| {
+                checking.lock().after(at, packet);
+            },
+        ));
+
+        if let Some(underlay) = &self.underlay {
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", underlay.fibs.handle()));
+            pipeline = pipeline.add_stage(Egress::new(
+                "egress",
+                underlay.interfaces.handle(),
+                underlay.adjacencies.handle(),
+            ));
+            pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
+        }
+
+        Worker {
+            pipeline,
+            translations,
+            next_id: 0,
+        }
+    }
+}
+
+impl Worker {
+    pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
+        let mut out = self.send_batch(vec![packet]);
+        assert_eq!(out.len(), 1, "the pipeline did not return the packet");
+        out.pop().unwrap_or_else(|| unreachable!())
+    }
+
+    pub(crate) fn send_batch(
+        &mut self,
+        mut packets: Vec<Packet<TestBuffer>>,
+    ) -> Vec<Packet<TestBuffer>> {
+        let sent = packets.len();
+        for packet in &mut packets {
+            self.next_id += 1;
+            packet.meta_mut().test = Some(Box::new(net::packet::TestMeta { id: self.next_id }));
+        }
+        self.translations.lock().clear();
+
+        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
+        assert_eq!(out.len(), sent, "the pipeline did not return every packet");
+        out
+    }
 }
 
 impl Fabric {
@@ -70,7 +259,7 @@ impl Fabric {
             .ok()?
             .validate()
             .ok()?;
-        Some(Self::with_overlay_sharing(
+        Some(Self::over(
             &overlay,
             Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
             flow_table,
@@ -78,14 +267,15 @@ impl Fabric {
     }
 
     pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
-        Some(Self::with_overlay(
+        Some(Self::over(
             &overlay.clone().validate().ok()?,
             Some(tables),
+            Arc::new(FlowTable::default()),
         ))
     }
 
     pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: RouterTables) -> Self {
-        Self::with_overlay(overlay, Some(tables))
+        Self::over(overlay, Some(tables), Arc::new(FlowTable::default()))
     }
 
     fn assemble(
@@ -97,147 +287,32 @@ impl Fabric {
             .ok()?
             .validate()
             .ok()?;
-        Some(Self::with_overlay(&overlay, tables))
+        Some(Self::over(&overlay, tables, Arc::new(FlowTable::default())))
     }
 
-    fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
-        Self::with_overlay_sharing(overlay, tables, Arc::new(FlowTable::default()))
-    }
-
-    fn with_overlay_sharing(
+    fn over(
         overlay: &ValidatedOverlay,
         tables: Option<RouterTables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
-        let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
-        let mut pipeline = DynPipeline::new();
-
-        if let Some(tables) = &tables {
-            pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
-            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
-            pipeline = pipeline.add_stage(Checkpoint::new(
-                "after ip-forward-1",
-                contract::decapsulated,
-            ));
-        }
-
-        pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
-        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
-
-        let flow_filter = FlowFilterContextWriter::new();
-        flow_filter.store(
-            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
-        );
-        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", flow_filter.get_reader()));
-        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
-
-        let acl = AclFilterContextWriter::new();
-        acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
-        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", acl.get_reader()));
-
-        let mut static_nat = NatTablesWriter::new();
-        static_nat.update_nat_tables(
-            build_nat_configuration(overlay.vpc_table())
-                .expect("a validated overlay lowers to nat"),
-        );
-        pipeline = pipeline.add_stage(StaticNat::with_reader(
-            "static-nat",
-            static_nat.get_reader(),
-        ));
-
-        let mut portfw = PortFwTableWriter::new();
-        portfw
-            .update_from_vpc_table(overlay.vpc_table())
-            .expect("a validated overlay lowers to port forwarding");
-        pipeline = pipeline.add_stage(PortForwarder::new(
-            "port-forwarder",
-            portfw.reader(),
-            flow_table.clone(),
-        ));
-
-        let mut masquerade = NatAllocatorWriter::new();
-        masquerade.update_nat_allocator(
-            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
-            &flow_table,
-        );
-        pipeline = pipeline.add_stage(Checkpoint::new(
-            "before masquerade",
-            contract::ready_to_translate,
-        ));
-        let recording = translations.clone();
-        pipeline = pipeline.add_stage(Checkpoint::new(
-            "before masquerade",
-            move |_: &str, packet: &Packet<TestBuffer>| {
-                recording.lock().before(packet);
-            },
-        ));
-        pipeline = pipeline.add_stage(Masquerade::new(
-            "masquerade",
-            flow_table.clone(),
-            masquerade.get_reader(),
-        ));
-
-        let checking = translations.clone();
-        pipeline = pipeline.add_stage(Checkpoint::new(
-            "after masquerade",
-            move |at: &str, packet: &Packet<TestBuffer>| {
-                checking.lock().after(at, packet);
-            },
-        ));
-
-        if let Some(tables) = &tables {
-            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
-            pipeline = pipeline.add_stage(Egress::new(
-                "egress",
-                tables.interfaces(),
-                tables.adjacencies(),
-            ));
-            pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
-        }
-
-        Self {
-            pipeline,
-            flow_table,
-            _flow_filter: flow_filter,
-            _acl: acl,
-            _static_nat: static_nat,
-            _portfw: portfw,
-            _masquerade: masquerade,
-            _tables: tables,
-            translations,
-            next_id: 0,
-        }
+        let fleet = Fleet::lowering(overlay, tables, flow_table);
+        let worker = fleet.blueprint().worker();
+        Self { fleet, worker }
     }
 
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let mut out = self.send_batch(vec![packet]);
-        assert_eq!(out.len(), 1, "the pipeline did not return the packet");
-        out.pop().unwrap_or_else(|| unreachable!())
-    }
-
-    pub(crate) fn flows(&self) -> Option<usize> {
-        self.flow_table.len()
-    }
-
-    pub(crate) fn shared_flow_table(&self) -> Arc<FlowTable> {
-        self.flow_table.clone()
+        self.worker.send(packet)
     }
 
     pub(crate) fn send_batch(
         &mut self,
-        mut packets: Vec<Packet<TestBuffer>>,
+        packets: Vec<Packet<TestBuffer>>,
     ) -> Vec<Packet<TestBuffer>> {
-        let sent = packets.len();
-        for packet in &mut packets {
-            self.next_id += 1;
-            packet.meta_mut().test = Some(Box::new(net::packet::TestMeta { id: self.next_id }));
-        }
-        self.translations.lock().clear();
+        self.worker.send_batch(packets)
+    }
 
-        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
-        assert_eq!(out.len(), sent, "the pipeline did not return every packet");
-        out
+    pub(crate) fn flows(&self) -> Option<usize> {
+        self.fleet.blueprint().flow_table.len()
     }
 }
 
@@ -347,7 +422,7 @@ pub(crate) struct Translations {
     was: std::collections::HashMap<u64, net::FlowKey>,
     from: std::collections::HashMap<u64, IpAddr>,
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
-    declared: Vec<Prefix>,
+    declared: Arc<[Prefix]>,
 }
 
 #[cfg(test)]
@@ -407,27 +482,32 @@ impl Translations {
         self.given.clear();
     }
 
-    fn declaring(overlay: &ValidatedOverlay) -> Self {
-        let mut declared = Vec::new();
-        for vpc in overlay.vpc_table().values() {
-            for peering in vpc.peerings() {
-                for manifest in [peering.local(), peering.remote()] {
-                    for expose in manifest.valexp() {
-                        declared.extend(
-                            expose
-                                .public_ips()
-                                .into_iter()
-                                .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
-                        );
-                    }
-                }
-            }
-        }
+    fn declaring(declared: &Arc<[Prefix]>) -> Self {
         Self {
-            declared,
+            declared: declared.clone(),
             ..Self::default()
         }
     }
+}
+
+#[cfg(test)]
+fn declared_public_ranges(overlay: &ValidatedOverlay) -> Arc<[Prefix]> {
+    let mut declared = Vec::new();
+    for vpc in overlay.vpc_table().values() {
+        for peering in vpc.peerings() {
+            for manifest in [peering.local(), peering.remote()] {
+                for expose in manifest.valexp() {
+                    declared.extend(
+                        expose
+                            .public_ips()
+                            .into_iter()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
+                    );
+                }
+            }
+        }
+    }
+    declared.into()
 }
 
 #[cfg(test)]

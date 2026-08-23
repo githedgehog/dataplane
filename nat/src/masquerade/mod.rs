@@ -22,7 +22,7 @@ mod test;
 //# REQ-9:  A NAT MUST support "Hairpinning".
 // re exports
 pub use allocator_writer::MasqueradeConfig;
-pub use allocator_writer::NatAllocatorWriter;
+pub use allocator_writer::{NatAllocatorReaderFactory, NatAllocatorWriter};
 pub use nf::Masquerade;
 
 use tracectl::trace_target;
