@@ -115,9 +115,6 @@ pub(crate) struct Fleet {
     _static_nat: NatTablesWriter,
     _portfw: PortFwTableWriter,
     _masquerade: NatAllocatorWriter,
-    /// Held for the same reason as the writers above: the fib writers live in here, and a fib
-    /// whose writer is dropped is torn down. `None` for an overlay-slice fabric.
-    _tables: Option<RouterTables>,
     blueprint: Blueprint,
 }
 
@@ -176,6 +173,9 @@ pub(crate) struct Worker {
 /// A [`Fleet`] with a single [`Worker`], which is what every single-threaded property here wants.
 /// The split behind it only shows through when a test needs two.
 pub(crate) struct Fabric {
+    /// Held because the fib writers live in here, and a fib whose writer is dropped is torn down.
+    /// The [`Fleet`] only borrowed them, to take out reader factories.
+    _tables: Option<RouterTables>,
     fleet: Fleet,
     worker: Worker,
 }
@@ -188,7 +188,7 @@ impl Fleet {
     /// `validate`.
     pub(crate) fn lowering(
         overlay: &ValidatedOverlay,
-        tables: Option<RouterTables>,
+        tables: Option<&RouterTables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
         let flow_filter = FlowFilterContextWriter::new();
@@ -225,7 +225,7 @@ impl Fleet {
             static_nat: static_nat.get_reader_factory(),
             portfw: portfw.reader().factory(),
             masquerade: masquerade.get_reader_factory(),
-            underlay: tables.as_ref().map(|tables| Underlay {
+            underlay: tables.map(|tables| Underlay {
                 interfaces: tables.interface_factory(),
                 fibs: tables.fib_factory(),
                 adjacencies: tables.adjacency_factory(),
@@ -240,7 +240,6 @@ impl Fleet {
             _static_nat: static_nat,
             _portfw: portfw,
             _masquerade: masquerade,
-            _tables: tables,
             blueprint,
         }
     }
@@ -451,9 +450,13 @@ impl Fabric {
         tables: Option<RouterTables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
-        let fleet = Fleet::lowering(overlay, tables, flow_table);
+        let fleet = Fleet::lowering(overlay, tables.as_ref(), flow_table);
         let worker = fleet.blueprint().worker();
-        Self { fleet, worker }
+        Self {
+            _tables: tables,
+            fleet,
+            worker,
+        }
     }
 
     /// Send one packet through. See [`Worker::send`].
@@ -4985,11 +4988,8 @@ mod model {
             // Lowered once, outside the threads, exactly as `start_router` lowers it once. The ACL
             // contexts are built here too, which keeps the registry lock out of the interleaving
             // under test rather than making every execution race on it.
-            let fleet = Fleet::lowering(
-                &overlay,
-                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-                Arc::new(FlowTable::default()),
-            );
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
             let blueprint = fleet.blueprint();
 
             // A host and a first source port each, far enough apart that no two flows in the run
@@ -5179,11 +5179,9 @@ mod model {
                     let (validated, vnis, vary, schedule) = &*drawn;
                     // The topology is built from the vnis the configuration names, so a fib exists
                     // for every vpc it can route to.
-                    let fleet = Fleet::lowering(
-                        validated,
-                        Some(topology(vnis)),
-                        Arc::new(FlowTable::default()),
-                    );
+                    let tables = topology(vnis);
+                    let fleet =
+                        Fleet::lowering(validated, Some(&tables), Arc::new(FlowTable::default()));
                     let blueprint = fleet.blueprint();
 
                     thread::scope(|scope| {
@@ -5322,11 +5320,8 @@ mod model {
                 .expect("the fixture exposes form an overlay")
                 .validate()
                 .expect("the fixture overlay validates");
-            let fleet = Fleet::lowering(
-                &overlay,
-                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-                Arc::new(FlowTable::default()),
-            );
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
             let blueprint = fleet.blueprint();
             let entering = handle.clone();
 
@@ -5538,11 +5533,9 @@ mod model {
                     .validate()
                     .expect("the fixture overlay validates");
                 // A fleet per case, so the second case cannot inherit the first's flows.
-                let fleet = Fleet::lowering(
-                    &overlay,
-                    Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-                    Arc::new(FlowTable::default()),
-                );
+                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet =
+                    Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
                 let blueprint = fleet.blueprint();
                 let entering = handle.clone();
 
@@ -5673,5 +5666,170 @@ mod model {
         );
         eprintln!("reported={reported} survived={survived}");
         super::assert_covered(reported > 0, "no icmp error ever reached the flow it named");
+    }
+
+    /// Forwarding is not disturbed by a route being republished underneath it.
+    ///
+    /// Production has a third kind of thread that nothing here has ever modelled. Workers read the
+    /// fibs; the config-apply path *writes* them, and it does so while traffic is flowing. Every
+    /// property above builds its tables, freezes them, and then sends packets -- so the left-right
+    /// machinery under `FibTableReader` has never once been asked to publish while a reader was
+    /// mid-lookup.
+    ///
+    /// That machinery is not a plain lock. `FibTableReader` caches an `Rc<UnsafeCell<FibGroup>>`
+    /// per thread (`left-right-tlcache`), which is exactly why a reader is neither `Send` nor
+    /// `Sync`, and a publish has to interact with every one of those caches. This is the first
+    /// property that puts a publish and a lookup in the same execution.
+    ///
+    /// # The claim
+    ///
+    /// The frame condition again, now on the fib: republishing a route the traffic does not use
+    /// changes nothing about the traffic that uses a different one. The churn installs prefixes in
+    /// `9.9.0.0/16`, which no packet here is addressed to; the conversations resolve `LOCAL_VTEP/32`
+    /// in the underlay fib and the default route in each vni fib, and must complete exactly as they
+    /// would against frozen tables.
+    ///
+    /// Stated over an untouched prefix rather than over the churned one on purpose. Left-right is
+    /// *eventually* consistent by design -- a reader may legitimately serve the old table until it
+    /// next refreshes -- so "the new route takes effect" is not a property that can be asserted
+    /// without inventing a barrier the dataplane does not have. What can be asserted is that
+    /// publishing does not corrupt what is already there.
+    ///
+    /// # Why the barrier
+    ///
+    /// Without it the workers can finish before the churn begins, and the property passes having
+    /// overlapped nothing. The barrier makes all three threads start together, which is the
+    /// cheapest way to make the overlap structural rather than lucky. It does not guarantee an
+    /// interleaving *within* the run -- that is shuttle's job, and on the plain backend it is the
+    /// scheduler's.
+    ///
+    /// # It can see a route change
+    ///
+    /// Worth establishing, because a property about publishing that could not notice a publish
+    /// would pass forever. Aiming the churn at `3.3.3.1/32` in the remote vni's fib -- a prefix the
+    /// conversations *do* resolve -- fails it immediately with `request not delivered:
+    /// Dropped(Local)`, the packet having been delivered locally instead of encapsulated.
+    ///
+    /// So the silence in the passing case is the fib being republished without disturbing a lookup,
+    /// rather than the property being blind to fibs.
+    #[concurrency::model_test]
+    fn forwarding_survives_a_route_being_republished_underneath_it() {
+        /// Conversations each worker completes while the tables move.
+        const FLOWS: u8 = 2;
+        /// Routes installed, and therefore fibs published, during the run.
+        const CHURN: u8 = 6;
+
+        /// Conversations that completed against moving tables.
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Routes published while they ran.
+        static PUBLISHED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            // Owned here rather than by the fleet, so this thread can still borrow it mutably while
+            // the workers hold a shared reference to what was derived from it.
+            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            // Two workers and this thread.
+            let start = Arc::new(concurrency::sync::Barrier::new(3));
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let start = start.clone();
+                        thread::Builder::new()
+                            .name(format!("forward-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("forward-{which}"));
+                                let mut worker = blueprint.worker();
+                                start.wait();
+                                let mut done = 0u64;
+                                for nth in 0..FLOWS {
+                                    let src = format!("1.1.{which}.{}", nth + 1);
+                                    let mut convo = Conversation::new(
+                                        super::routed::Path::fixture(),
+                                        src.parse().unwrap_or_else(|e| unreachable!("{src}: {e}")),
+                                        "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                        u16::from(nth) + 1000,
+                                        80,
+                                    );
+                                    drive(&mut worker, &mut convo);
+                                    assert!(
+                                        convo.checked(),
+                                        "a conversation did not complete while routes were being \
+                                         republished. {}",
+                                        convo.describe()
+                                    );
+                                    done += 1;
+                                }
+                                done
+                            })
+                            .expect("spawn forwarder")
+                    })
+                    .collect();
+
+                // This thread is the config-apply path: it owns the writers and republishes.
+                let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
+                let landing =
+                    FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink())));
+                start.wait();
+                for nth in 0..CHURN {
+                    // Somewhere no packet in this property is addressed, so the only thing under
+                    // test is the act of publishing.
+                    let prefix = format!("9.9.{nth}.0");
+                    tables.route_via(
+                        UNDERLAY_VRF,
+                        Prefix::expect_from((
+                            prefix
+                                .parse::<IpAddr>()
+                                .unwrap_or_else(|e| unreachable!("{e}")),
+                            24,
+                        )),
+                        nhop(&peer),
+                        &landing,
+                    );
+                    PUBLISHED.fetch_add(1, Ordering::Relaxed);
+                }
+
+                for worker in running {
+                    COMPLETED.fetch_add(
+                        worker.join().expect("forwarder panicked"),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+        });
+
+        let (completed, published) = (
+            COMPLETED.load(Ordering::Relaxed),
+            PUBLISHED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} published={published}");
+        super::assert_covered(
+            completed > 0 && published > 0,
+            "either no conversation completed or no route was published, so nothing was raced",
+        );
     }
 }
