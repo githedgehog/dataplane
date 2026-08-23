@@ -38,13 +38,6 @@
 //!   schedule that `parking_lot` permits. Tests that hinge on that
 //!   interleaving need `RwLock<T>` with explicit `read()` then
 //!   `write()`, or a richer state machine in the facade.
-//! * **`static FOO: Mutex<T> = Mutex::new(...)` does not compile
-//!   under loom.** `loom::sync::Mutex::new` is plain `fn`, not
-//!   `const fn`, so a static initialiser fails to typecheck. Use
-//!   `OnceLock` for the static (the facade re-exports
-//!   `std::sync::OnceLock` under all backends) or move the
-//!   construction into a runtime initialiser gated by
-//!   `#[concurrency_mode(std)]`.
 //! * **`OnceLock` under loom/shuttle** is the real `std::sync::OnceLock`,
 //!   not a model-aware shim. Loom and shuttle do not see the
 //!   atomics inside `OnceLock::get_or_init`, so tests whose
