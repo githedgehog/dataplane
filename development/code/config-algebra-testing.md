@@ -123,6 +123,19 @@ and flow-filter tables live (the blank path returns early, before every table wr
 masquerade overlap defect was a config change underneath live NAT allocations. Model removal and
 modification early.
 
+The second scar is not healed, and the frame condition is what named it. A masquerade change to one
+peering rebuilds the port allocation state of **every** peering: `update_nat_allocator` keeps the
+running allocator only when the whole `MasqueradeConfig` compares equal, so a change that shares no
+vpc, no expose and no address with a live flow still throws away and re-derives the port space that
+flow is using. The replacement is populated by walking the flow table before it is published, while
+workers keep allocating from the outgoing one, so the two can hand the same public tuple to two live
+flows -- and the reverse lookup then has one key and two answers. `dataplane::packet_processor::fuzz
+::model::report_why_the_masquerade_swap_disturbs_traffic` has the mechanism, the rates in
+production's configuration, and a traced instance of one tenant receiving another's reply.
+
+Worth keeping for its own sake: the frame condition was violated _inside the allocator_, before any
+packet was involved, and stating the property over traffic is what surfaced it.
+
 ### Every operation needs an undo, and the undo is not a function of the operation alone
 
 For every `A` in the algebra there should be an `A^-1` that reverses it, which buys the whole
