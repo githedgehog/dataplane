@@ -87,10 +87,15 @@ let
       };
     in
     if platform != "wasm32-wasip1" then over.pkgsCross.${platform'.info.nixarch} else over;
+  sysroot-stamp = ''
+    printf '%s' '${sanitize}' > "$out/.sanitize"
+    printf '%s' '${instrumentation}' > "$out/.instrumentation"
+  '';
   sysroot =
     if platform != "wasm32-wasip1" then
       pkgs.symlinkJoin {
         name = "sysroot";
+        postBuild = sysroot-stamp;
         paths = with pkgs.pkgsHostHost; [
           pkgs.pkgsHostHost.libc.dev # fully qualified: bare `libc` resolves to the "gnu" function argument, not pkgs.pkgsHostHost.libc
           pkgs.pkgsHostHost.libc.out # (same as above)
@@ -116,6 +121,7 @@ let
     else
       pkgs.symlinkJoin {
         name = "sysroot";
+        postBuild = sysroot-stamp;
         paths = with pkgs.pkgsHostHost; [
           fancy.hwloc.dev
           fancy.hwloc.static
