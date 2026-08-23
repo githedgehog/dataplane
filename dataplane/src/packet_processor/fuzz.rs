@@ -2813,7 +2813,7 @@ mod routed {
         matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
     }
 
-    fn inner() -> Packet<TestBuffer> {
+    pub(super) fn inner() -> Packet<TestBuffer> {
         build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
     }
 
@@ -3460,5 +3460,80 @@ mod routed {
         let mut out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+}
+
+#[cfg(test)]
+mod model {
+    use super::routed::{exposes, inner, tunnelled};
+    use super::*;
+    use concurrency::sync::Mutex;
+    use concurrency::thread;
+    #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
+    use concurrency::thread::BuilderExt;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn on_two_threads(body: &(impl Fn() + Sync)) {
+        thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    thread::Builder::new()
+                        .spawn_scoped(scope, body)
+                        .expect("spawn")
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("join");
+            }
+        });
+    }
+
+    #[concurrency::model_test]
+    fn a_lock_that_outlives_its_execution_is_not_model_checkable() {
+        static LOCK: OnceLock<Mutex<u32>> = OnceLock::new();
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+
+        concurrency::stress(|| {
+            let lock = concurrency::sync::Arc::new(Mutex::new(0u32));
+            let inner = lock.clone();
+            let bump = move || *inner.lock() += 1;
+            on_two_threads(&bump);
+            assert_eq!(*lock.lock(), 2);
+        });
+
+        concurrency::stress(|| {
+            let first = RUNS.fetch_add(1, Ordering::Relaxed) == 0;
+            let bump = move || {
+                if first {
+                    *LOCK.get_or_init(|| Mutex::new(0)).lock() += 1;
+                }
+            };
+            on_two_threads(&bump);
+        });
+    }
+
+    #[cfg(not(feature = "shuttle"))]
+    #[concurrency::model_test]
+    fn a_pipeline_can_be_driven_inside_a_stress_run() {
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let handle = rt.handle().clone();
+
+        concurrency::stress(move || {
+            let _guard = tokio::runtime::Handle::enter(&handle);
+            let mut fabric = Fabric::routed(&exposes(), None)
+                .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
+            let out = fabric.send(tunnelled(&inner()));
+            assert!(
+                matches!(verdict(&out), Verdict::Delivered { .. }),
+                "a packet that is delivered single-threaded was not: {:?}",
+                verdict(&out)
+            );
+        });
     }
 }
