@@ -127,7 +127,12 @@ pub fn compute_verdict(events: &[Event], had_stream_errors: bool) -> HypervisorV
 
     for event in events {
         match (event.source, event.event) {
-            (Source::Vmm, EventType::Shutdown) => {
+            // Either source. `Vm`/`Shutdown` is the VM reporting that it stopped; `Vmm`/`Shutdown`
+            // is the monitor process reporting that *it* is going away. Accepting only the second
+            // made a clean run's verdict depend on whether that later event won a race against the
+            // pipe closing: the guest would run the test, exit 0, shut down, and still be failed
+            // because the stream ended one event too early. Seen under load, where it loses.
+            (Source::Vmm | Source::Vm, EventType::Shutdown) => {
                 return if tainted {
                     HypervisorVerdict::Failure
                 } else {
@@ -202,6 +207,30 @@ impl tokio_util::codec::Decoder for AsyncJsonStreamDecoder {
             None => Ok(None),
         }
     }
+
+    /// End of stream, where the provided implementation is wrong for this format.
+    ///
+    /// `Decoder::decode_eof` defaults to calling [`Self::decode`] and, if that yields nothing
+    /// while bytes remain, reporting "bytes remaining on stream". Every event here is newline
+    /// terminated, so a byte always remains -- and [`watch`] escalates any stream error to
+    /// [`HypervisorVerdict::Failure`]. A terminator is not a truncated event.
+    ///
+    /// The distinction is kept rather than dropped: leftover *whitespace* ends the stream, and
+    /// anything else is still an error, because a half-written object is real evidence that
+    /// events were lost.
+    fn decode_eof(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if let Some(value) = self.decode(src)? {
+            return Ok(Some(value));
+        }
+        if src.iter().all(u8::is_ascii_whitespace) {
+            src.clear();
+            return Ok(None);
+        }
+        Err(AsyncJsonStreamError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("event stream ended mid-object with {} bytes left", src.len()),
+        )))
+    }
 }
 
 /// Drains remaining events from the stream for up to
@@ -265,7 +294,7 @@ pub async fn watch(receiver: tokio::net::unix::pipe::Receiver) -> (Vec<Event>, H
             Some(Ok(value)) => {
                 let is_shutdown = matches!(
                     (value.source, value.event),
-                    (Source::Vmm, EventType::Shutdown)
+                    (Source::Vmm | Source::Vm, EventType::Shutdown)
                 );
                 let is_panic = matches!(
                     (value.source, value.event),
@@ -300,6 +329,7 @@ pub async fn watch(receiver: tokio::net::unix::pipe::Receiver) -> (Vec<Event>, H
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_util::codec::Decoder as _;
 
     /// Helper to create a minimal [`Event`] with the given source and type.
     fn event(source: Source, event: EventType) -> Event {
@@ -311,12 +341,84 @@ mod tests {
         }
     }
 
+    /// One event as cloud-hypervisor writes it: a JSON object followed by a newline.
+    fn wire(source: &str, event: &str) -> BytesMut {
+        BytesMut::from(
+            format!(
+                "{{\"timestamp\":{{\"secs\":1,\"nanos\":0}},\"source\":\"{source}\",\
+                 \"event\":\"{event}\",\"properties\":null}}\n"
+            )
+            .as_bytes(),
+        )
+    }
+
+    #[test]
+    fn an_event_is_decoded_off_the_wire() {
+        let mut decoder = AsyncJsonStreamDecoder::new();
+        let mut buf = wire("vmm", "starting");
+        let got = decoder.decode(&mut buf).expect("decodes").expect("an event");
+        assert!(matches!(
+            (got.source, got.event),
+            (Source::Vmm, EventType::Starting)
+        ));
+    }
+
+    /// The newline after the last event is not a truncated event.
+    ///
+    /// `Decoder`'s provided `decode_eof` calls `decode` and, finding the buffer non-empty when it
+    /// yields nothing, reports "bytes remaining on stream". Every object here is newline
+    /// terminated, so that is what is always left over -- and [`watch`] turns any stream error
+    /// into [`HypervisorVerdict::Failure`].
+    ///
+    /// It stays hidden because `watch` breaks on `Vmm`/`Shutdown` and never reaches EOF. A VM
+    /// whose pipe closes *without* a shutdown -- the VMM killed, the host under enough load to
+    /// reorder things -- reaches it, and is then reported as a malformed event stream rather than
+    /// as the missing shutdown it actually is. Found exactly that way: one guest in a
+    /// twelve-at-a-time run, blaming the parser for a VM that went away.
+    #[test]
+    fn a_trailing_newline_at_end_of_stream_is_not_a_broken_event() {
+        let mut decoder = AsyncJsonStreamDecoder::new();
+        let mut buf = wire("vmm", "shutdown");
+        decoder.decode(&mut buf).expect("decodes").expect("an event");
+        assert_eq!(&buf[..], b"\n", "the terminator should be what is left");
+        assert!(
+            decoder.decode_eof(&mut buf).expect("a newline is not an error").is_none(),
+            "a trailing newline should end the stream, not fail it"
+        );
+    }
+
+    /// A genuinely truncated object still is one. The point above is not "tolerate anything".
+    #[test]
+    fn a_half_written_event_at_end_of_stream_is_an_error() {
+        let mut decoder = AsyncJsonStreamDecoder::new();
+        let mut buf = BytesMut::from(&b"{\"timestamp\":{\"secs\":1,"[..]);
+        assert!(decoder.decode_eof(&mut buf).is_err());
+    }
+
     #[test]
     fn clean_shutdown_without_errors() {
         let events = vec![
             event(Source::Vmm, EventType::Starting),
             event(Source::Vmm, EventType::Booting),
             event(Source::Vmm, EventType::Shutdown),
+        ];
+        assert_eq!(
+            compute_verdict(&events, false),
+            HypervisorVerdict::CleanShutdown,
+        );
+    }
+
+    /// The VM's own shutdown ends the run, not just the monitor's.
+    ///
+    /// A guest that runs its test, exits 0 and stops emits `Vm`/`Shutdown`. The `Vmm`/`Shutdown`
+    /// that follows is the monitor process leaving, and it may not arrive before the pipe closes.
+    /// Requiring it made a clean run fail intermittently under load.
+    #[test]
+    fn a_vm_shutdown_is_a_clean_shutdown() {
+        let events = vec![
+            event(Source::Vmm, EventType::Starting),
+            event(Source::Vm, EventType::Booted),
+            event(Source::Vm, EventType::Shutdown),
         ];
         assert_eq!(
             compute_verdict(&events, false),
