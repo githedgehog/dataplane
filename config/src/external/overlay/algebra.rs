@@ -406,6 +406,27 @@ impl Footprint {
     pub fn is_empty(&self) -> bool {
         self.vpcs.is_empty() && self.peerings.is_empty()
     }
+
+    /// Whether this footprint names the vpc that [`Draft::overlay`] calls `name`.
+    ///
+    /// Handles do not leave this module, and this is why they do not have to. A frame condition is
+    /// checked against traffic, traffic is derived from an assembled configuration, and an
+    /// assembled configuration knows only names -- so the projection a caller needs is "is this
+    /// name inside the footprint", not the handle itself.
+    #[must_use]
+    pub fn touches_vpc_named(&self, name: &str) -> bool {
+        self.vpcs.iter().any(|vpc| vpc.name() == name)
+    }
+
+    /// Whether this footprint names the peering that [`Draft::overlay`] calls `name`.
+    ///
+    /// See [`Footprint::touches_vpc_named`]. Both are needed and neither implies the other:
+    /// `AddExpose` writes a peering and no vpc at all, so filtering on vpcs alone would admit
+    /// traffic on the very peering that changed.
+    #[must_use]
+    pub fn touches_peering_named(&self, name: &str) -> bool {
+        self.peerings.iter().any(|peering| peering.name() == name)
+    }
 }
 
 /// One step of a configuration change.
@@ -1241,6 +1262,52 @@ mod tests {
     use super::*;
     use bolero::check;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    /// An operation can write a vpc without writing every peering that vpc takes part in.
+    ///
+    /// Asserted as a *positive* -- that such an operation is drawn -- because it is the reason a
+    /// frame condition over traffic has to be filtered three ways, by both endpoint vpcs and by
+    /// the peering, rather than by the peering alone.
+    ///
+    /// `AddPeering(P, A, B)` is the case. Its write set has `A` and `B`, because each one's peer
+    /// set changes, and the single peering `P`. Any peering `A` already had is therefore *inside*
+    /// the write set through `A` and outside it by peering name, so a filter that consulted only
+    /// peering names would assert the frame over traffic the footprint says the operation may
+    /// change.
+    ///
+    /// Whether it *does* change it is a sharper question and a better property -- "adding a
+    /// peering for one vpc changed nothing observable for another" is the design note's isolation
+    /// claim -- but it is not this one, and conflating them would turn a legitimate behaviour
+    /// change into a reported defect.
+    #[test]
+    fn writing_a_vpc_does_not_imply_writing_its_peerings() {
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+
+        check!()
+            .with_generator(Sequence::default())
+            .for_each(|ops: &Vec<Op>| {
+                let mut draft = Draft::new();
+                for op in ops {
+                    let footprint = op.writes(&draft);
+                    for vpc in &footprint.vpcs {
+                        for (handle, spec) in draft.peerings() {
+                            if spec.touches(*vpc) && !footprint.peerings.contains(&handle) {
+                                SEEN.fetch_add(1, Relaxed);
+                            }
+                        }
+                    }
+                    op.apply(&mut draft).expect("a drawn operation applies");
+                }
+            });
+
+        assert!(
+            SEEN.load(Relaxed) > 0,
+            "no drawn operation ever wrote a vpc while leaving one of its peerings unwritten. \
+             Either the vocabulary changed and a peering-only frame filter is now sound -- in \
+             which case say so where the filter is written -- or the generator stopped drawing \
+             `AddPeering` against a vpc that already had one"
+        );
+    }
 
     /// How many sequences reached each kind of operation.
     ///

@@ -65,6 +65,7 @@ use acl_filter::{
     AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
 use concurrency::sync::{Arc, Mutex};
+use config::external::GenId;
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
@@ -91,8 +92,11 @@ use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+
+/// The generation a freshly lowered configuration is enacted as. See [`Fleet::genid`].
+const FIRST_GENID: GenId = 1;
 
 use super::egress::Egress;
 use super::ingress::Ingress;
@@ -120,6 +124,15 @@ pub(crate) struct Fleet {
     static_nat: RefCell<NatTablesWriter>,
     portfw: RefCell<PortFwTableWriter>,
     masquerade: RefCell<NatAllocatorWriter>,
+    /// The generation of the configuration currently enacted.
+    ///
+    /// Not decoration. `update_nat_allocator` compares a flow's generation against the allocator's
+    /// to decide whether the flow has already been reconciled with the running configuration, so a
+    /// fleet that enacted every generation as generation one would be telling it that no
+    /// configuration ever changed. `mgmt`'s `apply_masquerade_config` passes the validated
+    /// config's own genid; this counts, which is the same claim -- each enactment is a later
+    /// generation than the one before it.
+    genid: Cell<GenId>,
     blueprint: Blueprint,
 }
 
@@ -220,7 +233,7 @@ impl Fleet {
         // flow, which is legitimate behaviour and useless to compare.
         masquerade.update_nat_allocator(
             MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
+            FIRST_GENID,
             &flow_table,
         );
 
@@ -249,6 +262,7 @@ impl Fleet {
             static_nat: RefCell::new(static_nat),
             portfw: RefCell::new(portfw),
             masquerade: RefCell::new(masquerade),
+            genid: Cell::new(FIRST_GENID),
             blueprint,
         }
     }
@@ -284,9 +298,10 @@ impl Fleet {
             .borrow_mut()
             .update_from_vpc_table(overlay.vpc_table())
             .expect("a validated overlay lowers to port forwarding");
+        self.genid.set(self.genid.get() + 1);
         self.masquerade.borrow_mut().update_nat_allocator(
             MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
+            self.genid.get(),
             &self.blueprint.flow_table,
         );
     }
@@ -1123,10 +1138,54 @@ pub(crate) mod derive {
     /// rather than a defect in the configuration. [`unsupported`] counts them so the gap is
     /// visible instead of silent.
     pub(crate) fn loads_for(overlay: &ValidatedOverlay, vary: &[Vary]) -> Vec<Box<dyn Load>> {
+        loads_where(overlay, vary, &|_| true)
+    }
+
+    /// What a load is between, as the assembled configuration names it.
+    ///
+    /// The three names an operation's footprint can be asked about. Named fields rather than a
+    /// tuple because `local` and `remote` are interchangeable by type and not by meaning, and a
+    /// frame filter that swapped them would still compile and would still be wrong.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Named<'a> {
+        pub(crate) local: &'a str,
+        pub(crate) remote: &'a str,
+        pub(crate) peering: &'a str,
+    }
+
+    /// [`loads_for`], restricted to what `keep` accepts.
+    ///
+    /// A frame condition needs the traffic *outside* what an operation wrote, and an operation's
+    /// footprint is a set of names -- so the restriction belongs here, where the peering a load
+    /// comes from is still known, rather than in a filter over the loads afterwards, where it is
+    /// not. `keep` is consulted per peering rather than per load because that is the granularity a
+    /// footprint has.
+    ///
+    /// All three names, and not just the peering. `AddPeering(P, A, B)` writes both vpcs and only
+    /// the one peering, so a peering already on `A` is inside the write set through `A` and
+    /// outside it by name; a filter on peering alone would assert the frame over traffic the
+    /// operation is permitted to change. `algebra`'s `writing_a_vpc_does_not_imply_writing_its_peerings`
+    /// is that statement, asserted where it belongs.
+    ///
+    /// # Panics
+    ///
+    /// Never; see [`loads_for`].
+    pub(crate) fn loads_where(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        keep: &dyn Fn(Named<'_>) -> bool,
+    ) -> Vec<Box<dyn Load>> {
         let mut loads: Vec<Box<dyn Load>> = Vec::new();
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
+                if !keep(Named {
+                    local: vpc.name(),
+                    remote: peering.remote().name(),
+                    peering: peering.name(),
+                }) {
+                    continue;
+                }
                 // Which two vpcs this expose's traffic is between, read off the configuration.
                 // A load that assumed the fixture's pair would still pass on a generated overlay
                 // whose vpcs happen to be numbered differently, while testing a route nobody
@@ -4812,7 +4871,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::Sequence;
+    use config::external::overlay::algebra::{Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{LazyLock, OnceLock};
@@ -5282,6 +5341,42 @@ mod model {
     ///
     /// [`drive`] runs a load to completion, which is the wrong granularity here -- the whole point
     /// is to stop halfway and change worker.
+    /// Run `body`, turning a panic into a message rather than letting it escape.
+    ///
+    /// Every property here that rendezvouses per round needs this, and each one that did without it
+    /// cost a wasted run to find out. A thread that panics between two barriers never reaches the
+    /// second, so its peers wait on it forever and the property **hangs instead of failing** --
+    /// which is the worst way for a test to be wrong, because there is nothing at all to read.
+    ///
+    /// Moving the assertions out of the workers is necessary and not sufficient: a load, the
+    /// pipeline, or a lock can panic too, and each hangs exactly the same way. So the round body
+    /// gets wrapped rather than the assertion. The panic hook still runs, so the original message
+    /// and location are printed either way; what this adds is that the barrier is still reached and
+    /// the failure is attributed to a round and a worker.
+    ///
+    /// `AssertUnwindSafe` because the caller is a test whose next action is to fail: a partly
+    /// updated worker or load cannot be observed by anything except the report of what went wrong.
+    fn without_unwinding<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+        cfg_select! {
+            // Stands down under a model checker, for the same shape of reason
+            // `tracectl::evidence` does. The hazard this guards against is a real thread parked on
+            // a barrier forever, and shuttle has no real threads: its tasks are green threads on
+            // one OS thread, and a panic in one ends the whole execution rather than stranding its
+            // peers. Catching it there takes the panic away from the scheduler that needed to see
+            // it -- which does not fail the run, it *hangs* it, turning a two-second suite into a
+            // timeout.
+            feature = "shuttle" => Ok(body()),
+            feature = "loom" => Ok(body()),
+            _ => std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|payload| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic carrying no message".to_owned())
+            }),
+        }
+    }
+
     fn step(worker: &mut Worker, load: &mut dyn Load) {
         let Some(packet) = load.next() else {
             panic!(
@@ -6110,19 +6205,28 @@ mod model {
                                         })
                                 };
 
+                                // Caught rather than allowed to escape: see `without_unwinding`.
+                                // A probe that panicked would miss the barrier below and hang the
+                                // property instead of failing it.
+                                let probe = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                    without_unwinding(|| send(worker, port)).unwrap_or_else(|why| {
+                                        Err(format!("sending it panicked: {why}"))
+                                    })
+                                };
+
                                 gate.wait();
                                 let mut seen = Vec::with_capacity(
                                     usize::from(CHURN) * usize::from(PER_ROUND) + 1,
                                 );
                                 for _ in 1..=CHURN {
                                     for _ in 0..PER_ROUND {
-                                        seen.push(send(&mut worker, &mut port));
+                                        seen.push(probe(&mut worker, &mut port));
                                     }
                                     gate.wait();
                                 }
                                 // Nothing is moving now: every publish returned before the last
                                 // barrier, so there is no version but the last one left to serve.
-                                seen.push(send(&mut worker, &mut port));
+                                seen.push(probe(&mut worker, &mut port));
                                 seen
                             })
                             .expect("spawn prober")
@@ -6307,23 +6411,28 @@ mod model {
                                 let mut seen = Vec::new();
                                 for round in 1..=APPLIES {
                                     for nth in 0..FLOWS {
-                                        let src = format!("1.1.{which}.{}", nth + 1);
-                                        let mut convo = Conversation::new(
-                                            super::routed::Path::fixture(),
-                                            src.parse()
-                                                .unwrap_or_else(|e| unreachable!("{src}: {e}")),
-                                            "3.3.3.1"
-                                                .parse()
-                                                .unwrap_or_else(|e| unreachable!("{e}")),
-                                            u16::from(round) * 100 + u16::from(nth) + 1000,
-                                            80,
-                                        );
-                                        drive(&mut worker, &mut convo);
-                                        // Judged after the join, not here: a tenant that panicked
-                                        // mid-round would never reach the next barrier and its two
-                                        // peers would wait on it forever, so the property would
-                                        // hang instead of failing.
-                                        seen.push((round, convo.checked(), convo.describe()));
+                                        // Judged after the join and caught here, both for the
+                                        // reason `without_unwinding` gives: a tenant that does not
+                                        // reach the barrier below hangs its two peers.
+                                        seen.push((
+                                            round,
+                                            without_unwinding(|| {
+                                                let src = format!("1.1.{which}.{}", nth + 1);
+                                                let mut convo = Conversation::new(
+                                                    super::routed::Path::fixture(),
+                                                    src.parse().unwrap_or_else(|e| {
+                                                        unreachable!("{src}: {e}")
+                                                    }),
+                                                    "3.3.3.1"
+                                                        .parse()
+                                                        .unwrap_or_else(|e| unreachable!("{e}")),
+                                                    u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                    80,
+                                                );
+                                                drive(&mut worker, &mut convo);
+                                                (convo.checked(), convo.describe())
+                                            }),
+                                        ));
                                     }
                                     gate.wait();
                                 }
@@ -6347,7 +6456,10 @@ mod model {
             });
 
             for seen in reports {
-                for (round, checked, described) in seen {
+                for (round, ran) in seen {
+                    let (checked, described) = ran.unwrap_or_else(|why| {
+                        panic!("a conversation in round {round} panicked mid-enactment: {why}")
+                    });
                     assert!(
                         checked,
                         "a conversation in round {round} did not survive the configuration it was \
@@ -6367,6 +6479,379 @@ mod model {
         super::assert_covered(
             completed > 0 && enacted > 0,
             "either no conversation completed or no configuration was enacted, so nothing was raced",
+        );
+    }
+
+    /// A configuration change leaves the traffic outside its footprint alone.
+    ///
+    /// The frame condition, stated where the design note says it is worth the most: over a
+    /// configuration that actually changes, under traffic, with the frame taken from the algebra
+    /// rather than guessed at.
+    ///
+    /// `re_enacting_a_configuration_under_load_disturbs_nothing` is the empty-footprint case of
+    /// this, on a fixed configuration. It is the sharper claim -- nothing at all may change -- and
+    /// the narrower one, because the enactment path never has to carry a *difference* through the
+    /// five writers. This one draws the difference.
+    ///
+    /// # The draw
+    ///
+    /// One sequence, split at its last operation: `X` is the fold of everything before it and `A`
+    /// is the operation itself, so `X => A.X` comes out of a single draw with `A` applicable to
+    /// `X` by construction. That is the design note's tractable form of "the dataplane must be
+    /// able to move from any legal configuration to any other" -- the general property recovered
+    /// by composition rather than by drawing pairs out of a space far too sparse to fuzz.
+    ///
+    /// # The frame
+    ///
+    /// `A.writes(&X)` is the footprint, and traffic is kept only if neither endpoint vpc nor its
+    /// peering is named in it. All three, for the reason [`derive::loads_where`] gives.
+    ///
+    /// Everything kept is asserted to complete exactly as it would against a configuration nobody
+    /// was touching -- and the loads are derived from `X` while the workers may be running against
+    /// `A.X`, which is the point: outside the footprint the two configurations agree, so traffic
+    /// derived from one must be carried by the other.
+    ///
+    /// # What is deliberately not asserted
+    ///
+    /// That traffic *inside* the footprint still works. It may legitimately stop: `A` is allowed
+    /// to be `RemovePeering`, and the whole content of the frame condition is that this is the
+    /// only traffic allowed to change. Asserting over it would be asserting the operation had no
+    /// effect.
+    ///
+    /// `Blueprint::declared` is also left at `X`'s public ranges rather than following the
+    /// enactment. Sound here, and only here: the address plan gives every peering, side and slot
+    /// its own block, so a range `X` and `A.X` disagree about belongs to a peering inside the
+    /// footprint, whose traffic is filtered out before anything checks a translation against it.
+    ///
+    /// That is not a comfortable argument to leave unchecked, and it is not left unchecked. The
+    /// variant below drops the restriction, and among what it produces is exactly this:
+    /// `masquerade rewrote a source to 172.16.4.0, which no declared public range covers`, from
+    /// traffic inside the footprint. The restriction is what makes the fixed `declared` correct,
+    /// and a property that changed the public ranges under load would have to move it behind the
+    /// writers.
+    ///
+    /// # It can see a change
+    ///
+    /// Dropping the footprint restriction -- keeping every load, including the traffic the change
+    /// is permitted to break -- fails it in round 1 with `RemoveVpc(VpcHandle(0))` and
+    /// `Dropped(Unroutable)`. So the restriction is load-bearing rather than decorative, and the
+    /// operations drawn do change what the dataplane does.
+    ///
+    /// It also hung the first time, before `without_unwinding` existed, because the `declared`
+    /// panic above happened between two barriers.
+    ///
+    /// # A defect, measured but not asserted
+    ///
+    /// Round 1 is the round that races the change, and it is **counted rather than asserted**,
+    /// because asserting it fails about one run in twenty. That rate is not noise and not a flaw
+    /// in the frame: it is a defect this property found, characterised and did not root-cause.
+    ///
+    /// What was measured, all on the plain backend with the same draws:
+    ///
+    /// | arrangement | failures |
+    /// | --- | --- |
+    /// | enactment racing the traffic, `genid` pinned at 1 | ~4 in 20 |
+    /// | enactment racing the traffic, `genid` incremented per enactment | 4 in 125 |
+    /// | enactment **before** any traffic starts | 0 in 25 |
+    /// | re-enacting an unchanged configuration, racing | 0 in 15 |
+    ///
+    /// Three things follow. The pinned `genid` was a fault in *this harness* and not in the
+    /// dataplane -- `update_nat_allocator` compares a flow's generation against the allocator's to
+    /// decide whether the flow has been reconciled, so enacting every generation as generation one
+    /// told it nothing ever changed. It produced two further symptoms that the corrected harness
+    /// has never reproduced: a live flow re-allocated to a second public tuple, and a reply
+    /// returned with another flow's source port. Neither is evidence about the product.
+    ///
+    /// What survives the correction is narrow and consistent: **every residual failure is an
+    /// `AddExpose` racing traffic, and every one is `Dropped(Filtered)`**. The same change enacted
+    /// before the same traffic never does it, so the two configurations do agree outside the
+    /// footprint and the disturbance is transient -- a window during enactment in which traffic
+    /// that both the old and the new configuration accept is refused.
+    ///
+    /// The mechanism is not established. `FlowFilterContextWriter::store` is a single atomic slot
+    /// swap, so it is not a torn read of that table; the likely candidate is the one the paragraph
+    /// at the top of this comment names -- five writers stored in sequence with no barrier, so a
+    /// packet can be judged by a mixture of generations -- but that is a hypothesis and it is
+    /// written here as one.
+    ///
+    /// Asserted from round 2 on. Every later round races a re-enactment of a configuration already
+    /// running, which is the arrangement measured at 0 in 15, so those rounds are held to the full
+    /// claim and this one reports a rate.
+    ///
+    /// # What the counters say, and what they say about something else
+    ///
+    /// Of 64 draws, roughly 26 are framed, 10 are engulfed -- the change's footprint covered every
+    /// load -- and **28 are barren**, meaning the configuration carries no derivable traffic at all
+    /// before any frame is applied. The last number is not about this property. It is
+    /// [`derive::loads_for`]'s reach, and it says that not far off half of every generated
+    /// configuration explored anywhere in this module carries nothing: the same ratio shows up in
+    /// `generated_traffic_survives_being_split_across_two_workers`. Counted separately from
+    /// `engulfed` precisely so the two cannot be mistaken for one another, because they call for
+    /// opposite fixes -- a wider derivation against a narrower footprint.
+    #[concurrency::model_test]
+    fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
+        /// Configurations drawn. Small for the reason
+        /// `generated_traffic_survives_being_split_across_two_workers` gives: under shuttle each
+        /// draw costs 32 executions and each execution lowers two configurations.
+        const CASES: usize = 64;
+        /// Rounds, and so enactments, per execution.
+        ///
+        /// Three, because round 1 is the only one that races a configuration change: the applier
+        /// enacts the same overlay every round, so rounds 2 and 3 race a *re*-enactment of what is
+        /// already running. That distinction turned out to be the whole of the result below, so
+        /// there are two asserted rounds rather than one.
+        const ROUNDS: u8 = 3;
+
+        /// Draws that left any traffic outside the footprint. One is enough: both workers carry
+        /// all of it, on separate flows, so a single framed load still has two threads runnable --
+        /// which is what shuttle's PCT scheduler requires.
+        static FRAMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Draws whose configuration carries no derivable traffic at all, before any frame is
+        /// applied. A limit of the derivation rather than of the frame, and counted apart from it
+        /// so the two cannot be confused for each other.
+        static BARREN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Draws that had traffic, and whose footprint covered all of it.
+        static ENGULFED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Loads that were filtered out for being inside the footprint. If this stays at zero the
+        /// frame is the whole configuration and the property is the re-enactment one again.
+        static FRAMED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Out-of-footprint loads disturbed by the round that races the *change*. Counted rather
+        /// than asserted; see `# A defect, measured but not asserted`.
+        static DISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Out-of-footprint loads that round carried untouched, so the rate above has a
+        /// denominator.
+        static UNDISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        /// Traffic the footprint does not name, by either endpoint vpc or by its peering.
+        fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
+            move |named| {
+                !footprint.touches_peering_named(named.peering)
+                    && !footprint.touches_vpc_named(named.local)
+                    && !footprint.touches_vpc_named(named.remote)
+            }
+        }
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(generated::Generated)
+            .with_iterations(CASES)
+            .for_each(|(ops, vary, _schedule)| {
+                let Some((change, built)) = ops.split_last() else {
+                    BARREN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                let before = Sequence::fold(built);
+                let footprint = change.writes(&before);
+
+                // Both validated out here: validation is not cheap, it is the same answer every
+                // execution, and a `ValidatedOverlay` is plain data. See the same note on
+                // `generated_traffic_survives_being_split_across_two_workers` for why the tables
+                // lowered from one may not be hoisted with it.
+                let assemble = |draft: &config::external::overlay::algebra::Draft| {
+                    draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"))
+                };
+                let running = assemble(&before);
+                let enacted = assemble(&Sequence::fold(ops));
+
+                let framed = derive::loads_where(&running, vary, &outside(&footprint)).len();
+                let total = derive::loads_for(&running, vary).len();
+                FRAMED_OUT.fetch_add(
+                    u64::try_from(total - framed).unwrap_or_else(|_| unreachable!()),
+                    Ordering::Relaxed,
+                );
+                if framed == 0 {
+                    if total == 0 { &BARREN } else { &ENGULFED }.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                FRAMED.fetch_add(1, Ordering::Relaxed);
+
+                let vnis: Vec<Vni> = enacted
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                // The topology has to serve both configurations: a vpc `A` adds is routable from
+                // the first packet, or the change would fail for want of a fib rather than for
+                // anything the property is about.
+                if vnis.is_empty() {
+                    BARREN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+
+                // Everything the body needs, owned: `stress` wants a `'static` `Fn`, so nothing
+                // borrowed from the draw may be captured.
+                let drawn =
+                    std::sync::Arc::new((running, enacted, vnis, vary.clone(), footprint, *change));
+                let entering = handle.clone();
+
+                concurrency::stress(move || {
+                    let (running, enacted, vnis, vary, footprint, change) = &*drawn;
+                    let tables = topology(vnis);
+                    let fleet =
+                        Fleet::lowering(running, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
+                    // Two workers and this thread, rendezvousing once per round.
+                    let gate = Arc::new(concurrency::sync::Barrier::new(3));
+                    let mut reports = Vec::new();
+
+                    thread::scope(|scope| {
+                        let handles: Vec<_> = (0..2usize)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                let gate = gate.clone();
+                                thread::Builder::new()
+                                    .name(format!("framed-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("framed-{which}"));
+                                        let mut worker = blueprint.worker();
+                                        // Per worker: the predicate borrows the footprint and is
+                                        // not `Copy`, so one shared between the threads could not
+                                        // be captured by both.
+                                        let outside = outside(footprint);
+                                        gate.wait();
+                                        let mut seen = Vec::new();
+                                        for round in 1..=ROUNDS {
+                                            // Fresh source ports each round, so a later round is
+                                            // new flows rather than a flow table hit that would
+                                            // never consult the configuration that just changed.
+                                            //
+                                            // And its own, rather than half of a split: each
+                                            // worker carries *every* framed load, on flows of its
+                                            // own. Splitting them needed two before either worker
+                                            // had traffic, and that gate rejected more than half
+                                            // of all draws -- while two workers on one peering is
+                                            // the shape `two_workers_are_not_given_the_same_public_tuple`
+                                            // exists because of.
+                                            let varied: Vec<derive::Vary> = vary
+                                                .iter()
+                                                .map(|v| derive::Vary {
+                                                    sport: v
+                                                        .sport
+                                                        .wrapping_add(u16::from(round) * 997)
+                                                        .wrapping_add(
+                                                            u16::try_from(which)
+                                                                .unwrap_or_else(|_| unreachable!())
+                                                                * 401,
+                                                        )
+                                                        .max(1),
+                                                    ..*v
+                                                })
+                                                .collect();
+                                            let mine =
+                                                derive::loads_where(running, &varied, &outside);
+                                            // Judged after the join, and caught here: see
+                                            // `without_unwinding` for why the barrier below is
+                                            // reached whatever happens above it.
+                                            seen.push((
+                                                round,
+                                                without_unwinding(|| {
+                                                    let mut ran = Vec::new();
+                                                    for mut load in mine {
+                                                        for _ in 0..8 {
+                                                            let Some(packet) = load.next() else {
+                                                                break;
+                                                            };
+                                                            let out = worker.send(packet);
+                                                            load.observe(&out);
+                                                        }
+                                                        ran.push((load.checked(), load.describe()));
+                                                    }
+                                                    ran
+                                                }),
+                                            ));
+                                            gate.wait();
+                                        }
+                                        seen
+                                    })
+                                    .expect("spawn framed worker")
+                            })
+                            .collect();
+
+                        // This thread is the config-apply path, carrying `A` through the writers
+                        // the running workers read.
+                        gate.wait();
+                        for _ in 0..ROUNDS {
+                            fleet.reconfigure(enacted);
+                            gate.wait();
+                        }
+
+                        for worker in handles {
+                            reports.push(worker.join().expect("framed worker panicked"));
+                        }
+                    });
+
+                    for seen in reports {
+                        for (round, ran) in seen {
+                            let ran = ran.unwrap_or_else(|why| {
+                                panic!(
+                                    "carrying traffic in round {round} panicked while {change:?} \
+                                     was being enacted: {why}"
+                                )
+                            });
+                            for (checked, described) in ran {
+                                // Round 1 is the one racing the change itself, and it is measured
+                                // rather than asserted. Every later round races a re-enactment of
+                                // a configuration already running, and those are asserted.
+                                if round == 1 {
+                                    if checked { &UNDISTURBED } else { &DISTURBED }
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    continue;
+                                }
+                                assert!(
+                                    checked,
+                                    "traffic outside the footprint of a configuration change did \
+                                     not survive it, in round {round}. The change was \
+                                     {change:?}, whose write set this load is outside of, so the \
+                                     configuration it ran against and the one enacted agree about \
+                                     it entirely -- and the enactment that carried the difference \
+                                     returned before this round opened. {described}"
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+
+        let (framed, barren, engulfed, framed_out, disturbed, undisturbed) = (
+            FRAMED.load(Ordering::Relaxed),
+            BARREN.load(Ordering::Relaxed),
+            ENGULFED.load(Ordering::Relaxed),
+            FRAMED_OUT.load(Ordering::Relaxed),
+            DISTURBED.load(Ordering::Relaxed),
+            UNDISTURBED.load(Ordering::Relaxed),
+        );
+        eprintln!("framed={framed} barren={barren} engulfed={engulfed} framed_out={framed_out}");
+        eprintln!("racing the change: disturbed={disturbed} undisturbed={undisturbed}");
+        super::assert_covered(
+            framed > 0,
+            "no draw left two loads outside the footprint of its last operation, so no \
+             configuration change was ever carried under traffic",
+        );
+        super::assert_covered(
+            framed_out > 0,
+            "no load was ever filtered out for being inside a footprint, so the frame was always \
+             the whole configuration and this property is the re-enactment one with extra steps",
         );
     }
 }
