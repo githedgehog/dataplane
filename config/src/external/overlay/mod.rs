@@ -6,6 +6,8 @@
 pub mod acl;
 #[cfg(any(test, feature = "bolero"))]
 pub mod algebra;
+#[cfg(test)]
+mod completeness;
 pub mod tests;
 pub mod validation_tests;
 pub mod vpc;

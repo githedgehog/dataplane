@@ -73,9 +73,32 @@ The algebra reaches exactly the configurations its operations compose to, which 
 of what the validator accepts. Configurations outside its reach are invisible to the fuzzer, and
 nothing about a green run says otherwise.
 
-So treat the algebra's completeness as its own property: take real configurations -- from CI, from the
-field -- and assert each is expressible as an operation sequence. A configuration that is not points
-at a missing operation.
+So treat the algebra's completeness as its own property. `config/src/external/overlay/completeness.rs`
+does, and not the way this paragraph first proposed.
+
+Asserting that real configurations are expressible as operation sequences answers a slightly
+different question than the one wanted, and answers it misleadingly. The algebra's address plan is a
+function of the handles, so essentially every real configuration fails on the address plan alone and
+the report is "0% reachable" -- true, useless, and it hides the differences that matter.
+
+Measure each _degree of freedom_ of the schema separately instead, with its own verdict, and get the
+evidence from the fuzzer: draw sequences, survey what comes out, and check the observed values
+against what each field is recorded to reach. That separates "the algebra picks one address plan out
+of many", which is deliberate and costs nothing to a property stated relative to its configuration,
+from "no operation produces a port-forwarding expose", which is a hole. It is falsifiable in both
+directions: a field recorded as reaching two values that shows one is a generator that stopped
+exploring, and a field recorded as fixed that starts varying is a vocabulary that grew without the
+record following it.
+
+The survey destructures every config struct and matches every enum without a wildcard, so a field
+added to the schema stops the build until it is surveyed and then fails a test until it is
+classified. A new configuration feature cannot quietly become unreachable.
+
+As of writing it reaches one of twenty-seven degrees of freedom fully, determines twelve from the
+handles, and **fixes thirteen**. The thirteen are the answer to "what does a green fuzzing run over
+this algebra not tell you", and the ones worth acting on are peering ACLs, port-restricted exposes,
+`nots`/`not_as` exclusions, and the static-nat and port-forwarding expose flavours -- each of which
+is both absent from the vocabulary and somewhere defects are expected.
 
 ## Updates come along for free
 
