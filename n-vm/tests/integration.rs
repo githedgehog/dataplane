@@ -40,10 +40,14 @@ const IOMMU_VM: VmConfig = VmConfig {
     ..VmConfig::DEFAULT
 };
 
-/// Standard 4 KiB host pages, so the VM needs no hugetlbfs reservation on
-/// the host.
-const HOST_4K_VM: VmConfig = VmConfig {
-    host_page_size: HostPageSize::Standard,
+/// 1 GiB host pages, which is the one thing the default deliberately does not ask for.
+///
+/// The default backs guest memory with 4 KiB pages because the host pool is small, unarbitrated,
+/// and irrelevant to a guest that is not driving DPDK through an IOMMU. That makes this the only
+/// test of the hugetlbfs path, and it is here so that flipping the default did not silently
+/// delete the coverage it used to get for free.
+const HOST_1G_VM: VmConfig = VmConfig {
+    host_page_size: HostPageSize::Huge1G,
     ..VmConfig::DEFAULT
 };
 
@@ -203,13 +207,13 @@ fn test_which_runs_in_vm_with_qemu_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-#[n_vm::test(config = HOST_4K_VM)]
-fn vm_boots_with_standard_host_pages() {
+#[n_vm::test(config = HOST_1G_VM)]
+fn vm_boots_with_host_hugepages() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-#[n_vm::test(qemu, config = HOST_4K_VM)]
-fn vm_boots_with_standard_host_pages_on_qemu() {
+#[n_vm::test(qemu, config = HOST_1G_VM)]
+fn vm_boots_with_host_hugepages_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
@@ -301,14 +305,14 @@ fn corpus_is_writable_and_rest_of_workspace_is_not() {
 /// sitting in a perfectly functional tmpfs and almost everything else would
 /// keep working -- so a test that merely boots proves much less than it
 /// appears to.
-#[n_vm::test(qemu, config = HOST_4K_VM)]
+#[n_vm::test(qemu)]
 fn root_is_read_only_after_switch_root() {
     let err = std::fs::File::create_new("/some.file").unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::ReadOnlyFilesystem);
 }
 
 /// `n-it`'s own mounts land on the new root, not the abandoned one.
-#[n_vm::test(qemu, config = HOST_4K_VM)]
+#[n_vm::test(qemu)]
 fn n_it_mounts_survive_switch_root() {
     std::fs::File::create_new("/run/probe").expect("/run should be a writable tmpfs");
     assert!(

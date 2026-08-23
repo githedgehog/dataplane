@@ -1196,12 +1196,14 @@ mod tests {
     #[test]
     fn kernel_cmdline_enables_hugepages() {
         let mut args = Vec::new();
-        push_kernel_args(&mut args, &sample_params());
+        let params = sample_params();
+        push_kernel_args(&mut args, &params);
         let idx = args.iter().position(|a| a == "-append").unwrap();
         let cmdline = &args[idx + 1];
-        assert!(cmdline.contains("default_hugepagesz=1G"), "{cmdline}");
-        assert!(cmdline.contains("hugepagesz=1G"), "{cmdline}");
-        assert!(cmdline.contains("hugepages=1"), "{cmdline}");
+        // Against the config, not a literal -- see the twin of this test in `cloud_hypervisor`.
+        let expected = params.vm_config.guest_hugepages.kernel_cmdline_fragment();
+        assert!(!expected.is_empty(), "the sample config reserves hugepages");
+        assert!(cmdline.contains(expected.trim_end()), "{cmdline}");
     }
 
     #[test]
