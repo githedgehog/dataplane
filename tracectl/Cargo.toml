@@ -5,6 +5,11 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Trace capture for tests: see `src/evidence.rs`. Off by default and expected in `dev-dependencies`
+# only, so it never reaches a shipped binary.
+evidence = []
+
 [dependencies]
 clock = { workspace = true }
 color-eyre = { workspace = true , features = [ "capture-spantrace", "color-spantrace", "tracing-error", "track-caller" ] }
