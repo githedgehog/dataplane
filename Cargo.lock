@@ -1732,6 +1732,7 @@ dependencies = [
 name = "dataplane-n-vm"
 version = "0.25.2"
 dependencies = [
+ "bolero",
  "bollard",
  "cloud-hypervisor-client",
  "command-fds",
