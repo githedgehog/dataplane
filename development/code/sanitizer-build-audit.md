@@ -48,15 +48,51 @@ allow there. So one of two things is true, and which one matters:
 - something in the graph is genuinely not instrumented, in which case that is the blind spot and
   the flag is hiding it.
 
+## What the experiment said
+
+Removed, and the thread-sanitizer build works without it. `nix build -f default.nix
+tests.pkg.dataplane --argstr sanitize thread` compiles the workspace with
+`-Zbuild-std=std,panic_abort` under `-Zsanitizer=thread`, **links** the test binary, and produces
+the nextest archive: exit 0, and no ABI-mismatch diagnostic anywhere in the log. So there was no
+mismatch to excuse on this path, because `std` is rebuilt from source with the same sanitizer as
+everything else -- which is what the flag's own comment did not account for.
+
+The flag is gone. What that restores is the compiler's guard: a crate in the graph that is *not*
+instrumented now fails the build instead of linking quietly.
+
+Confirmed along the way that dpdk really is instrumented, from its own build log:
+
+```
+dpdk-v26.03-hh> warning: Redundant instrumentation detected, with module flag: nosanitize_thread
+```
+
+That warning is worth its own look sometime -- it suggests two places are adding thread-sanitizer
+flags to dpdk rather than one -- but it is benign and it is proof the flags arrive.
+
+## The two knobs can no longer disagree
+
+`default.nix` stamps every sysroot with what it was built for (`postBuild` writes `.sanitize` and
+`.instrumentation`), and `just fuzz` reads the stamp and refuses when it disagrees with the
+sanitizer being asked for, naming the two commands that fix it. The check is conditional on the
+stamp existing, so a sysroot built before this degrades to the old behaviour rather than breaking.
+
+## Still open
+
+`nix build -f default.nix check --argstr sanitize thread` fails in `dataplane-interface-manager`
+with `cannot find `select` in `tokio``. That is feature unification, not sanitization -- `check`
+builds one package at a time, so it does not get the feature set a workspace build unifies -- and
+it is unrelated to anything here. Worth fixing on its own.
+
 ## What to do, when someone picks this up
 
-1. Remove `-Cunsafe-allow-abi-mismatch=sanitizer` and build `--argstr sanitize thread`. If it
-   builds, delete it. If it fails, the failure names the crate that is not instrumented, which is
-   the answer.
-2. If gimli is the crate, scope the exception to it rather than to everything, or drop `backtrace`
-   from `-Zbuild-std-features` for sanitizer builds and record the loss.
-3. Make the two `sanitize` knobs impossible to disagree. A `just fuzz` that is asked for a
-   sanitizer while the sysroot was built without one should refuse rather than link.
+Items 1 to 3 are done. What remains:
+
+1. The `check` target's feature unification, above.
+2. The doubled thread-sanitizer flags on dpdk, above.
+3. `sanitize=address` and the other profiles have had none of this scrutiny. The reasoning that
+   applied to `thread` -- does the flag list still match what the build actually does -- has not
+   been repeated for them, and `sanitize.leak` in particular overlaps with what address already
+   provides.
 
 ## Why this is worth the trouble
 
