@@ -7061,9 +7061,26 @@ mod model {
     ///
     /// **The masquerade step is the only one that disturbs anything**, alone among the six, and
     /// `Everything` is the same order as `Masquerade` alone -- which is what "the masquerade step
-    /// is the cause" should look like. Every other store is silent even in isolation, and that is
-    /// stronger than it sounds: enacting one store alone leaves the other four holding the
-    /// *previous* configuration, and four of them tolerate that perfectly.
+    /// is the cause" should look like.
+    ///
+    /// # Two of those zeroes are vacuous, and the table should not be read without this
+    ///
+    /// `Flavour` has two members, `Forward` and `Masquerade`, so **the algebra cannot build a
+    /// configuration containing static nat or port forwarding at all**. The `StaticNat` and
+    /// `PortForward` rows above therefore report stores of *empty* tables: the writer ran, wrote
+    /// nothing, and disturbed nothing, which is not evidence that those two stores are safe under
+    /// traffic. `config::external::overlay::completeness` records this as
+    /// `VpcExposeNat.config: Fixed("masquerade")` and it is one of the thirteen degrees of freedom
+    /// the vocabulary cannot reach.
+    ///
+    /// This matters more than it did before the masquerade store turned out to be defective. The
+    /// two stores that have never been exercised are the two whose equivalents in the one that was
+    /// exercised is where the defect lives.
+    ///
+    /// `FlowFilter`, `Acl` and `Generation` are not vacuous: every generated configuration has flow
+    /// filter and ACL tables, and those three zeroes are real. That is still worth something --
+    /// enacting one store alone leaves the other four holding the *previous* configuration, and
+    /// three of them tolerate that perfectly.
     ///
     /// # Two explanations this instrument killed
     ///
