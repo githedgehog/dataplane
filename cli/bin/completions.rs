@@ -5,7 +5,7 @@
 
 use crate::cmdtree::Node;
 use concurrency::sync::Arc;
-use reedline::{Completer, Span, Suggestion};
+use reedline::{Completer, CompletionResult, Span, Suggestion};
 
 #[derive(Default)]
 pub struct CmdCompleter {
@@ -35,8 +35,12 @@ fn suggestion(value: String, span: Span) -> Suggestion {
     }
 }
 
-impl Completer for CmdCompleter {
-    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+impl CmdCompleter {
+    /// Every candidate this completer can offer for `line[..pos]`.
+    ///
+    /// The whole command tree is already in memory, so there is never a
+    /// partial answer to report: the caller can always treat this as final.
+    fn candidates(&self, line: &str, pos: usize) -> Vec<Suggestion> {
         let input = &line[..pos];
         let tokens: Vec<String> = input.split_whitespace().map(ToString::to_string).collect();
         let mut candidates = Vec::new();
@@ -118,5 +122,11 @@ impl Completer for CmdCompleter {
             .into_iter()
             .map(|c| suggestion(c, span))
             .collect()
+    }
+}
+
+impl Completer for CmdCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
+        CompletionResult::fresh(self.candidates(line, pos))
     }
 }
