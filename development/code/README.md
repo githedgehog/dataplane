@@ -49,4 +49,8 @@ If you need to [handle an error][error], follow the guidelines.
 
 ## Testing instructions
 
-See [testing instructions](./running-tests.md)
+See [testing instructions](./running-tests.md).
+
+Before trusting a sanitizer run, read [what the sanitizer builds actually
+instrument](./sanitizer-build-audit.md): only the Nix build path instruments everything, and the
+other two paths that look like sanitizer builds fail silently rather than loudly.
