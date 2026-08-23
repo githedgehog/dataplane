@@ -4722,12 +4722,13 @@ mod routed {
 /// OS threads under `just test sanitize=thread`, is not redundant with the shuttle one.
 #[cfg(test)]
 mod model {
-    use super::routed::{exposes, inner, tunnelled};
+    use super::routed::{exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
+    use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4794,8 +4795,8 @@ mod model {
     /// A foundation rather than a property: it asserts almost nothing about the traffic, and exists
     /// to establish that a real pipeline survives a model-checked execution at all -- the flow
     /// table's tokio timers, the EAL, the ACL registry lock and `concurrency::sync` primitives all
-    /// have to tolerate it. Two workers each driving their own pipeline over shared tables is the
-    /// next step, and is what the split into [`Fleet`], [`Blueprint`] and [`Worker`] is for.
+    /// have to tolerate it. It is kept beside the two-worker property below because when that one
+    /// fails, this is what says whether the fault is in the sharing or in the machinery.
     ///
     /// The reader asserts nothing about *how many* entries it sees. That depends on the
     /// interleaving, and asserting it would make the test a claim about the scheduler.
@@ -4862,6 +4863,162 @@ mod model {
                 sender.join().expect("sender panicked");
                 reader.join().expect("reader panicked");
             });
+        });
+    }
+    /// The claim the whole arrangement rests on, put to the compiler rather than left in a comment.
+    ///
+    /// If a field is ever added to [`Blueprint`] that is not shareable, this is the error that says
+    /// so, in one line, instead of a page about a closure capture in the property below.
+    fn _a_blueprint_crosses_a_thread_boundary(blueprint: &Blueprint) {
+        fn shareable<T: Sync>(_: &T) {}
+        shareable(blueprint);
+    }
+
+    /// Two workers over one configuration are not given the same public tuple for two flows.
+    ///
+    /// This is the shape production runs in and that nothing above has ever been in. `start_router`
+    /// builds the writers once and gives each worker a pipeline of its own from the same factories,
+    /// so the masquerade allocator and the flow table are shared while the pipelines are not. Every
+    /// property above drives one pipeline on one thread, which is the one arrangement in which an
+    /// allocator race cannot happen.
+    ///
+    /// Two distinct flows given one public tuple is a defect however the threads interleave: the
+    /// reverse lookup then has a single key and two answers, and the reply reaches at most one of
+    /// them. `burst::a_burst_of_one_flow_allocates_once` is this property's single-threaded
+    /// neighbour and says the opposite thing -- one flow, one tuple. Both are needed, and only this
+    /// one can fail for a reason that involves two workers.
+    ///
+    /// It can fail, which is worth saying because a property about several allocations is worthless
+    /// if the answers were fixed in advance. Measured on this fixture the pool is a *single* public
+    /// address -- `1.1.0.0/16` masqueraded into `2.2.0.0/16` gives out `2.2.0.0` whichever host the
+    /// flow came from -- so every tuple here differs in the port alone, and the port allocator is
+    /// the one thing both workers reach into.
+    ///
+    /// It is contended at two levels, and the burst is sized to reach both. Ports come in blocks of
+    /// 256 handed out per thread (`ThreadPortMap` and `usable_blocks` in `nat::masquerade::apalloc`,
+    /// both `concurrency::sync` primitives and so both visible to shuttle), so the flows within one
+    /// worker share a block while the two workers must be given different ones -- observed as
+    /// `2.2.0.0:1024` and `2.2.0.0:1280`. A lost update to the block handout collides every port of
+    /// both workers at once; a lost update inside a block collides two of one worker's.
+    ///
+    /// That the ports are consecutive rather than arbitrary is `set_randomize(false)` in
+    /// [`Fleet::lowering`], and is the reason the observation above is stable enough to rely on.
+    ///
+    /// # Only shuttle catches it
+    ///
+    /// Replacing the `compare_exchange` in `PortBlockList::pick_available_block` with a
+    /// test-then-set -- load `free`, then store `false`, the classic lost update -- lets two threads
+    /// claim one block. Under shuttle this fails on the first run in 0.16s, reporting
+    /// `2.2.0.0:1024` handed to two flows and a replayable schedule. Under the std backend the same
+    /// break passed **twenty runs out of twenty**: two threads doing a few hundred microseconds of
+    /// work each simply do not land in that window on real hardware.
+    ///
+    /// That gap is the argument for the backend existing. It is also the limit of it: shuttle sees
+    /// `concurrency::sync` primitives and nothing else, so what it explores here is the allocator's
+    /// own synchronisation, not `rte_acl`'s.
+    #[concurrency::model_test]
+    fn two_workers_are_not_given_the_same_public_tuple() {
+        /// Flows per worker: more than one, so a collision *within* a worker's block can happen
+        /// too, and few enough that a burst is still one block rather than an exhaustion test.
+        const FLOWS: u16 = 3;
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            // Lowered once, outside the threads, exactly as `start_router` lowers it once. The ACL
+            // contexts are built here too, which keeps the registry lock out of the interleaving
+            // under test rather than making every execution race on it.
+            let fleet = Fleet::lowering(
+                &overlay,
+                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+                Arc::new(FlowTable::default()),
+            );
+            let blueprint = fleet.blueprint();
+
+            // A host and a first source port each, far enough apart that no two flows in the run
+            // are the same flow. Two workers rather than more because shuttle's cost is in the
+            // interleavings, and two threads is where the sharing already exists.
+            let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
+            let given: Vec<(Option<IpAddr>, Option<u16>)> = thread::scope(|scope| {
+                let running: Vec<_> = workers
+                    .iter()
+                    .map(|(host, first)| {
+                        let entering = handle.clone();
+                        thread::Builder::new()
+                            .name(format!("worker-{host}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                // Built on this thread, not handed to it: the readers it takes out
+                                // are thread-local caches, and this is the `factory().handle()`
+                                // path production uses.
+                                let mut worker = blueprint.worker();
+                                let burst = (0..FLOWS)
+                                    .map(|n| {
+                                        tunnelled(&build_test_udp_ipv4_packet(
+                                            host,
+                                            "3.3.3.1",
+                                            first + n,
+                                            80,
+                                        ))
+                                    })
+                                    .collect();
+                                worker
+                                    .send_batch(burst)
+                                    .iter()
+                                    .map(|out| {
+                                        assert!(
+                                            matches!(verdict(out), Verdict::Delivered { .. }),
+                                            "a packet that is delivered single-threaded was not: \
+                                             {:?}",
+                                            verdict(out)
+                                        );
+                                        let tenant = inside(out).expect(
+                                            "a delivered frame leaves this gateway tunnelled",
+                                        );
+                                        (
+                                            tenant.ip_source(),
+                                            tenant.transport_src_port().map(std::num::NonZero::get),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .expect("spawn worker")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .flat_map(|worker| worker.join().expect("worker panicked"))
+                    .collect()
+            });
+
+            let mut seen = std::collections::BTreeMap::new();
+            for tuple in &given {
+                let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
+                *count += 1;
+                assert_eq!(
+                    *count,
+                    1,
+                    "{} distinct flows were translated and {tuple:?} was handed out twice, so a \
+                     reply to it cannot be attributed to either of them: {given:?}",
+                    given.len()
+                );
+            }
         });
     }
 }
