@@ -3573,7 +3573,7 @@ mod routed {
 #[cfg(test)]
 mod model {
     use super::derive::loads_for;
-    use super::routed::{exposes, inner, inside, tunnelled};
+    use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
@@ -3879,6 +3879,144 @@ mod model {
             split > 0,
             "no drawn configuration ever implied enough traffic to load two workers, so this ran \
              nothing concurrently",
+        );
+    }
+
+    fn step(worker: &mut Worker, load: &mut dyn Load) {
+        let Some(packet) = load.next() else {
+            panic!(
+                "a load was asked for a packet it would not give: {}",
+                load.describe()
+            );
+        };
+        let out = worker.send(packet);
+        load.observe(&out);
+    }
+
+    #[concurrency::model_test]
+    fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
+        const FLOWS: u8 = 2;
+
+        static CLOSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let fleet = Fleet::lowering(
+                &overlay,
+                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+                Arc::new(FlowTable::default()),
+            );
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+
+            let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        thread::Builder::new()
+                            .name(format!("open-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("open-{which}"));
+                                let mut worker = blueprint.worker();
+                                (0..FLOWS)
+                                    .map(|nth| {
+                                        let src = format!("1.1.{which}.{}", nth + 1);
+                                        let mut convo = Conversation::new(
+                                            super::routed::Path::fixture(),
+                                            src.parse().unwrap_or_else(|e| {
+                                                unreachable!("{src} is an address: {e}")
+                                            }),
+                                            "3.3.3.1"
+                                                .parse()
+                                                .unwrap_or_else(|e| unreachable!("{e}")),
+                                            u16::from(nth) + 1000,
+                                            80,
+                                        );
+                                        step(&mut worker, &mut convo);
+                                        convo
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .expect("spawn opener")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|opener| opener.join().expect("opener panicked"))
+                    .collect()
+            });
+
+            let second = opened
+                .pop()
+                .unwrap_or_else(|| unreachable!("two openers ran"));
+            let first = opened
+                .pop()
+                .unwrap_or_else(|| unreachable!("two openers ran"));
+
+            let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                let running: Vec<_> = [(0u8, second), (1u8, first)]
+                    .into_iter()
+                    .map(|(which, mut theirs)| {
+                        let entering = entering.clone();
+                        thread::Builder::new()
+                            .name(format!("answer-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("answer-{which}"));
+                                let mut worker = blueprint.worker();
+                                for convo in &mut theirs {
+                                    if !convo.finished() {
+                                        step(&mut worker, convo);
+                                    }
+                                }
+                                theirs
+                            })
+                            .expect("spawn answerer")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|answerer| answerer.join().expect("answerer panicked"))
+                    .collect()
+            });
+
+            for convo in answered.into_iter().flatten() {
+                if convo.checked() {
+                    CLOSED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    ABANDONED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let (closed, abandoned) = (
+            CLOSED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+        );
+        eprintln!("closed={closed} abandoned={abandoned}");
+        super::assert_covered(
+            closed > 0,
+            "no conversation was ever answered by the other worker, so nothing crossed",
         );
     }
 }
