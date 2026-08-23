@@ -4721,6 +4721,12 @@ mod routed {
 /// [`generated_traffic_survives_being_split_across_two_workers`] found was reported as `RefCell
 /// already borrowed` at the top and `An ACL context named 'flow_filter_remote_v4_7499' already
 /// exists` a hundred and fifty lines further down.
+///
+/// The properties here take out `tracectl::evidence` recordings, which dump the pipeline's own
+/// trace for a failing worker. Under shuttle those are **inert by design** -- see that module's
+/// docs -- and the replayable schedule the backend prints is the artefact to use instead, because
+/// it reproduces the failure rather than describing one run of it. The recordings are for the
+/// backends with no such thing: the plain one, and the sanitizer builds.
 #[cfg(test)]
 mod model {
     use super::derive::loads_for;
@@ -4734,6 +4740,12 @@ mod model {
     use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{LazyLock, OnceLock};
+
+    /// The public tuple a translated packet left with.
+    type Tuple = (Option<IpAddr>, Option<u16>);
+
+    /// What one worker produced, and the trace that would explain it.
+    type Reported = (Vec<Tuple>, tracectl::evidence::Evidence);
 
     /// Run `body` on two threads inside one execution, which is the least shuttle's PCT scheduler
     /// will accept -- it panics outright on a body that never has two threads runnable at once.
@@ -4958,7 +4970,7 @@ mod model {
             // are the same flow. Two workers rather than more because shuttle's cost is in the
             // interleavings, and two threads is where the sharing already exists.
             let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
-            let given: Vec<(Option<IpAddr>, Option<u16>)> = thread::scope(|scope| {
+            let given: Vec<Reported> = thread::scope(|scope| {
                 let running: Vec<_> = workers
                     .iter()
                     .map(|(host, first)| {
@@ -4967,6 +4979,11 @@ mod model {
                             .name(format!("worker-{host}"))
                             .spawn_scoped(scope, move || {
                                 let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                // Recorded per thread because that is the only granularity there
+                                // is, and handed back because the assertion that judges this
+                                // worker is made after it has exited.
+                                let recording =
+                                    tracectl::evidence::capture(format!("worker-{host}"));
                                 // Built on this thread, not handed to it: the readers it takes out
                                 // are thread-local caches, and this is the `factory().handle()`
                                 // path production uses.
@@ -4981,7 +4998,7 @@ mod model {
                                         ))
                                     })
                                     .collect();
-                                worker
+                                let tuples = worker
                                     .send_batch(burst)
                                     .iter()
                                     .map(|out| {
@@ -4999,16 +5016,23 @@ mod model {
                                             tenant.transport_src_port().map(std::num::NonZero::get),
                                         )
                                     })
-                                    .collect::<Vec<_>>()
+                                    .collect::<Vec<_>>();
+                                (tuples, recording.evidence())
                             })
                             .expect("spawn worker")
                     })
                     .collect();
                 running
                     .into_iter()
-                    .flat_map(|worker| worker.join().expect("worker panicked"))
+                    .map(|worker| worker.join().expect("worker panicked"))
                     .collect()
             });
+
+            let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) = given.into_iter().unzip();
+            let given: Vec<_> = given.into_iter().flatten().collect();
+            // Held across the assertions below, so a collision arrives with both workers' traces
+            // attached and a pass prints nothing at all.
+            let _explain = tracectl::evidence::dump_on_panic(evidence);
 
             let mut seen = std::collections::BTreeMap::new();
             for tuple in &given {
@@ -5145,6 +5169,12 @@ mod model {
                                     .spawn_scoped(scope, move || {
                                         let _guard =
                                             entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        // Every assertion in this property is made *on this
+                                        // thread* -- a load panics where it is driven -- so the
+                                        // recording's own drop-while-panicking is enough and no
+                                        // handle has to leave.
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("worker-{which}"));
                                         let mut worker = blueprint.worker();
                                         let mut mine: Vec<Box<dyn Load>> =
                                             loads_for(validated, vary)
