@@ -61,7 +61,9 @@
 #![cfg(test)]
 #![cfg(not(miri))]
 
-use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
+use acl_filter::{
+    AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
+};
 use concurrency::sync::{Arc, Mutex};
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
@@ -70,12 +72,14 @@ use config::external::overlay::vpcpeering::contract::{
 };
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
+use flow_filter::{
+    FlowFilter, FlowFilterContext, FlowFilterContextReaderFactory, FlowFilterContextWriter,
+};
 use lpm::prefix::Prefix;
-use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
-use nat::portfw::{PortForwarder, PortFwTableWriter};
-use nat::static_nat::NatTablesWriter;
+use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorWriter};
+use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::setup::build_nat_configuration;
+use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
@@ -85,6 +89,7 @@ use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
+use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use std::net::IpAddr;
 
@@ -92,13 +97,19 @@ use super::egress::Egress;
 use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
 
-/// A configured overlay pipeline, and the handles that keep its tables alive.
+/// The write side of a configuration: the handles that keep its tables alive.
 ///
-/// Every writer is held for the fabric's lifetime: dropping one tears down the data it published,
-/// so a fabric that let a writer go would be a pipeline whose configuration silently emptied.
-pub(crate) struct Fabric {
-    pipeline: DynPipeline<TestBuffer>,
-    flow_table: Arc<FlowTable>,
+/// Every writer is held here for as long as any pipeline built from it runs. Dropping one tears
+/// down the data it published, so a fleet that let a writer go would be a pipeline whose
+/// configuration silently emptied. Nothing reads a `Fleet`; it exists to be held.
+///
+/// Kept apart from the pipeline because one configuration has to be able to feed *several*
+/// pipelines. That is how production works -- `start_router` builds the writers once and hands
+/// every worker a builder closure -- and it is not a stylistic choice: see [`Blueprint`] for why
+/// a built pipeline cannot cross a thread boundary. A `Fleet` cannot cross one either, because
+/// `RouterTables` is neither `Send` nor `Sync`, so it stays on the thread that made it and the
+/// blueprint is what travels.
+pub(crate) struct Fleet {
     _flow_filter: FlowFilterContextWriter,
     _acl: AclFilterContextWriter,
     _static_nat: NatTablesWriter,
@@ -107,10 +118,253 @@ pub(crate) struct Fabric {
     /// Held for the same reason as the writers above: the fib writers live in here, and a fib
     /// whose writer is dropped is torn down. `None` for an overlay-slice fabric.
     _tables: Option<RouterTables>,
+    blueprint: Blueprint,
+}
+
+/// The read side of a configuration: everything a pipeline is built *from*.
+///
+/// A built pipeline cannot be handed to a thread. `DynPipeline` holds `dyn DynNetworkFunction`,
+/// which is not `Send`, and underneath that the fib readers cache an `Rc<UnsafeCell<FibGroup>>`
+/// per thread; the readers themselves are neither `Send` nor `Sync` for the same reason. The only
+/// thing in the whole arrangement that crosses a thread boundary is a *factory*, on which the
+/// receiving thread calls `handle()` locally. That is why `start_router` gives each worker a
+/// builder closure rather than a pipeline, and it is why this type exists rather than a `Clone`
+/// on [`Fabric`].
+///
+/// So: build a `Fleet` on one thread, share `&Blueprint` with as many as you like, and let each
+/// call [`Blueprint::worker`] on itself.
+pub(crate) struct Blueprint {
+    flow_filter: FlowFilterContextReaderFactory,
+    acl: AclFilterContextReaderFactory,
+    static_nat: NatTablesReaderFactory,
+    portfw: PortFwTableReaderFactory,
+    masquerade: NatAllocatorReaderFactory,
+    /// The underlay factories, or `None` for an overlay-slice fabric. The four stages that read
+    /// them are added as a group, so they are present or absent together.
+    underlay: Option<Underlay>,
+    /// Shared by every worker, exactly as `start_router` shares one table across every pipeline it
+    /// builds. This is the sharing the model tests are about.
+    flow_table: Arc<FlowTable>,
+    /// The configuration's public ranges, for each worker's [`Translations`] to judge against.
+    declared: Arc<[Prefix]>,
+}
+
+/// The three underlay factories, kept together because the stages that read them are.
+struct Underlay {
+    interfaces: IfTableReaderFactory,
+    fibs: FibTableReaderFactory,
+    adjacencies: AtableReaderFactory,
+}
+
+/// One pipeline and the state that belongs to the thread driving it.
+///
+/// A worker's [`Translations`] is its own even though the flow table is shared, because that
+/// record is scoped to a *burst*: [`Worker::send_batch`] clears it, and a second worker clearing
+/// the first one's record mid-burst would turn correct behaviour into a failure. `next_id` is
+/// per-worker for the same reason -- ids only have to distinguish packets within the record that
+/// reads them.
+pub(crate) struct Worker {
+    pipeline: DynPipeline<TestBuffer>,
     /// Shared with the two checkpoints straddling masquerade, so a burst can be given a clean one.
     translations: Arc<Mutex<Translations>>,
-    /// Distinguishes the packets this fabric has been given, for those checkpoints.
+    /// Distinguishes the packets this worker has been given, for those checkpoints.
     next_id: u64,
+}
+
+/// A configured overlay pipeline, and the handles that keep its tables alive.
+///
+/// A [`Fleet`] with a single [`Worker`], which is what every single-threaded property here wants.
+/// The split behind it only shows through when a test needs two.
+pub(crate) struct Fabric {
+    fleet: Fleet,
+    worker: Worker,
+}
+
+impl Fleet {
+    /// Lower a validated overlay into tables, and hold the writers.
+    ///
+    /// The lowering steps are `expect` rather than `?`: a configuration that validates and then
+    /// cannot be lowered is a defect, not a rejected input. Rejection happens earlier, at
+    /// `validate`.
+    pub(crate) fn lowering(
+        overlay: &ValidatedOverlay,
+        tables: Option<RouterTables>,
+        flow_table: Arc<FlowTable>,
+    ) -> Self {
+        let flow_filter = FlowFilterContextWriter::new();
+        flow_filter.store(
+            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+        );
+
+        let acl = AclFilterContextWriter::new();
+        acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
+
+        let mut static_nat = NatTablesWriter::new();
+        static_nat.update_nat_tables(
+            build_nat_configuration(overlay.vpc_table())
+                .expect("a validated overlay lowers to nat"),
+        );
+
+        let mut portfw = PortFwTableWriter::new();
+        portfw
+            .update_from_vpc_table(overlay.vpc_table())
+            .expect("a validated overlay lowers to port forwarding");
+
+        let mut masquerade = NatAllocatorWriter::new();
+        // Randomised port selection would make two runs of one configuration disagree on every
+        // flow, which is legitimate behaviour and useless to compare.
+        masquerade.update_nat_allocator(
+            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+            1,
+            &flow_table,
+        );
+
+        let blueprint = Blueprint {
+            flow_filter: flow_filter.get_reader_factory(),
+            acl: acl.get_reader_factory(),
+            static_nat: static_nat.get_reader_factory(),
+            portfw: portfw.reader().factory(),
+            masquerade: masquerade.get_reader_factory(),
+            underlay: tables.as_ref().map(|tables| Underlay {
+                interfaces: tables.interface_factory(),
+                fibs: tables.fib_factory(),
+                adjacencies: tables.adjacency_factory(),
+            }),
+            flow_table,
+            declared: declared_public_ranges(overlay),
+        };
+
+        Self {
+            _flow_filter: flow_filter,
+            _acl: acl,
+            _static_nat: static_nat,
+            _portfw: portfw,
+            _masquerade: masquerade,
+            _tables: tables,
+            blueprint,
+        }
+    }
+
+    /// What a worker thread needs to build itself a pipeline over this configuration.
+    pub(crate) fn blueprint(&self) -> &Blueprint {
+        &self.blueprint
+    }
+}
+
+impl Blueprint {
+    /// Build a pipeline over this configuration, on the calling thread.
+    ///
+    /// Call this *from* the thread that will drive it. The readers it takes out are thread-local
+    /// caches; a pipeline built here and moved elsewhere is the thing the type system already
+    /// refuses, and the reason it refuses is not a formality.
+    pub(crate) fn worker(&self) -> Worker {
+        let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
+        let mut pipeline = DynPipeline::new();
+
+        if let Some(underlay) = &self.underlay {
+            pipeline = pipeline.add_stage(Ingress::new("ingress", underlay.interfaces.handle()));
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", underlay.fibs.handle()));
+            pipeline = pipeline.add_stage(Checkpoint::new(
+                "after ip-forward-1",
+                contract::decapsulated,
+            ));
+        }
+
+        pipeline = pipeline.add_stage(IcmpErrorHandler::new(self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", self.flow_filter.handle()));
+        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
+        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", self.acl.handle()));
+        pipeline = pipeline.add_stage(StaticNat::with_reader(
+            "static-nat",
+            self.static_nat.handle(),
+        ));
+        pipeline = pipeline.add_stage(PortForwarder::new(
+            "port-forwarder",
+            self.portfw.handle(),
+            self.flow_table.clone(),
+        ));
+
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            contract::ready_to_translate,
+        ));
+        let recording = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            move |_: &str, packet: &Packet<TestBuffer>| {
+                recording.lock().before(packet);
+            },
+        ));
+        pipeline = pipeline.add_stage(Masquerade::new(
+            "masquerade",
+            self.flow_table.clone(),
+            self.masquerade.handle(),
+        ));
+
+        let checking = translations.clone();
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "after masquerade",
+            move |at: &str, packet: &Packet<TestBuffer>| {
+                checking.lock().after(at, packet);
+            },
+        ));
+
+        if let Some(underlay) = &self.underlay {
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", underlay.fibs.handle()));
+            pipeline = pipeline.add_stage(Egress::new(
+                "egress",
+                underlay.interfaces.handle(),
+                underlay.adjacencies.handle(),
+            ));
+            pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
+        }
+
+        Worker {
+            pipeline,
+            translations,
+            next_id: 0,
+        }
+    }
+}
+
+impl Worker {
+    /// Send one packet through, and hand back what came out.
+    ///
+    /// A stage may drop a packet but must not lose it: `enforce` keeps a done packet so the reason
+    /// can be read, and a pipeline that returned nothing would be a packet that vanished. That is
+    /// asserted here rather than in a property, because every property depends on it.
+    pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
+        let mut out = self.send_batch(vec![packet]);
+        assert_eq!(out.len(), 1, "the pipeline did not return the packet");
+        out.pop().unwrap_or_else(|| unreachable!())
+    }
+
+    /// Send several packets through as one burst, and hand back what came out.
+    ///
+    /// Not the same code path as calling [`Self::send`] repeatedly. `FlowFilter::process` collects
+    /// its whole input before doing anything, so that it can pool the classifications into batched
+    /// `rte_acl` calls -- which means that in a burst, every packet has been through `FlowLookup`
+    /// before any of them reaches the nat stages. This is how the driver actually feeds the
+    /// pipeline: one bounded rx burst per poll.
+    pub(crate) fn send_batch(
+        &mut self,
+        mut packets: Vec<Packet<TestBuffer>>,
+    ) -> Vec<Packet<TestBuffer>> {
+        let sent = packets.len();
+        // A fresh identity per packet, and a clean slate per burst: the contract straddling
+        // masquerade is about one burst, and carrying a previous burst's allocations into this one
+        // would report a legitimately re-allocated flow as a violation.
+        for packet in &mut packets {
+            self.next_id += 1;
+            packet.meta_mut().test = Some(Box::new(net::packet::TestMeta { id: self.next_id }));
+        }
+        self.translations.lock().clear();
+
+        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
+        assert_eq!(out.len(), sent, "the pipeline did not return every packet");
+        out
+    }
 }
 
 impl Fabric {
@@ -143,13 +397,6 @@ impl Fabric {
     }
 
     /// As [`Self::routed`], over a flow table the caller already holds.
-    ///
-    /// Production shares one `Arc<FlowTable>` across every worker's pipeline, so a test about what
-    /// two workers do to each other has to be able to say which table they share. It cannot do that
-    /// by building a fabric and handing it to a thread: `DynPipeline` is **not `Send`** -- the fib
-    /// readers cache `Rc<UnsafeCell<FibGroup>>` per thread -- which is exactly why `start_router`
-    /// passes each worker a *builder closure* rather than a built pipeline. A fabric has to be
-    /// constructed on the thread that will drive it, and this is what crosses the boundary instead.
     pub(crate) fn routed_sharing(
         exposes: &[VpcExpose],
         acl: Option<&Acl>,
@@ -159,7 +406,7 @@ impl Fabric {
             .ok()?
             .validate()
             .ok()?;
-        Some(Self::with_overlay_sharing(
+        Some(Self::over(
             &overlay,
             Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
             flow_table,
@@ -172,9 +419,10 @@ impl Fabric {
     /// between. The caller supplies the underlay too, because the vnis it has to be able to
     /// encapsulate into are the ones its own configuration names.
     pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
-        Some(Self::with_overlay(
+        Some(Self::over(
             &overlay.clone().validate().ok()?,
             Some(tables),
+            Arc::new(FlowTable::default()),
         ))
     }
 
@@ -183,7 +431,7 @@ impl Fabric {
     /// Validation is not cheap and a property that rebuilds a fabric per case would otherwise pay
     /// for it every time, which at ten executions a second is most of the budget.
     pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: RouterTables) -> Self {
-        Self::with_overlay(overlay, Some(tables))
+        Self::over(overlay, Some(tables), Arc::new(FlowTable::default()))
     }
 
     fn assemble(
@@ -195,170 +443,35 @@ impl Fabric {
             .ok()?
             .validate()
             .ok()?;
-        Some(Self::with_overlay(&overlay, tables))
+        Some(Self::over(&overlay, tables, Arc::new(FlowTable::default())))
     }
 
-    fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
-        Self::with_overlay_sharing(overlay, tables, Arc::new(FlowTable::default()))
-    }
-
-    fn with_overlay_sharing(
+    fn over(
         overlay: &ValidatedOverlay,
         tables: Option<RouterTables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
-        let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
-        let mut pipeline = DynPipeline::new();
-
-        if let Some(tables) = &tables {
-            pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
-            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
-            pipeline = pipeline.add_stage(Checkpoint::new(
-                "after ip-forward-1",
-                contract::decapsulated,
-            ));
-        }
-
-        pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
-        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
-
-        let flow_filter = FlowFilterContextWriter::new();
-        flow_filter.store(
-            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
-        );
-        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", flow_filter.get_reader()));
-        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
-
-        let acl = AclFilterContextWriter::new();
-        acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
-        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", acl.get_reader()));
-
-        let mut static_nat = NatTablesWriter::new();
-        static_nat.update_nat_tables(
-            build_nat_configuration(overlay.vpc_table())
-                .expect("a validated overlay lowers to nat"),
-        );
-        pipeline = pipeline.add_stage(StaticNat::with_reader(
-            "static-nat",
-            static_nat.get_reader(),
-        ));
-
-        let mut portfw = PortFwTableWriter::new();
-        portfw
-            .update_from_vpc_table(overlay.vpc_table())
-            .expect("a validated overlay lowers to port forwarding");
-        pipeline = pipeline.add_stage(PortForwarder::new(
-            "port-forwarder",
-            portfw.reader(),
-            flow_table.clone(),
-        ));
-
-        let mut masquerade = NatAllocatorWriter::new();
-        // Randomised port selection would make two runs of one configuration disagree on every
-        // flow, which is legitimate behaviour and useless to compare.
-        masquerade.update_nat_allocator(
-            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
-            &flow_table,
-        );
-        pipeline = pipeline.add_stage(Checkpoint::new(
-            "before masquerade",
-            contract::ready_to_translate,
-        ));
-        let recording = translations.clone();
-        pipeline = pipeline.add_stage(Checkpoint::new(
-            "before masquerade",
-            move |_: &str, packet: &Packet<TestBuffer>| {
-                recording.lock().before(packet);
-            },
-        ));
-        pipeline = pipeline.add_stage(Masquerade::new(
-            "masquerade",
-            flow_table.clone(),
-            masquerade.get_reader(),
-        ));
-
-        let checking = translations.clone();
-        pipeline = pipeline.add_stage(Checkpoint::new(
-            "after masquerade",
-            move |at: &str, packet: &Packet<TestBuffer>| {
-                checking.lock().after(at, packet);
-            },
-        ));
-
-        if let Some(tables) = &tables {
-            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
-            pipeline = pipeline.add_stage(Egress::new(
-                "egress",
-                tables.interfaces(),
-                tables.adjacencies(),
-            ));
-            pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
-        }
-
-        Self {
-            pipeline,
-            flow_table,
-            _flow_filter: flow_filter,
-            _acl: acl,
-            _static_nat: static_nat,
-            _portfw: portfw,
-            _masquerade: masquerade,
-            _tables: tables,
-            translations,
-            next_id: 0,
-        }
+        let fleet = Fleet::lowering(overlay, tables, flow_table);
+        let worker = fleet.blueprint().worker();
+        Self { fleet, worker }
     }
 
-    /// Send one packet through, and hand back what came out.
-    ///
-    /// A stage may drop a packet but must not lose it: `enforce` keeps a done packet so the reason
-    /// can be read, and a pipeline that returned nothing would be a packet that vanished. That is
-    /// asserted here rather than in a property, because every property depends on it.
+    /// Send one packet through. See [`Worker::send`].
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let mut out = self.send_batch(vec![packet]);
-        assert_eq!(out.len(), 1, "the pipeline did not return the packet");
-        out.pop().unwrap_or_else(|| unreachable!())
+        self.worker.send(packet)
+    }
+
+    /// Send a burst through. See [`Worker::send_batch`].
+    pub(crate) fn send_batch(
+        &mut self,
+        packets: Vec<Packet<TestBuffer>>,
+    ) -> Vec<Packet<TestBuffer>> {
+        self.worker.send_batch(packets)
     }
 
     /// How many entries the flow table holds, for a property about state rather than packets.
     pub(crate) fn flows(&self) -> Option<usize> {
-        self.flow_table.len()
-    }
-
-    /// The flow table this fabric writes, for a second thread to read while it runs.
-    ///
-    /// Production shares exactly this between workers -- `start_router` builds one `Arc<FlowTable>`
-    /// and hands it to every pipeline it makes -- so handing out the `Arc` is the sharing under
-    /// test rather than a convenience.
-    pub(crate) fn shared_flow_table(&self) -> Arc<FlowTable> {
-        self.flow_table.clone()
-    }
-
-    /// Send several packets through as one burst, and hand back what came out.
-    ///
-    /// Not the same code path as calling [`Self::send`] repeatedly. `FlowFilter::process` collects
-    /// its whole input before doing anything, so that it can pool the classifications into batched
-    /// `rte_acl` calls -- which means that in a burst, every packet has been through `FlowLookup`
-    /// before any of them reaches the nat stages. This is how the driver actually feeds the
-    /// pipeline: one bounded rx burst per poll.
-    pub(crate) fn send_batch(
-        &mut self,
-        mut packets: Vec<Packet<TestBuffer>>,
-    ) -> Vec<Packet<TestBuffer>> {
-        let sent = packets.len();
-        // A fresh identity per packet, and a clean slate per burst: the contract straddling
-        // masquerade is about one burst, and carrying a previous burst's allocations into this one
-        // would report a legitimately re-allocated flow as a violation.
-        for packet in &mut packets {
-            self.next_id += 1;
-            packet.meta_mut().test = Some(Box::new(net::packet::TestMeta { id: self.next_id }));
-        }
-        self.translations.lock().clear();
-
-        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
-        assert_eq!(out.len(), sent, "the pipeline did not return every packet");
-        out
+        self.fleet.blueprint().flow_table.len()
     }
 }
 
@@ -552,7 +665,10 @@ pub(crate) struct Translations {
     /// The public tuple each of those flows has been given in this burst.
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
     /// Every address range the configuration declares as public. See [`Translations::after`].
-    declared: Vec<Prefix>,
+    ///
+    /// Shared rather than owned because every worker over one configuration judges against the
+    /// same set, and only the per-burst maps above are a worker's own.
+    declared: Arc<[Prefix]>,
 }
 
 #[cfg(test)]
@@ -647,28 +763,34 @@ impl Translations {
         self.given.clear();
     }
 
-    /// The public ranges of every expose in the configuration, in both directions of every peering.
-    fn declaring(overlay: &ValidatedOverlay) -> Self {
-        let mut declared = Vec::new();
-        for vpc in overlay.vpc_table().values() {
-            for peering in vpc.peerings() {
-                for manifest in [peering.local(), peering.remote()] {
-                    for expose in manifest.valexp() {
-                        declared.extend(
-                            expose
-                                .public_ips()
-                                .into_iter()
-                                .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
-                        );
-                    }
-                }
-            }
-        }
+    /// A clean record judging against the ranges the configuration declared.
+    fn declaring(declared: &Arc<[Prefix]>) -> Self {
         Self {
-            declared,
+            declared: declared.clone(),
             ..Self::default()
         }
     }
+}
+
+/// The public ranges of every expose in the configuration, in both directions of every peering.
+#[cfg(test)]
+fn declared_public_ranges(overlay: &ValidatedOverlay) -> Arc<[Prefix]> {
+    let mut declared = Vec::new();
+    for vpc in overlay.vpc_table().values() {
+        for peering in vpc.peerings() {
+            for manifest in [peering.local(), peering.remote()] {
+                for expose in manifest.valexp() {
+                    declared.extend(
+                        expose
+                            .public_ips()
+                            .into_iter()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
+                    );
+                }
+            }
+        }
+    }
+    declared.into()
 }
 
 /// Traffic that knows what it sent, and therefore what should come back.
@@ -4586,10 +4708,11 @@ mod routed {
 /// [`a_lock_that_outlives_its_execution_is_not_model_checkable`] keeps the evidence, since the raw
 /// symptom is a panic ten frames deep in shuttle that names nothing in this workspace.
 ///
-/// **`DynPipeline` is not `Send`.** The fib readers cache `Rc<UnsafeCell<FibGroup>>` per thread. So
-/// a worker cannot be handed a pipeline; it has to build its own, which is exactly why
-/// `start_router` gives each worker a builder closure. What crosses a thread boundary is the shared
-/// state -- see [`Fabric::routed_sharing`].
+/// **`DynPipeline` is not `Send`.** The fib readers cache `Rc<UnsafeCell<FibGroup>>` per thread, and
+/// are themselves neither `Send` nor `Sync`; so is `RouterTables`. A worker cannot be handed a
+/// pipeline, or a reader, or the tables -- only a *factory*, on which it calls `handle()` itself.
+/// That is exactly why `start_router` gives each worker a builder closure, and it is what
+/// [`Fleet`], [`Blueprint`] and [`Worker`] are the harness's version of.
 ///
 /// # What a green run here does and does not say
 ///
@@ -4672,8 +4795,7 @@ mod model {
     /// to establish that a real pipeline survives a model-checked execution at all -- the flow
     /// table's tokio timers, the EAL, the ACL registry lock and `concurrency::sync` primitives all
     /// have to tolerate it. Two workers each driving their own pipeline over shared tables is the
-    /// next step, and needs the writers hoisted out of [`Fabric`] so several can be built from one
-    /// set.
+    /// next step, and is what the split into [`Fleet`], [`Blueprint`] and [`Worker`] is for.
     ///
     /// The reader asserts nothing about *how many* entries it sees. That depends on the
     /// interleaving, and asserting it would make the test a claim about the scheduler.
