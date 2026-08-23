@@ -150,6 +150,14 @@ pub(crate) struct Fleet {
     /// config's own genid; this counts, which is the same claim -- each enactment is a later
     /// generation than the one before it.
     genid: Cell<GenId>,
+    /// Whether the masquerade allocator picks ports at random, as production does.
+    ///
+    /// Off by default and against production, because every property that reads a public port back
+    /// wants a stable answer -- see `two_workers_are_not_given_the_same_public_tuple`, whose
+    /// documented observation of `2.2.0.0:1024` and `2.2.0.0:1280` only holds because of this. It
+    /// is settable so that a finding made with it off can be checked with it on, which is the one
+    /// question a stable-port harness cannot answer about a port-allocation defect.
+    randomize: Cell<bool>,
     blueprint: Blueprint,
 }
 
@@ -298,6 +306,7 @@ impl Fleet {
             portfw: RefCell::new(portfw),
             masquerade: RefCell::new(masquerade),
             genid: Cell::new(FIRST_GENID),
+            randomize: Cell::new(false),
             blueprint,
         }
     }
@@ -353,6 +362,12 @@ impl Fleet {
         self.enact(overlay, Enact::Generation);
     }
 
+    /// Make the masquerade allocator pick ports the way production does. See [`Fleet::randomize`].
+    pub(crate) fn randomizing(&self, on: bool) -> &Self {
+        self.randomize.set(on);
+        self
+    }
+
     pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
         let doing = |step: Enact| which == Enact::Everything || which == step;
         if doing(Enact::FlowFilter) {
@@ -374,7 +389,7 @@ impl Fleet {
         if doing(Enact::Masquerade) {
             self.genid.set(self.genid.get() + 1);
             self.masquerade.borrow_mut().update_nat_allocator(
-                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
                 self.genid.get(),
                 &self.blueprint.flow_table,
             );
@@ -1005,6 +1020,19 @@ pub(crate) trait Load {
 
     /// What this load has done so far, for reading a failure.
     fn describe(&self) -> String;
+
+    /// The public tuple this load's traffic was translated to, once it has been seen leaving.
+    ///
+    /// Read off the delivered frame rather than asked of the allocator, which is the rule
+    /// `nat::masquerade::probe` states and this trait exists to keep: projections, not state.
+    ///
+    /// `None` until a request has come back translated, and `None` for a load whose traffic is not
+    /// translated at all -- so a property over these has to say what it does with the loads that
+    /// have no tuple to offer. It is on the trait, defaulted, because loads reach a property as
+    /// `Box<dyn Load>` and only one implementation has an answer.
+    fn public(&self) -> Option<(IpAddr, u16)> {
+        None
+    }
 }
 
 /// Run one load to completion against a fabric, one packet at a time.
@@ -4357,6 +4385,10 @@ mod routed {
         /// The request as it was sent, kept so the riders can compare against it.
         sent: Option<Packet<TestBuffer>>,
         state: State,
+        /// The tuple the request left as. Separate from `State::Replying` because that is consumed
+        /// when the reply is built, and a property asking which tuple this conversation was given
+        /// asks after it has closed.
+        public: Option<(IpAddr, u16)>,
         log: Vec<String>,
     }
 
@@ -4395,6 +4427,7 @@ mod routed {
                 dport,
                 sent: None,
                 state: State::Opening,
+                public: None,
                 log: Vec::new(),
             }
         }
@@ -4440,6 +4473,7 @@ mod routed {
                 return;
             };
             self.note(&format!("request left as {public_src}:{}", port.get()));
+            self.public = Some((public_src, port.get()));
             self.state = State::Replying {
                 public: (public_src, port.get()),
             };
@@ -4485,6 +4519,10 @@ mod routed {
     }
 
     impl Load for Conversation {
+        fn public(&self) -> Option<(IpAddr, u16)> {
+            self.public
+        }
+
         fn next(&mut self) -> Option<Packet<TestBuffer>> {
             match self.state {
                 State::Opening => {
@@ -6644,11 +6682,14 @@ mod model {
     /// design note's "config change underneath live NAT allocations" scar, and re-enacting an
     /// unchanged configuration -- which takes the equal-config branch -- does not do it.
     ///
-    /// This is **not** claimed as a confirmed dataplane defect. Four times now the answer has been
-    /// this harness, and the remaining known deviation from production is `set_randomize(false)`.
-    /// What is claimed is that it survives the four corrections, that it is reachable by a
-    /// coverage-guided search in a few thousand executions, and that the step it comes from is
-    /// identified.
+    /// It **is** a dataplane defect, and
+    /// [`report_why_the_masquerade_swap_disturbs_traffic`] is where the mechanism is written down:
+    /// a masquerade allocator swap can give one public tuple to two live flows, because the
+    /// replacement re-derives its port space from a walk of the flow table taken *before* it is
+    /// published, and workers keep allocating from the outgoing allocator until they see the store.
+    /// The last remaining harness deviation, `set_randomize(false)`, was the obvious suspect and is
+    /// not the answer: with randomisation on -- production's setting, on both sides of the swap --
+    /// the same duplicate tuple and the same cross-conversation reply still occur.
     ///
     /// # The generation mechanisms in detail
     ///
@@ -7059,12 +7100,11 @@ mod model {
     /// different block. Re-enacting an unchanged configuration takes the equal branch and never
     /// does it.
     ///
-    /// # Before treating the residual as a dataplane defect
+    /// # What the residual turned out to be
     ///
-    /// Check the harness first, because it has been the answer three times. `Fleet::enact` is
-    /// `mgmt::apply_masquerade_config`'s ordering and arguments as far as this module can see, but
-    /// "as far as this module can see" is exactly the phrase that preceded each of the three
-    /// phantoms. `set_randomize(false)` is one known deviation from production.
+    /// A dataplane defect. [`report_why_the_masquerade_swap_disturbs_traffic`] is the sequel and
+    /// carries the mechanism; the harness check this section used to demand was carried out there,
+    /// including the one known deviation, `set_randomize(false)`, which is not the answer.
     ///
     #[tokio::test]
     #[dpdk::with_eal]
@@ -7194,16 +7234,6 @@ mod model {
                         scope.spawn(move || {
                             let _guard = handle.enter();
                             let mut worker = blueprint.worker();
-                            let varied: Vec<derive::Vary> = vary
-                                .iter()
-                                .map(|v| derive::Vary {
-                                    sport: v.sport
-                                        + which * 401
-                                        + u16::try_from(round).unwrap_or(0) * 7,
-                                    ..*v
-                                })
-                                .collect();
-                            let mine = derive::loads_where(running, &varied, outside);
                             gate.wait();
                             // Sustained traffic, not a burst. `Everything` takes about a millisecond -- it
                             // rebuilds rte_acl tables -- so with only a couple of packets per round the
@@ -7255,6 +7285,367 @@ mod model {
                 carried.load(Ordering::Relaxed),
                 disturbed.load(Ordering::Relaxed)
             );
+        }
+    }
+
+    /// Why a masquerade allocator swap disturbs traffic on a peering it does not touch.
+    ///
+    /// [`report_which_enactment_step_disturbs_traffic`] establishes *which* store does it -- the
+    /// masquerade one, alone among six. This one says what it does, and the answer is worse than
+    /// the dropped packet that store was measured by.
+    ///
+    /// # The defect
+    ///
+    /// **A masquerade allocator swap can hand one public tuple to two live flows.**
+    ///
+    /// `update_nat_allocator` builds the replacement, populates it by walking the flow table
+    /// (`check_masquerading_flows`), and only then stores it. Workers keep allocating from the
+    /// *outgoing* allocator until they observe that store, so an allocation made during the walk is
+    /// in neither: the walk did not see the flow, and the replacement derives its port space from
+    /// scratch. Both allocators are then free to hand out the same port, and both do -- observed as
+    /// `172.16.0.0:1024` given to `10.0.0.0:15001` and to `10.0.0.0:47769` at once, each with its
+    /// own reverse flow installed under the one key `10.0.4.0:80 -> 172.16.0.0:1024`.
+    ///
+    /// `recheck_flow` is the mitigation and it is not a prevention. It runs *after* the flow pair
+    /// is installed and the request already translated, and all it can do by then is invalidate:
+    /// `MasqueradeError::IntendedDrop("Flow is not valid with the new allocator")`, which reaches
+    /// the wire as `DoneReason::Filtered`. That is the drop the step instrument counts.
+    ///
+    /// The reverse entry is the part that is not merely a drop. Two flows installed under one key
+    /// leave a single reverse lookup with two answers, and a reply is then attributed to whichever
+    /// of them the table kept:
+    ///
+    /// ```text
+    /// the reply did not get the original source port back.
+    /// [conversation 10.0.0.0:15001 -> 10.0.4.0:80 | request left as 172.16.0.0:1536]
+    ///   left: Some(48766)
+    ///  right: Some(15001)
+    /// ```
+    ///
+    /// One tenant conversation received another tenant conversation's reply. That is a
+    /// cross-conversation leak, not a lost packet.
+    ///
+    /// # Rates, in production's configuration
+    ///
+    /// `set_randomize(false)` was the last remaining deviation this harness had from
+    /// `mgmt::apply_masquerade_config`, and a finding about *which port two allocators pick* is
+    /// exactly the kind it could have manufactured -- so the instrument runs both settings, and
+    /// primes the running allocator so that the swap under test is random-to-random rather than
+    /// sequential-to-random.
+    ///
+    /// | `randomize` | loads carried | disturbed | one tuple, two live flows | wrong reply |
+    /// | --- | --- | --- | --- | --- |
+    /// | `false` | 9,600 | 45 | 0 | 1 |
+    /// | `true` (production) | 288,000 | 12 | 2 | 1 |
+    ///
+    /// Randomisation makes it about a hundred times rarer -- two allocators each picking a random
+    /// 256-port block out of ~254 rather than both starting at the bottom of the pool -- and
+    /// changes nothing else. Same drop, same duplicate tuple, same misdelivered reply.
+    ///
+    /// The rate is per *load carried across a swap*, which is why it is small: a gateway applies
+    /// configuration rarely and carries traffic constantly. The exposure is the flows in flight
+    /// during one swap, and it scales with offered load rather than with the change.
+    ///
+    /// # Why the fix is not "narrow the window"
+    ///
+    /// The window is narrow already and that is what makes the defect hard to see rather than hard
+    /// to hit. What creates it is that **a masquerade change to one peering rebuilds the port
+    /// allocation state of every peering.** `update_nat_allocator` keeps the existing allocator
+    /// only when the whole `MasqueradeConfig` compares equal, so a `SetFlavour` on a peering that
+    /// shares nothing with the traffic -- no vpc, no expose, no address -- throws away and
+    /// re-derives the port space the traffic is using. The frame condition the property beside this
+    /// one checks is violated inside the allocator, before any packet is involved.
+    ///
+    /// A fix that preserved the port bitmaps of pools the change did not touch would remove the
+    /// race rather than shrink it, and would also make the common case cheap. Failing that, an
+    /// allocation that cannot be honoured by the current allocator should be refused *before* the
+    /// flow pair is installed, so that a swap costs a retry rather than a reverse-lookup collision.
+    ///
+    /// # What thread sanitizer said, and why it was right to
+    ///
+    /// Nothing: no races, and the disturbance did not reproduce at all under it. That was correct.
+    /// Every access here is properly synchronised -- two allocators, each internally consistent,
+    /// independently reaching the same answer. A race detector has nothing to report about two
+    /// correct allocators disagreeing about who owns a port.
+    ///
+    /// # How to read the dump
+    ///
+    /// The instrument prints the masquerade path's own `debug` trace for all three threads -- both
+    /// workers and the config-apply side -- for the first disturbance only, then tallies the rest.
+    /// All three are needed: a worker's trace shows it losing a port, only the other worker's shows
+    /// who took it, and only config-apply's shows what the pre-publish walk carried over (in every
+    /// dump so far, nothing -- the flow table was empty when it ran).
+    ///
+    /// The sentences that matter, in `dataplane_nat::masquerade`:
+    ///
+    /// - *"NAT allocator got updated. Re-checking newly-installed flow..."* -- this flow was
+    ///   installed against the allocator that the swap replaced. This is the window.
+    /// - *"Cannot carry flow .. into the new allocator: .. Invalidating it"* -- the replacement
+    ///   agrees about the configuration and could not honour the **tuple**. This is the defect.
+    /// - *"Invalidating flow: there is no masquerading peering for .."* or *"Masquerade ip .. is no
+    ///   longer allowed"* -- the replacement would disagree about this flow's **configuration**.
+    ///   For a flow outside the change's footprint that would be a different and worse fault, in
+    ///   config lowering rather than in timing. Not once observed.
+    /// - *"Allocator got removed!"* -- the replacement has no masquerading peerings at all. Not
+    ///   expected here; the change adds masquerade rather than removing it.
+    ///
+    /// # Why an instrument and not a property
+    ///
+    /// Two reasons, and only the first is about taste. It rests on `debug!` statements in another
+    /// crate, which is the dependency `tracectl::evidence` refuses to let an assertion take --
+    /// "evidence, never an oracle". And the thing it demonstrates is a defect that is still open:
+    /// a property asserting it would fail every run, which is a broken suite rather than a claim.
+    ///
+    /// The duplicate tuple and the misdelivered reply are counted here from the pipeline's output
+    /// alone -- `Load::public` and the load's own reply assertions -- so when the defect is fixed
+    /// this becomes assertable without changing what it observes, and
+    /// [`a_configuration_change_leaves_traffic_outside_its_footprint_alone`] can start asserting
+    /// its first round instead of counting it. Run this with `--ignored --nocapture`.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
+    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    async fn report_why_the_masquerade_swap_disturbs_traffic() {
+        use config::external::overlay::algebra::{
+            Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
+        };
+        use std::sync::atomic::AtomicBool;
+
+        /// The same worker separation as the instrument above: two workers deriving loads from one
+        /// configuration must not be able to produce the same five-tuple.
+        fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
+            within + which * 32_768
+        }
+
+        /// Rounds per randomisation setting. Randomised ports need far more of them: two
+        /// allocators each picking a random 256-port block out of ~254 collide about that much
+        /// less often, so a sample sized for the sequential case reports zero and says nothing.
+        const ROUNDS: [usize; 2] = [200, 6000];
+        const REPS: u8 = 24;
+
+        /// A disturbance reduced to its kind, so two of the same land in one bucket. A load
+        /// describes itself with the conversation attached and an assertion failure arrives as a
+        /// multi-line `assert_eq!` message, and neither the tuple nor the ports belong in a key.
+        fn reason(how: &str) -> String {
+            how.lines()
+                .next()
+                .unwrap_or(how)
+                .rsplit('|')
+                .next()
+                .unwrap_or(how)
+                .trim()
+                .to_owned()
+        }
+
+        let vpc = VpcHandle;
+        let peering = PeeringHandle;
+        // Identical to the instrument above, so a dump here explains a row of its table.
+        let built = vec![
+            Op::AddVpc(vpc(0)),
+            Op::AddVpc(vpc(1)),
+            Op::AddPeering {
+                handle: peering(0),
+                left: vpc(0),
+                right: vpc(1),
+            },
+            Op::SetFlavour {
+                peering: peering(0),
+                side: Side::Left,
+                slot: 0,
+                flavour: Flavour::Masquerade,
+            },
+            Op::AddVpc(vpc(2)),
+            Op::AddVpc(vpc(3)),
+            Op::AddPeering {
+                handle: peering(1),
+                left: vpc(2),
+                right: vpc(3),
+            },
+        ];
+        let change = Op::SetFlavour {
+            peering: peering(1),
+            side: Side::Left,
+            slot: 0,
+            flavour: Flavour::Masquerade,
+        };
+        let assemble = |draft: &Draft| {
+            draft
+                .overlay()
+                .expect("assembles")
+                .validate()
+                .expect("validates")
+        };
+        let before = Sequence::fold(&built);
+        let running = assemble(&before);
+        let mut after_draft = before.clone();
+        change.apply(&mut after_draft).expect("the change applies");
+        let enacted = assemble(&after_draft);
+        let footprint = change.writes(&before);
+
+        let vnis: Vec<Vni> = enacted
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect();
+        let vary: Vec<derive::Vary> = (0..2)
+            .map(|n| derive::Vary {
+                host: n,
+                port: 0,
+                sport: 30000,
+                dport: 80,
+                burst: 2,
+                blast: false,
+            })
+            .collect();
+        let outside = |named: derive::Named<'_>| {
+            !footprint.touches_peering_named(named.peering)
+                && !footprint.touches_vpc_named(named.local)
+                && !footprint.touches_vpc_named(named.remote)
+        };
+
+        let handle = tokio::runtime::Handle::current();
+        // Both, because `set_randomize(false)` is this harness's one known deviation from
+        // `mgmt::apply_masquerade_config`, and a finding about *which port* two allocators pick is
+        // exactly the kind that deviation could have manufactured.
+        for (nth, randomize) in [false, true].into_iter().enumerate() {
+            eprintln!("\n== randomize={randomize} ==");
+            let explained = AtomicBool::new(false);
+            let carried = AtomicU64::new(0);
+            let disturbed = AtomicU64::new(0);
+            // What each disturbance was, and which public tuples were handed out in the round it
+            // happened in. The second is the question the first cannot answer: a drop is the mitigation
+            // working, and the accusation worth making is that the same tuple reached two live flows.
+            let why: Mutex<std::collections::BTreeMap<String, u64>> =
+                Mutex::new(std::collections::BTreeMap::new());
+            let mut duplicated = 0u64;
+
+            for round in 0..ROUNDS[nth] {
+                let tables = topology(&vnis);
+                let fleet =
+                    Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
+                fleet.randomizing(randomize);
+                if randomize {
+                    // `Fleet::lowering` builds the first allocator unrandomised. Enacting the
+                    // configuration that is already running rebuilds it -- `randomize` is part of
+                    // `MasqueradeConfig` and so part of the equality that decides whether to keep
+                    // the old allocator -- so that the swap under test is random-to-random, which
+                    // is production's shape, and not sequential-to-random, which is nobody's.
+                    fleet.enact(&running, Enact::Masquerade);
+                }
+                let blueprint = fleet.blueprint();
+                let gate = std::sync::Barrier::new(3);
+                // Every public tuple this round handed out, from both workers.
+                let handed: Mutex<Vec<(IpAddr, u16)>> = Mutex::new(Vec::new());
+                // The config-apply side of the same window. `check_masquerading_flows` runs on this
+                // thread, before the replacement is published, and says which flows it carried over --
+                // which is the half a worker's trace cannot show.
+                let writing = tracectl::evidence::Capture::new("config-apply")
+                    .depth(8192)
+                    .keeping(|target| target.starts_with("dataplane_nat"))
+                    .start();
+                let written = writing.evidence();
+                // Every thread's trace, dumped together. A worker's own trace shows it losing a port;
+                // only the *other* worker's shows who took it, and that is the whole question.
+                let traces: Mutex<Vec<tracectl::evidence::Evidence>> = Mutex::new(vec![written]);
+                std::thread::scope(|scope| {
+                    for which in 0..2u16 {
+                        let handle = handle.clone();
+                        let (gate, explained, carried, disturbed) =
+                            (&gate, &explained, &carried, &disturbed);
+                        let (running, vary, outside) = (&running, &vary, &outside);
+                        let (traces, why, handed) = (&traces, &why, &handed);
+                        scope.spawn(move || {
+                            let _guard = handle.enter();
+                            // Narrowed to the crate under suspicion and deepened, because the ring is
+                            // the scarce resource: a round is ~24 load sets of 8 packets, and the
+                            // lines that explain the drop are the ones the default filter would let
+                            // the pipeline's own spans push out.
+                            let recording =
+                                tracectl::evidence::Capture::new(format!("masq-{which}"))
+                                    .depth(8192)
+                                    .keeping(|target| target.starts_with("dataplane_nat"))
+                                    .start();
+                            traces.lock().push(recording.evidence());
+                            let mut worker = blueprint.worker();
+                            // Registers every recording before any traffic starts, so a dump holds
+                            // both workers whichever of them is the one that fails.
+                            gate.wait();
+                            let mut given = Vec::new();
+                            for rep in 0..REPS {
+                                let mine = derive::loads_where(
+                                    running,
+                                    &vary
+                                        .iter()
+                                        .map(|v| derive::Vary {
+                                            sport: separate(v.sport, rep, which),
+                                            ..*v
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    outside,
+                                );
+                                for mut load in mine {
+                                    carried.fetch_add(1, Ordering::Relaxed);
+                                    let ran = without_unwinding(|| {
+                                        for _ in 0..8 {
+                                            let Some(packet) = load.next() else { break };
+                                            let out = worker.send(packet);
+                                            load.observe(&out);
+                                        }
+                                        load.checked()
+                                    });
+                                    // Asked after, not inside: a load that panicked still knows which
+                                    // tuple its request left as, and that load is exactly the one whose
+                                    // tuple the duplicate check wants.
+                                    given.extend(load.public());
+                                    let (ok, how) = match ran {
+                                        Ok(ok) => (ok, load.describe()),
+                                        Err(why) => (false, format!("{why}. {}", load.describe())),
+                                    };
+                                    if ok {
+                                        continue;
+                                    }
+                                    disturbed.fetch_add(1, Ordering::Relaxed);
+                                    *why.lock().entry(reason(&how)).or_default() += 1;
+                                    // The trace is dumped once. One legible sequence answers what a
+                                    // disturbance *is*; a hundred answer nothing the tally does not.
+                                    if !explained.swap(true, Ordering::Relaxed) {
+                                        eprintln!(
+                                            "\ndisturbed in round {round}, rep {rep}, worker \
+                                         {which}: {how}\n"
+                                        );
+                                        for trace in traces.lock().iter() {
+                                            trace.dump();
+                                        }
+                                    }
+                                }
+                            }
+                            handed.lock().extend(given);
+                        });
+                    }
+                    gate.wait();
+                    fleet.enact(&enacted, Enact::Masquerade);
+                });
+
+                // Within the round only. Every round builds a fresh `Fleet`, so the same tuple in two
+                // rounds is two allocators each starting from the bottom of the pool, not a collision.
+                let mut seen = std::collections::BTreeSet::new();
+                for tuple in handed.lock().iter() {
+                    if !seen.insert(*tuple) {
+                        duplicated += 1;
+                        eprintln!("  round {round}: {tuple:?} was handed to two live flows");
+                    }
+                }
+            }
+
+            eprintln!(
+                "carried={} disturbed={} duplicated={duplicated}",
+                carried.load(Ordering::Relaxed),
+                disturbed.load(Ordering::Relaxed),
+            );
+            for (reason, count) in why.lock().iter() {
+                eprintln!("  {count:>4}  {reason}");
+            }
         }
     }
 }
