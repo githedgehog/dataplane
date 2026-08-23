@@ -38,11 +38,11 @@ use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 
 use crate::atable::adjacency::Adjacency;
-use crate::atable::atablerw::{AtableReader, AtableWriter};
+use crate::atable::atablerw::{AtableReader, AtableReaderFactory, AtableWriter};
 use crate::evpn::Vtep;
-use crate::fib::fibtable::{FibTableReader, FibTableWriter};
+use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
 use crate::fib::fibtype::FibKey;
-use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
+use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
 use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 
@@ -237,6 +237,34 @@ impl RouterTables {
     #[must_use]
     pub fn adjacencies(&self) -> AtableReader {
         self.adj_reader.clone()
+    }
+
+    /// A factory for interface-table readers, for a caller building one pipeline per thread.
+    ///
+    /// The readers above cannot be used for that. A `FibTableReader` and its siblings are neither
+    /// `Send` nor `Sync` -- they hold `NonNull` table pointers and a `Cell` read counter, and the
+    /// fib readers additionally cache `Rc<UnsafeCell<FibGroup>>` per thread -- so a reader cannot be
+    /// made on one thread and used on another. Nor can [`RouterTables`] itself be shared, for the
+    /// same reason.
+    ///
+    /// A factory can. It crosses the boundary, and each thread calls `handle()` to make its own
+    /// reader locally. That is what `start_router` does: the pipeline builder closure captures
+    /// factories and is invoked once per worker.
+    #[must_use]
+    pub fn interface_factory(&self) -> IfTableReaderFactory {
+        self.if_reader.factory()
+    }
+
+    /// A factory for fib-table readers. See [`Self::interface_factory`].
+    #[must_use]
+    pub fn fib_factory(&self) -> FibTableReaderFactory {
+        self.fib_reader.factory()
+    }
+
+    /// A factory for adjacency-table readers. See [`Self::interface_factory`].
+    #[must_use]
+    pub fn adjacency_factory(&self) -> AtableReaderFactory {
+        self.adj_reader.factory()
     }
 
     fn fib_mut(&mut self, vrfid: VrfId) -> &mut FibWriter {
