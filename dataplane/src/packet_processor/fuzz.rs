@@ -65,27 +65,27 @@ use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
 use concurrency::sync::{Arc, Mutex};
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
-use config::external::overlay::{Overlay, ValidatedOverlay};
 use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes_and_acl,
 };
+use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
+use lpm::prefix::Prefix;
 use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::static_nat::NatTablesWriter;
 use nat::static_nat::setup::build_nat_configuration;
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
-use lpm::prefix::Prefix;
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
-use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
-use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use pipeline::{DynPipeline, NetworkFunction};
 use routing::testing::RouterTables;
+use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
+use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
 use std::net::IpAddr;
 
 use super::egress::Egress;
@@ -139,7 +139,11 @@ impl Fabric {
     /// frame, and everything that stamp asserts -- that the vni names a fib, that the frame parses
     /// back, that nothing in it disqualifies it -- is under test rather than assumed.
     pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
-        Self::assemble(exposes, acl, Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])))
+        Self::assemble(
+            exposes,
+            acl,
+            Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+        )
     }
 
     /// A routed fabric over a configuration the caller built, rather than the two-vpc one.
@@ -158,10 +162,7 @@ impl Fabric {
     ///
     /// Validation is not cheap and a property that rebuilds a fabric per case would otherwise pay
     /// for it every time, which at ten executions a second is most of the budget.
-    pub(crate) fn routed_over_validated(
-        overlay: &ValidatedOverlay,
-        tables: RouterTables,
-    ) -> Self {
+    pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: RouterTables) -> Self {
         Self::with_overlay(overlay, Some(tables))
     }
 
@@ -202,9 +203,7 @@ impl Fabric {
         pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
 
         let acl = AclFilterContextWriter::new();
-        acl.store(
-            AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
-        );
+        acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
         pipeline = pipeline.add_stage(AclFilter::new("acl-filter", acl.get_reader()));
 
         let mut static_nat = NatTablesWriter::new();
@@ -240,9 +239,12 @@ impl Fabric {
             contract::ready_to_translate,
         ));
         let recording = translations.clone();
-        pipeline = pipeline.add_stage(Checkpoint::new("before masquerade", move |_: &str, packet: &Packet<TestBuffer>| {
-            recording.lock().before(packet);
-        }));
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "before masquerade",
+            move |_: &str, packet: &Packet<TestBuffer>| {
+                recording.lock().before(packet);
+            },
+        ));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
             flow_table.clone(),
@@ -250,9 +252,12 @@ impl Fabric {
         ));
 
         let checking = translations.clone();
-        pipeline = pipeline.add_stage(Checkpoint::new("after masquerade", move |at: &str, packet: &Packet<TestBuffer>| {
-            checking.lock().after(at, packet);
-        }));
+        pipeline = pipeline.add_stage(Checkpoint::new(
+            "after masquerade",
+            move |at: &str, packet: &Packet<TestBuffer>| {
+                checking.lock().after(at, packet);
+            },
+        ));
 
         if let Some(tables) = &tables {
             pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
@@ -428,7 +433,9 @@ fn largest_draw<G: bolero::ValueGenerator>(generator: &G) -> usize {
     (0..SAMPLES)
         .map(|_| {
             for byte in &mut bytes {
-                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
                 // Truncation is the point: the top bits of an LCG are the ones worth keeping.
                 #[allow(clippy::cast_possible_truncation)]
                 {
@@ -585,7 +592,11 @@ impl Translations {
         // It stays reachable because `smoke::the_harness_builds_a_pipeline_that_translates`
         // asserts the fixture masquerades at all; a pipeline that quietly stopped rewriting
         // sources would fail there rather than leave this silently judging nothing.
-        if self.from.get(&test.id).is_some_and(|before| *before != source) {
+        if self
+            .from
+            .get(&test.id)
+            .is_some_and(|before| *before != source)
+        {
             assert!(
                 self.declared.iter().any(|p| p.covers_addr(&source)),
                 "{at}: masquerade rewrote a source to {source}, which no declared public range \
@@ -799,6 +810,7 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
+    use config::external::overlay::vpcpeering::ValidatedExpose;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 
     /// How one sender should vary, drawn by the fuzzer and applied to whatever the config offers.
@@ -853,16 +865,44 @@ pub(crate) mod derive {
     }
 
     /// Where the far side of a peering lives, as the configuration advertises it.
-    fn peer_of(peering: &config::external::overlay::vpc::ValidatedPeering, n: u8) -> Option<IpAddr> {
+    ///
+    /// `usable` is what the far side has to be able to do with the traffic, and skipping it is a
+    /// mistake that costs a tenth of the derived senders. A masquerading expose is source NAT and
+    /// nothing else -- `can_receive_connection` is false for one -- so a request aimed at its
+    /// public range is *correctly* dropped as `Filtered`, and a derivation that aims one there
+    /// spends the load on a legitimate refusal while looking exactly like a delivery failure.
+    /// Symmetrically, a port-forwarded service is reached *by* the far side, so there the far side
+    /// has to be able to initiate.
+    fn peer_of(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+    ) -> Option<IpAddr> {
         peering
             .remote()
             .valexp()
             .iter()
+            .filter(|expose| usable(expose))
             .flat_map(|expose| expose.public_ips().into_iter())
             .find_map(|entry| host_in(entry.prefix(), n))
     }
 
     /// One load per expose the configuration offers, carrying that expose's traffic.
+    ///
+    /// # A load kind belongs to an expose flavour
+    ///
+    /// The three kinds are not interchangeable and matching them to the wrong expose produces a
+    /// failure that reads as a dataplane fault. A plain [`Conversation`] aimed at a port-forwarded
+    /// range is the worked example: if the destination port happens to fall inside the forwarded
+    /// window the request *is* delivered, so the load proceeds to reply -- from the external
+    /// address, which no host in that vpc owns, because a conversation models a masquerade
+    /// round trip where the far side answers from where it was addressed. The pipeline drops that
+    /// reply, correctly, and the load reports "the reply of a delivered flow did not reach the
+    /// wire". Nothing in the message says the test was asking the wrong question.
+    ///
+    /// That is why the peer's expose is filtered on what it can actually accept rather than on
+    /// whether it is reachable at all. It cost one intermittent failure at about one run in ten to
+    /// find, and it would have cost a great deal more to find from the message alone.
     ///
     /// # Panics
     ///
@@ -874,14 +914,28 @@ pub(crate) mod derive {
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
+                // Which two vpcs this expose's traffic is between, read off the configuration.
+                // A load that assumed the fixture's pair would still pass on a generated overlay
+                // whose vpcs happen to be numbered differently, while testing a route nobody
+                // configured.
+                let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
                 for expose in peering.local().valexp() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
                         continue;
                     };
                     nth += 1;
-                    let Some(peer) = peer_of(peering, v.host) else {
-                        continue;
-                    };
+                    // What the peer must be able to do depends on which way the traffic goes, so
+                    // this is drawn per branch rather than once.
+                    //
+                    // Outward wants a peer expose that will take traffic on *any* port, which is
+                    // stricter than `can_receive_connection`: that is only false for masquerade,
+                    // and a port-forwarding expose will take traffic only on the ports it forwards.
+                    // Aiming an arbitrary port at one is refused, correctly, and the load then
+                    // abandons for a reason that has nothing to do with the pipeline.
+                    let outward = peer_of(peering, v.host, |expose| {
+                        expose.can_receive_connection() && !expose.has_port_forwarding()
+                    });
+                    let inward = peer_of(peering, v.host, ValidatedExpose::can_init_connection);
 
                     if expose.has_port_forwarding() {
                         // Reached from outside on the advertised tuple, expected to land on the
@@ -900,7 +954,11 @@ pub(crate) mod derive {
                         ) else {
                             continue;
                         };
+                        let Some(peer) = inward else {
+                            continue;
+                        };
                         loads.push(Box::new(Inbound::new(
+                            path,
                             peer,
                             external,
                             port_in(outside, v.port, v.dport),
@@ -908,20 +966,31 @@ pub(crate) mod derive {
                             port_in(inside_entry, v.port, v.dport),
                             v.sport,
                         )));
-                    } else if expose.has_masquerade() {
-                        // Opened from inside the vpc, towards whatever the far side advertises.
-                        let Some(src) = expose
-                            .ips()
-                            .into_iter()
-                            .next()
-                            .and_then(|entry| host_in(entry.prefix(), v.host))
-                        else {
+                    } else if expose.has_static_nat() || expose.is_default() {
+                        // Not derived yet. Static NAT maps address to address across two
+                        // differently shaped sets of prefixes, so which address a host ends up at
+                        // is `RangeBuilder`'s answer rather than one this can read off a pair of
+                        // offsets; a default expose names no prefix at all.
+                    } else {
+                        // Masquerade, or no translation whatever. The same traffic either way --
+                        // opened from inside the vpc towards what the far side advertises -- which
+                        // is the point: what the expose does to it on the way is the pipeline's
+                        // business, and a load that had to know would be a second copy of the
+                        // translation to keep correct.
+                        let (Some(peer), Some(src)) = (
+                            outward,
+                            expose
+                                .ips()
+                                .into_iter()
+                                .next()
+                                .and_then(|entry| host_in(entry.prefix(), v.host)),
+                        ) else {
                             continue;
                         };
                         loads.push(if v.blast {
-                            Box::new(Blast::new(src, peer, v.sport, v.dport, v.burst))
+                            Box::new(Blast::new(path, src, peer, v.sport, v.dport, v.burst))
                         } else {
-                            Box::new(Conversation::new(src, peer, v.sport, v.dport))
+                            Box::new(Conversation::new(path, src, peer, v.sport, v.dport))
                                 as Box<dyn Load>
                         });
                     }
@@ -1174,7 +1243,12 @@ fn encapsulate_out_of(tables: &mut RouterTables, vrfid: u32, out_vni: Vni) {
         Some(uplink()),
         Some(peer),
     )));
-    tables.route_via(vrfid, Prefix::root_v4(), nhop(&peer), &FibGroup::with_entry(out));
+    tables.route_via(
+        vrfid,
+        Prefix::root_v4(),
+        nhop(&peer),
+        &FibGroup::with_entry(out),
+    );
 }
 
 /// A next hop is only an identity here: it names the group a route resolves to, and the tests
@@ -1236,14 +1310,9 @@ mod smoke {
             verdict(&out)
         );
 
-        for (i, name) in [
-            "decapsulated",
-            "placed",
-            "ready_to_translate",
-            "finished",
-        ]
-        .iter()
-        .enumerate()
+        for (i, name) in ["decapsulated", "placed", "ready_to_translate", "finished"]
+            .iter()
+            .enumerate()
         {
             let after = contract::JUDGED[i].load(std::sync::atomic::Ordering::Relaxed);
             assert!(
@@ -2149,8 +2218,7 @@ mod acl {
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
-            .for_each(
-            |(exposes, default_allow, rule_proto, packets)| {
+            .for_each(|(exposes, default_allow, rule_proto, packets)| {
                 let default = if *default_allow {
                     AclAction::Allow
                 } else {
@@ -2212,8 +2280,7 @@ mod acl {
                         }
                     }
                 }
-            },
-        );
+            });
 
         let (permitted, permitted_out, denied, denied_by_acl, behind) = (
             PERMITTED.load(Ordering::Relaxed),
@@ -2254,8 +2321,8 @@ mod acl {
 /// originates in the local vpc and is answered; this originates in the peer.
 #[cfg(test)]
 mod port_forward {
-    use super::routed::{inside, tunnelled_from};
     use super::round_trip::udp;
+    use super::routed::{inside, tunnelled_from};
     use super::*;
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
@@ -2357,12 +2424,7 @@ mod port_forward {
         external: IpAddr,
         dport: u16,
     ) -> bool {
-        let Some(reply) = udp(
-            host,
-            outside(),
-            INTERNAL_PORT + reach.port,
-            reach.src_port,
-        ) else {
+        let Some(reply) = udp(host, outside(), INTERNAL_PORT + reach.port, reach.src_port) else {
             return false;
         };
         let back = fabric.send(tunnelled_from(vni(LOCAL_VNI), &reply));
@@ -2514,7 +2576,7 @@ mod port_forward {
 /// conversations should do.
 #[cfg(test)]
 mod interleaved {
-    use super::routed::{Blast, Conversation, exposes};
+    use super::routed::{Blast, Conversation, Path, exposes};
     use super::*;
     use std::ops::Bound::Included;
     use std::sync::LazyLock;
@@ -2632,10 +2694,15 @@ mod interleaved {
                     };
                     kinds.push(sender.kind);
                     loads.push(match sender.kind {
-                        Kind::Conversation => {
-                            Box::new(Conversation::new(src, dst, sender.sport, sender.dport))
-                        }
+                        Kind::Conversation => Box::new(Conversation::new(
+                            Path::fixture(),
+                            src,
+                            dst,
+                            sender.sport,
+                            sender.dport,
+                        )),
                         Kind::Blast => Box::new(Blast::new(
+                            Path::fixture(),
                             src,
                             dst,
                             sender.sport,
@@ -2652,8 +2719,7 @@ mod interleaved {
                     if loads_in.len() > 1 {
                         MIXED_LOADS.fetch_add(1, Ordering::Relaxed);
                     }
-                    let mut kinds_in: Vec<Kind> =
-                        burst.iter().map(|i| kinds[*i]).collect();
+                    let mut kinds_in: Vec<Kind> = burst.iter().map(|i| kinds[*i]).collect();
                     kinds_in.sort_unstable_by_key(|k| format!("{k:?}"));
                     kinds_in.dedup();
                     if kinds_in.len() > 1 {
@@ -2892,6 +2958,186 @@ mod offers {
     }
 }
 
+/// Traffic derived from a configuration that was itself generated.
+///
+/// The last link. Everything above starts from a configuration somebody wrote down; here the
+/// configuration is drawn as a sequence of operations -- add a vpc, peer two, add an expose, change
+/// what it does, remove any of them -- folded into a draft and lowered. Nothing in this module names
+/// an address, a vni or a vpc, so the whole thing is a claim about the *mapping* from configuration
+/// to behaviour rather than about any configuration in particular.
+///
+/// What that reaches which a fixture cannot: vpcs with several peerings, peerings whose exposes were
+/// added and removed rather than declared, configurations that arrived at their shape by a route
+/// including deletion, and vpc numbering that has no relationship to what the loads expect.
+#[cfg(test)]
+mod generated {
+    use super::derive::{Vary, loads_for};
+    use super::*;
+    use bolero::ValueGenerator;
+    use config::external::overlay::algebra::{Op, Sequence};
+    use std::ops::Bound::Included;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const SENDERS: usize = 6;
+    const POLLS: usize = 8;
+
+    /// A configuration, the traffic to vary it with, and the order to run it in -- one draw.
+    ///
+    /// Drawn together rather than in three properties because the interesting failures are between
+    /// them: an expose the derivation cannot build traffic for, or a schedule that puts two vpcs'
+    /// packets in one burst, are both invisible if the configuration is fixed.
+    struct Generated;
+
+    impl ValueGenerator for Generated {
+        type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let ops = Sequence::default().generate(driver)?;
+
+            let vary = (0..SENDERS)
+                .map(|_| {
+                    Some(Vary {
+                        host: driver.produce::<u8>()?,
+                        port: driver.produce::<u8>()?,
+                        sport: driver.produce::<u16>()?.max(1),
+                        dport: driver.produce::<u16>()?.max(1),
+                        burst: driver.gen_u8(Included(&2), Included(&5))?,
+                        blast: driver.produce::<bool>()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            let schedule = (0..POLLS)
+                .map(|_| {
+                    let picks = driver.gen_u8(Included(&1), Included(&3))?;
+                    (0..picks)
+                        .map(|_| {
+                            Some(Pick {
+                                load: driver.produce::<u8>()?,
+                                take: driver.gen_u8(Included(&1), Included(&3))?,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            Some((ops, vary, schedule))
+        }
+    }
+
+    #[test]
+    fn the_generator_fits_the_input_budget() {
+        super::assert_within_budget("generated::Generated", &Generated);
+    }
+
+    /// Every configuration the algebra can build carries the traffic it says it carries.
+    ///
+    /// Three claims in one, and they fail in different places so they are worth naming separately:
+    ///
+    /// - **it lowers.** `Fabric` builds the flow filter, acl, static nat, port forwarding and
+    ///   masquerade tables from the validated overlay with `expect`, deliberately: a configuration
+    ///   the validator accepted and the dataplane cannot enact is the exact failure the design note
+    ///   says must not exist, since there is no channel to tell an operator about it.
+    /// - **the derivation finds its traffic.** Counted, because a derivation that quietly produced
+    ///   nothing would make everything below vacuous.
+    /// - **the traffic behaves.** Each load judges itself, against the vnis the *configuration*
+    ///   gave it rather than against a constant.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_generated_configuration_carries_its_own_traffic() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, schedule)| {
+                let draft = Sequence::fold(ops);
+                let overlay = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+                let validated = overlay
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                if validated.vpc_table().peerings().next().is_some() {
+                    PEERED.fetch_add(1, Ordering::Relaxed);
+                }
+                if vnis.len() > 2 {
+                    MULTI.fetch_add(1, Ordering::Relaxed);
+                }
+
+                // The topology is built from the vnis the configuration names, so a fib exists for
+                // every vpc it can route to. A fixture topology would refuse traffic for vpcs the
+                // configuration created, and the refusal would look like a dataplane fault.
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+
+                let mut loads = loads_for(&validated, vary);
+                DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+
+                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                    let mut seen = burst.clone();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    if seen.len() > 1 {
+                        MIXED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                for load in &loads {
+                    if load.checked() {
+                        CHECKED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (checked, derived, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            DERIVED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        let (peered, multi) = (
+            PEERED.load(Ordering::Relaxed),
+            MULTI.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "checked={checked} abandoned={} derived={derived} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            ABANDONED.load(Ordering::Relaxed)
+        );
+        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        super::assert_covered(
+            multi > 0,
+            "no generated configuration ever had more than two vpcs, so this reached nothing the \
+             two-vpc fixtures do not",
+        );
+        super::assert_covered(
+            derived > 0,
+            "no generated configuration ever implied any traffic",
+        );
+        super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            mixed > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+    }
+}
+
 /// A burst, against the same packets sent one at a time.
 ///
 /// The driver hands the pipeline one bounded rx burst per poll, and `FlowFilter::process` collects
@@ -2900,8 +3146,8 @@ mod offers {
 /// shape the dataplane actually runs in.
 #[cfg(test)]
 mod burst {
-    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
     use super::round_trip::udp;
+    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
     use super::*;
     use net::headers::TryVxlan;
     use std::sync::LazyLock;
@@ -3088,8 +3334,7 @@ mod burst {
                             let src: IpAddr = format!("1.1.{i}.{}", m.host)
                                 .parse()
                                 .unwrap_or_else(|_| unreachable!());
-                            let dst: IpAddr =
-                                "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                            let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
                             udp(src, dst, 1024 + u16::try_from(i).unwrap_or(0), m.dport)
                                 .map(|p| tunnelled(&p))
                         })
@@ -3111,19 +3356,14 @@ mod burst {
 
                 let one_at_a_time: Vec<_> =
                     singly.into_iter().map(|p| treatment(&a.send(p))).collect();
-                let in_a_burst: Vec<_> = b
-                    .send_batch(together)
-                    .iter()
-                    .map(treatment)
-                    .collect();
+                let in_a_burst: Vec<_> = b.send_batch(together).iter().map(treatment).collect();
 
                 assert_eq!(
                     one_at_a_time.len(),
                     in_a_burst.len(),
                     "a burst did not return as many packets as it was given"
                 );
-                for (i, (alone, batched)) in
-                    one_at_a_time.iter().zip(in_a_burst.iter()).enumerate()
+                for (i, (alone, batched)) in one_at_a_time.iter().zip(in_a_burst.iter()).enumerate()
                 {
                     assert_eq!(
                         alone, batched,
@@ -3159,8 +3399,8 @@ mod burst {
 /// reason to choose between them.
 #[cfg(test)]
 mod destination {
-    use super::routed::{inside, tunnelled};
     use super::round_trip::udp;
+    use super::routed::{inside, tunnelled};
     use super::*;
     use config::external::overlay::vpcpeering::contract::{overlay_with_peers, peer_vni};
     use lpm::prefix::Prefix;
@@ -3258,8 +3498,9 @@ mod destination {
                 let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
                     .chain((0..PEERS).map(|n| vni(peer_vni(n))))
                     .collect();
-                let overlay = overlay_with_peers(local_prefix(), PEERS)
-                    .unwrap_or_else(|e| unreachable!("the multi-peer contract does not build: {e}"));
+                let overlay = overlay_with_peers(local_prefix(), PEERS).unwrap_or_else(|e| {
+                    unreachable!("the multi-peer contract does not build: {e}")
+                });
                 let Some(mut fabric) = Fabric::routed_over(&overlay, topology(&vnis)) else {
                     unreachable!("the multi-peer contract does not validate")
                 };
@@ -3342,19 +3583,19 @@ mod destination {
 /// `IpForwarder` actually made.
 #[cfg(test)]
 mod routed {
-    use super::*;
+    use super::round_trip::udp;
     use super::shapes::{Batch, Shape, aim, wire};
+    use super::*;
+    use super::{Load, drive};
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
-    use net::parse::DeParse;
     use net::ip::dscp::Dscp;
     use net::ip::ecn::Ecn;
     use net::packet::test_utils::{
         build_test_udp_ipv4_packet, build_test_vxlan_ipv4_packet_carrying_vni,
     };
+    use net::parse::DeParse;
     use net::vlan::Vid;
-    use super::round_trip::udp;
-    use super::{Load, drive};
     use std::collections::BTreeMap;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3418,8 +3659,38 @@ mod routed {
     /// The outer addresses come from the fixture rather than from here, and the topology was
     /// chosen to match them. Deliberately: a helper that rewrote the outer header to whatever the
     /// topology wanted could not be used to build a frame the topology should *refuse*.
+    /// Which vpc a load's traffic comes from and which it is aimed at.
+    ///
+    /// Carried rather than assumed because a load derived from a generated configuration has no
+    /// reason to be between the two vpcs the hand-written fixtures use. Every assertion about
+    /// where a packet went is stated against this pair, so a load that was given the wrong one
+    /// fails loudly rather than testing a different question than it claims.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Path {
+        pub(crate) from: Vni,
+        pub(crate) to: Vni,
+    }
+
+    impl Path {
+        pub(crate) fn new(from: Vni, to: Vni) -> Self {
+            Self { from, to }
+        }
+
+        /// The pair the hand-written fixtures use.
+        pub(crate) fn fixture() -> Self {
+            Self::new(vni(LOCAL_VNI), vni(REMOTE_VNI))
+        }
+
+        fn reversed(self) -> Self {
+            Self::new(self.to, self.from)
+        }
+    }
+
     pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let bytes = inner.clone().serialize().expect("the inner frame serializes");
+        let bytes = inner
+            .clone()
+            .serialize()
+            .expect("the inner frame serializes");
         let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
             from,
             Dscp::default(),
@@ -3684,7 +3955,8 @@ mod routed {
                         .parse()
                         .unwrap_or_else(|_| unreachable!());
                     let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-                    let mut load = Conversation::new(src, dst, flow.sport, flow.dport);
+                    let mut load =
+                        Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
 
                     drive(&mut fabric, &mut load);
 
@@ -3715,6 +3987,9 @@ mod routed {
     /// the public tuple the request was given, which the load reads out of what came back.
     pub(super) struct Conversation {
         /// What the test chose, and therefore what the reply has to restore.
+        /// Which vpc this conversation is between, so the assertions about where a packet went
+        /// are stated against the configuration rather than against a fixture's constants.
+        path: Path,
         src: IpAddr,
         dst: IpAddr,
         sport: u16,
@@ -3751,8 +4026,9 @@ mod routed {
     }
 
     impl Conversation {
-        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Self {
+        pub(super) fn new(path: Path, src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> Self {
             Self {
+                path,
                 src,
                 dst,
                 sport,
@@ -3776,7 +4052,7 @@ mod routed {
             }
             assert_eq!(
                 got.try_vxlan().map(net::vxlan::Vxlan::vni),
-                Some(vni(REMOTE_VNI)),
+                Some(self.path.to),
                 "the request left tunnelled towards the wrong vpc. {}",
                 self.describe()
             );
@@ -3819,7 +4095,7 @@ mod routed {
             );
             assert_eq!(
                 got.try_vxlan().map(net::vxlan::Vxlan::vni),
-                Some(vni(LOCAL_VNI)),
+                Some(self.path.from),
                 "the reply went back into the wrong vpc. {}",
                 self.describe()
             );
@@ -3855,12 +4131,12 @@ mod routed {
                     let request = udp(self.src, self.dst, self.sport, self.dport)?;
                     self.sent = Some(request.clone());
                     self.state = State::AwaitingRequest;
-                    Some(tunnelled(&request))
+                    Some(tunnelled_from(self.path.from, &request))
                 }
                 State::Replying { public: (ip, port) } => {
                     let reply = udp(self.dst, ip, self.dport, port)?;
                     self.state = State::AwaitingReply;
-                    Some(tunnelled_from(vni(REMOTE_VNI), &reply))
+                    Some(tunnelled_from(self.path.reversed().from, &reply))
                 }
                 State::AwaitingRequest
                 | State::AwaitingReply
@@ -3925,6 +4201,7 @@ mod routed {
         dst: IpAddr,
         sport: u16,
         dport: u16,
+        path: Path,
         to_send: u8,
         in_flight: u8,
         given: Option<(IpAddr, u16)>,
@@ -3933,12 +4210,20 @@ mod routed {
     }
 
     impl Blast {
-        pub(super) fn new(src: IpAddr, dst: IpAddr, sport: u16, dport: u16, count: u8) -> Self {
+        pub(super) fn new(
+            path: Path,
+            src: IpAddr,
+            dst: IpAddr,
+            sport: u16,
+            dport: u16,
+            count: u8,
+        ) -> Self {
             Self {
                 src,
                 dst,
                 sport,
                 dport,
+                path,
                 to_send: count.max(2),
                 in_flight: 0,
                 given: None,
@@ -3956,7 +4241,7 @@ mod routed {
             let packet = udp(self.src, self.dst, self.sport, self.dport)?;
             self.to_send -= 1;
             self.in_flight += 1;
-            Some(tunnelled(&packet))
+            Some(tunnelled_from(self.path.from, &packet))
         }
 
         fn observe(&mut self, got: &Packet<TestBuffer>) {
@@ -3987,7 +4272,8 @@ mod routed {
                     self.given = Some(now);
                 }
                 Some(first) => assert_eq!(
-                    now, first,
+                    now,
+                    first,
                     "packets of one flow were given different public tuples, so the flow was \
                      allocated for more than once. {}",
                     self.describe()
@@ -4029,6 +4315,8 @@ mod routed {
     /// else here opens from within a vpc and is answered; this arrives from the peer, is translated
     /// inwards, and has to leave again under the address the outside host used.
     pub(super) struct Inbound {
+        /// Which vpc holds the service, and which the request arrives from.
+        path: Path,
         /// Where outside.
         from: IpAddr,
         /// The advertised address and port, which is what the outside host knows.
@@ -4054,6 +4342,7 @@ mod routed {
 
     impl Inbound {
         pub(super) fn new(
+            path: Path,
             from: IpAddr,
             external: IpAddr,
             external_port: u16,
@@ -4062,6 +4351,7 @@ mod routed {
             sport: u16,
         ) -> Self {
             Self {
+                path,
                 from,
                 external,
                 external_port,
@@ -4075,8 +4365,7 @@ mod routed {
 
         fn judge_arrival(&mut self, got: &Packet<TestBuffer>) {
             if !matches!(verdict(got), Verdict::Delivered { .. }) {
-                self.log
-                    .push(format!("not forwarded: {:?}", verdict(got)));
+                self.log.push(format!("not forwarded: {:?}", verdict(got)));
                 self.state = InboundState::Abandoned;
                 return;
             }
@@ -4133,16 +4422,14 @@ mod routed {
         fn next(&mut self) -> Option<Packet<TestBuffer>> {
             match self.state {
                 InboundState::Reaching => {
-                    let request =
-                        udp(self.from, self.external, self.sport, self.external_port)?;
+                    let request = udp(self.from, self.external, self.sport, self.external_port)?;
                     self.state = InboundState::AwaitingArrival;
-                    Some(tunnelled_from(vni(REMOTE_VNI), &request))
+                    Some(tunnelled_from(self.path.to, &request))
                 }
                 InboundState::Answering => {
-                    let answer =
-                        udp(self.internal, self.from, self.internal_port, self.sport)?;
+                    let answer = udp(self.internal, self.from, self.internal_port, self.sport)?;
                     self.state = InboundState::AwaitingAnswer;
-                    Some(tunnelled_from(vni(LOCAL_VNI), &answer))
+                    Some(tunnelled_from(self.path.from, &answer))
                 }
                 _ => None,
             }
@@ -4209,4 +4496,3 @@ mod routed {
         out.pop().unwrap_or_else(|| unreachable!())
     }
 }
-

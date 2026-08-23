@@ -395,3 +395,43 @@ counter claimed to be covering.
 
 [`TypeGenerator`]: https://docs.rs/bolero/latest/bolero/generator/trait.TypeGenerator.html
 [`ValueGenerator`]: https://docs.rs/bolero/latest/bolero/generator/trait.ValueGenerator.html
+
+## A generated fixture makes the harness's own assumptions fail
+
+Driving a harness from a generated configuration rather than a written one moves a whole class of
+mistake from "impossible" to "intermittent". A hand-written fixture pins every address, vni and expose
+flavour, so a load kind that only makes sense against one flavour is silently paired with the right one
+forever. A generated configuration pairs them however it likes.
+
+Three of these turned up on the first day of `dataplane/src/packet_processor/fuzz.rs`'s
+`generated` property, and the shape is the same each time: **the harness is wrong and the failure
+reads as a dataplane fault.**
+
+- **Loads carried the fixture's vnis.** `Conversation`, `Blast` and `Inbound` tunnelled from
+  `LOCAL_VNI` and asserted arrival at `REMOTE_VNI`. Against a generated overlay whose vpcs are
+  numbered differently that is a claim about a route nobody configured. Fixed by giving each load a
+  `Path` read off the configuration -- which is the same move as [let the configuration aim the
+  traffic](#let-the-configuration-aim-the-traffic), one level up.
+- **Traffic was aimed where the configuration does not accept it.** A masquerading expose is source
+  NAT and nothing else, so `can_receive_connection` is false for one and a request aimed at its public
+  range is _correctly_ dropped as `Filtered`. A tenth of the derived senders were spending themselves
+  on a legitimate refusal that looked exactly like a delivery failure.
+- **A load kind was paired with the wrong expose flavour.** A plain conversation aimed at a
+  port-forwarded range is delivered whenever the destination port happens to land inside the forwarded
+  window -- about one case in eight thousand -- and then replies from the external address, which no
+  host owns. The drop is right; the message, "the reply of a delivered flow did not reach the wire",
+  says nothing about the test having asked the wrong question.
+
+The lesson is not "be careful". It is that **the configuration already knows the answer to all three**,
+and the derivation should ask it rather than encode it: which vpcs a peering is between, whether an
+expose can receive a connection, and whether it accepts traffic on an arbitrary port are all methods on
+the validated types. A derivation that reads them cannot drift; one that hard-codes them drifts the
+moment the configuration stops being a fixture.
+
+### Reproduce the intermittent one deliberately
+
+The third of those failed about one run in ten and did not recur in twenty. The temptation is to write
+down the most plausible mechanism and move on, which is how a real defect gets filed as flakiness. It
+is usually cheap to settle instead: construct the suspected case directly -- here, one conversation
+aimed at one forwarded port -- and see whether it produces the same message. It took five minutes and
+turned a guess into a fact.
