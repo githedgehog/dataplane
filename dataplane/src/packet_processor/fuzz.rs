@@ -46,7 +46,6 @@ pub(crate) struct Fleet {
     _static_nat: NatTablesWriter,
     _portfw: PortFwTableWriter,
     _masquerade: NatAllocatorWriter,
-    _tables: Option<RouterTables>,
     blueprint: Blueprint,
 }
 
@@ -74,6 +73,7 @@ pub(crate) struct Worker {
 }
 
 pub(crate) struct Fabric {
+    _tables: Option<RouterTables>,
     fleet: Fleet,
     worker: Worker,
 }
@@ -81,7 +81,7 @@ pub(crate) struct Fabric {
 impl Fleet {
     pub(crate) fn lowering(
         overlay: &ValidatedOverlay,
-        tables: Option<RouterTables>,
+        tables: Option<&RouterTables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
         let flow_filter = FlowFilterContextWriter::new();
@@ -116,7 +116,7 @@ impl Fleet {
             static_nat: static_nat.get_reader_factory(),
             portfw: portfw.reader().factory(),
             masquerade: masquerade.get_reader_factory(),
-            underlay: tables.as_ref().map(|tables| Underlay {
+            underlay: tables.map(|tables| Underlay {
                 interfaces: tables.interface_factory(),
                 fibs: tables.fib_factory(),
                 adjacencies: tables.adjacency_factory(),
@@ -131,7 +131,6 @@ impl Fleet {
             _static_nat: static_nat,
             _portfw: portfw,
             _masquerade: masquerade,
-            _tables: tables,
             blueprint,
         }
     }
@@ -295,9 +294,13 @@ impl Fabric {
         tables: Option<RouterTables>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
-        let fleet = Fleet::lowering(overlay, tables, flow_table);
+        let fleet = Fleet::lowering(overlay, tables.as_ref(), flow_table);
         let worker = fleet.blueprint().worker();
-        Self { fleet, worker }
+        Self {
+            _tables: tables,
+            fleet,
+            worker,
+        }
     }
 
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
@@ -3709,11 +3712,8 @@ mod model {
                 .expect("the fixture exposes form an overlay")
                 .validate()
                 .expect("the fixture overlay validates");
-            let fleet = Fleet::lowering(
-                &overlay,
-                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-                Arc::new(FlowTable::default()),
-            );
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
             let blueprint = fleet.blueprint();
 
             let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
@@ -3835,11 +3835,9 @@ mod model {
 
                 concurrency::stress(move || {
                     let (validated, vnis, vary, schedule) = &*drawn;
-                    let fleet = Fleet::lowering(
-                        validated,
-                        Some(topology(vnis)),
-                        Arc::new(FlowTable::default()),
-                    );
+                    let tables = topology(vnis);
+                    let fleet =
+                        Fleet::lowering(validated, Some(&tables), Arc::new(FlowTable::default()));
                     let blueprint = fleet.blueprint();
 
                     thread::scope(|scope| {
@@ -3918,11 +3916,8 @@ mod model {
                 .expect("the fixture exposes form an overlay")
                 .validate()
                 .expect("the fixture overlay validates");
-            let fleet = Fleet::lowering(
-                &overlay,
-                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-                Arc::new(FlowTable::default()),
-            );
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
             let blueprint = fleet.blueprint();
             let entering = handle.clone();
 
@@ -4079,11 +4074,9 @@ mod model {
                     .expect("the fixture exposes form an overlay")
                     .validate()
                     .expect("the fixture overlay validates");
-                let fleet = Fleet::lowering(
-                    &overlay,
-                    Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-                    Arc::new(FlowTable::default()),
-                );
+                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet =
+                    Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
                 let blueprint = fleet.blueprint();
                 let entering = handle.clone();
 
@@ -4207,5 +4200,115 @@ mod model {
         );
         eprintln!("reported={reported} survived={survived}");
         super::assert_covered(reported > 0, "no icmp error ever reached the flow it named");
+    }
+
+    #[concurrency::model_test]
+    fn forwarding_survives_a_route_being_republished_underneath_it() {
+        const FLOWS: u8 = 2;
+        const CHURN: u8 = 6;
+
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PUBLISHED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            let start = Arc::new(concurrency::sync::Barrier::new(3));
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let start = start.clone();
+                        thread::Builder::new()
+                            .name(format!("forward-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("forward-{which}"));
+                                let mut worker = blueprint.worker();
+                                start.wait();
+                                let mut done = 0u64;
+                                for nth in 0..FLOWS {
+                                    let src = format!("1.1.{which}.{}", nth + 1);
+                                    let mut convo = Conversation::new(
+                                        super::routed::Path::fixture(),
+                                        src.parse().unwrap_or_else(|e| unreachable!("{src}: {e}")),
+                                        "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                        u16::from(nth) + 1000,
+                                        80,
+                                    );
+                                    drive(&mut worker, &mut convo);
+                                    assert!(
+                                        convo.checked(),
+                                        "a conversation did not complete while routes were being \
+                                         republished. {}",
+                                        convo.describe()
+                                    );
+                                    done += 1;
+                                }
+                                done
+                            })
+                            .expect("spawn forwarder")
+                    })
+                    .collect();
+
+                let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
+                let landing =
+                    FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink())));
+                start.wait();
+                for nth in 0..CHURN {
+                    let prefix = format!("9.9.{nth}.0");
+                    tables.route_via(
+                        UNDERLAY_VRF,
+                        Prefix::expect_from((
+                            prefix
+                                .parse::<IpAddr>()
+                                .unwrap_or_else(|e| unreachable!("{e}")),
+                            24,
+                        )),
+                        nhop(&peer),
+                        &landing,
+                    );
+                    PUBLISHED.fetch_add(1, Ordering::Relaxed);
+                }
+
+                for worker in running {
+                    COMPLETED.fetch_add(
+                        worker.join().expect("forwarder panicked"),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+        });
+
+        let (completed, published) = (
+            COMPLETED.load(Ordering::Relaxed),
+            PUBLISHED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} published={published}");
+        super::assert_covered(
+            completed > 0 && published > 0,
+            "either no conversation completed or no route was published, so nothing was raced",
+        );
     }
 }
