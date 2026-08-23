@@ -3568,12 +3568,13 @@ mod routed {
 
 #[cfg(test)]
 mod model {
-    use super::routed::{exposes, inner, tunnelled};
+    use super::routed::{exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
+    use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3669,6 +3670,104 @@ mod model {
                 sender.join().expect("sender panicked");
                 reader.join().expect("reader panicked");
             });
+        });
+    }
+    fn _a_blueprint_crosses_a_thread_boundary(blueprint: &Blueprint) {
+        fn shareable<T: Sync>(_: &T) {}
+        shareable(blueprint);
+    }
+
+    #[concurrency::model_test]
+    fn two_workers_are_not_given_the_same_public_tuple() {
+        const FLOWS: u16 = 3;
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let fleet = Fleet::lowering(
+                &overlay,
+                Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+                Arc::new(FlowTable::default()),
+            );
+            let blueprint = fleet.blueprint();
+
+            let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
+            let given: Vec<(Option<IpAddr>, Option<u16>)> = thread::scope(|scope| {
+                let running: Vec<_> = workers
+                    .iter()
+                    .map(|(host, first)| {
+                        let entering = handle.clone();
+                        thread::Builder::new()
+                            .name(format!("worker-{host}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let mut worker = blueprint.worker();
+                                let burst = (0..FLOWS)
+                                    .map(|n| {
+                                        tunnelled(&build_test_udp_ipv4_packet(
+                                            host,
+                                            "3.3.3.1",
+                                            first + n,
+                                            80,
+                                        ))
+                                    })
+                                    .collect();
+                                worker
+                                    .send_batch(burst)
+                                    .iter()
+                                    .map(|out| {
+                                        assert!(
+                                            matches!(verdict(out), Verdict::Delivered { .. }),
+                                            "a packet that is delivered single-threaded was not: \
+                                             {:?}",
+                                            verdict(out)
+                                        );
+                                        let tenant = inside(out).expect(
+                                            "a delivered frame leaves this gateway tunnelled",
+                                        );
+                                        (
+                                            tenant.ip_source(),
+                                            tenant.transport_src_port().map(std::num::NonZero::get),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .expect("spawn worker")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .flat_map(|worker| worker.join().expect("worker panicked"))
+                    .collect()
+            });
+
+            let mut seen = std::collections::BTreeMap::new();
+            for tuple in &given {
+                let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
+                *count += 1;
+                assert_eq!(
+                    *count,
+                    1,
+                    "{} distinct flows were translated and {tuple:?} was handed out twice, so a \
+                     reply to it cannot be attributed to either of them: {given:?}",
+                    given.len()
+                );
+            }
         });
     }
 }
