@@ -58,11 +58,23 @@ impl Fabric {
     }
 
     pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
-        Self::assemble(
-            exposes,
-            acl,
+        Self::routed_sharing(exposes, acl, Arc::new(FlowTable::default()))
+    }
+
+    pub(crate) fn routed_sharing(
+        exposes: &[VpcExpose],
+        acl: Option<&Acl>,
+        flow_table: Arc<FlowTable>,
+    ) -> Option<Self> {
+        let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
+            .ok()?
+            .validate()
+            .ok()?;
+        Some(Self::with_overlay_sharing(
+            &overlay,
             Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-        )
+            flow_table,
+        ))
     }
 
     pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
@@ -89,8 +101,15 @@ impl Fabric {
     }
 
     fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
+        Self::with_overlay_sharing(overlay, tables, Arc::new(FlowTable::default()))
+    }
+
+    fn with_overlay_sharing(
+        overlay: &ValidatedOverlay,
+        tables: Option<RouterTables>,
+        flow_table: Arc<FlowTable>,
+    ) -> Self {
         let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
-        let flow_table = Arc::new(FlowTable::default());
         let mut pipeline = DynPipeline::new();
 
         if let Some(tables) = &tables {
@@ -199,6 +218,10 @@ impl Fabric {
 
     pub(crate) fn flows(&self) -> Option<usize> {
         self.flow_table.len()
+    }
+
+    pub(crate) fn shared_flow_table(&self) -> Arc<FlowTable> {
+        self.flow_table.clone()
     }
 
     pub(crate) fn send_batch(
@@ -3513,27 +3536,59 @@ mod model {
         });
     }
 
-    #[cfg(not(feature = "shuttle"))]
     #[concurrency::model_test]
     fn a_pipeline_can_be_driven_inside_a_stress_run() {
         let _eal = dpdk::test_support::start_eal();
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime");
-        let handle = rt.handle().clone();
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
         concurrency::stress(move || {
-            let _guard = tokio::runtime::Handle::enter(&handle);
-            let mut fabric = Fabric::routed(&exposes(), None)
-                .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
-            let out = fabric.send(tunnelled(&inner()));
-            assert!(
-                matches!(verdict(&out), Verdict::Delivered { .. }),
-                "a packet that is delivered single-threaded was not: {:?}",
-                verdict(&out)
-            );
+            let table = Arc::new(FlowTable::default());
+            let sending = table.clone();
+            let entering = handle.clone();
+
+            thread::scope(|scope| {
+                let sender = thread::Builder::new()
+                    .name("sender".to_owned())
+                    .spawn_scoped(scope, move || {
+                        let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                        let mut fabric = Fabric::routed_sharing(&exposes(), None, sending)
+                            .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
+                        let out = fabric.send(tunnelled(&inner()));
+                        assert!(
+                            matches!(verdict(&out), Verdict::Delivered { .. }),
+                            "a packet that is delivered single-threaded was not: {:?}",
+                            verdict(&out)
+                        );
+                    })
+                    .expect("spawn sender");
+
+                let reader = thread::Builder::new()
+                    .name("reader".to_owned())
+                    .spawn_scoped(scope, move || {
+                        for _ in 0..3 {
+                            let seen = table.len();
+                            assert!(seen.is_some(), "the flow table refused a concurrent read");
+                            table.for_each_flow(|_, flow| {
+                                let _ = flow.status();
+                            });
+                            thread::yield_now();
+                        }
+                    })
+                    .expect("spawn reader");
+
+                sender.join().expect("sender panicked");
+                reader.join().expect("reader panicked");
+            });
         });
     }
 }

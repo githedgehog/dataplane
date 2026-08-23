@@ -41,7 +41,7 @@ use core::fmt;
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
-use concurrency::sync::{Mutex, OnceLock};
+use concurrency::sync::OnceLock;
 use errno::Errno;
 use tracing::{debug, error, trace};
 
@@ -71,13 +71,7 @@ use super::rule::Rule;
 /// `loom`/`shuttle` model-checker backends, `concurrency::sync::Mutex::new`
 /// is not `const fn` (each instance registers with the scheduler), so a
 /// `static M: Mutex<()> = Mutex::new(())` would fail to typecheck on those
-/// configurations.  `OnceLock` + lazy init is the portable idiom across
-/// all backends.  See the module docs on `concurrency::sync`.
 ///
-/// Why the concurrency facade rather than [`std::sync::Mutex`] directly:
-/// the workspace policy is poison-as-panic ("poison is a fatal invariant
-/// violation"); the facade applies that policy uniformly so call sites
-/// never see `LockResult`.
 ///
 /// # Tracing reentrancy
 ///
@@ -91,11 +85,38 @@ use super::rule::Rule;
 /// configuration never touches ACL, but custom layers (e.g. one that
 /// resolves the context name from a registry lookup for log enrichment)
 /// could trip this if added later.
-static ACL_CREATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ACL_CREATE_LOCK: OnceLock<RegistryMutex> = OnceLock::new();
 
-/// Lazy accessor for [`ACL_CREATE_LOCK`].
-fn acl_create_lock() -> &'static Mutex<()> {
-    ACL_CREATE_LOCK.get_or_init(|| Mutex::new(()))
+concurrency::with_std! {
+    type RegistryMutex = concurrency::sync::Mutex<()>;
+
+    fn hold(lock: &'static RegistryMutex) -> impl Sized {
+        lock.lock()
+    }
+}
+
+concurrency::with_loom! {
+    // nosemgrep: rust-no-direct-std-sync-import
+    type RegistryMutex = std::sync::Mutex<()>;
+
+    fn hold(lock: &'static RegistryMutex) -> impl Sized {
+        lock.lock()
+            .unwrap_or_else(|_| unreachable!("the acl registry lock is poisoned"))
+    }
+}
+
+concurrency::with_shuttle! {
+    // nosemgrep: rust-no-direct-std-sync-import
+    type RegistryMutex = std::sync::Mutex<()>;
+
+    fn hold(lock: &'static RegistryMutex) -> impl Sized {
+        lock.lock()
+            .unwrap_or_else(|_| unreachable!("the acl registry lock is poisoned"))
+    }
+}
+
+fn hold_acl_registry() -> impl Sized {
+    hold(ACL_CREATE_LOCK.get_or_init(|| RegistryMutex::new(())))
 }
 
 // ---------------------------------------------------------------------------
@@ -475,7 +496,7 @@ impl<const N: usize> AclContext<N, Configuring<N>> {
         // leaves DPDK's TAILQ in an unknown state, and continuing
         // silently could lead to use-after-free.  Aborting via the
         // panic is the only safe answer.
-        let _create_guard = acl_create_lock().lock();
+        let _create_guard = hold_acl_registry();
 
         // Pre-flight: DPDK's `rte_acl_create` silently returns the existing
         // context for a duplicate name.  Refuse if one is already registered.
@@ -1181,7 +1202,7 @@ impl<const N: usize, State> Drop for AclContext<N, State> {
         // The facade panics on poison.  Dropping while another holder
         // panicked mid-operation means the DPDK registry may be in an
         // unknown state; aborting via the panic is the only safe answer.
-        let _guard = acl_create_lock().lock();
+        let _guard = hold_acl_registry();
         // SAFETY: rte_acl_free is safe to call on any valid context pointer; `Drop` runs at
         // most once per `AclContext`, and the create-lock acquired above serialises against
         // `rte_acl_create` / `dump_all_contexts`.
@@ -1211,7 +1232,7 @@ pub fn dump_all_contexts() {
     // expose a list in an inconsistent state to the walk.  Facade panics
     // on poison (workspace policy -- a prior holder panic implies the
     // registry may be inconsistent).
-    let _guard = acl_create_lock().lock();
+    let _guard = hold_acl_registry();
     // SAFETY: rte_acl_list_dump takes no arguments and simply iterates an internal list.
     unsafe { dpdk_sys::rte_acl_list_dump() }
 }
