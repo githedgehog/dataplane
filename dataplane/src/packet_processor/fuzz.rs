@@ -34,6 +34,7 @@ use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
+use std::cell::RefCell;
 use std::net::IpAddr;
 
 use super::egress::Egress;
@@ -41,11 +42,11 @@ use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
 
 pub(crate) struct Fleet {
-    _flow_filter: FlowFilterContextWriter,
-    _acl: AclFilterContextWriter,
-    _static_nat: NatTablesWriter,
-    _portfw: PortFwTableWriter,
-    _masquerade: NatAllocatorWriter,
+    flow_filter: FlowFilterContextWriter,
+    acl: AclFilterContextWriter,
+    static_nat: RefCell<NatTablesWriter>,
+    portfw: RefCell<PortFwTableWriter>,
+    masquerade: RefCell<NatAllocatorWriter>,
     blueprint: Blueprint,
 }
 
@@ -126,13 +127,35 @@ impl Fleet {
         };
 
         Self {
-            _flow_filter: flow_filter,
-            _acl: acl,
-            _static_nat: static_nat,
-            _portfw: portfw,
-            _masquerade: masquerade,
+            flow_filter,
+            acl,
+            static_nat: RefCell::new(static_nat),
+            portfw: RefCell::new(portfw),
+            masquerade: RefCell::new(masquerade),
             blueprint,
         }
+    }
+
+    pub(crate) fn reconfigure(&self, overlay: &ValidatedOverlay) {
+        self.flow_filter.store(
+            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+        );
+        self.acl.store(
+            AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
+        );
+        self.static_nat.borrow_mut().update_nat_tables(
+            build_nat_configuration(overlay.vpc_table())
+                .expect("a validated overlay lowers to nat"),
+        );
+        self.portfw
+            .borrow_mut()
+            .update_from_vpc_table(overlay.vpc_table())
+            .expect("a validated overlay lowers to port forwarding");
+        self.masquerade.borrow_mut().update_nat_allocator(
+            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+            1,
+            &self.blueprint.flow_table,
+        );
     }
 
     pub(crate) fn blueprint(&self) -> &Blueprint {
@@ -4518,6 +4541,113 @@ mod model {
             fresh > 0,
             "no probe was ever forwarded by the version published in its own round, so the publish \
              never once landed inside the window it was racing",
+        );
+    }
+
+    #[concurrency::model_test]
+    fn re_enacting_a_configuration_under_load_disturbs_nothing() {
+        const FLOWS: u8 = 2;
+        const APPLIES: u8 = 4;
+
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ENACTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+            let mut reports = Vec::new();
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name(format!("tenant-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("tenant-{which}"));
+                                let mut worker = blueprint.worker();
+                                gate.wait();
+                                let mut seen = Vec::new();
+                                for round in 1..=APPLIES {
+                                    for nth in 0..FLOWS {
+                                        let src = format!("1.1.{which}.{}", nth + 1);
+                                        let mut convo = Conversation::new(
+                                            super::routed::Path::fixture(),
+                                            src.parse()
+                                                .unwrap_or_else(|e| unreachable!("{src}: {e}")),
+                                            "3.3.3.1"
+                                                .parse()
+                                                .unwrap_or_else(|e| unreachable!("{e}")),
+                                            u16::from(round) * 100 + u16::from(nth) + 1000,
+                                            80,
+                                        );
+                                        drive(&mut worker, &mut convo);
+                                        seen.push((round, convo.checked(), convo.describe()));
+                                    }
+                                    gate.wait();
+                                }
+                                seen
+                            })
+                            .expect("spawn tenant")
+                    })
+                    .collect();
+
+                gate.wait();
+                for _ in 0..APPLIES {
+                    fleet.reconfigure(&overlay);
+                    ENACTED.fetch_add(1, Ordering::Relaxed);
+                    gate.wait();
+                }
+
+                for worker in running {
+                    reports.push(worker.join().expect("tenant panicked"));
+                }
+            });
+
+            for seen in reports {
+                for (round, checked, described) in seen {
+                    assert!(
+                        checked,
+                        "a conversation in round {round} did not survive the configuration it was \
+                         already running being enacted again. Every enactment before this round \
+                         had returned, and the one racing it changes nothing. {described}"
+                    );
+                    COMPLETED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let (completed, enacted) = (
+            COMPLETED.load(Ordering::Relaxed),
+            ENACTED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} enacted={enacted}");
+        super::assert_covered(
+            completed > 0 && enacted > 0,
+            "either no conversation completed or no configuration was enacted, so nothing was raced",
         );
     }
 }
