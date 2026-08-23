@@ -295,6 +295,16 @@ impl Footprint {
     pub fn is_empty(&self) -> bool {
         self.vpcs.is_empty() && self.peerings.is_empty()
     }
+
+    #[must_use]
+    pub fn touches_vpc_named(&self, name: &str) -> bool {
+        self.vpcs.iter().any(|vpc| vpc.name() == name)
+    }
+
+    #[must_use]
+    pub fn touches_peering_named(&self, name: &str) -> bool {
+        self.peerings.iter().any(|peering| peering.name() == name)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -982,6 +992,36 @@ mod tests {
     // process-lifetime by construction, and a facade atomic in a `static` does not even compile
     // under loom, whose `AtomicUsize::new` is not `const`.
     use concurrency::process_global::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    #[test]
+    fn writing_a_vpc_does_not_imply_writing_its_peerings() {
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+
+        check!()
+            .with_generator(Sequence::default())
+            .for_each(|ops: &Vec<Op>| {
+                let mut draft = Draft::new();
+                for op in ops {
+                    let footprint = op.writes(&draft);
+                    for vpc in &footprint.vpcs {
+                        for (handle, spec) in draft.peerings() {
+                            if spec.touches(*vpc) && !footprint.peerings.contains(&handle) {
+                                SEEN.fetch_add(1, Relaxed);
+                            }
+                        }
+                    }
+                    op.apply(&mut draft).expect("a drawn operation applies");
+                }
+            });
+
+        assert!(
+            SEEN.load(Relaxed) > 0,
+            "no drawn operation ever wrote a vpc while leaving one of its peerings unwritten. \
+             Either the vocabulary changed and a peering-only frame filter is now sound -- in \
+             which case say so where the filter is written -- or the generator stopped drawing \
+             `AddPeering` against a vpc that already had one"
+        );
+    }
 
     static DRAWN: [AtomicUsize; 7] = [
         AtomicUsize::new(0),
