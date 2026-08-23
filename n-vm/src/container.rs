@@ -418,8 +418,19 @@ impl ContainerParams {
     /// still passes.  This is the only place the loss is visible.
     fn write_forwarded_env(&self) -> Result<Option<PathBuf>, ContainerError> {
         let extra = std::env::var(n_vm_protocol::ENV_FORWARD).ok();
+        // Values are rewritten, not just carried. A forwarded variable that names a host path
+        // points nowhere in the guest, where the workspace lives at `/workspace` rather than at
+        // whatever it is called here -- see `remap_workspace_paths`, and `BOLERO_LIBFUZZER_ARGS`
+        // for why it matters.
+        let host_root = workspace_root()
+            .and_then(|root| root.to_str().map(str::to_owned))
+            .unwrap_or_default();
         let mut vars: Vec<(String, String)> = std::env::vars()
             .filter(|(name, _)| n_vm_protocol::is_forwarded(name, extra.as_deref()))
+            .map(|(name, value)| {
+                let value = n_vm_protocol::remap_workspace_paths(&value, &host_root);
+                (name, value)
+            })
             .collect();
         if vars.is_empty() {
             return Ok(None);

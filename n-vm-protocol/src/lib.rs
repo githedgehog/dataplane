@@ -693,6 +693,36 @@ pub fn is_forwarded(name: &str, extra: Option<&str>) -> bool {
     })
 }
 
+/// Rewrite host workspace paths in a forwarded value so they resolve in the guest.
+///
+/// The workspace is mounted at [`VM_WORKSPACE_DIR`] rather than at its host path, because that
+/// path varies per developer and per CI runner and so cannot be baked into the `vmroot`
+/// derivation. Anything forwarded that *names* a host path therefore points nowhere once it
+/// arrives.
+///
+/// `BOLERO_LIBFUZZER_ARGS` is why this exists. `cargo-bolero` computes the corpus and
+/// artifact directories on the host and passes them as absolute paths:
+///
+/// ```text
+/// -artifact_prefix=/home/you/src/dataplane/mgmt/tests/__fuzz__/reconcile/crashes/
+/// ```
+///
+/// The guest has that tree at `/workspace/mgmt/tests/__fuzz__/...`, and it is writable there --
+/// see the `#[corpus]` share. Without the rewrite the fuzzer ran, found inputs, and wrote them
+/// to a directory that did not exist, so nothing ever came back.
+///
+/// Substring replacement rather than path parsing, because the value is an opaque
+/// space-separated argument list in which paths appear both alone and glued to a flag by `=`.
+/// A trailing separator on `host_root` is ignored so that `/a/b` and `/a/b/` behave alike.
+#[must_use]
+pub fn remap_workspace_paths(value: &str, host_root: &str) -> String {
+    let host_root = host_root.trim_end_matches('/');
+    if host_root.is_empty() {
+        return value.to_owned();
+    }
+    value.replace(host_root, &format!("/{VM_WORKSPACE_DIR}"))
+}
+
 /// Encode variables as NUL-separated `KEY=VALUE` records.
 ///
 /// The same shape as `/proc/self/environ`, and for the same reason: NUL is
@@ -733,6 +763,47 @@ pub fn decode_environ(bytes: &[u8]) -> Vec<(String, String)> {
             Some((key.to_owned(), value.to_owned()))
         })
         .collect()
+}
+
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+
+    #[test]
+    fn a_host_path_becomes_the_guest_mount() {
+        let got = remap_workspace_paths(
+            "-artifact_prefix=/home/you/src/dp/mgmt/tests/__fuzz__/crashes/",
+            "/home/you/src/dp",
+        );
+        assert_eq!(got, "-artifact_prefix=/workspace/mgmt/tests/__fuzz__/crashes/");
+    }
+
+    #[test]
+    fn every_occurrence_is_rewritten() {
+        let got = remap_workspace_paths("/w/corpus /w/crashes -x=/w/c/", "/w");
+        assert_eq!(got, "/workspace/corpus /workspace/crashes -x=/workspace/c/");
+    }
+
+    #[test]
+    fn a_trailing_separator_on_the_root_changes_nothing() {
+        assert_eq!(
+            remap_workspace_paths("/w/corpus", "/w/"),
+            remap_workspace_paths("/w/corpus", "/w"),
+        );
+    }
+
+    /// An out-of-workspace caller has no `/workspace`, and an empty root would otherwise splice
+    /// the mount point between every character.
+    #[test]
+    fn an_empty_root_is_left_alone() {
+        assert_eq!(remap_workspace_paths("/w/corpus", ""), "/w/corpus");
+    }
+
+    #[test]
+    fn a_value_naming_no_host_path_is_untouched() {
+        assert_eq!(remap_workspace_paths("-timeout=10 -jobs=1", "/w"), "-timeout=10 -jobs=1");
+    }
 }
 
 #[cfg(test)]
