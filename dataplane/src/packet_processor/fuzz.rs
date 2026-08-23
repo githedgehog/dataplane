@@ -30,7 +30,7 @@ use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
-use pipeline::{DynPipeline, NetworkFunction};
+use pipeline::{DynPipeline, NetworkFunction, PipelineData};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
@@ -39,6 +39,17 @@ use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
 const FIRST_GENID: GenId = 1;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Enact {
+    FlowFilter,
+    Acl,
+    StaticNat,
+    Masquerade,
+    PortForward,
+    Generation,
+    Everything,
+}
 
 use super::egress::Egress;
 use super::ingress::Ingress;
@@ -60,6 +71,7 @@ pub(crate) struct Blueprint {
     static_nat: NatTablesReaderFactory,
     portfw: PortFwTableReaderFactory,
     masquerade: NatAllocatorReaderFactory,
+    pipeline: Arc<PipelineData>,
     underlay: Option<Underlay>,
     flow_table: Arc<FlowTable>,
     declared: Arc<[Prefix]>,
@@ -121,6 +133,7 @@ impl Fleet {
             static_nat: static_nat.get_reader_factory(),
             portfw: portfw.reader().factory(),
             masquerade: masquerade.get_reader_factory(),
+            pipeline: Arc::new(PipelineData::new(FIRST_GENID)),
             underlay: tables.map(|tables| Underlay {
                 interfaces: tables.interface_factory(),
                 fibs: tables.fib_factory(),
@@ -142,26 +155,44 @@ impl Fleet {
     }
 
     pub(crate) fn reconfigure(&self, overlay: &ValidatedOverlay) {
-        self.flow_filter.store(
-            FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
-        );
-        self.acl.store(
-            AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
-        );
-        self.static_nat.borrow_mut().update_nat_tables(
-            build_nat_configuration(overlay.vpc_table())
-                .expect("a validated overlay lowers to nat"),
-        );
-        self.portfw
-            .borrow_mut()
-            .update_from_vpc_table(overlay.vpc_table())
-            .expect("a validated overlay lowers to port forwarding");
-        self.genid.set(self.genid.get() + 1);
-        self.masquerade.borrow_mut().update_nat_allocator(
-            MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            self.genid.get(),
-            &self.blueprint.flow_table,
-        );
+        self.enact(overlay, Enact::Everything);
+    }
+
+    pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
+        let doing = |step: Enact| which == Enact::Everything || which == step;
+        if doing(Enact::FlowFilter) {
+            self.flow_filter.store(
+                FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+            );
+        }
+        if doing(Enact::Acl) {
+            self.acl.store(
+                AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
+            );
+        }
+        if doing(Enact::StaticNat) {
+            self.static_nat.borrow_mut().update_nat_tables(
+                build_nat_configuration(overlay.vpc_table())
+                    .expect("a validated overlay lowers to nat"),
+            );
+        }
+        if doing(Enact::Masquerade) {
+            self.genid.set(self.genid.get() + 1);
+            self.masquerade.borrow_mut().update_nat_allocator(
+                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
+                self.genid.get(),
+                &self.blueprint.flow_table,
+            );
+        }
+        if doing(Enact::PortForward) {
+            self.portfw
+                .borrow_mut()
+                .update_from_vpc_table(overlay.vpc_table())
+                .expect("a validated overlay lowers to port forwarding");
+        }
+        if doing(Enact::Generation) {
+            self.blueprint.pipeline.set_genid(self.genid.get());
+        }
     }
 
     pub(crate) fn blueprint(&self) -> &Blueprint {
@@ -172,7 +203,7 @@ impl Fleet {
 impl Blueprint {
     pub(crate) fn worker(&self) -> Worker {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
-        let mut pipeline = DynPipeline::new();
+        let mut pipeline = DynPipeline::new().set_data(self.pipeline.clone());
 
         if let Some(underlay) = &self.underlay {
             pipeline = pipeline.add_stage(Ingress::new("ingress", underlay.interfaces.handle()));
@@ -4717,8 +4748,13 @@ mod model {
         static BARREN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ENGULFED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static FRAMED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static RACED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static UNDISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        fn separate(drawn: u16, round: u8, which: usize) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(round).wrapping_mul(997)) % 32_000 + 1;
+            within + u16::try_from(which).unwrap_or_else(|_| unreachable!()) * 32_768
+        }
 
         fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
             move |named| {
@@ -4818,15 +4854,7 @@ mod model {
                                             let varied: Vec<derive::Vary> = vary
                                                 .iter()
                                                 .map(|v| derive::Vary {
-                                                    sport: v
-                                                        .sport
-                                                        .wrapping_add(u16::from(round) * 997)
-                                                        .wrapping_add(
-                                                            u16::try_from(which)
-                                                                .unwrap_or_else(|_| unreachable!())
-                                                                * 401,
-                                                        )
-                                                        .max(1),
+                                                    sport: separate(v.sport, round, which),
                                                     ..*v
                                                 })
                                                 .collect();
@@ -4878,18 +4906,24 @@ mod model {
                             });
                             for (checked, described) in ran {
                                 if round == 1 {
-                                    if checked { &UNDISTURBED } else { &DISTURBED }
+                                    if checked { &RACED } else { &DISTURBED }
                                         .fetch_add(1, Ordering::Relaxed);
                                     continue;
                                 }
                                 assert!(
                                     checked,
                                     "traffic outside the footprint of a configuration change did \
-                                     not survive it, in round {round}. The change was \
-                                     {change:?}, whose write set this load is outside of, so the \
-                                     configuration it ran against and the one enacted agree about \
-                                     it entirely -- and the enactment that carried the difference \
-                                     returned before this round opened. {described}"
+                                     not survive it, in round {round}. The change was {change:?}, \
+                                     whose write set this load is outside of, so the configuration \
+                                     it ran against and the one enacted agree about it entirely. \
+                                     {}. {described}",
+                                    if round == 1 {
+                                        "This round races the enactment that carries the difference"
+                                    } else {
+                                        "That enactment returned before this round opened, and \
+                                         this round races only a re-enactment of what is already \
+                                         running"
+                                    }
                                 );
                             }
                         }
@@ -4897,25 +4931,181 @@ mod model {
                 });
             });
 
-        let (framed, barren, engulfed, framed_out, disturbed, undisturbed) = (
+        let (framed, barren, engulfed, framed_out, raced) = (
             FRAMED.load(Ordering::Relaxed),
             BARREN.load(Ordering::Relaxed),
             ENGULFED.load(Ordering::Relaxed),
             FRAMED_OUT.load(Ordering::Relaxed),
-            DISTURBED.load(Ordering::Relaxed),
-            UNDISTURBED.load(Ordering::Relaxed),
+            RACED.load(Ordering::Relaxed),
         );
         eprintln!("framed={framed} barren={barren} engulfed={engulfed} framed_out={framed_out}");
-        eprintln!("racing the change: disturbed={disturbed} undisturbed={undisturbed}");
+        eprintln!(
+            "carried while the change was being enacted: {raced}, of which disturbed: {}",
+            DISTURBED.load(Ordering::Relaxed)
+        );
         super::assert_covered(
             framed > 0,
             "no draw left two loads outside the footprint of its last operation, so no \
              configuration change was ever carried under traffic",
         );
         super::assert_covered(
+            raced > 0,
+            "no load was ever carried by the round that races the change itself, so every \
+             assertion here was about a re-enactment of a configuration already running -- which \
+             `re_enacting_a_configuration_under_load_disturbs_nothing` already covers",
+        );
+        super::assert_covered(
             framed_out > 0,
             "no load was ever filtered out for being inside a footprint, so the frame was always \
              the whole configuration and this property is the re-enactment one with extra steps",
         );
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    #[ignore = "an instrument, not a property: reports a rate and asserts nothing"]
+    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    async fn report_which_enactment_step_disturbs_traffic() {
+        use config::external::overlay::algebra::{
+            Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
+        };
+
+        const ROUNDS: usize = 500;
+
+        let vpc = VpcHandle;
+        let peering = PeeringHandle;
+        let built = vec![
+            Op::AddVpc(vpc(0)),
+            Op::AddVpc(vpc(1)),
+            Op::AddPeering {
+                handle: peering(0),
+                left: vpc(0),
+                right: vpc(1),
+            },
+            Op::SetFlavour {
+                peering: peering(0),
+                side: Side::Left,
+                slot: 0,
+                flavour: Flavour::Masquerade,
+            },
+            Op::AddVpc(vpc(2)),
+            Op::AddVpc(vpc(3)),
+            Op::AddPeering {
+                handle: peering(1),
+                left: vpc(2),
+                right: vpc(3),
+            },
+        ];
+        let change = Op::SetFlavour {
+            peering: peering(1),
+            side: Side::Left,
+            slot: 0,
+            flavour: Flavour::Masquerade,
+        };
+        let assemble = |draft: &Draft| {
+            draft
+                .overlay()
+                .expect("assembles")
+                .validate()
+                .expect("validates")
+        };
+        let before = Sequence::fold(&built);
+        let running = assemble(&before);
+        let mut after_draft = before.clone();
+        change.apply(&mut after_draft).expect("the change applies");
+        let enacted = assemble(&after_draft);
+        let footprint = change.writes(&before);
+
+        let vnis: Vec<Vni> = enacted
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect();
+        let vary: Vec<derive::Vary> = (0..2)
+            .map(|n| derive::Vary {
+                host: n,
+                port: 0,
+                sport: 30000,
+                dport: 80,
+                burst: 2,
+                blast: false,
+            })
+            .collect();
+        let outside = |named: derive::Named<'_>| {
+            !footprint.touches_peering_named(named.peering)
+                && !footprint.touches_vpc_named(named.local)
+                && !footprint.touches_vpc_named(named.remote)
+        };
+        eprintln!(
+            "loads: total={} framed={}",
+            derive::loads_for(&running, &vary).len(),
+            derive::loads_where(&running, &vary, &outside).len()
+        );
+
+        let handle = tokio::runtime::Handle::current();
+        for part in [
+            Enact::Everything,
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+            Enact::Generation,
+        ] {
+            let disturbed = std::sync::atomic::AtomicU64::new(0);
+            let carried = std::sync::atomic::AtomicU64::new(0);
+
+            for round in 0..ROUNDS {
+                let tables = topology(&vnis);
+                let fleet =
+                    Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let gate = std::sync::Barrier::new(3);
+                std::thread::scope(|scope| {
+                    for which in 0..2u16 {
+                        let handle = handle.clone();
+                        let (gate, disturbed, carried) = (&gate, &disturbed, &carried);
+                        let (running, vary, outside) = (&running, &vary, &outside);
+                        scope.spawn(move || {
+                            let _guard = handle.enter();
+                            let mut worker = blueprint.worker();
+                            let varied: Vec<derive::Vary> = vary
+                                .iter()
+                                .map(|v| derive::Vary {
+                                    sport: v.sport
+                                        + which * 401
+                                        + u16::try_from(round).unwrap_or(0) * 7,
+                                    ..*v
+                                })
+                                .collect();
+                            let mine = derive::loads_where(running, &varied, outside);
+                            gate.wait();
+                            for mut load in mine {
+                                carried.fetch_add(1, Ordering::Relaxed);
+                                let ran = without_unwinding(|| {
+                                    for _ in 0..8 {
+                                        let Some(packet) = load.next() else { break };
+                                        let out = worker.send(packet);
+                                        load.observe(&out);
+                                    }
+                                    (load.checked(), load.describe())
+                                });
+                                let (ok, how) = ran.unwrap_or_else(|why| (false, why));
+                                if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
+                                    eprintln!("  {part:?} first, round {round}: {how}");
+                                }
+                            }
+                        });
+                    }
+                    gate.wait();
+                    fleet.enact(&enacted, part);
+                });
+            }
+            eprintln!(
+                "{part:?}: carried={} disturbed={}",
+                carried.load(Ordering::Relaxed),
+                disturbed.load(Ordering::Relaxed)
+            );
+        }
     }
 }
