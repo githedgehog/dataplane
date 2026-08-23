@@ -51,5 +51,16 @@ pub use n_vm_protocol::{
     VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR, VsockAllocation, VsockChannel, VsockCid,
     VsockPort,
 };
+/// Re-exported so `#[n_vm::test]` can answer fuzz-target discovery.
+///
+/// `cargo bolero list` runs the test binary with `CARGO_BOLERO_SELECT=all` and reads a line that
+/// each `bolero::check!` prints *when it executes*. A tiered test never executes its body on the
+/// host -- that is the whole contract -- so an in-VM fuzz target was invisible to the
+/// coverage-guided runner and could not be named to `cargo bolero test`.
+///
+/// The generated harness therefore constructs bolero's own [`bolero::TargetLocation`] and asks it,
+/// before any tier dispatch. Bolero prints, and does the printing itself so the wire format cannot
+/// drift from a copy here.
+pub use bolero;
 pub use qemu::Qemu;
 pub use vm::{ProcessOutput, TestVm, TestVmParams, VmTestOutput, run_in_vm};
