@@ -35,10 +35,17 @@
 //! check would panic on every innocent reader in any test binary that shares a process -- which
 //! `cargo test` and edition-2024's merged doctests both do.
 //!
-//! One residual false positive is accepted: under plain `cargo test`, an unrelated test running in
-//! parallel *in the same process* can read the clock while this one holds it paused. `cargo
-//! nextest` -- what CI, `just miri` and the development guide all use -- gives each test its own
-//! process and has no such window. The panic message says so.
+//! # Where the check can be trusted
+//!
+//! It is sound exactly when the paused section owns every thread in the process. Under plain `cargo
+//! test` it does not: an unrelated test running in parallel reads the clock and is refused for
+//! something it did not do, and that is not rare -- it failed the whole packet-processor suite ten
+//! times out of ten, because one property pauses while another builds a fabric on its main thread.
+//!
+//! So the refusal is fatal only where the isolation actually holds. nextest states it:
+//! `NEXTEST_EXECUTION_MODE=process-per-test`, which is what CI, `just miri` and the development
+//! guide all run. Elsewhere the read still happens, but it warns once instead of panicking, so
+//! `cargo test` keeps working and the diagnostic is not lost. `CLOCK_STRICT=1` (or `0`) overrides.
 //!
 //! # Wall-clock mode
 //!
@@ -47,7 +54,9 @@
 //! an hour costs nothing, and wall, where the same property is what would catch the virtual clock
 //! lying. Only durations of a second or two are practical in wall mode, so it is opt-in per run.
 
-use crate::Duration;
+use crate::{Duration, Instant};
+#[cfg(all(test, not(wall_clock)))]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How many [`Paused`] sections are alive. Zero almost always.
@@ -72,14 +81,88 @@ pub(crate) fn armed() -> bool {
     LIVE.load(Ordering::Acquire) != 0
 }
 
-/// Refuse a clock read that would come from the wrong timeline.
+/// Whether a read from the wrong timeline is fatal.
+///
+/// Only where each test has the process to itself, which nextest states outright. Under a shared
+/// process the same condition is reached by tests that have nothing to do with each other, and a
+/// panic there reports the runner rather than a defect.
+#[cfg(not(wall_clock))]
+fn strict() -> bool {
+    static STRICT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    #[cfg(test)]
+    match FORCED.load(Ordering::Acquire) {
+        FORCED_STRICT => return true,
+        FORCED_LENIENT => return false,
+        _ => {}
+    }
+    *STRICT.get_or_init(|| {
+        if let Some(explicit) = std::env::var_os("CLOCK_STRICT") {
+            return explicit != "0";
+        }
+        std::env::var_os("NEXTEST_EXECUTION_MODE").is_some_and(|mode| mode == "process-per-test")
+    })
+}
+
+/// Lets this crate's own tests pin both halves of [`strict`] whatever the runner is.
+///
+/// Both halves need pinning and the runner decides which one a plain test would get, so each is
+/// forced explicitly rather than left to the environment. A flag rather than `set_var`, which would
+/// be a data race against every other thread in the process, and would not be re-read anyway once
+/// the detection has been cached.
+#[cfg(all(test, not(wall_clock)))]
+static FORCED: AtomicU8 = AtomicU8::new(FORCED_BY_RUNNER);
+#[cfg(all(test, not(wall_clock)))]
+const FORCED_BY_RUNNER: u8 = 0;
+#[cfg(all(test, not(wall_clock)))]
+const FORCED_STRICT: u8 = 1;
+#[cfg(all(test, not(wall_clock)))]
+const FORCED_LENIENT: u8 = 2;
+
+/// Run `body` with the refusal fatal, whichever runner is in use.
+///
+/// Callers must already hold [`serially`], since the flag is process-wide.
+#[cfg(all(test, not(wall_clock)))]
+fn strictly<R>(body: impl FnOnce() -> R) -> R {
+    forcing(FORCED_STRICT, body)
+}
+
+/// Run `body` with the refusal advisory, whichever runner is in use.
+#[cfg(all(test, not(wall_clock)))]
+fn leniently<R>(body: impl FnOnce() -> R) -> R {
+    forcing(FORCED_LENIENT, body)
+}
+
+#[cfg(all(test, not(wall_clock)))]
+fn forcing<R>(mode: u8, body: impl FnOnce() -> R) -> R {
+    FORCED.store(mode, Ordering::Release);
+    let out = body();
+    FORCED.store(FORCED_BY_RUNNER, Ordering::Release);
+    out
+}
+
+/// Answer a clock read that would come from the wrong timeline.
 ///
 /// Out of line and cold because the arming check is on every clock read in a test build, and this
-/// arm never returns.
+/// arm is not the common one.
 #[cfg(not(wall_clock))]
 #[cold]
 #[inline(never)]
-pub(crate) fn refuse() -> ! {
+pub(crate) fn refuse() -> Instant {
+    if !strict() {
+        // Once, because a thread in this position is usually in a loop, and a warning per packet
+        // would bury the run it is trying to describe.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "warning: clock::now() on a thread with no tokio runtime while another test holds \
+                 the virtual clock paused. Answering from the wall clock, which is a different \
+                 timeline. Under `cargo nextest` this is a hard error, because there each test has \
+                 the process to itself and the only way to reach it is a thread that forgot to \
+                 enter the runtime. Set CLOCK_STRICT=1 to make it one here."
+            );
+        });
+        return Instant::now();
+    }
     panic!(
         "clock::now() on a thread with no tokio runtime while the virtual clock is paused.\n\
          \n\
@@ -280,16 +363,14 @@ mod tests {
     ///
     /// The measured alternative is an hour of silent disagreement: an unentered thread falls back
     /// to the wall clock, which looks entirely normal and is a different timeline.
-    /// Wall mode reads the real clock from every thread, entered or not, so there is no wrong timeline
-    /// to be answered from and nothing to refuse.
-    #[cfg(not(wall_clock))]
     #[test]
-    fn a_thread_that_did_not_enter_is_refused() {
+    #[cfg(not(wall_clock))]
+    fn a_thread_that_did_not_enter_is_refused_where_the_process_is_ours() {
         let _serial = serially();
         let clock = Paused::new();
         clock.block_on(async { advance(LONG).await });
 
-        let forgetful = thread::spawn(now).join();
+        let forgetful = super::strictly(|| thread::spawn(now).join());
         let panic =
             forgetful.expect_err("an unentered read was allowed while the clock was paused");
         // The refusal is a literal, so it arrives as `&'static str` rather than `String`.
@@ -302,6 +383,22 @@ mod tests {
             message.contains("no tokio runtime"),
             "the refusal did not explain itself: {message}"
         );
+    }
+
+    /// Where the process is shared, the same read warns and answers rather than failing the run.
+    ///
+    /// Not a softening for its own sake: under `cargo test` this condition is reached by tests that
+    /// have nothing to do with each other -- it failed the whole packet-processor suite ten times
+    /// out of ten -- so a panic there reports the runner rather than a defect.
+    #[test]
+    #[cfg(not(wall_clock))]
+    fn a_thread_that_did_not_enter_is_only_warned_where_the_process_is_shared() {
+        let _serial = serially();
+        let clock = Paused::new();
+        clock.block_on(async { advance(LONG).await });
+
+        super::leniently(|| thread::spawn(now).join())
+            .expect("a shared-process read should warn, not panic");
     }
 
     /// A worker that did enter reads the same clock as the thread that drove it.

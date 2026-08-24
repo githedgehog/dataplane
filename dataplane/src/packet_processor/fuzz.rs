@@ -1137,6 +1137,61 @@ pub(crate) fn run_schedule(
     bursts
 }
 
+/// [`run_schedule`], with the clock moving between rounds.
+///
+/// The advance goes **between** polls, never during one, and that is the semantics rather than a
+/// limitation. `clock::virtual_time::advance` is async and only the thread driving the runtime may
+/// call it, so a worker could not move the clock even if it wanted to; and a clock that jumped while
+/// a packet was halfway through the pipeline would be measuring the scheduler rather than the code.
+/// "The configuration ages between rounds" is a claim that can be stated, so it is the one made.
+///
+/// The waits are drawn, not chosen here. A property that decided when to advance would be asserting
+/// something about its own schedule; drawn, the advance composes with the picks exactly as another
+/// dimension of the same input, and a failure still prints as one case.
+#[cfg(test)]
+pub(crate) async fn run_schedule_over_time(
+    worker: &mut Worker,
+    loads: &mut [Box<dyn Load>],
+    schedule: &[Poll],
+    waits: &[Duration],
+) -> Vec<Vec<usize>> {
+    let mut bursts = Vec::new();
+    for (nth, poll) in schedule.iter().enumerate() {
+        let mut burst = Vec::new();
+        let mut origin = Vec::new();
+        for pick in poll {
+            if loads.is_empty() {
+                break;
+            }
+            let which = usize::from(pick.load) % loads.len();
+            for _ in 0..pick.take {
+                let Some(packet) = loads[which].next() else {
+                    break;
+                };
+                burst.push(packet);
+                origin.push(which);
+            }
+        }
+        if !burst.is_empty() {
+            for (answer, which) in worker.send_batch(burst).iter().zip(&origin) {
+                loads[*which].observe(answer);
+            }
+            bursts.push(origin);
+        }
+        // After the round rather than before it, so that a schedule's last poll is followed by an
+        // advance too -- otherwise the final wait would be drawn and then never applied, and the
+        // last round would be the one round time never touched.
+        if let Some(wait) = waits.get(nth) {
+            clock::virtual_time::advance(*wait).await;
+        }
+    }
+
+    for load in loads {
+        drive(worker, load.as_mut());
+    }
+    bursts
+}
+
 /// Traffic a configuration says should work, derived from the configuration itself.
 ///
 /// Every property before this aimed its packets by hand: `1.1.0.5`, `3.3.3.1`, ports chosen to suit
@@ -3685,6 +3740,12 @@ mod generated {
     static BY_FLOW: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static EXCEPTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
+    /// Cases where the clock actually moved, and by how much in total.
+    static AGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static AGED_MILLIS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    /// Conversations that completed with the clock having moved under them.
+    static SURVIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
     /// Print what the run reached, and fail if it reached nothing worth having.
     ///
     /// Every guard here names a shape whose absence would leave the property green while covering
@@ -3926,6 +3987,123 @@ mod generated {
             });
 
         report_and_assert_coverage();
+    }
+
+    /// [`Generated`], plus how long the clock rests between rounds.
+    ///
+    /// The wait is bounded by the shortest deadline in the pipeline rather than by a literal:
+    /// `MASQUERADE_ONEWAY_TIMEOUT` is five seconds normally and five hundred under `emulated`, and a
+    /// hard-coded bound would be right in one build and would silently expire every flow in the
+    /// other. Half the timeout across the whole schedule leaves room for a conversation that spans
+    /// it, which is the shape this property is about.
+    pub(super) struct OverTime;
+
+    impl ValueGenerator for OverTime {
+        type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>, Vec<Duration>);
+
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let (ops, vary, schedule) = Generated.generate(driver)?;
+            let cap =
+                (Masquerade::MASQUERADE_ONEWAY_TIMEOUT / 2).as_millis() / (POLLS as u128).max(1);
+            let cap = u64::try_from(cap).unwrap_or(u64::MAX).max(1);
+            let waits = (0..POLLS)
+                .map(|_| {
+                    Some(Duration::from_millis(
+                        driver.gen_u64(Included(&0), Included(&cap))?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((ops, vary, schedule, waits))
+        }
+    }
+
+    /// Time passing under a flow does not disturb it, so long as it stays inside its lifetime.
+    ///
+    /// The *preserved* disposition, at the whole-pipeline scale rather than at one NF's. Until the
+    /// workspace read its deadlines through `clock`, this could not be written: the waits were on
+    /// tokio's clock and the deadlines were on `std`'s, so advancing time gave every flow created
+    /// after the first advance a deadline already in the past, and the property would have failed
+    /// for a reason that had nothing to do with the dataplane.
+    ///
+    /// It is a real claim, not a smoke test. A deadline computed with the wrong sign, or refreshed
+    /// against a clock the timers do not share, shortens a flow's life instead of extending it --
+    /// which is exactly the fault `nat::masquerade::expiry` documents at the NF scale. Here the
+    /// clock moves under a *generated* configuration carrying its own derived traffic, so the flow
+    /// being aged is one nobody wrote down.
+    ///
+    /// # Why a plain `#[test]`
+    ///
+    /// `bolero`'s `for_each` takes a synchronous closure, and `advance` is async. A `#[tokio::test]`
+    /// would need a nested `block_on`, which cannot nest. So the runtime is built once, outside the
+    /// draw, and each case is a future run on it: one clock for the whole property, monotone across
+    /// every case, rather than one per case restarting behind the last.
+    #[test]
+    fn time_passing_does_not_disturb_a_flow_inside_its_lifetime() {
+        let _eal = dpdk::test_support::start_eal();
+        // Outside `check!()` deliberately. One per case would give each its own base, so the clock
+        // would jump backwards between cases -- harmless here, but it is the habit that matters.
+        let clock = clock::virtual_time::Paused::new();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(OverTime)
+            .for_each(|(ops, vary, schedule, waits)| {
+                let draft = Sequence::fold(ops);
+                let Ok(overlay) = draft.overlay() else {
+                    return;
+                };
+                let Ok(validated) = overlay.validate() else {
+                    return;
+                };
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                let mut loads = loads_where(&validated, vary, &derive::carried_by(&draft));
+                if loads.is_empty() {
+                    return;
+                }
+
+                let moved: Duration = waits.iter().sum();
+                clock.block_on(async {
+                    run_schedule_over_time(fabric.worker(), &mut loads, schedule, waits).await;
+                });
+
+                if moved > Duration::ZERO {
+                    AGED.fetch_add(1, Ordering::Relaxed);
+                    AGED_MILLIS.fetch_add(
+                        u64::try_from(moved.as_millis()).unwrap_or(u64::MAX),
+                        Ordering::Relaxed,
+                    );
+                    for load in &loads {
+                        if load.checked() {
+                            SURVIVED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+
+        let (aged, millis, survived) = (
+            AGED.load(Ordering::Relaxed),
+            AGED_MILLIS.load(Ordering::Relaxed),
+            SURVIVED.load(Ordering::Relaxed),
+        );
+        println!("aged={aged} cases, {millis}ms of virtual time, survived={survived} loads");
+        super::assert_covered(
+            aged > 0,
+            "the clock never moved, so this property checked the same thing as the one above it",
+        );
+        super::assert_covered(
+            survived > 0,
+            "no load ever made its claim with the clock moving under it, so nothing was aged",
+        );
     }
 
     /// Traffic a configuration says it does not carry, it does not carry.

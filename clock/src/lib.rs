@@ -82,15 +82,17 @@ pub mod virtual_time;
 ///
 /// # Panics
 ///
-/// Under the `virtual` feature, if a [`virtual_time::Paused`] is alive and this thread has no
-/// runtime context. Without one the read would answer from the wall clock while the rest of the
-/// test is an hour ahead, so it is refused loudly instead. With no `Paused` alive -- which is every
-/// test that does not drive the clock -- calling this without a runtime is fine.
+/// Under the `virtual` feature, if a [`virtual_time::Paused`] is alive, this thread has no runtime
+/// context, and the runner gives each test its own process (which nextest states and `cargo test`
+/// does not). Without a context the read would answer from the wall clock while the rest of the
+/// test is an hour ahead. Where the process is shared the same condition is reached by unrelated
+/// tests, so there it warns once and answers from the wall clock instead -- see
+/// [`virtual_time`] for why the distinction is the runner's to make.
 #[must_use]
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        checked_now().unwrap_or_else(|| virtual_time::refuse())
+        checked_now().unwrap_or_else(virtual_time::refuse)
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
