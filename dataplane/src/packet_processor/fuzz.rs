@@ -3473,6 +3473,7 @@ mod generated {
         static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -3508,6 +3509,15 @@ mod generated {
 
                 let mut loads = loads_for(&validated, vary);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+                // Inbound loads separately, for the reason the fixture property counts them: a
+                // derivation that silently skipped a whole expose flavour would leave this
+                // property green while covering none of it. Inbound is the kind an algebra that
+                // could not draw port forwarding never produced at all.
+                for load in &loads {
+                    if load.describe().starts_with("[inbound") {
+                        INBOUND.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
 
                 for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
@@ -3549,8 +3559,9 @@ mod generated {
             MULTI.load(Ordering::Relaxed),
         );
         eprintln!(
-            "checked={checked} derived={derived} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}"
+            "checked={checked} derived={derived} inbound={} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            INBOUND.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -3563,6 +3574,11 @@ mod generated {
             "no generated configuration ever implied any traffic",
         );
         super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            INBOUND.load(Ordering::Relaxed) > 0,
+            "no generated configuration ever produced an inbound load, so a port-forwarding \
+             expose was drawn into configurations and then carried no traffic at all",
+        );
         super::assert_covered(
             mixed > 0,
             "no burst ever carried more than one sender's traffic, so nothing was interleaved",
