@@ -429,6 +429,15 @@ impl ContainerParams {
             .filter(|(name, _)| n_vm_protocol::is_forwarded(name, extra.as_deref()))
             .map(|(name, value)| {
                 let value = n_vm_protocol::remap_workspace_paths(&value, &host_root);
+                // The one forwarded value this tier reads rather than carries. A libfuzzer
+                // command line can ask the fuzzer to supervise copies of itself, which in the
+                // guest means `system(3)` against a root that has no shell -- see
+                // `strip_multiprocess_flags`.
+                let value = if name == n_vm_protocol::ENV_LIBFUZZER_ARGS {
+                    n_vm_protocol::strip_multiprocess_flags(&value)
+                } else {
+                    value
+                };
                 (name, value)
             })
             .collect();
