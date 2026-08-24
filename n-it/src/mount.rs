@@ -5,8 +5,6 @@
 
 use std::path::Path;
 
-use n_vm_protocol::VIRTIOFS_CORPUS_TAG;
-
 use nix::errno::Errno;
 use nix::mount::{MntFlags, MsFlags, mount};
 use nix::unistd::sync;
@@ -111,45 +109,66 @@ pub fn mount_essential_filesystems() -> Result<(), MountError> {
             Err(e) => return Err(e),
         }
     }
-    mount_corpus_share();
+    mount_writable_shares();
     debug!("all essential filesystems mounted successfully");
     Ok(())
 }
 
-/// Mounts the writable corpus share over its read-only counterpart in the
-/// workspace, when the container tier provided one.
+/// Mounts each writable share over its read-only counterpart, when the
+/// container tier provided one.
 ///
 /// The workspace itself arrives over the read-only virtiofs daemon, so this
-/// overmounts a single `__fuzz__` directory with a share from the *writable*
-/// daemon.  The read/write split is therefore enforced by which daemon
-/// serves which path -- nothing the guest does to its own mount flags can
-/// widen it, which is the point: a fuzz target is deliberately provoking
-/// misbehaviour and must not be able to damage the developer's source tree.
+/// overmounts individual directories with shares from *writable* daemons.
+/// The read/write split is therefore enforced by which daemon serves which
+/// path -- nothing the guest does to its own mount flags can widen it,
+/// which is the point: a fuzz target is deliberately provoking misbehaviour
+/// and must not be able to damage the developer's source tree.
 ///
-/// Best-effort.  A test whose corpus cannot be mounted still runs; it just
-/// cannot persist new inputs, which is far better than failing the run.
-fn mount_corpus_share() {
-    let Some(target) = crate::corpus_mount() else {
-        return;
-    };
+/// There are two, with opposite lifetimes: a corpus is a cache that a run
+/// may deliberately start without, while a crash is a finding that must not
+/// be lost.  The engine puts them in unrelated trees for that reason, so one
+/// share cannot cover both.
+///
+/// Best-effort.  A test whose shares cannot be mounted still runs; it just
+/// cannot persist anything, which is far better than failing the run.
+fn mount_writable_shares() {
+    for (share, target) in crate::writable_mounts() {
+        // Usually the mount point already exists, having come from the
+        // read-only workspace share.  A corpus directed outside the
+        // workspace -- `FUZZ_CORPUS_ROOT=/tmp/...` -- has no such
+        // counterpart, but lands on a writable tmpfs, so try to make one.
+        if !Path::new(target).is_dir() {
+            let _ = std::fs::create_dir_all(target);
+        }
+        if !Path::new(target).is_dir() {
+            warn!(
+                "{role} mount point {target} does not exist in the guest and \
+                 could not be created; skipping",
+                role = share.role,
+            );
+            continue;
+        }
 
-    // The mount point comes from the read-only workspace share, so it exists
-    // only if the host actually created the directory.
-    if !Path::new(target).is_dir() {
-        warn!("corpus mount point {target} does not exist in the guest; skipping");
-        return;
-    }
-
-    debug!("mounting writable corpus share at {target}");
-    match nix::mount::mount(
-        Some(VIRTIOFS_CORPUS_TAG),
-        target,
-        Some("virtiofs"),
-        nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
-        None::<&str>,
-    ) {
-        Ok(()) => debug!("corpus share mounted read-write at {target}"),
-        Err(e) => warn!("failed to mount corpus share at {target}: {e}"),
+        debug!(
+            "mounting writable {role} share at {target}",
+            role = share.role
+        );
+        match nix::mount::mount(
+            Some(share.tag),
+            target.as_str(),
+            Some("virtiofs"),
+            nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
+            None::<&str>,
+        ) {
+            Ok(()) => debug!(
+                "{role} share mounted read-write at {target}",
+                role = share.role,
+            ),
+            Err(e) => warn!(
+                "failed to mount {role} share at {target}: {e}",
+                role = share.role,
+            ),
+        }
     }
 }
 
