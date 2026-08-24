@@ -48,10 +48,13 @@
 //! lying. Only durations of a second or two are practical in wall mode, so it is opt-in per run.
 
 use crate::Duration;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Whether a [`Paused`] is alive. At most one, and false almost always.
-static LIVE: AtomicBool = AtomicBool::new(false);
+/// How many [`Paused`] sections are alive. Zero almost always.
+///
+/// A count rather than a flag, because independent tests running in one process legitimately hold
+/// one each -- see [`Paused`] on why a second is not refused.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Yields after an advance, so that timers which are now due actually run.
 ///
@@ -66,7 +69,7 @@ const YIELDS: usize = 4;
 #[inline]
 #[must_use]
 pub(crate) fn armed() -> bool {
-    LIVE.load(Ordering::Acquire)
+    LIVE.load(Ordering::Acquire) != 0
 }
 
 /// Refuse a clock read that would come from the wrong timeline.
@@ -97,7 +100,7 @@ pub(crate) fn refuse() -> ! {
     );
 }
 
-/// The process's one paused runtime.
+/// A runtime whose clock a test drives.
 ///
 /// Holding this is what makes the clock controllable, and dropping it gives the process back its
 /// ordinary clock. Every thread that reads a clock while it is alive must be inside it -- see the
@@ -105,19 +108,28 @@ pub(crate) fn refuse() -> ! {
 ///
 /// The runtime is current-thread, which is not a preference: `Builder::get_cfg` sets
 /// `enable_pause_time` false for the multi-threaded flavour, so tokio refuses to pause one at all.
+///
+/// # One per *property*, not one per process
+///
+/// A second `Paused` is not refused, and an earlier draft of this type refused it. That was the
+/// wrong granularity. Two clocks are only harmful when state crosses between them, and independent
+/// tests in one process share no state -- ten expiry properties running in parallel under `cargo
+/// test` each want their own, and refusing that broke a whole crate's suite while catching nothing.
+///
+/// What must not happen is one *property* building two, so that its own threads read different
+/// timelines. That is a claim about a single test, which a process-wide count cannot express;
+/// [`Paused::handle`] is the instrument -- thread the handle through, rather than starting another.
 #[derive(Debug)]
 pub struct Paused {
     runtime: tokio::runtime::Runtime,
 }
 
 impl Paused {
-    /// Build it, and claim the process's clock.
+    /// Build it, and arm the check.
     ///
     /// # Panics
     ///
-    /// If another [`Paused`] is already alive. Two of them would be two timelines, which is the one
-    /// thing this type exists to prevent, and a test that tripped this would otherwise fail much
-    /// later and somewhere else.
+    /// If a current-thread runtime with timers cannot be built, which does not happen in practice.
     #[must_use]
     pub fn new() -> Self {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -128,18 +140,9 @@ impl Paused {
             .build()
             .unwrap_or_else(|e| panic!("a current-thread runtime with timers does not build: {e}"));
 
-        // Claimed by compare-exchange rather than by a fetch-add that is checked afterwards: the
-        // refusal below unwinds out of the constructor, so a claim made before it would never be
-        // released by `Drop` and every later test in the process would be refused too.
+        // After the build, so a runtime that failed to build cannot leave the check armed.
         if !cfg!(wall_clock) {
-            assert!(
-                LIVE.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok(),
-                "a second virtual clock was started while the first was still alive. \
-                 Each has its own timeline and neither can see the other's advances, so a \
-                 deadline taken under one and checked under the other is meaningless. Drop the \
-                 first, or thread its handle through instead of starting another."
-            );
+            LIVE.fetch_add(1, Ordering::AcqRel);
         }
 
         Self { runtime }
@@ -174,7 +177,7 @@ impl Default for Paused {
 impl Drop for Paused {
     fn drop(&mut self) {
         if !cfg!(wall_clock) {
-            LIVE.store(false, Ordering::Release);
+            LIVE.fetch_sub(1, Ordering::Release);
         }
     }
 }
@@ -273,17 +276,6 @@ mod tests {
     }
 
     /// Two clocks would be two timelines, so the second is refused where it is asked for.
-    /// Wall mode has no timeline to protect: nothing is paused, so a second runtime is just a second
-    /// runtime and there is nothing to refuse.
-    #[cfg(not(wall_clock))]
-    #[test]
-    #[should_panic(expected = "a second virtual clock was started")]
-    fn a_second_clock_is_refused() {
-        let _serial = serially();
-        let _first = Paused::new();
-        let _second = Paused::new();
-    }
-
     /// A worker that never entered the runtime is refused rather than answered wrongly.
     ///
     /// The measured alternative is an hour of silent disagreement: an unentered thread falls back

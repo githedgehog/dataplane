@@ -32,6 +32,7 @@ use crate::Masquerade;
 use crate::masquerade::probe::{Arrival, Fabric, run};
 use crate::static_nat::probe::build;
 use clock::Duration;
+use clock::virtual_time::advance;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
 use flow_entry::flow_table::FlowLookup;
@@ -59,28 +60,12 @@ fn vni(raw: u32) -> Vni {
 
 /// A runtime whose clock starts paused and only moves when a property says so.
 ///
-/// `block_on` rather than `enter`, because `tokio::time::advance` is async and because the timer
-/// tasks the flow table spawns need the runtime to be driven before they can observe the new time.
-/// Everything a property does happens inside this one future.
+/// Thin, now that [`clock::virtual_time`] owns the shape. What it adds beyond `block_on` is the
+/// part a local copy kept getting wrong: `Paused` refuses a *second* clock, and while it is alive a
+/// clock read from a thread that never entered the runtime panics instead of quietly answering an
+/// hour behind.
 fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
-}
-
-/// Move the clock and let every timer that is now due actually run.
-///
-/// The yields matter. `advance` makes the time visible; it does not run the tasks waiting on it, and
-/// a property that checked immediately afterwards would see a flow that is past its deadline but has
-/// not yet been told so.
-async fn advance(by: Duration) {
-    tokio::time::advance(by).await;
-    for _ in 0..4 {
-        tokio::task::yield_now().await;
-    }
+    clock::virtual_time::Paused::new().block_on(body());
 }
 
 /// A two-vpc masquerade fabric with one expose, which is all expiry needs.

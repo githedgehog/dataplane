@@ -49,10 +49,11 @@
 //! answers from the wall clock. Measured: after a one-hour advance an unentered thread reads an
 //! hour behind an entered one, and it is the unentered one that looks normal.
 //!
-//! [`virtual_time`] is therefore the only way a test drives this clock: one [`virtual_time::Paused`]
-//! at a time, a second refused, and while one is alive [`now`] panics on a thread with no context
-//! rather than answering from the wrong timeline. See that module for the reasoning and for the one
-//! false positive it accepts.
+//! [`virtual_time`] is therefore the only way a test drives this clock: one
+//! [`virtual_time::Paused`] per property, its handle threaded to every thread that reads a clock,
+//! and while one is alive [`now`] panics on a thread with no runtime context rather than answering
+//! from the wrong timeline. See that module for the reasoning and for the one false positive it
+//! accepts.
 //!
 //! # The lint is the point
 //!
