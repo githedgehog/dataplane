@@ -3693,6 +3693,139 @@ mod burst {
         super::assert_covered(checked > 0, "no burst of a single flow was ever delivered");
     }
 
+    /// The same claim, for a flow that is masqueraded *and* statically translated.
+    ///
+    /// The sibling above covers a burst whose destination needs no translation, and that is the
+    /// only shape it can cover: its fixture gives the far side one plain prefix. This one gives
+    /// the far side a static-nat expose, so the packet needs both -- source masqueraded, and
+    /// destination statically translated on the way in.
+    ///
+    /// # Why the combination is a different case, and not just a longer one
+    ///
+    /// The pipeline runs `static_nat` *before* `masquerade`. So by the time masquerade sees the
+    /// packet its destination has already been rewritten, and the key it carries is no longer the
+    /// key `FlowLookup` used. `create_flow_pair` files the forward flow under the *initial* key
+    /// for exactly that reason -- `FlowLookup` runs first and would otherwise never find the flow
+    /// again -- while the intra-burst fallback in `get_masquerade_state` looked the flow up under
+    /// the key the packet carries now.
+    ///
+    /// The two keys are equal whenever nothing translated the destination, which is every
+    /// configuration the sibling can build, so one lookup was enough and the mismatch was
+    /// invisible. With a static-nat far side the fallback missed and every packet after the first
+    /// allocated again: eight packets of one flow left under eight public tuples.
+    ///
+    /// Asserted against the same packet sent alone rather than against a number, for the sibling's
+    /// reason: it says "a burst costs what one packet costs" without this test having to know how
+    /// many entries a flow is made of.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_burst_of_one_translated_flow_allocates_once() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        // Masquerade on the near side, static nat on the far side. The static-nat pair is equally
+        // sized because a one-to-one mapping is what static nat is; the masquerade pair need not
+        // be, and is not.
+        fn two_sided() -> Option<config::external::overlay::Overlay> {
+            let local = VpcExpose::empty()
+                .make_masquerade(None)
+                .ok()?
+                .ip("1.1.0.0/16".parse::<Prefix>().ok()?.into())
+                .as_range("2.2.0.0/16".parse::<Prefix>().ok()?.into())
+                .ok()?;
+            let remote = VpcExpose::empty()
+                .make_static_nat()
+                .ok()?
+                .ip("3.3.0.0/16".parse::<Prefix>().ok()?.into())
+                .as_range("4.4.0.0/16".parse::<Prefix>().ok()?.into())
+                .ok()?;
+            config::external::overlay::vpcpeering::contract::overlay_between(
+                vec![local],
+                vec![remote],
+            )
+            .ok()
+        }
+
+        let overlay = two_sided().expect("a valid two-sided configuration");
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Burst)
+            .for_each(|members| {
+                let m = members[0];
+                let src: IpAddr = format!("1.1.0.{}", m.host)
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
+                // The far side's *public* address, which is what a peer is told to reach it at.
+                // Aiming at the private one would take the packet through no static nat at all
+                // and quietly turn this into the sibling.
+                let dst: IpAddr = "4.4.0.1".parse().unwrap_or_else(|_| unreachable!());
+                let packet = || udp(src, dst, 4000, m.dport).map(|p| tunnelled(&p));
+
+                let tables = || topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let (Some(mut alone), Some(mut burst)) = (
+                    Fabric::routed_over(&overlay, tables()),
+                    Fabric::routed_over(&overlay, tables()),
+                ) else {
+                    return;
+                };
+                let Some(one) = packet() else { return };
+                let single = treatment(&alone.send(one));
+                if !matches!(single.verdict, Verdict::Delivered { .. }) {
+                    return;
+                }
+                let cost_of_one = alone.flows();
+
+                // The destination really was translated on the way in, or this is asserting the
+                // sibling's claim over again under a longer name.
+                assert_eq!(
+                    single.inner_dst,
+                    Some("3.3.0.1".parse().unwrap_or_else(|_| unreachable!())),
+                    "the far side's static nat did not translate the destination, so this \
+                     configuration does not reach the case this test is for"
+                );
+
+                let Some(together) = (0..BURST).map(|_| packet()).collect::<Option<Vec<_>>>()
+                else {
+                    return;
+                };
+                let out = burst.send_batch(together);
+
+                for (i, packet) in out.iter().enumerate() {
+                    let t = treatment(packet);
+                    assert_eq!(
+                        t.inner_sport, single.inner_sport,
+                        "packet {i} of a burst of one masqueraded-and-translated flow was given \
+                         a different public port from the same packet sent alone: the burst \
+                         allocated more than once"
+                    );
+                    assert_eq!(
+                        t.inner_src, single.inner_src,
+                        "packet {i} of a burst of one masqueraded-and-translated flow left under \
+                         a different public address"
+                    );
+                    assert_eq!(
+                        t.verdict, single.verdict,
+                        "packet {i} of a burst of one masqueraded-and-translated flow reached a \
+                         different verdict"
+                    );
+                }
+                assert_eq!(
+                    burst.flows(),
+                    cost_of_one,
+                    "a burst of {BURST} packets of one masqueraded-and-translated flow cost more \
+                     flow-table entries than one packet of it did"
+                );
+                CHECKED.fetch_add(1, Ordering::Relaxed);
+            });
+
+        let checked = CHECKED.load(Ordering::Relaxed);
+        eprintln!("translated-single-flow-bursts={checked}");
+        super::assert_covered(
+            checked > 0,
+            "no burst of a single masqueraded-and-translated flow was ever delivered",
+        );
+    }
+
     /// A burst is treated the same as the same packets sent one at a time.
     ///
     /// # Why the flows are distinct

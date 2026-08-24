@@ -355,15 +355,46 @@ impl Masquerade {
         // behind it, which is then refused as "TCP without SYN" -- the failure consulting the
         // table was added to prevent, reappearing whenever the stamp is present rather than
         // absent. Arbitration on insert does not cover it: that drop happens before any insert.
+        // The stamp when it is usable, the table otherwise -- including when the stamp is there
+        // and useless, which is the case a plain `if let Some(..) = stamp` gets wrong.
+        //
+        // A burst is stamped before any of it is masqueraded, so if the stamped entry has since
+        // expired or been cancelled, *every* packet of that burst carries the same dead `Arc`.
+        // Stopping at it means the SYN that replaces the entry is invisible to the data segment
+        // behind it, which is then refused as "TCP without SYN" -- the failure consulting the
+        // table was added to prevent, reappearing whenever the stamp is present rather than
+        // absent. Arbitration on insert does not cover it: that drop happens before any insert.
         if let Some(stamped) = packet.meta().flow_info.as_ref()
             && let Some(xlate) = Self::masquerade_state_of(packet, stamped)
         {
             return Some(xlate);
         }
-        let looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+
+        // Two keys, because the flow may not be installed under the one this packet currently
+        // carries. `create_flow_pair` keys the forward flow on the *initial* key -- deliberately,
+        // since `FlowLookup` runs before static NAT and would otherwise never find it again --
+        // while by the time masquerade runs, the packet's own key has had its destination
+        // translated. The two are equal whenever static NAT is not in play, which is why one
+        // lookup was enough until it was not.
+        //
+        // Current first, so this only ever adds a lookup where the old code found nothing: a
+        // reply is keyed on `new_reverse_session`'s key, which is derived from the current one,
+        // and must keep matching first.
+        let looked_up = FlowKey::try_from(packet)
+            .ok()
+            .and_then(|current| self.flow_table.lookup(&current))
+            .or_else(|| {
+                let initial = packet.meta().flow_key.as_deref().copied()?;
+                self.flow_table.lookup(&initial)
+            })?;
         Self::masquerade_state_of(packet, &looked_up)
     }
 
+    // The masquerade translation a flow carries, if the flow is live and has one.
+    //
+    // Split out so the stamp and the table are judged by the same standard: `None` here means
+    // "this flow cannot answer for the packet", which is what makes falling through to the table
+    // safe rather than a second chance at a decision already taken.
     // The masquerade translation a flow carries, if the flow is live and has one.
     //
     // Split out so the stamp and the table are judged by the same standard: `None` here means
