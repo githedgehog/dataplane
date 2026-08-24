@@ -1276,14 +1276,48 @@ impl Drop for ContainerGuard<'_> {
 /// are pass and fail.
 fn profile_backend(
     roots: &n_vm_protocol::ScratchRoots,
+    declared: Option<&str>,
     emulation_required: bool,
 ) -> Option<EffectiveBackend> {
     let path = roots
         .test_root
         .join(n_vm_protocol::KERNEL_MANIFEST_PATH.trim_start_matches('/'));
     let manifest = crate::kernel_manifest::KernelManifest::load_from(&path).ok()?;
-    let (name, profile) = manifest.selected(emulation_required).ok()?;
+    let (name, profile) = manifest.selected(declared, emulation_required).ok()?;
     profile.backend(name).ok()
+}
+
+/// Reports a test that named a kernel profile and a backend that disagree.
+///
+/// A failure rather than a skip, which is what
+/// [`RequestedBackend::resolve`](crate::backend::RequestedBackend::resolve)
+/// would produce.  Skipping is right when the profile came from
+/// `N_VM_PROFILE`: the run asked for an environment this test cannot use.
+/// It is wrong when the test wrote both halves itself, because a skip is
+/// reported as a pass -- so the test would go green having run nothing,
+/// and the contradiction would never be seen.
+///
+/// `None` when the test named no profile (nothing to contradict), pinned no
+/// backend (nothing contradicts it), or the two agree.
+fn profile_backend_conflict(
+    declared_profile: Option<&str>,
+    requested: crate::backend::RequestedBackend,
+    profile: Option<EffectiveBackend>,
+) -> Option<ContainerError> {
+    use crate::backend::RequestedBackend;
+
+    let name = declared_profile?;
+    let profile_backend = profile?;
+    let requested = match requested {
+        RequestedBackend::Default => return None,
+        RequestedBackend::Qemu => EffectiveBackend::Qemu,
+        RequestedBackend::CloudHypervisor => EffectiveBackend::CloudHypervisor,
+    };
+    (requested != profile_backend).then(|| ContainerError::ProfileContradictsBackend {
+        profile: name.to_owned(),
+        profile_backend,
+        requested,
+    })
 }
 
 /// Launches a Docker container and re-runs the current test binary inside it.
@@ -1337,7 +1371,14 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // The selected profile decides the hypervisor unless the test asked
         // for a specific one.  Read here rather than in the container tier
         // because this is the last place a skip can be expressed.
-        let profile = profile_backend(&params.scratch_roots, cross);
+        let profile = profile_backend(&params.scratch_roots, vm_config.kernel_profile, cross);
+
+        if let Some(conflict) =
+            profile_backend_conflict(vm_config.kernel_profile, vm_config.backend, profile)
+        {
+            return Err(conflict);
+        }
+
         let (backend, accel) = match requested.resolve(cross, needs_qemu, profile) {
             BackendResolution::Run { backend, accel } => (backend, accel),
             BackendResolution::Skip { reason } => {
@@ -1488,6 +1529,67 @@ fn find_on_path(program: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Profile / backend agreement ----------------------------------
+
+    use crate::backend::RequestedBackend;
+
+    /// The mistake this exists to catch: both halves named, and they
+    /// describe a machine that does not exist.
+    #[test]
+    fn a_declared_profile_contradicting_a_pinned_backend_is_an_error() {
+        let conflict = profile_backend_conflict(
+            Some("flatcar"),
+            RequestedBackend::CloudHypervisor,
+            Some(EffectiveBackend::Qemu),
+        );
+        assert!(matches!(
+            conflict,
+            Some(ContainerError::ProfileContradictsBackend { .. })
+        ));
+    }
+
+    /// Agreement is not a conflict, even though both were named.
+    #[test]
+    fn a_declared_profile_agreeing_with_its_backend_is_fine() {
+        assert!(
+            profile_backend_conflict(
+                Some("flatcar"),
+                RequestedBackend::Qemu,
+                Some(EffectiveBackend::Qemu),
+            )
+            .is_none()
+        );
+    }
+
+    /// An unpinned backend cannot contradict anything -- the profile
+    /// chooses, which is the ordinary way to use the lever.
+    #[test]
+    fn a_declared_profile_alone_chooses_the_backend() {
+        assert!(
+            profile_backend_conflict(
+                Some("flatcar"),
+                RequestedBackend::Default,
+                Some(EffectiveBackend::Qemu),
+            )
+            .is_none()
+        );
+    }
+
+    /// A profile the *environment* chose is not this function's business:
+    /// `resolve` skips that case, and skipping is right because the run,
+    /// not the test, asked for an environment the test cannot use.
+    #[test]
+    fn an_environment_chosen_profile_is_left_to_resolve() {
+        assert!(
+            profile_backend_conflict(
+                None,
+                RequestedBackend::CloudHypervisor,
+                Some(EffectiveBackend::Qemu),
+            )
+            .is_none()
+        );
+    }
 
     // -- Writable shares ----------------------------------------------
 
