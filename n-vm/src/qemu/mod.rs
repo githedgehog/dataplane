@@ -1201,7 +1201,7 @@ mod tests {
         let idx = args.iter().position(|a| a == "-append").unwrap();
         let cmdline = &args[idx + 1];
         // Against the config, not a literal -- see the twin of this test in `cloud_hypervisor`.
-        let expected = params.vm_config.guest_hugepages.kernel_cmdline_fragment();
+        let expected = params.vm_config.hugepage_reservation().kernel_cmdline_fragment();
         assert!(!expected.is_empty(), "the sample config reserves hugepages");
         assert!(cmdline.contains(expected.trim_end()), "{cmdline}");
     }

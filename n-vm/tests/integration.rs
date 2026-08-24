@@ -292,7 +292,13 @@ async fn tokio_test_multi_thread() {
     assert!(contents.contains("Linux"));
 }
 
-/// The writable corpus window must be exactly one directory wide.
+/// Everything `#[corpus]` changes about a guest, checked in one boot.
+///
+/// Two claims, kept together because the second costs nothing once the VM
+/// is up and a `#[corpus]` test of its own would be announced to
+/// `cargo bolero list` as a fuzz target containing no `check!`.
+///
+/// **The writable window is exactly one directory wide.**
 ///
 /// This is the security boundary that makes `#[corpus]` acceptable at all:
 /// a fuzz target is deliberately provoking misbehaviour, so it must be able
@@ -301,9 +307,22 @@ async fn tokio_test_multi_thread() {
 /// which path* -- the root daemon runs `--readonly` and the corpus daemon's
 /// `--shared-dir` is the corpus directory alone -- so it holds regardless of
 /// what the guest does with its own mount flags.
+///
+/// **The guest reserves no hugepages.**
+///
+/// `#[corpus]` alone decides this -- the test names no configuration, so
+/// `guest_hugepages` is [`GuestHugePageConfig::Auto`].  See
+/// `VmConfig::hugepage_reservation` for why the two roles want opposite
+/// answers.
 #[n_vm::test]
 #[n_vm::corpus]
 fn corpus_is_writable_and_rest_of_workspace_is_not() {
+    assert_eq!(
+        hugepages_total(),
+        0,
+        "a fuzz target should boot with no hugepage reservation",
+    );
+
     let cwd = std::env::current_dir().expect("workspace should be the working directory");
 
     let corpus = cwd.join("n-vm/tests/__fuzz__");

@@ -346,6 +346,28 @@ impl GuestHugePageSize {
 /// Guest hugepage reservation passed on the kernel command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuestHugePageConfig {
+    /// Let the harness decide, from what the test is for.
+    ///
+    /// A reservation is memory the guest kernel hands to hugetlbfs and can
+    /// never hand back, so it is only worth taking when something is going
+    /// to claim it.  The two roles want opposite answers:
+    ///
+    /// * an ordinary guest test gets [`DEFAULT_RESERVATION`], because the
+    ///   thing these VMs mostly exist to run is DPDK, and DPDK without
+    ///   hugepages is a different program;
+    /// * a fuzz target gets [`None`], because a coverage-guided engine
+    ///   claims ordinary heap and nothing else.  Reserving for it is
+    ///   strictly a subtraction: it halved the usable memory of a 1 GiB
+    ///   guest, and the engine's own `-rss_limit_mb` was left describing
+    ///   memory the kernel had already given away.
+    ///
+    /// This is a default, not a rule.  Naming either variant explicitly
+    /// wins, including on a fuzz target -- fuzzing a hugepage-dependent path
+    /// is a coherent thing to want.
+    ///
+    /// [`DEFAULT_RESERVATION`]: Self::DEFAULT_RESERVATION
+    /// [`None`]: Self::None
+    Auto,
     /// No guest hugepages.  DPDK must use `--no-huge`.
     None,
     /// Reserve hugepages of the given size and count.
@@ -358,12 +380,14 @@ pub enum GuestHugePageConfig {
 }
 
 impl Default for GuestHugePageConfig {
-    /// Returns one 1 GiB hugepage.
+    /// Returns [`Auto`](Self::Auto): defer, rather than guess in the dark.
+    ///
+    /// This used to return one 1 GiB page while [`VmConfig::DEFAULT`] used
+    /// 256 2 MiB pages -- two "defaults" that had already drifted apart
+    /// because nothing forced them to agree.  Deferring is the only answer
+    /// that cannot drift.
     fn default() -> Self {
-        Self::Allocate {
-            size: GuestHugePageSize::Huge1G,
-            count: 1,
-        }
+        Self::Auto
     }
 }
 
@@ -379,9 +403,28 @@ impl Default for VmConfig {
 }
 
 impl GuestHugePageConfig {
+    /// What [`Auto`](Self::Auto) means for a test that is not a fuzz target.
+    ///
+    /// 512 MiB of a 1 GiB guest, in 2 MiB pages.  Small enough to leave the
+    /// guest kernel room (see [`VmConfig::check`]), and 2 MiB rather than
+    /// 1 GiB because a guest cannot count on being handed a contiguous
+    /// gigabyte.
+    pub const DEFAULT_RESERVATION: Self = Self::Allocate {
+        size: GuestHugePageSize::Huge2M,
+        count: 256,
+    };
+
     /// Builds the kernel command-line fragment for hugepage reservation.
+    ///
+    /// Call this on a *resolved* reservation --
+    /// [`VmConfig::hugepage_reservation`] -- never on the raw field.
+    /// [`Auto`](Self::Auto) is a request to decide, and this type does not
+    /// hold what the decision is made from.
     pub(crate) fn kernel_cmdline_fragment(&self) -> String {
         match self {
+            Self::Auto => unreachable!(
+                "Auto must be resolved by VmConfig::hugepage_reservation before rendering"
+            ),
             Self::None => String::new(),
             Self::Allocate { size, count } => {
                 let sz = size.kernel_suffix();
@@ -534,6 +577,9 @@ pub struct VmConfig {
     /// Page size backing the VM's memory on the host.
     pub host_page_size: HostPageSize,
     /// Guest hugepage reservation for the kernel command line.
+    ///
+    /// A *request*, which [`GuestHugePageConfig::Auto`] leaves open; read
+    /// [`hugepage_reservation`](Self::hugepage_reservation) for the answer.
     pub guest_hugepages: GuestHugePageConfig,
     /// NIC model for all network interfaces in the VM.
     pub nic_model: NicModel,
@@ -686,6 +732,9 @@ impl VmConfigBuilder {
     }
 
     /// Sets the guest's own hugepage reservation.
+    ///
+    /// Overrides [`GuestHugePageConfig::Auto`], including on a fuzz target,
+    /// which otherwise reserves nothing.
     #[must_use]
     pub const fn guest_hugepages(mut self, hugepages: GuestHugePageConfig) -> Self {
         self.0.guest_hugepages = hugepages;
@@ -826,10 +875,7 @@ impl VmConfig {
     pub const DEFAULT: Self = Self {
         iommu: false,
         host_page_size: HostPageSize::Standard,
-        guest_hugepages: GuestHugePageConfig::Allocate {
-            size: GuestHugePageSize::Huge2M,
-            count: 256,
-        },
+        guest_hugepages: GuestHugePageConfig::Auto,
         nic_model: NicModel::VirtioNet,
         kernel_features: &[],
         backend: crate::backend::RequestedBackend::Default,
@@ -855,6 +901,39 @@ impl VmConfig {
         VmConfigBuilder(self)
     }
 
+    /// Whether this test is a coverage-guided fuzz target.
+    ///
+    /// Equivalent to "the test wrote `#[n_vm::corpus]`": that attribute is
+    /// what makes the harness announce the test to `cargo bolero list` and
+    /// give the guest a writable corpus directory, and it is the only signal
+    /// separating a fuzz target from an ordinary guest test.  Read through
+    /// this rather than off the field, so the meaning has one name.
+    #[must_use]
+    pub const fn is_fuzz_target(&self) -> bool {
+        self.corpus_source_file.is_some()
+    }
+
+    /// The hugepage reservation this VM actually boots with.
+    ///
+    /// Resolves [`GuestHugePageConfig::Auto`] against the test's role; any
+    /// other value is returned unchanged.  Every consumer -- the validity
+    /// check, the kernel command line, the launcher -- must go through here,
+    /// because the raw field is a *request* and `Auto` is a request to
+    /// decide.
+    #[must_use]
+    pub const fn hugepage_reservation(&self) -> GuestHugePageConfig {
+        match self.guest_hugepages {
+            GuestHugePageConfig::Auto => {
+                if self.is_fuzz_target() {
+                    GuestHugePageConfig::None
+                } else {
+                    GuestHugePageConfig::DEFAULT_RESERVATION
+                }
+            }
+            explicit => explicit,
+        }
+    }
+
     /// Checks the configuration for internal contradictions.
     ///
     /// `const` so the same check can run at compile time; see
@@ -868,7 +947,10 @@ impl VmConfig {
         if VM_MEMORY_BYTES % page_bytes != 0 {
             return Err(ConfigProblem::MemoryNotAligned);
         }
-        if let GuestHugePageConfig::Allocate { size, count } = self.guest_hugepages {
+        // The *resolved* reservation, not the raw field: `Auto` is what
+        // nearly every config carries, and checking the field would check
+        // nothing at all for them.
+        if let GuestHugePageConfig::Allocate { size, count } = self.hugepage_reservation() {
             // `as i64` rather than `i64::from`: trait methods are not
             // callable in a const fn, and this check must stay const.
             let required = size.bytes() * (count as i64);
@@ -1013,7 +1095,8 @@ impl VmConfig {
                 page_bytes = self.host_page_size.bytes(),
             )),
             Err(ConfigProblem::HugepagesExceedMemory) => {
-                let GuestHugePageConfig::Allocate { size, count } = self.guest_hugepages else {
+                let GuestHugePageConfig::Allocate { size, count } = self.hugepage_reservation()
+                else {
                     unreachable!(
                         "HugepagesExceedMemory is only reachable when hugepages are allocated"
                     )
@@ -1144,7 +1227,7 @@ pub(crate) fn build_kernel_cmdline(
 ) -> String {
     let vsock_cmdline = vsock.kernel_cmdline_fragment();
     let iommu = vm_config.iommu;
-    let guest_hugepages = &vm_config.guest_hugepages;
+    let guest_hugepages = vm_config.hugepage_reservation();
     let corpus_mount = vm_config.corpus_guest_path();
     let corpus_mount = corpus_mount.as_deref();
 
@@ -1286,6 +1369,80 @@ mod tests {
         size: GuestHugePageSize::Huge1G,
         count: 1,
     };
+
+    // -- Hugepage defaulting ------------------------------------------
+
+    /// The reservation an ordinary guest test still gets: the same 512 MiB
+    /// it got when `VmConfig::DEFAULT` spelled it out.
+    #[test]
+    fn an_ordinary_test_reserves_what_it_always_reserved() {
+        assert_eq!(
+            VmConfig::DEFAULT.hugepage_reservation(),
+            GuestHugePageConfig::Allocate {
+                size: GuestHugePageSize::Huge2M,
+                count: 256,
+            },
+        );
+    }
+
+    /// A fuzz target reserves nothing: a coverage-guided engine claims
+    /// ordinary heap, and the reservation was pure subtraction from the
+    /// memory it could use.
+    #[test]
+    fn a_fuzz_target_reserves_nothing() {
+        let config = with_corpus("n-vm/tests/integration.rs", "/home/dev/dataplane/n-vm");
+        assert_eq!(config.guest_hugepages, GuestHugePageConfig::Auto);
+        assert_eq!(config.hugepage_reservation(), GuestHugePageConfig::None);
+    }
+
+    /// `Auto` is a default, not a rule.  Fuzzing a hugepage-dependent path
+    /// is a coherent thing to want, and saying so wins.
+    #[test]
+    fn a_fuzz_target_may_still_ask_for_hugepages() {
+        let asked = GuestHugePageConfig::Allocate {
+            size: GuestHugePageSize::Huge2M,
+            count: 64,
+        };
+        let config = VmConfig {
+            guest_hugepages: asked,
+            ..with_corpus("n-vm/tests/integration.rs", "/home/dev/dataplane/n-vm")
+        };
+        assert_eq!(config.hugepage_reservation(), asked);
+    }
+
+    /// And an explicit `None` on an ordinary test still means none, rather
+    /// than falling through to the reservation `Auto` would have picked.
+    #[test]
+    fn an_ordinary_test_may_still_decline_hugepages() {
+        let config = VmConfig {
+            guest_hugepages: GuestHugePageConfig::None,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(config.hugepage_reservation(), GuestHugePageConfig::None);
+    }
+
+    /// The end of the chain: what the guest kernel is actually told.
+    ///
+    /// Asserted here as well as on the resolved value because the command
+    /// line is the only thing the guest sees, and `build_kernel_cmdline`
+    /// reading the raw field instead of the resolved one is exactly the
+    /// mistake this defaulting invites.
+    #[test]
+    fn a_fuzz_target_gets_no_hugepage_reservation_on_the_cmdline() {
+        let vsock = n_vm_protocol::VsockAllocation::with_defaults();
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            &with_corpus("n-vm/tests/integration.rs", "/home/dev/dataplane/n-vm"),
+            Arch::X86_64,
+            crate::kernel_manifest::BootMode::Direct,
+        );
+        assert!(
+            !cmdline.contains("hugepages"),
+            "a fuzz target should be told nothing about hugepages: {cmdline}",
+        );
+    }
 
     // -- Corpus paths -------------------------------------------------
 
