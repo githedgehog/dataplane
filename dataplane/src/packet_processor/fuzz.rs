@@ -1305,7 +1305,7 @@ pub(crate) mod derive {
     /// deciding it from the ACL means matching its rules against the manifests, and an evaluator
     /// is what no oracle here is allowed to contain.
     pub(crate) fn carried_by(draft: &Draft) -> impl Fn(Named<'_>) -> bool + '_ {
-        move |named| draft.guard_named(named.peering) != Some(Guard::Deny)
+        move |named| draft.carries(named.peering, named.local, named.nth)
     }
 
     /// [`loads_for`], for a configuration the algebra built: what a draft says it carries.
@@ -1327,6 +1327,12 @@ pub(crate) mod derive {
         pub(crate) local: &'a str,
         pub(crate) remote: &'a str,
         pub(crate) peering: &'a str,
+        /// Which of `local`'s exposes this load would come from, by position in the manifest.
+        ///
+        /// Needed because a peering's ACL may give two of its exposes different answers -- see
+        /// `Guard::PermitExcept` -- so "does this configuration carry this traffic" is not a
+        /// question about the peering. A filter that does not care simply ignores it.
+        pub(crate) nth: usize,
     }
 
     /// [`loads_for`], restricted to what `keep` accepts.
@@ -1355,23 +1361,29 @@ pub(crate) mod derive {
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
-                if !keep(Named {
-                    local: vpc.name(),
-                    remote: peering.remote().name(),
-                    peering: peering.name(),
-                }) {
-                    continue;
-                }
                 // Which two vpcs this expose's traffic is between, read off the configuration.
                 // A load that assumed the fixture's pair would still pass on a generated overlay
                 // whose vpcs happen to be numbered differently, while testing a route nobody
                 // configured.
                 let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
-                for expose in peering.local().valexp() {
+                for (which, expose) in peering.local().valexp().iter().enumerate() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
                         continue;
                     };
+                    // Advanced before `keep` is consulted, deliberately: which variation an expose
+                    // gets is then a property of the configuration rather than of the filter, so
+                    // two derivations under different filters agree about every expose they both
+                    // keep. `a_configuration_change_leaves_traffic_outside_its_footprint_alone`
+                    // takes two, and compared traffic that was not the same traffic before this.
                     nth += 1;
+                    if !keep(Named {
+                        local: vpc.name(),
+                        remote: peering.remote().name(),
+                        peering: peering.name(),
+                        nth: which,
+                    }) {
+                        continue;
+                    }
                     // What the peer must be able to do depends on which way the traffic goes, so
                     // this is drawn per branch rather than once.
                     //
@@ -3584,6 +3596,7 @@ mod generated {
     static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static BY_FLOW: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static EXCEPTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
     /// Print what the run reached, and fail if it reached nothing worth having.
     ///
@@ -3602,12 +3615,13 @@ mod generated {
         );
         eprintln!(
             "checked={checked} abandoned={} derived={derived} inbound={} \
-             permitting-peerings={} (by flow {}) peered-configs={peered} \
+             permitted-loads={} (by flow {}, past an exception {}) peered-configs={peered} \
              configs-past-two-vpcs={multi} mixed-bursts={mixed}",
             ABANDONED.load(Ordering::Relaxed),
             INBOUND.load(Ordering::Relaxed),
             PERMITTING.load(Ordering::Relaxed),
-            BY_FLOW.load(Ordering::Relaxed)
+            BY_FLOW.load(Ordering::Relaxed),
+            EXCEPTING.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -3630,6 +3644,12 @@ mod generated {
             "no traffic was ever derived across a peering whose acl permits it, so every load here \
              ran with no acl in the way and a rule set that lowered to nothing would have gone \
              unnoticed",
+        );
+        super::assert_covered(
+            EXCEPTING.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering whose acl excepts one expose from an \
+             otherwise permitting rule, so nothing here depended on a lookup returning the \
+             *first* rule that matches",
         );
         super::assert_covered(
             BY_FLOW.load(Ordering::Relaxed) > 0,
@@ -3711,18 +3731,21 @@ mod generated {
         draft: &'a Draft,
         permitting: &'a Cell<u64>,
         by_flow: &'a Cell<u64>,
+        excepting: &'a Cell<u64>,
     ) -> impl Fn(Named<'_>) -> bool + 'a {
-        move |named| match draft.guard_named(named.peering) {
-            Some(Guard::Deny) => false,
-            Some(Guard::Permit) => {
-                permitting.set(permitting.get() + 1);
-                true
+        let carried = super::derive::carried_by(draft);
+        move |named| {
+            let counter = match draft.guard_named(named.peering) {
+                Some(Guard::Permit) => permitting,
+                Some(Guard::PermitFlow) => by_flow,
+                Some(Guard::PermitExcept) => excepting,
+                Some(Guard::Open | Guard::Deny) | None => return carried(named),
+            };
+            let kept = carried(named);
+            if kept {
+                counter.set(counter.get() + 1);
             }
-            Some(Guard::PermitFlow) => {
-                by_flow.set(by_flow.get() + 1);
-                true
-            }
-            Some(Guard::Open) | None => true,
+            kept
         }
     }
 
@@ -3777,14 +3800,15 @@ mod generated {
                 // acl refuses its own traffic is not a peering that carries it, and a load derived
                 // for one would fail this property by behaving exactly as configured.
                 // `a_denied_peering_carries_nothing` is where those loads go.
-                let (permitting, by_flow) = (Cell::new(0), Cell::new(0));
+                let (permitting, by_flow, excepting) = (Cell::new(0), Cell::new(0), Cell::new(0));
                 let mut loads = loads_where(
                     &validated,
                     vary,
-                    &carried_counting(&draft, &permitting, &by_flow),
+                    &carried_counting(&draft, &permitting, &by_flow, &excepting),
                 );
                 PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
                 BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
+                EXCEPTING.fetch_add(excepting.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 // Inbound loads separately, for the reason the fixture property counts them: a
                 // derivation that silently skipped a whole expose flavour would leave this
@@ -3817,33 +3841,37 @@ mod generated {
         report_and_assert_coverage();
     }
 
-    /// A peering whose ACL denies everything it carries, carries nothing.
+    /// Traffic a configuration says it does not carry, it does not carry.
     ///
-    /// The dual of the property above, over the traffic that one leaves out, and the reason a
-    /// denying guard is worth having in the vocabulary at all: without this, a denied peering would
-    /// be a configuration nothing ever sent a packet at, and "the algebra can build one" would be
-    /// the whole of what a green run meant.
+    /// The dual of the property above, over exactly the traffic that one leaves out, and the reason
+    /// a denying guard is worth having in the vocabulary at all: without this, a denied expose
+    /// would be a configuration nothing ever sent a packet at, and "the algebra can build one"
+    /// would be the whole of what a green run meant.
     ///
     /// It states tenant isolation in the one form that needs no oracle. Predicting which packets a
-    /// selective ACL refuses would mean evaluating it, but an ACL covering the whole peering in
-    /// both directions has the same answer for every packet the peering could carry -- so the
-    /// claim is "none of it", and the traffic it is claimed over is derived from the very exposes
+    /// *selective* ACL refuses would mean evaluating it, and the two guards that refuse anything
+    /// are built so that no evaluation is needed: `Guard::Deny` gives the same answer to every
+    /// packet the peering could carry, and `Guard::PermitExcept` names a masquerading expose,
+    /// whose addresses appear in the implied traffic only as the source of its own requests. The
+    /// claim is "none of that", and the traffic it is claimed over is derived from the very exposes
     /// the ACL was filled in from.
     ///
     /// One packet per load. A load offers its second only after it has seen an answer to its
     /// first, and there is never going to be one; asking for more would test the load's patience
     /// rather than the pipeline.
     ///
-    /// # The counter is the property
+    /// # The counters are the property
     ///
     /// "Not delivered" is satisfied by every stage that drops a packet for its own reasons, and a
     /// derived load can legitimately meet one -- so the assertion alone would hold with the ACL
-    /// deleted. `BY_ACL` is what says the refusals are the ACL's.
+    /// deleted. `BY_ACL` is what says the refusals are the ACL's, and `NARROWED` what says some of
+    /// them came from a rule that names part of a peering rather than all of it.
     #[tokio::test]
     #[dpdk::with_eal]
-    async fn a_denied_peering_carries_nothing() {
+    async fn a_configuration_carries_nothing_it_denies() {
         static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NARROWED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
@@ -3866,10 +3894,22 @@ mod generated {
                     return;
                 }
                 let carried = super::derive::carried_by(&draft);
-                let mut loads = loads_where(&validated, vary, &|named| !carried(named));
+                let narrowed = Cell::new(0);
+                let mut loads = loads_where(&validated, vary, &|named| {
+                    if carried(named) {
+                        return false;
+                    }
+                    // Refused by a rule that names part of the peering rather than by the
+                    // peering's default, which is the half of this property that is new.
+                    if draft.guard_named(named.peering) != Some(Guard::Deny) {
+                        narrowed.set(narrowed.get() + 1);
+                    }
+                    true
+                });
                 if loads.is_empty() {
                     return;
                 }
+                NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
                 CONFIGS.fetch_add(1, Ordering::Relaxed);
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
@@ -3881,7 +3921,7 @@ mod generated {
                     SENT.fetch_add(1, Ordering::Relaxed);
                     assert!(
                         matches!(seen, Verdict::Dropped(_)),
-                        "a peering whose acl denies everything it carries produced {seen:?} for {}",
+                        "an acl that refuses this traffic produced {seen:?} for {}",
                         load.describe()
                     );
                     if seen == Verdict::Dropped(DoneReason::AclDropped) {
@@ -3895,11 +3935,19 @@ mod generated {
             SENT.load(Ordering::Relaxed),
             BY_ACL.load(Ordering::Relaxed),
         );
-        eprintln!("denied-configs={configs} sent={sent} (dropped by the acl {by_acl})");
+        eprintln!(
+            "refusing-configs={configs} sent={sent} (dropped by the acl {by_acl}, \
+             refused by a narrowed rule {})",
+            NARROWED.load(Ordering::Relaxed)
+        );
         super::assert_covered(
             sent > 0,
-            "no denied peering ever had traffic derived for it, so this asserted nothing about \
-             any packet",
+            "no refused traffic was ever derived, so this asserted nothing about any packet",
+        );
+        super::assert_covered(
+            NARROWED.load(Ordering::Relaxed) > 0,
+            "every refusal came from a peering denied outright, so nothing here was refused by a \
+             rule naming part of a peering and the first-match order was not under test",
         );
         super::assert_covered(
             by_acl > 0,

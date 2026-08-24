@@ -144,15 +144,14 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "Acl.rules",
-        // One for `Guard::PermitFlow`, two for the shapes that name both directions. Rule
-        // *precedence* is still out of reach either way: a lookup returns the first rule that
-        // matches, and with at most one rule per direction no packet ever matches two. An ACL
-        // whose rules overlap is where an ordering defect would live.
-        Reach::Spans(&["1", "2"]),
+        // One for `Guard::PermitFlow`, two for the shapes that name both directions, three for
+        // `Guard::PermitExcept` -- which is the only one whose rules *overlap*, and so the only one
+        // under which a lookup's first-match order decides anything.
+        Reach::Spans(&["1", "2", "3"]),
     ),
     (
         "AclRule.name",
-        Reach::Determined("the two vpc handles, as `<from>-to-<to>`"),
+        Reach::Determined("the two vpc handles, as `<from>-to-<to>`, and `-except` for a denial"),
     ),
     (
         "AclRule.from",
@@ -175,15 +174,24 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "AclPattern.src",
-        Reach::Fixed(
-            "empty, which `AclRule::validate` fills in from the `from` manifest -- so every \
-             generated rule covers its whole side. A rule matching *part* of what a peering \
-             carries, which is what an ACL is normally for, is unreachable.",
+        // Empty in most rules, which `AclRule::validate` then fills in from the `from` manifest;
+        // one masquerading expose's private prefix in `Guard::PermitExcept`'s denial, which is
+        // what makes that rule name *part* of what its side carries. The prefix itself follows
+        // the peering, side and slot, like every other address the algebra picks.
+        Reach::Determined(
+            "empty, or the excepted expose's private prefix from its peering, side and slot",
         ),
     ),
     (
         "AclPattern.dst",
-        Reach::Fixed("empty, for the same reason as `AclPattern.src`."),
+        Reach::Fixed(
+            "empty, so `AclRule::validate` fills it in from the `to` manifest and every generated \
+             rule reaches all of what its far side advertises. `AclPattern.src` is narrowed by \
+             `Guard::PermitExcept` and this is not, and the asymmetry is deliberate: a source \
+             prefix names the expose whose traffic it is, and a destination prefix names whichever \
+             of the peer's exposes a load happens to aim at -- which is `peer_of`'s choice, so \
+             predicting the effect would mean keeping a copy of it.",
+        ),
     ),
     (
         "AclPattern.src_any_ports",
