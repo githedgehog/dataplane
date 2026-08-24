@@ -90,33 +90,13 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "AclPattern.dst",
-        Reach::Fixed(
-            "empty, so `AclRule::validate` fills it in from the `to` manifest and every generated \
-             rule reaches all of what its far side advertises. `AclPattern.src` is narrowed by \
-             `Guard::PermitExcept` and this is not, and the asymmetry is deliberate: a source \
-             prefix names the expose whose traffic it is, and a destination prefix names whichever \
-             of the peer's exposes a load happens to aim at -- which is `peer_of`'s choice, so \
-             predicting the effect would mean keeping a copy of it.",
+        Reach::Determined(
+            "empty, or the excepted expose's public prefix from its peering, side and slot",
         ),
     ),
-    (
-        "AclPattern.src_any_ports",
-        Reach::Fixed(
-            "empty -- the survey renders it as a count of zero. A `match` naming ports but no \
-             address is a shape the k8s converter produces and nothing generated does.",
-        ),
-    ),
-    (
-        "AclPattern.dst_any_ports",
-        Reach::Fixed("empty, for the same reason as `AclPattern.src_any_ports`."),
-    ),
-    (
-        "AclPattern.proto",
-        Reach::Fixed(
-            "`Any`. Narrowing a rule to a protocol is what `acl_filter`'s own generator is aimed \
-             at, and a rule that discriminates is one a property here would have to evaluate.",
-        ),
-    ),
+    ("AclPattern.src_any_ports", Reach::Spans(&["0", "1"])),
+    ("AclPattern.dst_any_ports", Reach::Spans(&["0", "1"])),
+    ("AclPattern.proto", Reach::Spans(&["any", "tcp", "udp"])),
     (
         "VpcManifest.name",
         Reach::Determined("the side's vpc handle"),
