@@ -2720,7 +2720,7 @@ mod generated {
             let counter = match draft.guard_named(named.peering) {
                 Some(Guard::Permit) => permitting,
                 Some(Guard::PermitFlow) => by_flow,
-                Some(Guard::PermitExcept) => excepting,
+                Some(Guard::PermitExcept | Guard::PermitByProtocol) => excepting,
                 Some(Guard::Open | Guard::Deny) | None => return carried(named),
             };
             let kept = carried(named);

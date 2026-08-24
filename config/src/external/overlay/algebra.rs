@@ -68,6 +68,7 @@ pub enum Guard {
     Permit,
     PermitFlow,
     PermitExcept,
+    PermitByProtocol,
     Deny,
 }
 
@@ -75,11 +76,16 @@ impl Guard {
     fn acl(self, peering: PeeringHandle, spec: &PeeringSpec) -> Option<Acl> {
         let (default, action, scope) = match self {
             Guard::Open => return None,
-            Guard::Permit | Guard::PermitExcept => {
+            Guard::Permit | Guard::PermitExcept | Guard::PermitByProtocol => {
                 (AclAction::Deny, AclAction::Allow, AclScope::Packet)
             }
             Guard::PermitFlow => (AclAction::Deny, AclAction::Allow, AclScope::Flow),
             Guard::Deny => (AclAction::Allow, AclAction::Deny, AclScope::Packet),
+        };
+        let (proto, any_ports) = if self == Guard::PermitByProtocol {
+            (AclProtoMatch::Udp, vec![port_range(EVERY_PORT)])
+        } else {
+            (AclProtoMatch::Any, Vec::new())
         };
         let rule = |side: Side| {
             let (from, to) = (spec.vpc(side).name(), spec.vpc(side.other()).name());
@@ -91,9 +97,9 @@ impl Guard {
                 pattern: AclPattern {
                     src: PrefixPortsSet::new(),
                     dst: PrefixPortsSet::new(),
-                    src_any_ports: Vec::new(),
-                    dst_any_ports: Vec::new(),
-                    proto: AclProtoMatch::Any,
+                    src_any_ports: any_ports.clone(),
+                    dst_any_ports: any_ports.clone(),
+                    proto,
                 },
                 scope,
                 log: action == AclAction::Deny,
@@ -105,15 +111,26 @@ impl Guard {
                     unreachable!("`legal_on` refused a guard with no side")
                 }))]
             }
-            Guard::PermitExcept => {
-                let (side, expose) = spec
+            Guard::PermitExcept | Guard::PermitByProtocol => {
+                let (side, which, prefix) = spec
                     .exception(peering)
                     .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no expose"));
-                let mut denial = rule(side);
+                let denied_from = match which {
+                    Narrowing::Source => side,
+                    Narrowing::Destination => side.other(),
+                };
+                let mut denial = rule(denied_from);
                 denial.name = format!("{}-except", denial.name);
                 denial.action = AclAction::Deny;
-                denial.pattern.src = PrefixPortsSet::from([PrefixWithOptionalPorts::from(expose)]);
-                vec![denial, rule(side), rule(side.other())]
+                let named = PrefixPortsSet::from([PrefixWithOptionalPorts::from(prefix)]);
+                match which {
+                    Narrowing::Source => denial.pattern.src = named,
+                    Narrowing::Destination => denial.pattern.dst = named,
+                }
+                if self == Guard::PermitByProtocol {
+                    denial.pattern.proto = AclProtoMatch::Tcp;
+                }
+                vec![denial, rule(denied_from), rule(denied_from.other())]
             }
             Guard::Open | Guard::Permit | Guard::Deny => {
                 vec![rule(Side::Left), rule(Side::Right)]
@@ -128,7 +145,11 @@ impl Guard {
                 spec.sole_opener()
                     .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no side")),
             ),
-            Guard::Open | Guard::Permit | Guard::PermitExcept | Guard::Deny => None,
+            Guard::Open
+            | Guard::Permit
+            | Guard::PermitExcept
+            | Guard::PermitByProtocol
+            | Guard::Deny => None,
         }
     }
 
@@ -136,15 +157,17 @@ impl Guard {
         match self {
             Guard::Open | Guard::Permit | Guard::Deny => true,
             Guard::PermitFlow => spec.sole_opener().is_some(),
-            Guard::PermitExcept => spec.exception_slot().is_some(),
+            Guard::PermitExcept | Guard::PermitByProtocol => spec.exception_slot().is_some(),
         }
     }
 
     fn silences(self, spec: &PeeringSpec, side: Side, nth: usize) -> bool {
         match self {
-            Guard::Open | Guard::Permit | Guard::PermitFlow => false,
+            Guard::Open | Guard::Permit | Guard::PermitFlow | Guard::PermitByProtocol => false,
             Guard::Deny => true,
-            Guard::PermitExcept => spec.exception_slot() == Some((side, nth)),
+            Guard::PermitExcept => spec
+                .exception_slot()
+                .is_some_and(|(at, which, _)| (at, which) == (side, nth)),
         }
     }
 }
@@ -191,6 +214,8 @@ impl PeeringHandle {
 pub(crate) const FORWARDED_PRIVATE_PORTS: (u16, u16) = (1000, 1004);
 
 pub(crate) const FORWARDED_PUBLIC_PORTS: (u16, u16) = (2000, 2004);
+
+const EVERY_PORT: (u16, u16) = (1, u16::MAX);
 
 fn port_range((start, end): (u16, u16)) -> PortRange {
     PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
@@ -276,6 +301,22 @@ impl ExposeSpec {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Narrowing {
+    Source,
+    Destination,
+}
+
+impl Narrowing {
+    fn of(flavour: Flavour) -> Option<Self> {
+        match flavour {
+            Flavour::Masquerade => Some(Self::Source),
+            Flavour::PortForward => Some(Self::Destination),
+            Flavour::Forward | Flavour::StaticNat => None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PeeringSpec {
     left: VpcHandle,
@@ -338,19 +379,23 @@ impl PeeringSpec {
         })
     }
 
-    fn exception_slot(&self) -> Option<(Side, usize)> {
+    fn exception_slot(&self) -> Option<(Side, usize, Narrowing)> {
         [Side::Left, Side::Right].into_iter().find_map(|side| {
-            let nth = self
-                .exposes(side)
+            self.exposes(side)
                 .iter()
-                .position(|expose| expose.flavour == Flavour::Masquerade)?;
-            Some((side, nth))
+                .enumerate()
+                .find_map(|(nth, expose)| Some((side, nth, Narrowing::of(expose.flavour)?)))
         })
     }
 
-    fn exception(&self, peering: PeeringHandle) -> Option<(Side, Prefix)> {
-        let (side, nth) = self.exception_slot()?;
-        Some((side, self.exposes(side)[nth].private(peering, side)))
+    fn exception(&self, peering: PeeringHandle) -> Option<(Side, Narrowing, Prefix)> {
+        let (side, nth, which) = self.exception_slot()?;
+        let expose = self.exposes(side)[nth];
+        let prefix = match which {
+            Narrowing::Source => expose.private(peering, side),
+            Narrowing::Destination => expose.public(peering, side),
+        };
+        Some((side, which, prefix))
     }
 
     fn has_directional(&self, side: Side) -> bool {
@@ -1194,10 +1239,11 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 }
 
 fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
-    const ORDERED: [Guard; 5] = [
+    const ORDERED: [Guard; 6] = [
         Guard::Open,
         Guard::Permit,
         Guard::PermitExcept,
+        Guard::PermitByProtocol,
         Guard::PermitFlow,
         Guard::Deny,
     ];
@@ -1349,7 +1395,7 @@ mod tests {
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
         let flavours = [const { AtomicUsize::new(0) }; 4];
-        let guards = [const { AtomicUsize::new(0) }; 5];
+        let guards = [const { AtomicUsize::new(0) }; 6];
 
         check!()
             .with_generator(Sequence::default())
@@ -1391,13 +1437,19 @@ mod tests {
                         .values()
                         .find(|peering| peering.name == handle.name())
                         .and_then(|peering| peering.acl.as_ref());
-                    let observed = match acl.map(|acl| (acl.default_action(), acl.rules().len())) {
-                        None => Guard::Open,
-                        Some((AclAction::Deny, 1)) => Guard::PermitFlow,
-                        Some((AclAction::Deny, 3)) => Guard::PermitExcept,
-                        Some((AclAction::Deny, _)) => Guard::Permit,
-                        Some((AclAction::Allow, _)) => Guard::Deny,
-                    };
+                    let observed = acl.map_or(Guard::Open, |acl| {
+                        let inert = acl
+                            .rules()
+                            .first()
+                            .is_some_and(|rule| rule.pattern.proto == AclProtoMatch::Tcp);
+                        match (acl.default_action(), acl.rules().len()) {
+                            (AclAction::Deny, 1) => Guard::PermitFlow,
+                            (AclAction::Deny, 3) if inert => Guard::PermitByProtocol,
+                            (AclAction::Deny, 3) => Guard::PermitExcept,
+                            (AclAction::Deny, _) => Guard::Permit,
+                            (AclAction::Allow, _) => Guard::Deny,
+                        }
+                    });
                     assert_eq!(
                         observed,
                         spec.guard(),
@@ -1409,8 +1461,9 @@ mod tests {
                         Guard::Open => 0,
                         Guard::Permit => 1,
                         Guard::PermitExcept => 2,
-                        Guard::PermitFlow => 3,
-                        Guard::Deny => 4,
+                        Guard::PermitByProtocol => 3,
+                        Guard::PermitFlow => 4,
+                        Guard::Deny => 5,
                     }]
                     .fetch_add(1, Relaxed);
                 }
@@ -1425,15 +1478,16 @@ mod tests {
     }
 
     const FLAVOURS: [&str; 4] = ["forward", "masquerade", "static-nat", "port-forward"];
-    const GUARDS: [&str; 5] = [
+    const GUARDS: [&str; 6] = [
         "open",
         "permit",
         "permit-except-one",
+        "permit-by-protocol",
         "permit-by-flow",
         "deny",
     ];
 
-    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 5]) {
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 6]) {
         let show = |names: &[&str], counts: &[AtomicUsize]| {
             names
                 .iter()
