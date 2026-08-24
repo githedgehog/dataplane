@@ -130,11 +130,10 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcPeering.acl",
-        Reach::Fixed(
-            "absent. Peering-scoped ACLs are not in the vocabulary, so no generated configuration \
-             carries one -- and an ACL is precisely a thing that changes a verdict, which is what \
-             every property here asserts over.",
-        ),
+        // Presence only, which is all this row can say, and less than it looks. The survey does
+        // not descend into an `Acl`, so what the algebra reaches *inside* one -- the rules, their
+        // patterns, their scope -- is unmeasured rather than measured and found complete.
+        Reach::Spans(&["absent", "present"]),
     ),
     (
         "VpcManifest.name",
