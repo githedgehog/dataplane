@@ -502,6 +502,7 @@ impl TracingControl {
         S: Subscriber + for<'span> LookupSpan<'span>,
     {
         tracing_subscriber::fmt::layer()
+            .with_timer(crate::stamp::Stamp)
             .with_line_number(true)
             .with_target(true)
             .with_thread_ids(false)
