@@ -28,21 +28,60 @@ const SOCKET_POLL_MAX_ATTEMPTS: u32 = 100;
 /// Interval between socket existence checks.
 const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Maximum time a KVM-accelerated VM test is allowed to run before forced
-/// shutdown.
-const VM_TEST_TIMEOUT_KVM: Duration = Duration::from_secs(60);
+/// What a KVM-accelerated VM gets on top of the work it was asked to do.
+///
+/// Boot, the guest's own start-up, corpus load, shutdown and drain -- plus an
+/// ordinary test body, which declares nothing and is expected to fit here.
+const VM_OVERHEAD_ALLOWANCE_KVM: Duration = Duration::from_secs(60);
 
-/// Maximum time a TCG (software-emulated, cross-arch) VM test is allowed to
-/// run before forced shutdown.  TCG is far slower than KVM -- a guest
-/// kernel boot alone can take tens of seconds -- so this is much larger.
-const VM_TEST_TIMEOUT_TCG: Duration = Duration::from_secs(300);
+/// The same for TCG (software-emulated, cross-arch), which is far slower --
+/// a guest kernel boot alone can take tens of seconds.
+const VM_OVERHEAD_ALLOWANCE_TCG: Duration = Duration::from_secs(300);
 
-/// The test timeout for the given acceleration mode.
-fn vm_test_timeout(accel: config::Accel) -> Duration {
+/// The VM's overhead allowance for the given acceleration mode.
+const fn vm_overhead_allowance(accel: config::Accel) -> Duration {
     match accel {
-        config::Accel::Kvm => VM_TEST_TIMEOUT_KVM,
-        config::Accel::Tcg => VM_TEST_TIMEOUT_TCG,
+        config::Accel::Kvm => VM_OVERHEAD_ALLOWANCE_KVM,
+        config::Accel::Tcg => VM_OVERHEAD_ALLOWANCE_TCG,
     }
+}
+
+/// How long the VM may run before it is shut down by force.
+///
+/// The container has to be bigger than what it contains.  A budget that
+/// merely equalled the work would kill the guest inside its last second,
+/// which for a fuzz campaign means losing the crash it was in the middle of
+/// writing out -- libfuzzer saves artifacts from `DeathCallback`, after the
+/// abort, so a VM killed at the wire reports nothing at all.
+///
+/// So the allowance is added to the declared work rather than competing with
+/// it.  `guest_budget` of zero -- nothing declared, which is nearly every
+/// test -- leaves this exactly where it has always been.
+fn vm_test_timeout(accel: config::Accel, guest_budget: Duration) -> Duration {
+    vm_overhead_allowance(accel).saturating_add(guest_budget)
+}
+
+/// The longest the guest's work was declared to take.
+///
+/// Two sources, and the VM has to outlast both: a test can declare a limit in
+/// its `VmConfig`, and a fuzzing engine can declare a campaign length that
+/// only exists at run time, arriving via
+/// [`ENV_ENGINE_TIME_LIMIT`](n_vm_protocol::ENV_ENGINE_TIME_LIMIT) from the
+/// host tier.
+///
+/// The two are alternatives rather than addends: they describe one stretch of
+/// work, so the longer wins.
+///
+/// `engine_limit` is passed in rather than read here, matching
+/// [`Accel::from_env`](config::Accel::from_env) and for the same reason --
+/// the environment is the caller's to look at, and a pure function of its
+/// value is one a test can exercise without mutating the process.
+fn guest_budget(vm_config: &config::VmConfig, engine_limit: Option<&str>) -> Duration {
+    let declared = vm_config.guest_time_limit.unwrap_or(Duration::ZERO);
+    let from_engine = engine_limit
+        .and_then(|secs| secs.parse::<u64>().ok())
+        .map_or(Duration::ZERO, Duration::from_secs);
+    declared.max(from_engine)
 }
 
 /// The complete argument list for a virtiofsd serving one share.
@@ -414,6 +453,8 @@ pub struct TestVm<B: HypervisorBackend> {
     kernel_log: AbortOnDrop<String>,
     /// Acceleration mode, used to scale the test timeout (TCG is slower).
     accel: config::Accel,
+    /// How long the guest's work was declared to take, resolved at launch.
+    guest_budget: Duration,
 }
 
 impl<B: HypervisorBackend> TestVm<B> {
@@ -544,6 +585,12 @@ impl<B: HypervisorBackend> TestVm<B> {
             test_result,
             kernel_log,
             accel: params.accel,
+            guest_budget: guest_budget(
+                &params.vm_config,
+                std::env::var(n_vm_protocol::ENV_ENGINE_TIME_LIMIT)
+                    .ok()
+                    .as_deref(),
+            ),
         })
     }
 
@@ -564,6 +611,7 @@ impl<B: HypervisorBackend> TestVm<B> {
             test_result,
             kernel_log,
             accel,
+            guest_budget,
         } = self;
 
         let event_watcher = event_watcher.into_inner();
@@ -574,9 +622,10 @@ impl<B: HypervisorBackend> TestVm<B> {
         let kernel_log = kernel_log.into_inner();
 
         // Wait for a terminal event, or force shutdown on timeout.  The
-        // timeout is scaled to the acceleration mode: TCG (cross-arch
+        // budget is the work the guest was given plus the allowance for the
+        // acceleration mode, which also covers boot -- TCG (cross-arch
         // emulation) is much slower than KVM.
-        let timeout = vm_test_timeout(accel);
+        let timeout = vm_test_timeout(accel, guest_budget);
         let (hypervisor_events, hypervisor_verdict) = tokio::select! {
             biased;
             result = event_watcher => {
@@ -590,8 +639,10 @@ impl<B: HypervisorBackend> TestVm<B> {
             }
             _ = tokio::time::sleep(timeout) => {
                 warn!(
-                    "VM test did not complete within {timeout:?} ({accel:?}); \
-                     forcing hypervisor shutdown to collect diagnostics"
+                    "VM test did not complete within {timeout:?} ({accel:?} \
+                     allowance {allowance:?} + declared work {guest_budget:?}); \
+                     forcing hypervisor shutdown to collect diagnostics",
+                    allowance = vm_overhead_allowance(accel),
                 );
                 (B::EventLog::default(), HypervisorVerdict::Failure)
             }
@@ -792,6 +843,93 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
 
     let vm = TestVm::<B>::launch(&params).await?;
     Ok(vm.collect().await)
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// Nothing declared is the ordinary case, and it must leave the budget
+    /// exactly where it was before any of this existed.
+    #[test]
+    fn an_ordinary_test_gets_what_it_always_got() {
+        assert_eq!(
+            vm_test_timeout(config::Accel::Kvm, Duration::ZERO),
+            VM_OVERHEAD_ALLOWANCE_KVM,
+        );
+        assert_eq!(
+            vm_test_timeout(config::Accel::Tcg, Duration::ZERO),
+            VM_OVERHEAD_ALLOWANCE_TCG,
+        );
+    }
+
+    /// The container has to be bigger than what it contains.  A ten-minute
+    /// campaign in a ten-minute VM is the bug this exists to prevent.
+    #[test]
+    fn the_budget_always_exceeds_the_work() {
+        for secs in [1, 60, 600, 36_000] {
+            let work = Duration::from_secs(secs);
+            for accel in [config::Accel::Kvm, config::Accel::Tcg] {
+                assert!(
+                    vm_test_timeout(accel, work) > work,
+                    "{accel:?}: {secs}s of work must not get a {secs}s VM",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn declared_work_is_added_to_the_allowance() {
+        assert_eq!(
+            vm_test_timeout(config::Accel::Kvm, Duration::from_secs(600)),
+            VM_OVERHEAD_ALLOWANCE_KVM + Duration::from_secs(600),
+        );
+    }
+
+    /// The two sources are alternatives, not addends: a campaign running
+    /// inside a test that also declared a limit takes the longer of the two,
+    /// because it is one stretch of work described twice.
+    #[test]
+    fn the_longer_of_the_two_declarations_wins() {
+        let declared = config::VmConfig {
+            guest_time_limit: Some(Duration::from_secs(600)),
+            ..config::VmConfig::DEFAULT
+        };
+        assert_eq!(
+            guest_budget(&declared, Some("60")),
+            Duration::from_secs(600),
+            "a short campaign must not shrink a longer declared limit",
+        );
+        assert_eq!(
+            guest_budget(&declared, Some("900")),
+            Duration::from_secs(900),
+            "a long campaign must not be capped by a shorter declared limit",
+        );
+        assert_eq!(guest_budget(&declared, None), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn a_test_that_declares_nothing_declares_nothing() {
+        let default = config::VmConfig::DEFAULT;
+        assert_eq!(guest_budget(&default, None), Duration::ZERO);
+        assert_eq!(
+            guest_budget(&default, Some("600")),
+            Duration::from_secs(600),
+            "a campaign alone is enough to extend the budget",
+        );
+    }
+
+    /// A malformed value must not silently read as "no work declared" for a
+    /// campaign that is genuinely running -- but it is the host tier that
+    /// writes it, from a parsed `Duration`, so this is only reachable if
+    /// something else set it.
+    #[test]
+    fn a_malformed_engine_limit_falls_back_to_declaring_nothing() {
+        assert_eq!(
+            guest_budget(&config::VmConfig::DEFAULT, Some("ages")),
+            Duration::ZERO,
+        );
+    }
 }
 
 #[cfg(test)]
