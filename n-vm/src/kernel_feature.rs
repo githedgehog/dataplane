@@ -126,6 +126,17 @@ pub mod features {
 
     /// Mellanox ConnectX core driver.
     pub const MLX5_CORE: KernelFeature = KernelFeature::modular("MLX5_CORE", "mlx5_core");
+
+    /// Intel 82540EM, the emulated NIC QEMU calls `e1000`.
+    pub const E1000: KernelFeature = KernelFeature::modular("E1000", "e1000");
+    /// Intel 82574L, the emulated NIC QEMU calls `e1000e`.
+    ///
+    /// Worth declaring alongside [`VIRTIO_NET`] on a test that mixes
+    /// models: a kernel without the driver does not fail, it simply never
+    /// brings the interface up, and the test then reads as "the device was
+    /// not presented" when the device was presented and nothing could bind
+    /// it.
+    pub const E1000E: KernelFeature = KernelFeature::modular("E1000E", "e1000e");
 }
 
 /// A feature a kernel does not provide.
