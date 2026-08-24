@@ -552,6 +552,17 @@ pub struct VmConfig {
     /// };
     /// ```
     pub kernel_features: &'static [crate::kernel_feature::KernelFeature],
+    /// The hypervisor the test asked for.
+    ///
+    /// Part of the machine rather than of the attribute that declares the
+    /// test, so that "the same VM on both backends" is written as two
+    /// configurations -- which is what it is.  Derive the second from the
+    /// first with [`to_builder`](Self::to_builder).
+    pub backend: crate::backend::RequestedBackend,
+    /// The tokio runtime an `async` body is driven on in the guest.
+    ///
+    /// Ignored by a synchronous test, which has no runtime to shape.
+    pub runtime: GuestRuntime,
     /// Kernel module parameters to set on the guest command line.
     ///
     /// Rendered as `<module>.<key>=<value>` into the kernel section of the
@@ -580,6 +591,25 @@ pub struct VmConfig {
     /// directory.  The manifest dir supplies the anchor needed to recover
     /// the workspace-relative tail; see [`Self::corpus_rel_dir`].
     pub corpus_source_file: Option<(&'static str, &'static str)>,
+}
+
+/// The tokio runtime an `async` test body is driven on inside the guest.
+///
+/// A worker count that only means something on the multi-threaded scheduler
+/// is *inside* the variant that has one, so `worker_threads` without
+/// `multi_thread` cannot be written down.  It used to be two independent
+/// attribute options and a hand-written check that rejected the combination;
+/// there is now nothing to reject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestRuntime {
+    /// The current-thread scheduler.  The default: a test that does not say
+    /// otherwise gets no worker pool.
+    CurrentThread,
+    /// The multi-threaded scheduler.
+    MultiThread {
+        /// Worker threads, or `None` for tokio's default (one per core).
+        worker_threads: Option<usize>,
+    },
 }
 
 /// Builds a [`VmConfig`] by naming only what differs from
@@ -672,6 +702,25 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Pins the hypervisor.
+    ///
+    /// Leaving it at [`RequestedBackend::Default`](crate::backend::RequestedBackend::Default)
+    /// is not the same as naming cloud-hypervisor: the default tolerates
+    /// falling back to QEMU for a cross-architecture guest, where a pinned
+    /// cloud-hypervisor test is skipped instead.
+    #[must_use]
+    pub const fn backend(mut self, backend: crate::backend::RequestedBackend) -> Self {
+        self.0.backend = backend;
+        self
+    }
+
+    /// Sets the tokio runtime an `async` body is driven on in the guest.
+    #[must_use]
+    pub const fn runtime(mut self, runtime: GuestRuntime) -> Self {
+        self.0.runtime = runtime;
+        self
+    }
+
     /// Sets kernel module parameters on the guest command line.
     #[must_use]
     pub const fn module_params(mut self, params: &'static [ModuleParam]) -> Self {
@@ -707,6 +756,8 @@ pub enum ConfigProblem {
     MemoryNotAligned,
     /// The guest hugepage reservation is larger than the VM's memory.
     HugepagesExceedMemory,
+    /// The NIC model is emulated only by QEMU, but cloud-hypervisor is pinned.
+    NicRequiresQemu,
 }
 
 impl VmConfig {
@@ -758,9 +809,27 @@ impl VmConfig {
         },
         nic_model: NicModel::VirtioNet,
         kernel_features: &[],
+        backend: crate::backend::RequestedBackend::Default,
+        runtime: GuestRuntime::CurrentThread,
         module_params: &[],
         corpus_source_file: None,
     };
+
+    /// Reopens this configuration as a builder, for deriving a variant.
+    ///
+    /// The `const`-callable equivalent of `..BASE` struct update syntax, and
+    /// the answer to "the same VM on the other hypervisor":
+    ///
+    /// ```ignore
+    /// const IOMMU_VM: VmConfig = VmConfigBuilder::default().iommu(true).build();
+    /// const IOMMU_VM_QEMU: VmConfig = IOMMU_VM.to_builder()
+    ///     .backend(RequestedBackend::Qemu)
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub const fn to_builder(self) -> VmConfigBuilder {
+        VmConfigBuilder(self)
+    }
 
     /// Checks the configuration for internal contradictions.
     ///
@@ -792,6 +861,18 @@ impl VmConfig {
                 return Err(ConfigProblem::HugepagesExceedMemory);
             }
         }
+        // Now that the backend is part of the configuration this is an
+        // internal contradiction like the others, rather than something only
+        // a caller holding both halves could check.
+        //
+        // `RequestedBackend::Default` stays permissive: an unpinned test that
+        // asks for an emulated NIC is not a contradiction, it is a test that
+        // wants QEMU, and `RequestedBackend::resolve` selects it.
+        if self.nic_model.requires_qemu()
+            && matches!(self.backend, crate::backend::RequestedBackend::CloudHypervisor)
+        {
+            return Err(ConfigProblem::NicRequiresQemu);
+        }
         Ok(())
     }
 
@@ -817,37 +898,11 @@ impl VmConfig {
                  reduce hugepage_count, use a smaller hugepage size, or set \
                  guest_hugepages to GuestHugePageConfig::None"
             ),
-        }
-    }
-
-    /// Rejects a configuration that cannot work with the requested backend.
-    ///
-    /// The config itself is a `const` the macro cannot read, but the
-    /// *backend* is one of the macro's own arguments -- so combining them in
-    /// a `const fn` keeps this a compile error rather than demoting it to a
-    /// runtime skip.  That matters because a NIC model the chosen hypervisor
-    /// cannot emulate is a contradiction in the test as written, true on
-    /// every host, and it should not need a VM boot to discover.
-    ///
-    /// [`RequestedBackend::Default`] is deliberately permissive: an
-    /// unpinned test that asks for an emulated NIC is not a contradiction,
-    /// it is a test that wants QEMU, and
-    /// [`resolve`](crate::backend::RequestedBackend::resolve) selects it.
-    ///
-    /// # Panics
-    ///
-    /// Panics if [`check`](Self::check) fails, or if the NIC model requires
-    /// QEMU while the test explicitly pinned cloud-hypervisor.
-    pub const fn assert_valid_for(&self, backend: crate::backend::RequestedBackend) {
-        self.assert_valid();
-        if self.nic_model.requires_qemu()
-            && matches!(backend, crate::backend::RequestedBackend::CloudHypervisor)
-        {
-            panic!(
-                "this NIC model is emulated only by QEMU, but the test pinned \
-                 cloud-hypervisor; drop the backend argument to let the harness \
-                 pick QEMU, or write #[n_vm::test(qemu)]"
-            );
+            Err(ConfigProblem::NicRequiresQemu) => panic!(
+                "this NIC model is emulated only by QEMU, but the configuration pinned \
+                 cloud-hypervisor; leave the backend at RequestedBackend::Default to let \
+                 the harness pick QEMU, or ask for RequestedBackend::Qemu"
+            ),
         }
     }
 
@@ -946,6 +1001,11 @@ impl VmConfig {
                     size.bytes(),
                 ))
             }
+            Err(ConfigProblem::NicRequiresQemu) => Err(format!(
+                "{nic:?} is emulated only by QEMU, but this configuration pinned \
+                 cloud-hypervisor",
+                nic = self.nic_model,
+            )),
         }
     }
 }
@@ -1718,6 +1778,48 @@ mod tests {
             ..VmConfig::DEFAULT
         };
         assert_eq!(BUILT, WRITTEN);
+    }
+
+    /// The pairs in the integration suite depend on this: a derived config
+    /// must differ in exactly what was named and nowhere else, or "both
+    /// backends present the same guest" stops being what those tests check.
+    #[test]
+    fn to_builder_changes_only_what_is_named() {
+        const BASE: VmConfig = VmConfigBuilder::default().iommu(true).build();
+        const DERIVED: VmConfig = BASE
+            .to_builder()
+            .backend(crate::backend::RequestedBackend::Qemu)
+            .build();
+        assert_eq!(DERIVED.backend, crate::backend::RequestedBackend::Qemu);
+        assert_eq!(
+            DERIVED.to_builder().backend(BASE.backend).build(),
+            BASE,
+            "putting the backend back should recover the base exactly",
+        );
+    }
+
+    /// The check that used to need the backend passed in alongside the value.
+    #[test]
+    fn a_qemu_only_nic_contradicts_a_pinned_cloud_hypervisor() {
+        let pinned = VmConfig {
+            nic_model: NicModel::E1000,
+            backend: crate::backend::RequestedBackend::CloudHypervisor,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(pinned.check(), Err(ConfigProblem::NicRequiresQemu));
+
+        // Unpinned is not a contradiction: it is a test that wants QEMU, and
+        // `RequestedBackend::resolve` is what gives it one.
+        let unpinned = VmConfig {
+            backend: crate::backend::RequestedBackend::Default,
+            ..pinned
+        };
+        assert_eq!(unpinned.check(), Ok(()));
+    }
+
+    #[test]
+    fn the_default_runtime_is_current_thread() {
+        assert_eq!(VmConfig::DEFAULT.runtime, GuestRuntime::CurrentThread);
     }
 
     #[test]

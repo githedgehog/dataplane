@@ -15,24 +15,22 @@
 //!
 //! It *is* the test attribute -- it injects `#[test]` itself, so there is no
 //! companion `#[test]` or `#[tokio::test]` to write (or to get in the wrong
-//! order).  Use `#[n_vm::test]` for the default cloud-hypervisor backend or
-//! `#[n_vm::test(qemu)]` for QEMU.
+//! order).  It takes one argument, `config = PATH`, and everything else about
+//! the VM is a field of the `VmConfig` that names.
 //!
 //! # Configuring the VM
 //!
 //! The VM's shape comes from a `const VmConfig`, named by path:
 //!
 //! ```ignore
-//! const DPDK_VM: n_vm::VmConfig = n_vm::VmConfig {
-//!     iommu: true,
-//!     host_page_size: n_vm::HostPageSize::Standard,
-//!     guest_hugepages: n_vm::GuestHugePageConfig::Allocate {
+//! const DPDK_VM: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+//!     .iommu(true)
+//!     .guest_hugepages(n_vm::GuestHugePageConfig::Allocate {
 //!         size: n_vm::GuestHugePageSize::Huge2M,
-//!         count: 512,
-//!     },
-//!     nic_model: n_vm::NicModel::E1000,
-//!     ..n_vm::VmConfig::DEFAULT
-//! };
+//!         count: 256,
+//!     })
+//!     .nic_model(n_vm::NicModel::E1000)
+//!     .build();
 //!
 //! #[n_vm::test(config = DPDK_VM)]
 //! fn test_dpdk() {}
@@ -74,10 +72,15 @@
 //! a NIC only QEMU can emulate is still rejected by the build rather than by
 //! a VM that fails to boot.
 //!
-//! An `async fn` runs on a tokio runtime in the guest.  The shape comes from
-//! this attribute's own arguments -- a current-thread runtime by default, or
-//! `#[n_vm::test(multi_thread)]` / `#[n_vm::test(multi_thread,
-//! worker_threads = 4)]` for the multi-threaded scheduler.
+//! An `async fn` runs on a tokio runtime in the guest, shaped by the config's
+//! `runtime` field -- current-thread by default, or
+//! `GuestRuntime::MultiThread { worker_threads }`.  The worker count sits
+//! inside the variant that has one, so a count without a pool is not
+//! something that can be written.
+//!
+//! The hypervisor is the config's `backend`.  "The same VM on both backends"
+//! is therefore two configurations, which is what it is; `VmConfig::to_builder`
+//! keeps the second to one line.
 //!
 //! # Attribute routing
 //!
@@ -95,18 +98,27 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ReturnType, parse_macro_input};
 
-const KNOWN_BACKENDS: &[(&str, &str)] = &[
-    ("cloud_hypervisor", "::n_vm::CloudHypervisor"),
-    ("qemu", "::n_vm::Qemu"),
-];
-
-const DEFAULT_BACKEND_NAME: &str = "cloud_hypervisor";
-
 /// Options that used to be accepted here, and where they went.
 ///
 /// Kept as errors rather than dropped: a stale option would otherwise read
 /// as an unknown one, with no hint about the const that replaced it.
-const MIGRATED_OPTIONS: &[(&str, &str)] = &[("iommu", "the `iommu` field of a `const VmConfig`")];
+const MIGRATED_OPTIONS: &[(&str, &str)] = &[
+    ("iommu", "the `iommu` field of a `const VmConfig`"),
+    ("qemu", "`.backend(RequestedBackend::Qemu)` on the config"),
+    (
+        "cloud_hypervisor",
+        "`.backend(RequestedBackend::CloudHypervisor)` on the config",
+    ),
+    ("current_thread", "`.runtime(GuestRuntime::CurrentThread)` on the config"),
+    (
+        "multi_thread",
+        "`.runtime(GuestRuntime::MultiThread { worker_threads: None })` on the config",
+    ),
+    (
+        "worker_threads",
+        "the `worker_threads` field of `GuestRuntime::MultiThread`",
+    ),
+];
 
 /// Companion attributes this macro used to consume, now replaced by the
 /// `config = PATH` argument.
@@ -118,23 +130,6 @@ const MIGRATED_OPTIONS: &[(&str, &str)] = &[("iommu", "the `iommu` field of a `c
 const RETIRED_ATTRS: &[&str] = &["hypervisor", "guest", "network"];
 
 #[must_use]
-fn known_backend_list() -> String {
-    KNOWN_BACKENDS
-        .iter()
-        .map(|(name, _)| format!("`{name}`"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-#[must_use]
-fn resolve_backend(ident: &str) -> Option<(&'static str, &'static str)> {
-    KNOWN_BACKENDS
-        .iter()
-        .find(|(name, _)| *name == ident)
-        .copied()
-}
-
-#[must_use]
 fn migration_hint(ident: &str) -> Option<&'static str> {
     MIGRATED_OPTIONS
         .iter()
@@ -142,54 +137,19 @@ fn migration_hint(ident: &str) -> Option<&'static str> {
         .map(|(_, hint)| *hint)
 }
 
-struct BackendInfo {
-    /// The backend identifier (`cloud_hypervisor` or `qemu`).
-    name: &'static str,
-    /// Whether the test named a backend explicitly.  When `false` the
-    /// backend was defaulted, which means it may fall back to QEMU under
-    /// emulation rather than being skipped.
-    explicit: bool,
-}
-
-/// Everything `#[n_vm::test(...)]` accepts in its own argument list: the
-/// hypervisor backend plus the guest-tier tokio runtime shape.
+/// The one thing `#[n_vm::test(...)]` still accepts in its own argument list.
 ///
-/// The runtime options live here rather than on a companion
-/// `#[tokio::test]` because this macro *is* the test attribute -- there is
-/// no second attribute left to read them from.
-struct TestArgs {
-    backend: BackendInfo,
-    runtime: RuntimeConfig,
-    /// Path to the `const VmConfig` describing the VM, if the test named
-    /// one.  A path rather than an arbitrary expression on purpose: the
-    /// value is then written as a normal item, where an editor can help with
-    /// it, and the attribute holds nothing an editor has to parse.
-    config: Option<syn::Path>,
-}
-
-#[derive(Default)]
-struct RuntimeConfig {
-    multi_thread: bool,
-    worker_threads: Option<usize>,
-    /// Span of the option that asked for a multi-threaded runtime, so a
-    /// `worker_threads` without `multi_thread` can be reported precisely.
-    workers_span: Option<proc_macro2::Span>,
-}
-
-fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
-    let mut backend: Option<BackendInfo> = None;
-    let mut runtime = RuntimeConfig::default();
-    let mut config: Option<syn::Path> = None;
-
+/// A path rather than an arbitrary expression on purpose: the value is then
+/// written as a normal item, where an editor can help with it, and the
+/// attribute holds nothing an editor has to parse.
+///
+/// Everything else that used to be spelled here -- the hypervisor backend,
+/// the guest tokio runtime -- is a field of the `VmConfig` it configures.
+/// The attribute described the machine in one vocabulary while the `const`
+/// described it in another, and a reader had to hold both.
+fn parse_config_arg(attr: TokenStream) -> syn::Result<Option<syn::Path>> {
     if attr.is_empty() {
-        return Ok(TestArgs {
-            backend: BackendInfo {
-                name: DEFAULT_BACKEND_NAME,
-                explicit: false,
-            },
-            runtime,
-            config,
-        });
+        return Ok(None);
     }
 
     use syn::parse::Parser;
@@ -197,146 +157,64 @@ fn parse_test_args(attr: TokenStream) -> syn::Result<TestArgs> {
     let metas = parser.parse(attr).map_err(|_| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
-            format!(
-                "#[n_vm::test] expects an optional backend identifier and \
-                 runtime options; valid backends are: {}; runtime options \
-                 are `current_thread`, `multi_thread`, `worker_threads = N`",
-                known_backend_list(),
-            ),
+            "#[n_vm::test] takes an optional `config = PATH` naming a `const VmConfig`, \
+             and nothing else",
         )
     })?;
 
+    let mut config: Option<syn::Path> = None;
     for meta in metas {
-        match &meta {
-            syn::Meta::Path(path) => {
-                let Some(ident) = path.get_ident() else {
-                    return Err(syn::Error::new_spanned(path, unknown_option_msg("")));
-                };
-                let name = ident.to_string();
+        let path = meta.path();
+        let name = path
+            .get_ident()
+            .map_or_else(String::new, ToString::to_string);
 
-                match name.as_str() {
-                    "current_thread" => runtime.multi_thread = false,
-                    "multi_thread" => runtime.multi_thread = true,
-                    _ => {
-                        if let Some(hint) = migration_hint(&name) {
-                            return Err(syn::Error::new_spanned(
-                                ident,
-                                format!(
-                                    "`{name}` has moved out of #[n_vm::test(...)] -- \
-                                     use {hint} instead",
-                                ),
-                            ));
-                        }
-                        let Some((resolved, _path)) = resolve_backend(&name) else {
-                            return Err(syn::Error::new_spanned(ident, unknown_option_msg(&name)));
-                        };
-                        if let Some(prev) = &backend {
-                            return Err(syn::Error::new_spanned(
-                                ident,
-                                format!(
-                                    "duplicate backend in #[n_vm::test]: `{prev}` was \
-                                     already selected; only one backend is allowed",
-                                    prev = prev.name,
-                                ),
-                            ));
-                        }
-                        backend = Some(BackendInfo {
-                            name: resolved,
-                            explicit: true,
-                        });
-                    }
-                }
-            }
-            syn::Meta::NameValue(nv) => {
-                if nv.path.is_ident("config") {
-                    if config.is_some() {
-                        return Err(syn::Error::new_spanned(
-                            &nv.path,
-                            "duplicate `config` in #[n_vm::test]",
-                        ));
-                    }
-                    // A path, not an arbitrary expression: the config is
-                    // meant to be a named item so that an editor can help
-                    // with it.  Rejecting an inline value here is what
-                    // steers callers towards writing one.
-                    let syn::Expr::Path(syn::ExprPath { path, .. }) = &nv.value else {
-                        return Err(syn::Error::new_spanned(
-                            &nv.value,
-                            "`config` takes the path of a `const VmConfig`, not an \
-                             inline value; declare it as an item and name it here, \
-                             e.g.\n\n\
-                             const FAST_VM: n_vm::VmConfig = \
-                             n_vm::VmConfig { iommu: true, ..n_vm::VmConfig::DEFAULT };\n\n\
-                             #[n_vm::test(config = FAST_VM)]",
-                        ));
-                    };
-                    config = Some(path.clone());
-                } else if nv.path.is_ident("worker_threads") {
-                    let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Int(int),
-                        ..
-                    }) = &nv.value
-                    else {
-                        return Err(syn::Error::new_spanned(
-                            &nv.value,
-                            "worker_threads must be an integer literal",
-                        ));
-                    };
-                    runtime.worker_threads = Some(int.base10_parse()?);
-                    runtime.workers_span = Some(nv.path.segments[0].ident.span());
-                } else {
-                    let name = nv
-                        .path
-                        .get_ident()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    return Err(syn::Error::new_spanned(&nv.path, unknown_option_msg(&name)));
-                }
-            }
-            syn::Meta::List(list) => {
-                let name = list
-                    .path
-                    .get_ident()
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
-                return Err(syn::Error::new_spanned(
-                    &list.path,
-                    unknown_option_msg(&name),
-                ));
-            }
+        if let Some(hint) = migration_hint(&name) {
+            return Err(syn::Error::new_spanned(
+                path,
+                format!("`{name}` has moved out of #[n_vm::test(...)] -- use {hint} instead"),
+            ));
         }
+
+        let syn::Meta::NameValue(nv) = &meta else {
+            return Err(syn::Error::new_spanned(path, unknown_option_msg(&name)));
+        };
+        if !nv.path.is_ident("config") {
+            return Err(syn::Error::new_spanned(&nv.path, unknown_option_msg(&name)));
+        }
+        if config.is_some() {
+            return Err(syn::Error::new_spanned(
+                &nv.path,
+                "duplicate `config` in #[n_vm::test]",
+            ));
+        }
+        // Rejecting an inline value here is what steers callers towards
+        // writing the config as an item -- or, for a one-off, towards the
+        // `#[n_vm::config]` form in the body.
+        let syn::Expr::Path(syn::ExprPath { path, .. }) = &nv.value else {
+            return Err(syn::Error::new_spanned(
+                &nv.value,
+                "`config` takes the path of a `const VmConfig`, not an \
+                 inline value; declare it as an item and name it here, \
+                 e.g.\n\n\
+                 const FAST_VM: n_vm::VmConfig = \
+                 n_vm::VmConfigBuilder::default().iommu(true).build();\n\n\
+                 #[n_vm::test(config = FAST_VM)]\n\n\
+                 or write it inline with #[n_vm::config] in the test body.",
+            ));
+        };
+        config = Some(path.clone());
     }
 
-    // `worker_threads` only means anything to the multi-threaded scheduler;
-    // silently ignoring it on a current-thread runtime would misrepresent
-    // what the test actually runs on.
-    if runtime.worker_threads.is_some() && !runtime.multi_thread {
-        return Err(syn::Error::new(
-            runtime
-                .workers_span
-                .unwrap_or_else(proc_macro2::Span::call_site),
-            "worker_threads requires `multi_thread`; a current-thread \
-             runtime has no worker pool to size",
-        ));
-    }
-
-    Ok(TestArgs {
-        backend: backend.unwrap_or(BackendInfo {
-            name: DEFAULT_BACKEND_NAME,
-            explicit: false,
-        }),
-        runtime,
-        config,
-    })
+    Ok(config)
 }
 
 fn unknown_option_msg(name: &str) -> String {
     format!(
-        "unknown #[n_vm::test] option `{name}`; expected a backend ({}), \
-         a runtime flavor (`current_thread`, `multi_thread`), \
-         `worker_threads = N`, or `config = PATH`.  VM options live in a \
-         `const VmConfig` named by `config = ...`",
-        known_backend_list(),
+        "unknown #[n_vm::test] option `{name}`; the only argument is \
+         `config = PATH`, naming a `const VmConfig`.  Everything about the VM \
+         -- backend, runtime, NIC, pages, kernel features -- is a field of \
+         that config, set with `n_vm::VmConfigBuilder`."
     )
 }
 
@@ -468,20 +346,20 @@ fn extract_inline_config(block: &mut syn::Block) -> syn::Result<Option<syn::Expr
 ///
 /// This *is* the test attribute -- it injects `#[test]` itself, so do not
 /// add one.  A `fn` runs its body directly in the guest; an `async fn`
-/// runs on a tokio runtime whose shape comes from this attribute's own
-/// arguments (`current_thread` by default).
+/// runs on a tokio runtime whose shape comes from the config's `runtime`
+/// field (current-thread by default).
 ///
 /// ```ignore
 /// #[n_vm::test]                                  // cloud-hypervisor, sync
 /// fn plain() {}
 ///
-/// const FANCY_VM: n_vm::VmConfig = n_vm::VmConfig {
-///     iommu: true,
-///     host_page_size: n_vm::HostPageSize::Standard,
-///     ..n_vm::VmConfig::DEFAULT
-/// };
+/// const FANCY_VM: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+///     .iommu(true)
+///     .backend(n_vm::RequestedBackend::Qemu)
+///     .runtime(n_vm::GuestRuntime::MultiThread { worker_threads: Some(4) })
+///     .build();
 ///
-/// #[n_vm::test(qemu, multi_thread, worker_threads = 4, config = FANCY_VM)]
+/// #[n_vm::test(config = FANCY_VM)]
 /// async fn fancy() {}
 /// ```
 ///
@@ -492,12 +370,8 @@ fn extract_inline_config(block: &mut syn::Block) -> syn::Result<Option<syn::Expr
 /// attribute to grant the guest a writable corpus directory.
 #[proc_macro_attribute]
 pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let TestArgs {
-        backend,
-        runtime,
-        config,
-    } = match parse_test_args(attr) {
-        Ok(args) => args,
+    let config = match parse_config_arg(attr) {
+        Ok(config) => config,
         Err(err) => return err.to_compile_error().into(),
     };
 
@@ -707,16 +581,6 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     });
 
     // The requested backend is resolved against the host architecture at
-    // run time by the host tier (see `n_vm::RequestedBackend::resolve`):
-    // a defaulted backend falls back to QEMU/TCG for a cross-arch guest,
-    // while an explicitly-pinned cloud-hypervisor test is skipped there.
-    let requested_backend = if !backend.explicit {
-        quote! { ::n_vm::RequestedBackend::Default }
-    } else if backend.name == "qemu" {
-        quote! { ::n_vm::RequestedBackend::Qemu }
-    } else {
-        quote! { ::n_vm::RequestedBackend::CloudHypervisor }
-    };
     // The base configuration: whatever the test named, or the default.  This
     // macro never inspects it -- it is a path to a `const` whose value only
     // rustc can know -- which is exactly why the checks that used to live
@@ -763,27 +627,18 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     // unconditional wrapper would bake `__n_vm_guest_body` into that path
     // and make it churn whenever this macro's internals are renamed.
     let wrap_body = !body_attrs.is_empty();
-    let drive_async_block = |workers: Option<Option<usize>>| match workers {
-        Some(workers) => {
-            let workers = match workers {
-                Some(n) => quote! { ::core::option::Option::Some(#n) },
-                None => quote! { ::core::option::Option::None },
-            };
-            quote! {
-                ::n_vm::block_on_in_guest_multi_thread(#workers, async #block);
-            }
+    // The runtime shape is a value in the config, not a token this macro can
+    // read, so it is passed through rather than branched on.  A const, so the
+    // match inside `block_on_in_guest_with` folds away.
+    let drive_async_block = || {
+        quote! {
+            ::n_vm::block_on_in_guest_with(#config_ident.runtime, async #block);
         }
-        None => quote! { ::n_vm::block_on_in_guest(async #block); },
-    };
-    let async_workers = if runtime.multi_thread {
-        Some(runtime.worker_threads)
-    } else {
-        None
     };
 
     let tier3_body = if wrap_body {
         let wrapped_block = if is_async {
-            let drive = drive_async_block(async_workers);
+            let drive = drive_async_block();
             quote! { { #drive } }
         } else {
             quote! { #block }
@@ -796,7 +651,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     } else if is_async {
         // No attributes to route, so drive the body directly and leave the
         // call site's apparent path unchanged.
-        drive_async_block(async_workers)
+        drive_async_block()
     } else {
         quote! { #block }
     };
@@ -823,7 +678,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         // failure at build time rather than deferring it to a VM that will
         // not boot.
         #(#cfg_attrs)*
-        const _: () = #config_ident.assert_valid_for(#requested_backend);
+        const _: () = #config_ident.assert_valid();
 
         #[test]
         #(#harness_attrs)*
@@ -844,7 +699,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
 
             // Tier 1: Host -> Docker container.  Resolves the requested
             // backend + capabilities against the host arch / Docker daemon.
-            ::n_vm::run_host_tier(#ident, #requested_backend, #config_ident);
+            ::n_vm::run_host_tier(#ident, #config_ident);
         }
     }
     .into()

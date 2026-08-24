@@ -33,12 +33,12 @@ pub use backend::{
 };
 pub use cloud_hypervisor::CloudHypervisor;
 pub use config::{
-    Accel, ConfigProblem, GuestHugePageConfig, GuestHugePageSize, HostPageSize, ModuleParam,
-    NicModel, VmConfig, VmConfigBuilder,
+    Accel, ConfigProblem, GuestHugePageConfig, GuestHugePageSize, GuestRuntime, HostPageSize,
+    ModuleParam, NicModel, VmConfig, VmConfigBuilder,
 };
 pub use container::{ContainerOutcome, ContainerTestResult, run_test_in_vm};
 pub use dispatch::{
-    block_on_in_guest, block_on_in_guest_multi_thread, is_in_test_container, is_in_vm,
+    block_on_in_guest_with, is_in_test_container, is_in_vm,
     run_container_tier, run_host_tier,
 };
 pub use error::{ContainerError, VmError};

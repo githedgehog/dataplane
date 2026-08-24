@@ -2,8 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use n_vm::{
-    GuestHugePageConfig, GuestHugePageSize, HostPageSize, ModuleParam, VmConfig, VmConfigBuilder,
-    features,
+    GuestHugePageConfig, GuestHugePageSize, GuestRuntime, HostPageSize, ModuleParam,
+    RequestedBackend, VmConfig, VmConfigBuilder, features,
 };
 
 /// Reads the first `len` bytes of `path`, or the whole file if it is shorter.
@@ -54,6 +54,25 @@ const HOST_1G_VM: VmConfig = VmConfig {
     ..VmConfig::DEFAULT
 };
 
+/// The same VMs on QEMU.
+///
+/// Two configurations rather than one config and a backend argument, because
+/// that is what they are: the pair exists to check that both hypervisors
+/// present the same guest, which is only a claim worth making if each side
+/// names the machine it booted.  `to_builder` keeps the derivation to one
+/// line, so the shape is still stated once.
+const IOMMU_VM_QEMU: VmConfig = IOMMU_VM.to_builder().backend(RequestedBackend::Qemu).build();
+const HOST_1G_VM_QEMU: VmConfig = HOST_1G_VM
+    .to_builder()
+    .backend(RequestedBackend::Qemu)
+    .build();
+
+/// QEMU, otherwise default.  Pinned because these assert on the initramfs
+/// boot path, which only QEMU takes under the `modular` profile.
+const QEMU_VM: VmConfig = VmConfigBuilder::default()
+    .backend(RequestedBackend::Qemu)
+    .build();
+
 /// No guest hugepage reservation at all.
 const NO_GUEST_HUGEPAGES_VM: VmConfig = VmConfig {
     guest_hugepages: GuestHugePageConfig::None,
@@ -80,6 +99,19 @@ const HOST_4K_GUEST_2M_VM: VmConfig = VmConfig {
     iommu: true,
     ..VmConfig::DEFAULT
 };
+
+/// The same, on QEMU.
+const HOST_4K_GUEST_2M_VM_QEMU: VmConfig = HOST_4K_GUEST_2M_VM
+    .to_builder()
+    .backend(RequestedBackend::Qemu)
+    .build();
+
+/// The multi-threaded guest runtime, with a pinned worker count.
+const MULTI_THREAD_VM: VmConfig = VmConfigBuilder::default()
+    .runtime(GuestRuntime::MultiThread {
+        worker_threads: Some(2),
+    })
+    .build();
 
 /// Declares the kernel features it actually leans on.
 ///
@@ -205,7 +237,7 @@ fn test_which_runs_in_vm_with_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-#[n_vm::test(qemu, config = IOMMU_VM)]
+#[n_vm::test(config = IOMMU_VM_QEMU)]
 fn test_which_runs_in_vm_with_qemu_iommu() {
     assert_eq!(2 + 2, 4);
 }
@@ -215,7 +247,7 @@ fn vm_boots_with_host_hugepages() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-#[n_vm::test(qemu, config = HOST_1G_VM)]
+#[n_vm::test(config = HOST_1G_VM_QEMU)]
 fn vm_boots_with_host_hugepages_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
@@ -238,7 +270,7 @@ fn vm_boots_with_2m_guest_hugepages() {
     );
 }
 
-#[n_vm::test(qemu, config = HOST_4K_GUEST_2M_VM)]
+#[n_vm::test(config = HOST_4K_GUEST_2M_VM_QEMU)]
 async fn vm_boots_with_4k_host_and_2m_guest_hugepages_on_qemu() {
     assert_eq!(
         hugepages_total(),
@@ -253,7 +285,7 @@ async fn tokio_test_current_thread_default() {
     assert!(contents.contains("Linux"));
 }
 
-#[n_vm::test(multi_thread, worker_threads = 2)]
+#[n_vm::test(config = MULTI_THREAD_VM)]
 async fn tokio_test_multi_thread() {
     let handle = tokio::spawn(async { tokio::fs::read_to_string("/proc/version").await.unwrap() });
     let contents = handle.await.unwrap();
@@ -308,14 +340,14 @@ fn corpus_is_writable_and_rest_of_workspace_is_not() {
 /// sitting in a perfectly functional tmpfs and almost everything else would
 /// keep working -- so a test that merely boots proves much less than it
 /// appears to.
-#[n_vm::test(qemu)]
+#[n_vm::test(config = QEMU_VM)]
 fn root_is_read_only_after_switch_root() {
     let err = std::fs::File::create_new("/some.file").unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::ReadOnlyFilesystem);
 }
 
 /// `n-it`'s own mounts land on the new root, not the abandoned one.
-#[n_vm::test(qemu)]
+#[n_vm::test(config = QEMU_VM)]
 fn n_it_mounts_survive_switch_root() {
     std::fs::File::create_new("/run/probe").expect("/run should be a writable tmpfs");
     assert!(

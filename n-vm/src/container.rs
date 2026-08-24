@@ -24,7 +24,7 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tracing::warn;
 
-use crate::backend::{BackendResolution, EffectiveBackend, RequestedBackend, is_cross_arch};
+use crate::backend::{BackendResolution, EffectiveBackend, is_cross_arch};
 use crate::config::Accel;
 use crate::error::ContainerError;
 
@@ -1156,9 +1156,9 @@ fn profile_backend(
 /// or cleanup).
 pub fn run_test_in_vm<F: FnOnce()>(
     _test_fn: F,
-    requested: RequestedBackend,
     vm_config: crate::config::VmConfig,
 ) -> Result<ContainerOutcome, ContainerError> {
+    let requested = vm_config.backend;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
