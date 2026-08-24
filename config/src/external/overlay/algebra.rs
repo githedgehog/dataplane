@@ -22,19 +22,27 @@
 //!
 //! # The vocabulary so far
 //!
-//! Vpcs, peerings, and exposes that either forward or masquerade. Port forwarding, static NAT and
-//! peering ACLs are not yet drawn. A partially modelled algebra gives partial coverage on purpose:
-//! what grows is this list, rather than a collection of single-purpose generators.
+//! Vpcs, peerings, exposes in every flavour the configuration model has, and a peering-scoped ACL
+//! that either permits or denies everything the peering carries. A partially modelled algebra
+//! gives partial coverage on purpose: what grows is the vocabulary, rather than a collection of
+//! single-purpose generators.
+//!
+//! What is *not* drawn is recorded in [`completeness`](super::completeness) rather than here, and
+//! that is the only place it can be kept honest: that record is checked against what drawn
+//! configurations actually exhibit, and a paragraph is not.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::ops::Bound::Included;
 
 use bolero::{Driver, ValueGenerator};
-use lpm::prefix::{IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixWithOptionalPorts};
+use lpm::prefix::{
+    IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+};
 
 use crate::ConfigError;
 use crate::external::overlay::Overlay;
+use crate::external::overlay::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use crate::external::overlay::vpc::{Vpc, VpcTable};
 use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 
@@ -126,6 +134,74 @@ impl Flavour {
     #[must_use]
     pub const fn is_directional(self) -> bool {
         matches!(self, Self::Masquerade | Self::PortForward)
+    }
+}
+
+/// What a peering's ACL does to the traffic the peering carries.
+///
+/// Two shapes and their absence, rather than a generated rule set, and the restraint is the whole
+/// design. An ACL a property has to *evaluate* in order to know what should have happened is a
+/// second copy of a decision procedure, which is the thing an oracle must not be. `acl_filter`'s
+/// own generator is the rich one, and lookup and ordering are its to check. Here a rule set covers
+/// the whole peering in both directions, so what the ACL does is knowable without matching
+/// anything: either everything the peering carries is permitted, or none of it is.
+///
+/// In both shapes the default action is the **opposite** of what the rules say. That is what makes
+/// the rules load-bearing in either direction rather than only one: a rule table that lowered to
+/// nothing would leave [`Permit`](Self::Permit) carrying nothing and [`Deny`](Self::Deny) carrying
+/// everything, and each is a failure of a property rather than only the first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default)]
+pub enum Guard {
+    /// No ACL at all. `AclFilter` finds no default action for the peering and lets traffic past.
+    #[default]
+    Open,
+    /// Every direction named and allowed, over a default of deny.
+    Permit,
+    /// Every direction named and denied, over a default of allow.
+    Deny,
+}
+
+impl Guard {
+    /// The ACL this guard puts on a peering, or `None` for [`Guard::Open`].
+    ///
+    /// The rules carry empty patterns, which `AclRule::validate` fills in from the two manifests: a
+    /// rule's source becomes everything its `from` side holds, and its destination everything its
+    /// `to` side advertises. So the coverage follows the exposes instead of being written down
+    /// here, and an expose added to a peering is inside the ACL by construction rather than by
+    /// anything remembering to widen it.
+    ///
+    /// Packet scope, and that is what keeps this free of a legality condition. `validate_scope`
+    /// refuses a flow-scoped rule on a peering carrying any expose that is neither masquerade nor
+    /// port forwarding, because such a peering carries flows the flow table never sees. Flow scope
+    /// is a degree of freedom of its own and drawing it means drawing that condition too.
+    fn acl(self, spec: &PeeringSpec) -> Option<Acl> {
+        let (default, action) = match self {
+            Guard::Open => return None,
+            Guard::Permit => (AclAction::Deny, AclAction::Allow),
+            Guard::Deny => (AclAction::Allow, AclAction::Deny),
+        };
+        // One rule per direction. A rule is directional -- `PeeringAclRuleSet` files it under its
+        // `from` side's vni -- so a single rule would leave the reply direction to the default,
+        // which is the opposite action, and neither shape would mean what it says.
+        let rule = |side: Side| {
+            let (from, to) = (spec.vpc(side).name(), spec.vpc(side.other()).name());
+            AclRule {
+                name: format!("{from}-to-{to}"),
+                from,
+                to,
+                action,
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: AclProtoMatch::Any,
+                },
+                scope: AclScope::Packet,
+                log: false,
+            }
+        };
+        Some(Acl::new(default, vec![rule(Side::Left), rule(Side::Right)]))
     }
 }
 
@@ -301,6 +377,7 @@ pub struct PeeringSpec {
     left: VpcHandle,
     right: VpcHandle,
     exposes: [Vec<ExposeSpec>; 2],
+    guard: Guard,
 }
 
 impl PeeringSpec {
@@ -311,6 +388,16 @@ impl PeeringSpec {
             Side::Left => self.left,
             Side::Right => self.right,
         }
+    }
+
+    /// What this peering's ACL does to its traffic.
+    ///
+    /// Read by whoever derives traffic from the configuration, because a guard decides whether
+    /// there is any to derive. The assembled configuration says the same thing, but only by
+    /// evaluating an ACL against the manifests -- which is the reading this exists to avoid.
+    #[must_use]
+    pub fn guard(&self) -> Guard {
+        self.guard
     }
 
     /// The exposes on `side`, in the order the manifest will carry them.
@@ -391,6 +478,23 @@ impl Draft {
             .map(|(handle, _)| *handle)
     }
 
+    /// The guard on the peering that [`Draft::overlay`] calls `name`.
+    ///
+    /// By name rather than by handle, for the reason [`Footprint::touches_vpc_named`] gives:
+    /// handles do not leave this module, and a caller deriving traffic from an assembled
+    /// configuration knows only names. `None` for a name no peering has.
+    ///
+    /// Asked at all because a guard decides whether a peering carries anything, and a derivation
+    /// that read that off the assembled ACL would be evaluating one -- which is what
+    /// [`Guard`] exists to keep nobody having to do.
+    #[must_use]
+    pub fn guard_named(&self, name: &str) -> Option<Guard> {
+        self.peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == name)
+            .map(|(_, spec)| spec.guard)
+    }
+
     /// The connected components of the peering graph, each sorted, the whole sorted.
     ///
     /// Non-interference is a property of components rather than of edges: peerings `A-B` and `B-C`
@@ -439,11 +543,13 @@ impl Draft {
 
         let mut peerings = VpcPeeringTable::new();
         for (handle, spec) in self.peerings() {
-            peerings.add(VpcPeering::with_default_group(
+            let mut peering = VpcPeering::with_default_group(
                 &handle.name(),
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
-            ))?;
+            );
+            peering.acl = spec.guard.acl(spec);
+            peerings.add(peering)?;
         }
 
         Ok(Overlay::new(vpc_table, peerings))
@@ -548,6 +654,11 @@ pub enum Op {
         slot: u8,
         flavour: Flavour,
     },
+    /// Put a peering-scoped ACL on a peering, replace the one it has, or take it away.
+    SetGuard {
+        peering: PeeringHandle,
+        guard: Guard,
+    },
 }
 
 /// How to put back what an [`Op`] changed.
@@ -582,6 +693,10 @@ pub enum Undo {
         slot: u8,
         flavour: Flavour,
     },
+    SetGuard {
+        peering: PeeringHandle,
+        guard: Guard,
+    },
 }
 
 impl Op {
@@ -601,7 +716,8 @@ impl Op {
             Op::AddPeering { left, right, .. } => Footprint::of([*left, *right], []),
             Op::AddExpose { peering, .. }
             | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. } => Footprint::of([], [*peering]),
+            | Op::SetFlavour { peering, .. }
+            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
         }
     }
 
@@ -642,7 +758,8 @@ impl Op {
             }
             Op::AddExpose { peering, .. }
             | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. } => Footprint::of([], [*peering]),
+            | Op::SetFlavour { peering, .. }
+            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
         }
     }
 
@@ -695,6 +812,9 @@ impl Op {
                         left,
                         right,
                         exposes: [vec![first(0)], vec![first(0)]],
+                        // Peerings arrive unguarded, so that putting an ACL on one is an operation
+                        // whose effect a property can observe rather than a fact of the fixture.
+                        guard: Guard::Open,
                     },
                 );
                 Some(Undo::RemovePeering(handle))
@@ -737,6 +857,15 @@ impl Op {
                 slot,
                 flavour,
             } => set_flavour(draft, peering, side, slot, flavour),
+
+            Op::SetGuard { peering, guard } => {
+                let spec = draft.peerings.get_mut(&peering)?;
+                let previous = std::mem::replace(&mut spec.guard, guard);
+                Some(Undo::SetGuard {
+                    peering,
+                    guard: previous,
+                })
+            }
         }
     }
 }
@@ -903,6 +1032,13 @@ impl Undo {
                     .unwrap_or_else(|| unreachable!("no expose in slot {slot}"));
                 spec.exposes_mut(*side)[index].flavour = *flavour;
             }
+            Undo::SetGuard { peering, guard } => {
+                draft
+                    .peerings
+                    .get_mut(peering)
+                    .unwrap_or_else(|| unreachable!("no peering {peering:?}"))
+                    .guard = *guard;
+            }
         }
     }
 }
@@ -999,7 +1135,7 @@ impl ValueGenerator for Sequence {
 /// Weighted towards the operations that build structure, because a sequence's value is in the
 /// configuration it arrives at rather than in its length, and towards removal enough that a quarter
 /// of every sequence is deletion -- which the design note names as where the bugs live.
-const MENU: [(Kind, u8); 7] = [
+const MENU: [(Kind, u8); 8] = [
     (Kind::AddVpc, 4),
     (Kind::RemoveVpc, 1),
     (Kind::AddPeering, 4),
@@ -1007,6 +1143,7 @@ const MENU: [(Kind, u8); 7] = [
     (Kind::AddExpose, 2),
     (Kind::RemoveExpose, 1),
     (Kind::SetFlavour, 2),
+    (Kind::SetGuard, 2),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1018,6 +1155,7 @@ enum Kind {
     AddExpose,
     RemoveExpose,
     SetFlavour,
+    SetGuard,
 }
 
 impl Kind {
@@ -1039,7 +1177,7 @@ impl Kind {
                 let vpcs = draft.vpcs.len();
                 next_peering < u8::MAX && vpcs >= 2 && draft.peerings.len() < vpcs * (vpcs - 1) / 2
             }
-            Kind::RemovePeering | Kind::SetFlavour => !draft.peerings.is_empty(),
+            Kind::RemovePeering | Kind::SetFlavour | Kind::SetGuard => !draft.peerings.is_empty(),
             Kind::AddExpose => sides().any(|exposes| exposes.len() < usize::from(MAX_EXPOSES)),
             Kind::RemoveExpose => sides().any(|exposes| exposes.len() > 1),
         }
@@ -1080,6 +1218,7 @@ fn draw<D: Driver>(
             Kind::AddExpose => draw_add_expose(driver, draft),
             Kind::RemoveExpose => draw_remove_expose(driver, draft),
             Kind::SetFlavour => draw_set_flavour(driver, draft),
+            Kind::SetGuard => draw_set_guard(driver, draft),
         };
 
         let Some(op) = built else {
@@ -1269,6 +1408,24 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     })
 }
 
+/// A guard for one of the peerings that exist.
+///
+/// Unlike [`draw_flavour`] there is no condition to consult: every guard is legal on every peering,
+/// which is what [`Guard::acl`]'s choice of packet scope buys. The peering is the only choice, and
+/// a guard drawn onto a peering that already has it is a legal no-op rather than a wasted draw --
+/// the same latitude [`Op::SetFlavour`] has.
+fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
+    // Ordered least-constraining first, so that the byte `pick` reduces towards the peering that
+    // carries its traffic with nothing in the way.
+    const ORDERED: [Guard; 3] = [Guard::Open, Guard::Permit, Guard::Deny];
+
+    let peerings: Vec<PeeringHandle> = draft.peerings().map(|(handle, _)| handle).collect();
+    Some(Op::SetGuard {
+        peering: pick(driver, &peerings)?,
+        guard: pick(driver, &ORDERED)?,
+    })
+}
+
 /// A flavour this side of this peering will accept.
 ///
 /// Masquerade is refused when the far side already has it -- `validate_nat_combinations` allows at
@@ -1410,7 +1567,8 @@ mod tests {
     /// evidence at all that it is ever drawn. Without these a change that made removals
     /// unreachable -- the exact thing the design note warns the algebra will drift towards -- would
     /// leave every property here green.
-    static DRAWN: [AtomicUsize; 7] = [
+    static DRAWN: [AtomicUsize; 8] = [
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
@@ -1420,7 +1578,7 @@ mod tests {
         AtomicUsize::new(0),
     ];
 
-    const KINDS: [&str; 7] = [
+    const KINDS: [&str; 8] = [
         "AddVpc",
         "RemoveVpc",
         "AddPeering",
@@ -1428,6 +1586,7 @@ mod tests {
         "AddExpose",
         "RemoveExpose",
         "SetFlavour",
+        "SetGuard",
     ];
 
     fn record(op: Op) {
@@ -1439,6 +1598,7 @@ mod tests {
             Op::AddExpose { .. } => 4,
             Op::RemoveExpose { .. } => 5,
             Op::SetFlavour { .. } => 6,
+            Op::SetGuard { .. } => 7,
         };
         DRAWN[index].fetch_add(1, Relaxed);
     }
@@ -1467,6 +1627,11 @@ mod tests {
         let forwarding = AtomicUsize::new(0);
         let static_nat = AtomicUsize::new(0);
         let port_forward = AtomicUsize::new(0);
+        let guards = [
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        ];
 
         check!()
             .with_generator(Sequence::default())
@@ -1501,6 +1666,39 @@ mod tests {
                 let overlay = draft
                     .overlay()
                     .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+
+                // Counted off the assembled configuration rather than off the draft, and the
+                // difference is the whole value of the counter: a `Guard::acl` that had stopped
+                // building an ACL would leave a draft-side count untouched and green. What is
+                // asserted is the mapping -- each guard produces the acl it claims to -- and what
+                // is counted is what the configuration ended up with.
+                for (handle, spec) in draft.peerings() {
+                    let acl = overlay
+                        .peering_table
+                        .values()
+                        .find(|peering| peering.name == handle.name())
+                        .and_then(|peering| peering.acl.as_ref());
+                    let observed = match acl.map(Acl::default_action) {
+                        None => Guard::Open,
+                        // The default is the opposite of what the rules say; see `Guard`.
+                        Some(AclAction::Deny) => Guard::Permit,
+                        Some(AclAction::Allow) => Guard::Deny,
+                    };
+                    assert_eq!(
+                        observed,
+                        spec.guard(),
+                        "{:?} is guarded {:?} and assembled an acl reading {observed:?}",
+                        handle,
+                        spec.guard()
+                    );
+                    guards[match observed {
+                        Guard::Open => 0,
+                        Guard::Permit => 1,
+                        Guard::Deny => 2,
+                    }]
+                    .fetch_add(1, Relaxed);
+                }
+
                 if let Err(e) = overlay.validate() {
                     panic!("{ops:?} builds a configuration the validator refuses: {e}");
                 }
@@ -1519,6 +1717,19 @@ mod tests {
             static_nat.load(Relaxed),
             port_forward.load(Relaxed)
         );
+        // Separately from the flavours, because a guard is not a property of an expose and the two
+        // fail for different reasons: a peering the generator never guards is a validator rule --
+        // the one filling an empty pattern in from the manifests -- that nothing here ever reached.
+        for (name, count) in ["open", "permit", "deny"].iter().zip(&guards) {
+            assert!(
+                count.load(Relaxed) > 0,
+                "no peering was ever left {name} (open {}, permit {}, deny {}), so the acl \
+                 vocabulary was not exercised",
+                guards[0].load(Relaxed),
+                guards[1].load(Relaxed),
+                guards[2].load(Relaxed)
+            );
+        }
     }
 
     /// `undo(apply(A, X)) == X`, for every operation of a drawn sequence at the state it met.

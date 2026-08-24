@@ -1152,6 +1152,7 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
+    use config::external::overlay::algebra::{Draft, Guard};
     use config::external::overlay::vpcpeering::ValidatedExpose;
     use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
@@ -1285,6 +1286,30 @@ pub(crate) mod derive {
     /// visible instead of silent.
     pub(crate) fn loads_for(overlay: &ValidatedOverlay, vary: &[Vary]) -> Vec<Box<dyn Load>> {
         loads_where(overlay, vary, &|_| true)
+    }
+
+    /// Whether a peering the algebra drew carries any traffic at all.
+    ///
+    /// A peering guarded [`Guard::Deny`] refuses everything it carries, so the configuration
+    /// offers no traffic across one, and a load derived for it would fail every property here by
+    /// behaving exactly as configured. `generated::a_denied_peering_carries_nothing` is where that
+    /// traffic goes instead, and it is the only property that wants it.
+    ///
+    /// Read off the draft rather than off the assembled ACL, which is what
+    /// [`Draft::guard_named`](config::external::overlay::algebra::Draft::guard_named) is for:
+    /// deciding it from the ACL means matching its rules against the manifests, and an evaluator
+    /// is what no oracle here is allowed to contain.
+    pub(crate) fn carried_by(draft: &Draft) -> impl Fn(Named<'_>) -> bool + '_ {
+        move |named| draft.guard_named(named.peering) != Some(Guard::Deny)
+    }
+
+    /// [`loads_for`], for a configuration the algebra built: what a draft says it carries.
+    pub(crate) fn loads_carried(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        draft: &Draft,
+    ) -> Vec<Box<dyn Load>> {
+        loads_where(overlay, vary, &carried_by(draft))
     }
 
     /// What a load is between, as the assembled configuration names it.
@@ -3390,16 +3415,80 @@ mod offers {
 /// including deletion, and vpc numbering that has no relationship to what the loads expect.
 #[cfg(test)]
 mod generated {
-    use super::derive::{Vary, loads_for};
+    use super::derive::{Named, Vary, loads_where};
     use super::*;
     use bolero::ValueGenerator;
-    use config::external::overlay::algebra::{Op, Sequence};
+    use config::external::overlay::algebra::{Draft, Guard, Op, Sequence};
+    use std::cell::Cell;
     use std::ops::Bound::Included;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const SENDERS: usize = 6;
     const POLLS: usize = 8;
+
+    /// What the property below reached, accumulated across every case of a run.
+    ///
+    /// At module scope rather than inside the property, so that reading them back can be a
+    /// function of its own: the coverage guards are half the property's length and none of that
+    /// half is about a packet.
+    static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    /// Print what the run reached, and fail if it reached nothing worth having.
+    ///
+    /// Every guard here names a shape whose absence would leave the property green while covering
+    /// less than it claims. See [`assert_covered`](super::assert_covered) for the one benign way
+    /// they fail.
+    fn report_and_assert_coverage() {
+        let (checked, derived, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            DERIVED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        let (peered, multi) = (
+            PEERED.load(Ordering::Relaxed),
+            MULTI.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "checked={checked} derived={derived} inbound={} \
+             permitting-peerings={} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            INBOUND.load(Ordering::Relaxed),
+            PERMITTING.load(Ordering::Relaxed)
+        );
+        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        super::assert_covered(
+            multi > 0,
+            "no generated configuration ever had more than two vpcs, so this reached nothing the \
+             two-vpc fixtures do not",
+        );
+        super::assert_covered(
+            derived > 0,
+            "no generated configuration ever implied any traffic",
+        );
+        super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            INBOUND.load(Ordering::Relaxed) > 0,
+            "no generated configuration ever produced an inbound load, so a port-forwarding \
+             expose was drawn into configurations and then carried no traffic at all",
+        );
+        super::assert_covered(
+            PERMITTING.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering whose acl permits it, so every load here \
+             ran with no acl in the way and a rule set that lowered to nothing would have gone \
+             unnoticed",
+        );
+        super::assert_covered(
+            mixed > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+    }
 
     /// A configuration, the traffic to vary it with, and the order to run it in -- one draw.
     ///
@@ -3453,6 +3542,28 @@ mod generated {
         super::assert_within_budget("generated::Generated", &Generated);
     }
 
+    /// [`carried_by`](super::derive::carried_by), counting the peerings it kept that carry a
+    /// permitting ACL.
+    ///
+    /// Those are the ones this property is about and the ones it cannot see: an unguarded peering
+    /// and a permitting one are both kept, so without a count a run in which no peering was ever
+    /// guarded `Permit` would look exactly like one in which every rule lowered correctly. A
+    /// `Cell` because `loads_where` takes a `Fn`, and the alternative -- deriving a second time
+    /// over the permitting peerings alone, purely to count -- would cost a derivation per case.
+    fn carried_counting<'a>(
+        draft: &'a Draft,
+        permitting: &'a Cell<u64>,
+    ) -> impl Fn(Named<'_>) -> bool + 'a {
+        move |named| match draft.guard_named(named.peering) {
+            Some(Guard::Deny) => false,
+            Some(Guard::Permit) => {
+                permitting.set(permitting.get() + 1);
+                true
+            }
+            Some(Guard::Open) | None => true,
+        }
+    }
+
     /// Every configuration the algebra can build carries the traffic it says it carries.
     ///
     /// Three claims in one, and they fail in different places so they are worth naming separately:
@@ -3468,13 +3579,6 @@ mod generated {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_generated_configuration_carries_its_own_traffic() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
@@ -3507,7 +3611,14 @@ mod generated {
                 // configuration created, and the refusal would look like a dataplane fault.
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
 
-                let mut loads = loads_for(&validated, vary);
+                // Everything except what a denied peering would have carried. A peering whose
+                // acl refuses its own traffic is not a peering that carries it, and a load derived
+                // for one would fail this property by behaving exactly as configured.
+                // `a_denied_peering_carries_nothing` is where those loads go.
+                let permitting = Cell::new(0);
+                let mut loads =
+                    loads_where(&validated, vary, &carried_counting(&draft, &permitting));
+                PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 // Inbound loads separately, for the reason the fixture property counts them: a
                 // derivation that silently skipped a whole expose flavour would leave this
@@ -3549,39 +3660,97 @@ mod generated {
                 }
             });
 
-        let (checked, derived, mixed) = (
-            CHECKED.load(Ordering::Relaxed),
-            DERIVED.load(Ordering::Relaxed),
-            MIXED.load(Ordering::Relaxed),
+        report_and_assert_coverage();
+    }
+
+    /// A peering whose ACL denies everything it carries, carries nothing.
+    ///
+    /// The dual of the property above, over the traffic that one leaves out, and the reason a
+    /// denying guard is worth having in the vocabulary at all: without this, a denied peering would
+    /// be a configuration nothing ever sent a packet at, and "the algebra can build one" would be
+    /// the whole of what a green run meant.
+    ///
+    /// It states tenant isolation in the one form that needs no oracle. Predicting which packets a
+    /// selective ACL refuses would mean evaluating it, but an ACL covering the whole peering in
+    /// both directions has the same answer for every packet the peering could carry -- so the
+    /// claim is "none of it", and the traffic it is claimed over is derived from the very exposes
+    /// the ACL was filled in from.
+    ///
+    /// One packet per load. A load offers its second only after it has seen an answer to its
+    /// first, and there is never going to be one; asking for more would test the load's patience
+    /// rather than the pipeline.
+    ///
+    /// # The counter is the property
+    ///
+    /// "Not delivered" is satisfied by every stage that drops a packet for its own reasons, and a
+    /// derived load can legitimately meet one -- so the assertion alone would hold with the ACL
+    /// deleted. `BY_ACL` is what says the refusals are the ACL's.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_denied_peering_carries_nothing() {
+        static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, _schedule)| {
+                let draft = Sequence::fold(ops);
+                let validated = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                let carried = super::derive::carried_by(&draft);
+                let mut loads = loads_where(&validated, vary, &|named| !carried(named));
+                if loads.is_empty() {
+                    return;
+                }
+                CONFIGS.fetch_add(1, Ordering::Relaxed);
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                for load in &mut loads {
+                    let Some(packet) = load.next() else {
+                        continue;
+                    };
+                    let seen = verdict(&fabric.worker().send(packet));
+                    SENT.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        matches!(seen, Verdict::Dropped(_)),
+                        "a peering whose acl denies everything it carries produced {seen:?} for {}",
+                        load.describe()
+                    );
+                    if seen == Verdict::Dropped(DoneReason::AclDropped) {
+                        BY_ACL.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (configs, sent, by_acl) = (
+            CONFIGS.load(Ordering::Relaxed),
+            SENT.load(Ordering::Relaxed),
+            BY_ACL.load(Ordering::Relaxed),
         );
-        let (peered, multi) = (
-            PEERED.load(Ordering::Relaxed),
-            MULTI.load(Ordering::Relaxed),
-        );
-        eprintln!(
-            "checked={checked} derived={derived} inbound={} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
-            INBOUND.load(Ordering::Relaxed)
-        );
-        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        eprintln!("denied-configs={configs} sent={sent} (dropped by the acl {by_acl})");
         super::assert_covered(
-            multi > 0,
-            "no generated configuration ever had more than two vpcs, so this reached nothing the \
-             two-vpc fixtures do not",
+            sent > 0,
+            "no denied peering ever had traffic derived for it, so this asserted nothing about \
+             any packet",
         );
         super::assert_covered(
-            derived > 0,
-            "no generated configuration ever implied any traffic",
-        );
-        super::assert_covered(checked > 0, "no derived sender ever completed its business");
-        super::assert_covered(
-            INBOUND.load(Ordering::Relaxed) > 0,
-            "no generated configuration ever produced an inbound load, so a port-forwarding \
-             expose was drawn into configurations and then carried no traffic at all",
-        );
-        super::assert_covered(
-            mixed > 0,
-            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+            by_acl > 0,
+            "no packet was ever dropped by the acl: the claim is being satisfied by stages ahead \
+             of it and would hold with the acl removed",
         );
     }
 }
@@ -5223,14 +5392,14 @@ mod routed {
 /// backends with no such thing: the plain one, and the sanitizer builds.
 #[cfg(test)]
 mod model {
-    use super::derive::loads_for;
+    use super::derive::loads_carried;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Footprint, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{LazyLock, OnceLock};
@@ -5615,7 +5784,8 @@ mod model {
                 // primitives, and a primitive that outlives its execution is the fault
                 // `a_lock_that_outlives_its_execution_is_not_model_checkable` is about -- so
                 // `Fleet::lowering` stays inside.
-                let validated = Sequence::fold(ops)
+                let draft = Sequence::fold(ops);
+                let validated = draft
                     .overlay()
                     .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
                     .validate()
@@ -5629,7 +5799,7 @@ mod model {
                 // Both workers need traffic. A draw that leaves one idle is not a weaker test, it
                 // is a rejected one: shuttle's PCT scheduler panics outright on a body that never
                 // has two threads runnable at once.
-                if vnis.is_empty() || loads_for(&validated, vary).len() < 2 {
+                if vnis.is_empty() || loads_carried(&validated, vary, &draft).len() < 2 {
                     THIN.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
@@ -5637,11 +5807,12 @@ mod model {
 
                 // One allocation for the whole draw, shared by every execution: `stress` wants a
                 // `Fn`, so nothing here may be consumed.
-                let drawn = std::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let drawn =
+                    std::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone(), draft));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
-                    let (validated, vnis, vary, schedule) = &*drawn;
+                    let (validated, vnis, vary, schedule, draft) = &*drawn;
                     // The topology is built from the vnis the configuration names, so a fib exists
                     // for every vpc it can route to.
                     let tables = topology(vnis);
@@ -5666,7 +5837,7 @@ mod model {
                                             tracectl::evidence::capture(format!("worker-{which}"));
                                         let mut worker = blueprint.worker();
                                         let mut mine: Vec<Box<dyn Load>> =
-                                            loads_for(validated, vary)
+                                            loads_carried(validated, vary, draft)
                                                 .into_iter()
                                                 .enumerate()
                                                 .filter(|(nth, _)| nth % 2 == which)
@@ -7053,9 +7224,21 @@ mod model {
         }
 
         /// Traffic the footprint does not name, by either endpoint vpc or by its peering.
-        fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
+        /// Traffic the change is claimed not to disturb: outside its write set, and there to
+        /// begin with.
+        ///
+        /// The second half is not a weakening. A peering whose acl denies everything carries
+        /// nothing *before* the change either, so there is no behaviour of it for the change to
+        /// preserve -- and a load derived for one would report the acl's refusal as the change
+        /// having disturbed it. See [`derive::carried_by`].
+        fn outside<'a>(
+            footprint: &'a Footprint,
+            draft: &'a Draft,
+        ) -> impl Fn(derive::Named<'_>) -> bool + 'a {
+            let carried = derive::carried_by(draft);
             move |named| {
-                !footprint.touches_peering_named(named.peering)
+                carried(named)
+                    && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)
             }
@@ -7101,8 +7284,9 @@ mod model {
                 let running = assemble(&before);
                 let enacted = assemble(&Sequence::fold(ops));
 
-                let framed = derive::loads_where(&running, vary, &outside(&footprint)).len();
-                let total = derive::loads_for(&running, vary).len();
+                let framed =
+                    derive::loads_where(&running, vary, &outside(&footprint, &before)).len();
+                let total = derive::loads_carried(&running, vary, &before).len();
                 FRAMED_OUT.fetch_add(
                     u64::try_from(total - framed).unwrap_or_else(|_| unreachable!()),
                     Ordering::Relaxed,
@@ -7128,12 +7312,19 @@ mod model {
 
                 // Everything the body needs, owned: `stress` wants a `'static` `Fn`, so nothing
                 // borrowed from the draw may be captured.
-                let drawn =
-                    std::sync::Arc::new((running, enacted, vnis, vary.clone(), footprint, *change));
+                let drawn = std::sync::Arc::new((
+                    running,
+                    enacted,
+                    vnis,
+                    vary.clone(),
+                    footprint,
+                    *change,
+                    before,
+                ));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
-                    let (running, enacted, vnis, vary, footprint, change) = &*drawn;
+                    let (running, enacted, vnis, vary, footprint, change, before) = &*drawn;
                     let tables = topology(vnis);
                     let fleet =
                         Fleet::lowering(running, Some(&tables), Arc::new(FlowTable::default()));
@@ -7158,7 +7349,7 @@ mod model {
                                         // Per worker: the predicate borrows the footprint and is
                                         // not `Copy`, so one shared between the threads could not
                                         // be captured by both.
-                                        let outside = outside(footprint);
+                                        let outside = outside(footprint, before);
                                         gate.wait();
                                         let mut seen = Vec::new();
                                         for round in 1..=ROUNDS {
