@@ -37,6 +37,7 @@ use std::ops::Bound::Included;
 use std::time::Duration;
 
 use bolero::{Driver, ValueGenerator};
+use lpm::prefix::with_ports::L4Protocol;
 use lpm::prefix::{
     IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
 };
@@ -503,6 +504,35 @@ impl ExposeSpec {
         (self.slot % 2 == 1).then_some(LONG_IDLE_TIMEOUT)
     }
 
+    /// Which transport protocol this expose's translation applies to.
+    ///
+    /// Only port forwarding can say -- `make_port_forwarding` is the one constructor that takes a
+    /// protocol -- so only port forwarding varies here.
+    ///
+    /// By slot, and cycling through all three, so that a manifest holding several port-forwarded
+    /// exposes holds several answers. That is the shape worth having rather than a nicety: the
+    /// port forwarding table is keyed in part by protocol, and exposes that agree on it are the
+    /// ones whose keys can collide.
+    fn nat_proto(self) -> Option<L4Protocol> {
+        match self.flavour {
+            Flavour::PortForward => Some(match self.slot % 3 {
+                0 => L4Protocol::Any,
+                1 => L4Protocol::Udp,
+                _ => L4Protocol::Tcp,
+            }),
+            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat => None,
+        }
+    }
+
+    /// Whether this expose translates the traffic the derivation would build for it.
+    ///
+    /// Every load derived from a configuration is udp, so an expose narrowed to tcp forwards none
+    /// of it. Said here rather than left to whoever derives the traffic, for the reason
+    /// [`Draft::carries`] gives: the configuration is what knows.
+    fn carries_udp(self) -> bool {
+        !matches!(self.nat_proto(), Some(L4Protocol::Tcp))
+    }
+
     /// The private prefix this expose covers, on `side` of `peering`.
     #[must_use]
     pub fn private(self, peering: PeeringHandle, side: Side) -> Prefix {
@@ -541,7 +571,7 @@ impl ExposeSpec {
                 .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
             Flavour::PortForward => VpcExpose::empty()
                 // `None` protocol leaves the expose at `Any`; see `Flavour::PortForward`.
-                .make_port_forwarding(self.idle_timeout(), None)
+                .make_port_forwarding(self.idle_timeout(), self.nat_proto())
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
                 .ip(PrefixWithOptionalPorts::new(
                     private,
@@ -768,9 +798,12 @@ impl Draft {
     /// nobody downstream reads an ACL to answer it -- reading one means matching its rules against
     /// the manifests, and a second copy of a decision procedure is what an oracle must not be.
     ///
-    /// Per expose, because [`Guard::PermitExcept`] is the one shape under which two exposes of one
-    /// peering get different answers. By name and position for the reason
-    /// [`Draft::guard_named`] gives.
+    /// Two things can stop a configuration carrying what an expose would otherwise carry: the
+    /// peering's ACL, and the expose's own protocol narrowing. Both are answered here, and a
+    /// caller does not have to know there were two.
+    ///
+    /// Per expose, because [`Guard::PermitExcept`] and the narrowing are both per expose. By name
+    /// and position for the reason [`Draft::guard_named`] gives.
     #[must_use]
     pub fn carries(&self, peering: &str, local: &str, nth: usize) -> bool {
         let Some((_, spec)) = self
@@ -786,7 +819,11 @@ impl Draft {
         else {
             return true;
         };
-        !spec.guard.silences(spec, side, nth)
+        let carried_by_the_expose = spec
+            .exposes(side)
+            .get(nth)
+            .is_none_or(|expose| expose.carries_udp());
+        carried_by_the_expose && !spec.guard.silences(spec, side, nth)
     }
 
     #[must_use]
