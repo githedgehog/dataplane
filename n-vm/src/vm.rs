@@ -8,9 +8,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use n_vm_protocol::{
-    CORPUS_SHARE_PATH, KERNEL_CONSOLE_SOCKET_PATH, TestResult, VIRTIOFS_CORPUS_TAG,
-    VIRTIOFS_ROOT_TAG, VIRTIOFSD_BINARY_PATH, VIRTIOFSD_CORPUS_SOCKET_PATH, VIRTIOFSD_SOCKET_PATH,
-    VM_GUEST_CID, VM_ROOT_SHARE_PATH, VsockAllocation, VsockChannel, VsockCid, VsockPort,
+    KERNEL_CONSOLE_SOCKET_PATH, TestResult, VIRTIOFS_ROOT_TAG, VIRTIOFSD_BINARY_PATH,
+    VIRTIOFSD_SOCKET_PATH, VM_GUEST_CID, VM_ROOT_SHARE_PATH, VsockAllocation, VsockChannel,
+    VsockCid, VsockPort,
 };
 use rand::RngExt;
 use tokio::io::AsyncReadExt;
@@ -390,6 +390,13 @@ pub struct TestVmParams<'a> {
     pub accel: config::Accel,
     /// Dynamically-allocated vsock resources for this VM instance.
     pub vsock: VsockAllocation,
+    /// The writable shares this run has, and where the guest mounts them.
+    ///
+    /// Resolved once before launch rather than probed here, so that the
+    /// devices the hypervisor is given and the daemons that back them come
+    /// from one answer.  A device without its daemon does not fail: the
+    /// hypervisor blocks forever on a vhost-user socket nothing serves.
+    pub shares: Vec<config::ActiveShare>,
 }
 
 /// Collected output from a test that ran inside a VM.
@@ -432,11 +439,12 @@ pub struct TestVm<B: HypervisorBackend> {
     hypervisor: tokio::process::Child,
     /// The virtiofsd child process serving the read-only root share.
     virtiofsd: tokio::process::Child,
-    /// The virtiofsd child process serving the writable corpus share.
+    /// One virtiofsd child process per writable share, in
+    /// [`n_vm_protocol::WRITABLE_SHARES`] order.
     ///
-    /// `None` unless the test opted in via `#[corpus]`.  Held only so that
-    /// `kill_on_drop` tears the daemon down with the VM.
-    _corpus_virtiofsd: Option<tokio::process::Child>,
+    /// Empty for an ordinary test.  Held only so that `kill_on_drop` tears
+    /// the daemons down with the VM.
+    _share_virtiofsd: Vec<tokio::process::Child>,
     /// Backend-specific handle for lifecycle control.
     controller: B::Controller,
     /// Background task watching hypervisor lifecycle events.
@@ -544,24 +552,27 @@ impl<B: HypervisorBackend> TestVm<B> {
             return Err(err);
         }
 
-        // A second daemon for the writable corpus share, present only when
-        // the host tier bind-mounted one (i.e. the test used `#[corpus]`).
-        let corpus_virtiofsd = if std::path::Path::new(CORPUS_SHARE_PATH).is_dir() {
+        // One writable daemon per share the host tier opened.  Driven by
+        // `params.shares` rather than by probing the filesystem again: the
+        // hypervisor is about to be given exactly one device per entry, and
+        // a device whose daemon is missing hangs the boot on a vhost-user
+        // socket that never appears.
+        let mut share_virtiofsd = Vec::with_capacity(params.shares.len());
+        for active in &params.shares {
             let mut child = Self::launch_virtiofsd(
-                CORPUS_SHARE_PATH,
-                VIRTIOFS_CORPUS_TAG,
-                VIRTIOFSD_CORPUS_SOCKET_PATH,
+                active.share.container_path,
+                active.share.tag,
+                active.share.socket_path,
                 true,
             )
             .await?;
-            if let Err(err) = wait_for_socket(VIRTIOFSD_CORPUS_SOCKET_PATH).await {
-                config::drain_child_stderr(&mut child, "virtiofsd-corpus").await;
+            if let Err(err) = wait_for_socket(active.share.socket_path).await {
+                let label = format!("virtiofsd-{role}", role = active.share.role);
+                config::drain_child_stderr(&mut child, &label).await;
                 return Err(err);
             }
-            Some(child)
-        } else {
-            None
-        };
+            share_virtiofsd.push(child);
+        }
 
         // Bind readers before boot so guest-side vsock connects succeed.
         let init_trace = B::spawn_vsock_reader(&params.vsock.init_trace)?;
@@ -576,7 +587,7 @@ impl<B: HypervisorBackend> TestVm<B> {
         Ok(Self {
             hypervisor: launched.child,
             virtiofsd,
-            _corpus_virtiofsd: corpus_virtiofsd,
+            _share_virtiofsd: share_virtiofsd,
             controller: launched.controller,
             event_watcher: launched.event_watcher,
             init_trace,
@@ -599,10 +610,10 @@ impl<B: HypervisorBackend> TestVm<B> {
         let Self {
             hypervisor,
             virtiofsd,
-            // Dropped here, which kills the corpus daemon now that the guest
-            // is finished with it.  Its output is not collected: it serves a
-            // single directory and has no verdict to report.
-            _corpus_virtiofsd,
+            // Dropped here, which kills the writable daemons now that the
+            // guest is finished with them.  Their output is not collected:
+            // each serves a single directory and has no verdict to report.
+            _share_virtiofsd,
             controller,
             event_watcher,
             init_trace,
@@ -839,6 +850,7 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
         boot: profile.boot,
         accel,
         vsock,
+        shares: config::ActiveShare::resolve(),
     };
 
     let vm = TestVm::<B>::launch(&params).await?;
