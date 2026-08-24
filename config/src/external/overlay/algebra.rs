@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 use std::ops::Bound::Included;
 
 use bolero::{Driver, ValueGenerator};
-use lpm::prefix::{IpPrefix, Ipv4Prefix, Prefix};
+use lpm::prefix::{IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixWithOptionalPorts};
 
 use crate::ConfigError;
 use crate::external::overlay::Overlay;
@@ -47,6 +47,14 @@ pub enum Flavour {
     Forward,
     Masquerade,
     StaticNat,
+    PortForward,
+}
+
+impl Flavour {
+    #[must_use]
+    pub const fn is_directional(self) -> bool {
+        matches!(self, Self::Masquerade | Self::PortForward)
+    }
 }
 
 pub const MAX_EXPOSES: u8 = 4;
@@ -80,6 +88,14 @@ impl PeeringHandle {
                 * u32::from(MAX_EXPOSES)
             + u32::from(slot)
     }
+}
+
+pub(crate) const FORWARDED_PRIVATE_PORTS: (u16, u16) = (1000, 1004);
+
+pub(crate) const FORWARDED_PUBLIC_PORTS: (u16, u16) = (2000, 2004);
+
+fn port_range((start, end): (u16, u16)) -> PortRange {
+    PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
 }
 
 fn private_prefix(index: u32) -> Prefix {
@@ -118,7 +134,7 @@ impl ExposeSpec {
     pub fn public(self, peering: PeeringHandle, side: Side) -> Prefix {
         match self.flavour {
             Flavour::Forward => self.private(peering, side),
-            Flavour::Masquerade | Flavour::StaticNat => {
+            Flavour::Masquerade | Flavour::StaticNat | Flavour::PortForward => {
                 public_prefix(peering.block(side, self.slot))
             }
         }
@@ -140,6 +156,20 @@ impl ExposeSpec {
                 .ip(private.into())
                 .as_range(self.public(peering, side).into())
                 .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
+            Flavour::PortForward => VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
+                .ip(PrefixWithOptionalPorts::new(
+                    private,
+                    Some(port_range(FORWARDED_PRIVATE_PORTS)),
+                ))
+                .as_range(PrefixWithOptionalPorts::new(
+                    self.public(peering, side),
+                    Some(port_range(FORWARDED_PUBLIC_PORTS)),
+                ))
+                .unwrap_or_else(|_| {
+                    unreachable!("a port forwarding expose accepts a public range")
+                }),
         }
     }
 }
@@ -183,10 +213,10 @@ impl PeeringSpec {
         }
     }
 
-    fn has_stateful(&self, side: Side) -> bool {
+    fn has_directional(&self, side: Side) -> bool {
         self.exposes(side)
             .iter()
-            .any(|expose| expose.flavour == Flavour::Masquerade)
+            .any(|expose| expose.flavour.is_directional())
     }
 
     fn manifest(&self, peering: PeeringHandle, side: Side) -> VpcManifest {
@@ -542,7 +572,7 @@ fn add_expose(
     if spec.exposes(side).iter().any(|e| e.slot == slot) {
         return None;
     }
-    if flavour == Flavour::Masquerade && spec.has_stateful(side.other()) {
+    if flavour.is_directional() && spec.has_directional(side.other()) {
         return None;
     }
     draft
@@ -566,7 +596,7 @@ fn set_flavour(
     flavour: Flavour,
 ) -> Option<Undo> {
     let spec = draft.peerings.get(&peering)?;
-    if flavour == Flavour::Masquerade && spec.has_stateful(side.other()) {
+    if flavour.is_directional() && spec.has_directional(side.other()) {
         return None;
     }
     let index = spec.exposes(side).iter().position(|e| e.slot == slot)?;
@@ -941,8 +971,13 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 }
 
 fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
-    const ORDERED: [Flavour; 3] = [Flavour::Forward, Flavour::StaticNat, Flavour::Masquerade];
-    let legal: &[Flavour] = if spec.has_stateful(side.other()) {
+    const ORDERED: [Flavour; 4] = [
+        Flavour::Forward,
+        Flavour::StaticNat,
+        Flavour::PortForward,
+        Flavour::Masquerade,
+    ];
+    let legal: &[Flavour] = if spec.has_directional(side.other()) {
         &ORDERED[..2]
     } else {
         &ORDERED
@@ -1068,6 +1103,7 @@ mod tests {
         let masquerading = AtomicUsize::new(0);
         let forwarding = AtomicUsize::new(0);
         let static_nat = AtomicUsize::new(0);
+        let port_forward = AtomicUsize::new(0);
 
         check!()
             .with_generator(Sequence::default())
@@ -1092,6 +1128,7 @@ mod tests {
                                 Flavour::Masquerade => &masquerading,
                                 Flavour::Forward => &forwarding,
                                 Flavour::StaticNat => &static_nat,
+                                Flavour::PortForward => &port_forward,
                             }
                             .fetch_add(1, Relaxed);
                         }
@@ -1110,12 +1147,14 @@ mod tests {
         assert!(
             masquerading.load(Relaxed) > 0
                 && forwarding.load(Relaxed) > 0
-                && static_nat.load(Relaxed) > 0,
-            "not every flavour of expose was built (masquerade {}, forward {}, static nat {}), \
-             so the combination rules were not exercised",
+                && static_nat.load(Relaxed) > 0
+                && port_forward.load(Relaxed) > 0,
+            "not every flavour of expose was built (masquerade {}, forward {}, static nat {}, \
+             port forward {}), so the combination rules were not exercised",
             masquerading.load(Relaxed),
             forwarding.load(Relaxed),
-            static_nat.load(Relaxed)
+            static_nat.load(Relaxed),
+            port_forward.load(Relaxed)
         );
     }
 

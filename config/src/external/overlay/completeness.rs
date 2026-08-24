@@ -90,13 +90,7 @@ const REACH: &[(&str, Reach)] = &[
         "VpcExpose.ips",
         Reach::Determined("one prefix, from the expose's peering, side and slot"),
     ),
-    (
-        "VpcExpose.ips.ports",
-        Reach::Fixed(
-            "unset. The algebra exposes whole prefixes, so a port-restricted expose is \
-             unreachable, and with it every question about how ports partition an address.",
-        ),
-    ),
+    ("VpcExpose.ips.ports", Reach::Spans(&["set", "unset"])),
     (
         "VpcExpose.nots",
         Reach::Fixed(
@@ -112,7 +106,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.as_range.ports",
-        Reach::Fixed("unset, for the same reason as `VpcExpose.ips.ports`."),
+        Reach::Spans(&["set", "unset"]),
     ),
     (
         "VpcExposeNat.not_as",
@@ -120,7 +114,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.config",
-        Reach::Spans(&["masquerade", "static"]),
+        Reach::Spans(&["masquerade", "port-forwarding", "static"]),
     ),
     (
         "VpcExposeNat.proto",
@@ -138,9 +132,9 @@ const REACH: &[(&str, Reach)] = &[
     (
         "VpcExposePortForwarding.idle_timeout",
         Reach::Fixed(
-            "never constructed. `Flavour` has no port-forwarding member, so this flavour of \
-             nat -- and every question about the idle timeout it carries -- stays out of \
-             reach, which the design note names as missing vocabulary.",
+            "absent. `make_port_forwarding(None, ..)` is the only call, for the same reason \
+             `VpcExposeMasquerade.idle_timeout` is absent: the flavour is reachable now, but \
+             nothing asks for a timeout, so no flow ages out under a configuration that set one.",
         ),
     ),
 ];
