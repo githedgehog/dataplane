@@ -1,0 +1,5 @@
+error: unknown #[n_vm::test] option `not_a_real_option`; the only argument is `config = PATH`, naming a `const VmConfig`.  Everything about the VM -- backend, runtime, NIC, pages, kernel features -- is a field of that config, set with `n_vm::VmConfigBuilder`.
+ --> tests/compile_fail/unknown_option.rs:5:14
+  |
+5 | #[n_vm::test(not_a_real_option)]
+  |              ^^^^^^^^^^^^^^^^^

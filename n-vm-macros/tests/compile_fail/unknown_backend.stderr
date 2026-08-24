@@ -1,5 +1,0 @@
-error: unknown #[n_vm::test] option `not_a_real_backend`; expected a backend (`cloud_hypervisor`, `qemu`), a runtime flavor (`current_thread`, `multi_thread`), `worker_threads = N`, or `config = PATH`.  VM options live in a `const VmConfig` named by `config = ...`
- --> tests/compile_fail/unknown_backend.rs:4:14
-  |
-4 | #[n_vm::test(not_a_real_backend)]
-  |              ^^^^^^^^^^^^^^^^^^
