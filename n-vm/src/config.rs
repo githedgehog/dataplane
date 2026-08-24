@@ -563,6 +563,18 @@ pub struct VmConfig {
     ///
     /// Ignored by a synchronous test, which has no runtime to shape.
     pub runtime: GuestRuntime,
+    /// How long the test body may take, before the VM's own overhead.
+    ///
+    /// The VM is given this *plus* room to boot, load a corpus and shut down
+    /// -- the container cannot hold exactly what it contains, or the guest is
+    /// killed somewhere inside its last second and whatever it was about to
+    /// report is lost.
+    ///
+    /// `None` means the body gets the same allowance an ordinary test does,
+    /// which is what nearly every test wants.  Set it for work that is
+    /// deliberately long-lived: a fuzz campaign's length arrives separately,
+    /// from the engine, and the larger of the two wins.
+    pub guest_time_limit: Option<Duration>,
     /// Kernel module parameters to set on the guest command line.
     ///
     /// Rendered as `<module>.<key>=<value>` into the kernel section of the
@@ -721,6 +733,17 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Gives the test body longer than an ordinary test gets.
+    ///
+    /// Bounds the *body*, not the VM: boot, corpus load and shutdown are
+    /// added on top, so a test that asks for ten minutes gets a VM that
+    /// outlives ten minutes of work.
+    #[must_use]
+    pub const fn guest_time_limit(mut self, limit: Duration) -> Self {
+        self.0.guest_time_limit = Some(limit);
+        self
+    }
+
     /// Sets kernel module parameters on the guest command line.
     #[must_use]
     pub const fn module_params(mut self, params: &'static [ModuleParam]) -> Self {
@@ -811,6 +834,7 @@ impl VmConfig {
         kernel_features: &[],
         backend: crate::backend::RequestedBackend::Default,
         runtime: GuestRuntime::CurrentThread,
+        guest_time_limit: None,
         module_params: &[],
         corpus_source_file: None,
     };

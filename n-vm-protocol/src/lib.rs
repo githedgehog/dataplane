@@ -5,6 +5,7 @@
 //! nested VM test environment.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Platform string passed to the Docker engine when creating the container.
 pub const CONTAINER_PLATFORM: &str = "linux/amd64";
@@ -780,6 +781,44 @@ pub fn strip_multiprocess_flags(value: &str) -> String {
         .join(" ")
 }
 
+/// Container-tier environment variable carrying how long the guest's work
+/// was declared to take, in whole seconds.
+///
+/// Set by the host tier, read by the container tier, alongside
+/// [`ENV_BACKEND`] and [`ENV_ACCEL`] and for the same reason: it is a fact
+/// about *this run* that the container tier cannot discover for itself.  A
+/// fuzz campaign's length is chosen by whoever invoked `cargo bolero`, so it
+/// reaches the test binary through the environment and nothing in the
+/// compiled configuration knows it.
+///
+/// Absent when no engine declared one, which is the ordinary case.
+pub const ENV_ENGINE_TIME_LIMIT: &str = "N_VM_ENGINE_TIME_LIMIT";
+
+/// The libfuzzer flag naming how long a campaign should run.
+const MAX_TOTAL_TIME_FLAG: &str = "-max_total_time=";
+
+/// How long a libfuzzer command line says the campaign will run.
+///
+/// This is the guest's *work*, which the VM has to outlive: a VM budget that
+/// merely equalled it would kill the fuzzer somewhere in its last second,
+/// before `DeathCallback` could write out anything it had found.
+///
+/// `None` when the campaign is bounded some other way. `-runs=N` is the case
+/// that matters, and it is deliberately not translated: how long a number of
+/// executions takes is a property of the target, not of the flag, so guessing
+/// would produce a budget with nothing behind it.
+#[must_use]
+pub fn max_total_time(value: &str) -> Option<Duration> {
+    value
+        .split_whitespace()
+        .filter_map(|arg| arg.strip_prefix(MAX_TOTAL_TIME_FLAG))
+        .filter_map(|secs| secs.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        // Last wins, matching libfuzzer's own parser, which overwrites a flag
+        // each time it sees it rather than rejecting the repeat.
+        .next_back()
+}
+
 /// Encode variables as NUL-separated `KEY=VALUE` records.
 ///
 /// The same shape as `/proc/self/environ`, and for the same reason: NUL is
@@ -918,6 +957,46 @@ mod multiprocess_tests {
     fn a_command_line_with_nothing_to_strip_is_unchanged() {
         let args = "/corpus /crashes -timeout=10";
         assert_eq!(strip_multiprocess_flags(args), args);
+    }
+}
+
+#[cfg(test)]
+mod campaign_time_tests {
+    use super::*;
+
+    /// The shape `just fuzz` produces.
+    #[test]
+    fn the_campaign_length_is_read_from_the_command_line() {
+        let args = "/corpus /crashes -timeout=10 -max_total_time=600 -len_control=0";
+        assert_eq!(max_total_time(args), Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn a_command_line_without_one_declares_nothing() {
+        assert_eq!(max_total_time("/corpus /crashes -runs=1000"), None);
+        assert_eq!(max_total_time(""), None);
+    }
+
+    /// Not `-max_total_time`, and must not be mistaken for it.
+    #[test]
+    fn the_per_input_timeout_is_a_different_flag() {
+        assert_eq!(max_total_time("-timeout=10"), None);
+    }
+
+    #[test]
+    fn a_malformed_value_declares_nothing_rather_than_zero() {
+        assert_eq!(max_total_time("-max_total_time=soon"), None);
+        assert_eq!(max_total_time("-max_total_time="), None);
+    }
+
+    /// libfuzzer overwrites a repeated flag rather than rejecting it, so the
+    /// budget must be derived from the one that will actually take effect.
+    #[test]
+    fn a_repeated_flag_resolves_the_way_libfuzzer_resolves_it() {
+        assert_eq!(
+            max_total_time("-max_total_time=60 -max_total_time=600"),
+            Some(Duration::from_secs(600)),
+        );
     }
 }
 
