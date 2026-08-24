@@ -139,10 +139,7 @@ const REACH: &[(&str, Reach)] = &[
         "VpcExposeNat.config",
         Reach::Spans(&["masquerade", "port-forwarding", "static"]),
     ),
-    (
-        "VpcExposeNat.proto",
-        Reach::Fixed("`Any`; no operation restricts the protocol to TCP or UDP."),
-    ),
+    ("VpcExposeNat.proto", Reach::Spans(&["any", "tcp", "udp"])),
     (
         "VpcExposeMasquerade.idle_timeout",
         Reach::Spans(&["absent", "present"]),
