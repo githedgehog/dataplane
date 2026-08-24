@@ -1,0 +1,26 @@
+error[E0080]: evaluation panicked: that module name is the namespace `n-it` reads its own boot parameters from; setting it would redirect the guest's init protocol rather than configure a module
+ --> tests/compile_fail/module_param_reserved_namespace.rs:8:22
+  |
+8 |     .module_params(&[n_vm::ModuleParam::new("n_it", "result_port", "9")])
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed inside this call
+  |
+note: inside `ModuleParam::new`
+ --> $RUST/core/src/panic.rs
+  |
+  |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+  |
+ ::: $WORKSPACE/n-vm/src/config.rs
+  |
+  | /         assert!(
+  | |             !str_eq(module, n_vm_protocol::CMDLINE_NAMESPACE),
+  | |             "that module name is the namespace `n-it` reads its own boot parameters from; \
+  | |              setting it would redirect the guest's init protocol rather than configure a module"
+  | |         );
+  | |_________- in this macro invocation
+
+note: erroneous constant encountered
+ --> tests/compile_fail/module_param_reserved_namespace.rs:8:20
+  |
+8 |     .module_params(&[n_vm::ModuleParam::new("n_it", "result_port", "9")])
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
