@@ -287,11 +287,17 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         })
         .collect::<syn::Result<_>>()?;
+    // The `FixedSize` predicates pushed above are what let a wrapper field carry a
+    // non-`FixedSize` parameter, but on a non-generic key every one of them names a
+    // concrete type. A trivial bound in an item's param-env stops rustc evaluating
+    // `<Self as MatchKey>::KEY_SIZE` in `as_key`'s array length (E0284), so this impl
+    // takes the key's own generics and leaves the added predicates behind.
+    let (key_impl_generics, key_ty_generics, key_where_clause) = input.generics.split_for_impl();
     let as_key_impl = if is_generic {
         quote! {}
     } else {
         quote! {
-            impl #impl_generics #key_ident #ty_generics #where_clause {
+            impl #key_impl_generics #key_ident #key_ty_generics #key_where_clause {
                 #[must_use]
                 pub fn as_key(&self) -> [u8; <Self as #crate_path::MatchKey>::KEY_SIZE] {
                     let mut buf = [0u8; <Self as #crate_path::MatchKey>::KEY_SIZE];
