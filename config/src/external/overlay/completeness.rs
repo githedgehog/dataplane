@@ -120,7 +120,7 @@ const REACH: &[(&str, Reach)] = &[
     ("VpcExpose.ips.ports", Reach::Spans(&["set", "unset"])),
     (
         "VpcExpose.nots",
-        Reach::Fixed("empty; the algebra never excludes addresses from an expose."),
+        Reach::Determined("a `/26` in the middle of the expose's block, on the low slots"),
     ),
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),
     (
@@ -133,7 +133,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.not_as",
-        Reach::Fixed("empty, for the same reason as `VpcExpose.nots`."),
+        Reach::Determined("a `/26` in the middle of the expose's translated block"),
     ),
     (
         "VpcExposeNat.config",
