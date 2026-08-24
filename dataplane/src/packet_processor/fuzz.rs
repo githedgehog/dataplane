@@ -400,6 +400,10 @@ impl Fabric {
         &mut self.worker
     }
 
+    pub(crate) fn fleet(&self) -> &Fleet {
+        &self.fleet
+    }
+
     pub(crate) fn flows(&self) -> Option<usize> {
         self.fleet.blueprint().flow_table.len()
     }
@@ -1636,9 +1640,11 @@ mod acl {
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU64, Ordering};
-    use config::external::overlay::acl::{AclAction, AclProtoMatch};
+    use config::external::overlay::acl::{
+        Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    };
     use config::external::overlay::vpcpeering::contract::{MasqueradeExposes, peering_acl};
-    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
     use net::headers::builder::ChainBase;
     use net::headers::{Headers, TryIpv4Mut, TryIpv6Mut};
     use net::ip::NextHeader;
@@ -1924,6 +1930,111 @@ mod acl {
         super::assert_covered(
             behind > 0,
             "no packet was ever sent behind an extension header, which is the shape this exists for",
+        );
+    }
+
+    fn prefix(text: &str) -> Prefix {
+        text.parse()
+            .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
+    }
+
+    fn ports(start: u16, end: u16) -> PortRange {
+        PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
+    }
+
+    fn forwarding() -> Vec<VpcExpose> {
+        vec![
+            VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
+                .ip(PrefixWithOptionalPorts::new(
+                    prefix("10.0.0.0/24"),
+                    Some(ports(1000, 1004)),
+                ))
+                .as_range(PrefixWithOptionalPorts::new(
+                    prefix("172.16.0.0/24"),
+                    Some(ports(2000, 2004)),
+                ))
+                .unwrap_or_else(|_| unreachable!("a port forwarding expose accepts a range")),
+        ]
+    }
+
+    fn flow_scoped_permit() -> Acl {
+        Acl::new(
+            AclAction::Deny,
+            vec![AclRule {
+                name: "opened-from-outside".to_owned(),
+                from: "VPC-2".to_owned(),
+                to: "VPC-1".to_owned(),
+                action: AclAction::Allow,
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: AclProtoMatch::Any,
+                },
+                scope: AclScope::Flow,
+                log: false,
+            }],
+        )
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_port_forwarded_flow_loses_its_acl_permission_on_any_configuration_change() {
+        let acl = flow_scoped_permit();
+        let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
+            .expect("the fixture assembles")
+            .validate()
+            .expect("a port-forwarding side accepts a flow-scoped rule");
+        let mut fabric = Fabric::over(&overlay, None, Arc::new(FlowTable::default()));
+
+        let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
+        let outside = peer(advertised);
+
+        let mut request = super::round_trip::udp(outside, advertised, 40000, 2003)
+            .expect("a well-formed request");
+        arrive(&mut request, remote());
+        let arrived = fabric.send(request);
+        let Verdict::Forwarded {
+            dst: Some(inside), ..
+        } = verdict(&arrived)
+        else {
+            panic!(
+                "the request never reached the service: {:?}",
+                verdict(&arrived)
+            );
+        };
+        let inside_port = arrived
+            .transport_dst_port()
+            .expect("a forwarded request has a destination port");
+
+        let answer = |fabric: &mut Fabric| {
+            let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
+                .expect("a well-formed answer");
+            arrive(&mut answer, local());
+            verdict(&fabric.send(answer))
+        };
+
+        let before = answer(&mut fabric);
+        assert!(
+            matches!(before, Verdict::Forwarded { .. }),
+            "the flow did not authorise the answer even before anything changed: {before:?}. \
+             Either the reverse lookup in `AclFilter::lookup` has stopped working or this fixture \
+             no longer opens a flow"
+        );
+
+        fabric.fleet().enact(&overlay, Enact::Everything);
+
+        let after = answer(&mut fabric);
+        assert_eq!(
+            after,
+            Verdict::Dropped(DoneReason::AclDropped),
+            "a port-forwarded flow kept its acl permission across a configuration change. If \
+             `update_nat_allocator`'s generation upgrade now covers port-forwarded flows, this \
+             test has served its purpose -- delete it, and stop excluding flow-scoped peerings \
+             from `a_configuration_change_leaves_traffic_outside_its_footprint_alone`"
         );
     }
 }
@@ -2490,6 +2601,7 @@ mod generated {
     static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static BY_FLOW: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
     fn report_and_assert_coverage() {
         let (checked, derived, mixed) = (
@@ -2503,10 +2615,11 @@ mod generated {
         );
         eprintln!(
             "checked={checked} derived={derived} inbound={} \
-             permitting-peerings={} peered-configs={peered} \
+             permitting-peerings={} (by flow {}) peered-configs={peered} \
              configs-past-two-vpcs={multi} mixed-bursts={mixed}",
             INBOUND.load(Ordering::Relaxed),
-            PERMITTING.load(Ordering::Relaxed)
+            PERMITTING.load(Ordering::Relaxed),
+            BY_FLOW.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -2529,6 +2642,12 @@ mod generated {
             "no traffic was ever derived across a peering whose acl permits it, so every load here \
              ran with no acl in the way and a rule set that lowered to nothing would have gone \
              unnoticed",
+        );
+        super::assert_covered(
+            BY_FLOW.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering permitting only one direction, so no \
+             reply here was authorised by the flow it belongs to and the reverse lookup in \
+             `AclFilter::lookup` was never entered",
         );
         super::assert_covered(
             mixed > 0,
@@ -2583,11 +2702,16 @@ mod generated {
     fn carried_counting<'a>(
         draft: &'a Draft,
         permitting: &'a Cell<u64>,
+        by_flow: &'a Cell<u64>,
     ) -> impl Fn(Named<'_>) -> bool + 'a {
         move |named| match draft.guard_named(named.peering) {
             Some(Guard::Deny) => false,
             Some(Guard::Permit) => {
                 permitting.set(permitting.get() + 1);
+                true
+            }
+            Some(Guard::PermitFlow) => {
+                by_flow.set(by_flow.get() + 1);
                 true
             }
             Some(Guard::Open) | None => true,
@@ -2626,10 +2750,14 @@ mod generated {
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
 
-                let permitting = Cell::new(0);
-                let mut loads =
-                    loads_where(&validated, vary, &carried_counting(&draft, &permitting));
+                let (permitting, by_flow) = (Cell::new(0), Cell::new(0));
+                let mut loads = loads_where(
+                    &validated,
+                    vary,
+                    &carried_counting(&draft, &permitting, &by_flow),
+                );
                 PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
+                BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 for load in &loads {
                     if load.describe().starts_with("[inbound") {
@@ -3975,7 +4103,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Draft, Footprint, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Guard, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
 
     type Tuple = (Option<IpAddr>, Option<u16>);
@@ -5079,6 +5207,7 @@ mod model {
             let carried = derive::carried_by(draft);
             move |named| {
                 carried(named)
+                    && draft.guard_named(named.peering) != Some(Guard::PermitFlow)
                     && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)

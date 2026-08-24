@@ -65,15 +65,17 @@ pub enum Guard {
     #[default]
     Open,
     Permit,
+    PermitFlow,
     Deny,
 }
 
 impl Guard {
     fn acl(self, spec: &PeeringSpec) -> Option<Acl> {
-        let (default, action) = match self {
+        let (default, action, scope) = match self {
             Guard::Open => return None,
-            Guard::Permit => (AclAction::Deny, AclAction::Allow),
-            Guard::Deny => (AclAction::Allow, AclAction::Deny),
+            Guard::Permit => (AclAction::Deny, AclAction::Allow, AclScope::Packet),
+            Guard::PermitFlow => (AclAction::Deny, AclAction::Allow, AclScope::Flow),
+            Guard::Deny => (AclAction::Allow, AclAction::Deny, AclScope::Packet),
         };
         let rule = |side: Side| {
             let (from, to) = (spec.vpc(side).name(), spec.vpc(side.other()).name());
@@ -89,11 +91,32 @@ impl Guard {
                     dst_any_ports: Vec::new(),
                     proto: AclProtoMatch::Any,
                 },
-                scope: AclScope::Packet,
+                scope,
                 log: false,
             }
         };
-        Some(Acl::new(default, vec![rule(Side::Left), rule(Side::Right)]))
+        let rules = match self.opening_side(spec) {
+            Some(side) => vec![rule(side)],
+            None => vec![rule(Side::Left), rule(Side::Right)],
+        };
+        Some(Acl::new(default, rules))
+    }
+
+    fn opening_side(self, spec: &PeeringSpec) -> Option<Side> {
+        match self {
+            Guard::PermitFlow => Some(
+                spec.sole_opener()
+                    .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no side")),
+            ),
+            Guard::Open | Guard::Permit | Guard::Deny => None,
+        }
+    }
+
+    fn legal_on(self, spec: &PeeringSpec) -> bool {
+        match self {
+            Guard::Open | Guard::Permit | Guard::Deny => true,
+            Guard::PermitFlow => spec.sole_opener().is_some(),
+        }
     }
 }
 
@@ -257,6 +280,23 @@ impl PeeringSpec {
         } else {
             None
         }
+    }
+
+    fn sole_opener(&self) -> Option<Side> {
+        [Side::Left, Side::Right].into_iter().find_map(|side| {
+            let exposes = self.exposes(side);
+            if exposes.is_empty() {
+                return None;
+            }
+            let all = |flavour| exposes.iter().all(|expose| expose.flavour == flavour);
+            if all(Flavour::Masquerade) {
+                Some(side)
+            } else if all(Flavour::PortForward) {
+                Some(side.other())
+            } else {
+                None
+            }
+        })
     }
 
     fn has_directional(&self, side: Side) -> bool {
@@ -601,6 +641,9 @@ impl Op {
 
             Op::SetGuard { peering, guard } => {
                 let spec = draft.peerings.get_mut(&peering)?;
+                if !guard.legal_on(spec) {
+                    return None;
+                }
                 let previous = std::mem::replace(&mut spec.guard, guard);
                 Some(Undo::SetGuard {
                     peering,
@@ -657,11 +700,24 @@ fn add_expose(
         .unwrap_or_else(|| unreachable!("just found it"))
         .exposes_mut(side)
         .push(ExposeSpec { slot, flavour });
-    Some(Undo::RemoveExpose {
+    respecting_guard(
+        draft,
         peering,
-        side,
-        slot,
-    })
+        Undo::RemoveExpose {
+            peering,
+            side,
+            slot,
+        },
+    )
+}
+
+fn respecting_guard(draft: &mut Draft, peering: PeeringHandle, undo: Undo) -> Option<Undo> {
+    let spec = draft.peerings.get(&peering)?;
+    if spec.guard.legal_on(spec) {
+        return Some(undo);
+    }
+    undo.apply(draft);
+    None
 }
 
 fn set_flavour(
@@ -683,12 +739,16 @@ fn set_flavour(
         .exposes_mut(side);
     let previous = exposes[index].flavour;
     exposes[index].flavour = flavour;
-    Some(Undo::SetFlavour {
+    respecting_guard(
+        draft,
         peering,
-        side,
-        slot,
-        flavour: previous,
-    })
+        Undo::SetFlavour {
+            peering,
+            side,
+            slot,
+            flavour: previous,
+        },
+    )
 }
 
 impl Undo {
@@ -902,7 +962,7 @@ fn draw<D: Driver>(
             Kind::SetGuard => draw_set_guard(driver, draft),
         };
 
-        let Some(op) = built else {
+        let Some(op) = built.filter(|op| op.applicable(draft)) else {
             menu.retain(|other| *other != kind);
             continue;
         };
@@ -1057,12 +1117,18 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 }
 
 fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
-    const ORDERED: [Guard; 3] = [Guard::Open, Guard::Permit, Guard::Deny];
+    const ORDERED: [Guard; 4] = [Guard::Open, Guard::Permit, Guard::PermitFlow, Guard::Deny];
 
-    let peerings: Vec<PeeringHandle> = draft.peerings().map(|(handle, _)| handle).collect();
+    let guard = pick(driver, &ORDERED)?;
+    let willing: Vec<PeeringHandle> = draft
+        .peerings()
+        .filter(|(_, spec)| guard.legal_on(spec))
+        .map(|(handle, _)| handle)
+        .collect();
+
     Some(Op::SetGuard {
-        peering: pick(driver, &peerings)?,
-        guard: pick(driver, &ORDERED)?,
+        peering: pick(driver, &willing)?,
+        guard,
     })
 }
 
@@ -1199,15 +1265,8 @@ mod tests {
 
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
-        let masquerading = AtomicUsize::new(0);
-        let forwarding = AtomicUsize::new(0);
-        let static_nat = AtomicUsize::new(0);
-        let port_forward = AtomicUsize::new(0);
-        let guards = [
-            AtomicUsize::new(0),
-            AtomicUsize::new(0),
-            AtomicUsize::new(0),
-        ];
+        let flavours = [const { AtomicUsize::new(0) }; 4];
+        let guards = [const { AtomicUsize::new(0) }; 4];
 
         check!()
             .with_generator(Sequence::default())
@@ -1228,12 +1287,12 @@ mod tests {
                 for (_, spec) in draft.peerings() {
                     for side in [Side::Left, Side::Right] {
                         for expose in spec.exposes(side) {
-                            match expose.flavour() {
-                                Flavour::Masquerade => &masquerading,
-                                Flavour::Forward => &forwarding,
-                                Flavour::StaticNat => &static_nat,
-                                Flavour::PortForward => &port_forward,
-                            }
+                            flavours[match expose.flavour() {
+                                Flavour::Forward => 0,
+                                Flavour::Masquerade => 1,
+                                Flavour::StaticNat => 2,
+                                Flavour::PortForward => 3,
+                            }]
                             .fetch_add(1, Relaxed);
                         }
                     }
@@ -1249,10 +1308,11 @@ mod tests {
                         .values()
                         .find(|peering| peering.name == handle.name())
                         .and_then(|peering| peering.acl.as_ref());
-                    let observed = match acl.map(Acl::default_action) {
+                    let observed = match acl.map(|acl| (acl.default_action(), acl.rules().len())) {
                         None => Guard::Open,
-                        Some(AclAction::Deny) => Guard::Permit,
-                        Some(AclAction::Allow) => Guard::Deny,
+                        Some((AclAction::Deny, 1)) => Guard::PermitFlow,
+                        Some((AclAction::Deny, _)) => Guard::Permit,
+                        Some((AclAction::Allow, _)) => Guard::Deny,
                     };
                     assert_eq!(
                         observed,
@@ -1264,7 +1324,8 @@ mod tests {
                     guards[match observed {
                         Guard::Open => 0,
                         Guard::Permit => 1,
-                        Guard::Deny => 2,
+                        Guard::PermitFlow => 2,
+                        Guard::Deny => 3,
                     }]
                     .fetch_add(1, Relaxed);
                 }
@@ -1275,26 +1336,35 @@ mod tests {
             });
 
         assert_every_kind_drawn();
-        assert!(
-            masquerading.load(Relaxed) > 0
-                && forwarding.load(Relaxed) > 0
-                && static_nat.load(Relaxed) > 0
-                && port_forward.load(Relaxed) > 0,
-            "not every flavour of expose was built (masquerade {}, forward {}, static nat {}, \
-             port forward {}), so the combination rules were not exercised",
-            masquerading.load(Relaxed),
-            forwarding.load(Relaxed),
-            static_nat.load(Relaxed),
-            port_forward.load(Relaxed)
-        );
-        for (name, count) in ["open", "permit", "deny"].iter().zip(&guards) {
+        assert_every_shape_built(&flavours, &guards);
+    }
+
+    const FLAVOURS: [&str; 4] = ["forward", "masquerade", "static-nat", "port-forward"];
+    const GUARDS: [&str; 4] = ["open", "permit", "permit-by-flow", "deny"];
+
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 4]) {
+        let show = |names: [&str; 4], counts: &[AtomicUsize; 4]| {
+            names
+                .iter()
+                .zip(counts)
+                .map(|(name, count)| format!("{name}={}", count.load(Relaxed)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let (built, set) = (show(FLAVOURS, flavours), show(GUARDS, guards));
+        eprintln!("exposes: {built}\nguards:  {set}");
+
+        for (name, count) in FLAVOURS.iter().zip(flavours) {
             assert!(
                 count.load(Relaxed) > 0,
-                "no peering was ever left {name} (open {}, permit {}, deny {}), so the acl \
-                 vocabulary was not exercised",
-                guards[0].load(Relaxed),
-                guards[1].load(Relaxed),
-                guards[2].load(Relaxed)
+                "no expose was ever {name} ({built}), so the nat combination rules were not \
+                 exercised"
+            );
+        }
+        for (name, count) in GUARDS.iter().zip(guards) {
+            assert!(
+                count.load(Relaxed) > 0,
+                "no peering was ever left {name} ({set}), so the acl vocabulary was not exercised"
             );
         }
     }
