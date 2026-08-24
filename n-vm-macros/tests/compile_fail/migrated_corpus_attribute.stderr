@@ -1,0 +1,10 @@
+error: #[corpus] has been replaced by `.corpus(CorpusPolicy::Fuzz)` on the config, e.g.
+
+       #[n_vm::config]
+       const _: _ = n_vm::VmConfigBuilder::default()
+           .corpus(n_vm::CorpusPolicy::Fuzz)
+           .build();
+ --> tests/compile_fail/migrated_corpus_attribute.rs:8:1
+  |
+8 | #[n_vm::corpus]
+  | ^^^^^^^^^^^^^^^
