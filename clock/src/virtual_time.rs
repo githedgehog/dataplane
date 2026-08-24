@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::Duration;
+use crate::{Duration, Instant};
+#[cfg(all(test, not(wall_clock)))]
+// nosemgrep: rust-no-direct-std-sync-import
+use std::sync::atomic::AtomicU8;
 // nosemgrep: rust-no-direct-std-sync-import
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -17,9 +20,68 @@ pub(crate) fn armed() -> bool {
 }
 
 #[cfg(not(wall_clock))]
+fn strict() -> bool {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static STRICT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    #[cfg(test)]
+    match FORCED.load(Ordering::Acquire) {
+        FORCED_STRICT => return true,
+        FORCED_LENIENT => return false,
+        _ => {}
+    }
+    *STRICT.get_or_init(|| {
+        if let Some(explicit) = std::env::var_os("CLOCK_STRICT") {
+            return explicit != "0";
+        }
+        std::env::var_os("NEXTEST_EXECUTION_MODE").is_some_and(|mode| mode == "process-per-test")
+    })
+}
+
+#[cfg(all(test, not(wall_clock)))]
+static FORCED: AtomicU8 = AtomicU8::new(FORCED_BY_RUNNER);
+#[cfg(all(test, not(wall_clock)))]
+const FORCED_BY_RUNNER: u8 = 0;
+#[cfg(all(test, not(wall_clock)))]
+const FORCED_STRICT: u8 = 1;
+#[cfg(all(test, not(wall_clock)))]
+const FORCED_LENIENT: u8 = 2;
+
+#[cfg(all(test, not(wall_clock)))]
+fn strictly<R>(body: impl FnOnce() -> R) -> R {
+    forcing(FORCED_STRICT, body)
+}
+
+#[cfg(all(test, not(wall_clock)))]
+fn leniently<R>(body: impl FnOnce() -> R) -> R {
+    forcing(FORCED_LENIENT, body)
+}
+
+#[cfg(all(test, not(wall_clock)))]
+fn forcing<R>(mode: u8, body: impl FnOnce() -> R) -> R {
+    FORCED.store(mode, Ordering::Release);
+    let out = body();
+    FORCED.store(FORCED_BY_RUNNER, Ordering::Release);
+    out
+}
+
+#[cfg(not(wall_clock))]
 #[cold]
 #[inline(never)]
-pub(crate) fn refuse() -> ! {
+pub(crate) fn refuse() -> Instant {
+    if !strict() {
+        // nosemgrep: rust-no-direct-std-sync-import
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "warning: clock::now() on a thread with no tokio runtime while another test holds \
+                 the virtual clock paused. Answering from the wall clock, which is a different \
+                 timeline. Under `cargo nextest` this is a hard error, because there each test has \
+                 the process to itself and the only way to reach it is a thread that forgot to \
+                 enter the runtime. Set CLOCK_STRICT=1 to make it one here."
+            );
+        });
+        return Instant::now();
+    }
     panic!(
         "clock::now() on a thread with no tokio runtime while the virtual clock is paused.\n\
          \n\
@@ -149,14 +211,14 @@ mod tests {
         });
     }
 
-    #[cfg(not(wall_clock))]
     #[test]
-    fn a_thread_that_did_not_enter_is_refused() {
+    #[cfg(not(wall_clock))]
+    fn a_thread_that_did_not_enter_is_refused_where_the_process_is_ours() {
         let _serial = serially();
         let clock = Paused::new();
         clock.block_on(async { advance(LONG).await });
 
-        let forgetful = thread::spawn(now).join();
+        let forgetful = super::strictly(|| thread::spawn(now).join());
         let panic =
             forgetful.expect_err("an unentered read was allowed while the clock was paused");
         let message = panic
@@ -168,6 +230,17 @@ mod tests {
             message.contains("no tokio runtime"),
             "the refusal did not explain itself: {message}"
         );
+    }
+
+    #[test]
+    #[cfg(not(wall_clock))]
+    fn a_thread_that_did_not_enter_is_only_warned_where_the_process_is_shared() {
+        let _serial = serially();
+        let clock = Paused::new();
+        clock.block_on(async { advance(LONG).await });
+
+        super::leniently(|| thread::spawn(now).join())
+            .expect("a shared-process read should warn, not panic");
     }
 
     #[test]

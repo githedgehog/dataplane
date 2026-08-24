@@ -14,7 +14,7 @@ pub mod virtual_time;
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        checked_now().unwrap_or_else(|| virtual_time::refuse())
+        checked_now().unwrap_or_else(virtual_time::refuse)
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
