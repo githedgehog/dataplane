@@ -1709,19 +1709,41 @@ pub mod contract {
             _ => "3.3.3.0/24",
         };
 
-        let mut vpc_table = VpcTable::new();
-        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
-        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
-
-        let local = exposes
-            .into_iter()
-            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
-        let remote = VpcManifest::new("VPC-2").exposing(
+        let remote = vec![
             VpcExpose::empty().ip(remote_prefix
                 .parse::<Prefix>()
                 .unwrap_or_else(|_| unreachable!())
                 .into()),
-        );
+        ];
+
+        overlay_between(exposes, remote)
+    }
+
+    /// The same two vpcs, with both sides' exposes named by the caller.
+    ///
+    /// [`overlay_with_exposes`] gives the far side one plain prefix, which is the right fixture
+    /// for asking what the *near* side's expose does. It cannot ask what happens when the far
+    /// side translates too -- and a packet needing two translations at once takes a path neither
+    /// translation takes alone, which is where the flavours have to agree about the key a flow is
+    /// filed under.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConfigError`] if the vpcs or the peering are not well-formed.
+    pub fn overlay_between(
+        local: Vec<VpcExpose>,
+        remote: Vec<VpcExpose>,
+    ) -> Result<Overlay, ConfigError> {
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
+
+        let local = local
+            .into_iter()
+            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
+        let remote = remote
+            .into_iter()
+            .fold(VpcManifest::new("VPC-2"), VpcManifest::exposing);
         let mut peerings = VpcPeeringTable::new();
         peerings.add(VpcPeering::with_default_group(
             "VPC-1--VPC-2",

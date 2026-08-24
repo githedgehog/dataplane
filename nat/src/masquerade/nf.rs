@@ -308,7 +308,23 @@ impl Masquerade {
         let flow_info = if let Some(stamped) = packet.meta().flow_info.as_ref() {
             stamped
         } else {
-            looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+            // Two keys, because the flow may not be installed under the one this packet
+            // currently carries. `create_flow_pair` keys the forward flow on the *initial*
+            // key -- deliberately, since `FlowLookup` runs before static NAT and would
+            // otherwise never find it again -- while by the time masquerade runs, the packet's
+            // own key has had its destination translated. The two are equal whenever static
+            // NAT is not in play, which is why one lookup was enough until it was not.
+            //
+            // Current first, so this only ever adds a lookup where the old code found nothing:
+            // a reply is keyed on `new_reverse_session`'s key, which is derived from the
+            // current one, and must keep matching first.
+            looked_up = FlowKey::try_from(packet)
+                .ok()
+                .and_then(|current| self.flow_table.lookup(&current))
+                .or_else(|| {
+                    let initial = packet.meta().flow_key.as_deref().copied()?;
+                    self.flow_table.lookup(&initial)
+                })?;
             &looked_up
         };
         if !flow_info.is_active() {
