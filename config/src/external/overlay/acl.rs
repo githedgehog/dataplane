@@ -424,8 +424,8 @@ impl ValidatedAclRule {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Acl {
-    default: AclAction,
-    rules: Vec<AclRule>,
+    pub(crate) default: AclAction,
+    pub(crate) rules: Vec<AclRule>,
 }
 
 impl Acl {
