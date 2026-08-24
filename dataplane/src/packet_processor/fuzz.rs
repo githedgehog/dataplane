@@ -2840,6 +2840,7 @@ mod generated {
         static MIXED: AtomicU64 = AtomicU64::new(0);
         static PEERED: AtomicU64 = AtomicU64::new(0);
         static MULTI: AtomicU64 = AtomicU64::new(0);
+        static INBOUND: AtomicU64 = AtomicU64::new(0);
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -2872,6 +2873,11 @@ mod generated {
 
                 let mut loads = loads_for(&validated, vary);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+                for load in &loads {
+                    if load.describe().starts_with("[inbound") {
+                        INBOUND.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
 
                 for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
@@ -2902,8 +2908,9 @@ mod generated {
             MULTI.load(Ordering::Relaxed),
         );
         eprintln!(
-            "checked={checked} derived={derived} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}"
+            "checked={checked} derived={derived} inbound={} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            INBOUND.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -2916,6 +2923,11 @@ mod generated {
             "no generated configuration ever implied any traffic",
         );
         super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            INBOUND.load(Ordering::Relaxed) > 0,
+            "no generated configuration ever produced an inbound load, so a port-forwarding \
+             expose was drawn into configurations and then carried no traffic at all",
+        );
         super::assert_covered(
             mixed > 0,
             "no burst ever carried more than one sender's traffic, so nothing was interleaved",
