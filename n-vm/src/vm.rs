@@ -232,6 +232,7 @@ pub(crate) async fn check_kvm_accessible() -> Result<(), VmError> {
 /// not exist or cannot be stat'd and the host page size requires it.
 pub(crate) async fn check_hugepages_accessible(
     host_page_size: config::HostPageSize,
+    memory_bytes: i64,
 ) -> Result<(), VmError> {
     let Some(pool) = host_page_size.pool_dir() else {
         return Ok(());
@@ -261,7 +262,7 @@ pub(crate) async fn check_hugepages_accessible(
     };
 
     let page = host_page_size.bytes();
-    let needed = (config::VM_MEMORY_BYTES + page - 1) / page;
+    let needed = (memory_bytes + page - 1) / page;
     if (free as i64) < needed {
         return Err(VmError::HugepagesNotAccessible(std::io::Error::other(
             format!(
