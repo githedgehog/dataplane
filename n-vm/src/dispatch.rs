@@ -8,8 +8,8 @@
 
 use std::future::Future;
 
-use crate::backend::{EffectiveBackend, HypervisorBackend, RequestedBackend};
-use crate::config::{Accel, VmConfig};
+use crate::backend::{EffectiveBackend, HypervisorBackend};
+use crate::config::{Accel, GuestRuntime, VmConfig};
 use crate::container::ContainerOutcome;
 use n_vm_protocol::{ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_IN_VM, ENV_MARKER_VALUE};
 
@@ -37,33 +37,31 @@ fn init_tracing() {
         .try_init();
 }
 
-/// Runs an async test body on a current-thread runtime inside the VM guest.
+/// Runs an async test body on the runtime its configuration asked for.
+///
+/// One entry point rather than one per scheduler, because the choice now
+/// lives in a `const` the macro cannot read: a proc macro can branch on a
+/// token but not on a value.  The shape is a [`GuestRuntime`], so the match
+/// happens here, in ordinary code, where it can be tested.
 ///
 /// # Panics
 ///
 /// Panics if the tokio runtime cannot be created.
-pub fn block_on_in_guest<F: Future<Output = ()>>(f: F) {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build tokio runtime for async #[n_vm::test] test body")
-        .block_on(f);
-}
-
-/// Runs an async test body on a multi-threaded runtime inside the VM guest.
-///
-/// # Panics
-///
-/// Panics if the tokio runtime cannot be created.
-pub fn block_on_in_guest_multi_thread<F: Future<Output = ()>>(worker_threads: Option<usize>, f: F) {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
+pub fn block_on_in_guest_with<F: Future<Output = ()>>(runtime: GuestRuntime, f: F) {
+    let mut builder = match runtime {
+        GuestRuntime::CurrentThread => tokio::runtime::Builder::new_current_thread(),
+        GuestRuntime::MultiThread { .. } => tokio::runtime::Builder::new_multi_thread(),
+    };
     builder.enable_all();
-    if let Some(n) = worker_threads {
+    if let GuestRuntime::MultiThread {
+        worker_threads: Some(n),
+    } = runtime
+    {
         builder.worker_threads(n);
     }
     builder
         .build()
-        .expect("failed to build multi-threaded tokio runtime for async #[n_vm::test] test body")
+        .expect("failed to build tokio runtime for async #[n_vm::test] test body")
         .block_on(f);
 }
 
@@ -137,7 +135,7 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
 
 /// Host-tier dispatch: launch a Docker container and re-run the test inside it.
 ///
-/// `requested` is the backend the test asked for via `#[n_vm::test]`.  It is
+/// The backend the test asked for comes from `vm_config`.  It is
 /// resolved against the Docker daemon's architecture and the requested
 /// capabilities: a cross-arch guest runs under QEMU/TCG, a test that
 /// *explicitly* requires cloud-hypervisor on a cross-arch host is skipped,
@@ -156,10 +154,10 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
 /// - The Docker container infrastructure returns an error.
 /// - The container exits with a non-zero code.
 /// - The container does not report an exit code at all.
-pub fn run_host_tier<F: FnOnce()>(test_fn: F, requested: RequestedBackend, vm_config: VmConfig) {
+pub fn run_host_tier<F: FnOnce()>(test_fn: F, vm_config: VmConfig) {
     eprintln!("===== BEGIN NESTED TEST ENVIRONMENT =====");
 
-    let outcome = crate::run_test_in_vm(test_fn, requested, vm_config).unwrap_or_else(|err| {
+    let outcome = crate::run_test_in_vm(test_fn, vm_config).unwrap_or_else(|err| {
         panic!(
             "test container infrastructure error:\n{:?}",
             miette::Report::new(err)

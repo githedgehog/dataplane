@@ -1,0 +1,5 @@
+error: `multi_thread` has moved out of #[n_vm::test(...)] -- use `.runtime(GuestRuntime::MultiThread { worker_threads: None })` on the config instead
+ --> tests/compile_fail/migrated_runtime_option.rs:4:14
+  |
+4 | #[n_vm::test(multi_thread)]
+  |              ^^^^^^^^^^^^

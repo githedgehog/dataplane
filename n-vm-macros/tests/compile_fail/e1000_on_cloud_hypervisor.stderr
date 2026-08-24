@@ -1,10 +1,19 @@
-error[E0080]: evaluation panicked: this NIC model is emulated only by QEMU, but the test pinned cloud-hypervisor; drop the backend argument to let the harness pick QEMU, or write #[n_vm::test(qemu)]
-  --> tests/compile_fail/e1000_on_cloud_hypervisor.rs:20:1
+error[E0080]: evaluation panicked: this NIC model is emulated only by QEMU, but the configuration pinned cloud-hypervisor; leave the backend at RequestedBackend::Default to let the harness pick QEMU, or ask for RequestedBackend::Qemu
+  --> tests/compile_fail/e1000_on_cloud_hypervisor.rs:8:34
    |
-20 | #[n_vm::test(cloud_hypervisor, config = E1000_VM)]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed inside this call
+ 8 |   const E1000_VM: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+   |  __________________________________^
+ 9 | |     .nic_model(n_vm::NicModel::E1000)
+10 | |     .backend(n_vm::RequestedBackend::CloudHypervisor)
+11 | |     .build();
+   | |____________^ evaluation of `E1000_VM` failed inside this call
    |
-note: inside `VmConfig::assert_valid_for`
+note: inside `VmConfigBuilder::build`
+  --> $WORKSPACE/n-vm/src/config.rs
+   |
+   |         self.0.assert_valid();
+   |         ^^^^^^^^^^^^^^^^^^^^^
+note: inside `VmConfig::assert_valid`
   --> $RUST/core/src/panic.rs
    |
    |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
@@ -12,9 +21,22 @@ note: inside `VmConfig::assert_valid_for`
    |
   ::: $WORKSPACE/n-vm/src/config.rs
    |
-   | /             panic!(
-   | |                 "this NIC model is emulated only by QEMU, but the test pinned \
-   | |                  cloud-hypervisor; drop the backend argument to let the harness \
-   | |                  pick QEMU, or write #[n_vm::test(qemu)]"
-   | |             );
+   |               Err(ConfigProblem::NicRequiresQemu) => panic!(
+   |  ____________________________________________________-
+   | |                 "this NIC model is emulated only by QEMU, but the configuration pinned \
+   | |                  cloud-hypervisor; leave the backend at RequestedBackend::Default to let \
+   | |                  the harness pick QEMU, or ask for RequestedBackend::Qemu"
+   | |             ),
    | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/compile_fail/e1000_on_cloud_hypervisor.rs:13:1
+   |
+13 | #[n_vm::test(config = E1000_VM)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+  --> tests/compile_fail/e1000_on_cloud_hypervisor.rs:14:4
+   |
+14 | fn e1000_on_cloud_hypervisor() {}
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^
