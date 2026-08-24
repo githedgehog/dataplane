@@ -90,17 +90,70 @@ pub mod virtual_time;
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        // One relaxed-ish load when nothing is paused, which is every read in every test that does
-        // not drive the clock. The arm that panics is out of line -- see `virtual_time::refuse`.
-        if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
-            virtual_time::refuse();
-        }
-        tokio::time::Instant::now().into_std()
+        checked_now().unwrap_or_else(|| virtual_time::refuse())
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
         Instant::now()
     }
+}
+
+/// [`now`], or `None` where [`now`] would refuse.
+///
+/// For the readers that must not fail: a log timestamp, a metric label, anything whose job is to
+/// describe what happened rather than to decide something. For those, "this thread cannot see the
+/// clock the test is driving" is an answer worth printing, and a panic in the middle of formatting a
+/// log line would replace the diagnostic with a worse one.
+///
+/// Everything that compares against a deadline wants [`now`] instead. A `None` silently treated as
+/// "no timeout" is the class of bug this whole facade exists to prevent.
+#[must_use]
+pub fn checked_now() -> Option<Instant> {
+    #[cfg(all(feature = "virtual", not(wall_clock)))]
+    {
+        // One atomic load when nothing is paused, which is every read in every test that does not
+        // drive the clock.
+        if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
+            return None;
+        }
+        Some(tokio::time::Instant::now().into_std())
+    }
+    #[cfg(not(all(feature = "virtual", not(wall_clock))))]
+    {
+        Some(Instant::now())
+    }
+}
+
+/// Whether [`now`] follows a clock a test can drive.
+///
+/// `false` in production and under `--cfg wall_clock`. A caller wants this to decide how to *render*
+/// a time, not whether to read one -- see [`elapsed_since_first_reading`].
+#[must_use]
+pub const fn is_routed() -> bool {
+    cfg!(all(feature = "virtual", not(wall_clock)))
+}
+
+/// How far the clock has moved since the first time this was called.
+///
+/// A stamp for logs, where the useful question under a driven clock is "how far into the test is
+/// this line" rather than what the wall says. `None` on a thread that cannot see the driven clock,
+/// which is worth rendering as such rather than being papered over with a wall reading from a
+/// different timeline.
+///
+/// Signed, because the origin is the first reading and a *second* paused section in the same
+/// process starts behind it. `cargo nextest` gives each test its own process, so in the runner the
+/// workspace uses there is one section and the offsets count up from zero; under a shared process
+/// they can go negative, which is at least visibly odd rather than silently floored to zero.
+#[must_use]
+pub fn elapsed_since_first_reading() -> Option<(bool, Duration)> {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let reading = checked_now()?;
+    let origin = *ORIGIN.get_or_init(|| reading);
+    Some(if reading >= origin {
+        (false, reading.saturating_duration_since(origin))
+    } else {
+        (true, origin.saturating_duration_since(reading))
+    })
 }
 
 /// The current wall-clock time.

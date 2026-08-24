@@ -502,6 +502,8 @@ impl TracingControl {
         S: Subscriber + for<'span> LookupSpan<'span>,
     {
         tracing_subscriber::fmt::layer()
+            // Wall time in production, an offset on the driven clock under test -- see `stamp`.
+            .with_timer(crate::stamp::Stamp)
             .with_line_number(true)
             .with_target(true)
             .with_thread_ids(false)
