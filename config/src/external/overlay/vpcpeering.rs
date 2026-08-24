@@ -1568,19 +1568,40 @@ pub mod contract {
             _ => "3.3.3.0/24",
         };
 
-        let mut vpc_table = VpcTable::new();
-        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
-        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
-
-        let local = exposes
-            .into_iter()
-            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
-        let remote = VpcManifest::new("VPC-2").exposing(
+        let remote = vec![
             VpcExpose::empty().ip(remote_prefix
                 .parse::<Prefix>()
                 .unwrap_or_else(|_| unreachable!())
                 .into()),
-        );
+        ];
+
+        overlay_between(exposes, remote, gwgroup)
+    }
+
+    /// Build the fixed two-vpc overlay from both sides' exposes.
+    ///
+    /// `gwgroup` names the gateway group that owns the peering, which is what decides
+    /// whether a given gateway renders it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vpc is rejected by the [`VpcTable`], or if the
+    /// peering between them is rejected by the [`VpcPeeringTable`].
+    pub fn overlay_between(
+        local: Vec<VpcExpose>,
+        remote: Vec<VpcExpose>,
+        gwgroup: &str,
+    ) -> Result<Overlay, ConfigError> {
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
+
+        let local = local
+            .into_iter()
+            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
+        let remote = remote
+            .into_iter()
+            .fold(VpcManifest::new("VPC-2"), VpcManifest::exposing);
         let mut peerings = VpcPeeringTable::new();
         peerings.add(VpcPeering::new(
             "VPC-1--VPC-2",
