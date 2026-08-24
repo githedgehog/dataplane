@@ -601,9 +601,96 @@ pub const CMDLINE_NAMESPACE: &str = "n_it";
 /// Kernel command-line key carrying the guest path at which the writable
 /// corpus share should be mounted.
 ///
-/// Absent when the test did not opt in via `#[corpus]`, in which case
-/// `n-it` mounts nothing and the guest stays entirely read-only.
+/// Absent when the test declared no corpus, in which case `n-it` mounts
+/// nothing and the guest stays entirely read-only.
 pub const CMDLINE_CORPUS_MOUNT: &str = "n_it.corpus_mount";
+
+// == The crashes share ==
+//
+// A second writable window, with the same plumbing as the corpus one and
+// the opposite lifetime.  See [`FuzzDirs`] for why the engine needs two.
+
+/// Path to the Unix socket of the virtiofs daemon serving crash artifacts.
+pub const VIRTIOFSD_CRASHES_SOCKET_PATH: &str = "/vm/virtiofsd-crashes.sock";
+
+/// The virtiofs tag identifying the writable crashes share in the guest.
+pub const VIRTIOFS_CRASHES_TAG: &str = "crashes";
+
+/// Container path at which the host crashes directory is bind-mounted.
+pub const CRASHES_SHARE_PATH: &str = "/vm.crashes";
+
+/// Kernel command-line key carrying the guest path at which the writable
+/// crashes share should be mounted.
+///
+/// Absent when the engine named no separate artifact directory -- including
+/// every run without an engine at all, where the corpus share is the only
+/// writable window.
+pub const CMDLINE_CRASHES_MOUNT: &str = "n_it.crashes_mount";
+
+/// Container-tier environment variable carrying the guest path at which
+/// the corpus share is mounted.
+pub const ENV_CORPUS_MOUNT: &str = "N_VM_CORPUS_MOUNT";
+
+/// Container-tier environment variable carrying the guest path at which
+/// the crashes share is mounted.
+pub const ENV_CRASHES_MOUNT: &str = "N_VM_CRASHES_MOUNT";
+
+/// One writable window into the guest, described end to end.
+///
+/// The two shares differ only in *which host directory backs them*; every
+/// step between -- bind mount, daemon, tag, kernel command line, guest
+/// mount -- is identical.  Grouping the four constants that spell one share
+/// lets each tier iterate [`WRITABLE_SHARES`] instead of carrying a second
+/// copy of the same five-line sequence, which is how the first share's
+/// pieces drifted apart in the first place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WritableShare {
+    /// What this share is for, for logs and error messages.
+    pub role: &'static str,
+    /// virtiofs tag the guest mounts by.
+    pub tag: &'static str,
+    /// Container path the host directory is bind-mounted at.
+    pub container_path: &'static str,
+    /// Unix socket the daemon serving it listens on.
+    pub socket_path: &'static str,
+    /// Kernel command-line key carrying the guest mount point.
+    pub cmdline_key: &'static str,
+    /// Container-tier environment variable carrying the guest mount point.
+    ///
+    /// The guest path is a *remapped host* path, so only the host tier can
+    /// compute it -- the container has never seen the host's workspace.
+    /// This carries it inward, the same way [`ENV_BACKEND`] and
+    /// [`ENV_ENGINE_TIME_LIMIT`] carry the other facts a container cannot
+    /// discover for itself.
+    pub env_key: &'static str,
+}
+
+/// The share holding generated inputs.
+pub const CORPUS_SHARE: WritableShare = WritableShare {
+    role: "corpus",
+    tag: VIRTIOFS_CORPUS_TAG,
+    container_path: CORPUS_SHARE_PATH,
+    socket_path: VIRTIOFSD_CORPUS_SOCKET_PATH,
+    cmdline_key: CMDLINE_CORPUS_MOUNT,
+    env_key: ENV_CORPUS_MOUNT,
+};
+
+/// The share holding crash artifacts.
+pub const CRASHES_SHARE: WritableShare = WritableShare {
+    role: "crashes",
+    tag: VIRTIOFS_CRASHES_TAG,
+    container_path: CRASHES_SHARE_PATH,
+    socket_path: VIRTIOFSD_CRASHES_SOCKET_PATH,
+    cmdline_key: CMDLINE_CRASHES_MOUNT,
+    env_key: ENV_CRASHES_MOUNT,
+};
+
+/// Every writable window a guest can be given, in a fixed order.
+///
+/// Fixed and small on purpose: each entry costs a daemon, a socket and a
+/// pre-created mount point, so this is a closed set rather than something
+/// a test can extend.
+pub const WRITABLE_SHARES: [WritableShare; 2] = [CORPUS_SHARE, CRASHES_SHARE];
 
 /// Well-known directory inside the VM guest where the test binary
 /// directory is mounted.
@@ -781,6 +868,75 @@ pub fn strip_multiprocess_flags(value: &str) -> String {
         .join(" ")
 }
 
+/// The libfuzzer flag naming where crash artifacts are written.
+const ARTIFACT_PREFIX_FLAG: &str = "-artifact_prefix=";
+
+/// The two host directories a libfuzzer command line says the engine will
+/// write to.
+///
+/// Both are borrowed out of the command line rather than owned, because the
+/// only caller is the host tier deciding what to bind-mount and it has the
+/// string in hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuzzDirs<'a> {
+    /// Where newly-generated inputs are saved.
+    ///
+    /// libfuzzer's first positional argument: the one corpus directory it
+    /// treats as writable.  Later positionals are seed corpora it only
+    /// reads, so they need no writable share.
+    pub corpus: Option<&'a str>,
+    /// Where crash artifacts are written.
+    ///
+    /// [`None`] when it would duplicate [`corpus`](Self::corpus): two
+    /// virtiofs daemons serving one directory with `cache=always` is a
+    /// coherence hazard, and one share already covers it.
+    pub crashes: Option<&'a str>,
+}
+
+/// Reads the directories a libfuzzer command line will write to.
+///
+/// These are what a fuzz target actually needs write access to, and asking
+/// the engine is the only way to know them: `cargo-bolero` computes them on
+/// the host, from `--corpus-dir` and from its own `fuzz_dir()` derivation,
+/// and the guest sees only the result.  Deriving them independently in
+/// `n-vm` would mean reimplementing that derivation and drifting from it.
+///
+/// The two are separate trees, and deliberately so -- a corpus is a cache
+/// that a run may want to start without, while a crash is a finding that
+/// must not be lost -- which is why this returns two directories rather than
+/// the one enclosing `__fuzz__` that the earlier single share assumed:
+///
+/// ```text
+/// <ws>/.fuzz-corpus/reconcile_fuzz              <- corpus, out of tree
+/// <ws>/mgmt/tests/__fuzz__/reconcile/crashes    <- crashes, beside the test
+/// ```
+///
+/// `-artifact_prefix` is a *prefix*, not a directory: libfuzzer forms an
+/// artifact path by concatenating it with `crash-<hash>`.  `cargo-bolero`
+/// always ends it with `/`, making it a directory, but a hand-written
+/// `-E=-artifact_prefix=/tmp/run-` is legal and means `/tmp`.
+#[must_use]
+pub fn fuzz_dirs(value: &str) -> FuzzDirs<'_> {
+    let corpus = value.split_whitespace().find(|arg| !arg.starts_with('-'));
+
+    let crashes = value
+        .split_whitespace()
+        .filter_map(|arg| arg.strip_prefix(ARTIFACT_PREFIX_FLAG))
+        .filter(|prefix| !prefix.is_empty())
+        .map(|prefix| match prefix.strip_suffix('/') {
+            Some(dir) => dir,
+            // Not a directory but a filename stem; the directory is its parent.
+            None => prefix.rsplit_once('/').map_or("", |(dir, _)| dir),
+        })
+        // Last wins, matching libfuzzer's own parser.
+        .rfind(|dir| !dir.is_empty());
+
+    FuzzDirs {
+        corpus,
+        crashes: crashes.filter(|dir| Some(*dir) != corpus),
+    }
+}
+
 /// Container-tier environment variable carrying how long the guest's work
 /// was declared to take, in whole seconds.
 ///
@@ -861,7 +1017,6 @@ pub fn decode_environ(bytes: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-
 #[cfg(test)]
 mod remap_tests {
     use super::*;
@@ -872,7 +1027,10 @@ mod remap_tests {
             "-artifact_prefix=/home/you/src/dp/mgmt/tests/__fuzz__/crashes/",
             "/home/you/src/dp",
         );
-        assert_eq!(got, "-artifact_prefix=/workspace/mgmt/tests/__fuzz__/crashes/");
+        assert_eq!(
+            got,
+            "-artifact_prefix=/workspace/mgmt/tests/__fuzz__/crashes/"
+        );
     }
 
     #[test]
@@ -898,7 +1056,10 @@ mod remap_tests {
 
     #[test]
     fn a_value_naming_no_host_path_is_untouched() {
-        assert_eq!(remap_workspace_paths("-timeout=10 -jobs=1", "/w"), "-timeout=10 -jobs=1");
+        assert_eq!(
+            remap_workspace_paths("-timeout=10 -jobs=1", "/w"),
+            "-timeout=10 -jobs=1"
+        );
     }
 }
 
@@ -957,6 +1118,92 @@ mod multiprocess_tests {
     fn a_command_line_with_nothing_to_strip_is_unchanged() {
         let args = "/corpus /crashes -timeout=10";
         assert_eq!(strip_multiprocess_flags(args), args);
+    }
+}
+
+#[cfg(test)]
+mod fuzz_dirs_tests {
+    use super::*;
+
+    /// The exact command line observed from `just fuzz reconcile_fuzz`.
+    ///
+    /// Verbatim rather than reduced: the point of this parser is to agree
+    /// with what `cargo-bolero` actually emits, and a hand-simplified
+    /// sample cannot show that the two directories live in unrelated trees.
+    const REAL: &str = "/ws/.fuzz-corpus/reconcile_fuzz \
+         /ws/mgmt/tests/__fuzz__/reconcile/crashes \
+         -artifact_prefix=/ws/mgmt/tests/__fuzz__/reconcile/crashes/ \
+         -timeout=10 -max_total_time=60 -max_len=65536 -jobs=32 -len_control=0";
+
+    #[test]
+    fn the_two_directories_are_read_from_a_real_command_line() {
+        let dirs = fuzz_dirs(REAL);
+        assert_eq!(dirs.corpus, Some("/ws/.fuzz-corpus/reconcile_fuzz"));
+        assert_eq!(
+            dirs.crashes,
+            Some("/ws/mgmt/tests/__fuzz__/reconcile/crashes"),
+        );
+    }
+
+    /// Later positionals are seed corpora libfuzzer only reads.
+    ///
+    /// The crashes directory is itself passed as one, which is why "first
+    /// positional" and not "every positional" is what needs a writable
+    /// share.
+    #[test]
+    fn only_the_first_positional_is_writable() {
+        let dirs = fuzz_dirs("/corpus /seed-a /seed-b -artifact_prefix=/crashes/");
+        assert_eq!(dirs.corpus, Some("/corpus"));
+        assert_eq!(dirs.crashes, Some("/crashes"));
+    }
+
+    /// One directory, not two shares over it.
+    ///
+    /// Two virtiofs daemons serving the same tree with `cache=always` is
+    /// the coherence hazard the split has to avoid, so an engine that names
+    /// one directory twice gets one share.
+    #[test]
+    fn a_directory_named_twice_yields_one_share() {
+        let dirs = fuzz_dirs("/shared -artifact_prefix=/shared/");
+        assert_eq!(dirs.corpus, Some("/shared"));
+        assert_eq!(dirs.crashes, None);
+    }
+
+    /// `-artifact_prefix` is a prefix, so without a trailing slash the
+    /// directory is its parent.
+    #[test]
+    fn a_bare_artifact_prefix_names_its_parent_directory() {
+        let dirs = fuzz_dirs("/corpus -artifact_prefix=/tmp/run-");
+        assert_eq!(dirs.crashes, Some("/tmp"));
+    }
+
+    /// Nothing to mount when nothing was asked for.
+    #[test]
+    fn an_empty_command_line_names_nothing() {
+        let dirs = fuzz_dirs("");
+        assert_eq!(dirs.corpus, None);
+        assert_eq!(dirs.crashes, None);
+    }
+
+    /// A flags-only command line still has no corpus to write to.
+    #[test]
+    fn flags_alone_name_no_corpus() {
+        let dirs = fuzz_dirs("-timeout=10 -max_total_time=60");
+        assert_eq!(dirs.corpus, None);
+        assert_eq!(dirs.crashes, None);
+    }
+
+    /// The guest sees remapped paths, so the two must survive the rewrite
+    /// that `write_forwarded_env` applies to the same string.
+    #[test]
+    fn both_directories_survive_the_workspace_remap() {
+        let remapped = remap_workspace_paths(REAL, "/ws");
+        let dirs = fuzz_dirs(&remapped);
+        assert_eq!(dirs.corpus, Some("/workspace/.fuzz-corpus/reconcile_fuzz"));
+        assert_eq!(
+            dirs.crashes,
+            Some("/workspace/mgmt/tests/__fuzz__/reconcile/crashes"),
+        );
     }
 }
 

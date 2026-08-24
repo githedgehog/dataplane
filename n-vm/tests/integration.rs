@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use n_vm::{
-    GuestHugePageConfig, GuestHugePageSize, GuestRuntime, HostPageSize, ModuleParam,
+    CorpusPolicy, GuestHugePageConfig, GuestHugePageSize, GuestRuntime, HostPageSize, ModuleParam,
     RequestedBackend, VmConfig, VmConfigBuilder, features,
 };
 
@@ -61,7 +61,10 @@ const HOST_1G_VM: VmConfig = VmConfig {
 /// present the same guest, which is only a claim worth making if each side
 /// names the machine it booted.  `to_builder` keeps the derivation to one
 /// line, so the shape is still stated once.
-const IOMMU_VM_QEMU: VmConfig = IOMMU_VM.to_builder().backend(RequestedBackend::Qemu).build();
+const IOMMU_VM_QEMU: VmConfig = IOMMU_VM
+    .to_builder()
+    .backend(RequestedBackend::Qemu)
+    .build();
 const HOST_1G_VM_QEMU: VmConfig = HOST_1G_VM
     .to_builder()
     .backend(RequestedBackend::Qemu)
@@ -292,31 +295,39 @@ async fn tokio_test_multi_thread() {
     assert!(contents.contains("Linux"));
 }
 
-/// Everything `#[corpus]` changes about a guest, checked in one boot.
+/// Everything [`CorpusPolicy::Fuzz`] changes about a guest, in one boot.
 ///
 /// Two claims, kept together because the second costs nothing once the VM
-/// is up and a `#[corpus]` test of its own would be announced to
-/// `cargo bolero list` as a fuzz target containing no `check!`.
+/// is up and a fuzz target of its own would be announced to
+/// `cargo bolero list` as one containing no `check!`.
 ///
 /// **The writable window is exactly one directory wide.**
 ///
-/// This is the security boundary that makes `#[corpus]` acceptable at all:
-/// a fuzz target is deliberately provoking misbehaviour, so it must be able
-/// to save inputs without being able to damage the rest of the developer's
-/// source tree.  The split is enforced by *which virtiofs daemon serves
-/// which path* -- the root daemon runs `--readonly` and the corpus daemon's
-/// `--shared-dir` is the corpus directory alone -- so it holds regardless of
-/// what the guest does with its own mount flags.
+/// This is the security boundary that makes a writable share acceptable at
+/// all: a fuzz target is deliberately provoking misbehaviour, so it must be
+/// able to save inputs without being able to damage the rest of the
+/// developer's source tree.  The split is enforced by *which virtiofs daemon
+/// serves which path* -- the root daemon runs `--readonly` and the corpus
+/// daemon's `--shared-dir` is the corpus directory alone -- so it holds
+/// regardless of what the guest does with its own mount flags.
+///
+/// This run has no engine, so the corpus falls back to `bolero`'s own
+/// `__fuzz__` beside this file.  Under `cargo bolero test` the directories
+/// come from the engine instead, and there are two of them.
 ///
 /// **The guest reserves no hugepages.**
 ///
-/// `#[corpus]` alone decides this -- the test names no configuration, so
-/// `guest_hugepages` is [`GuestHugePageConfig::Auto`].  See
+/// The policy alone decides this -- the config says nothing about
+/// hugepages, so `guest_hugepages` is [`GuestHugePageConfig::Auto`].  See
 /// `VmConfig::hugepage_reservation` for why the two roles want opposite
 /// answers.
 #[n_vm::test]
-#[n_vm::corpus]
 fn corpus_is_writable_and_rest_of_workspace_is_not() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .corpus(CorpusPolicy::Fuzz)
+        .build();
+
     assert_eq!(
         hugepages_total(),
         0,

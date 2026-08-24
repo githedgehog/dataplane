@@ -630,8 +630,11 @@ pub struct VmConfig {
     /// [`KernelFeature`](crate::kernel_feature::KernelFeature) declared
     /// `modular`.
     pub module_params: &'static [ModuleParam],
-    /// The test's own `(file!(), CARGO_MANIFEST_DIR)` when it opted in to a
-    /// writable corpus directory via `#[corpus]`; `None` otherwise.
+    /// What writable storage this test gets, and whether it is a fuzz
+    /// target.  See [`CorpusPolicy`].
+    pub corpus: CorpusPolicy,
+    /// The test's own `(file!(), CARGO_MANIFEST_DIR)`, injected by the
+    /// attribute macro; `None` on a configuration built by hand.
     ///
     /// Carried as raw compile-time strings rather than a pre-computed
     /// directory so that both tiers derive the path identically from one
@@ -648,7 +651,35 @@ pub struct VmConfig {
     /// the workspace entirely -- so `#[corpus]` silently got no writable
     /// directory.  The manifest dir supplies the anchor needed to recover
     /// the workspace-relative tail; see [`Self::corpus_rel_dir`].
-    pub corpus_source_file: Option<(&'static str, &'static str)>,
+    pub source_file: Option<(&'static str, &'static str)>,
+}
+
+/// What writable storage a test is given, and whether it is a fuzz target.
+///
+/// One value rather than a `bool` because the two things it decides are the
+/// same decision: a coverage-guided target is exactly the thing that needs
+/// somewhere to save an input, and `cargo bolero list` exists to name the
+/// things that can be fuzzed.  Splitting them would let a test be announced
+/// with nowhere to write, or given a writable share it never uses.
+///
+/// An enum rather than a `bool` for the usual reason -- it reads at the call
+/// site, and a third answer can be added without breaking the second -- and
+/// for a specific one: everything a run might want to vary about a corpus
+/// (where it lives, whether it carries over, whether to start clean) is a
+/// property of the *invocation*, not of the test.  Those levers belong to
+/// `just fuzz`; see [`n_vm_protocol::FuzzDirs`].  What is left for the test
+/// to declare is only whether it needs them at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CorpusPolicy {
+    /// No writable storage.  The guest is read-only throughout, and the
+    /// test is not announced to `cargo bolero list`.
+    #[default]
+    None,
+    /// A coverage-guided fuzz target.
+    ///
+    /// Gets a writable corpus share, a writable crashes share when the
+    /// engine names a separate one, and an entry in `cargo bolero list`.
+    Fuzz,
 }
 
 /// The tokio runtime an `async` test body is driven on inside the guest.
@@ -728,6 +759,19 @@ impl VmConfigBuilder {
     #[must_use]
     pub const fn host_page_size(mut self, size: HostPageSize) -> Self {
         self.0.host_page_size = size;
+        self
+    }
+
+    /// Declares what writable storage the test needs.
+    ///
+    /// [`CorpusPolicy::Fuzz`] is what replaced the old `#[n_vm::corpus]`
+    /// attribute.  It is a configuration value rather than an attribute
+    /// because it decides things the other configuration decides -- notably
+    /// the hugepage reservation, which a fuzz target declines -- and those
+    /// could not see each other while one lived in the macro.
+    #[must_use]
+    pub const fn corpus(mut self, policy: CorpusPolicy) -> Self {
+        self.0.corpus = policy;
         self
     }
 
@@ -882,7 +926,8 @@ impl VmConfig {
         runtime: GuestRuntime::CurrentThread,
         guest_time_limit: None,
         module_params: &[],
-        corpus_source_file: None,
+        corpus: CorpusPolicy::None,
+        source_file: None,
     };
 
     /// Reopens this configuration as a builder, for deriving a variant.
@@ -903,14 +948,13 @@ impl VmConfig {
 
     /// Whether this test is a coverage-guided fuzz target.
     ///
-    /// Equivalent to "the test wrote `#[n_vm::corpus]`": that attribute is
-    /// what makes the harness announce the test to `cargo bolero list` and
-    /// give the guest a writable corpus directory, and it is the only signal
-    /// separating a fuzz target from an ordinary guest test.  Read through
-    /// this rather than off the field, so the meaning has one name.
+    /// Read through this rather than off the field, so the meaning has one
+    /// name.  It is also what the generated harness branches on to decide
+    /// whether to announce itself to `cargo bolero list`; being `const`, that
+    /// branch folds away entirely in an ordinary test.
     #[must_use]
     pub const fn is_fuzz_target(&self) -> bool {
-        self.corpus_source_file.is_some()
+        matches!(self.corpus, CorpusPolicy::Fuzz)
     }
 
     /// The hugepage reservation this VM actually boots with.
@@ -975,7 +1019,10 @@ impl VmConfig {
         // asks for an emulated NIC is not a contradiction, it is a test that
         // wants QEMU, and `RequestedBackend::resolve` selects it.
         if self.nic_model.requires_qemu()
-            && matches!(self.backend, crate::backend::RequestedBackend::CloudHypervisor)
+            && matches!(
+                self.backend,
+                crate::backend::RequestedBackend::CloudHypervisor
+            )
         {
             return Err(ConfigProblem::NicRequiresQemu);
         }
@@ -1021,24 +1068,34 @@ impl VmConfig {
     ///
     /// A relative `file!()` is used as-is.  An absolute one is the
     /// `--remap-path-prefix==${src}` case described on
-    /// [`Self::corpus_source_file`]: the remap prepends the workspace's
+    /// [`Self::source_file`]: the remap prepends the workspace's
     /// store path, so the workspace-relative tail is recovered by cutting at
     /// the crate directory's own name, which is where the manifest dir and
     /// the source path necessarily agree.  `rposition` because the anchor is
     /// the *last* such component -- a store hash like `abc-n-vm-source`
     /// would otherwise match ahead of the real crate directory.
     ///
-    /// `None` when the test did not opt in, when the path has no parent to
-    /// hang `__fuzz__` off, or when the anchor is absent (a crate sitting at
-    /// the workspace root, whose directory name the remapped prefix does not
-    /// preserve).  Callers must treat `None` on an opted-in test as an
-    /// error: a missing corpus mount otherwise surfaces as a confusing
-    /// read-only failure inside the guest.
+    /// This is the *fallback* location, used when no engine named one.
+    /// Under `cargo bolero test` the directories come from the engine's own
+    /// command line instead (see [`n_vm_protocol::fuzz_dirs`]), because
+    /// `cargo-bolero` computes them from `--corpus-dir` and from its own
+    /// `fuzz_dir()` derivation -- recomputing them here would mean
+    /// reimplementing that derivation and drifting from it.
+    ///
+    /// `None` when the test is not a fuzz target, when the path has no
+    /// parent to hang `__fuzz__` off, or when the anchor is absent (a crate
+    /// sitting at the workspace root, whose directory name the remapped
+    /// prefix does not preserve).  Callers must treat `None` on a fuzz
+    /// target as an error: a missing corpus mount otherwise surfaces as a
+    /// confusing read-only failure inside the guest.
     #[must_use]
     pub fn corpus_rel_dir(&self) -> Option<std::path::PathBuf> {
         use std::path::{Component, Path, PathBuf};
 
-        let (file, crate_dir) = self.corpus_source_file?;
+        if !self.is_fuzz_target() {
+            return None;
+        }
+        let (file, crate_dir) = self.source_file?;
         let file = Path::new(file);
 
         let relative: PathBuf = if file.is_relative() {
@@ -1213,23 +1270,67 @@ pub(crate) const VSOCK_READER_CAPACITY: usize = 32_768;
 /// is detected.
 pub(crate) const POST_PANIC_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// A writable share that this run actually has, and where it lands.
+///
+/// Separate from [`n_vm_protocol::WritableShare`], which is the static
+/// description of a window that *could* exist.  Which windows are open, and
+/// what guest path each covers, is decided per run: the engine names its own
+/// directories, and their guest paths are host paths put through the
+/// workspace remap.  Resolving that once and threading the result keeps the
+/// backends' argument lowering a pure function of its inputs, the same way
+/// `arch` and `kernel_image` are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveShare {
+    /// Which window this is.
+    pub share: n_vm_protocol::WritableShare,
+    /// Absolute path the guest mounts it at.
+    pub guest_path: String,
+}
+
+impl ActiveShare {
+    /// The shares this container has, in [`n_vm_protocol::WRITABLE_SHARES`]
+    /// order.
+    ///
+    /// A share is present when *both* halves are: the host tier bind-mounted
+    /// a directory at the container path, and it named the guest path in the
+    /// environment.  Requiring both is what keeps a virtio device from being
+    /// added with no daemon behind it, which does not fail -- it hangs the
+    /// hypervisor waiting on a vhost-user socket that will never be served.
+    #[must_use]
+    pub fn resolve() -> Vec<Self> {
+        n_vm_protocol::WRITABLE_SHARES
+            .iter()
+            .filter(|share| std::path::Path::new(share.container_path).is_dir())
+            .filter_map(|share| {
+                let guest_path = std::env::var(share.env_key).ok()?;
+                (!guest_path.is_empty()).then_some(Self {
+                    share: *share,
+                    guest_path,
+                })
+            })
+            .collect()
+    }
+}
+
 /// Builds the guest kernel command line.
 pub(crate) fn build_kernel_cmdline(
     vm_bin_path: &str,
     test_name: &str,
     vsock: &VsockAllocation,
     // Grouped rather than passed field by field: `iommu`, the hugepage
-    // reservation and the corpus mount all come from here, and threading
-    // them separately made the signature grow every time the config did.
+    // reservation and the module parameters all come from here, and
+    // threading them separately made the signature grow every time the
+    // config did.
     vm_config: &VmConfig,
+    // Not from the config, because which windows are open is a fact about
+    // this run rather than about the test -- see [`ActiveShare`].
+    shares: &[ActiveShare],
     arch: Arch,
     boot: crate::kernel_manifest::BootMode,
 ) -> String {
     let vsock_cmdline = vsock.kernel_cmdline_fragment();
     let iommu = vm_config.iommu;
     let guest_hugepages = vm_config.hugepage_reservation();
-    let corpus_mount = vm_config.corpus_guest_path();
-    let corpus_mount = corpus_mount.as_deref();
 
     // Without a vIOMMU, allow DPDK to bind devices via vfio-pci.
     let noiommu_fragment = if iommu {
@@ -1242,14 +1343,15 @@ pub(crate) fn build_kernel_cmdline(
 
     // Module parameters, in the kernel section (before `--`).  Each was
     // checked for shape when it was declared, so this only has to join them.
-    let module_param_fragment = vm_config
-        .module_params
-        .iter()
-        .fold(String::new(), |mut acc, param| {
-            acc.push_str(&param.render());
-            acc.push(' ');
-            acc
-        });
+    let module_param_fragment =
+        vm_config
+            .module_params
+            .iter()
+            .fold(String::new(), |mut acc, param| {
+                acc.push_str(&param.render());
+                acc.push(' ');
+                acc
+            });
 
     // The IOMMU and console parameters are lowered per guest ISA
     // (x86 ttyS0 vs aarch64 ttyAMA0); `arch` is passed in explicitly so
@@ -1259,11 +1361,17 @@ pub(crate) fn build_kernel_cmdline(
     let iommu_params = arch.virtual_iommu().map_or("", |l| l.kernel_params);
     let console_params = arch.console_kernel_params();
 
-    // Where `n-it` should mount the writable corpus share.  Absent unless
-    // the test opted in via `#[corpus]`, in which case the guest never sees
-    // a writable filesystem backed by the source tree at all.
-    let corpus_fragment = corpus_mount.map_or_else(String::new, |path| {
-        format!("{key}={path} ", key = n_vm_protocol::CMDLINE_CORPUS_MOUNT)
+    // Where `n-it` should mount each writable share.  Empty for an ordinary
+    // test, which never sees a writable filesystem at all.
+    let corpus_fragment = shares.iter().fold(String::new(), |mut acc, active| {
+        use std::fmt::Write as _;
+        let _ = write!(
+            acc,
+            "{key}={path} ",
+            key = active.share.cmdline_key,
+            path = active.guest_path,
+        );
+        acc
     });
 
     // `sysctl.debug.exception-trace=1` makes the kernel report a userspace
@@ -1370,6 +1478,69 @@ mod tests {
         count: 1,
     };
 
+    // -- Writable shares ----------------------------------------------
+
+    fn active(share: n_vm_protocol::WritableShare, guest_path: &str) -> ActiveShare {
+        ActiveShare {
+            share,
+            guest_path: guest_path.to_owned(),
+        }
+    }
+
+    fn cmdline_with(shares: &[ActiveShare]) -> String {
+        build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &n_vm_protocol::VsockAllocation::with_defaults(),
+            &VmConfig::DEFAULT,
+            shares,
+            Arch::X86_64,
+            crate::kernel_manifest::BootMode::Direct,
+        )
+    }
+
+    /// Both windows reach `n-it`, each under its own key.
+    ///
+    /// One key could not carry two paths, and the guest has to mount them
+    /// separately -- they are in unrelated trees.
+    #[test]
+    fn each_writable_share_gets_its_own_cmdline_key() {
+        let cmdline = cmdline_with(&[
+            active(n_vm_protocol::CORPUS_SHARE, "/workspace/.fuzz-corpus/t"),
+            active(
+                n_vm_protocol::CRASHES_SHARE,
+                "/workspace/m/__fuzz__/t/crashes",
+            ),
+        ]);
+        assert!(
+            cmdline.contains("n_it.corpus_mount=/workspace/.fuzz-corpus/t"),
+            "{cmdline}",
+        );
+        assert!(
+            cmdline.contains("n_it.crashes_mount=/workspace/m/__fuzz__/t/crashes"),
+            "{cmdline}",
+        );
+    }
+
+    /// An ordinary test is told about no writable filesystem at all.
+    #[test]
+    fn a_test_with_no_shares_names_no_mounts() {
+        let cmdline = cmdline_with(&[]);
+        assert!(!cmdline.contains("_mount="), "{cmdline}");
+    }
+
+    /// The keys land in the kernel section, before the `--` that separates
+    /// it from the test binary's own argv.  A parameter on the wrong side
+    /// of that split does not fail: `n-it` never sees it, and the guest
+    /// silently has no writable share.
+    #[test]
+    fn the_mount_keys_precede_the_argv_separator() {
+        let cmdline = cmdline_with(&[active(n_vm_protocol::CORPUS_SHARE, "/workspace/c")]);
+        let key = cmdline.find("n_it.corpus_mount=").expect("key is present");
+        let split = cmdline.find(" -- ").expect("separator is present");
+        assert!(key < split, "{cmdline}");
+    }
+
     // -- Hugepage defaulting ------------------------------------------
 
     /// The reservation an ordinary guest test still gets: the same 512 MiB
@@ -1435,6 +1606,7 @@ mod tests {
             "my::test",
             &vsock,
             &with_corpus("n-vm/tests/integration.rs", "/home/dev/dataplane/n-vm"),
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1448,7 +1620,8 @@ mod tests {
 
     fn with_corpus(file: &'static str, crate_dir: &'static str) -> VmConfig {
         VmConfig {
-            corpus_source_file: Some((file, crate_dir)),
+            corpus: CorpusPolicy::Fuzz,
+            source_file: Some((file, crate_dir)),
             ..VmConfig::DEFAULT
         }
     }
@@ -1621,9 +1794,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: hp,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1655,9 +1829,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: hp,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1686,6 +1861,7 @@ mod tests {
                 guest_hugepages: GuestHugePageConfig::None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1709,9 +1885,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1731,9 +1908,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1754,9 +1932,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1776,9 +1955,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1798,9 +1978,10 @@ mod tests {
             &VmConfig {
                 iommu: true,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1826,9 +2007,10 @@ mod tests {
                 &VmConfig {
                     iommu,
                     guest_hugepages: DEFAULT_HP,
-                    corpus_source_file: None,
+                    source_file: None,
                     ..VmConfig::DEFAULT
                 },
+                &[],
                 Arch::X86_64,
                 crate::kernel_manifest::BootMode::Direct,
             );
@@ -1841,9 +2023,10 @@ mod tests {
                 &VmConfig {
                     iommu,
                     guest_hugepages: DEFAULT_HP,
-                    corpus_source_file: None,
+                    source_file: None,
                     ..VmConfig::DEFAULT
                 },
+                &[],
                 Arch::Aarch64,
                 crate::kernel_manifest::BootMode::Direct,
             );
@@ -1864,9 +2047,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1879,9 +2063,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::Aarch64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -1914,18 +2099,27 @@ mod tests {
                 module_params: PARAMS,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
-        assert!(cmdline.contains("mlx5_core.prof_sel=2"), "cmdline: {cmdline}");
+        assert!(
+            cmdline.contains("mlx5_core.prof_sel=2"),
+            "cmdline: {cmdline}"
+        );
         assert!(
             cmdline.contains("vfio-pci.disable_idle_d3=1"),
             "cmdline: {cmdline}",
         );
         // In the kernel section: everything after `--` is argv for the test
         // binary, where a module parameter would be read by libtest instead.
-        let (kernel, _init) = cmdline.split_once(" -- ").expect("cmdline has an init separator");
-        assert!(kernel.contains("mlx5_core.prof_sel=2"), "kernel section: {kernel}");
+        let (kernel, _init) = cmdline
+            .split_once(" -- ")
+            .expect("cmdline has an init separator");
+        assert!(
+            kernel.contains("mlx5_core.prof_sel=2"),
+            "kernel section: {kernel}"
+        );
     }
 
     /// The default carries none, so no test that never asks for one pays a
@@ -1938,6 +2132,7 @@ mod tests {
             "my::test",
             &vsock,
             &VmConfig::DEFAULT,
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -2036,9 +2231,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -2059,9 +2255,10 @@ mod tests {
             &VmConfig {
                 iommu: false,
                 guest_hugepages: DEFAULT_HP,
-                corpus_source_file: None,
+                source_file: None,
                 ..VmConfig::DEFAULT
             },
+            &[],
             Arch::X86_64,
             crate::kernel_manifest::BootMode::Direct,
         );
@@ -2183,10 +2380,7 @@ mod tests {
     fn struct_update_leaves_unnamed_fields_at_the_default() {
         assert_eq!(OVERRIDDEN.host_page_size, VmConfig::DEFAULT.host_page_size);
         assert_eq!(OVERRIDDEN.nic_model, VmConfig::DEFAULT.nic_model);
-        assert_eq!(
-            OVERRIDDEN.corpus_source_file,
-            VmConfig::DEFAULT.corpus_source_file
-        );
+        assert_eq!(OVERRIDDEN.source_file, VmConfig::DEFAULT.source_file);
     }
 
     #[test]
