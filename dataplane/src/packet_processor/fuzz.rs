@@ -640,6 +640,11 @@ impl Fabric {
         &mut self.worker
     }
 
+    /// The write side of this fabric's configuration, for a property that re-enacts one.
+    pub(crate) fn fleet(&self) -> &Fleet {
+        &self.fleet
+    }
+
     /// How many entries the flow table holds, for a property about state rather than packets.
     pub(crate) fn flows(&self) -> Option<usize> {
         self.fleet.blueprint().flow_table.len()
@@ -2430,9 +2435,11 @@ mod round_trip {
 mod acl {
     use super::*;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use config::external::overlay::acl::{AclAction, AclProtoMatch};
+    use config::external::overlay::acl::{
+        Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    };
     use config::external::overlay::vpcpeering::contract::{MasqueradeExposes, peering_acl};
-    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
     use net::headers::builder::ChainBase;
     use net::headers::{Headers, TryIpv4Mut, TryIpv6Mut};
     use net::ip::NextHeader;
@@ -2751,6 +2758,142 @@ mod acl {
         super::assert_covered(
             behind > 0,
             "no packet was ever sent behind an extension header, which is the shape this exists for",
+        );
+    }
+
+    fn prefix(text: &str) -> Prefix {
+        text.parse()
+            .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
+    }
+
+    fn ports(start: u16, end: u16) -> PortRange {
+        PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
+    }
+
+    /// One port-forwarding expose: a service inside, reached from outside on named ports.
+    fn forwarding() -> Vec<VpcExpose> {
+        vec![
+            VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
+                .ip(PrefixWithOptionalPorts::new(
+                    prefix("10.0.0.0/24"),
+                    Some(ports(1000, 1004)),
+                ))
+                .as_range(PrefixWithOptionalPorts::new(
+                    prefix("172.16.0.0/24"),
+                    Some(ports(2000, 2004)),
+                ))
+                .unwrap_or_else(|_| unreachable!("a port forwarding expose accepts a range")),
+        ]
+    }
+
+    /// One rule, permitting what the far vpc opens, at flow scope over a default of deny.
+    ///
+    /// No rule for the reply direction, deliberately: at flow scope a reply is permitted by its
+    /// membership of the flow the request opened, and a second rule would permit it directly and
+    /// leave the mechanism under test unreached.
+    fn flow_scoped_permit() -> Acl {
+        Acl::new(
+            AclAction::Deny,
+            vec![AclRule {
+                name: "opened-from-outside".to_owned(),
+                from: "VPC-2".to_owned(),
+                to: "VPC-1".to_owned(),
+                action: AclAction::Allow,
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: AclProtoMatch::Any,
+                },
+                scope: AclScope::Flow,
+                log: false,
+            }],
+        )
+    }
+
+    /// A port-forwarded flow's ACL permission does not survive a configuration change.
+    ///
+    /// The configuration enacted here is the **same one already running** -- nothing about it
+    /// differs -- so nothing about this peering, its ACL or its port forwarding has changed. What
+    /// changes is the generation, and that is enough.
+    ///
+    /// `AclFilter` authorises a reply by finding the flow the request opened, reversing the reply
+    /// through it and looking the *request* up instead. `packet_has_valid_flow` refuses to do that
+    /// with flow information stamped under an older generation, which is right: the ACL that
+    /// authorised the request may not be the one now in force. The repair for that is
+    /// `upgrade_all_masquerading_flows`, which walks the flow table on every enactment and moves
+    /// live flows to the new generation -- and it is called from `update_nat_allocator`, which is
+    /// masquerade's writer and not port forwarding's. A port-forwarded flow is stamped with a
+    /// generation at creation (`PortForwarder` sets it) and is never moved off it.
+    ///
+    /// So the first configuration change after a port-forwarded connection opens denies its next
+    /// reply, wherever in the configuration that change was. Found by `Guard::PermitFlow` in the
+    /// operation algebra: nothing before it built a configuration where an ACL verdict depended on
+    /// a flow, so nothing before it could see a flow's generation go stale.
+    ///
+    /// Pinned as it stands rather than fixed here. The fix is in `nat`, it is a decision about
+    /// which flows an allocator writer is responsible for, and it should not be made as a side
+    /// effect of a test finding it.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_port_forwarded_flow_loses_its_acl_permission_on_any_configuration_change() {
+        let acl = flow_scoped_permit();
+        let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
+            .expect("the fixture assembles")
+            .validate()
+            .expect("a port-forwarding side accepts a flow-scoped rule");
+        let mut fabric = Fabric::over(&overlay, None, Arc::new(FlowTable::default()));
+
+        let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
+        let outside = peer(advertised);
+
+        let mut request = super::round_trip::udp(outside, advertised, 40000, 2003)
+            .expect("a well-formed request");
+        arrive(&mut request, remote());
+        let arrived = fabric.send(request);
+        let Verdict::Forwarded {
+            dst: Some(inside), ..
+        } = verdict(&arrived)
+        else {
+            panic!(
+                "the request never reached the service: {:?}",
+                verdict(&arrived)
+            );
+        };
+        let inside_port = arrived
+            .transport_dst_port()
+            .expect("a forwarded request has a destination port");
+
+        // Answered from where it landed, which is read off the packet rather than predicted --
+        // predicting it would be a second copy of the port forwarding table.
+        let answer = |fabric: &mut Fabric| {
+            let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
+                .expect("a well-formed answer");
+            arrive(&mut answer, local());
+            verdict(&fabric.send(answer))
+        };
+
+        let before = answer(&mut fabric);
+        assert!(
+            matches!(before, Verdict::Forwarded { .. }),
+            "the flow did not authorise the answer even before anything changed: {before:?}. \
+             Either the reverse lookup in `AclFilter::lookup` has stopped working or this fixture \
+             no longer opens a flow"
+        );
+
+        fabric.fleet().enact(&overlay, Enact::Everything);
+
+        let after = answer(&mut fabric);
+        assert_eq!(
+            after,
+            Verdict::Dropped(DoneReason::AclDropped),
+            "a port-forwarded flow kept its acl permission across a configuration change. If \
+             `update_nat_allocator`'s generation upgrade now covers port-forwarded flows, this \
+             test has served its purpose -- delete it, and stop excluding flow-scoped peerings \
+             from `a_configuration_change_leaves_traffic_outside_its_footprint_alone`"
         );
     }
 }
@@ -3440,6 +3583,7 @@ mod generated {
     static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static BY_FLOW: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
     /// Print what the run reached, and fail if it reached nothing worth having.
     ///
@@ -3458,11 +3602,12 @@ mod generated {
         );
         eprintln!(
             "checked={checked} abandoned={} derived={derived} inbound={} \
-             permitting-peerings={} peered-configs={peered} \
+             permitting-peerings={} (by flow {}) peered-configs={peered} \
              configs-past-two-vpcs={multi} mixed-bursts={mixed}",
             ABANDONED.load(Ordering::Relaxed),
             INBOUND.load(Ordering::Relaxed),
-            PERMITTING.load(Ordering::Relaxed)
+            PERMITTING.load(Ordering::Relaxed),
+            BY_FLOW.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -3485,6 +3630,12 @@ mod generated {
             "no traffic was ever derived across a peering whose acl permits it, so every load here \
              ran with no acl in the way and a rule set that lowered to nothing would have gone \
              unnoticed",
+        );
+        super::assert_covered(
+            BY_FLOW.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering permitting only one direction, so no \
+             reply here was authorised by the flow it belongs to and the reverse lookup in \
+             `AclFilter::lookup` was never entered",
         );
         super::assert_covered(
             mixed > 0,
@@ -3547,19 +3698,28 @@ mod generated {
     /// [`carried_by`](super::derive::carried_by), counting the peerings it kept that carry a
     /// permitting ACL.
     ///
-    /// Those are the ones this property is about and the ones it cannot see: an unguarded peering
-    /// and a permitting one are both kept, so without a count a run in which no peering was ever
-    /// guarded `Permit` would look exactly like one in which every rule lowered correctly. A
-    /// `Cell` because `loads_where` takes a `Fn`, and the alternative -- deriving a second time
+    /// Those are the ones this property is about and the ones it cannot otherwise see: an unguarded
+    /// peering and a permitting one are both kept, so without a count a run in which no peering was
+    /// ever guarded would look exactly like one in which every rule lowered correctly. The two
+    /// permitting shapes are counted apart because they are carried by different machinery -- a
+    /// rule of the reply's own, against the reverse lookup in `AclFilter::lookup` -- and a run
+    /// reaching only the first would say nothing about the second.
+    ///
+    /// A `Cell` because `loads_where` takes a `Fn`, and the alternative -- deriving a second time
     /// over the permitting peerings alone, purely to count -- would cost a derivation per case.
     fn carried_counting<'a>(
         draft: &'a Draft,
         permitting: &'a Cell<u64>,
+        by_flow: &'a Cell<u64>,
     ) -> impl Fn(Named<'_>) -> bool + 'a {
         move |named| match draft.guard_named(named.peering) {
             Some(Guard::Deny) => false,
             Some(Guard::Permit) => {
                 permitting.set(permitting.get() + 1);
+                true
+            }
+            Some(Guard::PermitFlow) => {
+                by_flow.set(by_flow.get() + 1);
                 true
             }
             Some(Guard::Open) | None => true,
@@ -3617,10 +3777,14 @@ mod generated {
                 // acl refuses its own traffic is not a peering that carries it, and a load derived
                 // for one would fail this property by behaving exactly as configured.
                 // `a_denied_peering_carries_nothing` is where those loads go.
-                let permitting = Cell::new(0);
-                let mut loads =
-                    loads_where(&validated, vary, &carried_counting(&draft, &permitting));
+                let (permitting, by_flow) = (Cell::new(0), Cell::new(0));
+                let mut loads = loads_where(
+                    &validated,
+                    vary,
+                    &carried_counting(&draft, &permitting, &by_flow),
+                );
                 PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
+                BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 // Inbound loads separately, for the reason the fixture property counts them: a
                 // derivation that silently skipped a whole expose flavour would leave this
@@ -5373,7 +5537,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Draft, Footprint, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Guard, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{LazyLock, OnceLock};
@@ -7198,13 +7362,23 @@ mod model {
         }
 
         /// Traffic the footprint does not name, by either endpoint vpc or by its peering.
-        /// Traffic the change is claimed not to disturb: outside its write set, and there to
-        /// begin with.
+        /// Traffic the change is claimed not to disturb: outside its write set, there to begin
+        /// with, and not authorised by something a change destroys wherever it happens.
         ///
-        /// The second half is not a weakening. A peering whose acl denies everything carries
-        /// nothing *before* the change either, so there is no behaviour of it for the change to
-        /// preserve -- and a load derived for one would report the acl's refusal as the change
-        /// having disturbed it. See [`derive::carried_by`].
+        /// Neither exclusion is a weakening of the claim; both are the claim being stated about
+        /// traffic it is true of.
+        ///
+        /// A peering whose acl denies everything carries nothing *before* the change either, so
+        /// there is no behaviour of it for the change to preserve, and a load derived for one would
+        /// report the acl's refusal as the change having disturbed it. See [`derive::carried_by`].
+        ///
+        /// A peering whose acl permits by *flow* is the harder one. Its replies are authorised by
+        /// the flow the request opened, and a flow's authorisation does not survive a configuration
+        /// change -- anywhere in the configuration, including here.
+        /// `acl::a_port_forwarded_flow_loses_its_acl_permission_on_any_configuration_change` pins
+        /// that as it stands, deliberately unfixed. Until it is fixed this property would fail on
+        /// such a peering perhaps one run in five, for a defect it did not find and cannot explain
+        /// from the message it would print. Delete this line when that test does.
         fn outside<'a>(
             footprint: &'a Footprint,
             draft: &'a Draft,
@@ -7212,6 +7386,7 @@ mod model {
             let carried = derive::carried_by(draft);
             move |named| {
                 carried(named)
+                    && draft.guard_named(named.peering) != Some(Guard::PermitFlow)
                     && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)
