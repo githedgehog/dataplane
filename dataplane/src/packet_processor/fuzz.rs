@@ -1153,7 +1153,7 @@ pub(crate) mod derive {
     use super::*;
     use config::external::overlay::ValidatedOverlay;
     use config::external::overlay::vpcpeering::ValidatedExpose;
-    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
     /// How one sender should vary, drawn by the fuzzer and applied to whatever the config offers.
     ///
@@ -1215,17 +1215,49 @@ pub(crate) mod derive {
     /// spends the load on a legitimate refusal while looking exactly like a delivery failure.
     /// Symmetrically, a port-forwarded service is reached *by* the far side, so there the far side
     /// has to be able to initiate.
+    ///
+    /// Public addresses, because this answers "what do I dial". For "what does the far side send
+    /// from", see [`peer_source_of`] -- the two are the same address only when nothing translates.
     fn peer_of(
         peering: &config::external::overlay::vpc::ValidatedPeering,
         n: u8,
         usable: fn(&ValidatedExpose) -> bool,
+    ) -> Option<IpAddr> {
+        peer_address(peering, n, usable, ValidatedExpose::public_ips)
+    }
+
+    /// An address the far side actually holds, for a load it is the *sender* of.
+    ///
+    /// Private addresses, which is the whole difference from [`peer_of`]. A packet arriving from a
+    /// vpc carries a source that vpc owns; whatever its expose does to that source on the way out
+    /// is the pipeline's business. Sending from the public address instead is the mistake
+    /// [`peer_of`]'s own note describes for a reply -- an address no host in that vpc owns, which
+    /// the flow filter refuses as a source, and which reads as a lost packet rather than as a
+    /// load that was never valid.
+    ///
+    /// Invisible until an expose could both translate and be the far side of an inbound load: a
+    /// forwarded expose is reached *by* its peer, and until port forwarding was drawable the only
+    /// peers ever asked this question had nothing to translate.
+    fn peer_source_of(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+    ) -> Option<IpAddr> {
+        peer_address(peering, n, usable, ValidatedExpose::ips)
+    }
+
+    fn peer_address(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+        which: for<'a> fn(&'a ValidatedExpose) -> &'a PrefixPortsSet,
     ) -> Option<IpAddr> {
         peering
             .remote()
             .valexp()
             .iter()
             .filter(|expose| usable(expose))
-            .flat_map(|expose| expose.public_ips().into_iter())
+            .flat_map(|expose| which(expose).into_iter())
             .find_map(|entry| host_in(entry.prefix(), n))
     }
 
@@ -1321,7 +1353,8 @@ pub(crate) mod derive {
                     let outward = peer_of(peering, v.host, |expose| {
                         expose.can_receive_connection() && !expose.has_port_forwarding()
                     });
-                    let inward = peer_of(peering, v.host, ValidatedExpose::can_init_connection);
+                    let inward =
+                        peer_source_of(peering, v.host, ValidatedExpose::can_init_connection);
 
                     if expose.has_port_forwarding() {
                         // Reached from outside on the advertised tuple, expected to land on the
@@ -4925,7 +4958,15 @@ mod routed {
     enum InboundState {
         Reaching,
         AwaitingArrival,
-        Answering,
+        /// The request arrived; the answer goes back to the tuple it arrived *from*.
+        ///
+        /// Carried rather than assumed to be `from`: whatever the outside host's own expose does
+        /// to its source on the way in, the service sees the result of it, and a service that
+        /// answered the pre-translation address would be answering somewhere it was never
+        /// contacted from.
+        Answering {
+            reply_to: (IpAddr, u16),
+        },
         AwaitingAnswer,
         Closed,
         Abandoned,
@@ -4973,8 +5014,17 @@ mod routed {
                 "reached the right host on the wrong port. {}",
                 self.describe()
             );
+            let (Some(src), Some(sport)) = (arrived.ip_source(), arrived.transport_src_port())
+            else {
+                self.log
+                    .push("the arrived request had no source tuple to answer".to_owned());
+                self.state = InboundState::Abandoned;
+                return;
+            };
             self.log.push("arrived inside".to_owned());
-            self.state = InboundState::Answering;
+            self.state = InboundState::Answering {
+                reply_to: (src, sport.get()),
+            };
         }
 
         fn judge_answer(&mut self, got: &Packet<TestBuffer>) {
@@ -5017,8 +5067,10 @@ mod routed {
                     self.state = InboundState::AwaitingArrival;
                     Some(tunnelled_from(self.path.to, &request))
                 }
-                InboundState::Answering => {
-                    let answer = udp(self.internal, self.from, self.internal_port, self.sport)?;
+                InboundState::Answering {
+                    reply_to: (to_ip, to_port),
+                } => {
+                    let answer = udp(self.internal, to_ip, self.internal_port, to_port)?;
                     self.state = InboundState::AwaitingAnswer;
                     Some(tunnelled_from(self.path.from, &answer))
                 }
