@@ -636,6 +636,17 @@ pub struct VmConfig {
     /// [`KernelFeature`](crate::kernel_feature::KernelFeature) declared
     /// `modular`.
     pub module_params: &'static [ModuleParam],
+    /// Number of fabric-facing network interfaces.
+    ///
+    /// The management interface is always present and is not counted here,
+    /// so the default of 2 gives the three the VM has always had.
+    ///
+    /// Raise it to test what only more than one link can show -- failover,
+    /// ECMP, a bond losing a member.  Lower it to nothing for a test that
+    /// never touches the network: each interface is a TAP device, a virtio
+    /// device and a queue pair, all of which are set up before the guest
+    /// starts running.
+    pub fabric_nics: u8,
     /// Total guest memory, in MiB.
     ///
     /// A whole number of [`host_page_size`](Self::host_page_size) pages, or
@@ -787,6 +798,15 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Sets how many fabric-facing interfaces the VM gets.
+    ///
+    /// The management interface is always present and is not counted.
+    #[must_use]
+    pub const fn fabric_nics(mut self, count: u8) -> Self {
+        self.0.fabric_nics = count;
+        self
+    }
+
     /// Sets the guest's total memory, in MiB.
     ///
     /// Must stay a whole number of host pages; with
@@ -920,6 +940,8 @@ pub enum ConfigProblem {
     NoMemory,
     /// The VM was given no vCPUs.
     NoVcpus,
+    /// More fabric interfaces were asked for than have distinct addresses.
+    TooManyNics,
 }
 
 impl VmConfig {
@@ -972,6 +994,7 @@ impl VmConfig {
         runtime: GuestRuntime::CurrentThread,
         guest_time_limit: None,
         module_params: &[],
+        fabric_nics: 2,
         memory_mib: 1024,
         vcpus: 6,
         corpus: CorpusPolicy::None,
@@ -1055,6 +1078,9 @@ impl VmConfig {
         if self.vcpus == 0 {
             return Err(ConfigProblem::NoVcpus);
         }
+        if self.fabric_nics > MAX_FABRIC_NICS {
+            return Err(ConfigProblem::TooManyNics);
+        }
         let memory_bytes = self.memory_bytes();
         let page_bytes = self.host_page_size.bytes();
         if memory_bytes % page_bytes != 0 {
@@ -1124,6 +1150,10 @@ impl VmConfig {
                 panic!("a VM needs memory; set memory_mib to a non-zero whole number of host pages")
             }
             Err(ConfigProblem::NoVcpus) => panic!("a VM needs at least one vCPU; set vcpus"),
+            Err(ConfigProblem::TooManyNics) => panic!(
+                "too many fabric interfaces; beyond 254 two of them would share a \
+                 MAC address and a link-local address"
+            ),
             Err(ConfigProblem::NicRequiresQemu) => panic!(
                 "this NIC model is emulated only by QEMU, but the configuration pinned \
                  cloud-hypervisor; leave the backend at RequestedBackend::Default to let \
@@ -1221,6 +1251,11 @@ impl VmConfig {
             Ok(()) => Ok(()),
             Err(ConfigProblem::NoMemory) => Err("memory_mib is 0; a VM needs memory".to_owned()),
             Err(ConfigProblem::NoVcpus) => Err("vcpus is 0; a VM needs at least one".to_owned()),
+            Err(ConfigProblem::TooManyNics) => Err(format!(
+                "fabric_nics ({n}) exceeds {MAX_FABRIC_NICS}; the MAC and link-local \
+                 addresses are derived from the index and would collide",
+                n = self.fabric_nics,
+            )),
             Err(ConfigProblem::MemoryNotAligned) => Err(format!(
                 "guest memory ({mib} MiB = {bytes} bytes) is not a whole number of \
                  host pages ({page_bytes} bytes)",
@@ -1310,44 +1345,72 @@ impl SmpTopology {
 }
 
 /// Describes a network interface shared across all hypervisor backends.
-pub(crate) struct NetIface {
+///
+/// Owned rather than `&'static`, because the fabric interfaces are
+/// generated from a count.  Carrying the MTU, queue depth and PCI segment
+/// here rather than branching on "is this the management one" in each
+/// backend is what lets both of them lower an arbitrary list identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetIface {
     /// Unique identifier used in device configuration (e.g. `"mgmt"`,
     /// `"fabric1"`).
-    pub id: &'static str,
+    pub id: String,
     /// TAP device name on the host.
-    pub tap: &'static str,
+    pub tap: String,
     /// MAC address in `XX:XX:XX:XX:XX:XX` format.
-    pub mac: &'static str,
+    pub mac: String,
     /// IPv6 link-local address assigned to the host-side TAP.
     pub host_ipv6: Ipv6Addr,
+    /// Link MTU.
+    pub mtu: i32,
+    /// Virtio queue depth.
+    pub queue_size: i32,
+    /// PCI segment the device is placed on.
+    ///
+    /// Segment 1 is the one placed behind the virtual IOMMU, so this is
+    /// also what decides whether a device gets DMA remapping.
+    pub pci_segment: u16,
 }
 
-/// The management network interface (standard Ethernet).
-pub(crate) const IFACE_MGMT: NetIface = NetIface {
-    id: "mgmt",
-    tap: "mgmt",
-    mac: "02:DE:AD:BE:EF:01",
-    host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0xffff, 1),
-};
+/// The largest fabric NIC index the address derivation can represent.
+///
+/// The last octet of the MAC and the last group of the IPv6 address are
+/// both the interface's index, so 254 is where two NICs would start
+/// sharing an address.  That does not fail: the guest brings both up, and
+/// forwarding silently goes to whichever answered -- which is precisely
+/// the symptom a failover test would then be trying to explain.
+pub(crate) const MAX_FABRIC_NICS: u8 = 254;
 
-/// First fabric-facing network interface (jumbo frames).
-pub(crate) const IFACE_FABRIC1: NetIface = NetIface {
-    id: "fabric1",
-    tap: "fabric1",
-    mac: "02:CA:FE:BA:BE:01",
-    host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1),
-};
+/// Every interface presented to the VM, in device order.
+///
+/// The management interface is always first and always present: it is the
+/// standard-MTU link on the unprotected PCI segment, and the fabric links
+/// are defined by contrast with it.  `fabric_nics` may be zero, which is
+/// what a test that never touches the network should ask for.
+#[must_use]
+pub fn all_ifaces(fabric_nics: u8) -> Vec<NetIface> {
+    let mgmt = NetIface {
+        id: "mgmt".to_owned(),
+        tap: "mgmt".to_owned(),
+        mac: "02:DE:AD:BE:EF:01".to_owned(),
+        host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0xffff, 1),
+        mtu: MGMT_MTU,
+        queue_size: MGMT_QUEUE_SIZE,
+        pci_segment: 0,
+    };
 
-/// Second fabric-facing network interface (jumbo frames).
-pub(crate) const IFACE_FABRIC2: NetIface = NetIface {
-    id: "fabric2",
-    tap: "fabric2",
-    mac: "02:CA:FE:BA:BE:02",
-    host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2),
-};
-
-/// All network interfaces in the order they are presented to the VM.
-pub(crate) const ALL_IFACES: [&NetIface; 3] = [&IFACE_MGMT, &IFACE_FABRIC1, &IFACE_FABRIC2];
+    std::iter::once(mgmt)
+        .chain((1..=fabric_nics).map(|n| NetIface {
+            id: format!("fabric{n}"),
+            tap: format!("fabric{n}"),
+            mac: format!("02:CA:FE:BA:BE:{n:02X}"),
+            host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, u16::from(n)),
+            mtu: FABRIC_MTU,
+            queue_size: FABRIC_QUEUE_SIZE,
+            pci_segment: 1,
+        }))
+        .collect()
+}
 
 /// IPv6 prefix length for host-side TAP addresses (link-local /64).
 pub(crate) const TAP_IPV6_PREFIX_LEN: u8 = 64;
@@ -2392,52 +2455,102 @@ mod tests {
         );
     }
 
+    /// Uniqueness across *every* count, not just the default three.
+    ///
+    /// The MAC, tap name, link-local address and device id are all derived
+    /// from the interface index now, so a collision is a bug in the
+    /// derivation rather than a typo in a table -- and it would not fail
+    /// loudly: the guest brings both links up and forwards out of whichever
+    /// answered.
     #[test]
-    fn all_interfaces_have_unique_mac_addresses() {
-        let macs: Vec<&str> = ALL_IFACES.iter().map(|i| i.mac).collect();
-        let mut deduped = macs.clone();
-        deduped.sort();
-        deduped.dedup();
+    fn every_interface_is_distinct_at_every_count() {
+        for fabric_nics in [0, 1, 2, 3, 8, 64, MAX_FABRIC_NICS] {
+            let ifaces = all_ifaces(fabric_nics);
+            assert_eq!(
+                ifaces.len(),
+                usize::from(fabric_nics) + 1,
+                "expected {fabric_nics} fabric interfaces plus mgmt",
+            );
+
+            for (label, mut values) in [
+                (
+                    "MAC",
+                    ifaces.iter().map(|i| i.mac.clone()).collect::<Vec<_>>(),
+                ),
+                ("TAP", ifaces.iter().map(|i| i.tap.clone()).collect()),
+                ("id", ifaces.iter().map(|i| i.id.clone()).collect()),
+                (
+                    "link-local address",
+                    ifaces.iter().map(|i| i.host_ipv6.to_string()).collect(),
+                ),
+            ] {
+                let count = values.len();
+                values.sort();
+                values.dedup();
+                assert_eq!(
+                    count,
+                    values.len(),
+                    "{label}s must be unique at {fabric_nics} fabric NICs",
+                );
+            }
+        }
+    }
+
+    /// The default still produces the three interfaces, with the exact
+    /// addresses, that used to be written out by hand.
+    #[test]
+    fn the_default_interfaces_are_the_ones_that_were_hand_written() {
+        let ifaces = all_ifaces(VmConfig::DEFAULT.fabric_nics);
+        let described: Vec<_> = ifaces
+            .iter()
+            .map(|i| {
+                (
+                    i.id.as_str(),
+                    i.mac.as_str(),
+                    i.host_ipv6.to_string(),
+                    i.mtu,
+                )
+            })
+            .collect();
         assert_eq!(
-            macs.len(),
-            deduped.len(),
-            "MAC addresses must be unique: {macs:?}",
+            described,
+            vec![
+                ("mgmt", "02:DE:AD:BE:EF:01", "fe80::ffff:1".to_owned(), 1500),
+                ("fabric1", "02:CA:FE:BA:BE:01", "fe80::1".to_owned(), 9500),
+                ("fabric2", "02:CA:FE:BA:BE:02", "fe80::2".to_owned(), 9500),
+            ],
         );
     }
 
+    /// Only the fabric links sit on the segment the vIOMMU protects.
     #[test]
-    fn all_interfaces_have_unique_tap_names() {
-        let taps: Vec<&str> = ALL_IFACES.iter().map(|i| i.tap).collect();
-        let mut deduped = taps.clone();
-        deduped.sort();
-        deduped.dedup();
-        assert_eq!(
-            taps.len(),
-            deduped.len(),
-            "TAP names must be unique: {taps:?}",
+    fn management_stays_off_the_protected_segment() {
+        let ifaces = all_ifaces(4);
+        assert_eq!(ifaces[0].pci_segment, 0, "mgmt is unprotected");
+        assert!(
+            ifaces[1..].iter().all(|i| i.pci_segment == 1),
+            "every fabric link belongs behind the vIOMMU",
         );
     }
 
+    /// A test that never touches the network can ask for no fabric links,
+    /// and still gets a machine.
     #[test]
-    fn all_interfaces_have_unique_ids() {
-        let ids: Vec<&str> = ALL_IFACES.iter().map(|i| i.id).collect();
-        let mut deduped = ids.clone();
-        deduped.sort();
-        deduped.dedup();
-        assert_eq!(
-            ids.len(),
-            deduped.len(),
-            "interface IDs must be unique: {ids:?}",
-        );
+    fn a_vm_can_have_no_fabric_interfaces() {
+        let ifaces = all_ifaces(0);
+        assert_eq!(ifaces.len(), 1);
+        assert_eq!(ifaces[0].id, "mgmt");
     }
 
+    /// Beyond the derivation's range the configuration is rejected rather
+    /// than silently issuing a duplicate address.
     #[test]
-    fn interface_count_is_three() {
-        assert_eq!(
-            ALL_IFACES.len(),
-            3,
-            "expected exactly 3 interfaces (mgmt + 2 fabric)",
-        );
+    fn more_fabric_interfaces_than_addresses_is_rejected() {
+        let config = VmConfig {
+            fabric_nics: MAX_FABRIC_NICS,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(config.check(), Ok(()));
     }
 
     #[test]
