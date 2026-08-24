@@ -7,6 +7,7 @@ use std::ops::Bound::Included;
 use std::time::Duration;
 
 use bolero::{Driver, ValueGenerator};
+use lpm::prefix::with_ports::L4Protocol;
 use lpm::prefix::{
     IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
 };
@@ -252,6 +253,21 @@ impl ExposeSpec {
         (self.slot % 2 == 1).then_some(LONG_IDLE_TIMEOUT)
     }
 
+    fn nat_proto(self) -> Option<L4Protocol> {
+        match self.flavour {
+            Flavour::PortForward => Some(match self.slot % 3 {
+                0 => L4Protocol::Any,
+                1 => L4Protocol::Udp,
+                _ => L4Protocol::Tcp,
+            }),
+            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat => None,
+        }
+    }
+
+    fn carries_udp(self) -> bool {
+        !matches!(self.nat_proto(), Some(L4Protocol::Tcp))
+    }
+
     #[must_use]
     pub fn private(self, peering: PeeringHandle, side: Side) -> Prefix {
         private_prefix(peering.block(side, self.slot))
@@ -284,7 +300,7 @@ impl ExposeSpec {
                 .as_range(self.public(peering, side).into())
                 .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
             Flavour::PortForward => VpcExpose::empty()
-                .make_port_forwarding(self.idle_timeout(), None)
+                .make_port_forwarding(self.idle_timeout(), self.nat_proto())
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
                 .ip(PrefixWithOptionalPorts::new(
                     private,
@@ -457,7 +473,11 @@ impl Draft {
         else {
             return true;
         };
-        !spec.guard.silences(spec, side, nth)
+        let carried_by_the_expose = spec
+            .exposes(side)
+            .get(nth)
+            .is_none_or(|expose| expose.carries_udp());
+        carried_by_the_expose && !spec.guard.silences(spec, side, nth)
     }
 
     #[must_use]
