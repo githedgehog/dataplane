@@ -636,6 +636,26 @@ pub struct VmConfig {
     /// [`KernelFeature`](crate::kernel_feature::KernelFeature) declared
     /// `modular`.
     pub module_params: &'static [ModuleParam],
+    /// The kernel profile to boot, by name.
+    ///
+    /// A profile is a *(kernel, hypervisor)* pair from the manifest nix
+    /// materialises into `testroot` -- `flatcar` is a distribution kernel
+    /// with its own module tree booted through an initramfs, `qemu` and
+    /// `cloud_hypervisor` are the union kernel this repo builds and boots
+    /// directly.  See [`kernel_profiles`] for the names.
+    ///
+    /// `None` leaves the choice to the run: `N_VM_PROFILE` if it is set,
+    /// otherwise the manifest's default.  Naming one here outranks both,
+    /// because a test that says which kernel it needs is saying what it is
+    /// *for* -- a module-loading test that got swept onto a
+    /// built-in-only kernel by an environment variable would not be
+    /// testing anything.
+    ///
+    /// Because a profile names a hypervisor, this can contradict
+    /// [`backend`](Self::backend).  That cannot be checked here -- which
+    /// hypervisor a profile uses is in a file, not in this type -- so it is
+    /// caught at launch, by name, rather than silently booting one of them.
+    pub kernel_profile: Option<&'static str>,
     /// Number of fabric-facing network interfaces.
     ///
     /// The management interface is always present and is not counted here,
@@ -795,6 +815,17 @@ impl VmConfigBuilder {
     #[must_use]
     pub const fn host_page_size(mut self, size: HostPageSize) -> Self {
         self.0.host_page_size = size;
+        self
+    }
+
+    /// Names the kernel profile to boot.
+    ///
+    /// Use a constant from [`kernel_profiles`] rather than a bare string,
+    /// so a rename shows up as a build error instead of an "unknown
+    /// profile" at launch.
+    #[must_use]
+    pub const fn kernel_profile(mut self, name: &'static str) -> Self {
+        self.0.kernel_profile = Some(name);
         self
     }
 
@@ -994,6 +1025,7 @@ impl VmConfig {
         runtime: GuestRuntime::CurrentThread,
         guest_time_limit: None,
         module_params: &[],
+        kernel_profile: None,
         fabric_nics: 2,
         memory_mib: 1024,
         vcpus: 6,
