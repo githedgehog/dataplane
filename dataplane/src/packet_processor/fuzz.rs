@@ -3234,7 +3234,10 @@ mod routed {
     enum State {
         Opening,
         AwaitingRequest,
-        Replying { public: (IpAddr, u16) },
+        Replying {
+            public: (IpAddr, u16),
+            landed: (IpAddr, u16),
+        },
         AwaitingReply,
         Closed,
         Abandoned,
@@ -3294,10 +3297,24 @@ mod routed {
                 self.state = State::Abandoned;
                 return;
             };
+            let (Some(landed_dst), Some(landed_port)) =
+                (carried.ip_destination(), carried.transport_dst_port())
+            else {
+                self.note("the delivered request had no destination tuple to answer from");
+                self.state = State::Abandoned;
+                return;
+            };
             self.note(&format!("request left as {public_src}:{}", port.get()));
+            if landed_dst != self.dst {
+                self.note(&format!(
+                    "request landed on {landed_dst}:{}",
+                    landed_port.get()
+                ));
+            }
             self.public = Some((public_src, port.get()));
             self.state = State::Replying {
                 public: (public_src, port.get()),
+                landed: (landed_dst, landed_port.get()),
             };
         }
 
@@ -3352,8 +3369,11 @@ mod routed {
                     self.state = State::AwaitingRequest;
                     Some(tunnelled_from(self.path.from, &request))
                 }
-                State::Replying { public: (ip, port) } => {
-                    let reply = udp(self.dst, ip, self.dport, port)?;
+                State::Replying {
+                    public: (ip, port),
+                    landed: (from_ip, from_port),
+                } => {
+                    let reply = udp(from_ip, ip, from_port, port)?;
                     self.state = State::AwaitingReply;
                     Some(tunnelled_from(self.path.reversed().from, &reply))
                 }
