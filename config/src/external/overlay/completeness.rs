@@ -124,10 +124,11 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcPeering.gwgroup",
-        Reach::Fixed(
-            "the default group. `with_default_group` is the only constructor the algebra calls, \
-             so nothing generated ever splits vpcs across gateway groups.",
-        ),
+        // Three groups over however many peerings, so some share one and some do not. The rule
+        // that gives a group meaning -- `VpcRouteSet::validate` refusing two *overlapping* routes
+        // in different groups -- stays out of reach, because the address plan gives every expose a
+        // block of its own. The field varies; what it constrains does not.
+        Reach::Determined("the peering handle, over three groups"),
     ),
     (
         "VpcPeering.acl",
@@ -170,7 +171,8 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "AclRule.log",
-        Reach::Fixed("false. Nothing generated asks for a rule's verdict to be logged."),
+        // True on a denial, false on a permit, which is the shape a real ACL is written in.
+        Reach::Spans(&["false", "true"]),
     ),
     (
         "AclPattern.src",
@@ -265,11 +267,12 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeMasquerade.idle_timeout",
-        Reach::Fixed(
-            "absent. `make_masquerade(None)` is the only call, so the timeout paths -- and every \
-             question about a flow ageing out under a configuration that set one -- are never \
-             entered.",
-        ),
+        // Present on odd slots, so a manifest holding more than one expose has both answers in it.
+        // The value is far longer than any property here runs (`algebra::LONG_IDLE_TIMEOUT`), so
+        // what is reached is that a configuration naming a timeout lowers and carries its traffic
+        // -- **not** that a flow ages out. Expiry needs a clock a test drives, and
+        // `nat::masquerade::expiry` is where that lives.
+        Reach::Spans(&["absent", "present"]),
     ),
     (
         "VpcExposeStaticNat",
@@ -280,11 +283,8 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposePortForwarding.idle_timeout",
-        Reach::Fixed(
-            "absent. `make_port_forwarding(None, ..)` is the only call, for the same reason \
-             `VpcExposeMasquerade.idle_timeout` is absent: the flavour is reachable now, but \
-             nothing asks for a timeout, so no flow ages out under a configuration that set one.",
-        ),
+        // As `VpcExposeMasquerade.idle_timeout`, including the caveat: reached, not aged out.
+        Reach::Spans(&["absent", "present"]),
     ),
 ];
 

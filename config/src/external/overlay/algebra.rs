@@ -34,6 +34,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::ops::Bound::Included;
+use std::time::Duration;
 
 use bolero::{Driver, ValueGenerator};
 use lpm::prefix::{
@@ -229,7 +230,10 @@ impl Guard {
                     proto: AclProtoMatch::Any,
                 },
                 scope,
-                log: false,
+                // A denial is the verdict an operator wants in the log, and a permit is not. That
+                // makes the field vary with the rule rather than with a draw, and it is the shape
+                // a real ACL is written in.
+                log: action == AclAction::Deny,
             }
         };
         let rules = match self {
@@ -335,9 +339,29 @@ impl VpcHandle {
     }
 }
 
+/// How long an expose that names an idle timeout asks its flows to live.
+///
+/// Far longer than any property here runs, deliberately. Nothing in this harness advances a clock,
+/// so a timeout short enough to fire would fire at a moment decided by how fast the machine is --
+/// which is a flaky test, not a test of expiry. What a configuration carrying a timeout is under
+/// test for *here* is that it lowers, and that it carries its traffic exactly as one without does.
+/// Expiry itself wants the paused clock, and `nat::masquerade::expiry` is where that lives.
+const LONG_IDLE_TIMEOUT: Duration = Duration::from_hours(1);
+
 impl PeeringHandle {
     fn name(self) -> String {
         format!("PEERING-{:03}", self.0)
+    }
+
+    /// The gateway group this peering is served by.
+    ///
+    /// Three groups over however many peerings, so that some peerings share one and some do not.
+    /// A group constrains only *overlapping* exposes -- `VpcRouteSet::validate` refuses two
+    /// overlapping routes in different groups -- and the address plan gives every expose a block
+    /// of its own, so nothing generated can reach that rule. Which is worth saying plainly: this
+    /// makes the field vary, and the rule that gives it meaning stays out of reach.
+    fn group(self) -> String {
+        format!("group-{}", self.0 % 3)
     }
 
     /// The address block index reserved for one expose slot on one side of this peering.
@@ -413,6 +437,15 @@ impl ExposeSpec {
         self.flavour
     }
 
+    /// Whether this expose names an idle timeout for the flows it opens.
+    ///
+    /// By slot rather than drawn, so a manifest with more than one expose has both answers in it
+    /// at once -- which is the shape that would catch a lowering that read one expose's timeout
+    /// and applied it to its neighbours. See [`LONG_IDLE_TIMEOUT`] for why the value is inert.
+    fn idle_timeout(self) -> Option<Duration> {
+        (self.slot % 2 == 1).then_some(LONG_IDLE_TIMEOUT)
+    }
+
     /// The private prefix this expose covers, on `side` of `peering`.
     #[must_use]
     pub fn private(self, peering: PeeringHandle, side: Side) -> Prefix {
@@ -438,7 +471,7 @@ impl ExposeSpec {
         match self.flavour {
             Flavour::Forward => VpcExpose::empty().ip(private.into()),
             Flavour::Masquerade => VpcExpose::empty()
-                .make_masquerade(None)
+                .make_masquerade(self.idle_timeout())
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
                 .ip(private.into())
                 .as_range(self.public(peering, side).into())
@@ -451,7 +484,7 @@ impl ExposeSpec {
                 .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
             Flavour::PortForward => VpcExpose::empty()
                 // `None` protocol leaves the expose at `Any`; see `Flavour::PortForward`.
-                .make_port_forwarding(None, None)
+                .make_port_forwarding(self.idle_timeout(), None)
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
                 .ip(PrefixWithOptionalPorts::new(
                     private,
@@ -722,10 +755,11 @@ impl Draft {
 
         let mut peerings = VpcPeeringTable::new();
         for (handle, spec) in self.peerings() {
-            let mut peering = VpcPeering::with_default_group(
+            let mut peering = VpcPeering::new(
                 &handle.name(),
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
+                handle.group(),
             );
             peering.acl = spec.guard.acl(handle, spec);
             peerings.add(peering)?;
