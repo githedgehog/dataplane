@@ -688,7 +688,7 @@ pub(crate) mod derive {
     use super::*;
     use config::external::overlay::ValidatedOverlay;
     use config::external::overlay::vpcpeering::ValidatedExpose;
-    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
     #[derive(Debug, Clone, Copy)]
     pub(crate) struct Vary {
@@ -737,12 +737,29 @@ pub(crate) mod derive {
         n: u8,
         usable: fn(&ValidatedExpose) -> bool,
     ) -> Option<IpAddr> {
+        peer_address(peering, n, usable, ValidatedExpose::public_ips)
+    }
+
+    fn peer_source_of(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+    ) -> Option<IpAddr> {
+        peer_address(peering, n, usable, ValidatedExpose::ips)
+    }
+
+    fn peer_address(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+        which: for<'a> fn(&'a ValidatedExpose) -> &'a PrefixPortsSet,
+    ) -> Option<IpAddr> {
         peering
             .remote()
             .valexp()
             .iter()
             .filter(|expose| usable(expose))
-            .flat_map(|expose| expose.public_ips().into_iter())
+            .flat_map(|expose| which(expose).into_iter())
             .find_map(|entry| host_in(entry.prefix(), n))
     }
 
@@ -782,7 +799,8 @@ pub(crate) mod derive {
                     let outward = peer_of(peering, v.host, |expose| {
                         expose.can_receive_connection() && !expose.has_port_forwarding()
                     });
-                    let inward = peer_of(peering, v.host, ValidatedExpose::can_init_connection);
+                    let inward =
+                        peer_source_of(peering, v.host, ValidatedExpose::can_init_connection);
 
                     if expose.has_port_forwarding() {
                         let (Some(outside), Some(inside_entry)) = (
@@ -3649,7 +3667,7 @@ mod routed {
     enum InboundState {
         Reaching,
         AwaitingArrival,
-        Answering,
+        Answering { reply_to: (IpAddr, u16) },
         AwaitingAnswer,
         Closed,
         Abandoned,
@@ -3697,8 +3715,17 @@ mod routed {
                 "reached the right host on the wrong port. {}",
                 self.describe()
             );
+            let (Some(src), Some(sport)) = (arrived.ip_source(), arrived.transport_src_port())
+            else {
+                self.log
+                    .push("the arrived request had no source tuple to answer".to_owned());
+                self.state = InboundState::Abandoned;
+                return;
+            };
             self.log.push("arrived inside".to_owned());
-            self.state = InboundState::Answering;
+            self.state = InboundState::Answering {
+                reply_to: (src, sport.get()),
+            };
         }
 
         fn judge_answer(&mut self, got: &Packet<TestBuffer>) {
@@ -3741,8 +3768,10 @@ mod routed {
                     self.state = InboundState::AwaitingArrival;
                     Some(tunnelled_from(self.path.to, &request))
                 }
-                InboundState::Answering => {
-                    let answer = udp(self.internal, self.from, self.internal_port, self.sport)?;
+                InboundState::Answering {
+                    reply_to: (to_ip, to_port),
+                } => {
+                    let answer = udp(self.internal, to_ip, self.internal_port, to_port)?;
                     self.state = InboundState::AwaitingAnswer;
                     Some(tunnelled_from(self.path.from, &answer))
                 }
