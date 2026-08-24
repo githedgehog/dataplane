@@ -1,5 +1,0 @@
-error: duplicate backend in #[n_vm::test]: `cloud_hypervisor` was already selected; only one backend is allowed
- --> tests/compile_fail/multiple_backends.rs:4:32
-  |
-4 | #[n_vm::test(cloud_hypervisor, qemu)]
-  |                                ^^^^

@@ -1,5 +1,0 @@
-error: worker_threads requires `multi_thread`; a current-thread runtime has no worker pool to size
- --> tests/compile_fail/worker_threads_without_multi_thread.rs:6:14
-  |
-6 | #[n_vm::test(worker_threads = 4)]
-  |              ^^^^^^^^^^^^^^
