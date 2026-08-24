@@ -586,6 +586,17 @@ pub const CORPUS_SHARE_PATH: &str = "/vm.corpus";
 /// so it is already a tight enough blast radius.
 pub const CORPUS_DIR_NAME: &str = "__fuzz__";
 
+/// The kernel command-line namespace `n-it` reads its own boot parameters from.
+///
+/// Every key this crate defines is `{CMDLINE_NAMESPACE}.<something>`, which is
+/// also the shape of a kernel *module* parameter. `ModuleParam` rejects this
+/// name for that reason: a test that set it would be redirecting the guest's
+/// init protocol, not configuring a module, and would report that as a hang.
+///
+/// The keys below still spell it out literally; folding them onto this
+/// constant is worth doing and is not what it was added for.
+pub const CMDLINE_NAMESPACE: &str = "n_it";
+
 /// Kernel command-line key carrying the guest path at which the writable
 /// corpus share should be mounted.
 ///

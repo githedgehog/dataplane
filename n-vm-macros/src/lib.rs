@@ -38,6 +38,29 @@
 //! fn test_dpdk() {}
 //! ```
 //!
+//! Or inline, in the body of the test it configures:
+//!
+//! ```ignore
+//! #[n_vm::test]
+//! fn test_dpdk() {
+//!     #[n_vm::config]
+//!     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+//!         .iommu(true)
+//!         .kernel_features(&[n_vm::features::VFIO_PCI])
+//!         .build();
+//!
+//!     // the test body follows
+//! }
+//! ```
+//!
+//! The two forms are equivalent and a test may use either, not both.  A named
+//! `const` is right when several tests share a machine; the inline form keeps
+//! a one-off beside the test that wants it.  `#[n_vm::config]` is searched for
+//! only at the top level of the body, and the `const` is lifted out before
+//! anything runs -- so it cannot refer to the test body, which is what the
+//! host tier needs: it is evaluated in another process, before the guest
+//! exists.
+//!
 //! This replaces the former `#[hypervisor]`, `#[guest]`, and `#[network]`
 //! companion attributes.  The reason is not brevity -- it is that a `const`
 //! is ordinary Rust in an ordinary position, so completion, hover, and
@@ -376,6 +399,54 @@ fn extract_unique_attr(
     Ok(Some(attr))
 }
 
+/// Finds a `#[n_vm::config]` const item in a test body, removes it, and
+/// returns its initializer.
+///
+/// A `const` item rather than a `let` for three reasons, all load-bearing.
+/// It is an *item*, so a custom attribute on it is ordinary stable Rust --
+/// attributes on statements are not.  It cannot capture anything from the
+/// body, which is exactly the constraint the host tier needs: the
+/// configuration is evaluated in another process, before the guest exists.
+/// The initializer keeps the spans it was written with, so naming a local is
+/// reported as E0425 *at that name in the test body* rather than somewhere
+/// inside generated code.  And it keeps `VmConfig::assert_valid` running at
+/// compile time.
+///
+/// Only the top level of the body is searched.  Items nest -- inside a
+/// helper `fn`, a closure, an inner block -- and a marker found at depth
+/// would either be lifted out of a scope it appears to belong to or ignored
+/// altogether; both are worse than not finding it.
+///
+/// The declared type is discarded along with the item, because only the
+/// initializer is used.  That is what lets a caller write `const _: _ = ...`
+/// and never meet E0121: the placeholder is deleted before rustc sees it.
+fn extract_inline_config(block: &mut syn::Block) -> syn::Result<Option<syn::Expr>> {
+    let mut found: Option<usize> = None;
+    for (idx, stmt) in block.stmts.iter().enumerate() {
+        let syn::Stmt::Item(syn::Item::Const(item)) = stmt else {
+            continue;
+        };
+        if !item.attrs.iter().any(|attr| attr_has_name(attr, "config")) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(syn::Error::new_spanned(
+                item,
+                "duplicate #[n_vm::config] in this test body; a test describes one VM",
+            ));
+        }
+        found = Some(idx);
+    }
+
+    let Some(idx) = found else {
+        return Ok(None);
+    };
+    let syn::Stmt::Item(syn::Item::Const(item)) = block.stmts.remove(idx) else {
+        unreachable!("the index came from a matched const item");
+    };
+    Ok(Some(*item.expr))
+}
+
 /// Declares a test that runs inside an ephemeral VM.
 ///
 /// This *is* the test attribute -- it injects `#[test]` itself, so do not
@@ -398,8 +469,9 @@ fn extract_unique_attr(
 /// ```
 ///
 /// The decorated function must take no parameters and return `()`.  The VM
-/// is configured by `config = PATH`, naming a `const VmConfig`; omitting it
-/// uses `VmConfig::DEFAULT`.  `#[n_vm::corpus]` may be placed below this
+/// is configured either by `config = PATH`, naming a `const VmConfig`, or by
+/// a `#[n_vm::config]` `const` in the body; with neither it uses
+/// `VmConfig::DEFAULT`.  `#[n_vm::corpus]` may be placed below this
 /// attribute to grant the guest a writable corpus directory.
 #[proc_macro_attribute]
 pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
@@ -542,6 +614,25 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         quote! { ::core::option::Option::None }
     };
 
+    // The inline configuration, if the body declares one.  Removed from the
+    // block here, so no tier sees it as part of the test.
+    let inline_config = match extract_inline_config(&mut func.block) {
+        Ok(found) => found,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    if let (Some(path), Some(expr)) = (&config, &inline_config) {
+        return syn::Error::new_spanned(
+            expr,
+            format!(
+                "this test is configured twice: `config = {path}` names one \
+                 `const VmConfig` and #[n_vm::config] declares another.  Keep one.",
+                path = quote! { #path },
+            ),
+        )
+        .to_compile_error()
+        .into();
+    }
+
     // Split the remaining attributes by which tier they belong to.
     //
     // Anything left on the generated dispatch function runs at *every*
@@ -613,9 +704,10 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     // macro never inspects it -- it is a path to a `const` whose value only
     // rustc can know -- which is exactly why the checks that used to live
     // here are now `const fn` assertions on the value itself.
-    let base_config = match &config {
-        Some(path) => quote! { #path },
-        None => quote! { ::n_vm::VmConfig::DEFAULT },
+    let base_config = match (&config, &inline_config) {
+        (Some(path), _) => quote! { #path },
+        (None, Some(expr)) => quote! { #expr },
+        (None, None) => quote! { ::n_vm::VmConfig::DEFAULT },
     };
 
     // The config and its assertion are emitted beside the test function
@@ -705,7 +797,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         #[allow(non_upper_case_globals)]
         const #config_ident: ::n_vm::VmConfig = ::n_vm::VmConfig {
             corpus_source_file: #corpus_source_file,
-            ..#base_config
+            ..(#base_config)
         };
 
         // The backend/NIC check that used to run inside this macro runs here
@@ -737,6 +829,50 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
             // backend + capabilities against the host arch / Docker daemon.
             ::n_vm::run_host_tier(#ident, #requested_backend, #config_ident);
         }
+    }
+    .into()
+}
+
+/// Marks the `const` in a test body that describes the VM, consumed by
+/// [`test`].
+///
+/// ```ignore
+/// #[n_vm::test]
+/// fn drives_a_nic() {
+///     #[n_vm::config]
+///     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+///         .iommu(true)
+///         .build();
+///
+///     // the test body follows
+/// }
+/// ```
+///
+/// [`test`] removes this before rustc resolves it, so the definition here
+/// only ever runs when the marker is used somewhere [`test`] does not reach
+/// -- which is the entire reason it exists rather than being left
+/// unresolvable.
+#[proc_macro_attribute]
+pub fn config(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let error = syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "#[n_vm::config] marks a `const` inside the body of a #[n_vm::test] \
+         function, and is consumed by it; e.g.\n\n\
+         #[n_vm::test]\n\
+         fn my_test() {\n\
+         \x20   #[n_vm::config]\n\
+         \x20   const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().iommu(true).build();\n\n\
+         \x20   // the test body follows\n\
+         }\n\n\
+         Only the top level of the body is searched, so a marker nested inside \
+         an inner function, closure or block is not found.",
+    )
+    .to_compile_error();
+
+    let input2: proc_macro2::TokenStream = input.into();
+    quote! {
+        #error
+        #input2
     }
     .into()
 }
