@@ -1,0 +1,5 @@
+error: this test is configured twice: `config = NAMED` names one `const VmConfig` and #[n_vm::config] declares another.  Keep one.
+ --> tests/compile_fail/config_declared_twice.rs:9:31
+  |
+9 |     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().build();
+  |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

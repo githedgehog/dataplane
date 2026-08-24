@@ -391,6 +391,125 @@ impl GuestHugePageConfig {
     }
 }
 
+/// A kernel module parameter, set on the guest command line as
+/// `<module>.<key>=<value>`.
+///
+/// Structured rather than a free-form command-line string on purpose. The
+/// kernel command line is a flat namespace in which `root=`, `init=` and
+/// `n_it.result_port=` sit beside module parameters, and a test that
+/// overwrote one of those would not report an error -- it would hang, or
+/// boot a guest whose init protocol had been quietly redirected. A value of
+/// this type can only ever render as a module parameter, so the only thing
+/// left to guard is the module name.
+///
+/// Everything this checks is checked in [`new`](Self::new), which is `const`,
+/// so a malformed parameter is a build error rather than a console line forty
+/// lines into a boot dump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleParam {
+    module: &'static str,
+    key: &'static str,
+    value: &'static str,
+}
+
+/// Whether `s` is a legal module or parameter name.
+///
+/// Kernel module and parameter names are C identifiers, with `-` also
+/// appearing in module names (`vfio-pci`). Anything else -- a `.`, an `=`, a
+/// space -- would change where the kernel splits the token, so it is rejected
+/// rather than escaped.
+const fn is_module_ident(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let ok = c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
+        if !ok {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Whether `s` can appear as a command-line value.
+///
+/// The command line is split on whitespace, so a value containing any would
+/// silently become two parameters.
+const fn is_cmdline_value(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `const`-callable string equality; `PartialEq` is not `const`.
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+impl ModuleParam {
+    /// Declares `<module>.<key>=<value>` on the guest kernel command line.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module` or `key` is not a legal identifier, if `value` is
+    /// empty or contains whitespace, or if `module` is the namespace `n-it`
+    /// reads its own parameters from.  In a `const` context each panic *is*
+    /// the compile error.
+    #[must_use]
+    pub const fn new(module: &'static str, key: &'static str, value: &'static str) -> Self {
+        assert!(
+            is_module_ident(module),
+            "a module name must be a kernel module identifier: letters, digits, `_` or `-`"
+        );
+        assert!(
+            is_module_ident(key),
+            "a module parameter name must be an identifier: letters, digits, `_` or `-`"
+        );
+        assert!(
+            is_cmdline_value(value),
+            "a module parameter value must be non-empty and contain no whitespace; \
+             the kernel command line is split on whitespace, so one that does \
+             would silently become two parameters"
+        );
+        assert!(
+            !str_eq(module, n_vm_protocol::CMDLINE_NAMESPACE),
+            "that module name is the namespace `n-it` reads its own boot parameters from; \
+             setting it would redirect the guest's init protocol rather than configure a module"
+        );
+        Self { module, key, value }
+    }
+
+    /// Renders as it appears on the kernel command line.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("{}.{}={}", self.module, self.key, self.value)
+    }
+}
+
 /// Complete VM configuration passed through the dispatch chain.
 ///
 /// Written at the call site as a `const`, so that a test's configuration is
@@ -433,6 +552,15 @@ pub struct VmConfig {
     /// };
     /// ```
     pub kernel_features: &'static [crate::kernel_feature::KernelFeature],
+    /// Kernel module parameters to set on the guest command line.
+    ///
+    /// Rendered as `<module>.<key>=<value>` into the kernel section of the
+    /// command line.  A module does not have to be built in for this to
+    /// apply: the kernel stores parameters for modules that are not loaded
+    /// yet and applies them at load time, so this composes with a
+    /// [`KernelFeature`](crate::kernel_feature::KernelFeature) declared
+    /// `modular`.
+    pub module_params: &'static [ModuleParam],
     /// The test's own `(file!(), CARGO_MANIFEST_DIR)` when it opted in to a
     /// writable corpus directory via `#[corpus]`; `None` otherwise.
     ///
@@ -452,6 +580,118 @@ pub struct VmConfig {
     /// directory.  The manifest dir supplies the anchor needed to recover
     /// the workspace-relative tail; see [`Self::corpus_rel_dir`].
     pub corpus_source_file: Option<(&'static str, &'static str)>,
+}
+
+/// Builds a [`VmConfig`] by naming only what differs from
+/// [`VmConfig::DEFAULT`].
+///
+/// Every method is `const`, which is the whole point rather than an
+/// optimisation. A test's configuration is evaluated on the *host* tier, in
+/// another process, before the guest exists, so it must not be able to
+/// observe anything in the test body -- and `const` is what enforces that:
+/// naming a local in one cannot resolve, and is reported at that name rather
+/// than somewhere inside generated code. It is also what keeps
+/// [`assert_valid`](VmConfig::assert_valid) running at compile time, so a
+/// contradictory configuration stays a build error.
+///
+/// This is why the builder is written out rather than derived.
+/// `derive_builder` produces `build(&self) -> Result<_, _>`, and neither the
+/// method nor the `unwrap` that follows it can appear in a `const`.
+///
+/// ```ignore
+/// #[n_vm::test]
+/// fn drives_a_nic() {
+///     #[n_vm::config]
+///     const _: n_vm::VmConfig = VmConfigBuilder::default()
+///         .iommu(true)
+///         .kernel_features(&[features::VFIO_PCI])
+///         .build();
+///
+///     // the test body follows
+/// }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct VmConfigBuilder(VmConfig);
+
+impl VmConfigBuilder {
+    /// Starts from [`VmConfig::DEFAULT`].
+    ///
+    /// An inherent method rather than the `Default` trait because
+    /// `Default::default` is not `const`, and a builder that cannot be used
+    /// in a `const` would defeat the purpose -- see the type's own docs.
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub const fn default() -> Self {
+        Self(VmConfig::DEFAULT)
+    }
+
+    /// Presents a virtual IOMMU to the guest.
+    #[must_use]
+    pub const fn iommu(mut self, iommu: bool) -> Self {
+        self.0.iommu = iommu;
+        self
+    }
+
+    /// Sets the host page size backing guest memory.
+    ///
+    /// Anything other than [`HostPageSize::Standard`] draws on a host
+    /// hugepage pool that nothing arbitrates; see [`VmConfig::DEFAULT`] for
+    /// why the default declines to.
+    #[must_use]
+    pub const fn host_page_size(mut self, size: HostPageSize) -> Self {
+        self.0.host_page_size = size;
+        self
+    }
+
+    /// Sets the guest's own hugepage reservation.
+    #[must_use]
+    pub const fn guest_hugepages(mut self, hugepages: GuestHugePageConfig) -> Self {
+        self.0.guest_hugepages = hugepages;
+        self
+    }
+
+    /// Sets the NIC model for every interface in the VM.
+    #[must_use]
+    pub const fn nic_model(mut self, model: NicModel) -> Self {
+        self.0.nic_model = model;
+        self
+    }
+
+    /// Declares the kernel features the test depends on.
+    ///
+    /// Prefer the curated constants in
+    /// [`features`](crate::kernel_feature::features) over spelling a symbol
+    /// out: the table exists so that a typo is a compile error and shows up
+    /// in completion, and a hand-written `KernelFeature` gets neither.
+    #[must_use]
+    pub const fn kernel_features(
+        mut self,
+        features: &'static [crate::kernel_feature::KernelFeature],
+    ) -> Self {
+        self.0.kernel_features = features;
+        self
+    }
+
+    /// Sets kernel module parameters on the guest command line.
+    #[must_use]
+    pub const fn module_params(mut self, params: &'static [ModuleParam]) -> Self {
+        self.0.module_params = params;
+        self
+    }
+
+    /// Produces the configuration, checking it.
+    ///
+    /// # Panics
+    ///
+    /// Panics via [`assert_valid`](VmConfig::assert_valid) if the
+    /// combination is contradictory.  In a `const` context that panic *is*
+    /// the compile error, which is why this returns a [`VmConfig`] rather
+    /// than a `Result`: `Result::unwrap` is not callable in a `const`.
+    #[must_use]
+    pub const fn build(self) -> VmConfig {
+        self.0.assert_valid();
+        self.0
+    }
 }
 
 /// A way a [`VmConfig`] can be wrong.
@@ -518,6 +758,7 @@ impl VmConfig {
         },
         nic_model: NicModel::VirtioNet,
         kernel_features: &[],
+        module_params: &[],
         corpus_source_file: None,
     };
 
@@ -832,6 +1073,17 @@ pub(crate) fn build_kernel_cmdline(
 
     let hugepage_fragment = guest_hugepages.kernel_cmdline_fragment();
 
+    // Module parameters, in the kernel section (before `--`).  Each was
+    // checked for shape when it was declared, so this only has to join them.
+    let module_param_fragment = vm_config
+        .module_params
+        .iter()
+        .fold(String::new(), |mut acc, param| {
+            acc.push_str(&param.render());
+            acc.push(' ');
+            acc
+        });
+
     // The IOMMU and console parameters are lowered per guest ISA
     // (x86 ttyS0 vs aarch64 ttyAMA0); `arch` is passed in explicitly so
     // this is testable for every ISA on any build host.  The IOMMU kernel
@@ -885,6 +1137,7 @@ pub(crate) fn build_kernel_cmdline(
          ro \
          {root_params} \
          {hugepage_fragment}\
+         {module_param_fragment}\
          {corpus_fragment}\
          {vsock_cmdline} \
          -- {vm_bin_path} {test_name} --exact --no-capture --format=terse",
@@ -1393,6 +1646,101 @@ mod tests {
         );
         assert!(arm.contains("console=ttyAMA0"), "aarch64: {arm}");
         assert!(!arm.contains("ttyS0"), "aarch64 must not use ttyS0: {arm}");
+    }
+
+    // -- Module parameters and the const builder ----------------------
+
+    #[test]
+    fn a_module_param_renders_as_the_kernel_expects() {
+        assert_eq!(
+            ModuleParam::new("vfio-pci", "disable_idle_d3", "1").render(),
+            "vfio-pci.disable_idle_d3=1",
+        );
+    }
+
+    #[test]
+    fn declared_module_params_reach_the_kernel_cmdline() {
+        const PARAMS: &[ModuleParam] = &[
+            ModuleParam::new("mlx5_core", "prof_sel", "2"),
+            ModuleParam::new("vfio-pci", "disable_idle_d3", "1"),
+        ];
+        let vsock = n_vm_protocol::VsockAllocation::with_defaults();
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            &VmConfig {
+                module_params: PARAMS,
+                ..VmConfig::DEFAULT
+            },
+            Arch::X86_64,
+            crate::kernel_manifest::BootMode::Direct,
+        );
+        assert!(cmdline.contains("mlx5_core.prof_sel=2"), "cmdline: {cmdline}");
+        assert!(
+            cmdline.contains("vfio-pci.disable_idle_d3=1"),
+            "cmdline: {cmdline}",
+        );
+        // In the kernel section: everything after `--` is argv for the test
+        // binary, where a module parameter would be read by libtest instead.
+        let (kernel, _init) = cmdline.split_once(" -- ").expect("cmdline has an init separator");
+        assert!(kernel.contains("mlx5_core.prof_sel=2"), "kernel section: {kernel}");
+    }
+
+    /// The default carries none, so no test that never asks for one pays a
+    /// stray command-line token for the feature existing.
+    #[test]
+    fn no_module_params_adds_nothing_to_the_cmdline() {
+        let vsock = n_vm_protocol::VsockAllocation::with_defaults();
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            &VmConfig::DEFAULT,
+            Arch::X86_64,
+            crate::kernel_manifest::BootMode::Direct,
+        );
+        assert!(!cmdline.contains("  "), "double space in {cmdline:?}");
+    }
+
+    /// The builder is `..VmConfig::DEFAULT` in fluent spelling, so the two
+    /// must agree -- otherwise a test converted from one form to the other
+    /// would silently boot a different machine.
+    #[test]
+    fn the_builder_agrees_with_struct_update_syntax() {
+        const BUILT: VmConfig = VmConfigBuilder::default()
+            .iommu(true)
+            .guest_hugepages(GuestHugePageConfig::None)
+            .build();
+        const WRITTEN: VmConfig = VmConfig {
+            iommu: true,
+            guest_hugepages: GuestHugePageConfig::None,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(BUILT, WRITTEN);
+    }
+
+    #[test]
+    fn an_untouched_builder_is_the_default() {
+        const BUILT: VmConfig = VmConfigBuilder::default().build();
+        assert_eq!(BUILT, VmConfig::DEFAULT);
+    }
+
+    /// `build()` runs the same check the generated harness does, so a
+    /// contradiction is caught at the builder rather than at launch.  This is
+    /// the runtime half; the compile-time half is a `compile_fail` case in
+    /// `n-vm-macros`, because a `const` panic cannot be caught here.
+    #[test]
+    fn the_builder_checks_what_it_builds() {
+        let problem = VmConfig {
+            guest_hugepages: GuestHugePageConfig::Allocate {
+                size: GuestHugePageSize::Huge1G,
+                count: 2,
+            },
+            ..VmConfig::DEFAULT
+        }
+        .check();
+        assert_eq!(problem, Err(ConfigProblem::HugepagesExceedMemory));
     }
 
     #[test]

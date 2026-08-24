@@ -33,7 +33,8 @@ pub use backend::{
 };
 pub use cloud_hypervisor::CloudHypervisor;
 pub use config::{
-    Accel, ConfigProblem, GuestHugePageConfig, GuestHugePageSize, HostPageSize, NicModel, VmConfig,
+    Accel, ConfigProblem, GuestHugePageConfig, GuestHugePageSize, HostPageSize, ModuleParam,
+    NicModel, VmConfig, VmConfigBuilder,
 };
 pub use container::{ContainerOutcome, ContainerTestResult, run_test_in_vm};
 pub use dispatch::{
@@ -42,7 +43,7 @@ pub use dispatch::{
 };
 pub use error::{ContainerError, VmError};
 pub use kernel_feature::{KernelFeature, features};
-pub use n_vm_macros::{corpus, test};
+pub use n_vm_macros::{config, corpus, test};
 pub use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_IN_VM,
     ENV_MARKER_VALUE, ENV_TEST_ROOT, ENV_VM_ROOT, HYPERVISOR_API_SOCKET_PATH, INIT_BINARY_PATH,
