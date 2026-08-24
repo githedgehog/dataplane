@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::{Duration, Instant};
-#[cfg(all(test, not(wall_clock)))]
-// nosemgrep: rust-no-direct-std-sync-import
-use std::sync::atomic::AtomicU8;
+use crate::Duration;
+use std::cell::Cell;
 // nosemgrep: rust-no-direct-std-sync-import
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12,76 +10,45 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 const YIELDS: usize = 4;
 
+thread_local! {
+    static IN_WORLD: Cell<bool> = const { Cell::new(false) };
+}
+
 #[cfg(not(wall_clock))]
 #[inline]
 #[must_use]
 pub(crate) fn armed() -> bool {
-    LIVE.load(Ordering::Acquire) != 0
+    LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get)
 }
 
-#[cfg(not(wall_clock))]
-fn strict() -> bool {
-    // nosemgrep: rust-no-direct-std-sync-import
-    static STRICT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    #[cfg(test)]
-    match FORCED.load(Ordering::Acquire) {
-        FORCED_STRICT => return true,
-        FORCED_LENIENT => return false,
-        _ => {}
+thread_local! {
+    #[cfg(all(has_spawn_hook, not(wall_clock)))]
+    static HOOKED: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(all(has_spawn_hook, not(wall_clock)))]
+fn inherit_across_spawns() {
+    if !HOOKED.replace(true) {
+        std::thread::add_spawn_hook(|_parent| {
+            let handle = tokio::runtime::Handle::try_current().ok();
+            let in_world = IN_WORLD.with(Cell::get);
+            move || {
+                IN_WORLD.with(|flag| flag.set(in_world));
+                if let Some(handle) = handle {
+                    std::mem::forget(Box::leak(Box::new(handle)).enter());
+                }
+            }
+        });
     }
-    *STRICT.get_or_init(|| {
-        if let Some(explicit) = std::env::var_os("CLOCK_STRICT") {
-            return explicit != "0";
-        }
-        std::env::var_os("NEXTEST_EXECUTION_MODE").is_some_and(|mode| mode == "process-per-test")
-    })
 }
 
-#[cfg(all(test, not(wall_clock)))]
-static FORCED: AtomicU8 = AtomicU8::new(FORCED_BY_RUNNER);
-#[cfg(all(test, not(wall_clock)))]
-const FORCED_BY_RUNNER: u8 = 0;
-#[cfg(all(test, not(wall_clock)))]
-const FORCED_STRICT: u8 = 1;
-#[cfg(all(test, not(wall_clock)))]
-const FORCED_LENIENT: u8 = 2;
-
-#[cfg(all(test, not(wall_clock)))]
-fn strictly<R>(body: impl FnOnce() -> R) -> R {
-    forcing(FORCED_STRICT, body)
-}
-
-#[cfg(all(test, not(wall_clock)))]
-fn leniently<R>(body: impl FnOnce() -> R) -> R {
-    forcing(FORCED_LENIENT, body)
-}
-
-#[cfg(all(test, not(wall_clock)))]
-fn forcing<R>(mode: u8, body: impl FnOnce() -> R) -> R {
-    FORCED.store(mode, Ordering::Release);
-    let out = body();
-    FORCED.store(FORCED_BY_RUNNER, Ordering::Release);
-    out
-}
+#[cfg(not(all(has_spawn_hook, not(wall_clock))))]
+fn inherit_across_spawns() {}
 
 #[cfg(not(wall_clock))]
 #[cold]
 #[inline(never)]
-pub(crate) fn refuse() -> Instant {
-    if !strict() {
-        // nosemgrep: rust-no-direct-std-sync-import
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| {
-            eprintln!(
-                "warning: clock::now() on a thread with no tokio runtime while another test holds \
-                 the virtual clock paused. Answering from the wall clock, which is a different \
-                 timeline. Under `cargo nextest` this is a hard error, because there each test has \
-                 the process to itself and the only way to reach it is a thread that forgot to \
-                 enter the runtime. Set CLOCK_STRICT=1 to make it one here."
-            );
-        });
-        return Instant::now();
-    }
+pub(crate) fn refuse() -> ! {
     panic!(
         "clock::now() on a thread with no tokio runtime while the virtual clock is paused.\n\
          \n\
@@ -89,16 +56,10 @@ pub(crate) fn refuse() -> Instant {
          paused one -- they disagree by however far the test has advanced -- so comparing it \
          against a deadline taken on the other side is silently wrong, in either direction.\n\
          \n\
-         Two things cause it:\n\
-         \n\
-         * A thread this test spawned never entered the runtime. Hand it \
-         `clock::virtual_time::Paused::handle()` and enter that, on the spawned thread rather than \
-         on the spawning one -- tokio's context is thread-local, so a guard held by the parent does \
-         nothing for the child.\n\
-         \n\
-         * Or another test in this process holds the clock paused and this thread has nothing to do \
-         with it. `cargo nextest` gives each test its own process and cannot hit this; plain `cargo \
-         test` shares one, so run it under nextest or with `--test-threads=1`."
+         A thread spawned with `std::thread` inherits its parent's clock automatically, so reaching \
+         this means this one did not come from there -- DPDK's EAL, or a C library calling \
+         `pthread_create`. Enter `clock::virtual_time::Paused::handle()` on the thread itself; a \
+         guard held by whoever created it does nothing, because tokio's context is thread-local."
     );
 }
 
@@ -117,6 +78,8 @@ impl Paused {
             .unwrap_or_else(|e| panic!("a current-thread runtime with timers does not build: {e}"));
 
         if !cfg!(wall_clock) {
+            inherit_across_spawns();
+            IN_WORLD.with(|flag| flag.set(true));
             LIVE.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -142,6 +105,7 @@ impl Default for Paused {
 impl Drop for Paused {
     fn drop(&mut self) {
         if !cfg!(wall_clock) {
+            IN_WORLD.with(|flag| flag.set(false));
             LIVE.fetch_sub(1, Ordering::Release);
         }
     }
@@ -212,15 +176,34 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(has_spawn_hook, not(wall_clock)))]
+    fn a_spawned_thread_inherits_the_clock_without_being_told() {
+        let _serial = serially();
+        let clock = Paused::new();
+        let (driver, worker) = clock.block_on(async {
+            advance(LONG).await;
+            let worker = thread::spawn(now)
+                .join()
+                .expect("an inherited read was refused");
+            (now(), worker)
+        });
+        assert_eq!(
+            driver,
+            worker,
+            "a spawned thread read {:?} away from the thread that advanced the clock",
+            driver.saturating_duration_since(worker)
+        );
+    }
+
+    #[test]
     #[cfg(not(wall_clock))]
-    fn a_thread_that_did_not_enter_is_refused_where_the_process_is_ours() {
+    fn a_thread_in_the_world_with_no_clock_is_refused() {
         let _serial = serially();
         let clock = Paused::new();
         clock.block_on(async { advance(LONG).await });
 
-        let forgetful = super::strictly(|| thread::spawn(now).join());
-        let panic =
-            forgetful.expect_err("an unentered read was allowed while the clock was paused");
+        let refused = std::panic::catch_unwind(now);
+        let panic = refused.expect_err("a read from the wrong timeline was allowed");
         let message = panic
             .downcast_ref::<&'static str>()
             .copied()
@@ -234,13 +217,23 @@ mod tests {
 
     #[test]
     #[cfg(not(wall_clock))]
-    fn a_thread_that_did_not_enter_is_only_warned_where_the_process_is_shared() {
+    fn a_thread_outside_the_tree_is_left_alone() {
         let _serial = serially();
-        let clock = Paused::new();
-        clock.block_on(async { advance(LONG).await });
+        let (started, wait_for_start) = std::sync::mpsc::channel();
+        let (finish, wait_to_finish) = std::sync::mpsc::channel();
 
-        super::leniently(|| thread::spawn(now).join())
-            .expect("a shared-process read should warn, not panic");
+        let driving = thread::spawn(move || {
+            let clock = Paused::new();
+            clock.block_on(async { advance(LONG).await });
+            started.send(()).expect("the test is waiting");
+            wait_to_finish.recv().expect("the test releases this");
+        });
+        wait_for_start.recv().expect("the driver starts");
+
+        let outsider = thread::spawn(now).join();
+        finish.send(()).expect("the driver is waiting");
+        driving.join().expect("the driver panicked");
+        outsider.expect("a thread outside the world was refused a clock read");
     }
 
     #[test]

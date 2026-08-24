@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![cfg_attr(
+    all(has_spawn_hook, feature = "virtual", not(wall_clock)),
+    feature(thread_spawn_hook)
+)]
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 #![deny(unsafe_code)]
@@ -14,7 +18,7 @@ pub mod virtual_time;
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        checked_now().unwrap_or_else(virtual_time::refuse)
+        checked_now().unwrap_or_else(|| virtual_time::refuse())
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
