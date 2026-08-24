@@ -11,3 +11,9 @@ virtual = ["dep:tokio"]
 
 [dependencies]
 tokio = { workspace = true, optional = true, features = ["test-util", "time"] }
+
+[dev-dependencies]
+concurrency = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wall_clock)'] }
