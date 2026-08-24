@@ -1,0 +1,6 @@
+error: duplicate #[n_vm::config] in this test body; a test describes one VM
+ --> tests/compile_fail/duplicate_inline_config.rs:8:5
+  |
+8 | /     #[n_vm::config]
+9 | |     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().iommu(true).build();
+  | |___________________________________________________________________________________^
