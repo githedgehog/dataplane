@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lpm::prefix::with_ports::{L4Protocol, PrefixPortsSet};
 
 use super::Overlay;
+use super::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use super::algebra::Sequence;
 use super::vpc::Vpc;
 use super::vpcpeering::{
@@ -67,6 +68,71 @@ const REACH: &[(&str, Reach)] = &[
         ),
     ),
     ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
+    ("Acl.default", Reach::Spans(&["allow", "deny"])),
+    (
+        "Acl.rules",
+        Reach::Fixed(
+            "two, one per direction of the peering. So rule *precedence* is unreachable: a lookup \
+             returns the first rule that matches, and with one rule per direction no packet ever \
+             matches two. An ACL whose rules overlap is where an ordering defect would live.",
+        ),
+    ),
+    (
+        "AclRule.name",
+        Reach::Determined("the two vpc handles, as `<from>-to-<to>`"),
+    ),
+    (
+        "AclRule.from",
+        Reach::Determined("the vpc handle on the rule's side"),
+    ),
+    (
+        "AclRule.to",
+        Reach::Determined("the vpc handle on the other side"),
+    ),
+    ("AclRule.action", Reach::Spans(&["allow", "deny"])),
+    (
+        "AclRule.scope",
+        Reach::Fixed(
+            "`Packet`. A flow-scoped rule authorises a reply by its membership of the flow the \
+             request opened, which is a whole mechanism -- `reverse_summary`, and the reverse \
+             lookup in `AclFilter::lookup` -- that no generated configuration reaches. Drawing it \
+             means drawing `validate_scope`'s condition too; see `algebra::Guard::acl`.",
+        ),
+    ),
+    (
+        "AclRule.log",
+        Reach::Fixed("false. Nothing generated asks for a rule's verdict to be logged."),
+    ),
+    (
+        "AclPattern.src",
+        Reach::Fixed(
+            "empty, which `AclRule::validate` fills in from the `from` manifest -- so every \
+             generated rule covers its whole side. A rule matching *part* of what a peering \
+             carries, which is what an ACL is normally for, is unreachable.",
+        ),
+    ),
+    (
+        "AclPattern.dst",
+        Reach::Fixed("empty, for the same reason as `AclPattern.src`."),
+    ),
+    (
+        "AclPattern.src_any_ports",
+        Reach::Fixed(
+            "empty -- the survey renders it as a count of zero. A `match` naming ports but no \
+             address is a shape the k8s converter produces and nothing generated does.",
+        ),
+    ),
+    (
+        "AclPattern.dst_any_ports",
+        Reach::Fixed("empty, for the same reason as `AclPattern.src_any_ports`."),
+    ),
+    (
+        "AclPattern.proto",
+        Reach::Fixed(
+            "`Any`. Narrowing a rule to a protocol is what `acl_filter`'s own generator is aimed \
+             at, and a rule that discriminates is one a property here would have to evaluate.",
+        ),
+    ),
     (
         "VpcManifest.name",
         Reach::Determined("the side's vpc handle"),
@@ -201,10 +267,70 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
             "VpcPeering.acl",
             if acl.is_some() { "present" } else { "absent" },
         );
+        if let Some(acl) = acl {
+            survey_acl(acl, seen);
+        }
         for (side, manifest) in [("VpcPeering.left", left), ("VpcPeering.right", right)] {
             seen.note(side, manifest.name.clone());
             survey_manifest(manifest, seen);
         }
+    }
+}
+
+fn survey_acl(acl: &Acl, seen: &mut Observed) {
+    let Acl { default, rules } = acl;
+    seen.note("Acl.default", action(*default));
+    seen.count("Acl.rules", rules.len());
+    for rule in rules {
+        let AclRule {
+            name,
+            from,
+            to,
+            action: verdict,
+            pattern,
+            scope,
+            log,
+        } = rule;
+        seen.note("AclRule.name", name.clone());
+        seen.note("AclRule.from", from.clone());
+        seen.note("AclRule.to", to.clone());
+        seen.note("AclRule.action", action(*verdict));
+        seen.note(
+            "AclRule.scope",
+            match scope {
+                AclScope::Flow => "flow",
+                AclScope::Packet => "packet",
+            },
+        );
+        seen.note("AclRule.log", log.to_string());
+
+        let AclPattern {
+            src,
+            dst,
+            src_any_ports,
+            dst_any_ports,
+            proto,
+        } = pattern;
+        seen.prefixes("AclPattern.src", src);
+        seen.prefixes("AclPattern.dst", dst);
+        seen.count("AclPattern.src_any_ports", src_any_ports.len());
+        seen.count("AclPattern.dst_any_ports", dst_any_ports.len());
+        seen.note(
+            "AclPattern.proto",
+            match proto {
+                AclProtoMatch::Tcp => "tcp".to_owned(),
+                AclProtoMatch::Udp => "udp".to_owned(),
+                AclProtoMatch::Other(number) => format!("other({number})"),
+                AclProtoMatch::Any => "any".to_owned(),
+            },
+        );
+    }
+}
+
+fn action(action: AclAction) -> &'static str {
+    match action {
+        AclAction::Allow => "allow",
+        AclAction::Deny => "deny",
     }
 }
 
