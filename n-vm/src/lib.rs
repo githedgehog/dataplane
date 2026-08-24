@@ -44,8 +44,8 @@ pub use backend::{
 pub use bolero;
 pub use cloud_hypervisor::CloudHypervisor;
 pub use config::{
-    Accel, ConfigProblem, CorpusPolicy, GuestHugePageConfig, GuestHugePageSize, GuestRuntime,
-    HostPageSize, ModuleParam, NicModel, VmConfig, VmConfigBuilder,
+    Accel, ConfigProblem, CorpusPolicy, FabricNics, GuestHugePageConfig, GuestHugePageSize,
+    GuestRuntime, HostPageSize, ModuleParam, NicModel, VmConfig, VmConfigBuilder,
 };
 pub use container::{ContainerOutcome, ContainerTestResult, run_test_in_vm};
 pub use dispatch::{

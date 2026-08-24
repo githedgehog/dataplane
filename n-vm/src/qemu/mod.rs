@@ -135,7 +135,7 @@ impl HypervisorBackend for Qemu {
         // DOWN with no addresses.  Bring them UP and assign IPv6 link-local
         // addresses so that NDP traffic flows and rx tests have something
         // to receive.
-        configure_host_taps(&config::all_ifaces(params.vm_config.fabric_nics)).await?;
+        configure_host_taps(&params.vm_config.all_ifaces()).await?;
 
         let (writer, event_stream) = qmp_conn.into_split();
 
@@ -501,12 +501,7 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     push_kernel_args(&mut args, params);
     push_fs_args(&mut args, &params.shares);
     push_vsock_args(&mut args, &params.vsock, iommu);
-    push_network_args(
-        &mut args,
-        iommu,
-        params.vm_config.nic_model,
-        &config::all_ifaces(params.vm_config.fabric_nics),
-    );
+    push_network_args(&mut args, iommu, &params.vm_config.all_ifaces());
     push_serial_args(&mut args);
     push_qmp_args(&mut args);
     push_platform_args(&mut args, params);
@@ -801,7 +796,10 @@ fn push_vsock_args(args: &mut Vec<String>, vsock: &VsockAllocation, iommu: bool)
 ///
 /// # NIC model selection
 ///
-/// The `nic_model` parameter selects the QEMU device type:
+/// Each interface names its own device type, so one VM can present several
+/// at once -- which is the point: a program that identifies a NIC by
+/// ordinal rather than by what it is looks correct on a uniform machine and
+/// picks the wrong one on a mixed one.
 ///
 /// - [`VirtioNet`](config::NicModel::VirtioNet) --
 ///   `virtio-net-pci-non-transitional` (virtio 1.0+ only).  When
@@ -819,12 +817,7 @@ fn push_vsock_args(args: &mut Vec<String>, vsock: &VsockAllocation, iommu: bool)
 ///   (MSI-X, hardware offloads).  Like `e1000`, it does not support
 ///   `iommu_platform` or ATS but sits behind the Intel IOMMU on the
 ///   PCI bus.
-fn push_network_args(
-    args: &mut Vec<String>,
-    iommu: bool,
-    nic_model: config::NicModel,
-    ifaces: &[config::NetIface],
-) {
+fn push_network_args(args: &mut Vec<String>, iommu: bool, ifaces: &[config::NetIface]) {
     for iface in ifaces {
         // The TAP netdev is the same regardless of the front-end device
         // model -- it just bridges a host TAP interface into the guest.
@@ -838,7 +831,7 @@ fn push_network_args(
         ]);
 
         // The front-end device string depends on the NIC model.
-        let device_str = match nic_model {
+        let device_str = match iface.model {
             config::NicModel::VirtioNet => {
                 let iommu_suffix = if iommu {
                     ",iommu_platform=on,ats=on"
@@ -955,6 +948,19 @@ mod tests {
 
     use super::*;
     use n_vm_protocol::INIT_BINARY_PATH;
+
+    /// A default VM's interfaces, with `n` fabric links all of `model`.
+    ///
+    /// The model reaches the lowering through the interface list now, so a
+    /// test that used to pass it alongside builds the list that carries it.
+    fn ifaces_of(model: config::NicModel, n: u8) -> Vec<config::NetIface> {
+        config::VmConfig {
+            nic_model: model,
+            fabric: config::FabricNics::Uniform(n),
+            ..config::VmConfig::DEFAULT
+        }
+        .all_ifaces()
+    }
 
     const VIRTIOFS_QUEUE_SIZE: u32 = crate::config::VIRTIOFS_QUEUE_SIZE;
 
@@ -1344,12 +1350,7 @@ mod tests {
     #[test]
     fn network_args_have_three_interfaces() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::VirtioNet, 2));
         let netdev_count = args.iter().filter(|a| a.starts_with("tap,")).count();
         let device_count = args
             .iter()
@@ -1362,12 +1363,7 @@ mod tests {
     #[test]
     fn all_interfaces_have_unique_mac_addresses() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::VirtioNet, 2));
         let macs: Vec<&str> = args
             .iter()
             .filter_map(|a| {
@@ -1386,12 +1382,7 @@ mod tests {
     #[test]
     fn all_interfaces_have_unique_tap_names() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::VirtioNet, 2));
         let taps: Vec<&str> = args
             .iter()
             .filter_map(|a| {
@@ -1543,12 +1534,7 @@ mod tests {
     #[test]
     fn network_devices_have_iommu_platform_when_enabled() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            true,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, true, &ifaces_of(config::NicModel::VirtioNet, 2));
         let devices: Vec<&String> = args
             .iter()
             .filter(|a| a.starts_with("virtio-net-pci-non-transitional,"))
@@ -1566,18 +1552,42 @@ mod tests {
     #[test]
     fn network_devices_omit_iommu_platform_when_disabled() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::VirtioNet, 2));
         for arg in &args {
             assert!(
                 !arg.contains("iommu_platform"),
                 "should not contain iommu_platform when disabled: {arg}",
             );
         }
+    }
+
+    /// One VM, three device models, in the order the fabric named them.
+    ///
+    /// This is the lowering a startup-sequence test depends on: if the
+    /// model were still per-VM, every device string here would be the
+    /// same and the test above it would be asserting nothing.
+    #[test]
+    fn a_mixed_fabric_lowers_to_a_different_device_per_link() {
+        let mixed = config::VmConfig {
+            fabric: config::FabricNics::Mixed(&[config::NicModel::E1000, config::NicModel::E1000E]),
+            ..config::VmConfig::DEFAULT
+        };
+        let mut args = Vec::new();
+        push_network_args(&mut args, false, &mixed.all_ifaces());
+
+        let devices: Vec<&str> = args
+            .iter()
+            .filter(|a| a.contains("netdev=nd-"))
+            .map(|a| a.split(',').next().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            devices,
+            vec!["virtio-net-pci-non-transitional", "e1000", "e1000e"],
+        );
+
+        // Every link still gets its own TAP, whatever it is presented as:
+        // the back end is the same host device either way.
+        assert_eq!(args.iter().filter(|a| a.starts_with("tap,")).count(), 3);
     }
 
     // -- e1000 NIC model ----------------------------------------------
@@ -1592,12 +1602,7 @@ mod tests {
     #[test]
     fn e1000_network_args_have_three_interfaces() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::E1000,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::E1000, 2));
         let netdev_count = args.iter().filter(|a| a.starts_with("tap,")).count();
         let device_count = args.iter().filter(|a| a.starts_with("e1000,")).count();
         assert_eq!(netdev_count, 3);
@@ -1607,12 +1612,7 @@ mod tests {
     #[test]
     fn e1000_devices_have_no_iommu_platform_even_when_enabled() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            true,
-            config::NicModel::E1000,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, true, &ifaces_of(config::NicModel::E1000, 2));
         let devices: Vec<&String> = args.iter().filter(|a| a.starts_with("e1000,")).collect();
         assert_eq!(devices.len(), 3);
         for dev in &devices {
@@ -1627,12 +1627,7 @@ mod tests {
     #[test]
     fn e1000_devices_have_correct_mac_addresses() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::E1000,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::E1000, 2));
         let macs: Vec<&str> = args
             .iter()
             .filter_map(|a| {
@@ -1658,15 +1653,13 @@ mod tests {
         push_network_args(
             &mut virtio_args,
             false,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
+            &ifaces_of(config::NicModel::VirtioNet, 2),
         );
         let mut e1000_args = Vec::new();
         push_network_args(
             &mut e1000_args,
             false,
-            config::NicModel::E1000,
-            &config::all_ifaces(2),
+            &ifaces_of(config::NicModel::E1000, 2),
         );
 
         let virtio_taps: Vec<&String> = virtio_args
@@ -1695,12 +1688,7 @@ mod tests {
     #[test]
     fn e1000e_network_args_have_three_interfaces() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::E1000E,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::E1000E, 2));
         let netdev_count = args.iter().filter(|a| a.starts_with("tap,")).count();
         let device_count = args.iter().filter(|a| a.starts_with("e1000e,")).count();
         assert_eq!(netdev_count, 3);
@@ -1710,12 +1698,7 @@ mod tests {
     #[test]
     fn e1000e_devices_have_no_iommu_platform_even_when_enabled() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            true,
-            config::NicModel::E1000E,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, true, &ifaces_of(config::NicModel::E1000E, 2));
         let devices: Vec<&String> = args.iter().filter(|a| a.starts_with("e1000e,")).collect();
         assert_eq!(devices.len(), 3);
         for dev in &devices {
@@ -1730,12 +1713,7 @@ mod tests {
     #[test]
     fn e1000e_devices_have_correct_mac_addresses() {
         let mut args = Vec::new();
-        push_network_args(
-            &mut args,
-            false,
-            config::NicModel::E1000E,
-            &config::all_ifaces(2),
-        );
+        push_network_args(&mut args, false, &ifaces_of(config::NicModel::E1000E, 2));
         let macs: Vec<&str> = args
             .iter()
             .filter_map(|a| {
@@ -1761,15 +1739,13 @@ mod tests {
         push_network_args(
             &mut virtio_args,
             false,
-            config::NicModel::VirtioNet,
-            &config::all_ifaces(2),
+            &ifaces_of(config::NicModel::VirtioNet, 2),
         );
         let mut e1000e_args = Vec::new();
         push_network_args(
             &mut e1000e_args,
             false,
-            config::NicModel::E1000E,
-            &config::all_ifaces(2),
+            &ifaces_of(config::NicModel::E1000E, 2),
         );
 
         let virtio_taps: Vec<&String> = virtio_args

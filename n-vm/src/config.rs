@@ -587,7 +587,13 @@ pub struct VmConfig {
     /// A *request*, which [`GuestHugePageConfig::Auto`] leaves open; read
     /// [`hugepage_reservation`](Self::hugepage_reservation) for the answer.
     pub guest_hugepages: GuestHugePageConfig,
-    /// NIC model for all network interfaces in the VM.
+    /// NIC model for the management interface, and for fabric links that
+    /// do not name their own.
+    ///
+    /// A [`FabricNics::Mixed`] fabric names each of its links, and this is
+    /// then the management link's model alone -- which is the one a test
+    /// of device identification wants held fixed, since it is how the
+    /// harness reaches the guest.
     pub nic_model: NicModel,
     /// Kernel features this test depends on.
     ///
@@ -666,7 +672,13 @@ pub struct VmConfig {
     /// never touches the network: each interface is a TAP device, a virtio
     /// device and a queue pair, all of which are set up before the guest
     /// starts running.
-    pub fabric_nics: u8,
+    ///
+    /// [`FabricNics::Mixed`] names a model per link instead of a count.
+    /// That is what a test of the startup sequence wants: the failure it
+    /// is looking for is a program that unbinds a device it did not mean
+    /// to, and on a machine where every NIC is the same device there is no
+    /// wrong one to pick.
+    pub fabric: FabricNics,
     /// Total guest memory, in MiB.
     ///
     /// A whole number of [`host_page_size`](Self::host_page_size) pages, or
@@ -830,12 +842,30 @@ impl VmConfigBuilder {
         self
     }
 
-    /// Sets how many fabric-facing interfaces the VM gets.
+    /// Sets how many fabric-facing interfaces the VM gets, all of the same
+    /// model.
     ///
     /// The management interface is always present and is not counted.
     #[must_use]
     pub const fn fabric_nics(mut self, count: u8) -> Self {
-        self.0.fabric_nics = count;
+        self.0.fabric = FabricNics::Uniform(count);
+        self
+    }
+
+    /// Gives the VM one fabric interface per model named, in order.
+    ///
+    /// Replaces any earlier [`fabric_nics`](Self::fabric_nics): the count
+    /// and the models are one field, so they cannot disagree.
+    ///
+    /// ```ignore
+    /// .fabric_nic_models(&[NicModel::VirtioNet, NicModel::E1000, NicModel::E1000E])
+    /// ```
+    ///
+    /// An emulated model needs QEMU, so a mixed fabric that names one also
+    /// pins the backend -- see [`ConfigProblem::NicRequiresQemu`].
+    #[must_use]
+    pub const fn fabric_nic_models(mut self, models: &'static [NicModel]) -> Self {
+        self.0.fabric = FabricNics::Mixed(models);
         self
     }
 
@@ -1029,7 +1059,7 @@ impl VmConfig {
         guest_time_limit: None,
         module_params: &[],
         kernel_profile: None,
-        fabric_nics: 2,
+        fabric: FabricNics::Uniform(2),
         memory_mib: 1024,
         vcpus: 6,
         corpus: CorpusPolicy::None,
@@ -1092,6 +1122,63 @@ impl VmConfig {
             }
             explicit => explicit,
         }
+    }
+
+    /// Every interface presented to this VM, in device order.
+    ///
+    /// The management interface is always first and always present: it is
+    /// the standard-MTU link on the unprotected PCI segment, and the fabric
+    /// links are defined by contrast with it.
+    ///
+    /// A method rather than a free function taking a count, because a link
+    /// now carries a device model as well as an index, and both come from
+    /// the configuration.  Reading them from one place is what keeps the
+    /// two backends lowering the same list.
+    #[must_use]
+    pub fn all_ifaces(&self) -> Vec<NetIface> {
+        let mgmt = NetIface {
+            id: "mgmt".to_owned(),
+            tap: "mgmt".to_owned(),
+            mac: "02:DE:AD:BE:EF:01".to_owned(),
+            host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0xffff, 1),
+            mtu: MGMT_MTU,
+            queue_size: MGMT_QUEUE_SIZE,
+            pci_segment: 0,
+            model: self.nic_model,
+        };
+
+        // Clamped rather than trusted. `check` rejects a longer fabric, but
+        // a configuration can reach the launcher without having been
+        // checked, and past 254 the index no longer fits the last octet of
+        // the MAC -- two links would come up sharing an address, which is
+        // the symptom a network test would then be trying to explain.
+        let count = MAX_FABRIC_NICS.min(u8::try_from(self.fabric.len()).unwrap_or(u8::MAX));
+
+        std::iter::once(mgmt)
+            .chain((1..=count).map(|n| NetIface {
+                id: format!("fabric{n}"),
+                tap: format!("fabric{n}"),
+                mac: format!("02:CA:FE:BA:BE:{n:02X}"),
+                host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, u16::from(n)),
+                mtu: FABRIC_MTU,
+                queue_size: FABRIC_QUEUE_SIZE,
+                pci_segment: 1,
+                model: self.fabric.model(usize::from(n) - 1, self.nic_model),
+            }))
+            .collect()
+    }
+
+    /// The first interface in this VM that only QEMU can emulate, if any.
+    ///
+    /// Covers the management link as well as the fabric, so that
+    /// `nic_model` alone is enough to pin the backend even on a VM with no
+    /// fabric links at all.
+    #[must_use]
+    pub const fn first_qemu_only_nic(&self) -> Option<NicModel> {
+        if self.nic_model.requires_qemu() {
+            return Some(self.nic_model);
+        }
+        self.fabric.first_qemu_only(self.nic_model)
     }
 
     /// The `-rss_limit_mb` a fuzz engine running in this VM should be held
@@ -1160,7 +1247,7 @@ impl VmConfig {
         if self.vcpus == 0 {
             return Err(ConfigProblem::NoVcpus);
         }
-        if self.fabric_nics > MAX_FABRIC_NICS {
+        if self.fabric.len() > MAX_FABRIC_NICS as usize {
             return Err(ConfigProblem::TooManyNics);
         }
         let memory_bytes = self.memory_bytes();
@@ -1202,7 +1289,7 @@ impl VmConfig {
         // `RequestedBackend::Default` stays permissive: an unpinned test that
         // asks for an emulated NIC is not a contradiction, it is a test that
         // wants QEMU, and `RequestedBackend::resolve` selects it.
-        if self.nic_model.requires_qemu()
+        if self.first_qemu_only_nic().is_some()
             && matches!(
                 self.backend,
                 crate::backend::RequestedBackend::CloudHypervisor
@@ -1348,7 +1435,7 @@ impl VmConfig {
             Err(ConfigProblem::TooManyNics) => Err(format!(
                 "fabric_nics ({n}) exceeds {MAX_FABRIC_NICS}; the MAC and link-local \
                  addresses are derived from the index and would collide",
-                n = self.fabric_nics,
+                n = self.fabric.len(),
             )),
             Err(ConfigProblem::MemoryNotAligned) => Err(format!(
                 "guest memory ({mib} MiB = {bytes} bytes) is not a whole number of \
@@ -1378,11 +1465,15 @@ impl VmConfig {
                  theirs; raise memory_mib or drop the reservation",
                 mib = self.memory_mib,
             )),
-            Err(ConfigProblem::NicRequiresQemu) => Err(format!(
-                "{nic:?} is emulated only by QEMU, but this configuration pinned \
-                 cloud-hypervisor",
-                nic = self.nic_model,
-            )),
+            Err(ConfigProblem::NicRequiresQemu) => {
+                let Some(nic) = self.first_qemu_only_nic() else {
+                    unreachable!("NicRequiresQemu is only reachable when some NIC needs QEMU")
+                };
+                Err(format!(
+                    "{nic:?} is emulated only by QEMU, but this configuration pinned \
+                     cloud-hypervisor",
+                ))
+            }
         }
     }
 }
@@ -1470,6 +1561,15 @@ pub struct NetIface {
     /// Segment 1 is the one placed behind the virtual IOMMU, so this is
     /// also what decides whether a device gets DMA remapping.
     pub pci_segment: u16,
+    /// The device model the guest sees, and therefore which driver binds
+    /// it.
+    ///
+    /// Per-interface rather than per-VM because a machine whose links are
+    /// all the same device cannot exercise the thing that goes wrong: a
+    /// program that picks a NIC by ordinal, or by whatever `/sys` lists
+    /// first, looks correct on a uniform machine and unbinds the wrong
+    /// device on a mixed one.
+    pub model: NicModel,
 }
 
 /// The largest fabric NIC index the address derivation can represent.
@@ -1481,35 +1581,103 @@ pub struct NetIface {
 /// the symptom a failover test would then be trying to explain.
 pub(crate) const MAX_FABRIC_NICS: u8 = 254;
 
-/// Every interface presented to the VM, in device order.
+/// The fabric-facing interfaces a VM is given.
 ///
-/// The management interface is always first and always present: it is the
-/// standard-MTU link on the unprotected PCI segment, and the fabric links
-/// are defined by contrast with it.  `fabric_nics` may be zero, which is
-/// what a test that never touches the network should ask for.
-#[must_use]
-pub fn all_ifaces(fabric_nics: u8) -> Vec<NetIface> {
-    let mgmt = NetIface {
-        id: "mgmt".to_owned(),
-        tap: "mgmt".to_owned(),
-        mac: "02:DE:AD:BE:EF:01".to_owned(),
-        host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0xffff, 1),
-        mtu: MGMT_MTU,
-        queue_size: MGMT_QUEUE_SIZE,
-        pci_segment: 0,
-    };
+/// Two spellings of one list, because the two things a test wants to say
+/// about its fabric are different questions.  Most tests care only how
+/// many links there are; a test of device *identification* cares what each
+/// one is, and needs them to differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FabricNics {
+    /// `n` links, every one of [`VmConfig::nic_model`].
+    Uniform(u8),
+    /// One link per entry, each of the model named.
+    ///
+    /// A `&'static` slice rather than an array so this stays writable in
+    /// the `const` the builder produces -- the same reason
+    /// [`VmConfig::kernel_features`] is one.
+    Mixed(&'static [NicModel]),
+}
 
-    std::iter::once(mgmt)
-        .chain((1..=fabric_nics).map(|n| NetIface {
-            id: format!("fabric{n}"),
-            tap: format!("fabric{n}"),
-            mac: format!("02:CA:FE:BA:BE:{n:02X}"),
-            host_ipv6: Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, u16::from(n)),
-            mtu: FABRIC_MTU,
-            queue_size: FABRIC_QUEUE_SIZE,
-            pci_segment: 1,
-        }))
-        .collect()
+impl Default for FabricNics {
+    fn default() -> Self {
+        VmConfig::DEFAULT.fabric
+    }
+}
+
+impl FabricNics {
+    /// How many fabric links this describes.
+    ///
+    /// `usize` rather than `u8` so that an over-long [`Mixed`](Self::Mixed)
+    /// is a number [`VmConfig::check`] can compare against
+    /// [`MAX_FABRIC_NICS`], instead of one that has already wrapped past
+    /// it.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        match self {
+            Self::Uniform(count) => *count as usize,
+            Self::Mixed(models) => models.len(),
+        }
+    }
+
+    /// Whether this VM has no fabric links at all, which is what a test
+    /// that never touches the network should ask for.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The model of the `index`-th link, counting from zero.
+    ///
+    /// `default` is what a [`Uniform`](Self::Uniform) fabric is made of;
+    /// it is the VM's own [`nic_model`](VmConfig::nic_model), which is
+    /// also what the management link uses.  It is returned for an index
+    /// past the end of a [`Mixed`](Self::Mixed) fabric too, which
+    /// [`VmConfig::all_ifaces`] never asks for -- it iterates
+    /// [`len`](Self::len).
+    #[must_use]
+    pub const fn model(&self, index: usize, default: NicModel) -> NicModel {
+        match self {
+            Self::Uniform(_) => default,
+            Self::Mixed(models) => {
+                if index < models.len() {
+                    models[index]
+                } else {
+                    default
+                }
+            }
+        }
+    }
+
+    /// The first model here that only QEMU emulates, if any.
+    ///
+    /// Returned rather than a bare `bool` so the error can name the device
+    /// that forced the choice -- on a mixed fabric, "some NIC in this VM
+    /// needs QEMU" is not enough to act on.
+    #[must_use]
+    pub const fn first_qemu_only(&self, default: NicModel) -> Option<NicModel> {
+        match self {
+            Self::Uniform(count) => {
+                if *count > 0 && default.requires_qemu() {
+                    Some(default)
+                } else {
+                    None
+                }
+            }
+            Self::Mixed(models) => {
+                // A `while` rather than an iterator: this must stay `const`,
+                // because it is what `check` asks.
+                let mut i = 0;
+                while i < models.len() {
+                    if models[i].requires_qemu() {
+                        return Some(models[i]);
+                    }
+                    i += 1;
+                }
+                None
+            }
+        }
+    }
 }
 
 /// IPv6 prefix length for host-side TAP addresses (link-local /64).
@@ -1739,6 +1907,14 @@ pub(crate) async fn drain_child_stderr(child: &mut tokio::process::Child, label:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default VM with `n` fabric links, all of the default model.
+    const fn uniform_fabric(n: u8) -> VmConfig {
+        VmConfig {
+            fabric: FabricNics::Uniform(n),
+            ..VmConfig::DEFAULT
+        }
+    }
 
     const DEFAULT_HP: GuestHugePageConfig = GuestHugePageConfig::Allocate {
         size: GuestHugePageSize::Huge1G,
@@ -2565,7 +2741,7 @@ mod tests {
     #[test]
     fn every_interface_is_distinct_at_every_count() {
         for fabric_nics in [0, 1, 2, 3, 8, 64, MAX_FABRIC_NICS] {
-            let ifaces = all_ifaces(fabric_nics);
+            let ifaces = uniform_fabric(fabric_nics).all_ifaces();
             assert_eq!(
                 ifaces.len(),
                 usize::from(fabric_nics) + 1,
@@ -2659,7 +2835,7 @@ mod tests {
     /// addresses, that used to be written out by hand.
     #[test]
     fn the_default_interfaces_are_the_ones_that_were_hand_written() {
-        let ifaces = all_ifaces(VmConfig::DEFAULT.fabric_nics);
+        let ifaces = VmConfig::DEFAULT.all_ifaces();
         let described: Vec<_> = ifaces
             .iter()
             .map(|i| {
@@ -2681,10 +2857,96 @@ mod tests {
         );
     }
 
+    /// A mixed fabric is what a startup-sequence test needs: the links
+    /// differ, so "the second NIC" and "the virtio NIC" are different
+    /// devices and picking the wrong rule is visible.
+    #[test]
+    fn each_link_in_a_mixed_fabric_is_the_model_it_named() {
+        const MIXED: VmConfig = VmConfig {
+            fabric: FabricNics::Mixed(&[NicModel::VirtioNet, NicModel::E1000, NicModel::E1000E]),
+            ..VmConfig::DEFAULT
+        };
+        let models: Vec<_> = MIXED.all_ifaces().iter().map(|i| i.model).collect();
+        assert_eq!(
+            models,
+            vec![
+                // The management link keeps the VM's own model: it is how
+                // the harness reaches the guest, so it is the one thing a
+                // test of device identification should hold fixed.
+                NicModel::VirtioNet,
+                NicModel::VirtioNet,
+                NicModel::E1000,
+                NicModel::E1000E,
+            ],
+        );
+    }
+
+    /// The count spelling still means what it meant: every link the same.
+    #[test]
+    fn a_uniform_fabric_takes_the_vms_own_model() {
+        const UNIFORM: VmConfig = VmConfig {
+            nic_model: NicModel::E1000,
+            fabric: FabricNics::Uniform(2),
+            backend: crate::backend::RequestedBackend::Qemu,
+            ..VmConfig::DEFAULT
+        };
+        assert!(
+            UNIFORM
+                .all_ifaces()
+                .iter()
+                .all(|i| i.model == NicModel::E1000),
+        );
+    }
+
+    /// One emulated link anywhere in the machine decides the hypervisor for
+    /// the whole machine -- there is no per-device backend.
+    #[test]
+    fn an_emulated_link_anywhere_pins_qemu() {
+        const MIXED: VmConfig = VmConfig {
+            fabric: FabricNics::Mixed(&[NicModel::VirtioNet, NicModel::E1000E]),
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(MIXED.first_qemu_only_nic(), Some(NicModel::E1000E));
+
+        const PINNED: VmConfig = VmConfig {
+            backend: crate::backend::RequestedBackend::CloudHypervisor,
+            ..MIXED
+        };
+        assert_eq!(PINNED.check(), Err(ConfigProblem::NicRequiresQemu));
+    }
+
+    /// An all-virtio mixed fabric is not a QEMU-only machine.  Worth
+    /// pinning: reading "mixed" as "emulated" would quietly take every
+    /// mixed test off the default backend.
+    #[test]
+    fn a_mixed_fabric_of_virtio_links_still_runs_anywhere() {
+        const MIXED: VmConfig = VmConfig {
+            fabric: FabricNics::Mixed(&[NicModel::VirtioNet, NicModel::VirtioNet]),
+            backend: crate::backend::RequestedBackend::CloudHypervisor,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(MIXED.first_qemu_only_nic(), None);
+        assert_eq!(MIXED.check(), Ok(()));
+    }
+
+    /// The management link counts too, so a VM with no fabric at all can
+    /// still be one only QEMU can run.
+    #[test]
+    fn an_emulated_management_link_pins_qemu_with_no_fabric_at_all() {
+        const MGMT_ONLY: VmConfig = VmConfig {
+            nic_model: NicModel::E1000,
+            fabric: FabricNics::Uniform(0),
+            backend: crate::backend::RequestedBackend::CloudHypervisor,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(MGMT_ONLY.first_qemu_only_nic(), Some(NicModel::E1000));
+        assert_eq!(MGMT_ONLY.check(), Err(ConfigProblem::NicRequiresQemu));
+    }
+
     /// Only the fabric links sit on the segment the vIOMMU protects.
     #[test]
     fn management_stays_off_the_protected_segment() {
-        let ifaces = all_ifaces(4);
+        let ifaces = uniform_fabric(4).all_ifaces();
         assert_eq!(ifaces[0].pci_segment, 0, "mgmt is unprotected");
         assert!(
             ifaces[1..].iter().all(|i| i.pci_segment == 1),
@@ -2696,7 +2958,7 @@ mod tests {
     /// and still gets a machine.
     #[test]
     fn a_vm_can_have_no_fabric_interfaces() {
-        let ifaces = all_ifaces(0);
+        let ifaces = uniform_fabric(0).all_ifaces();
         assert_eq!(ifaces.len(), 1);
         assert_eq!(ifaces[0].id, "mgmt");
     }
@@ -2705,11 +2967,19 @@ mod tests {
     /// than silently issuing a duplicate address.
     #[test]
     fn more_fabric_interfaces_than_addresses_is_rejected() {
-        let config = VmConfig {
-            fabric_nics: MAX_FABRIC_NICS,
+        assert_eq!(uniform_fabric(MAX_FABRIC_NICS).check(), Ok(()));
+        assert_eq!(
+            uniform_fabric(MAX_FABRIC_NICS + 1).check(),
+            Err(ConfigProblem::TooManyNics),
+        );
+        // A named-model fabric is counted the same way, and by its length
+        // rather than by a number somebody wrote next to it.
+        const TOO_MANY: &[NicModel] = &[NicModel::VirtioNet; MAX_FABRIC_NICS as usize + 1];
+        const MIXED: VmConfig = VmConfig {
+            fabric: FabricNics::Mixed(TOO_MANY),
             ..VmConfig::DEFAULT
         };
-        assert_eq!(config.check(), Ok(()));
+        assert_eq!(MIXED.check(), Err(ConfigProblem::TooManyNics));
     }
 
     #[test]
