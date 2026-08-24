@@ -442,7 +442,11 @@ async fn spawn_qemu_process(
     if params.accel == config::Accel::Kvm {
         check_kvm_accessible().await?;
     }
-    check_hugepages_accessible(params.vm_config.host_page_size).await?;
+    check_hugepages_accessible(
+        params.vm_config.host_page_size,
+        params.vm_config.memory_bytes(),
+    )
+    .await?;
 
     let args = build_qemu_args(params);
 
@@ -491,8 +495,8 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     let arch = params.arch;
     let mut args = Vec::with_capacity(64);
     push_machine_args(&mut args, iommu, params.accel, arch);
-    push_cpu_args(&mut args, arch);
-    push_memory_args(&mut args, params.vm_config.host_page_size);
+    push_cpu_args(&mut args, arch, params.vm_config.vcpus);
+    push_memory_args(&mut args, &params.vm_config);
     push_iommu_args(&mut args, iommu, arch);
     push_kernel_args(&mut args, params);
     push_fs_args(&mut args, &params.shares);
@@ -557,12 +561,13 @@ fn push_machine_args(
 
 /// CPU count and topology.
 ///
-/// Matches the cloud-hypervisor backend: 6 vCPUs arranged as
-/// 1 socket x 3 dies x 1 core x 2 threads.
-fn push_cpu_args(args: &mut Vec<String>, arch: config::Arch) {
+/// Matches the cloud-hypervisor backend: both arrange the count with
+/// [`SmpTopology::for_vcpus`](config::SmpTopology::for_vcpus), so the two
+/// present the same machine.
+fn push_cpu_args(args: &mut Vec<String>, arch: config::Arch, vcpus: u32) {
     // The `-smp dies=` level is x86-specific; `smp_topology` omits it on
     // aarch64 while preserving the total vCPU count.
-    args.extend(["-smp".into(), arch.smp_topology()]);
+    args.extend(["-smp".into(), arch.smp_topology(vcpus)]);
 }
 
 /// Memory configuration with hugepage backing and sharing.
@@ -584,8 +589,9 @@ fn push_cpu_args(args: &mut Vec<String>, arch: config::Arch) {
 /// The `-numa node,memdev=mem0` argument assigns the memory backend to
 /// a NUMA node, which is how QEMU associates a memory backend with the
 /// guest's address space.
-fn push_memory_args(args: &mut Vec<String>, host_page_size: config::HostPageSize) {
-    let mib = config::VM_MEMORY_MIB;
+fn push_memory_args(args: &mut Vec<String>, vm_config: &config::VmConfig) {
+    let host_page_size = vm_config.host_page_size;
+    let mib = vm_config.memory_mib;
     // `memory-backend-memfd` with `hugetlb=on`, not `memory-backend-file`
     // with `mem-path=/dev/hugepages`.
     //
@@ -938,7 +944,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::config::VM_MEMORY_MIB;
     use n_vm_protocol::INIT_BINARY_PATH;
 
     const VIRTIOFS_QUEUE_SIZE: u32 = crate::config::VIRTIOFS_QUEUE_SIZE;
@@ -1045,7 +1050,7 @@ mod tests {
     #[test]
     fn cpu_args_have_six_vcpus() {
         let mut args = Vec::new();
-        push_cpu_args(&mut args, config::Arch::X86_64);
+        push_cpu_args(&mut args, config::Arch::X86_64, 6);
         let smp = &args[1];
         assert!(smp.starts_with("6,"), "expected 6 vCPUs: {smp}");
     }
@@ -1053,7 +1058,7 @@ mod tests {
     #[test]
     fn cpu_topology_matches_cloud_hypervisor() {
         let mut args = Vec::new();
-        push_cpu_args(&mut args, config::Arch::X86_64);
+        push_cpu_args(&mut args, config::Arch::X86_64, 6);
         let smp = &args[1];
         assert!(smp.contains("sockets=1"), "{smp}");
         assert!(smp.contains("dies=3"), "{smp}");
@@ -1066,15 +1071,40 @@ mod tests {
     #[test]
     fn memory_args_set_ram_size() {
         let mut args = Vec::new();
-        push_memory_args(&mut args, config::HostPageSize::default());
+        push_memory_args(&mut args, &config::VmConfig::DEFAULT);
         let idx = args.iter().position(|a| a == "-m").unwrap();
-        assert_eq!(args[idx + 1], format!("{VM_MEMORY_MIB}M"));
+        assert_eq!(
+            args[idx + 1],
+            format!("{mib}M", mib = config::VmConfig::DEFAULT.memory_mib),
+        );
+    }
+
+    /// The size follows the configuration rather than a constant, which is
+    /// the point of the lever.  Both the `-m` flag and the backend object
+    /// have to move together, or QEMU is told two different sizes.
+    #[test]
+    fn memory_args_follow_the_configured_size() {
+        let mut args = Vec::new();
+        let vm_config = config::VmConfigBuilder::default().memory_mib(4096).build();
+        push_memory_args(&mut args, &vm_config);
+        let idx = args.iter().position(|a| a == "-m").unwrap();
+        assert_eq!(args[idx + 1], "4096M");
+        let obj = args
+            .iter()
+            .find(|a| a.starts_with("memory-backend"))
+            .expect("a memory backend object");
+        assert!(obj.contains("size=4096M"), "{obj}");
     }
 
     #[test]
     fn memory_args_use_hugepages_with_sharing_for_1g() {
         let mut args = Vec::new();
-        push_memory_args(&mut args, config::HostPageSize::Huge1G);
+        push_memory_args(
+            &mut args,
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Huge1G)
+                .build(),
+        );
         let obj = args
             .iter()
             .find(|a| a.starts_with("memory-backend-memfd"))
@@ -1098,7 +1128,10 @@ mod tests {
     fn each_huge_page_size_asks_for_that_size() {
         let arg_for = |size| {
             let mut args = Vec::new();
-            push_memory_args(&mut args, size);
+            let vm_config = config::VmConfigBuilder::default()
+                .host_page_size(size)
+                .build();
+            push_memory_args(&mut args, &vm_config);
             args.iter()
                 .find(|a| a.starts_with("memory-backend"))
                 .expect("a memory backend object")
@@ -1121,7 +1154,12 @@ mod tests {
     #[test]
     fn standard_pages_use_a_plain_memfd() {
         let mut args = Vec::new();
-        push_memory_args(&mut args, config::HostPageSize::Standard);
+        push_memory_args(
+            &mut args,
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Standard)
+                .build(),
+        );
         let obj = args
             .iter()
             .find(|a| a.starts_with("memory-backend-memfd"))
@@ -1132,7 +1170,12 @@ mod tests {
     #[test]
     fn memory_args_use_hugepages_with_sharing_for_2m() {
         let mut args = Vec::new();
-        push_memory_args(&mut args, config::HostPageSize::Huge2M);
+        push_memory_args(
+            &mut args,
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Huge2M)
+                .build(),
+        );
         let obj = args
             .iter()
             .find(|a| a.starts_with("memory-backend-memfd"))
@@ -1146,7 +1189,12 @@ mod tests {
     #[test]
     fn memory_args_use_memfd_for_standard_pages() {
         let mut args = Vec::new();
-        push_memory_args(&mut args, config::HostPageSize::Standard);
+        push_memory_args(
+            &mut args,
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Standard)
+                .build(),
+        );
         let obj = args
             .iter()
             .find(|a| a.starts_with("memory-backend-memfd"))
@@ -1161,7 +1209,7 @@ mod tests {
     #[test]
     fn memory_args_include_numa_node() {
         let mut args = Vec::new();
-        push_memory_args(&mut args, config::HostPageSize::default());
+        push_memory_args(&mut args, &config::VmConfig::DEFAULT);
         assert!(args.contains(&"node,memdev=mem0".to_string()));
     }
 

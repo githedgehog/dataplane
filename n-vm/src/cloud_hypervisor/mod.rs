@@ -120,8 +120,11 @@ impl HypervisorBackend for CloudHypervisor {
     type Controller = CloudHypervisorController;
 
     async fn launch(params: &TestVmParams<'_>) -> Result<LaunchedHypervisor<Self>, VmError> {
-        let (child, event_receiver) =
-            spawn_hypervisor_process(params.vm_config.host_page_size).await?;
+        let (child, event_receiver) = spawn_hypervisor_process(
+            params.vm_config.host_page_size,
+            params.vm_config.memory_bytes(),
+        )
+        .await?;
 
         let config = build_vm_config(params);
 
@@ -204,6 +207,7 @@ impl HypervisorBackend for CloudHypervisor {
 /// (which is consumed by [`hypervisor::watch`]).
 async fn spawn_hypervisor_process(
     host_page_size: config::HostPageSize,
+    memory_bytes: i64,
 ) -> Result<(tokio::process::Child, tokio::net::unix::pipe::Receiver), VmError> {
     let (event_sender, event_receiver) =
         tokio::net::unix::pipe::pipe().map_err(CloudHypervisorError::EventPipe)?;
@@ -212,7 +216,7 @@ async fn spawn_hypervisor_process(
         .map_err(CloudHypervisorError::EventSenderFd)?;
 
     check_kvm_accessible().await?;
-    check_hugepages_accessible(host_page_size).await?;
+    check_hugepages_accessible(host_page_size, memory_bytes).await?;
 
     let hypervisor = tokio::process::Command::new(CLOUD_HYPERVISOR_BINARY_PATH)
         .args([
@@ -276,8 +280,8 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
             pci_segment: Some(0),
             ..Default::default()
         }),
-        cpus: Some(build_cpu_config()),
-        memory: Some(build_memory_config(params.vm_config.host_page_size)),
+        cpus: Some(build_cpu_config(params.vm_config.vcpus)),
+        memory: Some(build_memory_config(&params.vm_config)),
         net: Some(build_network_configs(params.vm_config.iommu)),
         fs: Some(build_fs_config(&params.shares)),
         // The virtio-console is disabled: test stdout/stderr travel
@@ -323,17 +327,23 @@ fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
     }
 }
 
-/// Builds the CPU topology: 6 vCPUs arranged as 3 dies x 1 core x 2
-/// threads.
-fn build_cpu_config() -> CpusConfig {
+/// Builds the CPU topology for `vcpus` vCPUs.
+///
+/// cloud-hypervisor rejects a topology whose levels do not multiply to
+/// `boot_vcpus`, so the arrangement comes from
+/// [`SmpTopology::for_vcpus`](config::SmpTopology::for_vcpus) -- the same
+/// derivation QEMU's `-smp` string is built from, so the two backends
+/// present the same machine.
+fn build_cpu_config(vcpus: u32) -> CpusConfig {
+    let t = config::SmpTopology::for_vcpus(vcpus);
     CpusConfig {
-        boot_vcpus: config::VM_VCPUS as i32,
-        max_vcpus: config::VM_VCPUS as i32,
+        boot_vcpus: vcpus as i32,
+        max_vcpus: vcpus as i32,
         topology: Some(CpuTopology {
-            threads_per_core: Some(config::VM_THREADS_PER_CORE as i32),
-            cores_per_die: Some(config::VM_CORES_PER_DIE as i32),
-            dies_per_package: Some(config::VM_DIES_PER_PACKAGE as i32),
-            packages: Some(config::VM_SOCKETS as i32),
+            threads_per_core: Some(t.threads as i32),
+            cores_per_die: Some(t.cores as i32),
+            dies_per_package: Some(t.dies as i32),
+            packages: Some(t.sockets as i32),
         }),
         ..Default::default()
     }
@@ -357,14 +367,15 @@ fn build_cpu_config() -> CpusConfig {
 /// they have no effect when `shared=on` -- and current cloud-hypervisor
 /// *rejects* `mergeable=on` together with `shared=on` ("Invalid to set
 /// both 'mergeable' and 'shared' for memory").
-fn build_memory_config(host_page_size: config::HostPageSize) -> MemoryConfig {
+fn build_memory_config(vm_config: &config::VmConfig) -> MemoryConfig {
+    let host_page_size = vm_config.host_page_size;
     let (hugepages, hugepage_size) = if host_page_size.requires_hugepages() {
         (Some(true), Some(host_page_size.bytes()))
     } else {
         (Some(false), None)
     };
     MemoryConfig {
-        size: config::VM_MEMORY_BYTES,
+        size: vm_config.memory_bytes(),
         mergeable: Some(false),
         shared: Some(true),
         hugepages,
@@ -497,9 +508,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::config::{
-        self, FABRIC_MTU, FABRIC_QUEUE_SIZE, MGMT_MTU, MGMT_QUEUE_SIZE, VM_MEMORY_BYTES,
-    };
+    use crate::config::{self, FABRIC_MTU, FABRIC_QUEUE_SIZE, MGMT_MTU, MGMT_QUEUE_SIZE};
     use n_vm_protocol::INIT_BINARY_PATH;
     const VIRTIOFS_QUEUE_SIZE: i32 = crate::config::VIRTIOFS_QUEUE_SIZE as i32;
 
@@ -621,43 +630,67 @@ mod tests {
     // -- CPU config ---------------------------------------------------
 
     #[test]
-    fn cpu_config_has_six_vcpus() {
-        let cpus = build_cpu_config();
-        assert_eq!(cpus.boot_vcpus, 6);
-        assert_eq!(cpus.max_vcpus, 6);
+    fn cpu_config_asks_for_the_count_it_was_given() {
+        let cpus = build_cpu_config(4);
+        assert_eq!(cpus.boot_vcpus, 4);
+        assert_eq!(cpus.max_vcpus, 4);
     }
 
+    /// The default still lowers to the machine the hand-written constants
+    /// used to describe.
     #[test]
-    fn cpu_topology_is_three_dies_by_one_core_by_two_threads() {
-        let cpus = build_cpu_config();
+    fn the_default_cpu_topology_is_three_dies_by_one_core_by_two_threads() {
+        let cpus = build_cpu_config(config::VmConfig::DEFAULT.vcpus);
         let topo = cpus.topology.expect("topology should be set");
         assert_eq!(topo.threads_per_core, Some(2));
         assert_eq!(topo.cores_per_die, Some(1));
         assert_eq!(topo.dies_per_package, Some(3));
         assert_eq!(topo.packages, Some(1));
-        // Sanity: product of topology should equal boot_vcpus.
-        let total = topo.threads_per_core.unwrap()
-            * topo.cores_per_die.unwrap()
-            * topo.dies_per_package.unwrap()
-            * topo.packages.unwrap();
-        assert_eq!(
-            total, cpus.boot_vcpus,
-            "topology product ({total}) should match boot_vcpus ({})",
-            cpus.boot_vcpus,
-        );
+    }
+
+    /// cloud-hypervisor rejects a topology that does not multiply back to
+    /// `boot_vcpus`, so this must hold for every count, not just the
+    /// default.
+    #[test]
+    fn every_cpu_topology_multiplies_to_its_boot_vcpus() {
+        for vcpus in [1, 2, 3, 4, 6, 8, 15, 32] {
+            let cpus = build_cpu_config(vcpus);
+            let topo = cpus.topology.expect("topology should be set");
+            let total = topo.threads_per_core.unwrap()
+                * topo.cores_per_die.unwrap()
+                * topo.dies_per_package.unwrap()
+                * topo.packages.unwrap();
+            assert_eq!(
+                total, cpus.boot_vcpus,
+                "topology product ({total}) should match boot_vcpus ({})",
+                cpus.boot_vcpus,
+            );
+        }
     }
 
     // -- Memory config ------------------------------------------------
 
     #[test]
     fn memory_config_has_expected_size() {
-        let mem = build_memory_config(config::HostPageSize::default());
-        assert_eq!(mem.size, VM_MEMORY_BYTES);
+        let mem = build_memory_config(&config::VmConfig::DEFAULT);
+        assert_eq!(mem.size, config::VmConfig::DEFAULT.memory_bytes());
+    }
+
+    /// The size follows the configuration rather than a constant, which is
+    /// the point of the lever.
+    #[test]
+    fn memory_config_follows_the_configured_size() {
+        let vm_config = config::VmConfigBuilder::default().memory_mib(4096).build();
+        assert_eq!(build_memory_config(&vm_config).size, 4096 * 1024 * 1024);
     }
 
     #[test]
     fn memory_config_enables_hugepages_and_sharing_for_1g() {
-        let mem = build_memory_config(config::HostPageSize::Huge1G);
+        let mem = build_memory_config(
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Huge1G)
+                .build(),
+        );
         assert_eq!(mem.hugepages, Some(true));
         assert_eq!(mem.hugepage_size, Some(1024 * 1024 * 1024));
         assert_eq!(
@@ -675,7 +708,11 @@ mod tests {
 
     #[test]
     fn memory_config_enables_hugepages_and_sharing_for_2m() {
-        let mem = build_memory_config(config::HostPageSize::Huge2M);
+        let mem = build_memory_config(
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Huge2M)
+                .build(),
+        );
         assert_eq!(mem.hugepages, Some(true));
         assert_eq!(mem.hugepage_size, Some(2 * 1024 * 1024));
         assert_eq!(
@@ -687,7 +724,11 @@ mod tests {
 
     #[test]
     fn memory_config_disables_hugepages_for_standard_pages() {
-        let mem = build_memory_config(config::HostPageSize::Standard);
+        let mem = build_memory_config(
+            &config::VmConfigBuilder::default()
+                .host_page_size(config::HostPageSize::Standard)
+                .build(),
+        );
         assert_eq!(mem.hugepages, Some(false));
         assert_eq!(mem.hugepage_size, None);
         assert_eq!(
