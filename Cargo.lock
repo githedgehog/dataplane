@@ -1316,6 +1316,7 @@ dependencies = [
 name = "dataplane-clock"
 version = "0.25.2"
 dependencies = [
+ "dataplane-concurrency",
  "tokio",
 ]
 

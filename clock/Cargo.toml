@@ -16,3 +16,16 @@ virtual = ["dep:tokio"]
 
 [dependencies]
 tokio = { workspace = true, optional = true, features = ["test-util", "time"] }
+
+[dev-dependencies]
+# For this crate's own tests only, to take turns over the one clock -- see `virtual_time::serially`.
+# A dev-dependency because production has no business serializing anything here, and because
+# `concurrency` does not depend on `clock`, so nothing in the real graph gains an edge.
+concurrency = { workspace = true }
+
+[lints.rust]
+# `wall_clock` turns the routing off at build time without touching the eleven dev-dependency
+# declarations that switch `virtual` on. Features are additive, so there is no way to subtract one
+# from the command line; a cfg can be added to RUSTFLAGS for a single run, which is what makes
+# "the same property under both clocks" a flag rather than an edit.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wall_clock)'] }
