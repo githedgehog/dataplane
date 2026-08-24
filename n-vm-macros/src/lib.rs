@@ -109,7 +109,10 @@ const MIGRATED_OPTIONS: &[(&str, &str)] = &[
         "cloud_hypervisor",
         "`.backend(RequestedBackend::CloudHypervisor)` on the config",
     ),
-    ("current_thread", "`.runtime(GuestRuntime::CurrentThread)` on the config"),
+    (
+        "current_thread",
+        "`.runtime(GuestRuntime::CurrentThread)` on the config",
+    ),
     (
         "multi_thread",
         "`.runtime(GuestRuntime::MultiThread { worker_threads: None })` on the config",
@@ -366,8 +369,8 @@ fn extract_inline_config(block: &mut syn::Block) -> syn::Result<Option<syn::Expr
 /// The decorated function must take no parameters and return `()`.  The VM
 /// is configured either by `config = PATH`, naming a `const VmConfig`, or by
 /// a `#[n_vm::config]` `const` in the body; with neither it uses
-/// `VmConfig::DEFAULT`.  `#[n_vm::corpus]` may be placed below this
-/// attribute to grant the guest a writable corpus directory.
+/// `VmConfig::DEFAULT`.  A writable corpus directory is granted by
+/// `.corpus(CorpusPolicy::Fuzz)` on that configuration.
 #[proc_macro_attribute]
 pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     let config = match parse_config_arg(attr) {
@@ -472,37 +475,41 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         .into();
     }
 
-    // `#[corpus]` is a bare marker: its presence grants the guest write
-    // access to the `__fuzz__` directory beside this test's source file.
-    // The path itself is `file!()`, expanded at the call site rather than
-    // here, because a proc macro sees only tokens -- rustc is what knows
-    // which file it is compiling.
-    let corpus_attr = match extract_unique_attr(&mut func.attrs, "corpus") {
-        Ok(attr) => attr,
-        Err(err) => return err.to_compile_error().into(),
-    };
-    if let Some(attr) = &corpus_attr
-        && !matches!(attr.meta, syn::Meta::Path(_))
-    {
-        return syn::Error::new_spanned(attr, "#[corpus] takes no arguments")
-            .to_compile_error()
-            .into();
+    // `#[corpus]` is now `.corpus(CorpusPolicy::Fuzz)` on the config.  It is
+    // rejected here rather than silently ignored, because a fuzz target that
+    // quietly lost its writable share does not fail: it runs, generates
+    // inputs, and saves none of them.
+    if let Ok(Some(attr)) = extract_unique_attr(&mut func.attrs, "corpus") {
+        return syn::Error::new_spanned(
+            attr,
+            "#[corpus] has been replaced by `.corpus(CorpusPolicy::Fuzz)` on \
+             the config, e.g.\n\n\
+             #[n_vm::config]\n\
+             const _: _ = n_vm::VmConfigBuilder::default()\n\
+             \u{20}   .corpus(n_vm::CorpusPolicy::Fuzz)\n\
+             \u{20}   .build();",
+        )
+        .to_compile_error()
+        .into();
     }
+
     // `CARGO_MANIFEST_DIR` rides along because `file!()` is not reliably
     // workspace-relative here: this workspace builds with
     // `--remap-path-prefix==${src}`, which rewrites it to an absolute nix
     // store path.  The crate directory is the anchor that recovers the
     // workspace-relative tail (see `VmConfig::corpus_rel_dir`).  Both are
-    // expanded at the call site for the same reason `file!()` is.
-    let corpus_source_file = if corpus_attr.is_some() {
-        quote! {
-            ::core::option::Option::Some((
-                ::core::file!(),
-                ::core::env!("CARGO_MANIFEST_DIR"),
-            ))
-        }
-    } else {
-        quote! { ::core::option::Option::None }
+    // expanded at the call site rather than here, because a proc macro sees
+    // only tokens -- rustc is what knows which file it is compiling.
+    //
+    // Injected unconditionally now that the fuzz decision lives in the
+    // config: this macro cannot read a `const`, so it can no longer tell
+    // whether the file will be wanted.  It costs two `&'static str`s in a
+    // struct that is already `const`.
+    let source_file = quote! {
+        ::core::option::Option::Some((
+            ::core::file!(),
+            ::core::env!("CARGO_MANIFEST_DIR"),
+        ))
     };
 
     // The inline configuration, if the body declares one.  Removed from the
@@ -544,6 +551,9 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut sig = func.sig.clone();
     sig.asyncness = None;
 
+    // Named here because the discovery shim below branches on its value.
+    let config_ident = format_ident!("__N_VM_CONFIG_{}", ident);
+
     // Tier 0, and only for a fuzz target.
     //
     // `cargo bolero list` runs this binary with `CARGO_BOLERO_SELECT=all` and collects a line that
@@ -555,16 +565,22 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     // bind devices or assume it is root, none of which may happen on a developer's workstation
     // merely because something asked what tests exist.
     //
-    // Keyed on `#[corpus]` because that is what distinguishes a fuzz target from an ordinary guest
-    // test. Announcing every tiered test would put forty-odd entries containing no `check!` into a
-    // list whose whole purpose is naming things that can be fuzzed.
+    // Emitted for every test but *entered* only by a fuzz target. Announcing every tiered test
+    // would put forty-odd entries containing no `check!` into a list whose whole purpose is naming
+    // things that can be fuzzed.
+    //
+    // The guard is a `const fn` on a `const`, so rustc folds it: an ordinary test compiles to
+    // nothing at all here. It has to be a runtime-shaped branch rather than a macro-level one
+    // because the decision now lives in the configuration, and a proc macro sees tokens -- given
+    // `config = SOME_VM` it cannot know what `SOME_VM` holds. Moving the branch from the macro to
+    // the value is the whole reason this reads as a branch.
     //
     // `should_run` is `true` whenever `CARGO_BOLERO_SELECT` is unset, so an ordinary run falls
     // straight through. `__item_path__!` must expand at the call site or it names a path inside
     // `n-vm`; what it yields here is the *outer* test's path, which is the name libtest accepts as
     // a filter when `cargo bolero test` selects it.
-    let discovery = corpus_attr.as_ref().map(|_| {
-        quote! {
+    let discovery = quote! {
+        if #config_ident.is_fuzz_target() {
             let __n_vm_bolero_location = ::n_vm::bolero::TargetLocation {
                 package_name: ::core::env!("CARGO_PKG_NAME"),
                 manifest_dir: ::core::env!("CARGO_MANIFEST_DIR"),
@@ -578,7 +594,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
                 return;
             }
         }
-    });
+    };
 
     // The requested backend is resolved against the host architecture at
     // The base configuration: whatever the test named, or the default.  This
@@ -600,7 +616,6 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
     // Only `#[cfg]` carries over: a config for a test that does not exist
     // would fail to compile if it referenced cfg'd-out items.  `#[ignore]`
     // and doc comments are meaningless on a const.
-    let config_ident = format_ident!("__N_VM_CONFIG_{}", ident);
     let cfg_attrs: Vec<_> = harness_attrs
         .iter()
         .filter(|a| a.path().is_ident("cfg"))
@@ -660,7 +675,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         // Built once; both tiers need it (VmConfig is Copy).  Tier 1 uses it
         // to resolve capability/ISA skips; tier 2 to configure the VM.
         //
-        // `corpus_source_file` is always overridden rather than taken from
+        // `source_file` is always overridden rather than taken from
         // the base config, because it must name *this* test's file:
         // `file!()` expands where it is written, so a shared const would name
         // the const's own file and put the corpus directory beside the wrong
@@ -668,7 +683,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
         #(#cfg_attrs)*
         #[allow(non_upper_case_globals)]
         const #config_ident: ::n_vm::VmConfig = ::n_vm::VmConfig {
-            corpus_source_file: #corpus_source_file,
+            source_file: #source_file,
             ..(#base_config)
         };
 
@@ -749,30 +764,30 @@ pub fn config(_attr: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Companion attribute opting a test in to a writable corpus directory,
-/// consumed by [`test`].
+/// Superseded by `.corpus(CorpusPolicy::Fuzz)` on the configuration.
 ///
-/// Grants the guest write access to the `__fuzz__` directory beside the
-/// test's own source file -- and to nothing else -- so that a fuzzer can
-/// persist generated inputs and crash artifacts back to the source tree.
+/// Kept only so that the old spelling gets a compile error naming its
+/// replacement.  It moved for the reason everything else moved out of this
+/// macro: the grant now has to be visible to the *rest* of the
+/// configuration -- a fuzz target declines the hugepage reservation, which
+/// could not be decided while one half lived in an attribute and the other
+/// in a `const`.
 ///
-/// This is opt-in and spelled out at the call site on purpose.  The guest
-/// is otherwise entirely read-only, which is much of the reason to run a
-/// test in a VM at all: a fuzz target is deliberately trying to make code
-/// misbehave against a real kernel, and it must not be able to damage the
-/// developer's working tree.  Marking the tests that do write makes that
-/// grant reviewable rather than ambient.
-///
-/// Takes no arguments.
+/// The grant is still opt-in and still spelled out at the call site.  The
+/// guest is otherwise entirely read-only, which is much of the reason to
+/// run a test in a VM at all: a fuzz target is deliberately trying to make
+/// code misbehave against a real kernel, and it must not be able to damage
+/// the developer's working tree.
 #[proc_macro_attribute]
 pub fn corpus(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let error = syn::Error::new(
         proc_macro2::Span::call_site(),
-        "#[corpus] must be used together with #[n_vm::test] and must \
-         appear below it on the same function; e.g.\n\n\
-         #[n_vm::test]\n\
-         #[corpus]\n\
-         fn my_fuzz_test() { ... }",
+        "#[corpus] has been replaced by `.corpus(CorpusPolicy::Fuzz)` on \
+         the config, e.g.\n\n\
+         #[n_vm::config]\n\
+         const _: _ = n_vm::VmConfigBuilder::default()\n\
+         \u{20}   .corpus(n_vm::CorpusPolicy::Fuzz)\n\
+         \u{20}   .build();",
     )
     .to_compile_error();
 

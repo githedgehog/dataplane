@@ -57,8 +57,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use n_vm_protocol::{
-    HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH, VIRTIOFS_CORPUS_TAG, VIRTIOFS_ROOT_TAG,
-    VIRTIOFSD_CORPUS_SOCKET_PATH, VIRTIOFSD_SOCKET_PATH, VsockAllocation, VsockChannel,
+    HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH, VIRTIOFS_ROOT_TAG,
+    VIRTIOFSD_SOCKET_PATH, VsockAllocation, VsockChannel,
 };
 use tracing::{debug, error, warn};
 
@@ -495,7 +495,7 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     push_memory_args(&mut args, params.vm_config.host_page_size);
     push_iommu_args(&mut args, iommu, arch);
     push_kernel_args(&mut args, params);
-    push_fs_args(&mut args, params.vm_config.corpus_source_file.is_some());
+    push_fs_args(&mut args, &params.shares);
     push_vsock_args(&mut args, &params.vsock, iommu);
     push_network_args(&mut args, iommu, params.vm_config.nic_model);
     push_serial_args(&mut args);
@@ -678,6 +678,7 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
         params.test_name,
         &params.vsock,
         &params.vm_config,
+        &params.shares,
         params.arch,
         params.boot,
     );
@@ -709,7 +710,7 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
 /// separate userspace process (virtiofsd) rather than through QEMU's
 /// emulated IOMMU data path.  The Intel IOMMU's `caching-mode=on`
 /// (set in [`push_iommu_args`]) covers this case instead.
-fn push_fs_args(args: &mut Vec<String>, corpus: bool) {
+fn push_fs_args(args: &mut Vec<String>, shares: &[config::ActiveShare]) {
     args.extend([
         "-chardev".into(),
         format!("socket,id=virtiofs0,path={VIRTIOFSD_SOCKET_PATH}"),
@@ -721,17 +722,23 @@ fn push_fs_args(args: &mut Vec<String>, corpus: bool) {
         ),
     ]);
 
-    // Second share, served by a separate (writable) virtiofsd, for tests
-    // that opted in via `#[corpus]`.
-    if corpus {
+    // One further share per writable window, each served by its own
+    // daemon.  Indices continue from the root share's `virtiofs0`, and the
+    // order is `WRITABLE_SHARES` order, so a given window gets the same
+    // chardev id on both backends and in every run.
+    for (index, active) in shares.iter().enumerate() {
+        let id = format!("virtiofs{}", index + 1);
         args.extend([
             "-chardev".into(),
-            format!("socket,id=virtiofs1,path={VIRTIOFSD_CORPUS_SOCKET_PATH}"),
+            format!(
+                "socket,id={id},path={path}",
+                path = active.share.socket_path
+            ),
             "-device".into(),
             format!(
-                "vhost-user-fs-pci,queue-size={qs},\
-                 chardev=virtiofs1,tag={VIRTIOFS_CORPUS_TAG}",
+                "vhost-user-fs-pci,queue-size={qs},chardev={id},tag={tag}",
                 qs = config::VIRTIOFS_QUEUE_SIZE,
+                tag = active.share.tag,
             ),
         ]);
     }
@@ -951,6 +958,7 @@ mod tests {
             boot: crate::kernel_manifest::BootMode::Direct,
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
+            shares: Vec::new(),
         }
     }
 
@@ -1201,7 +1209,10 @@ mod tests {
         let idx = args.iter().position(|a| a == "-append").unwrap();
         let cmdline = &args[idx + 1];
         // Against the config, not a literal -- see the twin of this test in `cloud_hypervisor`.
-        let expected = params.vm_config.hugepage_reservation().kernel_cmdline_fragment();
+        let expected = params
+            .vm_config
+            .hugepage_reservation()
+            .kernel_cmdline_fragment();
         assert!(!expected.is_empty(), "the sample config reserves hugepages");
         assert!(cmdline.contains(expected.trim_end()), "{cmdline}");
     }
@@ -1236,7 +1247,7 @@ mod tests {
     #[test]
     fn fs_args_use_virtiofs_tag_and_socket() {
         let mut args = Vec::new();
-        push_fs_args(&mut args, false);
+        push_fs_args(&mut args, &[]);
         let chardev = args
             .iter()
             .find(|a| a.starts_with("socket,id=virtiofs0"))
@@ -1645,7 +1656,7 @@ mod tests {
     #[test]
     fn fs_device_never_has_iommu_platform() {
         let mut args = Vec::new();
-        push_fs_args(&mut args, false);
+        push_fs_args(&mut args, &[]);
         let device = args
             .iter()
             .find(|a| a.starts_with("vhost-user-fs-pci"))

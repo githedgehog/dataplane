@@ -41,8 +41,7 @@ use cloud_hypervisor_client::models::{
 use command_fds::{CommandFdExt, FdMapping};
 use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH,
-    VHOST_VSOCK_SOCKET_PATH, VIRTIOFS_CORPUS_TAG, VIRTIOFS_ROOT_TAG, VIRTIOFSD_CORPUS_SOCKET_PATH,
-    VIRTIOFSD_SOCKET_PATH, VsockChannel,
+    VHOST_VSOCK_SOCKET_PATH, VIRTIOFS_ROOT_TAG, VIRTIOFSD_SOCKET_PATH, VsockChannel,
 };
 use tracing::{debug, error};
 
@@ -280,9 +279,7 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
         cpus: Some(build_cpu_config()),
         memory: Some(build_memory_config(params.vm_config.host_page_size)),
         net: Some(build_network_configs(params.vm_config.iommu)),
-        fs: Some(build_fs_config(
-            params.vm_config.corpus_source_file.is_some(),
-        )),
+        fs: Some(build_fs_config(&params.shares)),
         // The virtio-console is disabled: test stdout/stderr travel
         // over dedicated VsockChannels (TEST_STDOUT / TEST_STDERR).
         console: Some(ConsoleConfig::new(Mode::Off)),
@@ -318,6 +315,7 @@ fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
             params.test_name,
             &params.vsock,
             &params.vm_config,
+            &params.shares,
             params.arch,
             params.boot,
         )),
@@ -435,7 +433,7 @@ fn build_network_configs(iommu: bool) -> Vec<NetConfig> {
 
 /// Builds the virtiofs filesystem configuration for sharing the container
 /// filesystem into the VM.
-fn build_fs_config(corpus: bool) -> Vec<FsConfig> {
+fn build_fs_config(active: &[config::ActiveShare]) -> Vec<FsConfig> {
     let mut shares = vec![FsConfig {
         tag: VIRTIOFS_ROOT_TAG.into(),
         socket: VIRTIOFSD_SOCKET_PATH.into(),
@@ -445,18 +443,15 @@ fn build_fs_config(corpus: bool) -> Vec<FsConfig> {
         ..Default::default()
     }];
 
-    // Second share, served by a separate (writable) virtiofsd, for tests
-    // that opted in via `#[corpus]`.
-    if corpus {
-        shares.push(FsConfig {
-            tag: VIRTIOFS_CORPUS_TAG.into(),
-            socket: VIRTIOFSD_CORPUS_SOCKET_PATH.into(),
-            num_queues: 1,
-            queue_size: config::VIRTIOFS_QUEUE_SIZE as i32,
-            id: Some(VIRTIOFS_CORPUS_TAG.into()),
-            ..Default::default()
-        });
-    }
+    // One further share per writable window, each served by its own daemon.
+    shares.extend(active.iter().map(|active| FsConfig {
+        tag: active.share.tag.into(),
+        socket: active.share.socket_path.into(),
+        num_queues: 1,
+        queue_size: config::VIRTIOFS_QUEUE_SIZE as i32,
+        id: Some(active.share.tag.into()),
+        ..Default::default()
+    }));
 
     shares
 }
@@ -523,6 +518,7 @@ mod tests {
             boot: crate::kernel_manifest::BootMode::Direct,
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
+            shares: Vec::new(),
         }
     }
 
@@ -584,7 +580,10 @@ mod tests {
         // `hugepagesz=1G`, which is a copy of the default rather than a claim about the cmdline,
         // and it failed the moment the default changed for reasons that had nothing to do with
         // whether the reservation reaches the kernel.
-        let expected = params.vm_config.hugepage_reservation().kernel_cmdline_fragment();
+        let expected = params
+            .vm_config
+            .hugepage_reservation()
+            .kernel_cmdline_fragment();
         assert!(!expected.is_empty(), "the sample config reserves hugepages");
         assert!(
             cmdline.contains(expected.trim_end()),
@@ -767,7 +766,7 @@ mod tests {
 
     #[test]
     fn fs_config_uses_virtiofs_root_tag_and_socket() {
-        let fs = build_fs_config(false);
+        let fs = build_fs_config(&[]);
         assert_eq!(fs.len(), 1);
         let entry = &fs[0];
         assert_eq!(entry.tag, VIRTIOFS_ROOT_TAG);

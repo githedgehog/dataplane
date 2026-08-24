@@ -14,11 +14,9 @@ use bollard::query_parameters::{
     StartContainerOptions,
 };
 use n_vm_protocol::{
-    CONTAINER_PLATFORM, CORPUS_SHARE_PATH, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER,
-    ENV_MARKER_VALUE, ENV_WORKSPACE, LABEL_HOST_PID, LABEL_OWNER, LABEL_OWNER_VALUE, LABEL_TEST,
-    ScratchRoots, VM_ENV_DIR, VM_ROOT_SHARE_PATH, VM_RUN_DIR,
-    VM_TEST_BIN_DIR,
-    VM_WORKSPACE_DIR,
+    CONTAINER_PLATFORM, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE,
+    ENV_WORKSPACE, LABEL_HOST_PID, LABEL_OWNER, LABEL_OWNER_VALUE, LABEL_TEST, ScratchRoots,
+    VM_ENV_DIR, VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR, VM_WORKSPACE_DIR,
 };
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -52,6 +50,135 @@ use crate::error::ContainerError;
 fn engine_time_limit() -> Option<u64> {
     let args = std::env::var(n_vm_protocol::ENV_LIBFUZZER_ARGS).ok()?;
     n_vm_protocol::max_total_time(&args).map(|d| d.as_secs())
+}
+
+/// A writable share the host tier has decided to open.
+///
+/// The host half of [`crate::config::ActiveShare`]: this side knows the host
+/// directory to bind-mount, the other side knows only what arrived.
+struct ResolvedShare {
+    share: n_vm_protocol::WritableShare,
+    host_dir: PathBuf,
+    guest_path: String,
+}
+
+/// Chooses which host directories a fuzz target may write to.
+///
+/// The engine is asked first, and answers for both windows.  `cargo-bolero`
+/// computes them from `--corpus-dir` and from its own `fuzz_dir()`
+/// derivation, and puts them on the command line it hands to libfuzzer --
+/// so they are already decided by the time this tier runs, and deriving
+/// them independently here would mean reimplementing that derivation and
+/// drifting from it.  That drift is exactly what broke persistence: `n-vm`
+/// made `__fuzz__` writable while `just fuzz` pointed the corpus at
+/// `.fuzz-corpus/<target>`, which the read-only share then served, so every
+/// campaign started from `0 files found` and saved nothing.
+///
+/// Without an engine there is no command line to read, and the corpus falls
+/// back to `bolero`'s own default beside the test.  There is no crashes
+/// window in that case: the fallback directory encloses both.
+///
+/// `engine` is passed in rather than read here so this stays a pure
+/// function of its inputs, matching [`Accel::from_env`]'s convention -- a
+/// test of it should not have to mutate the process environment.
+///
+/// # Errors
+///
+/// A test that asked for a corpus and cannot be given one is an error, not
+/// a warning.  The guest has no way to report "I had no writable corpus" --
+/// the write just lands on the read-only root share and surfaces as a bare
+/// `ReadOnlyFilesystem` several tiers from the cause, which is how the
+/// remapped-`file!()` bug hid.
+fn plan_writable_shares(
+    vm_config: &crate::config::VmConfig,
+    engine: &str,
+    workspace: &Path,
+) -> Result<Vec<(n_vm_protocol::WritableShare, PathBuf)>, ContainerError> {
+    if !vm_config.is_fuzz_target() {
+        return Ok(Vec::new());
+    }
+    let dirs = n_vm_protocol::fuzz_dirs(engine);
+
+    // A relative directory is resolved against the workspace, which is the
+    // guest's working directory too -- so the same string names the same
+    // place on both sides.
+    let absolute = |dir: &str| {
+        let path = Path::new(dir);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        }
+    };
+
+    let corpus = match dirs.corpus {
+        Some(dir) => absolute(dir),
+        None => {
+            let (file, crate_dir) = vm_config.source_file.unwrap_or(("<none>", "<none>"));
+            let rel = vm_config.corpus_rel_dir().ok_or_else(|| {
+                ContainerError::CorpusDirUnresolvable {
+                    file: file.to_owned(),
+                    crate_dir: crate_dir.to_owned(),
+                }
+            })?;
+            workspace.join(rel)
+        }
+    };
+
+    // `WRITABLE_SHARES` order, which every tier relies on: the container
+    // resolves in it, and the QEMU backend numbers chardevs by it.
+    Ok([
+        (n_vm_protocol::CORPUS_SHARE, Some(corpus)),
+        (n_vm_protocol::CRASHES_SHARE, dirs.crashes.map(absolute)),
+    ]
+    .into_iter()
+    .filter_map(|(share, dir)| dir.map(|dir| (share, dir)))
+    .collect())
+}
+
+/// Creates the planned directories and works out where the guest sees them.
+///
+/// # Errors
+///
+/// Propagates [`plan_writable_shares`], and reports a directory that cannot
+/// be created.
+fn resolve_writable_shares(
+    vm_config: &crate::config::VmConfig,
+) -> Result<Vec<ResolvedShare>, ContainerError> {
+    if !vm_config.is_fuzz_target() {
+        return Ok(Vec::new());
+    }
+    let workspace = workspace_root().ok_or(ContainerError::CorpusWithoutWorkspace)?;
+    let host_root = workspace.to_str().unwrap_or_default();
+
+    // The raw value, before `write_forwarded_env` rewrites it: these are
+    // host paths, and this tier is the only one that can act on them.
+    let engine = std::env::var(n_vm_protocol::ENV_LIBFUZZER_ARGS).unwrap_or_default();
+
+    plan_writable_shares(vm_config, &engine, &workspace)?
+        .into_iter()
+        .map(|(share, host_dir)| {
+            // Created here, as the invoking user: the guest sees the
+            // workspace read-only and so cannot create it, and creating it
+            // here keeps ownership right without relying on virtiofsd's uid
+            // squashing for the directory itself.
+            std::fs::create_dir_all(&host_dir).map_err(|source| {
+                ContainerError::CorpusDirCreate {
+                    path: host_dir.clone(),
+                    source,
+                }
+            })?;
+            let guest_path = n_vm_protocol::remap_workspace_paths(
+                host_dir.to_str().unwrap_or_default(),
+                host_root,
+            );
+            Ok(ResolvedShare {
+                share,
+                host_dir,
+                guest_path,
+            })
+        })
+        .collect()
 }
 
 fn workspace_root() -> Option<PathBuf> {
@@ -264,7 +391,7 @@ impl ContainerParams {
         backend: EffectiveBackend,
         accel: Accel,
         qemu_user: Option<&str>,
-        corpus_host_dir: Option<&Path>,
+        shares: &[ResolvedShare],
         env_host_dir: Option<&Path>,
     ) -> ContainerCreateBody {
         ContainerCreateBody {
@@ -281,10 +408,7 @@ impl ContainerParams {
                 [
                     (LABEL_OWNER.to_owned(), LABEL_OWNER_VALUE.to_owned()),
                     (LABEL_TEST.to_owned(), self.test_name.clone()),
-                    (
-                        LABEL_HOST_PID.to_owned(),
-                        std::process::id().to_string(),
-                    ),
+                    (LABEL_HOST_PID.to_owned(), std::process::id().to_string()),
                 ]
                 .into_iter()
                 .collect(),
@@ -315,6 +439,15 @@ impl ContainerParams {
                     engine_time_limit()
                         .map(|secs| format!("{}={secs}", n_vm_protocol::ENV_ENGINE_TIME_LIMIT)),
                 )
+                // Where each writable window lands in the guest.  Only the
+                // host tier can know this: the guest path is a host path put
+                // through the workspace remap, and the container has never
+                // seen the host's workspace.
+                .chain(
+                    shares
+                        .iter()
+                        .map(|active| format!("{}={}", active.share.env_key, active.guest_path)),
+                )
                 // Same "only when set" discipline: virtiofsd runs in this
                 // tier, so the override has to reach it here.
                 .chain(
@@ -342,7 +475,7 @@ impl ContainerParams {
                 }),
                 auto_remove: Some(false),
                 readonly_rootfs: Some(true),
-                mounts: Some(self.build_mounts(corpus_host_dir, env_host_dir)),
+                mounts: Some(self.build_mounts(shares, env_host_dir)),
                 tmpfs: Some(self.build_tmpfs()),
                 privileged: Some(false),
                 cap_add: Some(REQUIRED_CAPS.iter().map(|&c| c.into()).collect()),
@@ -397,7 +530,7 @@ impl ContainerParams {
     /// Builds the bind mounts for the test binary directory.
     fn build_mounts(
         &self,
-        corpus_host_dir: Option<&Path>,
+        shares: &[ResolvedShare],
         env_host_dir: Option<&Path>,
     ) -> Vec<bollard::models::Mount> {
         let bin_dir = self.bin_dir_str();
@@ -419,10 +552,7 @@ impl ContainerParams {
             ));
         }
 
-        mounts.extend(Self::build_scratch_mounts(
-            &self.scratch_roots,
-            corpus_host_dir,
-        ));
+        mounts.extend(Self::build_scratch_mounts(&self.scratch_roots, shares));
 
         mounts
     }
@@ -510,7 +640,7 @@ impl ContainerParams {
     /// Builds the additional bind mounts required in scratch mode.
     fn build_scratch_mounts(
         roots: &ScratchRoots,
-        corpus_host_dir: Option<&Path>,
+        shares: &[ResolvedShare],
     ) -> Vec<bollard::models::Mount> {
         let test_root = roots
             .test_root
@@ -583,16 +713,18 @@ impl ContainerParams {
             ));
         }
 
-        // The one writable window into the source tree, for tests that
-        // opted in with `#[corpus]`.  Mounted *outside* the root share so
-        // that the read-only virtiofs daemon never serves it: a separate
-        // daemon shares this path and only this path, which keeps the
-        // read/write split enforced by the server rather than by the
-        // guest's mount flags.
-        if let Some(corpus) = corpus_host_dir
-            && let Some(corpus) = corpus.to_str()
-        {
-            mounts.push(Self::rw_bind_mount(corpus, CORPUS_SHARE_PATH.to_owned()));
+        // The writable windows, one bind mount each.  Mounted *outside* the
+        // root share so that the read-only virtiofs daemon never serves
+        // them: a separate daemon shares each path and only that path,
+        // which keeps the read/write split enforced by the server rather
+        // than by the guest's mount flags.
+        for active in shares {
+            if let Some(host) = active.host_dir.to_str() {
+                mounts.push(Self::rw_bind_mount(
+                    host,
+                    active.share.container_path.to_owned(),
+                ));
+            }
         }
 
         mounts
@@ -1251,42 +1383,9 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // container config (which references it by tag).
         ensure_scratch_image(&client).await?;
 
-        // Resolve (and create) the corpus directory for a `#[corpus]` test.
-        // Created here, on the host, as the invoking user: the guest sees the
-        // workspace read-only and so cannot create it, and creating it here
-        // keeps ownership right without relying on virtiofsd's uid squashing
-        // for the directory itself.
-        //
-        // A failure to create it is not fatal -- the test still runs, just
-        // without a writable corpus -- because losing the ability to save an
-        // input is far less bad than failing a test run outright.
-        // A test that asked for a corpus and cannot be given one is a
-        // failure, not a warning.  The guest has no way to report "I had no
-        // writable corpus" -- the write just lands on the read-only root
-        // share and surfaces as a bare `ReadOnlyFilesystem` several tiers
-        // from the cause, which is exactly how the remapped-`file!()` bug
-        // hid.  Only reachable when `#[corpus]` was used, so this cannot
-        // affect a test that never asked.
-        let corpus_host_dir = match (workspace_root(), vm_config.corpus_source_file) {
-            (_, None) => None,
-            (Some(workspace), Some((file, crate_dir))) => {
-                let rel = vm_config.corpus_rel_dir().ok_or_else(|| {
-                    ContainerError::CorpusDirUnresolvable {
-                        file: file.to_owned(),
-                        crate_dir: crate_dir.to_owned(),
-                    }
-                })?;
-                let dir = workspace.join(rel);
-                std::fs::create_dir_all(&dir).map_err(|source| {
-                    ContainerError::CorpusDirCreate {
-                        path: dir.clone(),
-                        source,
-                    }
-                })?;
-                Some(dir)
-            }
-            (None, Some(_)) => return Err(ContainerError::CorpusWithoutWorkspace),
-        };
+        // Which windows this run opens, and where each is backed.  See
+        // `resolve_writable_shares`.
+        let shares = resolve_writable_shares(&vm_config)?;
 
         // Written before the container is created, so a failure here stops
         // the run rather than producing a guest that silently lost its
@@ -1297,7 +1396,7 @@ pub fn run_test_in_vm<F: FnOnce()>(
             backend,
             accel,
             qemu_user.as_deref(),
-            corpus_host_dir.as_deref(),
+            &shares,
             env_host_dir.as_deref(),
         );
 
@@ -1390,6 +1489,93 @@ fn find_on_path(program: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    // -- Writable shares ----------------------------------------------
+
+    /// The exact command line observed from `just fuzz reconcile_fuzz`,
+    /// with the workspace shortened.
+    const ENGINE: &str = "/ws/.fuzz-corpus/reconcile_fuzz \
+         /ws/mgmt/tests/__fuzz__/reconcile/crashes \
+         -artifact_prefix=/ws/mgmt/tests/__fuzz__/reconcile/crashes/ \
+         -timeout=10 -max_total_time=60";
+
+    fn fuzz_config() -> crate::config::VmConfig {
+        crate::config::VmConfig {
+            corpus: crate::config::CorpusPolicy::Fuzz,
+            source_file: Some(("mgmt/tests/reconcile.rs", "/ws/mgmt")),
+            ..crate::config::VmConfig::DEFAULT
+        }
+    }
+
+    /// An ordinary test opens no window at all, which is the property the
+    /// whole read-only guest rests on.
+    #[test]
+    fn a_test_that_is_not_a_fuzz_target_gets_no_writable_share() {
+        let plan =
+            plan_writable_shares(&crate::config::VmConfig::DEFAULT, ENGINE, Path::new("/ws"))
+                .expect("an ordinary test cannot fail to plan");
+        assert!(plan.is_empty());
+    }
+
+    /// Two windows, in two unrelated trees, taken from the engine.
+    ///
+    /// The corpus is the one that used to be served read-only, so this is
+    /// the case that failed: `0 files found`, and nothing saved.
+    #[test]
+    fn the_engine_names_both_windows() {
+        let plan = plan_writable_shares(&fuzz_config(), ENGINE, Path::new("/ws"))
+            .expect("both directories are named");
+        let got: Vec<_> = plan
+            .iter()
+            .map(|(share, dir)| (share.role, dir.to_str().expect("utf-8")))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("corpus", "/ws/.fuzz-corpus/reconcile_fuzz"),
+                ("crashes", "/ws/mgmt/tests/__fuzz__/reconcile/crashes"),
+            ],
+        );
+    }
+
+    /// Without an engine there is no command line to read, so the corpus
+    /// falls back beside the test -- and one window covers both, because
+    /// `__fuzz__` encloses the crashes directory too.
+    #[test]
+    fn without_an_engine_the_corpus_falls_back_beside_the_test() {
+        let plan = plan_writable_shares(&fuzz_config(), "", Path::new("/ws"))
+            .expect("the fallback is derivable from the source file");
+        let got: Vec<_> = plan
+            .iter()
+            .map(|(share, dir)| (share.role, dir.to_str().expect("utf-8")))
+            .collect();
+        assert_eq!(got, vec![("corpus", "/ws/mgmt/tests/__fuzz__")]);
+    }
+
+    /// A fuzz target whose corpus cannot be derived is an error rather than
+    /// a run with nowhere to write: the guest cannot report the difference.
+    #[test]
+    fn a_fuzz_target_without_a_derivable_corpus_is_an_error() {
+        let config = crate::config::VmConfig {
+            corpus: crate::config::CorpusPolicy::Fuzz,
+            source_file: None,
+            ..crate::config::VmConfig::DEFAULT
+        };
+        let err = plan_writable_shares(&config, "", Path::new("/ws"))
+            .expect_err("nothing names a corpus directory");
+        assert!(matches!(err, ContainerError::CorpusDirUnresolvable { .. }));
+    }
+
+    /// `FUZZ_CORPUS_ROOT` may point anywhere, including outside the
+    /// workspace.  The plan takes it as given; `n-it` creates the mount
+    /// point in the guest because there is no read-only counterpart to
+    /// overmount.
+    #[test]
+    fn a_corpus_outside_the_workspace_is_taken_as_given() {
+        let plan = plan_writable_shares(&fuzz_config(), "/tmp/scratch-corpus", Path::new("/ws"))
+            .expect("an absolute path needs no anchor");
+        assert_eq!(plan[0].1.to_str().expect("utf-8"), "/tmp/scratch-corpus",);
+    }
+
     /// Builds a representative [`ContainerParams`] for use in config
     /// builder tests without hitting the filesystem or process table.
     fn sample_params() -> ContainerParams {
@@ -1412,8 +1598,13 @@ mod tests {
 
     #[test]
     fn config_uses_scratch_image() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         assert_eq!(config.image.as_deref(), Some(SCRATCH_IMAGE_TAG));
     }
 
@@ -1440,7 +1631,8 @@ mod tests {
 
     #[test]
     fn config_propagates_backend_and_accel_env() {
-        let config = sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg, None, None, None);
+        let config =
+            sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg, None, &[], None);
         let env = config.env.as_ref().expect("env");
         assert!(
             env.iter().any(|e| e == "N_VM_BACKEND=qemu"),
@@ -1454,8 +1646,13 @@ mod tests {
 
     #[test]
     fn config_disables_networking() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         assert_eq!(config.network_disabled, Some(true));
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.network_mode.as_deref(), Some("none"));
@@ -1463,8 +1660,13 @@ mod tests {
 
     #[test]
     fn config_sets_environment_variables() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         let env = config.env.as_ref().expect("env should be set");
         let expected = format!("{ENV_IN_TEST_CONTAINER}={ENV_MARKER_VALUE}");
         assert!(
@@ -1479,8 +1681,13 @@ mod tests {
 
     #[test]
     fn config_runs_as_root() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         // The container runs as root so that capabilities in the
         // bounding set are effective without ambient-cap gymnastics.
         assert_eq!(config.user.as_deref(), Some("0:0"));
@@ -1489,7 +1696,13 @@ mod tests {
     #[test]
     fn config_passes_device_groups() {
         let params = sample_params();
-        let config = params.build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = params.build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         let host = config.host_config.as_ref().expect("host_config");
         let groups = host.group_add.as_ref().expect("group_add");
         // The sample_params use GIDs 36 and 108.
@@ -1499,8 +1712,13 @@ mod tests {
 
     #[test]
     fn config_is_unprivileged_with_minimal_caps() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.privileged, Some(false));
 
@@ -1536,16 +1754,26 @@ mod tests {
 
     #[test]
     fn config_has_readonly_rootfs() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.readonly_rootfs, Some(true));
     }
 
     #[test]
     fn config_does_not_auto_remove_and_never_restarts() {
-        let config =
-            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None, None, None);
+        let config = sample_params().build_config(
+            EffectiveBackend::CloudHypervisor,
+            Accel::Kvm,
+            None,
+            &[],
+            None,
+        );
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.auto_remove, Some(false));
         let restart = host.restart_policy.as_ref().expect("restart_policy");
@@ -1598,7 +1826,7 @@ mod tests {
     #[test]
     fn mounts_include_bin_dir_at_original_path() {
         let params = sample_params();
-        let mounts = params.build_mounts(None, None);
+        let mounts = params.build_mounts(&[], None);
         let direct = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/target/debug/deps"));
@@ -1618,7 +1846,7 @@ mod tests {
     fn mounts_include_the_forwarded_env_dir_when_there_is_one() {
         let params = sample_params();
         let env_dir = std::path::Path::new("/tmp/n-vm-env-1-tests_my_test");
-        let mounts = params.build_mounts(None, Some(env_dir));
+        let mounts = params.build_mounts(&[], Some(env_dir));
         let expected_target = format!("{VM_ROOT_SHARE_PATH}/{VM_ENV_DIR}");
         let mount = mounts
             .iter()
@@ -1638,7 +1866,7 @@ mod tests {
     /// unaffected by this path existing.
     #[test]
     fn no_env_dir_means_no_env_mount() {
-        let mounts = sample_params().build_mounts(None, None);
+        let mounts = sample_params().build_mounts(&[], None);
         let unexpected = format!("{VM_ROOT_SHARE_PATH}/{VM_ENV_DIR}");
         assert!(
             !mounts
@@ -1650,7 +1878,7 @@ mod tests {
     #[test]
     fn mounts_include_bin_dir_at_vm_test_bin_dir() {
         let params = sample_params();
-        let mounts = params.build_mounts(None, None);
+        let mounts = params.build_mounts(&[], None);
         let expected_target = format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}");
         let mirror = mounts
             .iter()
@@ -1670,7 +1898,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
         let nix_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/nix/store"));
@@ -1689,7 +1917,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
         let vm_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some(VM_ROOT_SHARE_PATH));
@@ -1708,7 +1936,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
         // At minimum we expect /nix/store, /vm.root, and /dev/hugepages.
         // testroot subdirectory mounts depend on what's on disk, so
         // we can't assert an exact count, but we can verify invariants
@@ -1749,7 +1977,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, None);
+        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
         let hp_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/dev/hugepages"));
@@ -1769,7 +1997,7 @@ mod tests {
     #[test]
     fn all_mounts_are_private_non_recursive_bind_mounts() {
         let params = sample_params();
-        let mounts = params.build_mounts(None, None);
+        let mounts = params.build_mounts(&[], None);
         for mount in &mounts {
             assert_eq!(mount.typ, Some(bollard::models::MountTypeEnum::BIND),);
             let opts = mount.bind_options.as_ref().expect("bind_options");

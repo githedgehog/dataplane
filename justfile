@@ -76,6 +76,19 @@ fuzz_max_input_length := env("FUZZ_MAX_INPUT_LENGTH", "65536")
 # failed, replayed on every `just test` -- and it stays small.
 fuzz_corpus_root := env("FUZZ_CORPUS_ROOT", justfile_directory() / ".fuzz-corpus")
 
+# Start `just fuzz` from an empty corpus, discarding it afterwards. Set FUZZ_CLEAN or pass
+# `just fuzz_clean=1 fuzz ...`.
+#
+# A lever on the invocation rather than on the test, and that is the whole reason it is here: how
+# much history a campaign starts from is a question about *this run* -- reproducing a report,
+# measuring how fast coverage is reached from nothing, checking that a fix is not merely being
+# stepped around by a corpus that already knows the answer. Nothing about the test changes, so
+# nothing about the test should have to be edited, let alone recompiled. `CorpusPolicy` in the
+# config declares only that a target needs a corpus at all.
+#
+# Crash artifacts are untouched by this. A crash is a finding, not a cache.
+fuzz_clean := env("FUZZ_CLEAN", "")
+
 # How many libfuzzer workers `just fuzz` runs. Set FUZZ_JOBS to override.
 #
 # Half the machine. Workers are independent processes sharing one corpus directory, so this is the
@@ -329,6 +342,13 @@ fuzz target time="60s" *args="":
     fi
 
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
+    if [ -n "{{ fuzz_clean }}" ]; then
+      # Beside the real corpus rather than in /tmp, so that it is covered by the same workspace
+      # share the guest mounts it through, and so that an interrupted run leaves its inputs
+      # somewhere findable rather than wherever the system puts scratch files.
+      corpus_dir="${corpus_dir}.clean.$$"
+      trap 'rm -rf "${corpus_dir}"' EXIT
+    fi
     mkdir -p "${corpus_dir}"
     # cargo-bolero defaults to a profile called "fuzz"; ours says what it is instead.
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
