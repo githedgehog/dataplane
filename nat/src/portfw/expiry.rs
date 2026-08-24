@@ -19,6 +19,7 @@ use crate::portfw::PortForwarder;
 use crate::portfw::probe::{Arrival, Fabric, PAST_ANY_TIMEOUT, run};
 use crate::static_nat::probe::build;
 use clock::Duration;
+use clock::virtual_time::advance;
 use config::external::overlay::vpcpeering::VpcExpose;
 use flow_entry::flow_table::FlowLookup;
 use lpm::prefix::{L4Protocol, PrefixWithOptionalPorts};
@@ -28,21 +29,13 @@ use std::net::IpAddr;
 const WITHIN_LIFETIME: Duration = Duration::from_secs(1);
 
 /// A runtime whose clock starts paused and only moves when a property says so.
+///
+/// Thin, now that [`clock::virtual_time`] owns the shape. What it adds beyond `block_on` is the
+/// part a local copy kept getting wrong: `Paused` refuses a *second* clock, and while it is alive a
+/// clock read from a thread that never entered the runtime panics instead of quietly answering an
+/// hour behind.
 fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
-}
-
-/// Move the clock and let every timer that is now due actually run.
-async fn advance(by: Duration) {
-    tokio::time::advance(by).await;
-    for _ in 0..4 {
-        tokio::task::yield_now().await;
-    }
+    clock::virtual_time::Paused::new().block_on(body());
 }
 
 /// One fixed rule: `172.16.0.0/30` ports 8000-8003 published to `10.0.0.0/30` ports 9000-9003.
