@@ -602,7 +602,7 @@ pub struct VmConfig {
 /// #[n_vm::test]
 /// fn drives_a_nic() {
 ///     #[n_vm::config]
-///     const _: n_vm::VmConfig = VmConfigBuilder::default()
+///     const _: _ = VmConfigBuilder::default()
 ///         .iommu(true)
 ///         .kernel_features(&[features::VFIO_PCI])
 ///         .build();

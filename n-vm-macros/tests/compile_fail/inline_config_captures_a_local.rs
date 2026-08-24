@@ -9,7 +9,7 @@
 fn inline_config_captures_a_local() {
     let wanted = true;
     #[n_vm::config]
-    const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().iommu(wanted).build();
+    const _: _ = n_vm::VmConfigBuilder::default().iommu(wanted).build();
 }
 
 fn main() {}

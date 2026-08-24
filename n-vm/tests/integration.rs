@@ -374,7 +374,7 @@ fn an_inline_config_reaches_the_guest_cmdline() {
 #[n_vm::test]
 fn an_inline_config_matches_the_named_const_it_mirrors() {
     #[n_vm::config]
-    const _: VmConfig = VmConfigBuilder::default()
+    const _: _ = VmConfigBuilder::default()
         .guest_hugepages(GuestHugePageConfig::Allocate {
             size: GuestHugePageSize::Huge2M,
             count: 64,
@@ -386,5 +386,19 @@ fn an_inline_config_matches_the_named_const_it_mirrors() {
         hugepages_total(),
         64,
         "expected 64 guest hugepages from the inline reservation"
+    );
+}
+
+/// No `#[n_vm::config]`, no `config = PATH`: the plain form still boots.
+///
+/// The path the other two are measured against, and the one every test
+/// written before either form existed takes.  Kept explicit because "we did
+/// not break the default" is otherwise only ever asserted incidentally, by
+/// tests that are checking something else.
+#[n_vm::test]
+fn a_default_vm() {
+    assert!(
+        std::path::Path::new("/proc/self").exists(),
+        "a default VM should still boot a guest with procfs mounted",
     );
 }

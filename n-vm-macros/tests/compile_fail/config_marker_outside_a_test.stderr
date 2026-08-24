@@ -3,7 +3,7 @@ error: #[n_vm::config] marks a `const` inside the body of a #[n_vm::test] functi
        #[n_vm::test]
        fn my_test() {
            #[n_vm::config]
-           const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().iommu(true).build();
+           const _: _ = n_vm::VmConfigBuilder::default().iommu(true).build();
 
            // the test body follows
        }

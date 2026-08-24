@@ -1,0 +1,5 @@
+error: #[n_vm::config] is written `const _: _ = ...`; the type is not yours to state.  The item is lifted out of the body and re-declared as `n_vm::VmConfig`, so a type written here would be discarded rather than checked.
+ --> tests/compile_fail/inline_config_states_a_type.rs:8:14
+  |
+8 |     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().build();
+  |              ^^^^^^^^^^^^^^

@@ -44,7 +44,7 @@
 //! #[n_vm::test]
 //! fn test_dpdk() {
 //!     #[n_vm::config]
-//!     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+//!     const _: _ = n_vm::VmConfigBuilder::default()
 //!         .iommu(true)
 //!         .kernel_features(&[n_vm::features::VFIO_PCI])
 //!         .build();
@@ -417,9 +417,10 @@ fn extract_unique_attr(
 /// would either be lifted out of a scope it appears to belong to or ignored
 /// altogether; both are worse than not finding it.
 ///
-/// The declared type is discarded along with the item, because only the
-/// initializer is used.  That is what lets a caller write `const _: _ = ...`
-/// and never meet E0121: the placeholder is deleted before rustc sees it.
+/// The type must be the placeholder `_`, and is discarded along with the
+/// item -- only the initializer is used.  That spelling is legal only because
+/// the item is deleted before rustc sees it; in a real const item it is
+/// E0121, which is exactly the signal a reader should get.
 fn extract_inline_config(block: &mut syn::Block) -> syn::Result<Option<syn::Expr>> {
     let mut found: Option<usize> = None;
     for (idx, stmt) in block.stmts.iter().enumerate() {
@@ -433,6 +434,22 @@ fn extract_inline_config(block: &mut syn::Block) -> syn::Result<Option<syn::Expr
             return Err(syn::Error::new_spanned(
                 item,
                 "duplicate #[n_vm::config] in this test body; a test describes one VM",
+            ));
+        }
+        // The type is required to be `_`, because it is discarded.  Written
+        // out it would look checked and would not be: the item is re-declared
+        // as `::n_vm::VmConfig` and only the initializer survives, so
+        // `const _: u32 = ...` would compile and mean nothing.  `_` also makes
+        // the construct honest about where it works -- a placeholder is E0121
+        // in a real const item, so a marker copied out of a test body says so
+        // immediately rather than silently configuring nothing.
+        if !matches!(*item.ty, syn::Type::Infer(_)) {
+            return Err(syn::Error::new_spanned(
+                &item.ty,
+                "#[n_vm::config] is written `const _: _ = ...`; the type is not \
+                 yours to state.  The item is lifted out of the body and \
+                 re-declared as `n_vm::VmConfig`, so a type written here would be \
+                 discarded rather than checked.",
             ));
         }
         found = Some(idx);
@@ -840,7 +857,7 @@ pub fn test(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// #[n_vm::test]
 /// fn drives_a_nic() {
 ///     #[n_vm::config]
-///     const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+///     const _: _ = n_vm::VmConfigBuilder::default()
 ///         .iommu(true)
 ///         .build();
 ///
@@ -861,7 +878,7 @@ pub fn config(_attr: TokenStream, input: TokenStream) -> TokenStream {
          #[n_vm::test]\n\
          fn my_test() {\n\
          \x20   #[n_vm::config]\n\
-         \x20   const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().iommu(true).build();\n\n\
+         \x20   const _: _ = n_vm::VmConfigBuilder::default().iommu(true).build();\n\n\
          \x20   // the test body follows\n\
          }\n\n\
          Only the top level of the body is searched, so a marker nested inside \

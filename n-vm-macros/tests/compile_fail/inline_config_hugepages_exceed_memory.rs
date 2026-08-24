@@ -7,7 +7,7 @@
 #[n_vm::test]
 fn inline_config_hugepages_exceed_memory() {
     #[n_vm::config]
-    const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+    const _: _ = n_vm::VmConfigBuilder::default()
         .guest_hugepages(n_vm::GuestHugePageConfig::Allocate {
             size: n_vm::GuestHugePageSize::Huge1G,
             count: 2,
