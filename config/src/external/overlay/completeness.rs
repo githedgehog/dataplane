@@ -243,11 +243,17 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExpose.nots",
-        Reach::Fixed(
-            "empty -- the survey renders it as no prefixes at all. An expose that carves holes out of its own range is unreachable, which is a \
-             real hole rather than a canonicalisation: an exclusion is what makes a prefix set \
-             non-contiguous, and non-contiguous is where a matcher goes wrong.",
-        ),
+        // A `/26` out of the middle of the block, on the low slots, so the effective set is two
+        // prefixes rather than one -- which is the whole point of an exclusion and what a matcher,
+        // an lpm table and `RangeBuilder` each have to handle. Never on a port-forwarded expose,
+        // which `VpcExpose::validate` refuses exclusions on outright.
+        //
+        // **Nothing generated is aimed at an excluded address.** The derivation reads its
+        // addresses off the effective set, so it stays inside the first of the two prefixes, and a
+        // matcher that ignored exclusions entirely would still carry every load. What is reached
+        // is the *shape* of the set; the hole in it is not yet under test, and closing that needs
+        // traffic aimed at an address the configuration deliberately does not expose.
+        Reach::Determined("a `/26` in the middle of the expose's block, on the low slots"),
     ),
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),
     (
@@ -260,7 +266,10 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.not_as",
-        Reach::Fixed("empty, for the same reason as `VpcExpose.nots`."),
+        // The same slice out of the translated range, and it has to be the same shape: a static
+        // mapping whose two sides hold different numbers of addresses is refused, and cutting one
+        // side alone would build exactly that. Same caveat as `VpcExpose.nots`.
+        Reach::Determined("a `/26` in the middle of the expose's translated block"),
     ),
     (
         "VpcExposeNat.config",

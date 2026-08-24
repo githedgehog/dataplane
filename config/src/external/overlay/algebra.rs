@@ -456,9 +456,15 @@ fn port_range((start, end): (u16, u16)) -> PortRange {
     PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
 }
 
+/// The base of the private range, `10.0.0.0/8`.
+const PRIVATE_BASE: u32 = 0x0A00_0000;
+
+/// The base of the public range, `172.16.0.0/12`.
+const PUBLIC_BASE: u32 = 0xAC10_0000;
+
 /// The private prefix of block `index`, a `/24` inside `10.0.0.0/8`.
 fn private_prefix(index: u32) -> Prefix {
-    prefix_v4(0x0A00_0000 | (index << 8), 24)
+    prefix_v4(PRIVATE_BASE | (index << 8), 24)
 }
 
 /// The public prefix of block `index`, a `/24` inside `172.16.0.0/12`.
@@ -467,7 +473,22 @@ fn private_prefix(index: u32) -> Prefix {
 /// and so that a forward expose in one peering cannot collide with a masquerade expose's public
 /// side in another.
 fn public_prefix(index: u32) -> Prefix {
-    prefix_v4(0xAC10_0000 | (index << 8), 24)
+    prefix_v4(PUBLIC_BASE | (index << 8), 24)
+}
+
+/// The slice an expose carves out of the middle of a block.
+///
+/// A **middle** slice rather than a half, because what an exclusion is for is making a prefix set
+/// non-contiguous: `10.0.b.0/24` less `10.0.b.64/26` is two prefixes, `10.0.b.0/26` and
+/// `10.0.b.128/25`, and two prefixes is what a matcher, an lpm table and `RangeBuilder` each have
+/// to handle and might not. Taking a half would leave one prefix and prove nothing.
+///
+/// Nothing generated is *aimed* at an excluded address: the derivation reads its addresses off the
+/// effective set, so it stays inside the first of the two prefixes. That is a real limit and the
+/// census row says so -- a matcher that ignored exclusions entirely would still carry every load.
+/// What is under test here is the shape of the set, not the hole in it.
+fn excluded_slice(index: u32, base: u32) -> Prefix {
+    prefix_v4(base | (index << 8) | 0x40, 26)
 }
 
 fn prefix_v4(bits: u32, len: u8) -> Prefix {
@@ -524,6 +545,18 @@ impl ExposeSpec {
         }
     }
 
+    /// Whether this expose carves a slice out of the ranges it advertises.
+    ///
+    /// By slot, and on the low slots, so a manifest holding several exposes holds both answers.
+    /// Never for port forwarding: `VpcExpose::validate` refuses exclusions on a forwarded expose
+    /// outright, which is a rule worth having the algebra respect rather than discover.
+    ///
+    /// The slot rule is chosen to be independent of [`ExposeSpec::idle_timeout`]'s, so that all
+    /// four combinations of the two appear across the four slots rather than only two.
+    fn excludes(self) -> bool {
+        self.slot < 2 && self.flavour != Flavour::PortForward
+    }
+
     /// Whether this expose translates the traffic the derivation would build for it.
     ///
     /// Every load derived from a configuration is udp, so an expose narrowed to tcp forwards none
@@ -553,22 +586,49 @@ impl ExposeSpec {
         }
     }
 
+    /// Carve this expose's slice out of both of its ranges, if it has one.
+    ///
+    /// Both ranges and by the same shape, which static NAT requires and everything else merely
+    /// tolerates: `VpcExpose::validate` refuses a static mapping whose two sides hold different
+    /// numbers of addresses, and cutting one side alone would build exactly that.
+    fn carve(self, expose: VpcExpose, peering: PeeringHandle, side: Side) -> VpcExpose {
+        if !self.excludes() {
+            return expose;
+        }
+        let block = peering.block(side, self.slot);
+        let expose = expose.not(excluded_slice(block, PRIVATE_BASE).into());
+        if expose.nat.is_none() {
+            return expose;
+        }
+        expose
+            .not_as(excluded_slice(block, PUBLIC_BASE).into())
+            .unwrap_or_else(|_| unreachable!("a translating expose accepts an excluded range"))
+    }
+
     fn expose(self, peering: PeeringHandle, side: Side) -> VpcExpose {
         let private = self.private(peering, side);
         match self.flavour {
-            Flavour::Forward => VpcExpose::empty().ip(private.into()),
-            Flavour::Masquerade => VpcExpose::empty()
-                .make_masquerade(self.idle_timeout())
-                .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
-                .ip(private.into())
-                .as_range(self.public(peering, side).into())
-                .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
-            Flavour::StaticNat => VpcExpose::empty()
-                .make_static_nat()
-                .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
-                .ip(private.into())
-                .as_range(self.public(peering, side).into())
-                .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
+            Flavour::Forward => self.carve(VpcExpose::empty().ip(private.into()), peering, side),
+            Flavour::Masquerade => self.carve(
+                VpcExpose::empty()
+                    .make_masquerade(self.idle_timeout())
+                    .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
+                    .ip(private.into())
+                    .as_range(self.public(peering, side).into())
+                    .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
+                peering,
+                side,
+            ),
+            Flavour::StaticNat => self.carve(
+                VpcExpose::empty()
+                    .make_static_nat()
+                    .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
+                    .ip(private.into())
+                    .as_range(self.public(peering, side).into())
+                    .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
+                peering,
+                side,
+            ),
             Flavour::PortForward => VpcExpose::empty()
                 // `None` protocol leaves the expose at `Any`; see `Flavour::PortForward`.
                 .make_port_forwarding(self.idle_timeout(), self.nat_proto())
