@@ -38,7 +38,8 @@ impl ScratchRoots {
         if let Some(roots) = Self::from_env()? {
             return Ok(roots);
         }
-        if let Some(roots) = Self::from_cwd() {
+        let cwd = std::env::current_dir().map_err(|_| ScratchRootError::NotFound)?;
+        if let Some(roots) = Self::from_ancestors_of(&cwd) {
             return Ok(roots);
         }
         Err(ScratchRootError::NotFound)
@@ -73,12 +74,29 @@ impl ScratchRoots {
         Ok(Some(Self { test_root, vm_root }))
     }
 
-    /// Tries to find `testroot` and `vmroot` in the current directory.
-    fn from_cwd() -> Option<Self> {
-        let cwd = std::env::current_dir().ok()?;
-        let test_root = std::fs::canonicalize(cwd.join("testroot")).ok()?;
-        let vm_root = std::fs::canonicalize(cwd.join("vmroot")).ok()?;
-        Some(Self { test_root, vm_root })
+    /// Tries to find `testroot` and `vmroot` at `start` or above it.
+    ///
+    /// The walk is the point.  `just setup-roots` puts both at the
+    /// workspace root, but cargo runs a test with the working directory set
+    /// to the *package* root -- so anything that invokes cargo directly
+    /// rather than through `just` (an IDE's test runner, a debugger, a plain
+    /// `cargo test` in a subdirectory) starts one or more levels below them.
+    /// `workspace_root` in the host tier walks for the same reason; this was
+    /// the one place that did not.
+    ///
+    /// Both roots must be found at the *same* ancestor.  Taking `testroot`
+    /// from one level and `vmroot` from another would pair a container
+    /// image with a guest filesystem that was never built alongside it.
+    ///
+    /// Takes the starting directory rather than reading it, so that a test
+    /// of the walk does not have to change the process's working directory
+    /// -- which is global, and would race every other test in the binary.
+    fn from_ancestors_of(start: &std::path::Path) -> Option<Self> {
+        start.ancestors().find_map(|dir| {
+            let test_root = std::fs::canonicalize(dir.join("testroot")).ok()?;
+            let vm_root = std::fs::canonicalize(dir.join("vmroot")).ok()?;
+            Some(Self { test_root, vm_root })
+        })
     }
 }
 
@@ -108,8 +126,8 @@ impl std::fmt::Display for ScratchRootError {
                 write!(
                     f,
                     "could not find testroot/vmroot in the working directory \
-                     and {ENV_TEST_ROOT}/{ENV_VM_ROOT} are not set; \
-                     run `just setup-roots` from the workspace root"
+                     or any parent, and {ENV_TEST_ROOT}/{ENV_VM_ROOT} are \
+                     not set; run `just setup-roots` from the workspace root"
                 )
             }
         }
@@ -1118,6 +1136,106 @@ mod multiprocess_tests {
     fn a_command_line_with_nothing_to_strip_is_unchanged() {
         let args = "/corpus /crashes -timeout=10";
         assert_eq!(strip_multiprocess_flags(args), args);
+    }
+}
+
+#[cfg(test)]
+mod scratch_root_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// A directory tree that removes itself, so a failing assertion does
+    /// not leave one behind.
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "n-vm-scratch-{pid}-{name}",
+                pid = std::process::id(),
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("temp tree");
+            Self(dir)
+        }
+
+        fn make(&self, rel: &str) -> PathBuf {
+            let path = self.0.join(rel);
+            std::fs::create_dir_all(&path).expect("subdirectory");
+            path
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The case that sent an IDE's test runner to `NotFound`: cargo starts
+    /// a test in the package directory, one level below the roots.
+    #[test]
+    fn the_roots_are_found_from_a_package_subdirectory() {
+        let tree = TempTree::new("nested");
+        tree.make("testroot");
+        tree.make("vmroot");
+        let pkg = tree.make("n-vm/tests");
+
+        let roots = ScratchRoots::from_ancestors_of(&pkg).expect("found by walking up");
+        assert!(roots.test_root.ends_with("testroot"));
+        assert!(roots.vm_root.ends_with("vmroot"));
+    }
+
+    /// The workspace root itself still resolves, which is what `just test`
+    /// relied on before the walk existed.
+    #[test]
+    fn the_roots_are_found_in_the_directory_that_holds_them() {
+        let tree = TempTree::new("here");
+        tree.make("testroot");
+        tree.make("vmroot");
+
+        assert!(ScratchRoots::from_ancestors_of(&tree.0).is_some());
+    }
+
+    /// Half a pair is not a pair.  Taking `testroot` from one ancestor and
+    /// `vmroot` from another would match a container image against a guest
+    /// filesystem never built alongside it.
+    #[test]
+    fn one_root_without_the_other_is_not_a_match() {
+        let tree = TempTree::new("half");
+        tree.make("testroot");
+        let pkg = tree.make("n-vm");
+
+        assert!(ScratchRoots::from_ancestors_of(&pkg).is_none());
+    }
+
+    /// A tree with no roots anywhere above it still reports nothing, so the
+    /// error keeps naming `just setup-roots`.
+    #[test]
+    fn a_tree_without_roots_finds_nothing() {
+        let tree = TempTree::new("bare");
+        let pkg = tree.make("some/deep/path");
+
+        assert!(ScratchRoots::from_ancestors_of(&pkg).is_none());
+    }
+
+    /// Resolution returns absolute, symlink-free paths: the roots are
+    /// symlinks into the nix store, and the container bind-mounts what they
+    /// point at.
+    #[test]
+    fn the_resolved_roots_are_canonical() {
+        let tree = TempTree::new("canon");
+        tree.make("testroot");
+        tree.make("vmroot");
+        let pkg = tree.make("pkg");
+
+        let roots = ScratchRoots::from_ancestors_of(&pkg).expect("found");
+        assert!(roots.test_root.is_absolute());
+        assert_eq!(
+            roots.test_root,
+            std::fs::canonicalize(&roots.test_root).expect("canonical")
+        );
+        assert!(!roots.test_root.starts_with(Path::new("pkg")));
     }
 }
 
