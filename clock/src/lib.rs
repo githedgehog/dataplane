@@ -14,15 +14,45 @@ pub mod virtual_time;
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
-            virtual_time::refuse();
-        }
-        tokio::time::Instant::now().into_std()
+        checked_now().unwrap_or_else(|| virtual_time::refuse())
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
         Instant::now()
     }
+}
+
+#[must_use]
+pub fn checked_now() -> Option<Instant> {
+    #[cfg(all(feature = "virtual", not(wall_clock)))]
+    {
+        if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
+            return None;
+        }
+        Some(tokio::time::Instant::now().into_std())
+    }
+    #[cfg(not(all(feature = "virtual", not(wall_clock))))]
+    {
+        Some(Instant::now())
+    }
+}
+
+#[must_use]
+pub const fn is_routed() -> bool {
+    cfg!(all(feature = "virtual", not(wall_clock)))
+}
+
+#[must_use]
+pub fn elapsed_since_first_reading() -> Option<(bool, Duration)> {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let reading = checked_now()?;
+    let origin = *ORIGIN.get_or_init(|| reading);
+    Some(if reading >= origin {
+        (false, reading.saturating_duration_since(origin))
+    } else {
+        (true, origin.saturating_duration_since(reading))
+    })
 }
 
 #[must_use]
