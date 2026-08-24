@@ -105,10 +105,7 @@ const REACH: &[(&str, Reach)] = &[
         "VpcManifest.exposes",
         Reach::Determined("one per `AddExpose`, in slot order"),
     ),
-    (
-        "VpcExpose.default",
-        Reach::Fixed("false. `VpcExpose::empty` never sets it and no operation does either."),
-    ),
+    ("VpcExpose.default", Reach::Spans(&["false", "true"])),
     (
         "VpcExpose.ips",
         Reach::Determined("one prefix, from the expose's peering, side and slot"),

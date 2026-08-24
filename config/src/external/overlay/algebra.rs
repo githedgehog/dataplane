@@ -53,12 +53,17 @@ pub enum Flavour {
     Masquerade,
     StaticNat,
     PortForward,
+    Everything,
 }
 
 impl Flavour {
     #[must_use]
     pub const fn is_directional(self) -> bool {
         matches!(self, Self::Masquerade | Self::PortForward)
+    }
+
+    const fn has_prefixes(self) -> bool {
+        !matches!(self, Self::Everything)
     }
 }
 
@@ -268,16 +273,18 @@ impl ExposeSpec {
                 1 => L4Protocol::Udp,
                 _ => L4Protocol::Tcp,
             }),
-            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat => None,
+            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat | Flavour::Everything => {
+                None
+            }
         }
     }
 
     fn excludes(self) -> bool {
-        self.slot < 2 && self.flavour != Flavour::PortForward
-    }
-
-    fn carries_udp(self) -> bool {
-        !matches!(self.nat_proto(), Some(L4Protocol::Tcp))
+        self.slot < 2
+            && matches!(
+                self.flavour,
+                Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat
+            )
     }
 
     #[must_use]
@@ -288,7 +295,7 @@ impl ExposeSpec {
     #[must_use]
     pub fn public(self, peering: PeeringHandle, side: Side) -> Prefix {
         match self.flavour {
-            Flavour::Forward => self.private(peering, side),
+            Flavour::Forward | Flavour::Everything => self.private(peering, side),
             Flavour::Masquerade | Flavour::StaticNat | Flavour::PortForward => {
                 public_prefix(peering.block(side, self.slot))
             }
@@ -312,6 +319,7 @@ impl ExposeSpec {
     fn expose(self, peering: PeeringHandle, side: Side) -> VpcExpose {
         let private = self.private(peering, side);
         match self.flavour {
+            Flavour::Everything => VpcExpose::empty().set_default(),
             Flavour::Forward => self.carve(VpcExpose::empty().ip(private.into()), peering, side),
             Flavour::Masquerade => self.carve(
                 VpcExpose::empty()
@@ -362,7 +370,7 @@ impl Narrowing {
         match flavour {
             Flavour::Masquerade => Some(Self::Source),
             Flavour::PortForward => Some(Self::Destination),
-            Flavour::Forward | Flavour::StaticNat => None,
+            Flavour::Forward | Flavour::StaticNat | Flavour::Everything => None,
         }
     }
 }
@@ -448,6 +456,12 @@ impl PeeringSpec {
         Some((side, which, prefix))
     }
 
+    fn has_everything(&self, side: Side) -> bool {
+        self.exposes(side)
+            .iter()
+            .any(|expose| expose.flavour == Flavour::Everything)
+    }
+
     fn has_directional(&self, side: Side) -> bool {
         self.exposes(side)
             .iter()
@@ -507,11 +521,7 @@ impl Draft {
         else {
             return true;
         };
-        let carried_by_the_expose = spec
-            .exposes(side)
-            .get(nth)
-            .is_none_or(|expose| expose.carries_udp());
-        carried_by_the_expose && !spec.guard.silences(spec, side, nth)
+        !spec.guard.silences(spec, side, nth)
     }
 
     #[must_use]
@@ -520,6 +530,22 @@ impl Draft {
             .iter()
             .find(|(handle, _)| handle.name() == name)
             .map(|(_, spec)| spec.guard)
+    }
+
+    fn peerings_of(&self, vpc: VpcHandle) -> usize {
+        self.peerings
+            .values()
+            .filter(|spec| spec.touches(vpc))
+            .count()
+    }
+
+    fn beside_everything(&self, vpc: VpcHandle) -> bool {
+        self.peerings.values().any(|spec| {
+            spec.touches(vpc)
+                && [Side::Left, Side::Right]
+                    .into_iter()
+                    .any(|side| spec.has_everything(side))
+        })
     }
 
     #[must_use]
@@ -677,14 +703,34 @@ pub enum Undo {
 
 impl Op {
     #[must_use]
-    pub fn reads(&self) -> Footprint {
+    pub fn reads(&self, draft: &Draft) -> Footprint {
         match self {
             Op::AddVpc(_) | Op::RemoveVpc(_) | Op::RemovePeering(_) => Footprint::default(),
-            Op::AddPeering { left, right, .. } => Footprint::of([*left, *right], []),
-            Op::AddExpose { peering, .. }
-            | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. }
-            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
+            Op::AddPeering { left, right, .. } => Footprint::of(
+                [*left, *right],
+                draft
+                    .peerings()
+                    .filter(|(_, spec)| spec.touches(*left) || spec.touches(*right))
+                    .map(|(handle, _)| handle),
+            ),
+            Op::RemoveExpose { peering, .. } | Op::SetGuard { peering, .. } => {
+                Footprint::of([], [*peering])
+            }
+            Op::AddExpose {
+                peering, flavour, ..
+            }
+            | Op::SetFlavour {
+                peering, flavour, ..
+            } => {
+                let mut footprint = Footprint::of([], [*peering]);
+                if *flavour == Flavour::Everything
+                    && let Some(spec) = draft.peerings.get(peering)
+                {
+                    footprint.vpcs.insert(spec.left);
+                    footprint.vpcs.insert(spec.right);
+                }
+                footprint
+            }
         }
     }
 
@@ -754,6 +800,8 @@ impl Op {
                     || !draft.vpcs.contains(&left)
                     || !draft.vpcs.contains(&right)
                     || draft.peering_between(left, right).is_some()
+                    || draft.beside_everything(left)
+                    || draft.beside_everything(right)
                 {
                     return None;
                 }
@@ -870,6 +918,9 @@ fn add_expose(
     if flavour.is_directional() && spec.has_directional(side.other()) {
         return None;
     }
+    if flavour == Flavour::Everything && !may_expose_everything(draft, peering, side) {
+        return None;
+    }
     draft
         .peerings
         .get_mut(&peering)
@@ -896,6 +947,17 @@ fn respecting_guard(draft: &mut Draft, peering: PeeringHandle, undo: Undo) -> Op
     None
 }
 
+fn may_expose_everything(draft: &Draft, peering: PeeringHandle, side: Side) -> bool {
+    let Some(spec) = draft.peerings.get(&peering) else {
+        return false;
+    };
+    !spec.has_everything(side)
+        && !spec.has_everything(side.other())
+        && [Side::Left, Side::Right]
+            .into_iter()
+            .all(|which| draft.peerings_of(spec.vpc(which)) == 1)
+}
+
 fn set_flavour(
     draft: &mut Draft,
     peering: PeeringHandle,
@@ -908,6 +970,12 @@ fn set_flavour(
         return None;
     }
     let index = spec.exposes(side).iter().position(|e| e.slot == slot)?;
+    if flavour == Flavour::Everything
+        && spec.exposes(side)[index].flavour != Flavour::Everything
+        && !may_expose_everything(draft, peering, side)
+    {
+        return None;
+    }
     let exposes = draft
         .peerings
         .get_mut(&peering)
@@ -1243,7 +1311,12 @@ fn draw_add_expose<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
         peering,
         side,
         slot,
-        flavour: draw_flavour(driver, spec, side)?,
+        flavour: draw_flavour(
+            driver,
+            spec,
+            side,
+            may_expose_everything(draft, peering, side),
+        )?,
     })
 }
 
@@ -1284,11 +1357,20 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     let (peering, side, slot) = pick(driver, &exposes)?;
     let spec = draft.peerings.get(&peering)?;
 
+    let already = spec
+        .exposes(side)
+        .iter()
+        .any(|expose| expose.slot == slot && expose.flavour == Flavour::Everything);
     Some(Op::SetFlavour {
         peering,
         side,
         slot,
-        flavour: draw_flavour(driver, spec, side)?,
+        flavour: draw_flavour(
+            driver,
+            spec,
+            side,
+            already || may_expose_everything(draft, peering, side),
+        )?,
     })
 }
 
@@ -1315,17 +1397,24 @@ fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     })
 }
 
-fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
-    const ORDERED: [Flavour; 4] = [
+fn draw_flavour<D: Driver>(
+    driver: &mut D,
+    spec: &PeeringSpec,
+    side: Side,
+    everything: bool,
+) -> Option<Flavour> {
+    const ORDERED: [Flavour; 5] = [
         Flavour::Forward,
         Flavour::StaticNat,
         Flavour::PortForward,
         Flavour::Masquerade,
+        Flavour::Everything,
     ];
-    let legal: &[Flavour] = if spec.has_directional(side.other()) {
+    let end = if everything { 5 } else { 4 };
+    let legal = if spec.has_directional(side.other()) {
         &ORDERED[..2]
     } else {
-        &ORDERED
+        &ORDERED[..end]
     };
     pick(driver, legal)
 }
@@ -1448,7 +1537,7 @@ mod tests {
 
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
-        let flavours = [const { AtomicUsize::new(0) }; 4];
+        let flavours = [const { AtomicUsize::new(0) }; 5];
         let guards = [const { AtomicUsize::new(0) }; 6];
 
         check!()
@@ -1475,6 +1564,7 @@ mod tests {
                                 Flavour::Masquerade => 1,
                                 Flavour::StaticNat => 2,
                                 Flavour::PortForward => 3,
+                                Flavour::Everything => 4,
                             }]
                             .fetch_add(1, Relaxed);
                         }
@@ -1531,7 +1621,13 @@ mod tests {
         assert_every_shape_built(&flavours, &guards);
     }
 
-    const FLAVOURS: [&str; 4] = ["forward", "masquerade", "static-nat", "port-forward"];
+    const FLAVOURS: [&str; 5] = [
+        "forward",
+        "masquerade",
+        "static-nat",
+        "port-forward",
+        "everything",
+    ];
     const GUARDS: [&str; 6] = [
         "open",
         "permit",
@@ -1541,7 +1637,7 @@ mod tests {
         "deny",
     ];
 
-    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 6]) {
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 5], guards: &[AtomicUsize; 6]) {
         let show = |names: &[&str], counts: &[AtomicUsize]| {
             names
                 .iter()
@@ -1666,8 +1762,8 @@ mod tests {
     }
 
     fn conflict(draft: &Draft, first: Op, second: Op) -> bool {
-        let (rw1, ww1) = (first.reads(), first.writes(draft));
-        let (rw2, ww2) = (second.reads(), second.writes(draft));
+        let (rw1, ww1) = (first.reads(draft), first.writes(draft));
+        let (rw2, ww2) = (second.reads(draft), second.writes(draft));
         ww1.intersects(&ww2) || ww1.intersects(&rw2) || rw1.intersects(&ww2)
     }
 

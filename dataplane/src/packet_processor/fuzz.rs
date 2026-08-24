@@ -693,6 +693,7 @@ pub(crate) mod derive {
     use config::external::overlay::ValidatedOverlay;
     use config::external::overlay::algebra::{Draft, Guard};
     use config::external::overlay::vpcpeering::ValidatedExpose;
+    use lpm::prefix::with_ports::L4Protocol;
     use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
     #[derive(Debug, Clone, Copy)]
@@ -820,6 +821,13 @@ pub(crate) mod derive {
                     });
                     let inward =
                         peer_source_of(peering, v.host, ValidatedExpose::can_init_connection);
+
+                    if expose
+                        .nat_proto()
+                        .is_some_and(|proto| proto == L4Protocol::Tcp)
+                    {
+                        continue;
+                    }
 
                     if expose.has_port_forwarding() {
                         let (Some(outside), Some(inside_entry)) = (
