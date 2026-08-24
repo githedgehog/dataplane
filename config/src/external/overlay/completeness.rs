@@ -66,7 +66,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcPeering.gwgroup",
-        Reach::Fixed("the default group; the algebra only calls `with_default_group`."),
+        Reach::Determined("the peering handle, over three groups"),
     ),
     ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
     ("Acl.default", Reach::Spans(&["allow", "deny"])),
@@ -85,10 +85,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     ("AclRule.action", Reach::Spans(&["allow", "deny"])),
     ("AclRule.scope", Reach::Spans(&["flow", "packet"])),
-    (
-        "AclRule.log",
-        Reach::Fixed("false. Nothing generated asks for a rule's verdict to be logged."),
-    ),
+    ("AclRule.log", Reach::Spans(&["false", "true"])),
     (
         "AclPattern.src",
         Reach::Determined(
@@ -168,19 +165,12 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeMasquerade.idle_timeout",
-        Reach::Fixed(
-            "absent; the algebra always calls `make_masquerade(None)`, leaving custom \
-             timeouts untested.",
-        ),
+        Reach::Spans(&["absent", "present"]),
     ),
     ("VpcExposeStaticNat", Reach::Spans(&["constructed"])),
     (
         "VpcExposePortForwarding.idle_timeout",
-        Reach::Fixed(
-            "absent. `make_port_forwarding(None, ..)` is the only call, for the same reason \
-             `VpcExposeMasquerade.idle_timeout` is absent: the flavour is reachable now, but \
-             nothing asks for a timeout, so no flow ages out under a configuration that set one.",
-        ),
+        Reach::Spans(&["absent", "present"]),
     ),
 ];
 
