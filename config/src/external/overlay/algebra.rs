@@ -222,12 +222,20 @@ fn port_range((start, end): (u16, u16)) -> PortRange {
     PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
 }
 
+const PRIVATE_BASE: u32 = 0x0A00_0000;
+
+const PUBLIC_BASE: u32 = 0xAC10_0000;
+
 fn private_prefix(index: u32) -> Prefix {
-    prefix_v4(0x0A00_0000 | (index << 8), 24)
+    prefix_v4(PRIVATE_BASE | (index << 8), 24)
 }
 
 fn public_prefix(index: u32) -> Prefix {
-    prefix_v4(0xAC10_0000 | (index << 8), 24)
+    prefix_v4(PUBLIC_BASE | (index << 8), 24)
+}
+
+fn excluded_slice(index: u32, base: u32) -> Prefix {
+    prefix_v4(base | (index << 8) | 0x40, 26)
 }
 
 fn prefix_v4(bits: u32, len: u8) -> Prefix {
@@ -264,6 +272,10 @@ impl ExposeSpec {
         }
     }
 
+    fn excludes(self) -> bool {
+        self.slot < 2 && self.flavour != Flavour::PortForward
+    }
+
     fn carries_udp(self) -> bool {
         !matches!(self.nat_proto(), Some(L4Protocol::Tcp))
     }
@@ -283,22 +295,44 @@ impl ExposeSpec {
         }
     }
 
+    fn carve(self, expose: VpcExpose, peering: PeeringHandle, side: Side) -> VpcExpose {
+        if !self.excludes() {
+            return expose;
+        }
+        let block = peering.block(side, self.slot);
+        let expose = expose.not(excluded_slice(block, PRIVATE_BASE).into());
+        if expose.nat.is_none() {
+            return expose;
+        }
+        expose
+            .not_as(excluded_slice(block, PUBLIC_BASE).into())
+            .unwrap_or_else(|_| unreachable!("a translating expose accepts an excluded range"))
+    }
+
     fn expose(self, peering: PeeringHandle, side: Side) -> VpcExpose {
         let private = self.private(peering, side);
         match self.flavour {
-            Flavour::Forward => VpcExpose::empty().ip(private.into()),
-            Flavour::Masquerade => VpcExpose::empty()
-                .make_masquerade(self.idle_timeout())
-                .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
-                .ip(private.into())
-                .as_range(self.public(peering, side).into())
-                .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
-            Flavour::StaticNat => VpcExpose::empty()
-                .make_static_nat()
-                .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
-                .ip(private.into())
-                .as_range(self.public(peering, side).into())
-                .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
+            Flavour::Forward => self.carve(VpcExpose::empty().ip(private.into()), peering, side),
+            Flavour::Masquerade => self.carve(
+                VpcExpose::empty()
+                    .make_masquerade(self.idle_timeout())
+                    .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
+                    .ip(private.into())
+                    .as_range(self.public(peering, side).into())
+                    .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
+                peering,
+                side,
+            ),
+            Flavour::StaticNat => self.carve(
+                VpcExpose::empty()
+                    .make_static_nat()
+                    .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
+                    .ip(private.into())
+                    .as_range(self.public(peering, side).into())
+                    .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
+                peering,
+                side,
+            ),
             Flavour::PortForward => VpcExpose::empty()
                 .make_port_forwarding(self.idle_timeout(), self.nat_proto())
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
