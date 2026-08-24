@@ -116,11 +116,7 @@ const REACH: &[(&str, Reach)] = &[
     ("VpcExpose.ips.ports", Reach::Spans(&["set", "unset"])),
     (
         "VpcExpose.nots",
-        Reach::Fixed(
-            "empty -- the survey renders it as no prefixes at all. An expose that carves holes out of its own range is unreachable, which is a \
-             real hole rather than a canonicalisation: an exclusion is what makes a prefix set \
-             non-contiguous, and non-contiguous is where a matcher goes wrong.",
-        ),
+        Reach::Determined("a `/26` in the middle of the expose's block, on the low slots"),
     ),
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),
     (
@@ -133,7 +129,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.not_as",
-        Reach::Fixed("empty, for the same reason as `VpcExpose.nots`."),
+        Reach::Determined("a `/26` in the middle of the expose's translated block"),
     ),
     (
         "VpcExposeNat.config",
