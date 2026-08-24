@@ -723,6 +723,52 @@ pub fn remap_workspace_paths(value: &str, host_root: &str) -> String {
     value.replace(host_root, &format!("/{VM_WORKSPACE_DIR}"))
 }
 
+/// The variable through which a fuzz supervisor hands libfuzzer its command line.
+///
+/// Named rather than spelled out at each use because it is the one forwarded value this crate
+/// interprets rather than merely carries -- see [`strip_multiprocess_flags`].
+pub const ENV_LIBFUZZER_ARGS: &str = "BOLERO_LIBFUZZER_ARGS";
+
+/// libfuzzer flags under which the fuzzer supervises copies of itself.
+///
+/// Flag *names*, matched against the token up to its `=`, so that `-fork_corpus_groups=1` is left
+/// alone. A libfuzzer flag has no bare form: the parser only recognises `-name=value`.
+const MULTIPROCESS_FLAGS: &[&str] = &["jobs", "workers", "fork"];
+
+/// Remove the libfuzzer flags that would have the guest fuzzer spawn workers.
+///
+/// Under `-jobs`/`-workers` (`RunInMultipleProcesses`) or `-fork` (`FuzzWithFork`), libfuzzer stops
+/// fuzzing and becomes a supervisor: it re-executes its own `argv[0]` once per job and reports what
+/// the copies did. It launches them with `system(3)`, so each one needs `/bin/sh`, and the guest
+/// root is the `vmroot` derivation, whose `/bin` holds `n-it` and nothing else. Every job therefore
+/// exits 127 -- `system(3)`'s code for "could not exec the shell" -- and the supervisor, which
+/// never ran a single input itself, reports failure.
+///
+/// Dropping them rather than translating them to something the guest could satisfy. A worker is a
+/// process, and the number of them worth running is bounded by memory rather than by cores (see
+/// `development/code/running-tests.md`): `just fuzz` derives `-jobs` from the *host's* `nproc`,
+/// while the whole guest has a gigabyte in total. More parallelism in a guest has to come from
+/// more guests, not from more processes inside one -- the VM is what isolates a fuzz target from
+/// the developer's machine, and a supervisor that shells out gains nothing while giving that up.
+///
+/// The `fuzz-<n>.log` each job would be redirected into is a second, independent wall: libfuzzer
+/// writes it relative to the working directory, which in the guest is the workspace share, and
+/// virtiofsd serves that `--readonly`.
+#[must_use]
+pub fn strip_multiprocess_flags(value: &str) -> String {
+    value
+        .split_whitespace()
+        .filter(|arg| {
+            let Some(flag) = arg.strip_prefix('-') else {
+                return true;
+            };
+            let name = flag.split_once('=').map_or(flag, |(name, _)| name);
+            !MULTIPROCESS_FLAGS.contains(&name)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Encode variables as NUL-separated `KEY=VALUE` records.
 ///
 /// The same shape as `/proc/self/environ`, and for the same reason: NUL is
@@ -803,6 +849,64 @@ mod remap_tests {
     #[test]
     fn a_value_naming_no_host_path_is_untouched() {
         assert_eq!(remap_workspace_paths("-timeout=10 -jobs=1", "/w"), "-timeout=10 -jobs=1");
+    }
+}
+
+#[cfg(test)]
+mod multiprocess_tests {
+    use super::*;
+
+    /// The shape `just fuzz` produces: positional corpus and crashes directories, then flags.
+    #[test]
+    fn the_job_flags_go_and_everything_else_stays() {
+        let got = strip_multiprocess_flags(
+            "/corpus /crashes -artifact_prefix=/crashes/ -timeout=10 \
+             -max_total_time=60 -jobs=32 -len_control=0",
+        );
+        assert_eq!(
+            got,
+            "/corpus /crashes -artifact_prefix=/crashes/ -timeout=10 -max_total_time=60 -len_control=0",
+        );
+    }
+
+    #[test]
+    fn every_flag_that_shells_out_is_removed() {
+        assert_eq!(strip_multiprocess_flags("-jobs=4 -workers=2 -fork=1"), "");
+    }
+
+    /// Prefix matching would take this one too, and it names an in-process corpus strategy that
+    /// only `-fork` ever reads -- so removing it would be silently changing a setting rather than
+    /// removing a mode the guest cannot run.
+    #[test]
+    fn a_flag_merely_starting_with_a_stripped_name_survives() {
+        let args = "-fork_corpus_groups=1 -jobs_are_not_a_flag";
+        assert_eq!(strip_multiprocess_flags(args), args);
+    }
+
+    /// A positional path is not a flag, however it is spelled.
+    #[test]
+    fn positional_arguments_are_never_matched() {
+        let args = "/corpus/jobs /crashes/fork";
+        assert_eq!(strip_multiprocess_flags(args), args);
+    }
+
+    /// `bolero` splits this value on a single space rather than on whitespace, so a run of two
+    /// spaces reaches libfuzzer as an empty `argv` entry. Removing a flag from the middle of the
+    /// list must not leave one behind.
+    #[test]
+    fn removal_leaves_no_empty_argument_behind() {
+        let got = strip_multiprocess_flags("/corpus -jobs=4 -timeout=10");
+        assert!(
+            !got.split(' ').any(str::is_empty),
+            "empty argv entry in {got:?}",
+        );
+        assert_eq!(got, "/corpus -timeout=10");
+    }
+
+    #[test]
+    fn a_command_line_with_nothing_to_strip_is_unchanged() {
+        let args = "/corpus /crashes -timeout=10";
+        assert_eq!(strip_multiprocess_flags(args), args);
     }
 }
 
