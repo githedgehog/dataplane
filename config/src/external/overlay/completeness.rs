@@ -69,14 +69,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
     ("Acl.default", Reach::Spans(&["allow", "deny"])),
-    (
-        "Acl.rules",
-        Reach::Fixed(
-            "two, one per direction of the peering. So rule *precedence* is unreachable: a lookup \
-             returns the first rule that matches, and with one rule per direction no packet ever \
-             matches two. An ACL whose rules overlap is where an ordering defect would live.",
-        ),
-    ),
+    ("Acl.rules", Reach::Spans(&["1", "2"])),
     (
         "AclRule.name",
         Reach::Determined("the two vpc handles, as `<from>-to-<to>`"),
@@ -90,15 +83,7 @@ const REACH: &[(&str, Reach)] = &[
         Reach::Determined("the vpc handle on the other side"),
     ),
     ("AclRule.action", Reach::Spans(&["allow", "deny"])),
-    (
-        "AclRule.scope",
-        Reach::Fixed(
-            "`Packet`. A flow-scoped rule authorises a reply by its membership of the flow the \
-             request opened, which is a whole mechanism -- `reverse_summary`, and the reverse \
-             lookup in `AclFilter::lookup` -- that no generated configuration reaches. Drawing it \
-             means drawing `validate_scope`'s condition too; see `algebra::Guard::acl`.",
-        ),
-    ),
+    ("AclRule.scope", Reach::Spans(&["flow", "packet"])),
     (
         "AclRule.log",
         Reach::Fixed("false. Nothing generated asks for a rule's verdict to be logged."),
