@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use n_vm::{GuestHugePageConfig, GuestHugePageSize, HostPageSize, VmConfig, features};
+use n_vm::{
+    GuestHugePageConfig, GuestHugePageSize, HostPageSize, ModuleParam, VmConfig, VmConfigBuilder,
+    features,
+};
 
 /// Reads the first `len` bytes of `path`, or the whole file if it is shorter.
 fn read_prefix(path: &str, len: usize) -> Vec<u8> {
@@ -322,5 +325,66 @@ fn n_it_mounts_survive_switch_root() {
     assert!(
         std::path::Path::new("/sys/kernel").exists(),
         "sysfs mounted"
+    );
+}
+
+// -- The inline `#[n_vm::config]` form --------------------------------
+//
+// `config = PATH` still works and every test above still uses it.  These two
+// exist to pin what the inline form adds: a configuration written at the call
+// site, in ordinary Rust, that still reaches the guest.
+
+/// A module parameter declared inline reaches the guest's command line.
+///
+/// Asserts on `/proc/cmdline` rather than on the config value.  The value is
+/// what the host tier *asked* for; the command line is what the guest was
+/// actually booted with, and everything this form changed sits between the
+/// two -- the const is lifted out of the body by the macro, folded into the
+/// generated `VmConfig`, and rendered by `build_kernel_cmdline`.
+///
+/// The type is spelled `_` on purpose: the placeholder is illegal in a real
+/// const item (E0121), and this passes only because the macro deletes the
+/// item before rustc ever resolves it.
+#[n_vm::test]
+fn an_inline_config_reaches_the_guest_cmdline() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .guest_hugepages(GuestHugePageConfig::None)
+        .module_params(&[ModuleParam::new("vfio-pci", "disable_idle_d3", "1")])
+        .build();
+
+    let cmdline = std::fs::read_to_string("/proc/cmdline").expect("procfs should be mounted");
+    assert!(
+        cmdline.contains("vfio-pci.disable_idle_d3=1"),
+        "declared module parameter is missing from {cmdline:?}",
+    );
+    assert_eq!(
+        hugepages_total(),
+        0,
+        "inline guest_hugepages(None) should have reached the guest",
+    );
+}
+
+/// The same VM as `GUEST_2M_HUGEPAGES_VM`, written inline.
+///
+/// Kept alongside the `config = PATH` test it mirrors
+/// (`vm_boots_with_2m_guest_hugepages`) so that the two forms are known to
+/// produce the same guest rather than assumed to.  Spelled with an explicit
+/// type, which is the form that also compiles outside this macro.
+#[n_vm::test]
+fn an_inline_config_matches_the_named_const_it_mirrors() {
+    #[n_vm::config]
+    const _: VmConfig = VmConfigBuilder::default()
+        .guest_hugepages(GuestHugePageConfig::Allocate {
+            size: GuestHugePageSize::Huge2M,
+            count: 64,
+        })
+        .kernel_features(&[features::HUGETLBFS])
+        .build();
+
+    assert_eq!(
+        hugepages_total(),
+        64,
+        "expected 64 guest hugepages from the inline reservation"
     );
 }

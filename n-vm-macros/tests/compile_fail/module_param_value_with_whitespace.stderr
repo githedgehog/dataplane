@@ -1,0 +1,27 @@
+error[E0080]: evaluation panicked: a module parameter value must be non-empty and contain no whitespace; the kernel command line is split on whitespace, so one that does would silently become two parameters
+ --> tests/compile_fail/module_param_value_with_whitespace.rs:7:22
+  |
+7 |     .module_params(&[n_vm::ModuleParam::new("mlx5_core", "prof_sel", "2 3")])
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed inside this call
+  |
+note: inside `ModuleParam::new`
+ --> $RUST/core/src/panic.rs
+  |
+  |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+  |
+ ::: $WORKSPACE/n-vm/src/config.rs
+  |
+  | /         assert!(
+  | |             is_cmdline_value(value),
+  | |             "a module parameter value must be non-empty and contain no whitespace; \
+  | |              the kernel command line is split on whitespace, so one that does \
+  | |              would silently become two parameters"
+  | |         );
+  | |_________- in this macro invocation
+
+note: erroneous constant encountered
+ --> tests/compile_fail/module_param_value_with_whitespace.rs:7:20
+  |
+7 |     .module_params(&[n_vm::ModuleParam::new("mlx5_core", "prof_sel", "2 3")])
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
