@@ -464,3 +464,219 @@ fn a_default_vm() {
         "a default VM should still boot a guest with procfs mounted",
     );
 }
+
+// -- What the machine is made of --------------------------------------
+//
+// Each of these asserts from inside the booted guest rather than against
+// the arguments the harness produced.  An argument records what was asked
+// for; a hypervisor that silently declined it -- or accepted it and built
+// something else -- leaves every unit test green.
+
+/// Total memory as the guest sees it, in KiB.
+fn mem_total_kib() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .expect("guest has /proc/meminfo")
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .expect("MemTotal is a number")
+}
+
+/// How many CPUs the guest brought online.
+fn online_cpus() -> usize {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .expect("guest has /proc/cpuinfo")
+        .lines()
+        .filter(|l| l.starts_with("processor"))
+        .count()
+}
+
+/// Every interface the guest enumerated, as `(name, MAC)`, sorted.
+///
+/// Loopback is dropped: it is not a NIC and it has no MAC worth naming.
+fn guest_links() -> Vec<(String, String)> {
+    let mut links: Vec<(String, String)> = std::fs::read_dir("/sys/class/net")
+        .expect("guest has /sys/class/net")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "lo")
+        .map(|name| {
+            let mac = std::fs::read_to_string(format!("/sys/class/net/{name}/address"))
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_uppercase();
+            (name, mac)
+        })
+        .collect();
+    links.sort();
+    links
+}
+
+/// The kernel driver bound to each interface, sorted.
+///
+/// This, rather than the MAC, is what says the guest saw a *different
+/// device*: the harness derives every MAC the same way whatever the model
+/// is, so a machine that presented one device three times would still show
+/// three distinct addresses.
+fn guest_nic_drivers() -> Vec<String> {
+    let mut drivers: Vec<String> = guest_links()
+        .into_iter()
+        .filter_map(|(name, _)| {
+            std::fs::read_link(format!("/sys/class/net/{name}/device/driver"))
+                .ok()?
+                .file_name()
+                .map(|d| d.to_string_lossy().into_owned())
+        })
+        .collect();
+    drivers.sort();
+    drivers
+}
+
+/// The VM is the size it asked for, not the size this crate used to hard-code.
+#[n_vm::test]
+fn a_vm_is_the_size_it_asked_for() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default().memory_mib(2048).vcpus(2).build();
+
+    assert_eq!(online_cpus(), 2, "the guest should have brought up 2 vCPUs");
+
+    // A band, not an equality: the guest kernel's own reservations come off
+    // MemTotal before userspace ever sees it, so the exact figure is a
+    // property of the kernel rather than of the lever under test.  What
+    // matters is that it is the 2 GiB that was asked for and not the 1 GiB
+    // default.
+    let mib = mem_total_kib() / 1024;
+    assert!(
+        (1536..=2048).contains(&mib),
+        "a 2048 MiB VM reported {mib} MiB of RAM",
+    );
+}
+
+/// The same lever, on the other hypervisor.
+#[n_vm::test]
+fn a_vm_is_the_size_it_asked_for_on_qemu() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .kernel_profile(n_vm::kernel_profiles::QEMU)
+        .memory_mib(2048)
+        .vcpus(2)
+        .build();
+
+    assert_eq!(online_cpus(), 2);
+    let mib = mem_total_kib() / 1024;
+    assert!(
+        (1536..=2048).contains(&mib),
+        "a 2048 MiB VM reported {mib} MiB of RAM",
+    );
+}
+
+/// The fabric is as wide as the test said.
+///
+/// **Pinned to QEMU, and not because the lever is.** A fabric link does not
+/// reach a cloud-hypervisor guest at all: they sit on PCI segment 1 and that
+/// guest enumerates nothing there, with or without the vIOMMU.  That
+/// predates this lever -- the two links the VM has always had were equally
+/// invisible -- so this names the profile that shows the interfaces rather
+/// than asserting something known to be false.
+#[n_vm::test]
+fn a_vm_gets_the_fabric_links_it_asked_for() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .kernel_profile(n_vm::kernel_profiles::QEMU)
+        .fabric_nics(4)
+        .build();
+
+    // Sorted by address rather than left in device order: which interface
+    // the kernel names `eth0` is up to the kernel, and this is asserting
+    // which links exist, not what they were called.
+    let mut macs: Vec<String> = guest_links().into_iter().map(|(_, mac)| mac).collect();
+    macs.sort();
+    assert_eq!(
+        macs,
+        vec![
+            "02:CA:FE:BA:BE:01",
+            "02:CA:FE:BA:BE:02",
+            "02:CA:FE:BA:BE:03",
+            "02:CA:FE:BA:BE:04",
+            "02:DE:AD:BE:EF:01",
+        ],
+        "expected four fabric links plus management",
+    );
+}
+
+/// A test that never touches the network can decline the fabric entirely.
+///
+/// Each link is a TAP device, a virtio device and a queue pair, all set up
+/// before the guest runs, so this is the cheapest VM the harness can build.
+#[n_vm::test]
+fn a_vm_can_decline_its_fabric_links() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .kernel_profile(n_vm::kernel_profiles::QEMU)
+        .fabric_nics(0)
+        .build();
+
+    let links = guest_links();
+    assert_eq!(links.len(), 1, "management only, but found {links:?}");
+    assert_eq!(links[0].1, "02:DE:AD:BE:EF:01");
+}
+
+/// One VM, three device models, so "the second NIC" and "the virtio NIC"
+/// name different devices.
+///
+/// This is the machine a startup-sequence test needs.  The failure it is
+/// looking for is a program that identifies a NIC by ordinal, or by whatever
+/// `/sys` happens to list first, and unbinds a device it did not mean to --
+/// on this system, that is how the management link gets taken away and the
+/// host needs a physical reboot.  On a machine where every NIC is the same
+/// device there is no wrong one to pick, so a uniform fabric cannot see it.
+///
+/// No backend is pinned: an emulated model is one only QEMU has, so the
+/// configuration selects it on its own.
+#[n_vm::test]
+fn a_vm_can_present_several_nic_models_at_once() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .fabric_nic_models(&[
+            n_vm::NicModel::VirtioNet,
+            n_vm::NicModel::E1000,
+            n_vm::NicModel::E1000E,
+        ])
+        // Declared, because a kernel missing one of these does not fail --
+        // it presents the device and binds nothing, which reads here as
+        // "the model never reached the guest" when it did.
+        .kernel_features(&[features::VIRTIO_NET, features::E1000, features::E1000E])
+        // Named rather than left to `RequestedBackend::Qemu`.  A pinned
+        // backend that the run's profile does not offer resolves to a
+        // *skip*, and a skip is reported as a pass -- so this test would
+        // have quietly asserted nothing on every default run.  Naming the
+        // profile says what the test is for, and outranks `N_VM_PROFILE`.
+        .kernel_profile(n_vm::kernel_profiles::QEMU)
+        .build();
+
+    assert_eq!(
+        guest_nic_drivers(),
+        vec!["e1000", "e1000e", "virtio_net", "virtio_net"],
+        "the guest should have bound three different drivers",
+    );
+}
+
+/// The kernel a test names is the kernel it gets.
+///
+/// `N_VM_PROFILE` points a suite that has no opinion at another
+/// environment; a test that depends on a *modular* kernel has an opinion,
+/// and this is how it says so.
+#[n_vm::test]
+fn a_vm_boots_the_kernel_profile_it_named() {
+    #[n_vm::config]
+    const _: _ = VmConfigBuilder::default()
+        .kernel_profile(n_vm::kernel_profiles::FLATCAR)
+        .build();
+
+    let version = std::fs::read_to_string("/proc/version").expect("guest has /proc/version");
+    assert!(
+        version.to_ascii_lowercase().contains("flatcar"),
+        "expected a flatcar kernel, got {version}",
+    );
+}
