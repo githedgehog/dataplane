@@ -67,10 +67,7 @@ const REACH: &[(&str, Reach)] = &[
         "VpcPeering.gwgroup",
         Reach::Fixed("the default group; the algebra only calls `with_default_group`."),
     ),
-    (
-        "VpcPeering.acl",
-        Reach::Fixed("absent; the algebra has no operation that adds peering ACLs."),
-    ),
+    ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
     (
         "VpcManifest.name",
         Reach::Determined("the side's vpc handle"),
