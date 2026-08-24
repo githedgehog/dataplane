@@ -46,6 +46,7 @@ impl Side {
 pub enum Flavour {
     Forward,
     Masquerade,
+    StaticNat,
 }
 
 pub const MAX_EXPOSES: u8 = 4;
@@ -117,7 +118,9 @@ impl ExposeSpec {
     pub fn public(self, peering: PeeringHandle, side: Side) -> Prefix {
         match self.flavour {
             Flavour::Forward => self.private(peering, side),
-            Flavour::Masquerade => public_prefix(peering.block(side, self.slot)),
+            Flavour::Masquerade | Flavour::StaticNat => {
+                public_prefix(peering.block(side, self.slot))
+            }
         }
     }
 
@@ -131,6 +134,12 @@ impl ExposeSpec {
                 .ip(private.into())
                 .as_range(self.public(peering, side).into())
                 .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
+            Flavour::StaticNat => VpcExpose::empty()
+                .make_static_nat()
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
+                .ip(private.into())
+                .as_range(self.public(peering, side).into())
+                .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
         }
     }
 }
@@ -932,11 +941,13 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 }
 
 fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
-    if driver.produce::<bool>()? && !spec.has_stateful(side.other()) {
-        Some(Flavour::Masquerade)
+    const ORDERED: [Flavour; 3] = [Flavour::Forward, Flavour::StaticNat, Flavour::Masquerade];
+    let legal: &[Flavour] = if spec.has_stateful(side.other()) {
+        &ORDERED[..2]
     } else {
-        Some(Flavour::Forward)
-    }
+        &ORDERED
+    };
+    pick(driver, legal)
 }
 
 fn pick<T: Copy, D: Driver>(driver: &mut D, items: &[T]) -> Option<T> {
@@ -1056,6 +1067,7 @@ mod tests {
     fn every_sequence_builds_a_valid_configuration() {
         let masquerading = AtomicUsize::new(0);
         let forwarding = AtomicUsize::new(0);
+        let static_nat = AtomicUsize::new(0);
 
         check!()
             .with_generator(Sequence::default())
@@ -1079,6 +1091,7 @@ mod tests {
                             match expose.flavour() {
                                 Flavour::Masquerade => &masquerading,
                                 Flavour::Forward => &forwarding,
+                                Flavour::StaticNat => &static_nat,
                             }
                             .fetch_add(1, Relaxed);
                         }
@@ -1095,11 +1108,14 @@ mod tests {
 
         assert_every_kind_drawn();
         assert!(
-            masquerading.load(Relaxed) > 0 && forwarding.load(Relaxed) > 0,
-            "only one flavour of expose was ever built (masquerade {}, forward {}), so the \
-             combination rules were not exercised",
+            masquerading.load(Relaxed) > 0
+                && forwarding.load(Relaxed) > 0
+                && static_nat.load(Relaxed) > 0,
+            "not every flavour of expose was built (masquerade {}, forward {}, static nat {}), \
+             so the combination rules were not exercised",
             masquerading.load(Relaxed),
-            forwarding.load(Relaxed)
+            forwarding.load(Relaxed),
+            static_nat.load(Relaxed)
         );
     }
 
