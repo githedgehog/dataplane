@@ -38,6 +38,22 @@ use crate::error::ContainerError;
 /// Returns `None` when no workspace is found, which is not an error: a
 /// caller outside a cargo workspace simply gets no `/workspace` in the
 /// guest.
+/// How long the fuzzing engine says this run's campaign will take, in whole
+/// seconds.
+///
+/// Derived from the forwarded engine arguments rather than declared, because
+/// nothing compiled into the test knows it: `cargo bolero test -T 10min`
+/// chooses it at the command line, and the test binary learns it from
+/// `BOLERO_LIBFUZZER_ARGS`.
+///
+/// The workspace remap does not apply -- this reads a duration, not a path --
+/// so it deliberately looks at the raw value rather than at what
+/// `write_forwarded_env` will carry into the guest.
+fn engine_time_limit() -> Option<u64> {
+    let args = std::env::var(n_vm_protocol::ENV_LIBFUZZER_ARGS).ok()?;
+    n_vm_protocol::max_total_time(&args).map(|d| d.as_secs())
+}
+
 fn workspace_root() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var(ENV_WORKSPACE) {
         let path = PathBuf::from(dir);
@@ -289,6 +305,15 @@ impl ContainerParams {
                         .ok()
                         .filter(|v| !v.is_empty())
                         .map(|v| format!("{}={v}", n_vm_protocol::ENV_PROFILE)),
+                )
+                // How long the engine says the guest's work will take.  Read
+                // from *this* tier's environment because that is where the
+                // fuzz supervisor set it; the container tier never sees the
+                // invocation that chose it.  Absent when nothing declared
+                // one, which leaves the VM budget exactly where it was.
+                .chain(
+                    engine_time_limit()
+                        .map(|secs| format!("{}={secs}", n_vm_protocol::ENV_ENGINE_TIME_LIMIT)),
                 )
                 // Same "only when set" discipline: virtiofsd runs in this
                 // tier, so the override has to reach it here.
