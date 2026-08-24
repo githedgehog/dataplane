@@ -19,13 +19,19 @@
 
 pub use std::time::{Duration, Instant, SystemTime, SystemTimeError, TryFromFloatSecsError};
 
+#[cfg(feature = "virtual")]
+pub mod virtual_time;
+
 #[must_use]
 pub fn now() -> Instant {
-    #[cfg(feature = "virtual")]
+    #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
+        if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
+            virtual_time::refuse();
+        }
         tokio::time::Instant::now().into_std()
     }
-    #[cfg(not(feature = "virtual"))]
+    #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
         Instant::now()
     }
@@ -54,11 +60,27 @@ pub fn system_now() -> SystemTime {
 }
 
 #[cfg(test)]
+pub(crate) fn serially() -> concurrency::sync::MutexGuard<'static, ()> {
+    // Lazily, not `static SERIAL: Mutex<()> = Mutex::new(())`. The facade's
+    // `Mutex::new` is not `const fn` under loom or shuttle -- `concurrency::sync`
+    // says so in its own module docs -- so the in-place form stops compiling the
+    // moment the workspace is built with `--features shuttle`. Nothing in this
+    // crate asks for shuttle; it arrives by feature unification from
+    // `dataplane/shuttle -> concurrency/shuttle`, and `clock` depends on
+    // `concurrency`. That is why `just shuttle` never got as far as running.
+    static SERIAL: concurrency::sync::LazyLock<concurrency::sync::Mutex<()>> =
+        concurrency::sync::LazyLock::new(|| concurrency::sync::Mutex::new(()));
+    SERIAL.lock()
+}
+
+#[cfg(test)]
 mod tests {
+    use super::serially;
     use super::{Duration, now, system_now};
 
     #[test]
     fn now_is_monotonic() {
+        let _serial = serially();
         let first = now();
         let second = now();
         assert!(second >= first, "the monotonic clock went backwards");
@@ -66,8 +88,36 @@ mod tests {
 
     #[test]
     fn now_works_with_no_runtime() {
+        let _serial = serially();
         let _ = now();
         let _ = system_now();
+    }
+
+    /// The claim every paused-clock test in the workspace rests on.
+    ///
+    /// Worth having *here* rather than inferring it from a NAT or routing test:
+    /// a regression -- a tokio bump that changes `into_std`, someone re-pointing
+    /// the facade -- otherwise surfaces several crates away as a mysterious
+    /// expiry failure rather than as a clock failure.
+    #[test]
+    #[cfg(all(feature = "virtual", not(wall_clock)))]
+    fn now_follows_a_paused_clock() {
+        let _serial = serially();
+        let clock = super::virtual_time::Paused::new();
+        clock.block_on(async {
+            let before = now();
+            super::virtual_time::advance(Duration::from_hours(1)).await;
+            assert_eq!(
+                now().saturating_duration_since(before),
+                Duration::from_hours(1),
+                "the facade did not follow the clock it is pointed at"
+            );
+            assert_eq!(
+                super::elapsed(before),
+                Duration::from_hours(1),
+                "`elapsed` did not follow the clock `now` follows"
+            );
+        });
     }
 
     #[test]
