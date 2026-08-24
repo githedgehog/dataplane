@@ -62,6 +62,12 @@
 //! `.semgrep/rules/no-std-time-direct.yaml` refuses direct clock reads outside this crate, the same
 //! way `no-std-sync-direct.yaml` refuses direct `std::sync` imports.
 
+// Mirrors the cfg on `virtual_time::inherit_across_spawns`, which is the only user: declaring the
+// feature in a build that has no routed clock is an unused-feature warning.
+#![cfg_attr(
+    all(has_spawn_hook, feature = "virtual", not(wall_clock)),
+    feature(thread_spawn_hook)
+)]
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 #![deny(unsafe_code)]
@@ -82,17 +88,15 @@ pub mod virtual_time;
 ///
 /// # Panics
 ///
-/// Under the `virtual` feature, if a [`virtual_time::Paused`] is alive, this thread has no runtime
-/// context, and the runner gives each test its own process (which nextest states and `cargo test`
-/// does not). Without a context the read would answer from the wall clock while the rest of the
-/// test is an hour ahead. Where the process is shared the same condition is reached by unrelated
-/// tests, so there it warns once and answers from the wall clock instead -- see
-/// [`virtual_time`] for why the distinction is the runner's to make.
+/// Under the `virtual` feature, if this thread is inside a [`virtual_time::Paused`]'s world and has
+/// no runtime context -- the read would answer from the wall clock while the rest of the test is an
+/// hour ahead. A thread spawned with `std::thread` inherits both, so reaching this means the thread
+/// came from somewhere else. A thread outside the world is not checked at all.
 #[must_use]
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        checked_now().unwrap_or_else(virtual_time::refuse)
+        checked_now().unwrap_or_else(|| virtual_time::refuse())
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
@@ -142,10 +146,10 @@ pub const fn is_routed() -> bool {
 /// which is worth rendering as such rather than being papered over with a wall reading from a
 /// different timeline.
 ///
-/// Signed, because the origin is the first reading and a *second* paused section in the same
-/// process starts behind it. `cargo nextest` gives each test its own process, so in the runner the
-/// workspace uses there is one section and the offsets count up from zero; under a shared process
-/// they can go negative, which is at least visibly odd rather than silently floored to zero.
+/// Signed, because the origin is the first reading and a *second* paused section in the same process
+/// starts behind it. `cargo nextest` gives each test its own process, so there is one section and
+/// the offsets count up from zero; under a shared process they can go negative, which is at least
+/// visibly odd rather than silently floored to zero.
 #[must_use]
 pub fn elapsed_since_first_reading() -> Option<(bool, Duration)> {
     static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -175,13 +179,12 @@ pub fn system_now() -> SystemTime {
 
 /// Serializes this crate's own tests against each other.
 ///
-/// Not a general facility -- callers get process isolation from `cargo nextest` instead. It is here
-/// because this crate is the worst case for the false positive [`refuse`] accepts: a third of its
-/// tests pause the clock, so under the plain `cargo test` runner an innocent reader landed inside a
-/// paused section about three runs in ten. Measured, which is why this exists.
+/// Not a general facility. It is here because these tests contend for `LIVE`, which is process-wide
+/// -- one test dropping its clock while another still holds one would disarm the check underneath
+/// it. `cargo nextest` gives each test its own process and would not need this; the crate's own
+/// tests should pass under the plain runner too, so they take turns.
 ///
-/// **Every test in this crate that reads a clock takes it**, driving or not. That is the whole rule,
-/// and it is why this is `pub(crate)` rather than private to the module below.
+/// **Every test in this crate that reads a clock takes it**, driving or not.
 #[cfg(test)]
 pub(crate) fn serially() -> concurrency::sync::MutexGuard<'static, ()> {
     static SERIAL: concurrency::sync::Mutex<()> = concurrency::sync::Mutex::new(());

@@ -35,17 +35,28 @@
 //! check would panic on every innocent reader in any test binary that shares a process -- which
 //! `cargo test` and edition-2024's merged doctests both do.
 //!
-//! # Where the check can be trusted
+//! # Which threads the check applies to
 //!
-//! It is sound exactly when the paused section owns every thread in the process. Under plain `cargo
-//! test` it does not: an unrelated test running in parallel reads the clock and is refused for
-//! something it did not do, and that is not rare -- it failed the whole packet-processor suite ten
-//! times out of ten, because one property pauses while another builds a fabric on its main thread.
+//! Only the ones actually in the test's world, which is a *tree*: the thread holding the [`Paused`],
+//! and every thread spawned from it, transitively. `std::thread::add_spawn_hook` is what makes that
+//! knowable -- it runs a closure on the parent at spawn time and another on the child before its
+//! body, so both the runtime context and the "in a driven-clock world" flag are inherited rather
+//! than reconstructed.
 //!
-//! So the refusal is fatal only where the isolation actually holds. nextest states it:
-//! `NEXTEST_EXECUTION_MODE=process-per-test`, which is what CI, `just miri` and the development
-//! guide all run. Elsewhere the read still happens, but it warns once instead of panicking, so
-//! `cargo test` keeps working and the diagnostic is not lost. `CLOCK_STRICT=1` (or `0`) overrides.
+//! That inheritance is the design, not an optimisation. A process-wide check is unsound under any
+//! runner that shares a process: it refused unrelated tests for something they did not do, and
+//! failed the whole packet-processor suite ten times out of ten because one property paused while
+//! another built a fabric on its main thread. Scoped to the tree, an unrelated test is simply not in
+//! it -- measured, a thread spawned from outside inherits nothing.
+//!
+//! The hook also *enters* the runtime on the child, so a worker that would have forgotten to is
+//! simply correct instead. What is left for the panic to catch is the case inheritance cannot
+//! reach: a thread created outside `std::thread` -- by DPDK's EAL, or any C library calling
+//! `pthread_create` -- which is exactly where a silent wall-clock reading would be least expected.
+//!
+//! Without `has_spawn_hook` (a build with no `RUSTC_BOOTSTRAP`, which the dev shell and the nix
+//! build both set) nothing is inherited, so only the thread holding the `Paused` is checked. Weaker,
+//! never wrong.
 //!
 //! # Wall-clock mode
 //!
@@ -54,9 +65,8 @@
 //! an hour costs nothing, and wall, where the same property is what would catch the virtual clock
 //! lying. Only durations of a second or two are practical in wall mode, so it is opt-in per run.
 
-use crate::{Duration, Instant};
-#[cfg(all(test, not(wall_clock)))]
-use std::sync::atomic::AtomicU8;
+use crate::Duration;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How many [`Paused`] sections are alive. Zero almost always.
@@ -73,96 +83,90 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 /// costs nothing when there is nothing to run.
 const YIELDS: usize = 4;
 
+thread_local! {
+    /// Whether this thread is inside a [`Paused`]'s world.
+    ///
+    /// Set on the thread that builds one, and inherited by every thread it spawns. A read on a
+    /// thread where this is false is nobody's business but that thread's.
+    static IN_WORLD: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Whether [`crate::now`] should refuse a read with no runtime context.
+///
+/// Both halves matter. The global says a clock is being driven *somewhere*, so the common case --
+/// no clock driven at all -- costs one atomic load and never touches the thread-local. The
+/// thread-local says this thread is part of it, which is what keeps an unrelated test out.
 #[cfg(not(wall_clock))]
 #[inline]
 #[must_use]
 pub(crate) fn armed() -> bool {
-    LIVE.load(Ordering::Acquire) != 0
+    LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get)
 }
 
-/// Whether a read from the wrong timeline is fatal.
+thread_local! {
+    /// Whether this thread has already registered the spawn hook.
+    ///
+    /// Per thread, not per process, because that is how `add_spawn_hook` works: `SPAWN_HOOKS` is a
+    /// thread-local list which children inherit, and "adding a hook has no effect on already running
+    /// threads". A `Once` looked right and was not -- the first test to build a `Paused` consumed
+    /// it, and every later test's threads then inherited nothing. That failed as a spawned thread
+    /// reading the wall clock while the thread that spawned it was an hour ahead.
+    ///
+    /// Hooks can be added but never removed, so this also stops a thread that builds several
+    /// `Paused`s from stacking one hook per clock.
+    #[cfg(all(has_spawn_hook, not(wall_clock)))]
+    static HOOKED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Make every thread spawned from here on inherit this thread's clock.
 ///
-/// Only where each test has the process to itself, which nextest states outright. Under a shared
-/// process the same condition is reached by tests that have nothing to do with each other, and a
-/// panic there reports the runner rather than a defect.
-#[cfg(not(wall_clock))]
-fn strict() -> bool {
-    static STRICT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    #[cfg(test)]
-    match FORCED.load(Ordering::Acquire) {
-        FORCED_STRICT => return true,
-        FORCED_LENIENT => return false,
-        _ => {}
+/// That the hook list is itself thread-local is what scopes this: only threads descending from one
+/// that drives a clock carry it, so an unrelated test in the same process is untouched without
+/// anything having to know about it.
+#[cfg(all(has_spawn_hook, not(wall_clock)))]
+fn inherit_across_spawns() {
+    if !HOOKED.replace(true) {
+        std::thread::add_spawn_hook(|_parent| {
+            // On the parent, at spawn time.
+            let handle = tokio::runtime::Handle::try_current().ok();
+            let in_world = IN_WORLD.with(Cell::get);
+            move || {
+                // On the child, before its body.
+                IN_WORLD.with(|flag| flag.set(in_world));
+                if let Some(handle) = handle {
+                    // Both deliberate. `EnterGuard` restores the previous context when it drops and
+                    // the context should last the thread rather than this closure, so it is
+                    // forgotten; and the guard borrows the handle, so the handle is leaked to give
+                    // it somewhere to borrow from.
+                    //
+                    // One `Handle` -- an `Arc` clone -- per spawned thread, which is small beside
+                    // the thread. Caching one for the process was tried and is wrong: each `Paused`
+                    // builds its own runtime, so a cached handle sends every later test's threads to
+                    // the *first* test's clock. That failed as a spawned thread reading 3599.99s
+                    // away from the one that advanced it.
+                    std::mem::forget(Box::leak(Box::new(handle)).enter());
+                }
+            }
+        });
     }
-    *STRICT.get_or_init(|| {
-        if let Some(explicit) = std::env::var_os("CLOCK_STRICT") {
-            return explicit != "0";
-        }
-        std::env::var_os("NEXTEST_EXECUTION_MODE").is_some_and(|mode| mode == "process-per-test")
-    })
 }
 
-/// Lets this crate's own tests pin both halves of [`strict`] whatever the runner is.
-///
-/// Both halves need pinning and the runner decides which one a plain test would get, so each is
-/// forced explicitly rather than left to the environment. A flag rather than `set_var`, which would
-/// be a data race against every other thread in the process, and would not be re-read anyway once
-/// the detection has been cached.
-#[cfg(all(test, not(wall_clock)))]
-static FORCED: AtomicU8 = AtomicU8::new(FORCED_BY_RUNNER);
-#[cfg(all(test, not(wall_clock)))]
-const FORCED_BY_RUNNER: u8 = 0;
-#[cfg(all(test, not(wall_clock)))]
-const FORCED_STRICT: u8 = 1;
-#[cfg(all(test, not(wall_clock)))]
-const FORCED_LENIENT: u8 = 2;
+/// Without the hook nothing is inherited, so only the thread holding the [`Paused`] is checked.
+#[cfg(not(all(has_spawn_hook, not(wall_clock))))]
+fn inherit_across_spawns() {}
 
-/// Run `body` with the refusal fatal, whichever runner is in use.
-///
-/// Callers must already hold [`serially`], since the flag is process-wide.
-#[cfg(all(test, not(wall_clock)))]
-fn strictly<R>(body: impl FnOnce() -> R) -> R {
-    forcing(FORCED_STRICT, body)
-}
-
-/// Run `body` with the refusal advisory, whichever runner is in use.
-#[cfg(all(test, not(wall_clock)))]
-fn leniently<R>(body: impl FnOnce() -> R) -> R {
-    forcing(FORCED_LENIENT, body)
-}
-
-#[cfg(all(test, not(wall_clock)))]
-fn forcing<R>(mode: u8, body: impl FnOnce() -> R) -> R {
-    FORCED.store(mode, Ordering::Release);
-    let out = body();
-    FORCED.store(FORCED_BY_RUNNER, Ordering::Release);
-    out
-}
-
-/// Answer a clock read that would come from the wrong timeline.
+/// Refuse a clock read that would come from the wrong timeline.
 ///
 /// Out of line and cold because the arming check is on every clock read in a test build, and this
-/// arm is not the common one.
+/// arm never returns.
+///
+/// Reaching this means a thread is in a driven-clock world and cannot see the clock -- which, with
+/// inheritance in place, means it was not created by `std::thread`. There is no runner to blame and
+/// nothing to soften: the read would answer from a different timeline.
 #[cfg(not(wall_clock))]
 #[cold]
 #[inline(never)]
-pub(crate) fn refuse() -> Instant {
-    if !strict() {
-        // Once, because a thread in this position is usually in a loop, and a warning per packet
-        // would bury the run it is trying to describe.
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| {
-            eprintln!(
-                "warning: clock::now() on a thread with no tokio runtime while another test holds \
-                 the virtual clock paused. Answering from the wall clock, which is a different \
-                 timeline. Under `cargo nextest` this is a hard error, because there each test has \
-                 the process to itself and the only way to reach it is a thread that forgot to \
-                 enter the runtime. Set CLOCK_STRICT=1 to make it one here."
-            );
-        });
-        return Instant::now();
-    }
+pub(crate) fn refuse() -> ! {
     panic!(
         "clock::now() on a thread with no tokio runtime while the virtual clock is paused.\n\
          \n\
@@ -170,16 +174,10 @@ pub(crate) fn refuse() -> Instant {
          paused one -- they disagree by however far the test has advanced -- so comparing it \
          against a deadline taken on the other side is silently wrong, in either direction.\n\
          \n\
-         Two things cause it:\n\
-         \n\
-         * A thread this test spawned never entered the runtime. Hand it \
-         `clock::virtual_time::Paused::handle()` and enter that, on the spawned thread rather than \
-         on the spawning one -- tokio's context is thread-local, so a guard held by the parent does \
-         nothing for the child.\n\
-         \n\
-         * Or another test in this process holds the clock paused and this thread has nothing to do \
-         with it. `cargo nextest` gives each test its own process and cannot hit this; plain `cargo \
-         test` shares one, so run it under nextest or with `--test-threads=1`."
+         A thread spawned with `std::thread` inherits its parent's clock automatically, so reaching \
+         this means this one did not come from there -- DPDK's EAL, or a C library calling \
+         `pthread_create`. Enter `clock::virtual_time::Paused::handle()` on the thread itself; a \
+         guard held by whoever created it does nothing, because tokio's context is thread-local."
     );
 }
 
@@ -225,6 +223,8 @@ impl Paused {
 
         // After the build, so a runtime that failed to build cannot leave the check armed.
         if !cfg!(wall_clock) {
+            inherit_across_spawns();
+            IN_WORLD.with(|flag| flag.set(true));
             LIVE.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -260,6 +260,7 @@ impl Default for Paused {
 impl Drop for Paused {
     fn drop(&mut self) {
         if !cfg!(wall_clock) {
+            IN_WORLD.with(|flag| flag.set(false));
             LIVE.fetch_sub(1, Ordering::Release);
         }
     }
@@ -359,20 +360,52 @@ mod tests {
     }
 
     /// Two clocks would be two timelines, so the second is refused where it is asked for.
-    /// A worker that never entered the runtime is refused rather than answered wrongly.
+    /// A thread spawned inside the world reads the driven clock, with nobody telling it to.
     ///
-    /// The measured alternative is an hour of silent disagreement: an unentered thread falls back
-    /// to the wall clock, which looks entirely normal and is a different timeline.
+    /// No `handle.enter()` anywhere: the spawn hook carried the context across. This is what makes
+    /// the forgetful worker unrepresentable rather than merely detected -- there is nothing left to
+    /// forget.
+    #[test]
+    #[cfg(all(has_spawn_hook, not(wall_clock)))]
+    fn a_spawned_thread_inherits_the_clock_without_being_told() {
+        let _serial = serially();
+        let clock = Paused::new();
+        let (driver, worker) = clock.block_on(async {
+            advance(LONG).await;
+            // Spawned from inside `block_on`, so the parent has a runtime context to pass on.
+            let worker = thread::spawn(now)
+                .join()
+                .expect("an inherited read was refused");
+            (now(), worker)
+        });
+        assert_eq!(
+            driver,
+            worker,
+            "a spawned thread read {:?} away from the thread that advanced the clock",
+            driver.saturating_duration_since(worker)
+        );
+    }
+
+    /// A thread in the world with no clock to read is refused, not answered wrongly.
+    ///
+    /// Reached on the thread holding the `Paused` itself, outside its `block_on`: it is in the world
+    /// -- it built the thing -- and has no runtime context, so it cannot see the clock it is driving.
+    /// A reading taken there and compared against a deadline taken inside would be off by however
+    /// far the test had advanced, which is the whole failure. It is also the shape of the case
+    /// inheritance cannot reach: a thread created outside `std::thread`, by DPDK's EAL or a C
+    /// library.
+    ///
+    /// Not gated on `has_spawn_hook`, deliberately -- this is the half of the check that survives a
+    /// build with no inheritance, and it should be seen to.
     #[test]
     #[cfg(not(wall_clock))]
-    fn a_thread_that_did_not_enter_is_refused_where_the_process_is_ours() {
+    fn a_thread_in_the_world_with_no_clock_is_refused() {
         let _serial = serially();
         let clock = Paused::new();
         clock.block_on(async { advance(LONG).await });
 
-        let forgetful = super::strictly(|| thread::spawn(now).join());
-        let panic =
-            forgetful.expect_err("an unentered read was allowed while the clock was paused");
+        let refused = std::panic::catch_unwind(now);
+        let panic = refused.expect_err("a read from the wrong timeline was allowed");
         // The refusal is a literal, so it arrives as `&'static str` rather than `String`.
         let message = panic
             .downcast_ref::<&'static str>()
@@ -385,20 +418,33 @@ mod tests {
         );
     }
 
-    /// Where the process is shared, the same read warns and answers rather than failing the run.
+    /// A thread that is not in the tree is left entirely alone.
     ///
-    /// Not a softening for its own sake: under `cargo test` this condition is reached by tests that
-    /// have nothing to do with each other -- it failed the whole packet-processor suite ten times
-    /// out of ten -- so a panic there reports the runner rather than a defect.
+    /// The property the process-wide check could not have: this thread never built a `Paused`, so a
+    /// clock being driven on another thread is none of its business. Without this, an unrelated test
+    /// sharing the process is refused for something it did not do -- which failed the whole
+    /// packet-processor suite ten times out of ten.
     #[test]
     #[cfg(not(wall_clock))]
-    fn a_thread_that_did_not_enter_is_only_warned_where_the_process_is_shared() {
+    fn a_thread_outside_the_tree_is_left_alone() {
         let _serial = serially();
-        let clock = Paused::new();
-        clock.block_on(async { advance(LONG).await });
+        let (started, wait_for_start) = std::sync::mpsc::channel();
+        let (finish, wait_to_finish) = std::sync::mpsc::channel();
 
-        super::leniently(|| thread::spawn(now).join())
-            .expect("a shared-process read should warn, not panic");
+        // The world lives on its own thread, so this one is never in it.
+        let driving = thread::spawn(move || {
+            let clock = Paused::new();
+            clock.block_on(async { advance(LONG).await });
+            started.send(()).expect("the test is waiting");
+            // Hold the clock paused across the outsider's read, which is the whole question.
+            wait_to_finish.recv().expect("the test releases this");
+        });
+        wait_for_start.recv().expect("the driver starts");
+
+        let outsider = thread::spawn(now).join();
+        finish.send(()).expect("the driver is waiting");
+        driving.join().expect("the driver panicked");
+        outsider.expect("a thread outside the world was refused a clock read");
     }
 
     /// A worker that did enter reads the same clock as the thread that drove it.
