@@ -1159,6 +1159,7 @@ pub(crate) mod derive {
     use config::external::overlay::ValidatedOverlay;
     use config::external::overlay::algebra::{Draft, Guard};
     use config::external::overlay::vpcpeering::ValidatedExpose;
+    use lpm::prefix::with_ports::L4Protocol;
     use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
     /// How one sender should vary, drawn by the fuzzer and applied to whatever the config offers.
@@ -1397,6 +1398,19 @@ pub(crate) mod derive {
                     });
                     let inward =
                         peer_source_of(peering, v.host, ValidatedExpose::can_init_connection);
+
+                    // An expose narrowed to a transport protocol none of these loads carries is
+                    // skipped rather than judged. It still routes its prefix -- only the
+                    // translation is conditional -- so traffic aimed at it is delivered
+                    // *untranslated*, which is neither the delivery an inbound load checks for nor
+                    // a refusal. Observed rather than assumed: predicting a refusal here is what
+                    // `a_configuration_carries_nothing_it_denies` caught.
+                    if expose
+                        .nat_proto()
+                        .is_some_and(|proto| proto == L4Protocol::Tcp)
+                    {
+                        continue;
+                    }
 
                     if expose.has_port_forwarding() {
                         // Reached from outside on the advertised tuple, expected to land on the
