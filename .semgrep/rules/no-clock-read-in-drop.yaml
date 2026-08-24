@@ -1,0 +1,49 @@
+# A clock read from a `Drop` can abort the process, not fail a test.
+#
+# tokio's `DID_PAUSE_CLOCK` is a process-global that latches on the first
+# `pause()` and is never cleared.  Once it is set, every routed clock read goes
+# through the calling thread's runtime context -- and if that thread's tokio
+# thread-local has *already been destroyed*, tokio panics with "The Tokio
+# context thread-local variable has been destroyed".  A panic inside a
+# thread-local destructor is not catchable: the runtime turns it into
+# `fatal runtime error: thread local panicked on drop, aborting`, SIGABRT.
+#
+# Reproduced against tokio 1.53.1.  It needs a thread that entered a runtime,
+# a `Drop` that reads the clock during TLS teardown, and any pause anywhere in
+# the process -- which may be a test in another crate entirely.  The symptom is
+# an abort with no test name attached, so this is worth catching at review.
+#
+# Nothing in the workspace does this today.  The rule exists so that it stays
+# that way, since the connection between "expiry test three crates away" and
+# "CI aborted" is not one anyone will make from the failure alone.
+rules:
+  - id: rust-no-clock-read-in-drop
+    languages: [rust]
+    severity: ERROR
+    message: |
+      Do not read the clock from a `Drop` implementation.
+
+      Once anything in the process has paused the virtual clock, tokio routes
+      every read through the calling thread's runtime context.  A `Drop` that
+      runs during thread-local teardown may find that context already
+      destroyed, and tokio's response is a panic inside a destructor -- which
+      aborts the process rather than failing the test.
+
+      Take the reading before the value is dropped and pass it in, or record
+      the instant when the value is created.
+    paths:
+      exclude:
+        - .codeql/tests/
+        - clock/src/
+    patterns:
+      # Anchored on `Drop::drop`'s signature rather than on `impl Drop for $T`:
+      # opengrep's Rust support matches the latter against *any* impl block, so
+      # the trait name does no work. This is exact -- `fn drop(&mut self)` with
+      # no return type is Drop's method and essentially nothing else.
+      - pattern-inside: |
+          fn drop(&mut self) {
+            ...
+          }
+      - pattern-either:
+          - pattern: clock::now()
+          - pattern: clock::system_now()
