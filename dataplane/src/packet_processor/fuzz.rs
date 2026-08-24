@@ -4433,8 +4433,17 @@ mod routed {
         Opening,
         /// The request is in flight. Nothing more to send until it comes back.
         AwaitingRequest,
-        /// The request came back; the reply is built from `public`.
-        Replying { public: (IpAddr, u16) },
+        /// The request came back; the reply is built from `public` and `landed`.
+        ///
+        /// Two tuples, not one. `public` is what the far side must answer *to*; `landed` is the
+        /// address the request actually arrived on, and so the address the answering host holds.
+        /// They are the same thing only when nothing translated the destination on the way in --
+        /// which was every case this load had ever carried until an expose could both translate
+        /// and receive a connection.
+        Replying {
+            public: (IpAddr, u16),
+            landed: (IpAddr, u16),
+        },
         /// The reply is in flight.
         AwaitingReply,
         /// Checked, both ways.
@@ -4498,10 +4507,28 @@ mod routed {
                 self.state = State::Abandoned;
                 return;
             };
+            // Where it landed, which is not `self.dst` whenever the destination was translated on
+            // the way in. Read off the delivered packet rather than computed: working it out from
+            // the configuration would be a second copy of the translation, and two copies
+            // disagree.
+            let (Some(landed_dst), Some(landed_port)) =
+                (carried.ip_destination(), carried.transport_dst_port())
+            else {
+                self.note("the delivered request had no destination tuple to answer from");
+                self.state = State::Abandoned;
+                return;
+            };
             self.note(&format!("request left as {public_src}:{}", port.get()));
+            if landed_dst != self.dst {
+                self.note(&format!(
+                    "request landed on {landed_dst}:{}",
+                    landed_port.get()
+                ));
+            }
             self.public = Some((public_src, port.get()));
             self.state = State::Replying {
                 public: (public_src, port.get()),
+                landed: (landed_dst, landed_port.get()),
             };
         }
 
@@ -4557,8 +4584,15 @@ mod routed {
                     self.state = State::AwaitingRequest;
                     Some(tunnelled_from(self.path.from, &request))
                 }
-                State::Replying { public: (ip, port) } => {
-                    let reply = udp(self.dst, ip, self.dport, port)?;
+                State::Replying {
+                    public: (ip, port),
+                    landed: (from_ip, from_port),
+                } => {
+                    // From where the request landed. Sending from `self.dst` instead would be the
+                    // far side answering from an address it does not hold -- and when that address
+                    // is a translated one, the flow filter refuses it as a source that vpc may not
+                    // use, which is correct and looks exactly like a lost reply.
+                    let reply = udp(from_ip, ip, from_port, port)?;
                     self.state = State::AwaitingReply;
                     Some(tunnelled_from(self.path.reversed().from, &reply))
                 }
