@@ -177,41 +177,46 @@ const REACH: &[(&str, Reach)] = &[
     (
         "AclPattern.src",
         // Empty in most rules, which `AclRule::validate` then fills in from the `from` manifest;
-        // one masquerading expose's private prefix in `Guard::PermitExcept`'s denial, which is
-        // what makes that rule name *part* of what its side carries. The prefix itself follows
-        // the peering, side and slot, like every other address the algebra picks.
+        // a masquerading expose's private prefix in the denial of a `Guard::PermitExcept` that
+        // found one, which is what makes that rule name *part* of what its side carries. The
+        // prefix itself follows the peering, side and slot, like every other address the algebra
+        // picks.
         Reach::Determined(
             "empty, or the excepted expose's private prefix from its peering, side and slot",
         ),
     ),
     (
         "AclPattern.dst",
-        Reach::Fixed(
-            "empty, so `AclRule::validate` fills it in from the `to` manifest and every generated \
-             rule reaches all of what its far side advertises. `AclPattern.src` is narrowed by \
-             `Guard::PermitExcept` and this is not, and the asymmetry is deliberate: a source \
-             prefix names the expose whose traffic it is, and a destination prefix names whichever \
-             of the peer's exposes a load happens to aim at -- which is `peer_of`'s choice, so \
-             predicting the effect would mean keeping a copy of it.",
+        // Empty in most rules; a port-forwarding expose's public prefix in the denial of a
+        // `Guard::PermitExcept` that found one. That is the mirror of the `.src` narrowing -- a
+        // port-forwarding expose is reached and never reaches, so its public prefix is where the
+        // traffic aimed at it goes and where nothing else does. See `algebra::Narrowing`.
+        Reach::Determined(
+            "empty, or the excepted expose's public prefix from its peering, side and slot",
         ),
     ),
     (
         "AclPattern.src_any_ports",
-        Reach::Fixed(
-            "empty -- the survey renders it as a count of zero. A `match` naming ports but no \
-             address is a shape the k8s converter produces and nothing generated does.",
-        ),
+        // One entry -- every port there is -- in `Guard::PermitByProtocol`'s rules, and none
+        // elsewhere. That is the `match` shape naming ports and no address, which the k8s
+        // converter produces and `AclRule::validate` materialises against the manifests through
+        // `expand_any_ports`. Which *ports* such a rule selects is still fixed: it selects all of
+        // them, because a rule that selected some would have to be predicted against traffic
+        // whose ports the fuzzer drew.
+        Reach::Spans(&["0", "1"]),
     ),
     (
         "AclPattern.dst_any_ports",
-        Reach::Fixed("empty, for the same reason as `AclPattern.src_any_ports`."),
+        // As `AclPattern.src_any_ports`, including the caveat.
+        Reach::Spans(&["0", "1"]),
     ),
     (
         "AclPattern.proto",
-        Reach::Fixed(
-            "`Any`. Narrowing a rule to a protocol is what `acl_filter`'s own generator is aimed \
-             at, and a rule that discriminates is one a property here would have to evaluate.",
-        ),
+        // `Guard::PermitByProtocol` names `Udp` on the rules that must fire and `Tcp` on the one
+        // that must not -- every load the derivation builds is udp, so tcp is the protocol the
+        // configuration's own traffic never carries. `Other(_)` is not reached: it is a protocol
+        // number, and there is no traffic here to give one meaning.
+        Reach::Spans(&["any", "tcp", "udp"]),
     ),
     (
         "VpcManifest.name",
