@@ -268,7 +268,12 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.proto",
-        Reach::Fixed("`Any`. No operation narrows an expose to tcp or udp."),
+        // Cycled by slot across the port-forwarding exposes, which are the only ones that can name
+        // a protocol at all -- `make_port_forwarding` is the one constructor that takes one. A
+        // manifest with several therefore holds several, which is the shape worth having: a port
+        // forwarding rule is keyed by `(source vpc, protocol)`, so exposes that agree on it are
+        // the ones whose keys can collide.
+        Reach::Spans(&["any", "tcp", "udp"]),
     ),
     (
         "VpcExposeMasquerade.idle_timeout",
