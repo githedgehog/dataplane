@@ -7,6 +7,7 @@ use crate::Masquerade;
 use crate::masquerade::probe::{Arrival, Fabric, run};
 use crate::static_nat::probe::build;
 use clock::Duration;
+use clock::virtual_time::advance;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
 use flow_entry::flow_table::FlowLookup;
@@ -26,19 +27,7 @@ fn vni(raw: u32) -> Vni {
 }
 
 fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
-}
-
-async fn advance(by: Duration) {
-    tokio::time::advance(by).await;
-    for _ in 0..4 {
-        tokio::task::yield_now().await;
-    }
+    clock::virtual_time::Paused::new().block_on(body());
 }
 
 fn fabric() -> (Fabric, Vec<VpcExpose>) {
