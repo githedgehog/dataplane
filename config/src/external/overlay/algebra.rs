@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::ops::Bound::Included;
+use std::time::Duration;
 
 use bolero::{Driver, ValueGenerator};
 use lpm::prefix::{
@@ -95,7 +96,7 @@ impl Guard {
                     proto: AclProtoMatch::Any,
                 },
                 scope,
-                log: false,
+                log: action == AclAction::Deny,
             }
         };
         let rules = match self {
@@ -168,9 +169,15 @@ impl VpcHandle {
     }
 }
 
+const LONG_IDLE_TIMEOUT: Duration = Duration::from_hours(1);
+
 impl PeeringHandle {
     fn name(self) -> String {
         format!("PEERING-{:03}", self.0)
+    }
+
+    fn group(self) -> String {
+        format!("group-{}", self.0 % 3)
     }
 
     fn block(self, side: Side, slot: u8) -> u32 {
@@ -216,6 +223,10 @@ impl ExposeSpec {
         self.flavour
     }
 
+    fn idle_timeout(self) -> Option<Duration> {
+        (self.slot % 2 == 1).then_some(LONG_IDLE_TIMEOUT)
+    }
+
     #[must_use]
     pub fn private(self, peering: PeeringHandle, side: Side) -> Prefix {
         private_prefix(peering.block(side, self.slot))
@@ -236,7 +247,7 @@ impl ExposeSpec {
         match self.flavour {
             Flavour::Forward => VpcExpose::empty().ip(private.into()),
             Flavour::Masquerade => VpcExpose::empty()
-                .make_masquerade(None)
+                .make_masquerade(self.idle_timeout())
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
                 .ip(private.into())
                 .as_range(self.public(peering, side).into())
@@ -248,7 +259,7 @@ impl ExposeSpec {
                 .as_range(self.public(peering, side).into())
                 .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
             Flavour::PortForward => VpcExpose::empty()
-                .make_port_forwarding(None, None)
+                .make_port_forwarding(self.idle_timeout(), None)
                 .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
                 .ip(PrefixWithOptionalPorts::new(
                     private,
@@ -447,10 +458,11 @@ impl Draft {
 
         let mut peerings = VpcPeeringTable::new();
         for (handle, spec) in self.peerings() {
-            let mut peering = VpcPeering::with_default_group(
+            let mut peering = VpcPeering::new(
                 &handle.name(),
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
+                handle.group(),
             );
             peering.acl = spec.guard.acl(handle, spec);
             peerings.add(peering)?;
