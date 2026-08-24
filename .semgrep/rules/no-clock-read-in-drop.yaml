@@ -1,0 +1,27 @@
+rules:
+  - id: rust-no-clock-read-in-drop
+    languages: [rust]
+    severity: ERROR
+    message: |
+      Do not read the clock from a `Drop` implementation.
+
+      Once anything in the process has paused the virtual clock, tokio routes
+      every read through the calling thread's runtime context.  A `Drop` that
+      runs during thread-local teardown may find that context already
+      destroyed, and tokio's response is a panic inside a destructor -- which
+      aborts the process rather than failing the test.
+
+      Take the reading before the value is dropped and pass it in, or record
+      the instant when the value is created.
+    paths:
+      exclude:
+        - .codeql/tests/
+        - clock/src/
+    patterns:
+      - pattern-inside: |
+          fn drop(&mut self) {
+            ...
+          }
+      - pattern-either:
+          - pattern: clock::now()
+          - pattern: clock::system_now()
