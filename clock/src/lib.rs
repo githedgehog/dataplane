@@ -13,6 +13,10 @@
 //! the facade at a different source is a change here rather than a sweep of
 //! every call site.
 
+#![cfg_attr(
+    all(has_spawn_hook, feature = "virtual", not(wall_clock)),
+    feature(thread_spawn_hook)
+)]
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 #![deny(unsafe_code)]
@@ -26,7 +30,7 @@ pub mod virtual_time;
 pub fn now() -> Instant {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        checked_now().unwrap_or_else(virtual_time::refuse)
+        checked_now().unwrap_or_else(|| virtual_time::refuse())
     }
     #[cfg(not(all(feature = "virtual", not(wall_clock))))]
     {
@@ -56,7 +60,10 @@ pub fn checked_now() -> Option<Instant> {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
         if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
-            return None;
+            // No context of this thread's own -- but the spawn hook may have
+            // handed it the driving one, and reading through that is the same
+            // timeline. Anything else here is not, so `None` means refuse.
+            return virtual_time::read_inherited();
         }
         Some(tokio::time::Instant::now().into_std())
     }
