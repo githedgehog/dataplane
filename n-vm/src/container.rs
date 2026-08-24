@@ -1379,7 +1379,7 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // the reliable host signal.
         let daemon_arch = query_daemon_arch(&client).await?;
         let cross = is_cross_arch(&daemon_arch, std::env::consts::ARCH);
-        let needs_qemu = vm_config.nic_model.requires_qemu();
+        let needs_qemu = vm_config.first_qemu_only_nic().is_some();
         // The selected profile decides the hypervisor unless the test asked
         // for a specific one.  Read here rather than in the container tier
         // because this is the last place a skip can be expressed.

@@ -1,0 +1,42 @@
+error[E0080]: evaluation panicked: this NIC model is emulated only by QEMU, but the configuration pinned cloud-hypervisor; leave the backend at RequestedBackend::Default to let the harness pick QEMU, or ask for RequestedBackend::Qemu
+  --> tests/compile_fail/mixed_fabric_on_cloud_hypervisor.rs:8:34
+   |
+ 8 |   const MIXED_VM: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+   |  __________________________________^
+ 9 | |     .fabric_nic_models(&[n_vm::NicModel::VirtioNet, n_vm::NicModel::E1000])
+10 | |     .backend(n_vm::RequestedBackend::CloudHypervisor)
+11 | |     .build();
+   | |____________^ evaluation of `MIXED_VM` failed inside this call
+   |
+note: inside `VmConfigBuilder::build`
+  --> $WORKSPACE/n-vm/src/config.rs
+   |
+   |         self.0.assert_valid();
+   |         ^^^^^^^^^^^^^^^^^^^^^
+note: inside `VmConfig::assert_valid`
+  --> $RUST/core/src/panic.rs
+   |
+   |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: $WORKSPACE/n-vm/src/config.rs
+   |
+   |               Err(ConfigProblem::NicRequiresQemu) => panic!(
+   |  ____________________________________________________-
+   | |                 "this NIC model is emulated only by QEMU, but the configuration pinned \
+   | |                  cloud-hypervisor; leave the backend at RequestedBackend::Default to let \
+   | |                  the harness pick QEMU, or ask for RequestedBackend::Qemu"
+   | |             ),
+   | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/compile_fail/mixed_fabric_on_cloud_hypervisor.rs:13:1
+   |
+13 | #[n_vm::test(config = MIXED_VM)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+  --> tests/compile_fail/mixed_fabric_on_cloud_hypervisor.rs:14:4
+   |
+14 | fn mixed_fabric_on_cloud_hypervisor() {}
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
