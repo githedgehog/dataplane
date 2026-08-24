@@ -170,7 +170,7 @@ const REACH: &[(&str, Reach)] = &[
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),
     (
         "VpcExposeNat.as_range",
-        Reach::Determined("one prefix in the masquerade pool, from peering, side and slot"),
+        Reach::Determined("one prefix in the translated pool, from peering, side and slot"),
     ),
     (
         "VpcExposeNat.as_range.ports",
@@ -182,11 +182,7 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeNat.config",
-        Reach::Fixed(
-            "masquerade. `Flavour` has two members and only one of them makes a nat, so static \
-             nat and port forwarding are both unreachable -- which the design note already names \
-             as missing vocabulary.",
-        ),
+        Reach::Spans(&["masquerade", "static"]),
     ),
     (
         "VpcExposeNat.proto",
@@ -202,11 +198,18 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExposeStaticNat",
-        Reach::Fixed("never constructed; see `VpcExposeNat.config`."),
+        // `Spans` of a single value rather than `Determined`: the struct carries no
+        // fields, so "it exists" is the whole of what there is to observe about one.
+        // Recorded this way so that the algebra ceasing to build one fails here.
+        Reach::Spans(&["constructed"]),
     ),
     (
         "VpcExposePortForwarding.idle_timeout",
-        Reach::Fixed("never constructed; see `VpcExposeNat.config`."),
+        Reach::Fixed(
+            "never constructed. `Flavour` has no port-forwarding member, so this flavour of \
+             nat -- and every question about the idle timeout it carries -- stays out of \
+             reach, which the design note names as missing vocabulary.",
+        ),
     ),
 ];
 
