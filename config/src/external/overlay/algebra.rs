@@ -121,6 +121,24 @@ pub enum Flavour {
     /// degree of freedom, and opening the flavour and narrowing the protocol at once would leave
     /// neither measured on its own -- an `Any` expose is also the one every derived load can reach.
     PortForward,
+    /// Everything: a `default` expose, which names no prefix and stands for all destinations.
+    ///
+    /// The only flavour with no address block of its own, and the only one whose expose carries
+    /// neither `ips` nor `nat` -- `VpcExpose::validate` refuses a default expose that has either.
+    ///
+    /// Legal only on a peering whose two vpcs have no *other* peering, which is a stronger
+    /// condition than the configuration model imposes and is chosen to keep the algebra's
+    /// preconditions local. A default expose produces a route that overlaps every other route the
+    /// vpc sees, and two overlapping routes must agree about their gateway group and must not both
+    /// be default. Both are conditions on a vpc's whole neighbourhood rather than on one peering,
+    /// and a neighbourhood is exactly what a later `AddPeering` can change underneath a rule. An
+    /// isolated pair has neither question to answer.
+    ///
+    /// No traffic is derived across such a peering: a default expose advertises no prefix, so
+    /// there is no address for the far side to aim at. What it reaches is the configuration paths
+    /// -- `is_default_only`, the root-prefix ACL coverage set, the default route -- rather than a
+    /// packet.
+    Everything,
 }
 
 impl Flavour {
@@ -136,6 +154,14 @@ impl Flavour {
     #[must_use]
     pub const fn is_directional(self) -> bool {
         matches!(self, Self::Masquerade | Self::PortForward)
+    }
+
+    /// Whether an expose of this flavour advertises an address block at all.
+    ///
+    /// False only for [`Everything`](Self::Everything), which is what makes it the one flavour
+    /// whose slot names no prefix.
+    const fn has_prefixes(self) -> bool {
+        !matches!(self, Self::Everything)
     }
 }
 
@@ -541,7 +567,9 @@ impl ExposeSpec {
                 1 => L4Protocol::Udp,
                 _ => L4Protocol::Tcp,
             }),
-            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat => None,
+            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat | Flavour::Everything => {
+                None
+            }
         }
     }
 
@@ -554,16 +582,11 @@ impl ExposeSpec {
     /// The slot rule is chosen to be independent of [`ExposeSpec::idle_timeout`]'s, so that all
     /// four combinations of the two appear across the four slots rather than only two.
     fn excludes(self) -> bool {
-        self.slot < 2 && self.flavour != Flavour::PortForward
-    }
-
-    /// Whether this expose translates the traffic the derivation would build for it.
-    ///
-    /// Every load derived from a configuration is udp, so an expose narrowed to tcp forwards none
-    /// of it. Said here rather than left to whoever derives the traffic, for the reason
-    /// [`Draft::carries`] gives: the configuration is what knows.
-    fn carries_udp(self) -> bool {
-        !matches!(self.nat_proto(), Some(L4Protocol::Tcp))
+        self.slot < 2
+            && matches!(
+                self.flavour,
+                Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat
+            )
     }
 
     /// The private prefix this expose covers, on `side` of `peering`.
@@ -579,7 +602,7 @@ impl ExposeSpec {
     #[must_use]
     pub fn public(self, peering: PeeringHandle, side: Side) -> Prefix {
         match self.flavour {
-            Flavour::Forward => self.private(peering, side),
+            Flavour::Forward | Flavour::Everything => self.private(peering, side),
             Flavour::Masquerade | Flavour::StaticNat | Flavour::PortForward => {
                 public_prefix(peering.block(side, self.slot))
             }
@@ -608,6 +631,7 @@ impl ExposeSpec {
     fn expose(self, peering: PeeringHandle, side: Side) -> VpcExpose {
         let private = self.private(peering, side);
         match self.flavour {
+            Flavour::Everything => VpcExpose::empty().set_default(),
             Flavour::Forward => self.carve(VpcExpose::empty().ip(private.into()), peering, side),
             Flavour::Masquerade => self.carve(
                 VpcExpose::empty()
@@ -672,7 +696,7 @@ impl Narrowing {
         match flavour {
             Flavour::Masquerade => Some(Self::Source),
             Flavour::PortForward => Some(Self::Destination),
-            Flavour::Forward | Flavour::StaticNat => None,
+            Flavour::Forward | Flavour::StaticNat | Flavour::Everything => None,
         }
     }
 }
@@ -788,6 +812,13 @@ impl PeeringSpec {
         Some((side, which, prefix))
     }
 
+    /// Whether `side` already exposes everything.
+    fn has_everything(&self, side: Side) -> bool {
+        self.exposes(side)
+            .iter()
+            .any(|expose| expose.flavour == Flavour::Everything)
+    }
+
     /// Whether `side` carries a flavour that forbids one on the other side.
     ///
     /// See [`Flavour::is_directional`] for which, and why.
@@ -858,12 +889,15 @@ impl Draft {
     /// nobody downstream reads an ACL to answer it -- reading one means matching its rules against
     /// the manifests, and a second copy of a decision procedure is what an oracle must not be.
     ///
-    /// Two things can stop a configuration carrying what an expose would otherwise carry: the
-    /// peering's ACL, and the expose's own protocol narrowing. Both are answered here, and a
-    /// caller does not have to know there were two.
+    /// Per expose, because [`Guard::PermitExcept`] is the one shape under which two exposes of one
+    /// peering get different answers. By name and position for the reason [`Draft::guard_named`]
+    /// gives.
     ///
-    /// Per expose, because [`Guard::PermitExcept`] and the narrowing are both per expose. By name
-    /// and position for the reason [`Draft::guard_named`] gives.
+    /// Only the ACL. An expose narrowed to a transport protocol the traffic does not carry is a
+    /// different thing and not this one: it still *routes* its prefix, and only declines to
+    /// translate, so the configuration carries that traffic in the sense this question asks about.
+    /// Whoever derives traffic skips such an expose because there is no outcome it can state, not
+    /// because the configuration refuses it.
     #[must_use]
     pub fn carries(&self, peering: &str, local: &str, nth: usize) -> bool {
         let Some((_, spec)) = self
@@ -879,11 +913,7 @@ impl Draft {
         else {
             return true;
         };
-        let carried_by_the_expose = spec
-            .exposes(side)
-            .get(nth)
-            .is_none_or(|expose| expose.carries_udp());
-        carried_by_the_expose && !spec.guard.silences(spec, side, nth)
+        !spec.guard.silences(spec, side, nth)
     }
 
     #[must_use]
@@ -892,6 +922,29 @@ impl Draft {
             .iter()
             .find(|(handle, _)| handle.name() == name)
             .map(|(_, spec)| spec.guard)
+    }
+
+    /// How many peerings name `vpc`.
+    fn peerings_of(&self, vpc: VpcHandle) -> usize {
+        self.peerings
+            .values()
+            .filter(|spec| spec.touches(vpc))
+            .count()
+    }
+
+    /// Whether `vpc` already takes part in a peering that exposes everything.
+    ///
+    /// Asked by `AddPeering`, because [`Flavour::Everything`]'s precondition is about a vpc's whole
+    /// neighbourhood: a peering added beside a default expose would break a rule that held when
+    /// the expose was drawn. The other direction -- refusing the expose when the neighbourhood is
+    /// already busy -- is [`PeeringSpec::may_expose_everything`].
+    fn beside_everything(&self, vpc: VpcHandle) -> bool {
+        self.peerings.values().any(|spec| {
+            spec.touches(vpc)
+                && [Side::Left, Side::Right]
+                    .into_iter()
+                    .any(|side| spec.has_everything(side))
+        })
     }
 
     /// The connected components of the peering graph, each sorted, the whole sorted.
@@ -1102,22 +1155,55 @@ pub enum Undo {
 impl Op {
     /// The state this operation needs, which is the same thing as its precondition.
     ///
-    /// Takes no draft, unlike [`Op::writes`], because every read set in the vocabulary so far is
-    /// determined by the operation's own arguments. That is not a law -- `RemoveVpc`'s *write* set
-    /// is state-dependent, and a read set could be -- so add the argument back rather than
-    /// contorting an operation to fit.
+    /// Takes a draft, and used not to. The note that stood here said every read set in the
+    /// vocabulary was determined by the operation's own arguments, that this was not a law, and
+    /// that the argument should be added back rather than contorting an operation to fit.
+    /// [`Flavour::Everything`] is what made it not a law: a vpc already in a peering that exposes
+    /// everything takes no others, so whether two vpcs may be peered is a fact about the *exposes*
+    /// of the peerings they are already in, and not only about their peer sets.
+    ///
+    /// `independent_operations_commute` is what found this, by reporting an `AddPeering` and a
+    /// `SetFlavour` as independent when swapping them changed whether the peering could be made at
+    /// all. Widening the write set of every expose operation instead would have said something
+    /// false -- changing an expose does not change any vpc's peer set -- and would have cost every
+    /// swap those operations take part in.
     #[must_use]
-    pub fn reads(&self) -> Footprint {
+    pub fn reads(&self, draft: &Draft) -> Footprint {
         match self {
             // Nothing: a fresh handle is nobody else's, and removal reads nothing it does not also
             // write.
             Op::AddVpc(_) | Op::RemoveVpc(_) | Op::RemovePeering(_) => Footprint::default(),
-            // Both endpoints, because whether they may be peered is a fact about their peer sets.
-            Op::AddPeering { left, right, .. } => Footprint::of([*left, *right], []),
-            Op::AddExpose { peering, .. }
-            | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. }
-            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
+            // Both endpoints, because whether they may be peered is a fact about their peer sets --
+            // and every peering those endpoints are already in, because it is also a fact about
+            // what those peerings expose.
+            Op::AddPeering { left, right, .. } => Footprint::of(
+                [*left, *right],
+                draft
+                    .peerings()
+                    .filter(|(_, spec)| spec.touches(*left) || spec.touches(*right))
+                    .map(|(handle, _)| handle),
+            ),
+            Op::RemoveExpose { peering, .. } | Op::SetGuard { peering, .. } => {
+                Footprint::of([], [*peering])
+            }
+            // The peering, and -- for an expose that would stand for everything -- the two vpcs
+            // as well, because whether one is allowed is a fact about their whole neighbourhoods.
+            // See `Flavour::Everything`.
+            Op::AddExpose {
+                peering, flavour, ..
+            }
+            | Op::SetFlavour {
+                peering, flavour, ..
+            } => {
+                let mut footprint = Footprint::of([], [*peering]);
+                if *flavour == Flavour::Everything
+                    && let Some(spec) = draft.peerings.get(peering)
+                {
+                    footprint.vpcs.insert(spec.left);
+                    footprint.vpcs.insert(spec.right);
+                }
+                footprint
+            }
         }
     }
 
@@ -1197,6 +1283,10 @@ impl Op {
                     || !draft.vpcs.contains(&left)
                     || !draft.vpcs.contains(&right)
                     || draft.peering_between(left, right).is_some()
+                    // A vpc in a peering that exposes everything takes no others; see
+                    // `Flavour::Everything`.
+                    || draft.beside_everything(left)
+                    || draft.beside_everything(right)
                 {
                     return None;
                 }
@@ -1319,6 +1409,9 @@ fn add_expose(
     if flavour.is_directional() && spec.has_directional(side.other()) {
         return None;
     }
+    if flavour == Flavour::Everything && !may_expose_everything(draft, peering, side) {
+        return None;
+    }
     draft
         .peerings
         .get_mut(&peering)
@@ -1351,6 +1444,23 @@ fn respecting_guard(draft: &mut Draft, peering: PeeringHandle, undo: Undo) -> Op
     None
 }
 
+/// Whether `side` of `peering` may take on a [`Flavour::Everything`] expose.
+///
+/// Three conditions, all local reads of the draft, and all three are the configuration model's
+/// rules restated where they can be made unrepresentable rather than checked. A manifest holds at
+/// most one default expose; a peering may not have one on both sides; and the two vpcs must have
+/// no other peering, for the reason [`Flavour::Everything`] gives.
+fn may_expose_everything(draft: &Draft, peering: PeeringHandle, side: Side) -> bool {
+    let Some(spec) = draft.peerings.get(&peering) else {
+        return false;
+    };
+    !spec.has_everything(side)
+        && !spec.has_everything(side.other())
+        && [Side::Left, Side::Right]
+            .into_iter()
+            .all(|which| draft.peerings_of(spec.vpc(which)) == 1)
+}
+
 /// Change what one expose does, leaving its private prefix alone.
 fn set_flavour(
     draft: &mut Draft,
@@ -1364,6 +1474,12 @@ fn set_flavour(
         return None;
     }
     let index = spec.exposes(side).iter().position(|e| e.slot == slot)?;
+    if flavour == Flavour::Everything
+        && spec.exposes(side)[index].flavour != Flavour::Everything
+        && !may_expose_everything(draft, peering, side)
+    {
+        return None;
+    }
     let exposes = draft
         .peerings
         .get_mut(&peering)
@@ -1794,7 +1910,12 @@ fn draw_add_expose<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
         peering,
         side,
         slot,
-        flavour: draw_flavour(driver, spec, side)?,
+        flavour: draw_flavour(
+            driver,
+            spec,
+            side,
+            may_expose_everything(draft, peering, side),
+        )?,
     })
 }
 
@@ -1835,11 +1956,23 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     let (peering, side, slot) = pick(driver, &exposes)?;
     let spec = draft.peerings.get(&peering)?;
 
+    // Already being everything is not a reason to refuse becoming it again, and
+    // `may_expose_everything` counts the expose itself; the same latitude `Op::SetFlavour` has
+    // elsewhere.
+    let already = spec
+        .exposes(side)
+        .iter()
+        .any(|expose| expose.slot == slot && expose.flavour == Flavour::Everything);
     Some(Op::SetFlavour {
         peering,
         side,
         slot,
-        flavour: draw_flavour(driver, spec, side)?,
+        flavour: draw_flavour(
+            driver,
+            spec,
+            side,
+            already || may_expose_everything(draft, peering, side),
+        )?,
     })
 }
 
@@ -1894,20 +2027,27 @@ fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 /// validator rejects. Worth knowing rather than tidying away. This one keeps a draw from being
 /// spent on an operation that will be refused; the one in `apply` is what makes the rule hold for a
 /// sequence a caller assembled by hand.
-fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
-    // Ordered simplest-first, so that the byte `pick` reduces towards names the least translating
-    // expose -- and with the two flavours that carry a legality condition last, so that they are
-    // what falls off the end when the condition fails.
-    const ORDERED: [Flavour; 4] = [
+fn draw_flavour<D: Driver>(
+    driver: &mut D,
+    spec: &PeeringSpec,
+    side: Side,
+    everything: bool,
+) -> Option<Flavour> {
+    // Ordered simplest-first, so that the byte `pick` reduces towards the least translating expose
+    // -- and with the flavours that carry a legality condition last, so that they are what falls
+    // off the end when the condition fails.
+    const ORDERED: [Flavour; 5] = [
         Flavour::Forward,
         Flavour::StaticNat,
         Flavour::PortForward,
         Flavour::Masquerade,
+        Flavour::Everything,
     ];
-    let legal: &[Flavour] = if spec.has_directional(side.other()) {
+    let end = if everything { 5 } else { 4 };
+    let legal = if spec.has_directional(side.other()) {
         &ORDERED[..2]
     } else {
-        &ORDERED
+        &ORDERED[..end]
     };
     pick(driver, legal)
 }
@@ -2079,7 +2219,7 @@ mod tests {
     /// deletion that orphans a peering is attributed to the deletion.
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
-        let flavours = [const { AtomicUsize::new(0) }; 4];
+        let flavours = [const { AtomicUsize::new(0) }; 5];
         let guards = [const { AtomicUsize::new(0) }; 6];
 
         check!()
@@ -2106,6 +2246,7 @@ mod tests {
                                 Flavour::Masquerade => 1,
                                 Flavour::StaticNat => 2,
                                 Flavour::PortForward => 3,
+                                Flavour::Everything => 4,
                             }]
                             .fetch_add(1, Relaxed);
                         }
@@ -2170,7 +2311,13 @@ mod tests {
     }
 
     /// The names of the two vocabularies above, in the order they are counted in.
-    const FLAVOURS: [&str; 4] = ["forward", "masquerade", "static-nat", "port-forward"];
+    const FLAVOURS: [&str; 5] = [
+        "forward",
+        "masquerade",
+        "static-nat",
+        "port-forward",
+        "everything",
+    ];
     const GUARDS: [&str; 6] = [
         "open",
         "permit",
@@ -2191,7 +2338,7 @@ mod tests {
     /// flavour never built means the nat combination rules were never exercised; a guard never set
     /// means a validator rule was not -- the one filling an empty ACL pattern in from the
     /// manifests.
-    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 6]) {
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 5], guards: &[AtomicUsize; 6]) {
         let show = |names: &[&str], counts: &[AtomicUsize]| {
             names
                 .iter()
@@ -2342,8 +2489,8 @@ mod tests {
     }
 
     fn conflict(draft: &Draft, first: Op, second: Op) -> bool {
-        let (rw1, ww1) = (first.reads(), first.writes(draft));
-        let (rw2, ww2) = (second.reads(), second.writes(draft));
+        let (rw1, ww1) = (first.reads(draft), first.writes(draft));
+        let (rw2, ww2) = (second.reads(draft), second.writes(draft));
         ww1.intersects(&ww2) || ww1.intersects(&rw2) || rw1.intersects(&ww2)
     }
 

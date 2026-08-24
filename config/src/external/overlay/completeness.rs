@@ -228,7 +228,15 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcExpose.default",
-        Reach::Fixed("false. `VpcExpose::empty` never sets it and no operation does either."),
+        // `Flavour::Everything`, which is legal only on a peering whose two vpcs have no other --
+        // a stronger condition than the configuration model imposes, and chosen so that the
+        // algebra's preconditions stay local. See the flavour for why.
+        //
+        // No traffic crosses such a peering: a default expose advertises no prefix, so there is no
+        // address for the far side to aim at. What is reached is the configuration paths --
+        // `is_default_only`, the root-prefix ACL coverage set, the default route -- and not a
+        // packet.
+        Reach::Spans(&["false", "true"]),
     ),
     (
         "VpcExpose.ips",
