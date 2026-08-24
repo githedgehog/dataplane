@@ -30,6 +30,9 @@
 //!         count: 256,
 //!     })
 //!     .nic_model(n_vm::NicModel::E1000)
+//!     // one fabric link per model named, for a test that must tell
+//!     // devices apart rather than count them
+//!     .fabric_nic_models(&[n_vm::NicModel::VirtioNet, n_vm::NicModel::E1000E])
 //!     .build();
 //!
 //! #[n_vm::test(config = DPDK_VM)]

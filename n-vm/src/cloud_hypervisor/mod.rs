@@ -261,17 +261,17 @@ async fn spawn_hypervisor_process(
 /// stdout/stderr are forwarded via dedicated
 /// [`VsockChannel`](n_vm_protocol::VsockChannel)s instead.
 fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
-    let ifaces = config::all_ifaces(params.vm_config.fabric_nics);
+    let ifaces = params.vm_config.all_ifaces();
     let ifaces = &ifaces;
     // Cloud-hypervisor only supports virtio-net -- it has no emulated NIC
     // models.  The proc macro prevents incompatible combinations at compile
     // time, so this is a belt-and-suspenders check for callers that bypass
     // the macro (e.g. direct `TestVm::<CloudHypervisor>::launch()` calls).
     debug_assert!(
-        !params.vm_config.nic_model.requires_qemu(),
+        params.vm_config.first_qemu_only_nic().is_none(),
         "cloud-hypervisor does not support NIC model {:?}; \
-         use #[n_vm::test(qemu)] for emulated NIC models",
-        params.vm_config.nic_model,
+         pin RequestedBackend::Qemu for emulated NIC models",
+        params.vm_config.first_qemu_only_nic().unwrap_or_default(),
     );
 
     VmConfig {
@@ -390,9 +390,14 @@ fn build_memory_config(vm_config: &config::VmConfig) -> MemoryConfig {
 /// Builds the network interface configurations.
 ///
 /// One per entry in `ifaces`, which
-/// [`config::all_ifaces`] derives from the configured fabric NIC count:
-/// **mgmt** on PCI segment 0 (1500 MTU), then **fabric1**..**fabricN** on
-/// segment 1 (9500 MTU jumbo frames).
+/// [`VmConfig::all_ifaces`](config::VmConfig::all_ifaces) derives from the
+/// configured fabric: **mgmt** on PCI segment 0 (1500 MTU), then
+/// **fabric1**..**fabricN** on segment 1 (9500 MTU jumbo frames).
+///
+/// The interface's device model is not read here.  Cloud-hypervisor has
+/// only virtio-net, so a VM naming any other model has already been
+/// resolved to QEMU by [`config::VmConfig::first_qemu_only_nic`] before
+/// this runs.
 ///
 /// When `iommu` is `true`, the fabric interfaces have their per-device
 /// `iommu` flag set so that cloud-hypervisor places them behind the
@@ -496,6 +501,16 @@ mod tests {
     use super::*;
     use crate::config::{self, FABRIC_MTU, FABRIC_QUEUE_SIZE, MGMT_MTU, MGMT_QUEUE_SIZE};
     use n_vm_protocol::INIT_BINARY_PATH;
+
+    /// A default VM's interfaces, with `n` fabric links.
+    fn ifaces_of(n: u8) -> Vec<config::NetIface> {
+        config::VmConfig {
+            fabric: config::FabricNics::Uniform(n),
+            ..config::VmConfig::DEFAULT
+        }
+        .all_ifaces()
+    }
+
     const VIRTIOFS_QUEUE_SIZE: i32 = crate::config::VIRTIOFS_QUEUE_SIZE as i32;
 
     /// Builds a representative [`TestVmParams`] for use in config builder
@@ -729,13 +744,13 @@ mod tests {
 
     #[test]
     fn network_config_has_three_interfaces() {
-        let nets = build_network_configs(false, &config::all_ifaces(2));
+        let nets = build_network_configs(false, &ifaces_of(2));
         assert_eq!(nets.len(), 3);
     }
 
     #[test]
     fn mgmt_interface_is_on_pci_segment_zero_with_standard_mtu() {
-        let nets = build_network_configs(false, &config::all_ifaces(2));
+        let nets = build_network_configs(false, &ifaces_of(2));
         let mgmt = nets
             .iter()
             .find(|n| n.id.as_deref() == Some("mgmt"))
@@ -747,7 +762,7 @@ mod tests {
 
     #[test]
     fn fabric_interfaces_are_on_pci_segment_one_with_jumbo_mtu() {
-        let nets = build_network_configs(false, &config::all_ifaces(2));
+        let nets = build_network_configs(false, &ifaces_of(2));
         for name in &["fabric1", "fabric2"] {
             let iface = nets
                 .iter()
@@ -765,7 +780,7 @@ mod tests {
 
     #[test]
     fn all_interfaces_have_unique_mac_addresses() {
-        let nets = build_network_configs(false, &config::all_ifaces(2));
+        let nets = build_network_configs(false, &ifaces_of(2));
         let macs: Vec<_> = nets.iter().filter_map(|n| n.mac.as_deref()).collect();
         assert_eq!(macs.len(), 3, "all interfaces should have MAC addresses");
         let mut deduped = macs.clone();
@@ -780,7 +795,7 @@ mod tests {
 
     #[test]
     fn all_interfaces_have_unique_tap_names() {
-        let nets = build_network_configs(false, &config::all_ifaces(2));
+        let nets = build_network_configs(false, &ifaces_of(2));
         let taps: Vec<_> = nets.iter().filter_map(|n| n.tap.as_deref()).collect();
         assert_eq!(taps.len(), 3, "all interfaces should have tap names");
         let mut deduped = taps.clone();
@@ -918,7 +933,7 @@ mod tests {
 
     #[test]
     fn fabric_interfaces_have_iommu_when_enabled() {
-        let nets = build_network_configs(true, &config::all_ifaces(2));
+        let nets = build_network_configs(true, &ifaces_of(2));
         let fabric1 = &nets[1];
         let fabric2 = &nets[2];
         assert_eq!(
@@ -935,7 +950,7 @@ mod tests {
 
     #[test]
     fn mgmt_interface_has_no_iommu_even_when_enabled() {
-        let nets = build_network_configs(true, &config::all_ifaces(2));
+        let nets = build_network_configs(true, &ifaces_of(2));
         let mgmt = &nets[0];
         assert_eq!(
             mgmt.iommu, None,
@@ -945,7 +960,7 @@ mod tests {
 
     #[test]
     fn fabric_interfaces_have_no_iommu_when_disabled() {
-        let nets = build_network_configs(false, &config::all_ifaces(2));
+        let nets = build_network_configs(false, &ifaces_of(2));
         let fabric1 = &nets[1];
         let fabric2 = &nets[2];
         assert_eq!(
