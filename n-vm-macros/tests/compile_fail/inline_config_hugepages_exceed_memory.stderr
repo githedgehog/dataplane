@@ -1,8 +1,8 @@
 error[E0080]: evaluation panicked: the guest hugepage reservation does not leave the guest kernel room; reduce hugepage_count, use a smaller hugepage size, or set guest_hugepages to GuestHugePageConfig::None
-  --> tests/compile_fail/inline_config_hugepages_exceed_memory.rs:10:31
+  --> tests/compile_fail/inline_config_hugepages_exceed_memory.rs:10:18
    |
-10 |       const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
-   |  _______________________________^
+10 |       const _: _ = n_vm::VmConfigBuilder::default()
+   |  __________________^
 11 | |         .guest_hugepages(n_vm::GuestHugePageConfig::Allocate {
 12 | |             size: n_vm::GuestHugePageSize::Huge1G,
 13 | |             count: 2,
