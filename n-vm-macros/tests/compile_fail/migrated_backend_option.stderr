@@ -1,0 +1,5 @@
+error: `qemu` has moved out of #[n_vm::test(...)] -- use `.backend(RequestedBackend::Qemu)` on the config instead
+ --> tests/compile_fail/migrated_backend_option.rs:7:14
+  |
+7 | #[n_vm::test(qemu)]
+  |              ^^^^
