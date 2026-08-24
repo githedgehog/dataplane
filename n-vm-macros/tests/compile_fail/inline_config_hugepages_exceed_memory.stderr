@@ -1,0 +1,38 @@
+error[E0080]: evaluation panicked: the guest hugepage reservation does not leave the guest kernel room; reduce hugepage_count, use a smaller hugepage size, or set guest_hugepages to GuestHugePageConfig::None
+  --> tests/compile_fail/inline_config_hugepages_exceed_memory.rs:10:31
+   |
+10 |       const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default()
+   |  _______________________________^
+11 | |         .guest_hugepages(n_vm::GuestHugePageConfig::Allocate {
+12 | |             size: n_vm::GuestHugePageSize::Huge1G,
+13 | |             count: 2,
+14 | |         })
+15 | |         .build();
+   | |________________^ evaluation of `__N_VM_CONFIG_inline_config_hugepages_exceed_memory` failed inside this call
+   |
+note: inside `VmConfigBuilder::build`
+  --> $WORKSPACE/n-vm/src/config.rs
+   |
+   |         self.0.assert_valid();
+   |         ^^^^^^^^^^^^^^^^^^^^^
+note: inside `VmConfig::assert_valid`
+  --> $RUST/core/src/panic.rs
+   |
+   |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: $WORKSPACE/n-vm/src/config.rs
+   |
+   |               Err(ConfigProblem::HugepagesExceedMemory) => panic!(
+   |  __________________________________________________________-
+   | |                 "the guest hugepage reservation does not leave the guest kernel room; \
+   | |                  reduce hugepage_count, use a smaller hugepage size, or set \
+   | |                  guest_hugepages to GuestHugePageConfig::None"
+   | |             ),
+   | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+ --> tests/compile_fail/inline_config_hugepages_exceed_memory.rs:8:4
+  |
+8 | fn inline_config_hugepages_exceed_memory() {
+  |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

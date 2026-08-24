@@ -1,0 +1,17 @@
+error: #[n_vm::config] marks a `const` inside the body of a #[n_vm::test] function, and is consumed by it; e.g.
+
+       #[n_vm::test]
+       fn my_test() {
+           #[n_vm::config]
+           const _: n_vm::VmConfig = n_vm::VmConfigBuilder::default().iommu(true).build();
+
+           // the test body follows
+       }
+
+       Only the top level of the body is searched, so a marker nested inside an inner function, closure or block is not found.
+ --> tests/compile_fail/config_marker_outside_a_test.rs:7:1
+  |
+7 | #[n_vm::config]
+  | ^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `n_vm::config` (in Nightly builds, run with -Z macro-backtrace for more info)
