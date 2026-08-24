@@ -37,7 +37,17 @@ const REACH: &[(&str, Reach)] = &[
     ("Vpc.vni", Reach::Determined("`VpcHandle::vni`")),
     (
         "Vpc.interfaces",
-        Reach::Fixed("empty; the algebra has no operation that attaches VPC interfaces."),
+        Reach::Fixed(
+            "empty, and left that way on purpose. An operation attaching one is easy and would be \
+             the wrong thing: nothing reads the field. `Vpc::validate` clones it into \
+             `ValidatedVpc` without checking anything about it, `ValidatedVpc::interfaces` has no \
+             callers, and the interfaces that reach the kernel and FRR come from the *internal* \
+             config's vrf tables instead -- see `mgmt::vpc_manager` and \
+             `converters::k8s::config::underlay`. Filling this in would move the row and cover \
+             nothing, which is the one failure mode this whole record exists to prevent. The thing \
+             worth doing is upstream of here: either the field has a consumer and this record \
+             should follow it there, or it does not and it should go.",
+        ),
     ),
     (
         "Vpc.peerings",
