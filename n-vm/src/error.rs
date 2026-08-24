@@ -366,6 +366,33 @@ pub enum ContainerError {
     )]
     CorpusWithoutWorkspace,
 
+    /// The test named a kernel profile and a backend that disagree.
+    ///
+    /// A failure rather than a skip.  A profile the *environment* chose can
+    /// legitimately not suit a test -- that is what `N_VM_PROFILE` sweeps
+    /// are for, and skipping is right.  But a test that writes both halves
+    /// itself has described a machine that does not exist, and a skip is
+    /// reported as a pass, so it would go green having run nothing.
+    #[error(
+        "this test names kernel profile `{profile}`, which runs on {profile_backend:?}, \
+         but also pins {requested:?}"
+    )]
+    #[diagnostic(
+        code(n_vm::container::profile_contradicts_backend),
+        help(
+            "a profile is a (kernel, hypervisor) pair; drop the backend, or name a \
+              profile that runs on it"
+        )
+    )]
+    ProfileContradictsBackend {
+        /// The profile the test named.
+        profile: String,
+        /// The hypervisor that profile runs on.
+        profile_backend: crate::backend::EffectiveBackend,
+        /// The hypervisor the test pinned.
+        requested: crate::backend::EffectiveBackend,
+    },
+
     /// Could not canonicalize the test binary's parent directory.
     #[error("failed to canonicalize test binary directory")]
     #[diagnostic(code(n_vm::container::binary_path_canonicalize))]

@@ -52,7 +52,7 @@ pub use dispatch::{
     block_on_in_guest_with, is_in_test_container, is_in_vm, run_container_tier, run_host_tier,
 };
 pub use error::{ContainerError, VmError};
-pub use kernel_feature::{KernelFeature, features};
+pub use kernel_feature::{KernelFeature, features, kernel_profiles};
 pub use n_vm_macros::{config, corpus, test};
 pub use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_IN_VM,

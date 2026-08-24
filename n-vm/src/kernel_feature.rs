@@ -265,3 +265,46 @@ mod test {
         assert!(modules_to_load(&[], &config()).is_empty());
     }
 }
+
+/// Names of the kernel profiles the manifest defines.
+///
+/// A profile is a *(kernel, hypervisor)* pair, and which ones exist is a
+/// fact about the nix build rather than about this crate -- so these are
+/// names checked against the manifest at launch, not a closed enum.  They
+/// are spelled out here for the same reason [`features`] is: a constant
+/// gets completion and a rename becomes a build error, where a bare string
+/// gets neither.
+///
+/// A name that is not in the manifest is reported at launch, listing the
+/// ones that are.
+pub mod kernel_profiles {
+    /// The kernel this repo builds, booted directly under cloud-hypervisor.
+    ///
+    /// The manifest's default, and what a test that names no profile gets.
+    pub const CLOUD_HYPERVISOR: &str = "cloud_hypervisor";
+
+    /// The same kernel, booted directly under QEMU.
+    ///
+    /// Prefer [`RequestedBackend::Qemu`](crate::RequestedBackend::Qemu) to
+    /// change only the hypervisor; this exists so the pair can be named as
+    /// one thing when that is what is meant.
+    pub const QEMU: &str = "qemu";
+
+    /// Flatcar's distribution kernel, booted through an initramfs on QEMU.
+    ///
+    /// A *modular* kernel with its own module tree, which is what makes it
+    /// worth having: the union kernel builds in everything, so nothing that
+    /// depends on a module being loaded -- or on failing to load -- can be
+    /// tested against it.
+    pub const FLATCAR: &str = "flatcar";
+
+    /// Ubuntu's distribution kernel, booted through an initramfs on QEMU.
+    pub const UBUNTU: &str = "ubuntu";
+
+    /// This repo's kernel built modular, booted through an initramfs on
+    /// QEMU.
+    ///
+    /// The one to reach for when a test needs modules *and* a kernel whose
+    /// configuration this repo controls.
+    pub const MODULAR: &str = "modular";
+}
