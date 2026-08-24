@@ -886,6 +886,37 @@ pub fn strip_multiprocess_flags(value: &str) -> String {
         .join(" ")
 }
 
+/// The libfuzzer flag bounding the engine's resident set, in mebibytes.
+const RSS_LIMIT_FLAG: &str = "-rss_limit_mb";
+
+/// Bound the guest engine's resident set to what the guest actually has.
+///
+/// Appended rather than substituted: a command line that already names
+/// `-rss_limit_mb` said so deliberately -- `just fuzz` forwards `-E=` flags
+/// verbatim for exactly this -- and libfuzzer takes the *last* occurrence,
+/// so appending unconditionally would silently overrule it.
+///
+/// The caller supplies the limit because only the host tier knows the size
+/// of the VM the engine will run in; see `VmConfig::fuzz_rss_limit_mib` for
+/// how it is derived and why it is never zero.
+#[must_use]
+pub fn with_rss_limit(value: &str, limit_mib: u32) -> String {
+    let already_bounded = value.split_whitespace().any(|arg| {
+        arg.split_once('=')
+            .is_some_and(|(name, _)| name == RSS_LIMIT_FLAG)
+    });
+    if already_bounded {
+        return value.to_owned();
+    }
+    // A trailing separator on an empty command line would be a leading one,
+    // and libfuzzer treats an empty argument as a positional -- i.e. as a
+    // corpus directory named "".
+    if value.trim().is_empty() {
+        return format!("{RSS_LIMIT_FLAG}={limit_mib}");
+    }
+    format!("{value} {RSS_LIMIT_FLAG}={limit_mib}")
+}
+
 /// The libfuzzer flag naming where crash artifacts are written.
 const ARTIFACT_PREFIX_FLAG: &str = "-artifact_prefix=";
 
@@ -1101,6 +1132,30 @@ mod multiprocess_tests {
     #[test]
     fn every_flag_that_shells_out_is_removed() {
         assert_eq!(strip_multiprocess_flags("-jobs=4 -workers=2 -fork=1"), "");
+    }
+
+    #[test]
+    fn an_engine_that_named_no_bound_is_given_the_guests() {
+        assert_eq!(
+            with_rss_limit("/corpus -artifact_prefix=/crashes/ -timeout=10", 896),
+            "/corpus -artifact_prefix=/crashes/ -timeout=10 -rss_limit_mb=896",
+        );
+    }
+
+    /// libfuzzer takes the last occurrence, so appending to a command line
+    /// that already names one would silently overrule a deliberate choice.
+    #[test]
+    fn an_engine_that_named_its_own_bound_keeps_it() {
+        let asked = "/corpus -rss_limit_mb=64 -timeout=10";
+        assert_eq!(with_rss_limit(asked, 896), asked);
+    }
+
+    /// An empty command line must not gain a leading separator: libfuzzer
+    /// reads an empty argument as a positional, i.e. as a corpus directory
+    /// with no name.
+    #[test]
+    fn an_empty_command_line_gains_only_the_bound() {
+        assert_eq!(with_rss_limit("", 896), "-rss_limit_mb=896");
     }
 
     /// Prefix matching would take this one too, and it names an in-process corpus strategy that

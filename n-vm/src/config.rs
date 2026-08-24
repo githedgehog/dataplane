@@ -673,8 +673,9 @@ pub struct VmConfig {
     /// the VM cannot be backed at all -- see [`ConfigProblem::MemoryNotAligned`].
     ///
     /// Raise it for work that needs room: a fuzz engine's `-rss_limit_mb`
-    /// is measured against this, and the default gigabyte is a tight fit
-    /// for a coverage-guided campaign.  Every MiB is taken from the host
+    /// is derived from this by [`fuzz_rss_limit_mib`](Self::fuzz_rss_limit_mib),
+    /// and the default gigabyte is a tight fit for a coverage-guided
+    /// campaign.  Every MiB is taken from the host
     /// for the VM's whole life, so this is also what bounds how many VMs
     /// can run at once.
     pub memory_mib: u32,
@@ -973,6 +974,8 @@ pub enum ConfigProblem {
     NoVcpus,
     /// More fabric interfaces were asked for than have distinct addresses.
     TooManyNics,
+    /// A fuzz target whose VM has no memory left for the engine to use.
+    NoRoomToFuzz,
 }
 
 impl VmConfig {
@@ -1091,6 +1094,53 @@ impl VmConfig {
         }
     }
 
+    /// The `-rss_limit_mb` a fuzz engine running in this VM should be held
+    /// to, or [`None`] if this VM has no room to fuzz at all.
+    ///
+    /// libfuzzer's own default is 2048 MB, which is twice the default guest
+    /// and was never reached: the guest kernel ran out of memory first and
+    /// killed the engine, and an engine killed from outside writes no
+    /// artifact.  The input that grew the heap is then gone, so the one
+    /// finding a memory bug is supposed to produce is exactly what the
+    /// failure destroys.  Under the limit, libfuzzer notices the growth
+    /// itself, saves the input, and says which one it was.
+    ///
+    /// The derivation is what is left after the two claims the engine
+    /// cannot touch: a hugepage reservation, which the guest kernel hands
+    /// to hugetlbfs and never hands back, and
+    /// [`GUEST_KERNEL_HEADROOM_BYTES`] for the kernel and `n-it`
+    /// themselves.  That is a bound, not a measurement -- an engine that
+    /// stays under it can still be killed by a guest that was busy
+    /// elsewhere -- but every part of it is memory that provably is not
+    /// available to the engine.
+    ///
+    /// [`None`] rather than a floor because libfuzzer reads
+    /// `-rss_limit_mb=0` as *no limit*.  Saturating at zero would turn a VM
+    /// too small to fuzz into one whose engine is unbounded, which is the
+    /// opposite of what this is for.  [`check`](Self::check) rejects a fuzz
+    /// target that lands here, so the [`None`] arm is only reachable for a
+    /// configuration that never declared itself one.
+    #[must_use]
+    pub const fn fuzz_rss_limit_mib(&self) -> Option<u32> {
+        let reserved_bytes = match self.hugepage_reservation() {
+            // `as i64` rather than `i64::from`: trait methods are not
+            // callable in a const fn.
+            GuestHugePageConfig::Allocate { size, count } => size.bytes() * (count as i64),
+            // `Auto` is unreachable -- `hugepage_reservation` resolves it --
+            // and `None` reserves nothing.
+            _ => 0,
+        };
+        let available_mib =
+            (self.memory_bytes() - reserved_bytes - GUEST_KERNEL_HEADROOM_BYTES) / (1024 * 1024);
+        // Rounded down first, then tested: a remainder under a mebibyte is
+        // not a limit anybody can express, and `0` would mean the opposite
+        // of one.
+        if available_mib <= 0 {
+            return None;
+        }
+        Some(available_mib as u32)
+    }
+
     /// Checks the configuration for internal contradictions.
     ///
     /// `const` so the same check can run at compile time; see
@@ -1137,6 +1187,13 @@ impl VmConfig {
             if required + GUEST_KERNEL_HEADROOM_BYTES > memory_bytes {
                 return Err(ConfigProblem::HugepagesExceedMemory);
             }
+        }
+        // A fuzz target with nowhere to fuzz. Checked here rather than
+        // clamped at the point of use because the clamp would have to be
+        // zero, and libfuzzer reads zero as "no limit" -- see
+        // `fuzz_rss_limit_mib`.
+        if self.is_fuzz_target() && self.fuzz_rss_limit_mib().is_none() {
+            return Err(ConfigProblem::NoRoomToFuzz);
         }
         // Now that the backend is part of the configuration this is an
         // internal contradiction like the others, rather than something only
@@ -1185,6 +1242,11 @@ impl VmConfig {
             Err(ConfigProblem::TooManyNics) => panic!(
                 "too many fabric interfaces; beyond 254 two of them would share a \
                  MAC address and a link-local address"
+            ),
+            Err(ConfigProblem::NoRoomToFuzz) => panic!(
+                "this fuzz target's VM has no memory left for the engine once the guest \
+                 kernel and the hugepage reservation have taken theirs; raise memory_mib, \
+                 or set guest_hugepages to GuestHugePageConfig::None"
             ),
             Err(ConfigProblem::NicRequiresQemu) => panic!(
                 "this NIC model is emulated only by QEMU, but the configuration pinned \
@@ -1310,6 +1372,12 @@ impl VmConfig {
                     bytes = self.memory_bytes(),
                 ))
             }
+            Err(ConfigProblem::NoRoomToFuzz) => Err(format!(
+                "this is a fuzz target, but its VM ({mib} MiB) has nothing left for the \
+                 engine once the guest kernel and the hugepage reservation have taken \
+                 theirs; raise memory_mib or drop the reservation",
+                mib = self.memory_mib,
+            )),
             Err(ConfigProblem::NicRequiresQemu) => Err(format!(
                 "{nic:?} is emulated only by QEMU, but this configuration pinned \
                  cloud-hypervisor",
@@ -2526,6 +2594,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The bound the engine is given is the memory it can actually reach:
+    /// the whole VM, less what the kernel reserves before the engine runs.
+    #[test]
+    fn a_fuzz_targets_heap_is_bounded_by_the_memory_it_can_reach() {
+        const FUZZ: VmConfig = VmConfig {
+            corpus: CorpusPolicy::Fuzz,
+            ..VmConfig::DEFAULT
+        };
+        // A fuzz target reserves no hugepages, so only the kernel headroom
+        // comes off the top.
+        assert_eq!(FUZZ.fuzz_rss_limit_mib(), Some(1024 - 128));
+    }
+
+    /// A reservation is memory the guest kernel has given away, so it is
+    /// not memory the engine may grow into -- even though nothing stops it
+    /// trying.
+    #[test]
+    fn a_hugepage_reservation_comes_off_the_engines_bound() {
+        const FUZZ: VmConfig = VmConfig {
+            corpus: CorpusPolicy::Fuzz,
+            guest_hugepages: GuestHugePageConfig::DEFAULT_RESERVATION,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(FUZZ.fuzz_rss_limit_mib(), Some(1024 - 512 - 128));
+    }
+
+    /// Zero would mean "unlimited" to libfuzzer, so a VM with nothing left
+    /// reports having nothing left.
+    #[test]
+    fn a_vm_with_no_room_reports_none_rather_than_an_unlimited_engine() {
+        const TINY: VmConfig = VmConfig {
+            guest_hugepages: GuestHugePageConfig::None,
+            memory_mib: 128,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(TINY.fuzz_rss_limit_mib(), None);
+        // Not a contradiction on its own: this VM is fine, it just is not
+        // one anybody can fuzz in.
+        assert_eq!(TINY.check(), Ok(()));
+    }
+
+    /// ...and declaring such a VM a fuzz target is a contradiction, caught
+    /// where every other one is.
+    #[test]
+    fn a_fuzz_target_with_no_room_is_rejected() {
+        const TINY_FUZZ: VmConfig = VmConfig {
+            corpus: CorpusPolicy::Fuzz,
+            guest_hugepages: GuestHugePageConfig::None,
+            memory_mib: 128,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(TINY_FUZZ.check(), Err(ConfigProblem::NoRoomToFuzz));
+        assert!(
+            TINY_FUZZ
+                .validate_memory_alignment()
+                .is_err_and(|why| why.contains("fuzz target")),
+        );
     }
 
     /// The default still produces the three interfaces, with the exact

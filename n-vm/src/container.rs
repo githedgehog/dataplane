@@ -571,7 +571,10 @@ impl ContainerParams {
     /// "I was given no environment", and a bolero test that loses
     /// `BOLERO_LIBFUZZER_ARGS` does not fail -- it quietly stops fuzzing and
     /// still passes.  This is the only place the loss is visible.
-    fn write_forwarded_env(&self) -> Result<Option<PathBuf>, ContainerError> {
+    fn write_forwarded_env(
+        &self,
+        rss_limit_mib: Option<u32>,
+    ) -> Result<Option<PathBuf>, ContainerError> {
         let extra = std::env::var(n_vm_protocol::ENV_FORWARD).ok();
         // Values are rewritten, not just carried. A forwarded variable that names a host path
         // points nowhere in the guest, where the workspace lives at `/workspace` rather than at
@@ -589,7 +592,16 @@ impl ContainerParams {
                 // guest means `system(3)` against a root that has no shell -- see
                 // `strip_multiprocess_flags`.
                 let value = if name == n_vm_protocol::ENV_LIBFUZZER_ARGS {
-                    n_vm_protocol::strip_multiprocess_flags(&value)
+                    let value = n_vm_protocol::strip_multiprocess_flags(&value);
+                    // The other thing this tier decides rather than carries.
+                    // libfuzzer's default `-rss_limit_mb` is twice the
+                    // default guest, so it is the guest kernel that notices
+                    // the growth first -- and it kills the engine, which
+                    // loses the input that caused it.
+                    match rss_limit_mib {
+                        Some(limit) => n_vm_protocol::with_rss_limit(&value, limit),
+                        None => value,
+                    }
                 } else {
                     value
                 };
@@ -1431,7 +1443,7 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // Written before the container is created, so a failure here stops
         // the run rather than producing a guest that silently lost its
         // fuzzing configuration.
-        let env_host_dir = params.write_forwarded_env()?;
+        let env_host_dir = params.write_forwarded_env(vm_config.fuzz_rss_limit_mib())?;
 
         let config = params.build_config(
             backend,
