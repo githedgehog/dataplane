@@ -66,14 +66,17 @@ pub enum Guard {
     Open,
     Permit,
     PermitFlow,
+    PermitExcept,
     Deny,
 }
 
 impl Guard {
-    fn acl(self, spec: &PeeringSpec) -> Option<Acl> {
+    fn acl(self, peering: PeeringHandle, spec: &PeeringSpec) -> Option<Acl> {
         let (default, action, scope) = match self {
             Guard::Open => return None,
-            Guard::Permit => (AclAction::Deny, AclAction::Allow, AclScope::Packet),
+            Guard::Permit | Guard::PermitExcept => {
+                (AclAction::Deny, AclAction::Allow, AclScope::Packet)
+            }
             Guard::PermitFlow => (AclAction::Deny, AclAction::Allow, AclScope::Flow),
             Guard::Deny => (AclAction::Allow, AclAction::Deny, AclScope::Packet),
         };
@@ -95,9 +98,25 @@ impl Guard {
                 log: false,
             }
         };
-        let rules = match self.opening_side(spec) {
-            Some(side) => vec![rule(side)],
-            None => vec![rule(Side::Left), rule(Side::Right)],
+        let rules = match self {
+            Guard::PermitFlow => {
+                vec![rule(self.opening_side(spec).unwrap_or_else(|| {
+                    unreachable!("`legal_on` refused a guard with no side")
+                }))]
+            }
+            Guard::PermitExcept => {
+                let (side, expose) = spec
+                    .exception(peering)
+                    .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no expose"));
+                let mut denial = rule(side);
+                denial.name = format!("{}-except", denial.name);
+                denial.action = AclAction::Deny;
+                denial.pattern.src = PrefixPortsSet::from([PrefixWithOptionalPorts::from(expose)]);
+                vec![denial, rule(side), rule(side.other())]
+            }
+            Guard::Open | Guard::Permit | Guard::Deny => {
+                vec![rule(Side::Left), rule(Side::Right)]
+            }
         };
         Some(Acl::new(default, rules))
     }
@@ -108,7 +127,7 @@ impl Guard {
                 spec.sole_opener()
                     .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no side")),
             ),
-            Guard::Open | Guard::Permit | Guard::Deny => None,
+            Guard::Open | Guard::Permit | Guard::PermitExcept | Guard::Deny => None,
         }
     }
 
@@ -116,6 +135,15 @@ impl Guard {
         match self {
             Guard::Open | Guard::Permit | Guard::Deny => true,
             Guard::PermitFlow => spec.sole_opener().is_some(),
+            Guard::PermitExcept => spec.exception_slot().is_some(),
+        }
+    }
+
+    fn silences(self, spec: &PeeringSpec, side: Side, nth: usize) -> bool {
+        match self {
+            Guard::Open | Guard::Permit | Guard::PermitFlow => false,
+            Guard::Deny => true,
+            Guard::PermitExcept => spec.exception_slot() == Some((side, nth)),
         }
     }
 }
@@ -299,6 +327,21 @@ impl PeeringSpec {
         })
     }
 
+    fn exception_slot(&self) -> Option<(Side, usize)> {
+        [Side::Left, Side::Right].into_iter().find_map(|side| {
+            let nth = self
+                .exposes(side)
+                .iter()
+                .position(|expose| expose.flavour == Flavour::Masquerade)?;
+            Some((side, nth))
+        })
+    }
+
+    fn exception(&self, peering: PeeringHandle) -> Option<(Side, Prefix)> {
+        let (side, nth) = self.exception_slot()?;
+        Some((side, self.exposes(side)[nth].private(peering, side)))
+    }
+
     fn has_directional(&self, side: Side) -> bool {
         self.exposes(side)
             .iter()
@@ -341,6 +384,24 @@ impl Draft {
             .iter()
             .find(|(_, spec)| spec.touches(left) && spec.touches(right))
             .map(|(handle, _)| *handle)
+    }
+
+    #[must_use]
+    pub fn carries(&self, peering: &str, local: &str, nth: usize) -> bool {
+        let Some((_, spec)) = self
+            .peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == peering)
+        else {
+            return true;
+        };
+        let Some(side) = [Side::Left, Side::Right]
+            .into_iter()
+            .find(|side| spec.vpc(*side).name() == local)
+        else {
+            return true;
+        };
+        !spec.guard.silences(spec, side, nth)
     }
 
     #[must_use]
@@ -391,7 +452,7 @@ impl Draft {
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
             );
-            peering.acl = spec.guard.acl(spec);
+            peering.acl = spec.guard.acl(handle, spec);
             peerings.add(peering)?;
         }
 
@@ -624,12 +685,16 @@ impl Op {
                 }
                 let index = spec.exposes(side).iter().position(|e| e.slot == slot)?;
                 let removed = spec.exposes_mut(side).remove(index);
-                Some(Undo::RestoreExpose {
+                respecting_guard(
+                    draft,
                     peering,
-                    side,
-                    index,
-                    spec: removed,
-                })
+                    Undo::RestoreExpose {
+                        peering,
+                        side,
+                        index,
+                        spec: removed,
+                    },
+                )
             }
 
             Op::SetFlavour {
@@ -1117,7 +1182,13 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 }
 
 fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
-    const ORDERED: [Guard; 4] = [Guard::Open, Guard::Permit, Guard::PermitFlow, Guard::Deny];
+    const ORDERED: [Guard; 5] = [
+        Guard::Open,
+        Guard::Permit,
+        Guard::PermitExcept,
+        Guard::PermitFlow,
+        Guard::Deny,
+    ];
 
     let guard = pick(driver, &ORDERED)?;
     let willing: Vec<PeeringHandle> = draft
@@ -1266,7 +1337,7 @@ mod tests {
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
         let flavours = [const { AtomicUsize::new(0) }; 4];
-        let guards = [const { AtomicUsize::new(0) }; 4];
+        let guards = [const { AtomicUsize::new(0) }; 5];
 
         check!()
             .with_generator(Sequence::default())
@@ -1311,6 +1382,7 @@ mod tests {
                     let observed = match acl.map(|acl| (acl.default_action(), acl.rules().len())) {
                         None => Guard::Open,
                         Some((AclAction::Deny, 1)) => Guard::PermitFlow,
+                        Some((AclAction::Deny, 3)) => Guard::PermitExcept,
                         Some((AclAction::Deny, _)) => Guard::Permit,
                         Some((AclAction::Allow, _)) => Guard::Deny,
                     };
@@ -1324,8 +1396,9 @@ mod tests {
                     guards[match observed {
                         Guard::Open => 0,
                         Guard::Permit => 1,
-                        Guard::PermitFlow => 2,
-                        Guard::Deny => 3,
+                        Guard::PermitExcept => 2,
+                        Guard::PermitFlow => 3,
+                        Guard::Deny => 4,
                     }]
                     .fetch_add(1, Relaxed);
                 }
@@ -1340,10 +1413,16 @@ mod tests {
     }
 
     const FLAVOURS: [&str; 4] = ["forward", "masquerade", "static-nat", "port-forward"];
-    const GUARDS: [&str; 4] = ["open", "permit", "permit-by-flow", "deny"];
+    const GUARDS: [&str; 5] = [
+        "open",
+        "permit",
+        "permit-except-one",
+        "permit-by-flow",
+        "deny",
+    ];
 
-    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 4]) {
-        let show = |names: [&str; 4], counts: &[AtomicUsize; 4]| {
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 5]) {
+        let show = |names: &[&str], counts: &[AtomicUsize]| {
             names
                 .iter()
                 .zip(counts)
@@ -1351,7 +1430,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        let (built, set) = (show(FLAVOURS, flavours), show(GUARDS, guards));
+        let (built, set) = (show(&FLAVOURS, flavours), show(&GUARDS, guards));
         eprintln!("exposes: {built}\nguards:  {set}");
 
         for (name, count) in FLAVOURS.iter().zip(flavours) {

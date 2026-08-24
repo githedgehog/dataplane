@@ -69,10 +69,10 @@ const REACH: &[(&str, Reach)] = &[
     ),
     ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
     ("Acl.default", Reach::Spans(&["allow", "deny"])),
-    ("Acl.rules", Reach::Spans(&["1", "2"])),
+    ("Acl.rules", Reach::Spans(&["1", "2", "3"])),
     (
         "AclRule.name",
-        Reach::Determined("the two vpc handles, as `<from>-to-<to>`"),
+        Reach::Determined("the two vpc handles, as `<from>-to-<to>`, and `-except` for a denial"),
     ),
     (
         "AclRule.from",
@@ -90,15 +90,20 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "AclPattern.src",
-        Reach::Fixed(
-            "empty, which `AclRule::validate` fills in from the `from` manifest -- so every \
-             generated rule covers its whole side. A rule matching *part* of what a peering \
-             carries, which is what an ACL is normally for, is unreachable.",
+        Reach::Determined(
+            "empty, or the excepted expose's private prefix from its peering, side and slot",
         ),
     ),
     (
         "AclPattern.dst",
-        Reach::Fixed("empty, for the same reason as `AclPattern.src`."),
+        Reach::Fixed(
+            "empty, so `AclRule::validate` fills it in from the `to` manifest and every generated \
+             rule reaches all of what its far side advertises. `AclPattern.src` is narrowed by \
+             `Guard::PermitExcept` and this is not, and the asymmetry is deliberate: a source \
+             prefix names the expose whose traffic it is, and a destination prefix names whichever \
+             of the peer's exposes a load happens to aim at -- which is `peer_of`'s choice, so \
+             predicting the effect would mean keeping a copy of it.",
+        ),
     ),
     (
         "AclPattern.src_any_ports",

@@ -773,7 +773,7 @@ pub(crate) mod derive {
     }
 
     pub(crate) fn carried_by(draft: &Draft) -> impl Fn(Named<'_>) -> bool + '_ {
-        move |named| draft.guard_named(named.peering) != Some(Guard::Deny)
+        move |named| draft.carries(named.peering, named.local, named.nth)
     }
 
     pub(crate) fn loads_carried(
@@ -789,6 +789,7 @@ pub(crate) mod derive {
         pub(crate) local: &'a str,
         pub(crate) remote: &'a str,
         pub(crate) peering: &'a str,
+        pub(crate) nth: usize,
     }
 
     pub(crate) fn loads_where(
@@ -800,19 +801,20 @@ pub(crate) mod derive {
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
-                if !keep(Named {
-                    local: vpc.name(),
-                    remote: peering.remote().name(),
-                    peering: peering.name(),
-                }) {
-                    continue;
-                }
                 let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
-                for expose in peering.local().valexp() {
+                for (which, expose) in peering.local().valexp().iter().enumerate() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
                         continue;
                     };
                     nth += 1;
+                    if !keep(Named {
+                        local: vpc.name(),
+                        remote: peering.remote().name(),
+                        peering: peering.name(),
+                        nth: which,
+                    }) {
+                        continue;
+                    }
                     let outward = peer_of(peering, v.host, |expose| {
                         expose.can_receive_connection() && !expose.has_port_forwarding()
                     });
@@ -2602,6 +2604,7 @@ mod generated {
     static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
     static BY_FLOW: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static EXCEPTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
     fn report_and_assert_coverage() {
         let (checked, derived, mixed) = (
@@ -2615,11 +2618,12 @@ mod generated {
         );
         eprintln!(
             "checked={checked} derived={derived} inbound={} \
-             permitting-peerings={} (by flow {}) peered-configs={peered} \
+             permitted-loads={} (by flow {}, past an exception {}) peered-configs={peered} \
              configs-past-two-vpcs={multi} mixed-bursts={mixed}",
             INBOUND.load(Ordering::Relaxed),
             PERMITTING.load(Ordering::Relaxed),
-            BY_FLOW.load(Ordering::Relaxed)
+            BY_FLOW.load(Ordering::Relaxed),
+            EXCEPTING.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -2642,6 +2646,12 @@ mod generated {
             "no traffic was ever derived across a peering whose acl permits it, so every load here \
              ran with no acl in the way and a rule set that lowered to nothing would have gone \
              unnoticed",
+        );
+        super::assert_covered(
+            EXCEPTING.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering whose acl excepts one expose from an \
+             otherwise permitting rule, so nothing here depended on a lookup returning the \
+             *first* rule that matches",
         );
         super::assert_covered(
             BY_FLOW.load(Ordering::Relaxed) > 0,
@@ -2703,18 +2713,21 @@ mod generated {
         draft: &'a Draft,
         permitting: &'a Cell<u64>,
         by_flow: &'a Cell<u64>,
+        excepting: &'a Cell<u64>,
     ) -> impl Fn(Named<'_>) -> bool + 'a {
-        move |named| match draft.guard_named(named.peering) {
-            Some(Guard::Deny) => false,
-            Some(Guard::Permit) => {
-                permitting.set(permitting.get() + 1);
-                true
+        let carried = super::derive::carried_by(draft);
+        move |named| {
+            let counter = match draft.guard_named(named.peering) {
+                Some(Guard::Permit) => permitting,
+                Some(Guard::PermitFlow) => by_flow,
+                Some(Guard::PermitExcept) => excepting,
+                Some(Guard::Open | Guard::Deny) | None => return carried(named),
+            };
+            let kept = carried(named);
+            if kept {
+                counter.set(counter.get() + 1);
             }
-            Some(Guard::PermitFlow) => {
-                by_flow.set(by_flow.get() + 1);
-                true
-            }
-            Some(Guard::Open) | None => true,
+            kept
         }
     }
 
@@ -2750,14 +2763,15 @@ mod generated {
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
 
-                let (permitting, by_flow) = (Cell::new(0), Cell::new(0));
+                let (permitting, by_flow, excepting) = (Cell::new(0), Cell::new(0), Cell::new(0));
                 let mut loads = loads_where(
                     &validated,
                     vary,
-                    &carried_counting(&draft, &permitting, &by_flow),
+                    &carried_counting(&draft, &permitting, &by_flow, &excepting),
                 );
                 PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
                 BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
+                EXCEPTING.fetch_add(excepting.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 for load in &loads {
                     if load.describe().starts_with("[inbound") {
@@ -2789,9 +2803,10 @@ mod generated {
 
     #[tokio::test]
     #[dpdk::with_eal]
-    async fn a_denied_peering_carries_nothing() {
+    async fn a_configuration_carries_nothing_it_denies() {
         static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NARROWED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
@@ -2814,10 +2829,20 @@ mod generated {
                     return;
                 }
                 let carried = super::derive::carried_by(&draft);
-                let mut loads = loads_where(&validated, vary, &|named| !carried(named));
+                let narrowed = Cell::new(0);
+                let mut loads = loads_where(&validated, vary, &|named| {
+                    if carried(named) {
+                        return false;
+                    }
+                    if draft.guard_named(named.peering) != Some(Guard::Deny) {
+                        narrowed.set(narrowed.get() + 1);
+                    }
+                    true
+                });
                 if loads.is_empty() {
                     return;
                 }
+                NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
                 CONFIGS.fetch_add(1, Ordering::Relaxed);
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
@@ -2829,7 +2854,7 @@ mod generated {
                     SENT.fetch_add(1, Ordering::Relaxed);
                     assert!(
                         matches!(seen, Verdict::Dropped(_)),
-                        "a peering whose acl denies everything it carries produced {seen:?} for {}",
+                        "an acl that refuses this traffic produced {seen:?} for {}",
                         load.describe()
                     );
                     if seen == Verdict::Dropped(DoneReason::AclDropped) {
@@ -2843,11 +2868,19 @@ mod generated {
             SENT.load(Ordering::Relaxed),
             BY_ACL.load(Ordering::Relaxed),
         );
-        eprintln!("denied-configs={configs} sent={sent} (dropped by the acl {by_acl})");
+        eprintln!(
+            "refusing-configs={configs} sent={sent} (dropped by the acl {by_acl}, \
+             refused by a narrowed rule {})",
+            NARROWED.load(Ordering::Relaxed)
+        );
         super::assert_covered(
             sent > 0,
-            "no denied peering ever had traffic derived for it, so this asserted nothing about \
-             any packet",
+            "no refused traffic was ever derived, so this asserted nothing about any packet",
+        );
+        super::assert_covered(
+            NARROWED.load(Ordering::Relaxed) > 0,
+            "every refusal came from a peering denied outright, so nothing here was refused by a \
+             rule naming part of a peering and the first-match order was not under test",
         );
         super::assert_covered(
             by_acl > 0,
