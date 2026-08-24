@@ -100,8 +100,15 @@ const REACH: &[(&str, Reach)] = &[
     (
         "Vpc.interfaces",
         Reach::Fixed(
-            "empty. No operation attaches an interface to a vpc, so no generated configuration \
-             has one. Reaching the interface-bearing paths at all needs a new operation.",
+            "empty, and left that way on purpose. An operation attaching one is easy and would be \
+             the wrong thing: nothing reads the field. `Vpc::validate` clones it into \
+             `ValidatedVpc` without checking anything about it, `ValidatedVpc::interfaces` has no \
+             callers, and the interfaces that reach the kernel and FRR come from the *internal* \
+             config's vrf tables instead -- see `mgmt::vpc_manager` and \
+             `converters::k8s::config::underlay`. Filling this in would move the row and cover \
+             nothing, which is the one failure mode this whole record exists to prevent. The thing \
+             worth doing is upstream of here: either the field has a consumer and this record \
+             should follow it there, or it does not and it should go.",
         ),
     ),
     (
@@ -256,11 +263,11 @@ const REACH: &[(&str, Reach)] = &[
         // an lpm table and `RangeBuilder` each have to handle. Never on a port-forwarded expose,
         // which `VpcExpose::validate` refuses exclusions on outright.
         //
-        // **Nothing generated is aimed at an excluded address.** The derivation reads its
-        // addresses off the effective set, so it stays inside the first of the two prefixes, and a
-        // matcher that ignored exclusions entirely would still carry every load. What is reached
-        // is the *shape* of the set; the hole in it is not yet under test, and closing that needs
-        // traffic aimed at an address the configuration deliberately does not expose.
+        // The hole itself is under test as well as the shape:
+        // `generated::an_excluded_address_is_not_reachable` aims one packet at an address inside
+        // the block and outside what the expose advertises, and requires it to be refused. Every
+        // load derived here still stays inside the effective set, so that property is the only
+        // thing standing between a matcher that ignored exclusions and a green run.
         Reach::Determined("a `/26` in the middle of the expose's block, on the low slots"),
     ),
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),

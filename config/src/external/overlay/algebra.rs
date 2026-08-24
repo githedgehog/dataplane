@@ -32,7 +32,7 @@
 //! configurations actually exhibit, and a paragraph is not.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Bound::Included;
 use std::time::Duration;
 
@@ -914,6 +914,47 @@ impl Draft {
             return true;
         };
         !spec.guard.silences(spec, side, nth)
+    }
+
+    /// An address inside the `nth` expose of the side named `local` that the configuration
+    /// deliberately does not expose, if there is one and a peer could aim at it.
+    ///
+    /// The first address of the slice the expose carves out of its *advertised* range -- which is
+    /// what a peer dials, and so the only range where "not exposed" is a claim about reachability
+    /// rather than about an address nobody would send to anyway.
+    ///
+    /// `None` for an expose with no exclusion, and for a masquerading one: nothing is ever aimed
+    /// at a masquerading expose, so an address it does not expose is unreachable for a reason that
+    /// has nothing to do with the exclusion, and a property asserting otherwise would pass without
+    /// meaning anything.
+    #[must_use]
+    pub fn unexposed_address(&self, peering: &str, local: &str, nth: usize) -> Option<IpAddr> {
+        let (handle, spec) = self
+            .peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == peering)?;
+        let side = [Side::Left, Side::Right]
+            .into_iter()
+            .find(|side| spec.vpc(*side).name() == local)?;
+        let expose = *spec.exposes(side).get(nth)?;
+        if !expose.excludes() || expose.flavour == Flavour::Masquerade {
+            return None;
+        }
+        // A manifest holding a default expose advertises every destination, so nothing in it is
+        // unexposed: the flow filter emits an ungated default rule for that peering and any
+        // address is placeable. The hole is still in the configuration; it is just no longer the
+        // last word on reachability.
+        if spec.has_everything(side) {
+            return None;
+        }
+        let base = match expose.flavour {
+            Flavour::Forward => PRIVATE_BASE,
+            Flavour::StaticNat => PUBLIC_BASE,
+            // Refused above (masquerade) or never carving at all; kept explicit so that a new
+            // flavour has to answer the question rather than inherit an answer.
+            Flavour::Masquerade | Flavour::PortForward | Flavour::Everything => return None,
+        };
+        Some(excluded_slice(handle.block(side, expose.slot), base).as_address())
     }
 
     #[must_use]

@@ -1309,6 +1309,79 @@ pub(crate) mod derive {
         move |named| draft.carries(named.peering, named.local, named.nth)
     }
 
+    /// One packet aimed at an address a configuration deliberately does not expose.
+    ///
+    /// Not a [`Load`]: there is no conversation to have, and nothing to observe but the verdict on
+    /// the one packet. It describes itself for the same reason a load does -- a failure here is
+    /// otherwise two addresses with no account of where either came from.
+    #[derive(Debug)]
+    pub(crate) struct Probe {
+        path: super::routed::Path,
+        from: IpAddr,
+        at: IpAddr,
+        sport: u16,
+        dport: u16,
+    }
+
+    impl Probe {
+        /// The packet, tunnelled from the vpc that would be sending it.
+        ///
+        /// A real frame rather than a stamped inner packet, because this is asserted against a
+        /// routed fabric: the arrival has to be earned through `Ingress` and decapsulation, the
+        /// same way every load's is.
+        pub(crate) fn packet(&self) -> Option<Packet<TestBuffer>> {
+            let inner = super::round_trip::udp(self.from, self.at, self.sport, self.dport)?;
+            Some(super::routed::tunnelled_from(self.path.from(), &inner))
+        }
+    }
+
+    /// One probe per expose that carves a slice out of what it advertises.
+    ///
+    /// The sender is a host of the *other* side of the peering, so the packet is one a legitimate
+    /// peer could send; the destination is the address that peer would reach if the exclusion were
+    /// ignored. An expose whose peer has no address to send from is skipped -- that is a gap in
+    /// this function rather than a configuration that carries nothing.
+    pub(crate) fn probes_for(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        draft: &Draft,
+    ) -> Vec<Probe> {
+        let mut probes = Vec::new();
+        let mut nth = 0usize;
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
+                for (which, _) in peering.local().valexp().iter().enumerate() {
+                    let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
+                        continue;
+                    };
+                    nth += 1;
+                    let Some(at) = draft.unexposed_address(peering.name(), vpc.name(), which)
+                    else {
+                        continue;
+                    };
+                    // From the peer, which is where traffic for this expose comes from. Its own
+                    // private addresses, for the reason `peer_source_of` exists.
+                    let Some(from) =
+                        peer_source_of(peering, v.host, ValidatedExpose::can_init_connection)
+                    else {
+                        continue;
+                    };
+                    if from.is_ipv4() != at.is_ipv4() {
+                        continue;
+                    }
+                    probes.push(Probe {
+                        path: super::routed::Path::new(peering.remote_vni(), vpc.vni()),
+                        from,
+                        at,
+                        sport: v.sport,
+                        dport: v.dport,
+                    });
+                }
+            }
+        }
+        probes
+    }
+
     /// [`loads_for`], for a configuration the algebra built: what a draft says it carries.
     pub(crate) fn loads_carried(
         overlay: &ValidatedOverlay,
@@ -3979,6 +4052,84 @@ mod generated {
              of it and would hold with the acl removed",
         );
     }
+
+    /// An address a configuration deliberately does not expose is not reachable.
+    ///
+    /// The property that gives an exclusion meaning. Every other use of one here reaches only the
+    /// *shape* of the prefix set it produces -- two prefixes where there was one -- because the
+    /// derivation reads its addresses off the effective set and so never aims at a hole. A matcher
+    /// that ignored exclusions entirely would pass all of that. It fails this.
+    ///
+    /// The address is the first of the slice the expose carves out of its advertised range, which
+    /// `Draft::unexposed_address` reads off the same address plan the expose was built from; the
+    /// sender is a host of the vpc on the other side of the peering, so the packet is one a
+    /// legitimate peer could actually send. What must not happen is delivery: the address is
+    /// inside a block the configuration routes and outside what it exposes, so a stage that
+    /// consulted the block and not the exclusion would forward it into the vpc.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn an_excluded_address_is_not_reachable() {
+        static AIMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, _schedule)| {
+                let draft = Sequence::fold(ops);
+                let validated = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                let probes = super::derive::probes_for(&validated, vary, &draft);
+                if probes.is_empty() {
+                    return;
+                }
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                for probe in probes {
+                    let Some(packet) = probe.packet() else {
+                        continue;
+                    };
+                    let seen = verdict(&fabric.worker().send(packet));
+                    AIMED.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        matches!(seen, Verdict::Dropped(_)),
+                        "an address the configuration excludes was reached: {seen:?} for {probe:?}"
+                    );
+                    if seen == Verdict::Dropped(DoneReason::Filtered) {
+                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (aimed, refused) = (
+            AIMED.load(Ordering::Relaxed),
+            REFUSED.load(Ordering::Relaxed),
+        );
+        eprintln!("excluded-addresses-aimed-at={aimed} (refused as unplaceable {refused})");
+        super::assert_covered(
+            aimed > 0,
+            "no packet was ever aimed at an excluded address, so this asserted nothing -- either \
+             no generated expose carves a slice out of its advertised range, or none of those was \
+             reachable from a peer",
+        );
+        super::assert_covered(
+            refused > 0,
+            "every excluded address was refused for some reason other than being unplaceable, so \
+             the exclusion may not be what refused any of them",
+        );
+    }
 }
 
 /// A burst, against the same packets sent one at a time.
@@ -4654,6 +4805,11 @@ mod routed {
         /// The pair the hand-written fixtures use.
         pub(crate) fn fixture() -> Self {
             Self::new(vni(LOCAL_VNI), vni(REMOTE_VNI))
+        }
+
+        /// The vni traffic on this path originates in.
+        pub(crate) fn from(self) -> Vni {
+            self.from
         }
 
         fn reversed(self) -> Self {
