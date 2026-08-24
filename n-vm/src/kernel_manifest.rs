@@ -217,10 +217,11 @@ impl KernelManifest {
 
     /// The profile this invocation should use.
     ///
-    /// [`ENV_PROFILE`] overrides the manifest's `default`, which is how a
-    /// whole run is pointed at a different environment
-    /// (`N_VM_PROFILE=qemu cargo test`) without editing any test.  An
-    /// unset variable, or an empty one, falls back to the default.
+    /// Three inputs, in order.  `declared` is what the test's own
+    /// configuration asked for and wins outright.  Failing that,
+    /// [`ENV_PROFILE`] points a whole run at a different environment
+    /// (`N_VM_PROFILE=qemu cargo test`) without editing any test.  Failing
+    /// that, the manifest's `default`.
     ///
     /// `emulation_required` says the guest cannot run natively on this host,
     /// so the chosen profile's hypervisor has to be able to emulate.  It
@@ -240,10 +241,41 @@ impl KernelManifest {
     /// another, which is the one outcome worth failing over.
     pub fn selected(
         &self,
+        declared: Option<&str>,
         emulation_required: bool,
     ) -> Result<(&str, &KernelProfile), KernelManifestError> {
-        match std::env::var(n_vm_protocol::ENV_PROFILE) {
-            Ok(name) if !name.is_empty() => {
+        // A test that names a profile means it, so it outranks the
+        // environment.  Same rule as a pinned `RequestedBackend`, and for
+        // the same reason: `N_VM_PROFILE` exists to point tests that have
+        // *no* opinion at a different environment, and a test that declares
+        // one is declaring what it is for -- a modular-kernel test asking
+        // for `flatcar` is not asking to be swept along with the rest.
+        let from_env = std::env::var(n_vm_protocol::ENV_PROFILE).ok();
+        self.selected_with(declared, from_env.as_deref(), emulation_required)
+    }
+
+    /// [`selected`](Self::selected) with the environment passed in.
+    ///
+    /// Separated so the precedence can be tested without mutating the
+    /// process environment, which is global and would race every other test
+    /// in the binary.
+    ///
+    /// # Errors
+    ///
+    /// As [`selected`](Self::selected).
+    pub(crate) fn selected_with(
+        &self,
+        declared: Option<&str>,
+        from_env: Option<&str>,
+        emulation_required: bool,
+    ) -> Result<(&str, &KernelProfile), KernelManifestError> {
+        let named = declared
+            .filter(|name| !name.is_empty())
+            .or(from_env.filter(|name| !name.is_empty()))
+            .map(str::to_owned);
+
+        match named {
+            Some(name) => {
                 let profile = self.profile(&name)?;
                 let key = self
                     .profiles
@@ -252,8 +284,8 @@ impl KernelManifest {
                     .expect("profile() succeeded, so the key is present");
                 Ok((key, profile))
             }
-            _ if emulation_required => Ok(self.default_emulating_profile()),
-            _ => self.default_profile(),
+            None if emulation_required => Ok(self.default_emulating_profile()),
+            None => self.default_profile(),
         }
     }
 
@@ -473,6 +505,82 @@ mod test {
                 .can_emulate(),
             "substituted profile `{name}` must be able to emulate",
         );
+    }
+
+    // -- Which profile a run gets -------------------------------------
+
+    /// A test that names a profile gets it, even under a sweep that named
+    /// something else.
+    ///
+    /// The point of the lever: a test declares which kernel it is *for*.
+    /// A modular-kernel test swept onto a built-in-only kernel by an
+    /// environment variable would not be testing anything, and would say so
+    /// only by failing somewhere unrelated.
+    #[test]
+    fn a_declared_profile_outranks_the_environment() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest
+            .selected_with(Some("modular"), Some("qemu"), false)
+            .expect("declared profile resolves");
+        assert_eq!(name, "modular");
+    }
+
+    /// With nothing declared, the environment still points a whole run at
+    /// another environment -- which is what it was for.
+    #[test]
+    fn the_environment_still_steers_a_test_with_no_opinion() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest
+            .selected_with(None, Some("qemu"), false)
+            .expect("environment profile resolves");
+        assert_eq!(name, "qemu");
+    }
+
+    /// With neither, the manifest's default.
+    #[test]
+    fn nothing_declared_and_nothing_set_is_the_default() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest
+            .selected_with(None, None, false)
+            .expect("default resolves");
+        assert_eq!(name, "cloud_hypervisor");
+    }
+
+    /// An empty value is not a choice, from either source.
+    #[test]
+    fn an_empty_name_falls_through() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest
+            .selected_with(Some(""), Some(""), false)
+            .expect("falls through to the default");
+        assert_eq!(name, "cloud_hypervisor");
+    }
+
+    /// A declared profile that does not exist is an error naming the ones
+    /// that do -- never a silent fallback to the default, which would run
+    /// the wrong kernel while appearing to run the requested one.
+    #[test]
+    fn a_declared_profile_that_does_not_exist_is_an_error() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let err = manifest
+            .selected_with(Some("flatcra"), None, false)
+            .expect_err("a typo must not fall back");
+        assert!(
+            matches!(err, KernelManifestError::UnknownProfile { .. }),
+            "expected UnknownProfile, got {err:?}",
+        );
+    }
+
+    /// A declared profile is honoured even when the guest must be emulated
+    /// and it cannot emulate: the caller then skips with its own reason.
+    /// Substituting silently is only right for a run with no opinion.
+    #[test]
+    fn a_declared_profile_is_not_substituted_when_emulating() {
+        let manifest = parse(CROSS).expect("cross manifest should parse");
+        let (name, _) = manifest
+            .selected_with(Some("cloud_hypervisor"), None, true)
+            .expect("declared profile resolves");
+        assert_eq!(name, "cloud_hypervisor");
     }
 
     /// The substitute differs from the default in its hypervisor and nothing
