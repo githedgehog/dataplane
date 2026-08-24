@@ -138,19 +138,25 @@ impl Arch {
         }
     }
 
-    /// QEMU `-smp` topology string preserving [`VM_VCPUS`] total vCPUs.
+    /// QEMU `-smp` topology string for `vcpus` total vCPUs.
     ///
     /// The `dies=` level is x86-only; on aarch64 it is folded into `cores`.
     #[must_use]
-    pub fn smp_topology(self) -> String {
+    pub fn smp_topology(self, vcpus: u32) -> String {
+        let t = SmpTopology::for_vcpus(vcpus);
         match self {
             Self::X86_64 => format!(
-                "{VM_VCPUS},sockets={VM_SOCKETS},dies={VM_DIES_PER_PACKAGE},\
-                 cores={VM_CORES_PER_DIE},threads={VM_THREADS_PER_CORE}",
+                "{vcpus},sockets={sockets},dies={dies},cores={cores},threads={threads}",
+                sockets = t.sockets,
+                dies = t.dies,
+                cores = t.cores,
+                threads = t.threads,
             ),
             Self::Aarch64 => format!(
-                "{VM_VCPUS},sockets={VM_SOCKETS},cores={cores},threads={VM_THREADS_PER_CORE}",
-                cores = VM_DIES_PER_PACKAGE * VM_CORES_PER_DIE,
+                "{vcpus},sockets={sockets},cores={cores},threads={threads}",
+                sockets = t.sockets,
+                cores = t.dies * t.cores,
+                threads = t.threads,
             ),
         }
     }
@@ -630,6 +636,25 @@ pub struct VmConfig {
     /// [`KernelFeature`](crate::kernel_feature::KernelFeature) declared
     /// `modular`.
     pub module_params: &'static [ModuleParam],
+    /// Total guest memory, in MiB.
+    ///
+    /// A whole number of [`host_page_size`](Self::host_page_size) pages, or
+    /// the VM cannot be backed at all -- see [`ConfigProblem::MemoryNotAligned`].
+    ///
+    /// Raise it for work that needs room: a fuzz engine's `-rss_limit_mb`
+    /// is measured against this, and the default gigabyte is a tight fit
+    /// for a coverage-guided campaign.  Every MiB is taken from the host
+    /// for the VM's whole life, so this is also what bounds how many VMs
+    /// can run at once.
+    pub memory_mib: u32,
+    /// Number of vCPUs.
+    ///
+    /// Arranged into a socket/die/core/thread topology by
+    /// [`SmpTopology::for_vcpus`], which is what both hypervisors actually
+    /// want.  Like [`memory_mib`](Self::memory_mib) this bounds
+    /// concurrency: vCPUs, not memory, is what usually limits how many of
+    /// these VMs a host can run.
+    pub vcpus: u32,
     /// What writable storage this test gets, and whether it is a fuzz
     /// target.  See [`CorpusPolicy`].
     pub corpus: CorpusPolicy,
@@ -762,6 +787,23 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Sets the guest's total memory, in MiB.
+    ///
+    /// Must stay a whole number of host pages; with
+    /// [`HostPageSize::Huge1G`] that means a whole number of gibibytes.
+    #[must_use]
+    pub const fn memory_mib(mut self, mib: u32) -> Self {
+        self.0.memory_mib = mib;
+        self
+    }
+
+    /// Sets the guest's vCPU count.
+    #[must_use]
+    pub const fn vcpus(mut self, vcpus: u32) -> Self {
+        self.0.vcpus = vcpus;
+        self
+    }
+
     /// Declares what writable storage the test needs.
     ///
     /// [`CorpusPolicy::Fuzz`] is what replaced the old `#[n_vm::corpus]`
@@ -874,6 +916,10 @@ pub enum ConfigProblem {
     HugepagesExceedMemory,
     /// The NIC model is emulated only by QEMU, but cloud-hypervisor is pinned.
     NicRequiresQemu,
+    /// The VM was given no memory.
+    NoMemory,
+    /// The VM was given no vCPUs.
+    NoVcpus,
 }
 
 impl VmConfig {
@@ -926,6 +972,8 @@ impl VmConfig {
         runtime: GuestRuntime::CurrentThread,
         guest_time_limit: None,
         module_params: &[],
+        memory_mib: 1024,
+        vcpus: 6,
         corpus: CorpusPolicy::None,
         source_file: None,
     };
@@ -955,6 +1003,16 @@ impl VmConfig {
     #[must_use]
     pub const fn is_fuzz_target(&self) -> bool {
         matches!(self.corpus, CorpusPolicy::Fuzz)
+    }
+
+    /// Total guest memory in bytes.
+    ///
+    /// `i64` because both hypervisors' memory sizes are signed, and the
+    /// hugepage arithmetic in [`check`](Self::check) is done in the same
+    /// type to keep it `const`.
+    #[must_use]
+    pub const fn memory_bytes(&self) -> i64 {
+        (self.memory_mib as i64) * 1024 * 1024
     }
 
     /// The hugepage reservation this VM actually boots with.
@@ -987,8 +1045,19 @@ impl VmConfig {
     ///
     /// Returns the first [`ConfigProblem`] found.
     pub const fn check(&self) -> Result<(), ConfigProblem> {
+        // Zero first, because every check below passes vacuously on it:
+        // `0 % anything` is 0, so an empty VM would read as well-aligned
+        // and then fail at launch with whatever the hypervisor says about
+        // a machine with nothing in it.
+        if self.memory_mib == 0 {
+            return Err(ConfigProblem::NoMemory);
+        }
+        if self.vcpus == 0 {
+            return Err(ConfigProblem::NoVcpus);
+        }
+        let memory_bytes = self.memory_bytes();
         let page_bytes = self.host_page_size.bytes();
-        if VM_MEMORY_BYTES % page_bytes != 0 {
+        if memory_bytes % page_bytes != 0 {
             return Err(ConfigProblem::MemoryNotAligned);
         }
         // The *resolved* reservation, not the raw field: `Auto` is what
@@ -1007,7 +1076,7 @@ impl VmConfig {
             // `<=` accepted exactly that, and the default was exactly that: one 1 GiB page out of
             // 1 GiB. It only ever worked because 1 GiB host pages handed the guest a contiguous
             // block; it became intermittent the moment the host default stopped doing so.
-            if required + GUEST_KERNEL_HEADROOM_BYTES > VM_MEMORY_BYTES {
+            if required + GUEST_KERNEL_HEADROOM_BYTES > memory_bytes {
                 return Err(ConfigProblem::HugepagesExceedMemory);
             }
         }
@@ -1051,6 +1120,10 @@ impl VmConfig {
                  reduce hugepage_count, use a smaller hugepage size, or set \
                  guest_hugepages to GuestHugePageConfig::None"
             ),
+            Err(ConfigProblem::NoMemory) => {
+                panic!("a VM needs memory; set memory_mib to a non-zero whole number of host pages")
+            }
+            Err(ConfigProblem::NoVcpus) => panic!("a VM needs at least one vCPU; set vcpus"),
             Err(ConfigProblem::NicRequiresQemu) => panic!(
                 "this NIC model is emulated only by QEMU, but the configuration pinned \
                  cloud-hypervisor; leave the backend at RequestedBackend::Default to let \
@@ -1146,9 +1219,13 @@ impl VmConfig {
         // panic is limited to.
         match self.check() {
             Ok(()) => Ok(()),
+            Err(ConfigProblem::NoMemory) => Err("memory_mib is 0; a VM needs memory".to_owned()),
+            Err(ConfigProblem::NoVcpus) => Err("vcpus is 0; a VM needs at least one".to_owned()),
             Err(ConfigProblem::MemoryNotAligned) => Err(format!(
-                "VM_MEMORY_BYTES ({VM_MEMORY_BYTES}) is not aligned to \
-                 host page size ({page_bytes} bytes)",
+                "guest memory ({mib} MiB = {bytes} bytes) is not a whole number of \
+                 host pages ({page_bytes} bytes)",
+                mib = self.memory_mib,
+                bytes = self.memory_bytes(),
                 page_bytes = self.host_page_size.bytes(),
             )),
             Err(ConfigProblem::HugepagesExceedMemory) => {
@@ -1161,8 +1238,9 @@ impl VmConfig {
                 let required = size.bytes() * i64::from(count);
                 Err(format!(
                     "guest hugepage reservation ({count} x {} = {required} bytes) \
-                     exceeds VM memory ({VM_MEMORY_BYTES} bytes)",
+                     exceeds VM memory ({bytes} bytes)",
                     size.bytes(),
+                    bytes = self.memory_bytes(),
                 ))
             }
             Err(ConfigProblem::NicRequiresQemu) => Err(format!(
@@ -1174,12 +1252,6 @@ impl VmConfig {
     }
 }
 
-/// Total guest memory in MiB (1 GiB).
-pub(crate) const VM_MEMORY_MIB: u32 = 1024;
-
-/// Total guest memory in bytes (1 GiB).
-pub(crate) const VM_MEMORY_BYTES: i64 = (VM_MEMORY_MIB as i64) * 1024 * 1024;
-
 /// Guest memory a hugepage reservation must leave for the kernel that performs it.
 ///
 /// Not a measurement -- a floor. The kernel reserves hugepages very early, but not before it
@@ -1187,23 +1259,55 @@ pub(crate) const VM_MEMORY_BYTES: i64 = (VM_MEMORY_MIB as i64) * 1024 * 1024;
 /// boots and small enough not to constrain a reservation anybody would actually want.
 pub(crate) const GUEST_KERNEL_HEADROOM_BYTES: i64 = 128 * 1024 * 1024;
 
-// The topology must satisfy:
-//   VM_SOCKETS x VM_DIES_PER_PACKAGE x VM_CORES_PER_DIE x VM_THREADS_PER_CORE == VM_VCPUS
+/// A CPU topology whose levels multiply to a given vCPU count.
+///
+/// Both hypervisors want the four levels rather than a total, and both
+/// reject a topology that does not multiply back -- so this is derived in
+/// one place and used by both, rather than each backend guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SmpTopology {
+    /// Sockets (packages).
+    pub sockets: u32,
+    /// Dies per socket.  x86-only; aarch64 folds this into `cores`.
+    pub dies: u32,
+    /// Cores per die.
+    pub cores: u32,
+    /// Hardware threads per core.
+    pub threads: u32,
+}
 
-/// Number of vCPUs.
-pub(crate) const VM_VCPUS: u32 = 6;
-
-/// Threads per core in the CPU topology.
-pub(crate) const VM_THREADS_PER_CORE: u32 = 2;
-
-/// Cores per die in the CPU topology.
-pub(crate) const VM_CORES_PER_DIE: u32 = 1;
-
-/// Dies per package (socket) in the CPU topology.
-pub(crate) const VM_DIES_PER_PACKAGE: u32 = 3;
-
-/// Number of sockets in the CPU topology.
-pub(crate) const VM_SOCKETS: u32 = 1;
+impl SmpTopology {
+    /// Arranges `vcpus` into levels whose product is exactly `vcpus`.
+    ///
+    /// An even count keeps SMT, because that is the shape a real host has
+    /// and the guest is code that inspects its own topology: DPDK reads
+    /// `/sys` to lay lcores out, and a machine that claims no hyperthreads
+    /// exercises a different path from every machine this code runs on in
+    /// production.  An odd count cannot be split that way, so it falls back
+    /// to flat cores rather than rounding the request.
+    ///
+    /// At the default of 6 this reproduces the topology that used to be
+    /// four hand-written constants -- 1 socket, 3 dies, 1 core, 2 threads --
+    /// so making the count a lever changes nothing for a test that does not
+    /// set it.
+    pub(crate) const fn for_vcpus(vcpus: u32) -> Self {
+        if vcpus.is_multiple_of(2) {
+            Self {
+                sockets: 1,
+                dies: vcpus / 2,
+                cores: 1,
+                threads: 2,
+            }
+        } else {
+            Self {
+                sockets: 1,
+                dies: 1,
+                cores: vcpus,
+                threads: 1,
+            }
+        }
+    }
+}
 
 /// Describes a network interface shared across all hypervisor backends.
 pub(crate) struct NetIface {
@@ -1733,7 +1837,7 @@ mod tests {
         assert_eq!(viommu.machine_opts, "kernel-irqchip=split");
         assert!(viommu.kernel_params.contains("intel_iommu=on"));
         assert!(a.supports_virtual_iommu());
-        assert!(a.smp_topology().contains("dies="));
+        assert!(a.smp_topology(6).contains("dies="));
     }
 
     #[test]
@@ -1752,32 +1856,48 @@ mod tests {
         assert!(viommu.kernel_params.is_empty());
         assert!(a.supports_virtual_iommu());
         assert!(
-            !a.smp_topology().contains("dies="),
+            !a.smp_topology(6).contains("dies="),
             "aarch64 -smp must not use the x86-only dies= level: {}",
-            a.smp_topology(),
+            a.smp_topology(6),
         );
     }
 
+    /// Both hypervisors reject a topology whose levels do not multiply to
+    /// the vCPU count, so this has to hold for every count a test can ask
+    /// for -- not just the default it used to be checked at.
     #[test]
     fn smp_topology_preserves_vcpu_count_on_both_arches() {
-        for arch in [Arch::X86_64, Arch::Aarch64] {
-            let smp = arch.smp_topology();
-            assert!(
-                smp.starts_with(&format!("{VM_VCPUS},")),
-                "{arch:?} -smp must declare {VM_VCPUS} vCPUs: {smp}",
-            );
-            // sockets * (dies) * cores * threads == VM_VCPUS
-            let product: u32 = smp
-                .split(',')
-                .skip(1)
-                .filter_map(|kv| kv.split('=').nth(1))
-                .filter_map(|v| v.parse::<u32>().ok())
-                .product();
-            assert_eq!(
-                product, VM_VCPUS,
-                "{arch:?} topology must multiply to {VM_VCPUS}: {smp}"
-            );
+        for vcpus in [1, 2, 3, 4, 6, 7, 8, 16, 31, 64] {
+            for arch in [Arch::X86_64, Arch::Aarch64] {
+                let smp = arch.smp_topology(vcpus);
+                assert!(
+                    smp.starts_with(&format!("{vcpus},")),
+                    "{arch:?} -smp must declare {vcpus} vCPUs: {smp}",
+                );
+                // sockets * (dies) * cores * threads == vcpus
+                let product: u32 = smp
+                    .split(',')
+                    .skip(1)
+                    .filter_map(|kv| kv.split('=').nth(1))
+                    .filter_map(|v| v.parse::<u32>().ok())
+                    .product();
+                assert_eq!(
+                    product, vcpus,
+                    "{arch:?} topology must multiply to {vcpus}: {smp}"
+                );
+            }
         }
+    }
+
+    /// The default still produces the machine the four hand-written
+    /// constants used to: making the count a lever must not silently change
+    /// what a test that never sets it boots on.
+    #[test]
+    fn the_default_vcpu_count_lowers_to_the_topology_it_always_did() {
+        assert_eq!(
+            Arch::X86_64.smp_topology(VmConfig::DEFAULT.vcpus),
+            "6,sockets=1,dies=3,cores=1,threads=2",
+        );
     }
 
     #[test]
@@ -2322,13 +2442,24 @@ mod tests {
 
     #[test]
     fn topology_multiplies_to_vcpu_count() {
-        let total = VM_SOCKETS * VM_DIES_PER_PACKAGE * VM_CORES_PER_DIE * VM_THREADS_PER_CORE;
-        assert_eq!(
-            total, VM_VCPUS,
-            "topology ({VM_SOCKETS}S x {VM_DIES_PER_PACKAGE}D x \
-             {VM_CORES_PER_DIE}C x {VM_THREADS_PER_CORE}T = {total}) \
-             must equal VM_VCPUS ({VM_VCPUS})",
-        );
+        for vcpus in 1..=64 {
+            let t = SmpTopology::for_vcpus(vcpus);
+            assert_eq!(
+                t.sockets * t.dies * t.cores * t.threads,
+                vcpus,
+                "topology for {vcpus} vCPUs does not multiply back: {t:?}",
+            );
+        }
+    }
+
+    /// An even count keeps SMT, because that is the shape of every machine
+    /// this code runs on in production and the guest inspects its own
+    /// topology to lay lcores out.
+    #[test]
+    fn an_even_vcpu_count_keeps_hyperthreads() {
+        assert_eq!(SmpTopology::for_vcpus(8).threads, 2);
+        assert_eq!(SmpTopology::for_vcpus(1).threads, 1);
+        assert_eq!(SmpTopology::for_vcpus(7).threads, 1);
     }
 
     #[test]
@@ -2444,7 +2575,7 @@ mod tests {
             .validate_memory_alignment()
             .expect_err("two 1 GiB hugepages exceed 1 GiB of VM memory");
         assert!(
-            err.contains('2') && err.contains(&VM_MEMORY_BYTES.to_string()),
+            err.contains('2') && err.contains(&VmConfig::DEFAULT.memory_bytes().to_string()),
             "message should carry the reservation and the VM memory: {err}",
         );
     }
@@ -2493,11 +2624,79 @@ mod tests {
     }
 
     #[test]
-    fn memory_mib_and_bytes_are_consistent() {
-        assert_eq!(
-            VM_MEMORY_BYTES,
-            (VM_MEMORY_MIB as i64) * 1024 * 1024,
-            "VM_MEMORY_BYTES and VM_MEMORY_MIB must be consistent",
-        );
+    fn memory_bytes_follows_memory_mib() {
+        for mib in [1, 512, 1024, 4096, 65536] {
+            let config = VmConfig {
+                memory_mib: mib,
+                ..VmConfig::DEFAULT
+            };
+            assert_eq!(config.memory_bytes(), i64::from(mib) * 1024 * 1024);
+        }
+    }
+
+    /// Shrinking the VM below its own hugepage reservation is caught, and
+    /// caught at build time.
+    ///
+    /// The two levers are independent to write and not independent in
+    /// effect: `guest_hugepages` defaults to 512 MiB, so asking for a
+    /// smaller VM without also lowering it describes a guest whose kernel
+    /// has no room to boot.  Left unchecked the guest reports
+    /// "HugeTLB: allocating ... failed" on a console nobody reads and boots
+    /// without them, which surfaces much later as a test failure with
+    /// nothing pointing here.
+    #[test]
+    fn a_vm_too_small_for_its_own_hugepages_is_rejected() {
+        let config = VmConfig {
+            memory_mib: 256,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(config.check(), Err(ConfigProblem::HugepagesExceedMemory));
+    }
+
+    /// ...and lowering the reservation with it is accepted.
+    #[test]
+    fn a_small_vm_that_declines_hugepages_is_fine() {
+        let config = VmConfig {
+            memory_mib: 256,
+            guest_hugepages: GuestHugePageConfig::None,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(config.check(), Ok(()));
+    }
+
+    /// A VM with nothing in it is rejected before any check that would
+    /// pass vacuously on it.
+    #[test]
+    fn an_empty_vm_is_rejected() {
+        let no_memory = VmConfig {
+            memory_mib: 0,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(no_memory.check(), Err(ConfigProblem::NoMemory));
+
+        let no_cpus = VmConfig {
+            vcpus: 0,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(no_cpus.check(), Err(ConfigProblem::NoVcpus));
+    }
+
+    /// Memory must still be a whole number of host pages, now measured
+    /// against the configured size rather than a constant.
+    #[test]
+    fn memory_must_be_a_whole_number_of_host_pages() {
+        let unaligned = VmConfig {
+            memory_mib: 1536,
+            host_page_size: HostPageSize::Huge1G,
+            guest_hugepages: GuestHugePageConfig::None,
+            ..VmConfig::DEFAULT
+        };
+        assert_eq!(unaligned.check(), Err(ConfigProblem::MemoryNotAligned));
+
+        let aligned = VmConfig {
+            memory_mib: 2048,
+            ..unaligned
+        };
+        assert_eq!(aligned.check(), Ok(()));
     }
 }
