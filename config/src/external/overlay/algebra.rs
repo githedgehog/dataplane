@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Bound::Included;
 use std::time::Duration;
 
@@ -522,6 +522,30 @@ impl Draft {
             return true;
         };
         !spec.guard.silences(spec, side, nth)
+    }
+
+    #[must_use]
+    pub fn unexposed_address(&self, peering: &str, local: &str, nth: usize) -> Option<IpAddr> {
+        let (handle, spec) = self
+            .peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == peering)?;
+        let side = [Side::Left, Side::Right]
+            .into_iter()
+            .find(|side| spec.vpc(*side).name() == local)?;
+        let expose = *spec.exposes(side).get(nth)?;
+        if !expose.excludes() || expose.flavour == Flavour::Masquerade {
+            return None;
+        }
+        if spec.has_everything(side) {
+            return None;
+        }
+        let base = match expose.flavour {
+            Flavour::Forward => PRIVATE_BASE,
+            Flavour::StaticNat => PUBLIC_BASE,
+            Flavour::Masquerade | Flavour::PortForward | Flavour::Everything => return None,
+        };
+        Some(excluded_slice(handle.block(side, expose.slot), base).as_address())
     }
 
     #[must_use]
