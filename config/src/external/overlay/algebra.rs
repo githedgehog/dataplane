@@ -89,6 +89,15 @@ pub enum Flavour {
     Forward,
     /// Stateful source NAT from the private prefix into the public one.
     Masquerade,
+    /// Stateless one-to-one translation between the private prefix and the public one.
+    ///
+    /// The two blocks of the address plan are both `/24`s, which is what a static
+    /// mapping needs: every private address has exactly one public address and the
+    /// translation carries no state at all.  That is the whole reason it is worth
+    /// having in the vocabulary next to [`Masquerade`](Self::Masquerade) -- the two
+    /// answer the same question about a configuration change with and without a flow
+    /// table underneath.
+    StaticNat,
 }
 
 /// The most exposes one side of one peering may carry.
@@ -196,7 +205,9 @@ impl ExposeSpec {
     pub fn public(self, peering: PeeringHandle, side: Side) -> Prefix {
         match self.flavour {
             Flavour::Forward => self.private(peering, side),
-            Flavour::Masquerade => public_prefix(peering.block(side, self.slot)),
+            Flavour::Masquerade | Flavour::StaticNat => {
+                public_prefix(peering.block(side, self.slot))
+            }
         }
     }
 
@@ -210,6 +221,12 @@ impl ExposeSpec {
                 .ip(private.into())
                 .as_range(self.public(peering, side).into())
                 .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
+            Flavour::StaticNat => VpcExpose::empty()
+                .make_static_nat()
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
+                .ip(private.into())
+                .as_range(self.public(peering, side).into())
+                .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
         }
     }
 }
@@ -1198,11 +1215,16 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 /// spent on an operation that will be refused; the one in `apply` is what makes the rule hold for a
 /// sequence a caller assembled by hand.
 fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
-    if driver.produce::<bool>()? && !spec.has_stateful(side.other()) {
-        Some(Flavour::Masquerade)
+    // Ordered simplest-first, so that the byte `pick` reduces towards names the
+    // least translating expose -- and so that the one flavour with a legality
+    // condition is the one that falls off the end when the condition fails.
+    const ORDERED: [Flavour; 3] = [Flavour::Forward, Flavour::StaticNat, Flavour::Masquerade];
+    let legal: &[Flavour] = if spec.has_stateful(side.other()) {
+        &ORDERED[..2]
     } else {
-        Some(Flavour::Forward)
-    }
+        &ORDERED
+    };
+    pick(driver, legal)
 }
 
 /// One of `items`, chosen by index modulo how many there are.
@@ -1371,6 +1393,7 @@ mod tests {
     fn every_sequence_builds_a_valid_configuration() {
         let masquerading = AtomicUsize::new(0);
         let forwarding = AtomicUsize::new(0);
+        let static_nat = AtomicUsize::new(0);
 
         check!()
             .with_generator(Sequence::default())
@@ -1394,6 +1417,7 @@ mod tests {
                             match expose.flavour() {
                                 Flavour::Masquerade => &masquerading,
                                 Flavour::Forward => &forwarding,
+                                Flavour::StaticNat => &static_nat,
                             }
                             .fetch_add(1, Relaxed);
                         }
@@ -1410,11 +1434,14 @@ mod tests {
 
         assert_every_kind_drawn();
         assert!(
-            masquerading.load(Relaxed) > 0 && forwarding.load(Relaxed) > 0,
-            "only one flavour of expose was ever built (masquerade {}, forward {}), so the \
-             combination rules were not exercised",
+            masquerading.load(Relaxed) > 0
+                && forwarding.load(Relaxed) > 0
+                && static_nat.load(Relaxed) > 0,
+            "not every flavour of expose was built (masquerade {}, forward {}, static nat {}), \
+             so the combination rules were not exercised",
             masquerading.load(Relaxed),
-            forwarding.load(Relaxed)
+            forwarding.load(Relaxed),
+            static_nat.load(Relaxed)
         );
     }
 
