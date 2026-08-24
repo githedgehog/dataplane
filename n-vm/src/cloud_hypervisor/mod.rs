@@ -584,7 +584,7 @@ mod tests {
         // `hugepagesz=1G`, which is a copy of the default rather than a claim about the cmdline,
         // and it failed the moment the default changed for reasons that had nothing to do with
         // whether the reservation reaches the kernel.
-        let expected = params.vm_config.guest_hugepages.kernel_cmdline_fragment();
+        let expected = params.vm_config.hugepage_reservation().kernel_cmdline_fragment();
         assert!(!expected.is_empty(), "the sample config reserves hugepages");
         assert!(
             cmdline.contains(expected.trim_end()),
