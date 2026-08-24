@@ -66,14 +66,7 @@ const REACH: &[(&str, Reach)] = &[
              so nothing generated ever splits vpcs across gateway groups.",
         ),
     ),
-    (
-        "VpcPeering.acl",
-        Reach::Fixed(
-            "absent. Peering-scoped ACLs are not in the vocabulary, so no generated configuration \
-             carries one -- and an ACL is precisely a thing that changes a verdict, which is what \
-             every property here asserts over.",
-        ),
-    ),
+    ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
     (
         "VpcManifest.name",
         Reach::Determined("the side's vpc handle"),

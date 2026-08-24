@@ -6,10 +6,13 @@ use std::net::Ipv4Addr;
 use std::ops::Bound::Included;
 
 use bolero::{Driver, ValueGenerator};
-use lpm::prefix::{IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixWithOptionalPorts};
+use lpm::prefix::{
+    IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+};
 
 use crate::ConfigError;
 use crate::external::overlay::Overlay;
+use crate::external::overlay::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use crate::external::overlay::vpc::{Vpc, VpcTable};
 use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 
@@ -54,6 +57,43 @@ impl Flavour {
     #[must_use]
     pub const fn is_directional(self) -> bool {
         matches!(self, Self::Masquerade | Self::PortForward)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default)]
+pub enum Guard {
+    #[default]
+    Open,
+    Permit,
+    Deny,
+}
+
+impl Guard {
+    fn acl(self, spec: &PeeringSpec) -> Option<Acl> {
+        let (default, action) = match self {
+            Guard::Open => return None,
+            Guard::Permit => (AclAction::Deny, AclAction::Allow),
+            Guard::Deny => (AclAction::Allow, AclAction::Deny),
+        };
+        let rule = |side: Side| {
+            let (from, to) = (spec.vpc(side).name(), spec.vpc(side.other()).name());
+            AclRule {
+                name: format!("{from}-to-{to}"),
+                from,
+                to,
+                action,
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: AclProtoMatch::Any,
+                },
+                scope: AclScope::Packet,
+                log: false,
+            }
+        };
+        Some(Acl::new(default, vec![rule(Side::Left), rule(Side::Right)]))
     }
 }
 
@@ -179,6 +219,7 @@ pub struct PeeringSpec {
     left: VpcHandle,
     right: VpcHandle,
     exposes: [Vec<ExposeSpec>; 2],
+    guard: Guard,
 }
 
 impl PeeringSpec {
@@ -188,6 +229,11 @@ impl PeeringSpec {
             Side::Left => self.left,
             Side::Right => self.right,
         }
+    }
+
+    #[must_use]
+    pub fn guard(&self) -> Guard {
+        self.guard
     }
 
     #[must_use]
@@ -258,6 +304,14 @@ impl Draft {
     }
 
     #[must_use]
+    pub fn guard_named(&self, name: &str) -> Option<Guard> {
+        self.peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == name)
+            .map(|(_, spec)| spec.guard)
+    }
+
+    #[must_use]
     pub fn components(&self) -> Vec<Vec<VpcHandle>> {
         let mut unvisited: BTreeSet<VpcHandle> = self.vpcs.clone();
         let mut components = Vec::new();
@@ -292,11 +346,13 @@ impl Draft {
 
         let mut peerings = VpcPeeringTable::new();
         for (handle, spec) in self.peerings() {
-            peerings.add(VpcPeering::with_default_group(
+            let mut peering = VpcPeering::with_default_group(
                 &handle.name(),
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
-            ))?;
+            );
+            peering.acl = spec.guard.acl(spec);
+            peerings.add(peering)?;
         }
 
         Ok(Overlay::new(vpc_table, peerings))
@@ -369,6 +425,10 @@ pub enum Op {
         slot: u8,
         flavour: Flavour,
     },
+    SetGuard {
+        peering: PeeringHandle,
+        guard: Guard,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -397,6 +457,10 @@ pub enum Undo {
         slot: u8,
         flavour: Flavour,
     },
+    SetGuard {
+        peering: PeeringHandle,
+        guard: Guard,
+    },
 }
 
 impl Op {
@@ -407,7 +471,8 @@ impl Op {
             Op::AddPeering { left, right, .. } => Footprint::of([*left, *right], []),
             Op::AddExpose { peering, .. }
             | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. } => Footprint::of([], [*peering]),
+            | Op::SetFlavour { peering, .. }
+            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
         }
     }
 
@@ -445,7 +510,8 @@ impl Op {
             }
             Op::AddExpose { peering, .. }
             | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. } => Footprint::of([], [*peering]),
+            | Op::SetFlavour { peering, .. }
+            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
         }
     }
 
@@ -489,6 +555,7 @@ impl Op {
                         left,
                         right,
                         exposes: [vec![first(0)], vec![first(0)]],
+                        guard: Guard::Open,
                     },
                 );
                 Some(Undo::RemovePeering(handle))
@@ -531,6 +598,15 @@ impl Op {
                 slot,
                 flavour,
             } => set_flavour(draft, peering, side, slot, flavour),
+
+            Op::SetGuard { peering, guard } => {
+                let spec = draft.peerings.get_mut(&peering)?;
+                let previous = std::mem::replace(&mut spec.guard, guard);
+                Some(Undo::SetGuard {
+                    peering,
+                    guard: previous,
+                })
+            }
         }
     }
 }
@@ -688,6 +764,13 @@ impl Undo {
                     .unwrap_or_else(|| unreachable!("no expose in slot {slot}"));
                 spec.exposes_mut(*side)[index].flavour = *flavour;
             }
+            Undo::SetGuard { peering, guard } => {
+                draft
+                    .peerings
+                    .get_mut(peering)
+                    .unwrap_or_else(|| unreachable!("no peering {peering:?}"))
+                    .guard = *guard;
+            }
         }
     }
 }
@@ -749,7 +832,7 @@ impl ValueGenerator for Sequence {
     }
 }
 
-const MENU: [(Kind, u8); 7] = [
+const MENU: [(Kind, u8); 8] = [
     (Kind::AddVpc, 4),
     (Kind::RemoveVpc, 1),
     (Kind::AddPeering, 4),
@@ -757,6 +840,7 @@ const MENU: [(Kind, u8); 7] = [
     (Kind::AddExpose, 2),
     (Kind::RemoveExpose, 1),
     (Kind::SetFlavour, 2),
+    (Kind::SetGuard, 2),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -768,6 +852,7 @@ enum Kind {
     AddExpose,
     RemoveExpose,
     SetFlavour,
+    SetGuard,
 }
 
 impl Kind {
@@ -784,7 +869,7 @@ impl Kind {
                 let vpcs = draft.vpcs.len();
                 next_peering < u8::MAX && vpcs >= 2 && draft.peerings.len() < vpcs * (vpcs - 1) / 2
             }
-            Kind::RemovePeering | Kind::SetFlavour => !draft.peerings.is_empty(),
+            Kind::RemovePeering | Kind::SetFlavour | Kind::SetGuard => !draft.peerings.is_empty(),
             Kind::AddExpose => sides().any(|exposes| exposes.len() < usize::from(MAX_EXPOSES)),
             Kind::RemoveExpose => sides().any(|exposes| exposes.len() > 1),
         }
@@ -814,6 +899,7 @@ fn draw<D: Driver>(
             Kind::AddExpose => draw_add_expose(driver, draft),
             Kind::RemoveExpose => draw_remove_expose(driver, draft),
             Kind::SetFlavour => draw_set_flavour(driver, draft),
+            Kind::SetGuard => draw_set_guard(driver, draft),
         };
 
         let Some(op) = built else {
@@ -970,6 +1056,16 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     })
 }
 
+fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
+    const ORDERED: [Guard; 3] = [Guard::Open, Guard::Permit, Guard::Deny];
+
+    let peerings: Vec<PeeringHandle> = draft.peerings().map(|(handle, _)| handle).collect();
+    Some(Op::SetGuard {
+        peering: pick(driver, &peerings)?,
+        guard: pick(driver, &ORDERED)?,
+    })
+}
+
 fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
     const ORDERED: [Flavour; 4] = [
         Flavour::Forward,
@@ -1056,7 +1152,8 @@ mod tests {
         );
     }
 
-    static DRAWN: [AtomicUsize; 7] = [
+    static DRAWN: [AtomicUsize; 8] = [
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
@@ -1066,7 +1163,7 @@ mod tests {
         AtomicUsize::new(0),
     ];
 
-    const KINDS: [&str; 7] = [
+    const KINDS: [&str; 8] = [
         "AddVpc",
         "RemoveVpc",
         "AddPeering",
@@ -1074,6 +1171,7 @@ mod tests {
         "AddExpose",
         "RemoveExpose",
         "SetFlavour",
+        "SetGuard",
     ];
 
     fn record(op: Op) {
@@ -1085,6 +1183,7 @@ mod tests {
             Op::AddExpose { .. } => 4,
             Op::RemoveExpose { .. } => 5,
             Op::SetFlavour { .. } => 6,
+            Op::SetGuard { .. } => 7,
         };
         DRAWN[index].fetch_add(1, Relaxed);
     }
@@ -1104,6 +1203,11 @@ mod tests {
         let forwarding = AtomicUsize::new(0);
         let static_nat = AtomicUsize::new(0);
         let port_forward = AtomicUsize::new(0);
+        let guards = [
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        ];
 
         check!()
             .with_generator(Sequence::default())
@@ -1138,6 +1242,33 @@ mod tests {
                 let overlay = draft
                     .overlay()
                     .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+
+                for (handle, spec) in draft.peerings() {
+                    let acl = overlay
+                        .peering_table
+                        .values()
+                        .find(|peering| peering.name == handle.name())
+                        .and_then(|peering| peering.acl.as_ref());
+                    let observed = match acl.map(Acl::default_action) {
+                        None => Guard::Open,
+                        Some(AclAction::Deny) => Guard::Permit,
+                        Some(AclAction::Allow) => Guard::Deny,
+                    };
+                    assert_eq!(
+                        observed,
+                        spec.guard(),
+                        "{:?} is guarded {:?} and assembled an acl reading {observed:?}",
+                        handle,
+                        spec.guard()
+                    );
+                    guards[match observed {
+                        Guard::Open => 0,
+                        Guard::Permit => 1,
+                        Guard::Deny => 2,
+                    }]
+                    .fetch_add(1, Relaxed);
+                }
+
                 if let Err(e) = overlay.validate() {
                     panic!("{ops:?} builds a configuration the validator refuses: {e}");
                 }
@@ -1156,6 +1287,16 @@ mod tests {
             static_nat.load(Relaxed),
             port_forward.load(Relaxed)
         );
+        for (name, count) in ["open", "permit", "deny"].iter().zip(&guards) {
+            assert!(
+                count.load(Relaxed) > 0,
+                "no peering was ever left {name} (open {}, permit {}, deny {}), so the acl \
+                 vocabulary was not exercised",
+                guards[0].load(Relaxed),
+                guards[1].load(Relaxed),
+                guards[2].load(Relaxed)
+            );
+        }
     }
 
     #[test]

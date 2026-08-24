@@ -687,6 +687,7 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
+    use config::external::overlay::algebra::{Draft, Guard};
     use config::external::overlay::vpcpeering::ValidatedExpose;
     use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
@@ -765,6 +766,18 @@ pub(crate) mod derive {
 
     pub(crate) fn loads_for(overlay: &ValidatedOverlay, vary: &[Vary]) -> Vec<Box<dyn Load>> {
         loads_where(overlay, vary, &|_| true)
+    }
+
+    pub(crate) fn carried_by(draft: &Draft) -> impl Fn(Named<'_>) -> bool + '_ {
+        move |named| draft.guard_named(named.peering) != Some(Guard::Deny)
+    }
+
+    pub(crate) fn loads_carried(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        draft: &Draft,
+    ) -> Vec<Box<dyn Load>> {
+        loads_where(overlay, vary, &carried_by(draft))
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -2458,16 +2471,70 @@ mod offers {
 
 #[cfg(test)]
 mod generated {
-    use super::derive::{Vary, loads_for};
+    use super::derive::{Named, Vary, loads_where};
     use super::*;
     use bolero::ValueGenerator;
     use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU64, Ordering};
-    use config::external::overlay::algebra::{Op, Sequence};
+    use config::external::overlay::algebra::{Draft, Guard, Op, Sequence};
+    use std::cell::Cell;
     use std::ops::Bound::Included;
 
     const SENDERS: usize = 6;
     const POLLS: usize = 8;
+
+    static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    fn report_and_assert_coverage() {
+        let (checked, derived, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            DERIVED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        let (peered, multi) = (
+            PEERED.load(Ordering::Relaxed),
+            MULTI.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "checked={checked} derived={derived} inbound={} \
+             permitting-peerings={} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            INBOUND.load(Ordering::Relaxed),
+            PERMITTING.load(Ordering::Relaxed)
+        );
+        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        super::assert_covered(
+            multi > 0,
+            "no generated configuration ever had more than two vpcs, so this reached nothing the \
+             two-vpc fixtures do not",
+        );
+        super::assert_covered(
+            derived > 0,
+            "no generated configuration ever implied any traffic",
+        );
+        super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            INBOUND.load(Ordering::Relaxed) > 0,
+            "no generated configuration ever produced an inbound load, so a port-forwarding \
+             expose was drawn into configurations and then carried no traffic at all",
+        );
+        super::assert_covered(
+            PERMITTING.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering whose acl permits it, so every load here \
+             ran with no acl in the way and a rule set that lowered to nothing would have gone \
+             unnoticed",
+        );
+        super::assert_covered(
+            mixed > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+    }
 
     pub(super) struct Generated;
 
@@ -2513,16 +2580,23 @@ mod generated {
         super::assert_within_budget("generated::Generated", &Generated);
     }
 
+    fn carried_counting<'a>(
+        draft: &'a Draft,
+        permitting: &'a Cell<u64>,
+    ) -> impl Fn(Named<'_>) -> bool + 'a {
+        move |named| match draft.guard_named(named.peering) {
+            Some(Guard::Deny) => false,
+            Some(Guard::Permit) => {
+                permitting.set(permitting.get() + 1);
+                true
+            }
+            Some(Guard::Open) | None => true,
+        }
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_generated_configuration_carries_its_own_traffic() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
@@ -2552,7 +2626,10 @@ mod generated {
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
 
-                let mut loads = loads_for(&validated, vary);
+                let permitting = Cell::new(0);
+                let mut loads =
+                    loads_where(&validated, vary, &carried_counting(&draft, &permitting));
+                PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 for load in &loads {
                     if load.describe().starts_with("[inbound") {
@@ -2579,39 +2656,75 @@ mod generated {
                 }
             });
 
-        let (checked, derived, mixed) = (
-            CHECKED.load(Ordering::Relaxed),
-            DERIVED.load(Ordering::Relaxed),
-            MIXED.load(Ordering::Relaxed),
+        report_and_assert_coverage();
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_denied_peering_carries_nothing() {
+        static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, _schedule)| {
+                let draft = Sequence::fold(ops);
+                let validated = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                let carried = super::derive::carried_by(&draft);
+                let mut loads = loads_where(&validated, vary, &|named| !carried(named));
+                if loads.is_empty() {
+                    return;
+                }
+                CONFIGS.fetch_add(1, Ordering::Relaxed);
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                for load in &mut loads {
+                    let Some(packet) = load.next() else {
+                        continue;
+                    };
+                    let seen = verdict(&fabric.worker().send(packet));
+                    SENT.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        matches!(seen, Verdict::Dropped(_)),
+                        "a peering whose acl denies everything it carries produced {seen:?} for {}",
+                        load.describe()
+                    );
+                    if seen == Verdict::Dropped(DoneReason::AclDropped) {
+                        BY_ACL.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (configs, sent, by_acl) = (
+            CONFIGS.load(Ordering::Relaxed),
+            SENT.load(Ordering::Relaxed),
+            BY_ACL.load(Ordering::Relaxed),
         );
-        let (peered, multi) = (
-            PEERED.load(Ordering::Relaxed),
-            MULTI.load(Ordering::Relaxed),
-        );
-        eprintln!(
-            "checked={checked} derived={derived} inbound={} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
-            INBOUND.load(Ordering::Relaxed)
-        );
-        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        eprintln!("denied-configs={configs} sent={sent} (dropped by the acl {by_acl})");
         super::assert_covered(
-            multi > 0,
-            "no generated configuration ever had more than two vpcs, so this reached nothing the \
-             two-vpc fixtures do not",
+            sent > 0,
+            "no denied peering ever had traffic derived for it, so this asserted nothing about \
+             any packet",
         );
         super::assert_covered(
-            derived > 0,
-            "no generated configuration ever implied any traffic",
-        );
-        super::assert_covered(checked > 0, "no derived sender ever completed its business");
-        super::assert_covered(
-            INBOUND.load(Ordering::Relaxed) > 0,
-            "no generated configuration ever produced an inbound load, so a port-forwarding \
-             expose was drawn into configurations and then carried no traffic at all",
-        );
-        super::assert_covered(
-            mixed > 0,
-            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+            by_acl > 0,
+            "no packet was ever dropped by the acl: the claim is being satisfied by stages ahead \
+             of it and would hold with the acl removed",
         );
     }
 }
@@ -3853,7 +3966,7 @@ mod routed {
 
 #[cfg(test)]
 mod model {
-    use super::derive::loads_for;
+    use super::derive::loads_carried;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
@@ -3862,7 +3975,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Footprint, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
 
     type Tuple = (Option<IpAddr>, Option<u16>);
@@ -4091,7 +4204,8 @@ mod model {
             .with_generator(generated::Generated)
             .with_iterations(CASES)
             .for_each(|(ops, vary, schedule)| {
-                let validated = Sequence::fold(ops)
+                let draft = Sequence::fold(ops);
+                let validated = draft
                     .overlay()
                     .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
                     .validate()
@@ -4102,18 +4216,23 @@ mod model {
                     .values()
                     .map(config::external::overlay::vpc::ValidatedVpc::vni)
                     .collect();
-                if vnis.is_empty() || loads_for(&validated, vary).len() < 2 {
+                if vnis.is_empty() || loads_carried(&validated, vary, &draft).len() < 2 {
                     THIN.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
                 SPLIT.fetch_add(1, Ordering::Relaxed);
 
-                let drawn =
-                    concurrency::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let drawn = concurrency::sync::Arc::new((
+                    validated,
+                    vnis,
+                    vary.clone(),
+                    schedule.clone(),
+                    draft,
+                ));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
-                    let (validated, vnis, vary, schedule) = &*drawn;
+                    let (validated, vnis, vary, schedule, draft) = &*drawn;
                     let tables = topology(vnis);
                     let fleet =
                         Fleet::lowering(validated, Some(&tables), Arc::new(FlowTable::default()));
@@ -4132,7 +4251,7 @@ mod model {
                                             tracectl::evidence::capture(format!("worker-{which}"));
                                         let mut worker = blueprint.worker();
                                         let mut mine: Vec<Box<dyn Load>> =
-                                            loads_for(validated, vary)
+                                            loads_carried(validated, vary, draft)
                                                 .into_iter()
                                                 .enumerate()
                                                 .filter(|(nth, _)| nth % 2 == which)
@@ -4953,9 +5072,14 @@ mod model {
             within + u16::try_from(which).unwrap_or_else(|_| unreachable!()) * 32_768
         }
 
-        fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
+        fn outside<'a>(
+            footprint: &'a Footprint,
+            draft: &'a Draft,
+        ) -> impl Fn(derive::Named<'_>) -> bool + 'a {
+            let carried = derive::carried_by(draft);
             move |named| {
-                !footprint.touches_peering_named(named.peering)
+                carried(named)
+                    && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)
             }
@@ -4996,8 +5120,9 @@ mod model {
                 let running = assemble(&before);
                 let enacted = assemble(&Sequence::fold(ops));
 
-                let framed = derive::loads_where(&running, vary, &outside(&footprint)).len();
-                let total = derive::loads_for(&running, vary).len();
+                let framed =
+                    derive::loads_where(&running, vary, &outside(&footprint, &before)).len();
+                let total = derive::loads_carried(&running, vary, &before).len();
                 FRAMED_OUT.fetch_add(
                     u64::try_from(total - framed).unwrap_or_else(|_| unreachable!()),
                     Ordering::Relaxed,
@@ -5025,11 +5150,12 @@ mod model {
                     vary.clone(),
                     footprint,
                     *change,
+                    before,
                 ));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
-                    let (running, enacted, vnis, vary, footprint, change) = &*drawn;
+                    let (running, enacted, vnis, vary, footprint, change, before) = &*drawn;
                     let tables = topology(vnis);
                     let fleet =
                         Fleet::lowering(running, Some(&tables), Arc::new(FlowTable::default()));
@@ -5050,7 +5176,7 @@ mod model {
                                         let _evidence =
                                             tracectl::evidence::capture(format!("framed-{which}"));
                                         let mut worker = blueprint.worker();
-                                        let outside = outside(footprint);
+                                        let outside = outside(footprint, before);
                                         gate.wait();
                                         let mut seen = Vec::new();
                                         for round in 1..=ROUNDS {
