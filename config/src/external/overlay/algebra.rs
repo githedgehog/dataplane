@@ -186,6 +186,22 @@ pub enum Guard {
     /// one place in the traffic the configuration implies: as the source of its own requests.
     /// Narrow a rule to it and precisely those requests change verdict.
     PermitExcept,
+    /// As [`PermitExcept`](Self::PermitExcept), except that nothing is excepted after all.
+    ///
+    /// The denial names a protocol the configuration's own traffic never carries, so it cannot
+    /// fire; the permits that follow it name the protocol the traffic does carry, and name it by
+    /// port range rather than by address. Everything is carried.
+    ///
+    /// The value is that the correctness here is a **negative**: a rule that must *not* fire. If
+    /// the protocol were dropped on the way into the table, or lowered as a wildcard, this
+    /// configuration would silence an expose and `a_generated_configuration_carries_its_own_traffic`
+    /// would say so. Every other shape in this vocabulary is checked by a rule doing something.
+    ///
+    /// It leans on one fact about the traffic a configuration implies rather than about the
+    /// configuration: every load the derivation builds is UDP. That is worth stating here because
+    /// it is the whole reason `Tcp` is the protocol that cannot fire, and a load kind carrying
+    /// anything else would need this rewritten rather than merely extended.
+    PermitByProtocol,
     /// Every direction named and denied, over a default of allow.
     Deny,
 }
@@ -206,7 +222,7 @@ impl Guard {
     fn acl(self, peering: PeeringHandle, spec: &PeeringSpec) -> Option<Acl> {
         let (default, action, scope) = match self {
             Guard::Open => return None,
-            Guard::Permit | Guard::PermitExcept => {
+            Guard::Permit | Guard::PermitExcept | Guard::PermitByProtocol => {
                 (AclAction::Deny, AclAction::Allow, AclScope::Packet)
             }
             Guard::PermitFlow => (AclAction::Deny, AclAction::Allow, AclScope::Flow),
@@ -215,6 +231,16 @@ impl Guard {
         // One rule per direction. A rule is directional -- `PeeringAclRuleSet` files it under its
         // `from` side's vni -- so a single rule would leave the reply direction to the default,
         // which is the opposite action, and neither shape would mean what it says.
+        // A rule that names its protocol also names its ports, because that is the only shape in
+        // which ports may be named at all: `AclPattern::validate_ports` refuses port matching on
+        // any protocol but tcp and udp. The range is every port there is, so what it selects is
+        // "udp, on any port" -- the `match` shape that names ports and no address, which the k8s
+        // converter produces and `expand_any_ports` materialises against the manifests.
+        let (proto, any_ports) = if self == Guard::PermitByProtocol {
+            (AclProtoMatch::Udp, vec![port_range(EVERY_PORT)])
+        } else {
+            (AclProtoMatch::Any, Vec::new())
+        };
         let rule = |side: Side| {
             let (from, to) = (spec.vpc(side).name(), spec.vpc(side.other()).name());
             AclRule {
@@ -225,9 +251,9 @@ impl Guard {
                 pattern: AclPattern {
                     src: PrefixPortsSet::new(),
                     dst: PrefixPortsSet::new(),
-                    src_any_ports: Vec::new(),
-                    dst_any_ports: Vec::new(),
-                    proto: AclProtoMatch::Any,
+                    src_any_ports: any_ports.clone(),
+                    dst_any_ports: any_ports.clone(),
+                    proto,
                 },
                 scope,
                 // A denial is the verdict an operator wants in the log, and a permit is not. That
@@ -248,15 +274,31 @@ impl Guard {
             // The denial goes **first**, and that is the whole of the shape: it names a subset of
             // what the rule after it names, so a packet from the excepted expose matches both and
             // only the order decides which answer it gets.
-            Guard::PermitExcept => {
-                let (side, expose) = spec
+            Guard::PermitExcept | Guard::PermitByProtocol => {
+                let (side, which, prefix) = spec
                     .exception(peering)
                     .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no expose"));
-                let mut denial = rule(side);
+                // A source narrowing rides the rule *from* the excepted expose's side; a
+                // destination narrowing rides the rule *to* it, which is the rule from the other
+                // side. See `Narrowing`.
+                let denied_from = match which {
+                    Narrowing::Source => side,
+                    Narrowing::Destination => side.other(),
+                };
+                let mut denial = rule(denied_from);
                 denial.name = format!("{}-except", denial.name);
                 denial.action = AclAction::Deny;
-                denial.pattern.src = PrefixPortsSet::from([PrefixWithOptionalPorts::from(expose)]);
-                vec![denial, rule(side), rule(side.other())]
+                let named = PrefixPortsSet::from([PrefixWithOptionalPorts::from(prefix)]);
+                match which {
+                    Narrowing::Source => denial.pattern.src = named,
+                    Narrowing::Destination => denial.pattern.dst = named,
+                }
+                if self == Guard::PermitByProtocol {
+                    // A protocol the traffic never carries, so the denial cannot fire. See
+                    // `Guard::PermitByProtocol`; the whole shape is that this rule does nothing.
+                    denial.pattern.proto = AclProtoMatch::Tcp;
+                }
+                vec![denial, rule(denied_from), rule(denied_from.other())]
             }
             Guard::Open | Guard::Permit | Guard::Deny => {
                 vec![rule(Side::Left), rule(Side::Right)]
@@ -272,7 +314,11 @@ impl Guard {
                 spec.sole_opener()
                     .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no side")),
             ),
-            Guard::Open | Guard::Permit | Guard::PermitExcept | Guard::Deny => None,
+            Guard::Open
+            | Guard::Permit
+            | Guard::PermitExcept
+            | Guard::PermitByProtocol
+            | Guard::Deny => None,
         }
     }
 
@@ -287,7 +333,7 @@ impl Guard {
         match self {
             Guard::Open | Guard::Permit | Guard::Deny => true,
             Guard::PermitFlow => spec.sole_opener().is_some(),
-            Guard::PermitExcept => spec.exception_slot().is_some(),
+            Guard::PermitExcept | Guard::PermitByProtocol => spec.exception_slot().is_some(),
         }
     }
 
@@ -299,9 +345,14 @@ impl Guard {
     /// peering get different answers.
     fn silences(self, spec: &PeeringSpec, side: Side, nth: usize) -> bool {
         match self {
-            Guard::Open | Guard::Permit | Guard::PermitFlow => false,
+            // `PermitByProtocol` sits here rather than beside the `PermitExcept` it is otherwise
+            // shaped like: its denial names a protocol the traffic does not carry, so the rule
+            // cannot fire and the expose it names is carried after all.
+            Guard::Open | Guard::Permit | Guard::PermitFlow | Guard::PermitByProtocol => false,
             Guard::Deny => true,
-            Guard::PermitExcept => spec.exception_slot() == Some((side, nth)),
+            Guard::PermitExcept => spec
+                .exception_slot()
+                .is_some_and(|(at, which, _)| (at, which) == (side, nth)),
         }
     }
 }
@@ -393,6 +444,12 @@ pub(crate) const FORWARDED_PRIVATE_PORTS: (u16, u16) = (1000, 1004);
 /// nothing saying so. Different numbers are what makes a test that confuses the two sides fail
 /// rather than pass.
 pub(crate) const FORWARDED_PUBLIC_PORTS: (u16, u16) = (2000, 2004);
+
+/// Every port a load could send from or to.
+///
+/// One rather than zero at the bottom: a load's ports come from `Vary`, which floors them at one,
+/// and a range that reached zero would claim coverage of a port no generated traffic uses.
+const EVERY_PORT: (u16, u16) = (1, u16::MAX);
 
 fn port_range((start, end): (u16, u16)) -> PortRange {
     PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
@@ -501,6 +558,35 @@ impl ExposeSpec {
     }
 }
 
+/// Which end of a rule a narrowed exception names, and therefore which rule carries it.
+///
+/// Both are the same trick from opposite ends: name a prefix that appears in the traffic the
+/// configuration implies in exactly *one* place, so that narrowing a rule to it changes exactly one
+/// thing and no evaluation is needed to say which.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Narrowing {
+    /// The private prefix of a masquerading expose, on the rule *from* its side.
+    ///
+    /// Nothing is ever aimed at a masquerading expose -- `can_receive_connection` is false for one
+    /// -- so its private prefix is the source of its own requests and of nothing else.
+    Source,
+    /// The public prefix of a port-forwarding expose, on the rule *to* its side.
+    ///
+    /// The mirror image: a port-forwarding expose is reached and never reaches, so its public
+    /// prefix is the destination of the traffic aimed at it and of nothing else.
+    Destination,
+}
+
+impl Narrowing {
+    fn of(flavour: Flavour) -> Option<Self> {
+        match flavour {
+            Flavour::Masquerade => Some(Self::Source),
+            Flavour::PortForward => Some(Self::Destination),
+            Flavour::Forward | Flavour::StaticNat => None,
+        }
+    }
+}
+
 /// One peering and both its manifests.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PeeringSpec {
@@ -582,30 +668,34 @@ impl PeeringSpec {
         })
     }
 
-    /// The masquerading expose a rule may be narrowed to, and where it lives.
+    /// The expose a rule may be narrowed to, where it lives, and which end of a rule names it.
     ///
-    /// The *first* masquerading expose of whichever side has one, by position in the manifest --
+    /// The *first* directional expose of whichever side has one, by position in the manifest --
     /// which is the order [`PeeringSpec::manifest`] folds them in and the order a validated
     /// manifest keeps them in, so "the first" means the same thing to whoever reads the assembled
     /// configuration. Slot order would not: a slot freed by a removal is refilled by the next
     /// addition, which lands at the end.
     ///
-    /// At most one side has a masquerading expose at all -- [`Flavour::is_directional`] -- so
-    /// there is nothing to choose between.
-    fn exception_slot(&self) -> Option<(Side, usize)> {
+    /// At most one side has a directional expose at all -- [`Flavour::is_directional`] -- so there
+    /// is nothing to choose between.
+    fn exception_slot(&self) -> Option<(Side, usize, Narrowing)> {
         [Side::Left, Side::Right].into_iter().find_map(|side| {
-            let nth = self
-                .exposes(side)
+            self.exposes(side)
                 .iter()
-                .position(|expose| expose.flavour == Flavour::Masquerade)?;
-            Some((side, nth))
+                .enumerate()
+                .find_map(|(nth, expose)| Some((side, nth, Narrowing::of(expose.flavour)?)))
         })
     }
 
     /// [`PeeringSpec::exception_slot`], resolved to the prefix a rule would name.
-    fn exception(&self, peering: PeeringHandle) -> Option<(Side, Prefix)> {
-        let (side, nth) = self.exception_slot()?;
-        Some((side, self.exposes(side)[nth].private(peering, side)))
+    fn exception(&self, peering: PeeringHandle) -> Option<(Side, Narrowing, Prefix)> {
+        let (side, nth, which) = self.exception_slot()?;
+        let expose = self.exposes(side)[nth];
+        let prefix = match which {
+            Narrowing::Source => expose.private(peering, side),
+            Narrowing::Destination => expose.public(peering, side),
+        };
+        Some((side, which, prefix))
     }
 
     /// Whether `side` carries a flavour that forbids one on the other side.
@@ -1673,10 +1763,11 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
 fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     // Ordered least-constraining first, so that the byte `pick` reduces towards the peering that
     // carries its traffic with nothing in the way.
-    const ORDERED: [Guard; 5] = [
+    const ORDERED: [Guard; 6] = [
         Guard::Open,
         Guard::Permit,
         Guard::PermitExcept,
+        Guard::PermitByProtocol,
         Guard::PermitFlow,
         Guard::Deny,
     ];
@@ -1892,7 +1983,7 @@ mod tests {
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
         let flavours = [const { AtomicUsize::new(0) }; 4];
-        let guards = [const { AtomicUsize::new(0) }; 5];
+        let guards = [const { AtomicUsize::new(0) }; 6];
 
         check!()
             .with_generator(Sequence::default())
@@ -1939,15 +2030,21 @@ mod tests {
                         .values()
                         .find(|peering| peering.name == handle.name())
                         .and_then(|peering| peering.acl.as_ref());
-                    let observed = match acl.map(|acl| (acl.default_action(), acl.rules().len())) {
-                        None => Guard::Open,
-                        // The default is the opposite of what the rules say, and the rule count is
-                        // what tells the three permitting shapes apart; see `Guard`.
-                        Some((AclAction::Deny, 1)) => Guard::PermitFlow,
-                        Some((AclAction::Deny, 3)) => Guard::PermitExcept,
-                        Some((AclAction::Deny, _)) => Guard::Permit,
-                        Some((AclAction::Allow, _)) => Guard::Deny,
-                    };
+                    // The default is the opposite of what the rules say; the rule count and the
+                    // first rule's protocol tell the permitting shapes apart. See `Guard`.
+                    let observed = acl.map_or(Guard::Open, |acl| {
+                        let inert = acl
+                            .rules()
+                            .first()
+                            .is_some_and(|rule| rule.pattern.proto == AclProtoMatch::Tcp);
+                        match (acl.default_action(), acl.rules().len()) {
+                            (AclAction::Deny, 1) => Guard::PermitFlow,
+                            (AclAction::Deny, 3) if inert => Guard::PermitByProtocol,
+                            (AclAction::Deny, 3) => Guard::PermitExcept,
+                            (AclAction::Deny, _) => Guard::Permit,
+                            (AclAction::Allow, _) => Guard::Deny,
+                        }
+                    });
                     assert_eq!(
                         observed,
                         spec.guard(),
@@ -1959,8 +2056,9 @@ mod tests {
                         Guard::Open => 0,
                         Guard::Permit => 1,
                         Guard::PermitExcept => 2,
-                        Guard::PermitFlow => 3,
-                        Guard::Deny => 4,
+                        Guard::PermitByProtocol => 3,
+                        Guard::PermitFlow => 4,
+                        Guard::Deny => 5,
                     }]
                     .fetch_add(1, Relaxed);
                 }
@@ -1976,10 +2074,11 @@ mod tests {
 
     /// The names of the two vocabularies above, in the order they are counted in.
     const FLAVOURS: [&str; 4] = ["forward", "masquerade", "static-nat", "port-forward"];
-    const GUARDS: [&str; 5] = [
+    const GUARDS: [&str; 6] = [
         "open",
         "permit",
         "permit-except-one",
+        "permit-by-protocol",
         "permit-by-flow",
         "deny",
     ];
@@ -1995,7 +2094,7 @@ mod tests {
     /// flavour never built means the nat combination rules were never exercised; a guard never set
     /// means a validator rule was not -- the one filling an empty ACL pattern in from the
     /// manifests.
-    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 5]) {
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 4], guards: &[AtomicUsize; 6]) {
         let show = |names: &[&str], counts: &[AtomicUsize]| {
             names
                 .iter()
