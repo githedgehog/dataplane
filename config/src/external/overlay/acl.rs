@@ -424,8 +424,11 @@ impl ValidatedAclRule {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Acl {
-    default: AclAction,
-    rules: Vec<AclRule>,
+    // `pub(crate)` rather than private so that `completeness::survey` can destructure one. It has
+    // to: the survey's exhaustiveness is what stops a field added here from quietly becoming
+    // unreachable, and it can only be exhaustive over fields it can name.
+    pub(crate) default: AclAction,
+    pub(crate) rules: Vec<AclRule>,
 }
 
 impl Acl {
