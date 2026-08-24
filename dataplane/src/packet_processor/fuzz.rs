@@ -410,6 +410,10 @@ impl Fabric {
         &mut self.worker
     }
 
+    pub(crate) fn fleet(&self) -> &Fleet {
+        &self.fleet
+    }
+
     pub(crate) fn flows(&self) -> Option<usize> {
         self.fleet.blueprint().flow_table.len()
     }
@@ -2809,6 +2813,7 @@ mod generated {
     static MULTI: AtomicU64 = AtomicU64::new(0);
     static INBOUND: AtomicU64 = AtomicU64::new(0);
     static PERMITTING: AtomicU64 = AtomicU64::new(0);
+    static BY_FLOW: AtomicU64 = AtomicU64::new(0);
 
     fn report_and_assert_coverage() {
         let (checked, derived, mixed) = (
@@ -2822,10 +2827,11 @@ mod generated {
         );
         eprintln!(
             "checked={checked} derived={derived} inbound={} \
-             permitting-peerings={} peered-configs={peered} \
+             permitting-peerings={} (by flow {}) peered-configs={peered} \
              configs-past-two-vpcs={multi} mixed-bursts={mixed}",
             INBOUND.load(Ordering::Relaxed),
-            PERMITTING.load(Ordering::Relaxed)
+            PERMITTING.load(Ordering::Relaxed),
+            BY_FLOW.load(Ordering::Relaxed)
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
@@ -2848,6 +2854,12 @@ mod generated {
             "no traffic was ever derived across a peering whose acl permits it, so every load here \
              ran with no acl in the way and a rule set that lowered to nothing would have gone \
              unnoticed",
+        );
+        super::assert_covered(
+            BY_FLOW.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering permitting only one direction, so no \
+             reply here was authorised by the flow it belongs to and the reverse lookup in \
+             `AclFilter::lookup` was never entered",
         );
         super::assert_covered(
             mixed > 0,
@@ -2902,11 +2914,16 @@ mod generated {
     fn carried_counting<'a>(
         draft: &'a Draft,
         permitting: &'a Cell<u64>,
+        by_flow: &'a Cell<u64>,
     ) -> impl Fn(Named<'_>) -> bool + 'a {
         move |named| match draft.guard_named(named.peering) {
             Some(Guard::Deny) => false,
             Some(Guard::Permit) => {
                 permitting.set(permitting.get() + 1);
+                true
+            }
+            Some(Guard::PermitFlow) => {
+                by_flow.set(by_flow.get() + 1);
                 true
             }
             Some(Guard::Open) | None => true,
@@ -2945,10 +2962,14 @@ mod generated {
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
 
-                let permitting = Cell::new(0);
-                let mut loads =
-                    loads_where(&validated, vary, &carried_counting(&draft, &permitting));
+                let (permitting, by_flow) = (Cell::new(0), Cell::new(0));
+                let mut loads = loads_where(
+                    &validated,
+                    vary,
+                    &carried_counting(&draft, &permitting, &by_flow),
+                );
                 PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
+                BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
                 for load in &loads {
                     if load.describe().starts_with("[inbound") {
