@@ -261,6 +261,8 @@ async fn spawn_hypervisor_process(
 /// stdout/stderr are forwarded via dedicated
 /// [`VsockChannel`](n_vm_protocol::VsockChannel)s instead.
 fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
+    let ifaces = config::all_ifaces(params.vm_config.fabric_nics);
+    let ifaces = &ifaces;
     // Cloud-hypervisor only supports virtio-net -- it has no emulated NIC
     // models.  The proc macro prevents incompatible combinations at compile
     // time, so this is a belt-and-suspenders check for callers that bypass
@@ -282,7 +284,7 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
         }),
         cpus: Some(build_cpu_config(params.vm_config.vcpus)),
         memory: Some(build_memory_config(&params.vm_config)),
-        net: Some(build_network_configs(params.vm_config.iommu)),
+        net: Some(build_network_configs(params.vm_config.iommu, ifaces)),
         fs: Some(build_fs_config(&params.shares)),
         // The virtio-console is disabled: test stdout/stderr travel
         // over dedicated VsockChannels (TEST_STDOUT / TEST_STDERR).
@@ -387,59 +389,43 @@ fn build_memory_config(vm_config: &config::VmConfig) -> MemoryConfig {
 
 /// Builds the network interface configurations.
 ///
-/// Returns three interfaces:
-/// - **mgmt** -- management network on PCI segment 0 (1500 MTU).
-/// - **fabric1** / **fabric2** -- fabric-facing interfaces on PCI
-///   segment 1 (9500 MTU jumbo frames).
+/// One per entry in `ifaces`, which
+/// [`config::all_ifaces`] derives from the configured fabric NIC count:
+/// **mgmt** on PCI segment 0 (1500 MTU), then **fabric1**..**fabricN** on
+/// segment 1 (9500 MTU jumbo frames).
 ///
-/// When `iommu` is `true`, the fabric interfaces (PCI segment 1) have
-/// their per-device `iommu` flag set so that cloud-hypervisor places
-/// them behind the virtual IOMMU.
-/// The management interface remains on PCI segment 0, which is outside
-/// the IOMMU segments configured in [`build_platform_config`].
-fn build_network_configs(iommu: bool) -> Vec<NetConfig> {
+/// When `iommu` is `true`, the fabric interfaces have their per-device
+/// `iommu` flag set so that cloud-hypervisor places them behind the
+/// virtual IOMMU.  The management interface remains on PCI segment 0,
+/// which is outside the IOMMU segments configured in
+/// [`build_platform_config`].
+fn build_network_configs(iommu: bool, ifaces: &[config::NetIface]) -> Vec<NetConfig> {
     // Per-device IOMMU flag for devices on the IOMMU-protected PCI
     // segment.  `None` leaves the field at its default (no IOMMU),
     // `Some(true)` opts the device into DMA remapping.
     let fabric_iommu = if iommu { Some(true) } else { None };
 
-    vec![
-        NetConfig {
-            tap: Some(config::IFACE_MGMT.tap.into()),
-            ip: Some(config::IFACE_MGMT.host_ipv6.to_string()),
+    ifaces
+        .iter()
+        .map(|iface| NetConfig {
+            tap: Some(iface.tap.clone()),
+            ip: Some(iface.host_ipv6.to_string()),
             mask: Some("ffff:ffff:ffff:ffff::".into()),
-            mac: Some(config::IFACE_MGMT.mac.into()),
-            mtu: Some(config::MGMT_MTU),
-            id: Some(config::IFACE_MGMT.id.into()),
-            pci_segment: Some(0),
-            queue_size: Some(config::MGMT_QUEUE_SIZE),
+            mac: Some(iface.mac.clone()),
+            mtu: Some(iface.mtu),
+            id: Some(iface.id.clone()),
+            pci_segment: Some(i32::from(iface.pci_segment)),
+            queue_size: Some(iface.queue_size),
+            // Only the protected segment carries the flag; the management
+            // link is on segment 0, which has no IOMMU in front of it.
+            iommu: if iface.pci_segment == 0 {
+                None
+            } else {
+                fabric_iommu
+            },
             ..Default::default()
-        },
-        NetConfig {
-            tap: Some(config::IFACE_FABRIC1.tap.into()),
-            ip: Some(config::IFACE_FABRIC1.host_ipv6.to_string()),
-            mask: Some("ffff:ffff:ffff:ffff::".into()),
-            mac: Some(config::IFACE_FABRIC1.mac.into()),
-            mtu: Some(config::FABRIC_MTU),
-            id: Some(config::IFACE_FABRIC1.id.into()),
-            pci_segment: Some(1),
-            queue_size: Some(config::FABRIC_QUEUE_SIZE),
-            iommu: fabric_iommu,
-            ..Default::default()
-        },
-        NetConfig {
-            tap: Some(config::IFACE_FABRIC2.tap.into()),
-            ip: Some(config::IFACE_FABRIC2.host_ipv6.to_string()),
-            mask: Some("ffff:ffff:ffff:ffff::".into()),
-            mac: Some(config::IFACE_FABRIC2.mac.into()),
-            mtu: Some(config::FABRIC_MTU),
-            id: Some(config::IFACE_FABRIC2.id.into()),
-            pci_segment: Some(1),
-            queue_size: Some(config::FABRIC_QUEUE_SIZE),
-            iommu: fabric_iommu,
-            ..Default::default()
-        },
-    ]
+        })
+        .collect()
 }
 
 /// Builds the virtiofs filesystem configuration for sharing the container
@@ -743,13 +729,13 @@ mod tests {
 
     #[test]
     fn network_config_has_three_interfaces() {
-        let nets = build_network_configs(false);
+        let nets = build_network_configs(false, &config::all_ifaces(2));
         assert_eq!(nets.len(), 3);
     }
 
     #[test]
     fn mgmt_interface_is_on_pci_segment_zero_with_standard_mtu() {
-        let nets = build_network_configs(false);
+        let nets = build_network_configs(false, &config::all_ifaces(2));
         let mgmt = nets
             .iter()
             .find(|n| n.id.as_deref() == Some("mgmt"))
@@ -761,7 +747,7 @@ mod tests {
 
     #[test]
     fn fabric_interfaces_are_on_pci_segment_one_with_jumbo_mtu() {
-        let nets = build_network_configs(false);
+        let nets = build_network_configs(false, &config::all_ifaces(2));
         for name in &["fabric1", "fabric2"] {
             let iface = nets
                 .iter()
@@ -779,7 +765,7 @@ mod tests {
 
     #[test]
     fn all_interfaces_have_unique_mac_addresses() {
-        let nets = build_network_configs(false);
+        let nets = build_network_configs(false, &config::all_ifaces(2));
         let macs: Vec<_> = nets.iter().filter_map(|n| n.mac.as_deref()).collect();
         assert_eq!(macs.len(), 3, "all interfaces should have MAC addresses");
         let mut deduped = macs.clone();
@@ -794,7 +780,7 @@ mod tests {
 
     #[test]
     fn all_interfaces_have_unique_tap_names() {
-        let nets = build_network_configs(false);
+        let nets = build_network_configs(false, &config::all_ifaces(2));
         let taps: Vec<_> = nets.iter().filter_map(|n| n.tap.as_deref()).collect();
         assert_eq!(taps.len(), 3, "all interfaces should have tap names");
         let mut deduped = taps.clone();
@@ -932,7 +918,7 @@ mod tests {
 
     #[test]
     fn fabric_interfaces_have_iommu_when_enabled() {
-        let nets = build_network_configs(true);
+        let nets = build_network_configs(true, &config::all_ifaces(2));
         let fabric1 = &nets[1];
         let fabric2 = &nets[2];
         assert_eq!(
@@ -949,7 +935,7 @@ mod tests {
 
     #[test]
     fn mgmt_interface_has_no_iommu_even_when_enabled() {
-        let nets = build_network_configs(true);
+        let nets = build_network_configs(true, &config::all_ifaces(2));
         let mgmt = &nets[0];
         assert_eq!(
             mgmt.iommu, None,
@@ -959,7 +945,7 @@ mod tests {
 
     #[test]
     fn fabric_interfaces_have_no_iommu_when_disabled() {
-        let nets = build_network_configs(false);
+        let nets = build_network_configs(false, &config::all_ifaces(2));
         let fabric1 = &nets[1];
         let fabric2 = &nets[2];
         assert_eq!(
