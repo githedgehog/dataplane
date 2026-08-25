@@ -64,6 +64,7 @@
 use acl_filter::{
     AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
+use common::cliprovider::CliDataProvider;
 use concurrency::sync::{Arc, Mutex};
 use config::external::GenId;
 use config::external::overlay::acl::Acl;
@@ -411,7 +412,66 @@ impl Fleet {
     }
 }
 
+/// The `show` commands a running dataplane answers, and the state each one reads.
+///
+/// One per entry in `CliSources`, which `start_router` fills from exactly these factories. The
+/// names are the CLI's own, so a failure here names the command an operator would have typed.
+pub(crate) struct CliReaders {
+    sources: Vec<(&'static str, Box<dyn CliDataProvider + Send>)>,
+}
+
+impl CliReaders {
+    /// Answer every command once, discarding the text.
+    ///
+    /// The text is not the point and there is no oracle for it: what is being asserted is that
+    /// asking at all is safe while the dataplane is busy. Returns the total length so the
+    /// formatting is not optimised away, and so a caller can tell an answer from an empty one.
+    pub(crate) fn read_all(&self) -> usize {
+        self.sources
+            .iter()
+            .map(|(_, source)| source.provide().len())
+            .sum()
+    }
+
+    /// Answer one command, chosen by `which` modulo the number of commands.
+    pub(crate) fn read_one(&self, which: usize) -> (&'static str, String) {
+        let (name, source) = &self.sources[which % self.sources.len()];
+        (name, source.provide())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.sources.len()
+    }
+}
+
 impl Blueprint {
+    /// The CLI's view of this configuration, taken out the way `start_router` takes it.
+    ///
+    /// Call this from the thread that built the fleet, not from the reader thread: `handle()`
+    /// yields a thread-local reader, and it is `inner()` that produces the `Send` handle the CLI
+    /// actually holds. `packet_processor::mod` does the same two steps in the same order, on the
+    /// setup thread, and the resulting box is read from the router's thread thereafter.
+    pub(crate) fn cli_readers(&self) -> CliReaders {
+        CliReaders {
+            sources: vec![
+                ("show flow-table", Box::new(self.flow_table.clone())),
+                (
+                    "show flow-filter",
+                    Box::new(self.flow_filter.handle().inner()),
+                ),
+                (
+                    "show port-forwarding",
+                    Box::new(self.portfw.handle().inner()),
+                ),
+                ("show static-nat", Box::new(self.static_nat.handle().inner())),
+                (
+                    "show masquerading",
+                    Box::new(self.masquerade.handle().inner()),
+                ),
+            ],
+        }
+    }
+
     /// Build a pipeline over this configuration, on the calling thread.
     ///
     /// Call this *from* the thread that will drive it. The readers it takes out are thread-local
@@ -2974,7 +3034,7 @@ mod acl {
         );
     }
 
-    fn prefix(text: &str) -> Prefix {
+    pub(super) fn prefix(text: &str) -> Prefix {
         text.parse()
             .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
     }
@@ -7665,6 +7725,227 @@ mod model {
         super::assert_covered(
             completed > 0 && enacted > 0,
             "either no conversation completed or no configuration was enacted, so nothing was raced",
+        );
+    }
+
+    /// Reading the CLI while the dataplane is busy is safe, and stays safe.
+    ///
+    /// # Why this is worth a concurrency model rather than a unit test
+    ///
+    /// The CLI is a production debugging tool, so the only time anyone runs it is when something
+    /// is already wrong. A lock-up in the read path is therefore not one fault but two at once:
+    /// the box stops forwarding *and* the state that would have explained the original fault is
+    /// gone with it. A situation that was hard to reach in the first place does not come back
+    /// because it was interrupted, so the cost of the second fault is losing the first one for
+    /// good.
+    ///
+    /// That is not hypothetical here. `nat::masquerade::apalloc`'s `Display` carries a comment
+    /// about exactly this shape: it prints the pool under a read guard, printing upgrades weak
+    /// references to the addresses in use, and another thread ending the last flow on one of them
+    /// at that moment leaves the *printing* thread holding the last strong reference -- so
+    /// dropping it runs `AllocatedIp::drop`, which takes the same lock for writing, under the read
+    /// guard. That deadlock was found and defended against by hand. Nothing was watching for the
+    /// next one.
+    ///
+    /// # The three roles
+    ///
+    /// The reader is a *separate* thread from the workers on purpose, because that is where it
+    /// runs in production: `start_router` hands `CliSources` to the router, and the router answers
+    /// on its own thread while the workers forward. A reader called from a worker thread would be
+    /// testing a serialisation that never happens.
+    ///
+    /// The configuration thread matters for the same reason the churn properties need it: the
+    /// tables the CLI formats are the tables config-apply is republishing, and a reader that only
+    /// ever sees a quiescent table is not reading anything hard.
+    ///
+    /// # What is asserted
+    ///
+    /// Every command answers, no command panics, and the traffic beside it is unharmed. There is
+    /// deliberately no claim about the *text*: the output is a debugging aid with no oracle, and
+    /// inventing one would pin formatting rather than behaviour. What has an oracle is that asking
+    /// terminates -- which under `shuttle` is checked against every interleaving the model
+    /// explores, and that is the whole reason this is a `model_test`.
+    ///
+    /// # The failures it can see
+    ///
+    /// - A provider that panics: asserting inside `FlowTable`'s `Display` fails this with
+    ///   `` `break test` while answering a cli command in round 1 ``.
+    /// - A provider that locks up: taking the table's write guard under its own read guard fails
+    ///   the shuttle variant with `deadlock! task main-thread(2) tried to acquire a RwLock it
+    ///   already holds`. That is the class this exists for, and it is caught.
+    ///
+    /// # What this does not reach yet
+    ///
+    /// The `apalloc` hazard above, specifically. It needs the printing thread to be holding the
+    /// *last* strong reference to an address when it lets go, and every conversation here leaves
+    /// its flow alive: `show masquerading` does report a live allocation, so the pool is
+    /// populated, but nothing releases one while the reader is inside the guard. Removing the
+    /// defence and re-running passes, so this is stated rather than assumed.
+    ///
+    /// Two ways in, neither taken here. Enacting a configuration that *moves* the public range
+    /// retires the pool the last one was using -- but it also legitimately strands the flows
+    /// translated through the old range, so the traffic assertion above stops holding and the
+    /// property turns into the frame condition, which
+    /// `a_configuration_change_leaves_traffic_outside_its_footprint_alone` already is. Expiring a
+    /// flow releases its allocation the way production does, and now that a test can drive the
+    /// clock that is the one to build; it belongs in `nat` beside the allocator rather than out
+    /// here, because reaching it through seven stages is a great deal of machinery for a race
+    /// between two functions in one file.
+    #[concurrency::model_test]
+    fn the_cli_can_be_read_while_the_dataplane_works() {
+        /// Conversations the worker completes per round.
+        const FLOWS: u8 = 2;
+        /// Rounds, and so enactments, during the run.
+        const APPLIES: u8 = 3;
+
+        /// Conversations that completed while the CLI was being read.
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Commands answered while traffic ran and the configuration was republished.
+        static ANSWERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        // See `a_pipeline_can_be_driven_inside_a_stress_run` for why the runtime is conditional.
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            // Taken here, on the thread that built the fleet, exactly as `start_router` does.
+            let readers = blueprint.cli_readers();
+            let entering = handle.clone();
+            // One worker, one reader, and this thread, rendezvousing once per round.
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+
+            let (seen, read) = thread::scope(|scope| {
+                let forwarding = {
+                    let entering = entering.clone();
+                    let gate = gate.clone();
+                    thread::Builder::new()
+                        .name("tenant".to_string())
+                        .spawn_scoped(scope, move || {
+                            let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("tenant");
+                            let mut worker = blueprint.worker();
+                            gate.wait();
+                            let mut seen = Vec::new();
+                            for round in 1..=APPLIES {
+                                for nth in 0..FLOWS {
+                                    // Caught rather than propagated, for the reason
+                                    // `without_unwinding` gives: a thread that does not reach the
+                                    // barrier below hangs its two peers.
+                                    seen.push((
+                                        round,
+                                        without_unwinding(|| {
+                                            let src = format!("1.1.0.{}", nth + 1);
+                                            let mut convo = Conversation::new(
+                                                super::routed::Path::fixture(),
+                                                src.parse().unwrap_or_else(|e| {
+                                                    unreachable!("{src}: {e}")
+                                                }),
+                                                "3.3.3.1"
+                                                    .parse()
+                                                    .unwrap_or_else(|e| unreachable!("{e}")),
+                                                u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                80,
+                                            );
+                                            drive(&mut worker, &mut convo);
+                                            (convo.checked(), convo.describe())
+                                        }),
+                                    ));
+                                }
+                                gate.wait();
+                            }
+                            seen
+                        })
+                        .expect("spawn tenant")
+                };
+
+                let reading = {
+                    let gate = gate.clone();
+                    thread::Builder::new()
+                        .name("cli".to_string())
+                        .spawn_scoped(scope, move || {
+                            let _evidence = tracectl::evidence::capture("cli");
+                            gate.wait();
+                            let mut answered = Vec::new();
+                            for round in 1..=APPLIES {
+                                for nth in 0..(2 * readers.len()) {
+                                    answered.push((
+                                        round,
+                                        without_unwinding(|| {
+                                            let (command, text) = readers.read_one(nth);
+                                            (command, text.len())
+                                        }),
+                                    ));
+                                }
+                                gate.wait();
+                            }
+                            answered
+                        })
+                        .expect("spawn cli")
+                };
+
+                // This thread is the config-apply path.
+                gate.wait();
+                for _ in 0..APPLIES {
+                    fleet.reconfigure(&overlay);
+                    gate.wait();
+                }
+
+                (
+                    forwarding.join().expect("tenant panicked"),
+                    reading.join().expect("cli panicked"),
+                )
+            });
+
+            for (round, answer) in read {
+                let (command, length) = answer.unwrap_or_else(|why| {
+                    panic!("`{why}` while answering a cli command in round {round}")
+                });
+                assert!(
+                    length > 0,
+                    "`{command}` answered with nothing in round {round}, so the reader reached \
+                     the state but could not say anything about it"
+                );
+                ANSWERED.fetch_add(1, Ordering::Relaxed);
+            }
+
+            for (round, ran) in seen {
+                let (checked, described) = ran.unwrap_or_else(|why| {
+                    panic!("a conversation in round {round} panicked while the cli read: {why}")
+                });
+                assert!(
+                    checked,
+                    "a conversation in round {round} did not survive the cli being read beside \
+                     it. Reading is supposed to be an observation, not a change. {described}"
+                );
+                COMPLETED.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let (completed, answered) = (
+            COMPLETED.load(Ordering::Relaxed),
+            ANSWERED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} answered={answered}");
+        super::assert_covered(
+            completed > 0 && answered > 0,
+            "either no conversation completed or no cli command was answered, so nothing was raced",
         );
     }
 
