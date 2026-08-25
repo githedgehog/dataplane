@@ -77,7 +77,25 @@ fn apportion_into_batches(
     value: PacketAndByte<u64>,
     mut apply: impl FnMut(&mut TransmitSummary<u64>, PacketAndByte<u64>),
 ) {
-    if (value.packets == 0 && value.bytes == 0) || total_ov == 0 {
+    if value.packets == 0 && value.bytes == 0 {
+        return;
+    }
+    // An update that lines up with no open batch is still traffic that happened, and these feed a
+    // *cumulative* counter, so discarding it is the one outcome that cannot be right: the number
+    // an operator totals would be short by that much for as long as the process lives, with
+    // nothing anywhere saying so. It is put in the earliest batch still open instead, which is the
+    // nearest window to an update timed before all of them. Attributing it slightly early costs a
+    // smoothed rate a little accuracy for one tick; losing it costs the counter its meaning.
+    if total_ov == 0 {
+        let Some(batch) = slices.first_mut() else {
+            error!(
+                "no open batch for an update covering {} packets: the schedule has fallen behind",
+                value.packets
+            );
+            return;
+        };
+        let tx = batch.vpc.entry(src).or_insert_with(TransmitSummary::new);
+        apply(tx, value);
         return;
     }
     let mut rem_pkts = value.packets;
@@ -186,6 +204,8 @@ pub struct StatsCollector {
 impl StatsCollector {
     const DEFAULT_CHANNEL_CAPACITY: usize = 256;
     const TIME_TICK: Duration = Duration::from_secs(1);
+    /// Windows kept open at once, and so how far back an update may be timed and still land.
+    const OUTSTANDING: usize = 10;
 
     #[tracing::instrument(level = "info")]
     pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> (StatsCollector, PacketStatsWriter) {
@@ -242,11 +262,23 @@ impl StatsCollector {
             .collect();
 
         let updates = PacketStatsReader(r);
-        let outstanding: VecDeque<_> = (0..10)
-            .scan(
-                BatchSummary::<u64>::new(clock::now() + Self::TIME_TICK),
-                |prior, _| Some(BatchSummary::new(prior.planned_end + Self::TIME_TICK)),
-            )
+        // A pipeline of consecutive windows covering the next `OUTSTANDING` ticks, so that
+        // whatever instant an update reports, exactly one of them is accumulating for it.
+        //
+        // This was a `scan` whose closure read its state and never assigned to it, so all ten
+        // batches came out identical: the same two-second window, all beginning at construction
+        // and all ending at the same instant. Two consequences, and the second is the one that
+        // reached production. Ten windows that all end together leave an instant at which *no*
+        // outstanding batch satisfies `planned_end > update.start`, so the update arriving then
+        // overlapped nothing, `total_ov` was zero, and its counts were discarded without a trace.
+        // Measured: one tick of traffic per (src, dst) pair silently missing from the cumulative
+        // counters, at startup, permanently.
+        let outstanding: VecDeque<_> = (0..Self::OUTSTANDING)
+            .scan(clock::now(), |start, _| {
+                let batch = BatchSummary::<u64>::with_start(*start, Self::TIME_TICK);
+                *start += Self::TIME_TICK;
+                Some(batch)
+            })
             .collect();
 
         let store_clone = Arc::clone(&vpc_store);
@@ -398,92 +430,9 @@ impl StatsCollector {
                 })
                 .collect();
 
-            // Proportionally distribute each (src,dst) update across overlapping batches.
-            update.summary.vpc.iter().for_each(|(src, summary)| {
-                summary.dst.iter().for_each(|(dst, stats)| {
-                    if stats.packets == 0 && stats.bytes == 0 {
-                        return;
-                    }
-
-                    let upd_start = update.summary.start;
-                    let upd_end = update.start() + update.duration;
-
-                    // Pre-compute overlaps with all candidate batch slices
-                    let overlaps: Vec<u128> = slices
-                        .iter()
-                        .map(|b| overlap_nanos(b.start, b.planned_end, upd_start, upd_end))
-                        .collect();
-                    let total_ov: u128 = overlaps.iter().copied().sum();
-                    if total_ov == 0 {
-                        return;
-                    }
-
-                    // Integer-safe split: give the remainder to the last overlapping bucket
-                    let mut rem_pkts = stats.packets;
-                    let mut rem_bytes = stats.bytes;
-
-                    let last_idx = overlaps
-                        .iter()
-                        .enumerate()
-                        .rfind(|&(_, &ov)| ov > 0)
-                        .map(|(i, _)| i);
-
-                    for (i, batch) in slices.iter_mut().enumerate() {
-                        let ov = overlaps[i];
-                        if ov == 0 {
-                            continue;
-                        }
-
-                        let is_last = Some(i) == last_idx;
-
-                        let pkts_in = if is_last {
-                            rem_pkts
-                        } else {
-                            let v = ((stats.packets as u128) * ov / total_ov) as u64;
-                            rem_pkts = rem_pkts.saturating_sub(v);
-                            v
-                        };
-
-                        let bytes_in = if is_last {
-                            rem_bytes
-                        } else {
-                            let v = ((stats.bytes as u128) * ov / total_ov) as u64;
-                            rem_bytes = rem_bytes.saturating_sub(v);
-                            v
-                        };
-
-                        if pkts_in == 0 && bytes_in == 0 {
-                            continue;
-                        }
-
-                        let apportioned = PacketAndByte {
-                            packets: pkts_in,
-                            bytes: bytes_in,
-                        };
-
-                        match batch.vpc.get_mut(src) {
-                            None => {
-                                let mut tx_summary = TransmitSummary::new();
-                                tx_summary.dst.insert(*dst, apportioned);
-                                batch.vpc.insert(*src, tx_summary);
-                            }
-                            Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
-                                None => {
-                                    tx_summary.dst.insert(*dst, apportioned);
-                                }
-                                Some(s) => {
-                                    *s += apportioned;
-                                }
-                            },
-                        }
-                    }
-                });
-            });
-
-            // Drops are collected per source (a total that also includes drops whose destination
-            // VPC could not be resolved) and per (src,dst) pair. Neither is rate-smoothed, but both
-            // must reach `submit_expired` via the outstanding batches, so apportion them across the
-            // same overlapping slices as forward traffic.
+            // Every value in this update covers the same interval, so the overlaps against the
+            // outstanding batches are the same for all of them: computed once, here, rather than
+            // per (src, dst).
             let upd_start = update.summary.start;
             let upd_end = update.start() + update.duration;
             let overlaps: Vec<u128> = slices
@@ -497,6 +446,26 @@ impl StatsCollector {
                 .rfind(|&(_, &ov)| ov > 0)
                 .map(|(i, _)| i);
 
+            // Proportionally distribute each (src,dst) update across overlapping batches.
+            update.summary.vpc.iter().for_each(|(src, summary)| {
+                summary.dst.iter().for_each(|(dst, stats)| {
+                    let dst = *dst;
+                    apportion_into_batches(
+                        &mut slices,
+                        &overlaps,
+                        total_ov,
+                        last_idx,
+                        *src,
+                        *stats,
+                        |tx, v| add_into_map(&mut tx.dst, dst, v),
+                    );
+                });
+            });
+
+            // Drops are collected per source (a total that also includes drops whose destination
+            // VPC could not be resolved) and per (src,dst) pair. Neither is rate-smoothed, but both
+            // must reach `submit_expired` via the outstanding batches, so apportion them across the
+            // same overlapping slices as forward traffic.
             update.summary.vpc.iter().for_each(|(src, summary)| {
                 for (dst, drops) in summary.pair_drops.iter() {
                     let dst = *dst;
@@ -1409,8 +1378,17 @@ mod drop_stats_tests {
         assert_eq!(got, 4);
     }
 
+    /// Traffic that lines up with no open batch is still counted, in the earliest one open.
+    ///
+    /// This asserted the opposite -- that nothing was recorded -- which is what the code did, and
+    /// the reason it did it was a guard against dividing by a zero total rather than a decision
+    /// about what to do with the traffic. These counters are cumulative and an operator totals
+    /// them, so a silent discard is the one outcome that cannot be right: the number is short for
+    /// as long as the process lives and nothing about it looks wrong. Misattributing a tick after
+    /// a stall costs a smoothed rate a little accuracy; discarding it costs the counter its
+    /// meaning.
     #[test]
-    fn apportion_no_overlap_records_nothing() {
+    fn apportion_no_overlap_still_counts() {
         let mut b0 = batch(1);
         let mut slices: Vec<&mut BatchSummary<u64>> = vec![&mut b0];
         let src = vpcd(9);
@@ -1428,7 +1406,32 @@ mod drop_stats_tests {
             |tx, v| tx.drops += v,
         );
         drop(slices);
-        assert!(b0.vpc.is_empty());
+        let recorded = b0.vpc.get(&src).map(|tx| tx.drops);
+        assert_eq!(
+            recorded,
+            Some(PacketAndByte {
+                packets: 5,
+                bytes: 50
+            })
+        );
+    }
+
+    /// With nowhere at all to put it, there is nothing to be done -- but it is logged, not silent.
+    #[test]
+    fn apportion_with_no_open_batch_records_nothing() {
+        let mut slices: Vec<&mut BatchSummary<u64>> = vec![];
+        apportion_into_batches(
+            &mut slices,
+            &[],
+            0,
+            None,
+            vpcd(9),
+            PacketAndByte {
+                packets: 5,
+                bytes: 50,
+            },
+            |tx, v| tx.drops += v,
+        );
     }
 }
 
@@ -1703,6 +1706,120 @@ mod rate_oracle {
                     assert!(
                         (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
                         "at tick {tick} the established pair read {pps} pkt/s instead of {LOAD}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// Every packet fed in is eventually counted, exactly once.
+    ///
+    /// The claim is about the *cumulative* counters rather than the rates: they are what an
+    /// operator totals, and a total that is quietly short is worse than one that is late, because
+    /// nothing about it looks wrong. So the load is fed, then the pipeline is left to drain, and
+    /// the ledger has to balance.
+    ///
+    /// It did not. The ten batches the collector opens at startup were all the same window --
+    /// same beginning, same end -- and ten windows that end together leave an instant at which no
+    /// batch satisfies `planned_end > update.start`. The update arriving at that instant
+    /// overlapped nothing and was dropped without a word. Measured before the fix: 20,000 packets
+    /// fed, 19,000 counted, and it never caught up however long the collector was left running.
+    #[test]
+    fn every_packet_fed_in_is_eventually_counted() {
+        /// Ticks of traffic.
+        const TICKS: usize = 20;
+        /// Idle ticks afterwards, comfortably more than the pipeline is deep.
+        const DRAIN: usize = 16;
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (src, dst) = (vpc(100), vpc(200));
+            let (mut collector, store, _map) = collecting(src, dst);
+            for _ in 0..TICKS {
+                collector.update(Some(a_tick_of(src, dst, LOAD))).await;
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+            }
+            for _ in 0..DRAIN {
+                collector.update(None).await;
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+            }
+            let counted = store
+                .snapshot_pairs()
+                .await
+                .into_iter()
+                .find(|((from, to), _)| *from == src && *to == dst)
+                .map_or((0, 0), |(_, stats)| (stats.ctr.packets, stats.ctr.bytes));
+            let fed = LOAD * TICKS as u64;
+            assert_eq!(
+                counted.0, fed,
+                "{fed} packets were fed and {} were counted after the pipeline drained",
+                counted.0
+            );
+            assert_eq!(counted.1, fed * SIZE, "the byte total disagreed with the packets");
+        });
+    }
+
+    /// Nothing is counted twice or lost in flight either: at every instant, what has been credited
+    /// plus what is still held in open batches is exactly what has been fed.
+    ///
+    /// The stronger form of the above, and the one that says *where* a loss happened rather than
+    /// only that there was one. Before the fix this first failed at the third tick -- the instant
+    /// all ten identical batches expired together -- and stayed wrong forever after.
+    #[test]
+    fn the_ledger_balances_at_every_tick() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (src, dst) = (vpc(100), vpc(200));
+            let (mut collector, store, _map) = collecting(src, dst);
+            for tick in 0..24u64 {
+                collector.update(Some(a_tick_of(src, dst, LOAD))).await;
+                let held: u64 = collector
+                    .outstanding
+                    .iter()
+                    .flat_map(|batch| batch.vpc.values())
+                    .flat_map(|summary| summary.dst.iter().map(|(_, v)| v.packets))
+                    .sum();
+                let credited = store
+                    .snapshot_pairs()
+                    .await
+                    .into_iter()
+                    .find(|((from, to), _)| *from == src && *to == dst)
+                    .map_or(0, |(_, stats)| stats.ctr.packets);
+                let fed = LOAD * (tick + 1);
+                assert_eq!(
+                    credited + held,
+                    fed,
+                    "after {} ticks, {fed} packets had been fed but {credited} were counted and \
+                     {held} were still in open batches",
+                    tick + 1
+                );
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+            }
+        });
+    }
+
+    /// The batches the collector opens at startup tile the time ahead of it, one after another.
+    ///
+    /// Stated directly as well as through its consequence, because the consequence took a ledger
+    /// and a drain to see and this takes one look. Ten batches that all end at the same instant
+    /// leave a hole no update can land in.
+    #[test]
+    fn the_open_batches_tile_the_time_ahead() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (collector, _store, _map) = collecting(vpc(100), vpc(200));
+            let batches: Vec<_> = collector.outstanding.iter().collect();
+            assert_eq!(batches.len(), StatsCollector::OUTSTANDING);
+            for (nth, batch) in batches.iter().enumerate() {
+                assert_eq!(
+                    batch.planned_end.saturating_duration_since(batch.start),
+                    StatsCollector::TIME_TICK,
+                    "batch {nth} does not cover one tick"
+                );
+                if let Some(prior) = nth.checked_sub(1) {
+                    assert_eq!(
+                        batch.start, batches[prior].planned_end,
+                        "batch {nth} does not begin where batch {prior} ends"
                     );
                 }
             }
