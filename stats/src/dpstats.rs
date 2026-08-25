@@ -347,17 +347,19 @@ impl StatsCollector {
         // anything that reads these numbers is concerned, and the series it is exported under is
         // retired below. Its counters have to go with it: they are cumulative, so the incoming
         // tenant's first scrape would otherwise report every packet the outgoing one ever sent.
-        let recycled: HashSet<VpcDiscriminant> = new_names
+        let handovers: Vec<(VpcDiscriminant, String)> = new_names
             .iter()
             .filter(|(disc, name)| {
                 self.known_names
                     .get(disc)
                     .is_some_and(|previously| previously != *name)
             })
-            .map(|(disc, _)| *disc)
+            .map(|(disc, name)| (*disc, name.clone()))
             .collect();
-        if !recycled.is_empty() {
-            self.vpc_store.forget_vpcs(&recycled).await;
+        if !handovers.is_empty() {
+            let recycled: HashSet<VpcDiscriminant> =
+                handovers.iter().map(|(disc, _)| *disc).collect();
+            self.vpc_store.hand_over(&handovers).await;
             // The counters in the store are not the only history. A batch takes up to
             // `OUTSTANDING` ticks to conclude and the window is five wide, so at the moment of the
             // handover the outgoing tenant's last several seconds are still in flight -- and they
@@ -371,12 +373,9 @@ impl StatsCollector {
                 .each_sample_mut(|sample| forget_from(sample, &recycled));
         }
 
-        // Prune before publishing the new names, not after. A reader of the store takes the names
-        // and the counters as two separate snapshots -- `handle_get_dataplane_status` in `mgmt`
-        // does exactly that -- so whichever is written first is what a read landing between them
-        // will pair with stale data from the other. Counters first means the worst such read sees
-        // an old name against no counters; names first would mean a *new* tenant's name against
-        // the outgoing tenant's counters, which is the thing the forget above exists to prevent.
+        // Prune before publishing the names, for the same reason `hand_over` does the two in that
+        // order: a reader takes them as separate snapshots with no lock held across both, so
+        // whichever is written first decides what a read landing between them sees.
         self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
         self.vpc_store.set_many_vpc_names_sync(pairs.clone());
 
