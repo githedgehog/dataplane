@@ -894,7 +894,31 @@ mod tests {
         bolero::check!().with_type().for_each(
             |(requirement, observation): &(InterfaceSpec, Interface)| {
                 if requirement == observation {
-                    assert_eq!(requirement, &observation.as_requirement().unwrap());
+                    // Not `assert_eq!` against the whole requirement form. Comparing a
+                    // requirement to an observation is deliberately lenient: `mac` and `mtu` are
+                    // documented as "None means the operating system picks", so a requirement
+                    // that leaves them unset matches whatever was observed. Equality therefore
+                    // means "agrees wherever the requirement has something to say", not "is
+                    // identical" -- and the strict form fails on exactly the case the lenient one
+                    // is for, a `None` mtu against an observed 1280.
+                    //
+                    // Spelled out field by field rather than deferring to the comparison under
+                    // test, because that comparison is the thing this is supposed to pin down.
+                    // `controller`'s `None` is not a wildcard -- it means "controlled by nothing"
+                    // -- so it is checked like any other field.
+                    let observed = observation
+                        .as_requirement()
+                        .unwrap_or_else(|| unreachable!("it matched, so it has a requirement"));
+                    assert_eq!(requirement.name, observed.name);
+                    assert_eq!(requirement.admin_state, observed.admin_state);
+                    assert_eq!(requirement.controller, observed.controller);
+                    assert_eq!(requirement.properties, observed.properties);
+                    if requirement.mac.is_some() {
+                        assert_eq!(requirement.mac, observed.mac);
+                    }
+                    if requirement.mtu.is_some() {
+                        assert_eq!(requirement.mtu, observed.mtu);
+                    }
                 } else {
                     match observation.as_requirement() {
                         None => {}
