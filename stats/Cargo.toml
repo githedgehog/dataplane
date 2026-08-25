@@ -36,7 +36,7 @@ tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
 clock = { workspace = true, features = ["virtual"] }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 bolero = { workspace = true }
 net = { workspace = true, features = ["bolero"] }
 vpcmap = { workspace = true, features = ["bolero"] }
