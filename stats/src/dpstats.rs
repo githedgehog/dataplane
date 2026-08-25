@@ -836,10 +836,15 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             ));
             let duration = time.duration_since(self.update.start);
             let summary = std::mem::replace(&mut self.update, batch);
-            let update = MetricsUpdate { duration, summary };
-            match self.stats.0.try_send(update) {
+            let mut update = Some(MetricsUpdate { duration, summary });
+            match self.stats.0.try_send_option(&mut update) {
                 Ok(true) => trace!("sent stats update"),
-                Ok(false) => warn!("metrics channel full! Some metrics lost"),
+                Ok(false) => {
+                    let held = update.unwrap_or_else(|| unreachable!()).summary;
+                    self.update = held;
+                    self.update.planned_end = time + self.delivery_schedule;
+                    warn!("metrics channel full; holding this batch open until it can be sent");
+                }
                 Err(err) => {
                     error!("{err}");
                     panic!("{err}");
@@ -1119,6 +1124,60 @@ mod drop_stats_tests {
     /// mutable borrow of `stats` ends.
     fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
         let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+    }
+
+    #[test]
+    fn a_batch_that_cannot_be_sent_is_held_rather_than_dropped() {
+        const FED: usize = 5;
+        let (a, b) = (vpcd(100), vpcd(200));
+        let (sender, receiver) = kanal::bounded(1);
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let tick = Duration::from_secs(1);
+            let mut stats = Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+
+            for _ in 0..FED {
+                clock::virtual_time::advance(tick * 2).await;
+                run(
+                    &mut stats,
+                    vec![mk_packet(Some(a), Some(b), Some(DoneReason::Delivered))],
+                );
+            }
+
+            let mut sent = 0u64;
+            for _ in 0..FED * 2 {
+                while let Ok(Some(update)) = receiver.try_recv() {
+                    sent += update
+                        .summary
+                        .vpc
+                        .get(&a)
+                        .and_then(|tx| tx.dst.get(&b))
+                        .map_or(0, |counts| counts.packets);
+                }
+                clock::virtual_time::advance(tick * 2).await;
+                run(&mut stats, vec![]);
+            }
+            while let Ok(Some(update)) = receiver.try_recv() {
+                sent += update
+                    .summary
+                    .vpc
+                    .get(&a)
+                    .and_then(|tx| tx.dst.get(&b))
+                    .map_or(0, |counts| counts.packets);
+            }
+
+            let still_held = stats
+                .update
+                .vpc
+                .get(&a)
+                .and_then(|tx| tx.dst.get(&b))
+                .map_or(0, |counts| counts.packets);
+            assert_eq!(
+                sent + still_held,
+                FED as u64,
+                "{FED} packets counted, {sent} sent and {still_held} still in hand"
+            );
+        });
     }
 
     #[test]
