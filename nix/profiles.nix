@@ -5,7 +5,7 @@
   host-arch,
   profile,
   sanitizers,
-  instrumentation,
+  instrumentations,
   cargo-features ? [ ],
   for-tests ? false,
 }:
@@ -64,7 +64,7 @@ let
       ]
   )
   ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
-  ++ (if instrumentation == "coverage" then [ "--cfg=instrumented" ] else [ ])
+  ++ (if builtins.elem "coverage" instrumentations then [ "--cfg=instrumented" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
@@ -229,6 +229,32 @@ let
     "-Ctarget-feature=-crt-static" # shadow-stack doesn't work with static libc
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.shadow-stack.NIX_CFLAGS_LINK);
+  # Coverage-guided fuzzing is an instrumentation, not a profile: it is a set of flags added to
+  # rustc, clang and the link, exactly as coverage is, and it composes with coverage (a corpus one
+  # cannot measure is a corpus one cannot reason about) and with the sanitizers.
+  #
+  # The rust half of sancov is supplied by `cargo-bolero` itself, which builds its own RUSTFLAGS.
+  # What it does not supply is the *runtime* those counters call into, and only the binaries it
+  # links get libFuzzer. Anything else in the package -- an integration test that does not use
+  # bolero -- is instrumented with nothing to call, and fails to link on `__sanitizer_cov_*`. So the
+  # runtime is named here for every binary; `fuzzer_no_main` is libFuzzer without its `main`, and a
+  # linker takes archive members only to resolve undefined symbols, so it is inert wherever
+  # libFuzzer has already resolved them.
+  instrument.fuzz.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=fuzzer-no-link"
+  ];
+  instrument.fuzz.NIX_CXXFLAGS_COMPILE = instrument.fuzz.NIX_CFLAGS_COMPILE;
+  instrument.fuzz.NIX_CFLAGS_LINK = instrument.fuzz.NIX_CFLAGS_COMPILE;
+  instrument.fuzz.RUSTFLAGS = [
+    "--cfg=fuzzing"
+    "-Cpasses=sancov-module"
+    "-Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
+    "-Cllvm-args=-sanitizer-coverage-level=4"
+    "-Cllvm-args=-sanitizer-coverage-pc-table"
+    "-Cllvm-args=-sanitizer-coverage-trace-compares"
+    "-Cllvm-args=-sanitizer-coverage-stack-depth"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") instrument.fuzz.NIX_CFLAGS_LINK);
   instrument.none.NIX_CFLAGS_COMPILE = [ ];
   instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
@@ -260,14 +286,16 @@ let
       optimize-for.performance
       secure
     ];
-    fuzz = release;
+    # Release with its assertions kept; see `[profile.checked]` in Cargo.toml. Fuzzing and
+    # coverage are instrumentations layered on top, not profiles of their own.
+    checked = release;
   };
 in
 combine-profiles (
   [
     profile-map."${profile}"
     march."${arch}"
-    instrument."${instrumentation}"
   ]
+  ++ (map (i: instrument.${i}) instrumentations)
   ++ (map (s: sanitize.${s}) sanitizers)
 )

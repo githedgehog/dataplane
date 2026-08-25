@@ -327,7 +327,9 @@ fuzz target time="60s" *args="":
 
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
+    # cargo-bolero defaults to a profile called "fuzz"; ours says what it is instead.
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        --profile checked \
         --corpus-dir "${corpus_dir}" \
         -l '{{ fuzz_max_input_length }}' \
         -E='-len_control={{ fuzz_len_control }}' \
@@ -504,9 +506,30 @@ setup-roots *args:
         {{ args }}
     done
 
+# An instrumented binary is a measuring device, not a shippable artifact -- and unlike the platform,
+# profile and sanitizer axes, instrumentation appears nowhere in `version`. A coverage or fuzz image
+# would therefore carry the *same tag* as a clean one and quietly replace it in the registry.
+# Refused rather than given a tag of its own, because the tag was never the problem: there is no
+# reason to ship one.
+#
+# Sanitizer images are a different matter and build as normal -- an asan or tsan image is something
+# you deploy and run real traffic against, and `version_san` already names it.
+#
+# A dependency rather than the head of the body, so that it refuses before the artifact is built
+# rather than after.
+[private]
+[script]
+_refuse-instrumented-artifact:
+    if [ -n '{{ instrument }}' ] && [ '{{ instrument }}' != "none" ]; then
+      printf 'refusing to build a container at instrument=%s: an instrumented build is a diagnostic,\n' '{{ instrument }}' >&2
+      printf 'not an artifact, and instrumentation is not part of the version -- so this image would\n' >&2
+      printf 'take a clean image tag and replace it.\n' >&2
+      exit 1
+    fi
+
 # Build the dataplane container image
 [script]
-build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
+build-container target="dataplane" *args: _refuse-instrumented-artifact (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
     case "{{target}}" in
