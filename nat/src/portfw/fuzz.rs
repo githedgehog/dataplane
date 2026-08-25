@@ -40,13 +40,15 @@ impl ValueGenerator for Scenario {
     }
 }
 
-fn with_runtime(body: impl FnOnce()) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    let _guard = runtime.enter();
-    body();
+fn settled(body: impl FnOnce()) {
+    const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
+    // nosemgrep: rust-no-direct-std-sync-import
+    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
+        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
+    CLOCK.block_on(async {
+        body();
+        clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+    });
 }
 
 fn fabric(exposes: &[VpcExpose]) -> Option<Fabric> {
@@ -145,11 +147,11 @@ fn forward(
 fn a_forwarded_packet_answers_as_the_published_tuple() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -180,8 +182,7 @@ fn a_forwarded_packet_answers_as_the_published_tuple() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("reversibility");
 }
 
@@ -189,11 +190,11 @@ fn a_forwarded_packet_answers_as_the_published_tuple() {
 fn a_forwarded_packet_lands_inside_the_published_target() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -216,8 +217,7 @@ fn a_forwarded_packet_lands_inside_the_published_target() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("containment");
 }
 
@@ -226,11 +226,11 @@ fn a_forwarded_packet_lands_inside_the_published_target() {
 fn distinct_published_tuples_reach_distinct_targets() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, _probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, _probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -271,8 +271,7 @@ fn distinct_published_tuples_reach_distinct_targets() {
                     }
                 }
             });
-    });
-
+        });
     tally.report("injectivity");
 }
 
@@ -280,11 +279,11 @@ fn distinct_published_tuples_reach_distinct_targets() {
 fn nothing_is_forwarded_that_was_not_published() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: true })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: true })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -316,8 +315,7 @@ fn nothing_is_forwarded_that_was_not_published() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("permission");
 }
 
@@ -325,11 +323,11 @@ fn nothing_is_forwarded_that_was_not_published() {
 fn forwarding_touches_only_the_destination() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -358,8 +356,7 @@ fn forwarding_touches_only_the_destination() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("frame");
 }
 
@@ -367,11 +364,11 @@ fn forwarding_touches_only_the_destination() {
 fn a_forwarded_flow_keeps_its_target() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -401,7 +398,6 @@ fn a_forwarded_flow_keeps_its_target() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("stability");
 }
