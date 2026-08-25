@@ -2198,40 +2198,49 @@ mod embedded_view_properties {
     /// [`EmbeddedFields`](super::super::pat::EmbeddedFields) handed out two paths to the same
     /// layer. The arity-3 shape is the one that borrows from all three of its fields at once,
     /// including a slice element, which is the hardest of them to split soundly.
-    fn exercise_the_embedded_split() {
-        bolero::check!()
-            .with_generator(ShapedIcmpError)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let Some(outer) = owned.as_view_mut::<O4V6>() else {
-                    return;
-                };
-                let Some(ew) = outer.as_embedded_mut::<(&Ipv6, &HopByHop, &TruncatedTcp)>() else {
-                    return;
-                };
-                let (ip, ext, tcp) = ew.look_mut();
+    /// Expanded at each shard rather than called by them.
+    ///
+    /// `bolero::check!()` takes its target name from the function it is written in, so a helper
+    /// shared by the shards registers one target named after the helper -- which is not a `#[test]`
+    /// and so cannot be selected. Expanding here gives each shard a target of its own, which is
+    /// what the shards were for.
+    macro_rules! exercise_the_embedded_split {
+        () => {{
+            bolero::check!()
+                .with_generator(ShapedIcmpError)
+                .for_each(|h: &Headers| {
+                    let mut owned = h.clone();
+                    let Some(outer) = owned.as_view_mut::<O4V6>() else {
+                        return;
+                    };
+                    let Some(ew) = outer.as_embedded_mut::<(&Ipv6, &HopByHop, &TruncatedTcp)>()
+                    else {
+                        return;
+                    };
+                    let (ip, ext, tcp) = ew.look_mut();
 
-                let want_hops = ip.hop_limit().wrapping_add(1);
-                ip.set_hop_limit(want_hops);
-                let seen_ext = ext.next_header();
-                let seen_tcp = matches!(tcp, TruncatedTcp::FullHeader(_));
+                    let want_hops = ip.hop_limit().wrapping_add(1);
+                    ip.set_hop_limit(want_hops);
+                    let seen_ext = ext.next_header();
+                    let seen_tcp = matches!(tcp, TruncatedTcp::FullHeader(_));
 
-                assert_eq!(
-                    ip.hop_limit(),
-                    want_hops,
-                    "the write through ipv6 did not stick"
-                );
-                assert_eq!(
-                    ext.next_header(),
-                    seen_ext,
-                    "the extension header changed under a write to ipv6"
-                );
-                assert_eq!(
-                    matches!(tcp, TruncatedTcp::FullHeader(_)),
-                    seen_tcp,
-                    "the quoted transport changed under a write to ipv6"
-                );
-            });
+                    assert_eq!(
+                        ip.hop_limit(),
+                        want_hops,
+                        "the write through ipv6 did not stick"
+                    );
+                    assert_eq!(
+                        ext.next_header(),
+                        seen_ext,
+                        "the extension header changed under a write to ipv6"
+                    );
+                    assert_eq!(
+                        matches!(tcp, TruncatedTcp::FullHeader(_)),
+                        seen_tcp,
+                        "the quoted transport changed under a write to ipv6"
+                    );
+                });
+        }};
     }
 
     /// Shards of [`exercise_the_embedded_split`], so the machine can be used.
@@ -2246,7 +2255,7 @@ mod embedded_view_properties {
             $(
                 #[test]
                 fn $name() {
-                    exercise_the_embedded_split();
+                    exercise_the_embedded_split!();
                 }
             )*
         };

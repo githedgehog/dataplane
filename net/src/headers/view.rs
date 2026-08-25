@@ -3178,7 +3178,14 @@ mod view_mut_properties {
     /// written through*, so that miri with stacked borrows enabled can judge whether
     /// [`Fields`](super::pat::Fields) handed out two paths to the same layer. Nothing else in the suite
     /// does that.
-    fn exercise_the_mutable_split() {
+    /// Expanded at each shard rather than called by them.
+    ///
+    /// `bolero::check!()` takes its target name from the function it is written in, so a helper
+    /// shared by the shards registers one target named after the helper -- which is not a `#[test]`
+    /// and so cannot be selected. Expanding here gives each shard a target of its own, which is
+    /// what the shards were for.
+    macro_rules! exercise_the_mutable_split {
+        () => {{
         bolero::check!()
             .with_generator(ShapedHeaders)
             .for_each(|h: &Headers| {
@@ -3212,6 +3219,7 @@ mod view_mut_properties {
                     "transport changed under a write to eth"
                 );
             });
+    }};
     }
 
     /// Shards of [`exercise_the_mutable_split`], so the machine can be used.
@@ -3229,7 +3237,7 @@ mod view_mut_properties {
             $(
                 #[test]
                 fn $name() {
-                    exercise_the_mutable_split();
+                    exercise_the_mutable_split!();
                 }
             )*
         };
