@@ -609,7 +609,7 @@ where
 mod contract {
     use crate::rate::{Derivative, SavitzkyGolayFilter};
     use crate::{PacketAndByte, TransmitSummary};
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
     use std::fmt::Debug;
     use std::time::Duration;
 
@@ -671,6 +671,49 @@ mod contract {
                         }
                     }
                 }
+            }
+            Some(filter)
+        }
+    }
+
+    pub struct PerIntervalCounts;
+
+    impl ValueGenerator for PerIntervalCounts {
+        type Output = SavitzkyGolayFilter<u64>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut step: Duration = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let ceiling = 1u64 << (driver.produce::<u8>()? % 63);
+            for _ in 0..entries {
+                filter.push(driver.produce::<u64>()? % ceiling);
+            }
+            Some(filter)
+        }
+    }
+
+    pub struct PerIntervalPacketAndByte;
+
+    impl ValueGenerator for PerIntervalPacketAndByte {
+        type Output = SavitzkyGolayFilter<PacketAndByte<u64>>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut step: Duration = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let ceiling = 1u64 << (driver.produce::<u8>()? % 63);
+            for _ in 0..entries {
+                filter.push(PacketAndByte {
+                    packets: driver.produce::<u64>()? % ceiling,
+                    bytes: driver.produce::<u64>()? % ceiling,
+                });
             }
             Some(filter)
         }
@@ -759,6 +802,8 @@ mod contract {
 #[cfg(test)]
 mod test {
     use crate::rate::{Derivative, DerivativeComparer, DerivativeError, SavitzkyGolayFilter};
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{PacketAndByte, TransmitSummary};
 
@@ -866,24 +911,54 @@ mod test {
 
     #[test]
     fn smoothing_a_counter_is_never_negative() {
+        static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
         bolero::check!()
-            .with_type()
+            .with_generator(crate::rate::contract::PerIntervalCounts)
             .for_each(|x: &SavitzkyGolayFilter<u64>| {
-                if let Ok(v) = x.smooth() {
-                    assert!(v >= 0.0, "smoothed a counter to {v}");
+                let Ok(v) = x.smooth() else {
+                    return;
+                };
+                assert!(v >= 0.0, "smoothed a counter to {v}");
+                if unclamped(&x.chronological().copied().collect::<Vec<_>>()) < 0. {
+                    UNDERSHOT.fetch_add(1, Ordering::Relaxed);
                 }
             });
+
+        let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        assert!(
+            undershot > 0,
+            "no window in the whole run would have smoothed to a negative number, so this said \
+             nothing about the clamp it exists to guard"
+        );
     }
 
     #[test]
     fn smoothing_a_packet_and_byte_counter_is_never_negative() {
+        static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
         bolero::check!()
-            .with_type()
+            .with_generator(crate::rate::contract::PerIntervalPacketAndByte)
             .for_each(|x: &SavitzkyGolayFilter<PacketAndByte<u64>>| {
-                if let Ok(v) = x.smooth() {
-                    assert!(v.packets >= 0.0 && v.bytes >= 0.0, "smoothed to {v:?}");
+                let Ok(v) = x.smooth() else {
+                    return;
+                };
+                assert!(v.packets >= 0.0, "smoothed a packet count to {}", v.packets);
+                assert!(v.bytes >= 0.0, "smoothed a byte count to {}", v.bytes);
+                let window: Vec<_> = x.chronological().copied().collect();
+                let packets: Vec<u64> = window.iter().map(|v| v.packets).collect();
+                let bytes: Vec<u64> = window.iter().map(|v| v.bytes).collect();
+                if unclamped(&packets) < 0. || unclamped(&bytes) < 0. {
+                    UNDERSHOT.fetch_add(1, Ordering::Relaxed);
                 }
             });
+
+        let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        assert!(
+            undershot > 0,
+            "no window in the whole run would have smoothed to a negative number, so this said \
+             nothing about the clamp it exists to guard"
+        );
     }
 
     #[test]
@@ -953,6 +1028,18 @@ mod test {
                     }
                 },
             )
+    }
+
+    fn unclamped(window: &[u64]) -> f64 {
+        const COEFFS: [i64; 5] = [-3, 12, 17, 12, -3];
+        if window.len() < 5 {
+            return 0.;
+        }
+        COEFFS
+            .iter()
+            .zip(window.iter())
+            .fold(0i128, |acc, (&c, &v)| acc + i128::from(c) * i128::from(v)) as f64
+            / 35.
     }
 
     use crate::rate::Smooth;
