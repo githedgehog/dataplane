@@ -36,6 +36,13 @@ pub struct FlowStats {
 }
 
 #[derive(Debug, Default)]
+pub struct StatsSnapshot {
+    pub names: HashMap<VpcId, String>,
+    pub pairs: Vec<(VpcPairKey, FlowStats)>,
+    pub vpcs: Vec<(VpcId, FlowStats)>,
+}
+
+#[derive(Debug, Default)]
 pub struct VpcStatsStore {
     /// Directional (src -> dst)
     pair_stats: RwLock<HashMap<VpcPairKey, FlowStats>>,
@@ -143,7 +150,8 @@ impl VpcStatsStore {
         e.rate.bps = bps;
     }
 
-    pub async fn forget_vpcs(&self, forget: &HashSet<VpcId>) {
+    pub async fn hand_over(&self, handovers: &[(VpcId, String)]) {
+        let forget: HashSet<VpcId> = handovers.iter().map(|(id, _)| *id).collect();
         {
             let mut pairs = self.pair_stats.write().await;
             pairs.retain(|(src, dst), _| !forget.contains(src) && !forget.contains(dst));
@@ -151,6 +159,10 @@ impl VpcStatsStore {
         {
             let mut vpcs = self.vpc_stats.write().await;
             vpcs.retain(|vpc, _| !forget.contains(vpc));
+        }
+        let mut names = self.vpc_names.write();
+        for (id, name) in handovers {
+            names.insert(*id, name.clone());
         }
     }
 
@@ -169,6 +181,17 @@ impl VpcStatsStore {
         }
     }
 
+    pub async fn snapshot(&self) -> StatsSnapshot {
+        let pairs = self.pair_stats.read().await;
+        let vpcs = self.vpc_stats.read().await;
+        let names = self.vpc_names.read();
+        StatsSnapshot {
+            pairs: pairs.iter().map(|(k, v)| (*k, *v)).collect(),
+            vpcs: vpcs.iter().map(|(k, v)| (*k, *v)).collect(),
+            names: names.clone(),
+        }
+    }
+
     // ---------- Snapshots ----------
     pub async fn snapshot_pairs(&self) -> Vec<(VpcPairKey, FlowStats)> {
         let map = self.pair_stats.read().await;
@@ -184,5 +207,117 @@ impl VpcStatsStore {
     /// but it does not perform any awaits internally.
     pub async fn snapshot_names(&self) -> HashMap<VpcId, String> {
         self.vpc_names.read().clone()
+    }
+}
+
+#[cfg(test)]
+mod under_readers {
+    use super::{VpcId, VpcStatsStore};
+    use net::vxlan::Vni;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use vpcmap::VpcDiscriminant;
+
+    const HANDOVERS: u64 = 20_000;
+    const SENT: u64 = 1_000;
+
+    fn vpc(vni: u32) -> VpcId {
+        VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap_or_else(|_| unreachable!()))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reader_never_sees_a_name_against_the_previous_tenants_traffic() {
+        fn sent_by(tenant: u64) -> u64 {
+            SENT + tenant
+        }
+
+        let store = VpcStatsStore::new();
+        let (src, dst) = (vpc(100), vpc(200));
+        let done = Arc::new(AtomicBool::new(false));
+        let saw_the_window = Arc::new(AtomicU64::new(0));
+        let saw_a_tenant_settled = Arc::new(AtomicU64::new(0));
+
+        let reader = tokio::spawn({
+            let store = Arc::clone(&store);
+            let done = Arc::clone(&done);
+            let saw_the_window = Arc::clone(&saw_the_window);
+            let saw_a_tenant_settled = Arc::clone(&saw_a_tenant_settled);
+            async move {
+                while !done.load(Ordering::Relaxed) {
+                    let taken = store.snapshot().await;
+                    let (names, pairs) = (taken.names, taken.pairs);
+
+                    let Some(name) = names.get(&dst) else {
+                        continue;
+                    };
+                    let tenant: u64 = name.parse().unwrap_or_else(|e| unreachable!("{e:?}"));
+                    let credited = pairs
+                        .iter()
+                        .find(|&&((from, to), _)| from == src && to == dst)
+                        .map_or(0, |&(_, stats)| stats.ctr.packets);
+
+                    if credited == 0 {
+                        saw_the_window.fetch_add(1, Ordering::Relaxed);
+                    } else if credited == sent_by(tenant) {
+                        saw_a_tenant_settled.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        panic!(
+                            "tenant {tenant} sends {}, but is exported carrying {credited} -- \
+                             which is what tenant {} sent",
+                            sent_by(tenant),
+                            credited.saturating_sub(SENT)
+                        );
+                    }
+                }
+            }
+        });
+
+        for tenant in 0..HANDOVERS {
+            store.hand_over(&[(dst, tenant.to_string())]).await;
+            tokio::task::yield_now().await;
+            store
+                .add_pair_counts(src, dst, sent_by(tenant), sent_by(tenant) * 500)
+                .await;
+            tokio::task::yield_now().await;
+        }
+        done.store(true, Ordering::Relaxed);
+        reader.await.unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        assert!(
+            saw_the_window.load(Ordering::Relaxed) > 0,
+            "no read landed between a handover and the incoming tenant's first packets"
+        );
+        assert!(
+            saw_a_tenant_settled.load(Ordering::Relaxed) > 0,
+            "no read ever saw a tenant against its own traffic"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_handover_drops_what_the_outgoing_tenant_accumulated() {
+        let store = VpcStatsStore::new();
+        let (src, dst) = (vpc(100), vpc(200));
+        store.add_pair_counts(src, dst, SENT, SENT * 500).await;
+        store.add_vpc_counts(dst, SENT, SENT * 500).await;
+        assert_eq!(
+            store
+                .snapshot_pairs()
+                .await
+                .first()
+                .map(|&(_, fs)| (fs.ctr.packets, fs.ctr.bytes)),
+            Some((SENT, SENT * 500))
+        );
+
+        store.hand_over(&[(dst, "next".to_string())]).await;
+
+        assert!(
+            store.snapshot_pairs().await.is_empty(),
+            "the outgoing tenant's pair counters survived the handover"
+        );
+        assert!(
+            store.snapshot_vpcs().await.is_empty(),
+            "the outgoing tenant's totals survived the handover"
+        );
+        assert_eq!(store.name_of(dst).as_deref(), Some("next"));
     }
 }
