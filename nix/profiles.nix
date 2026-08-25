@@ -242,9 +242,24 @@ let
   # libFuzzer has already resolved them.
   instrument.fuzz.NIX_CFLAGS_COMPILE = [
     "-fsanitize=fuzzer-no-link"
+    # sancov emits a module constructor per translation unit and reaches it from `.init_array`.
+    # Thin LTO discards the section that constructor lives in and then cannot resolve the
+    # relocation -- "relocation refers to a discarded section .text.sancov.module_ctor_*", which
+    # is how DPDK fails to link. Instrumentation flags fold in after the profile's, so this
+    # overrides the `-flto=thin` that `optimize-for.performance` asks for.
+    #
+    # Cheap to give up: an instrumented build is a measuring device rather than something shipped,
+    # which is the same reason a container refuses to be built from one.
+    "-fno-lto"
   ];
   instrument.fuzz.NIX_CXXFLAGS_COMPILE = instrument.fuzz.NIX_CFLAGS_COMPILE;
-  instrument.fuzz.NIX_CFLAGS_LINK = instrument.fuzz.NIX_CFLAGS_COMPILE;
+  # Deliberately not the compile flags. `fuzzer-no-link` instruments without linking a runtime, and
+  # naming one here drags the whole of libFuzzer into every build-time executable a C dependency
+  # happens to produce -- along with libstdc++ and libm behind it. Those executables are throwaway;
+  # we consume static archives. rdma-core is allowed to leave the symbols unresolved instead (see
+  # `SUPPORTS_NO_UNDEFINED` in `nix/overlays/dataplane.nix`), and the objects that do reach our
+  # binary take their sancov symbols from the libFuzzer the fuzz target links.
+  instrument.fuzz.NIX_CFLAGS_LINK = [ ];
   instrument.fuzz.RUSTFLAGS = [
     "--cfg=fuzzing"
     "-Cpasses=sancov-module"
