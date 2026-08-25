@@ -889,10 +889,25 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             ));
             let duration = time.duration_since(self.update.start);
             let summary = std::mem::replace(&mut self.update, batch);
-            let update = MetricsUpdate { duration, summary };
-            match self.stats.0.try_send(update) {
+            let mut update = Some(MetricsUpdate { duration, summary });
+            match self.stats.0.try_send_option(&mut update) {
                 Ok(true) => trace!("sent stats update"),
-                Ok(false) => warn!("metrics channel full! Some metrics lost"),
+                Ok(false) => {
+                    // Hold the batch open and try again at the next flush. What travels this
+                    // channel is a *delta*, so a dropped batch is not a stale reading that the
+                    // next one corrects -- it is packets subtracted from the cumulative counters
+                    // for good, invisibly, and worst under exactly the load that filled the
+                    // channel. `try_send_option` leaves the batch in hand when it cannot be sent,
+                    // which is the whole reason to prefer it over `try_send`.
+                    //
+                    // The batch is a map keyed by VPC pair, so holding it costs no more memory the
+                    // longer it is held; only its resolution in time is lost, and the collector
+                    // apportions a long update across the windows it spans.
+                    let held = update.unwrap_or_else(|| unreachable!()).summary;
+                    self.update = held;
+                    self.update.planned_end = time + self.delivery_schedule;
+                    warn!("metrics channel full; holding this batch open until it can be sent");
+                }
                 Err(err) => {
                     error!("{err}");
                     panic!("{err}");
@@ -1172,6 +1187,75 @@ mod drop_stats_tests {
     /// mutable borrow of `stats` ends.
     fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
         let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+    }
+
+    /// A batch that cannot be sent is not lost.
+    ///
+    /// The collector reads a bounded channel, and the collector can fall behind -- it used to
+    /// rebuild every Prometheus series on every update, and it still does work proportional to the
+    /// square of the VPC count once a second. The old failure arm was `Ok(false) => warn!(..)`,
+    /// which dropped the batch.
+    ///
+    /// That is worse than it sounds. The channel carries *deltas*, so a dropped batch is not a
+    /// stale reading that the next one corrects: those packets are subtracted from the cumulative
+    /// counters permanently. There is also no metric for it -- the only trace is a log line -- so
+    /// the numbers quietly disagree with reality and nothing in the numbers says so. And it
+    /// happens under load, which is when they are being read.
+    #[test]
+    fn a_batch_that_cannot_be_sent_is_held_rather_than_dropped() {
+        const FED: usize = 5;
+        let (a, b) = (vpcd(100), vpcd(200));
+        // One slot, so the second flush has nowhere to go.
+        let (sender, receiver) = kanal::bounded(1);
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let tick = Duration::from_secs(1);
+            let mut stats =
+                Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+
+            for _ in 0..FED {
+                clock::virtual_time::advance(tick * 2).await;
+                run(
+                    &mut stats,
+                    vec![mk_packet(Some(a), Some(b), Some(DoneReason::Delivered))],
+                );
+            }
+
+            // Drain what made it through, then let the held batches follow.
+            let mut sent = 0u64;
+            for _ in 0..FED * 2 {
+                while let Ok(Some(update)) = receiver.try_recv() {
+                    sent += update
+                        .summary
+                        .vpc
+                        .get(&a)
+                        .and_then(|tx| tx.dst.get(&b))
+                        .map_or(0, |counts| counts.packets);
+                }
+                clock::virtual_time::advance(tick * 2).await;
+                run(&mut stats, vec![]);
+            }
+            while let Ok(Some(update)) = receiver.try_recv() {
+                sent += update
+                    .summary
+                    .vpc
+                    .get(&a)
+                    .and_then(|tx| tx.dst.get(&b))
+                    .map_or(0, |counts| counts.packets);
+            }
+
+            let still_held = stats
+                .update
+                .vpc
+                .get(&a)
+                .and_then(|tx| tx.dst.get(&b))
+                .map_or(0, |counts| counts.packets);
+            assert_eq!(
+                sent + still_held,
+                FED as u64,
+                "{FED} packets counted, {sent} sent and {still_held} still in hand"
+            );
+        });
     }
 
     #[test]
