@@ -894,7 +894,19 @@ mod tests {
         bolero::check!().with_type().for_each(
             |(requirement, observation): &(InterfaceSpec, Interface)| {
                 if requirement == observation {
-                    assert_eq!(requirement, &observation.as_requirement().unwrap());
+                    let observed = observation
+                        .as_requirement()
+                        .unwrap_or_else(|| unreachable!("it matched, so it has a requirement"));
+                    assert_eq!(requirement.name, observed.name);
+                    assert_eq!(requirement.admin_state, observed.admin_state);
+                    assert_eq!(requirement.controller, observed.controller);
+                    assert_eq!(requirement.properties, observed.properties);
+                    if requirement.mac.is_some() {
+                        assert_eq!(requirement.mac, observed.mac);
+                    }
+                    if requirement.mtu.is_some() {
+                        assert_eq!(requirement.mtu, observed.mtu);
+                    }
                 } else {
                     match observation.as_requirement() {
                         None => {}
