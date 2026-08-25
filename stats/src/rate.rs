@@ -155,6 +155,15 @@ impl<U> SavitzkyGolayFilter<U> {
     pub fn chronological(&self) -> impl Iterator<Item = &U> {
         self.data.iter().cycle().skip(self.idx).take(self.data.len())
     }
+
+    /// Every sample held, for editing in place.
+    ///
+    /// Order is not offered because there is nothing order-dependent a caller can do here: this
+    /// exists to *forget* something across the whole window, and forgetting it from four of five
+    /// samples would be worse than not forgetting it at all.
+    pub fn each_sample_mut(&mut self, mut edit: impl FnMut(&mut U)) {
+        self.data.iter_mut().for_each(&mut edit);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
