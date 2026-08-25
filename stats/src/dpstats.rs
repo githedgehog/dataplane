@@ -135,16 +135,23 @@ fn apportion_into_batches(
 }
 
 /// Take a synchronous snapshot of `(disc, name)` pairs from the VPC map reader.
-fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Vec<(VpcDiscriminant, String)> {
+fn snapshot_vpc_pairs(reader: &VpcMapReader<VpcMapName>) -> Option<Vec<(VpcDiscriminant, String)>> {
     match reader.enter() {
-        Some(guard) => guard
-            .0
-            .values()
-            .map(|VpcMapName { disc, name }| (*disc, name.clone()))
-            .collect(),
+        Some(guard) => Some(
+            guard
+                .0
+                .values()
+                .map(|VpcMapName { disc, name }| (*disc, name.clone()))
+                .collect(),
+        ),
         None => {
-            warn!("vpcmap reader guard acquisition failed; proceeding with empty snapshot");
-            Vec::new()
+            // `None` is not "no VPCs are configured" -- an empty map reads as `Some(vec![])`. It
+            // means the map could not be read at all, and the difference matters: taking it for an
+            // empty configuration means every VPC looks deleted, which prunes the store, zeroes
+            // every series and discards the traffic in flight. Nothing here is recoverable
+            // afterwards, so the only safe reading of "I do not know" is to change nothing.
+            warn!("vpcmap reader guard acquisition failed; leaving the collector's view unchanged");
+            None
         }
     }
 }
@@ -263,7 +270,7 @@ impl StatsCollector {
     ) -> (StatsCollector, PacketStatsWriter, Arc<VpcStatsStore>) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
 
-        let name_pairs = snapshot_vpc_pairs(&vpcmap_r);
+        let name_pairs = snapshot_vpc_pairs(&vpcmap_r).unwrap_or_default();
         vpc_store.set_many_vpc_names_sync(name_pairs.clone());
 
         let alive_vpcs: HashSet<VpcDiscriminant> =
@@ -321,7 +328,9 @@ impl StatsCollector {
     /// configuration cost and belongs on the configuration path.
     #[tracing::instrument(level = "debug")]
     async fn refresh_vpc_store(&mut self) {
-        let pairs = snapshot_vpc_pairs(&self.vpcmap_r);
+        let Some(pairs) = snapshot_vpc_pairs(&self.vpcmap_r) else {
+            return;
+        };
         let new_names: HashMap<VpcDiscriminant, String> = pairs.iter().cloned().collect();
 
         // Nothing below this line has anything to do when the configuration has not moved, and
@@ -547,16 +556,23 @@ impl StatsCollector {
             let mut total_bytes = 0u64;
 
             for (&dst, &stats) in tx_summary.dst.iter() {
+                // The total is accumulated before the liveness gate, not after it. A pair series
+                // belongs to both ends and stops meaning anything when either leaves, but the
+                // total belongs to the source alone: it sent these packets, whatever has since
+                // become of where they went. Gating both on the destination made deleting a VPC
+                // reach backwards and subtract from every surviving peer's cumulative counter --
+                // up to the whole in-flight window of traffic, permanently, because the counter is
+                // monotonic and never gets a chance to catch up.
+                total_pkts = total_pkts.saturating_add(stats.packets);
+                total_bytes = total_bytes.saturating_add(stats.bytes);
+
                 if !self.alive_vpcs.contains(&dst) {
-                    debug!("skipping stats for removed VPC {dst}");
+                    debug!("skipping pair stats for removed VPC {dst}");
                     continue;
                 }
                 self.vpc_store
                     .add_pair_counts(src, dst, stats.packets, stats.bytes)
                     .await;
-
-                total_pkts = total_pkts.saturating_add(stats.packets);
-                total_bytes = total_bytes.saturating_add(stats.bytes);
             }
 
             if total_pkts != 0 || total_bytes != 0 {
@@ -2529,6 +2545,97 @@ mod exported {
                     "customer-b has sent nothing but its count gauge reads {rate}"
                 );
             }
+        });
+    }
+
+    /// Deleting a VPC does not reach backwards into what its peers had already sent.
+    ///
+    /// A pair series belongs to both ends and rightly stops when either leaves. A VPC's *total* is
+    /// its own: it sent those packets, whatever has since become of where they went. Both were
+    /// gated on the destination being alive, so the last in-flight window of traffic -- up to a
+    /// dozen seconds of it -- was subtracted from every surviving peer's cumulative counter at the
+    /// moment the far end was deleted. Permanently, because the counter is monotonic and never
+    /// gets the chance to catch up.
+    ///
+    /// The source side of the same gate is left alone: a VPC that is gone has no total anyone will
+    /// read.
+    #[test]
+    fn deleting_a_peer_does_not_subtract_from_a_survivors_total() {
+        const TICKS: u64 = 24;
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, TICKS as usize).await;
+
+            map.del(dst, true);
+            quiet(&mut collector, 16).await;
+
+            let offered = (TICKS * LOAD) as f64;
+            let counted = scrape
+                .get("vpc_packet_count", &[("total", "left")])
+                .unwrap_or_else(|| unreachable!("left has no total at all"));
+            assert!(
+                (counted - offered).abs() < CLOSE_ENOUGH,
+                "left sent {offered} packets and is credited with {counted} after its peer was \
+                 deleted"
+            );
+        });
+    }
+
+    /// A map that cannot be read is not an empty map.
+    ///
+    /// `snapshot_vpc_pairs` returns `Some(vec![])` when nothing is configured and `None` when the
+    /// read failed, and the two used to collapse into the same empty `Vec`. Reading a failure as
+    /// "every VPC was just deleted" prunes the store, zeroes every series, and drops the traffic
+    /// still in flight -- none of which can be undone when the read next succeeds.
+    ///
+    /// The way to reach it is the way it happens: a `left_right` reader whose writer has been
+    /// dropped hands out no guard at all. That is shutdown in production, which is why this is a
+    /// guard against a latent class rather than a fix for a live defect -- but the collector should
+    /// not be one refactor of the map's ownership away from wiping every counter.
+    #[test]
+    fn a_map_that_cannot_be_read_is_not_read_as_empty() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+            let held = store.snapshot_pairs().await;
+            assert!(!held.is_empty(), "nothing was counted to begin with");
+
+            drop(map);
+            quiet(&mut collector, 4).await;
+
+            assert_eq!(
+                store.snapshot_pairs().await.len(),
+                held.len(),
+                "the counters were discarded because the map could not be read"
+            );
+            assert!(
+                scrape
+                    .get("vpc_packet_count", &[("from", "left"), ("to", "right")])
+                    .is_some_and(|counted| counted > 0.0),
+                "every series was zeroed because the map could not be read"
+            );
         });
     }
 
