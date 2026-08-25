@@ -4,6 +4,7 @@
 use concurrency::sync::{Mutex, MutexGuard};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) type Labels = BTreeMap<String, String>;
 
@@ -12,7 +13,10 @@ pub(crate) type SeriesId = (String, Labels);
 pub(crate) type Series = BTreeMap<SeriesId, f64>;
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Scrape(Arc<Mutex<Series>>);
+pub(crate) struct Scrape {
+    held: Arc<Mutex<Series>>,
+    registrations: Arc<AtomicUsize>,
+}
 
 impl Scrape {
     pub(crate) fn get(&self, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
@@ -21,6 +25,10 @@ impl Scrape {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         self.held().get(&(name.to_string(), labels)).copied()
+    }
+
+    pub(crate) fn registrations(&self) -> usize {
+        self.registrations.load(Ordering::Relaxed)
     }
 
     pub(crate) fn series(&self, name: &str) -> Vec<(Labels, f64)> {
@@ -47,7 +55,7 @@ impl Scrape {
     }
 
     fn held(&self) -> MutexGuard<'_, Series> {
-        self.0.lock()
+        self.held.lock()
     }
 }
 
@@ -113,10 +121,11 @@ impl metrics::Recorder for Scrape {
             .map(|label| (label.key().to_string(), label.value().to_string()))
             .collect();
         let at = (key.name().to_string(), labels);
+        self.registrations.fetch_add(1, Ordering::Relaxed);
         self.held().entry(at.clone()).or_insert(0.0);
         metrics::Gauge::from_arc(Arc::new(Cell {
             at,
-            into: self.0.clone(),
+            into: self.held.clone(),
         }))
     }
 
