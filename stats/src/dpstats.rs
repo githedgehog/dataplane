@@ -291,17 +291,19 @@ impl StatsCollector {
 
         self.alive_vpcs = pairs.iter().map(|(disc, _)| *disc).collect();
 
-        let recycled: HashSet<VpcDiscriminant> = new_names
+        let handovers: Vec<(VpcDiscriminant, String)> = new_names
             .iter()
             .filter(|(disc, name)| {
                 self.known_names
                     .get(disc)
                     .is_some_and(|previously| previously != *name)
             })
-            .map(|(disc, _)| *disc)
+            .map(|(disc, name)| (*disc, name.clone()))
             .collect();
-        if !recycled.is_empty() {
-            self.vpc_store.forget_vpcs(&recycled).await;
+        if !handovers.is_empty() {
+            let recycled: HashSet<VpcDiscriminant> =
+                handovers.iter().map(|(disc, _)| *disc).collect();
+            self.vpc_store.hand_over(&handovers).await;
             self.outstanding
                 .iter_mut()
                 .for_each(|batch| batch.forget(&recycled));
