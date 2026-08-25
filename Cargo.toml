@@ -283,7 +283,7 @@ rpath = true
 [profile.release.build-override]
 debug = false
 
-[profile.fuzz]
+[profile.checked]
 inherits = "release"
 opt-level = 2
 debug-assertions = true
