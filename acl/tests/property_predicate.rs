@@ -211,100 +211,102 @@ where
 }
 const MIN_ASSERTED_HITS: u64 = 20;
 const MIN_ASSERTED_MISSES: u64 = 20;
-fn run_property<A, T>(
-    name_prefix: &str,
-    install_dpdk: impl Fn(String, &FiveTupleRule<A>) -> T + core::panic::RefUnwindSafe,
-) where
-    A: KeyAddr,
-    PrefixSpec<A>: FieldHit<A> + FieldMiss<A> + IsUniversal,
-    T: Lookup<FiveTuple<A>, Verdict>,
-    RawRule<A>: TypeGenerator,
-{
-    let asserted_hits = AtomicU64::new(0);
-    let asserted_misses = AtomicU64::new(0);
+macro_rules! run_property {
+    ($a:ty, $name_prefix:expr, $install_dpdk:expr) => {{
+        let asserted_hits = AtomicU64::new(0);
+        let asserted_misses = AtomicU64::new(0);
 
-    bolero::check!()
-        .with_type::<(RawRule<A>, Box<[u8]>, Box<[u8]>)>()
-        .for_each(|(raw, hit_bytes, miss_bytes)| {
-            let rule = build_rule(raw);
-            let dpdk = install_dpdk(unique_name(name_prefix), &rule);
-            let reference = ReferenceTable::<FiveTuple<A>, Verdict>::new(vec![RefRule::new(
-                rule.into_backend_fields::<Erased>(),
-                Verdict::Drop,
-            )]);
+        bolero::check!()
+            .with_type::<(RawRule<$a>, Box<[u8]>, Box<[u8]>)>()
+            .for_each(|(raw, hit_bytes, miss_bytes)| {
+                let rule = build_rule(raw);
+                let dpdk = $install_dpdk(unique_name($name_prefix), &rule);
+                let reference = ReferenceTable::<FiveTuple<$a>, Verdict>::new(vec![RefRule::new(
+                    rule.into_backend_fields::<Erased>(),
+                    Verdict::Drop,
+                )]);
 
-            let hits = HitsGen { rule };
-            let n_hits = sweep(&hits, hit_bytes, |k| {
-                assert!(rule.accepts(k), "hits gen produced a rejected key: {k:?}");
-                assert_eq!(reference.lookup(k), Some(&Verdict::Drop));
-                assert_eq!(dpdk.lookup(k), Some(&Verdict::Drop));
-            });
-            asserted_hits.fetch_add(n_hits, Ordering::Relaxed);
-
-            if !rule.is_universal() {
-                let misses = MissesGen { rule };
-                let n_misses = sweep(&misses, miss_bytes, |k| {
-                    assert!(
-                        !rule.accepts(k),
-                        "misses gen produced an accepted key: {k:?}",
-                    );
-                    assert_eq!(reference.lookup(k), None);
-                    assert_eq!(dpdk.lookup(k), None);
+                let hits = HitsGen { rule };
+                let n_hits = sweep(&hits, hit_bytes, |k| {
+                    assert!(rule.accepts(k), "hits gen produced a rejected key: {k:?}");
+                    assert_eq!(reference.lookup(k), Some(&Verdict::Drop));
+                    assert_eq!(dpdk.lookup(k), Some(&Verdict::Drop));
                 });
-                asserted_misses.fetch_add(n_misses, Ordering::Relaxed);
-            }
-        });
+                asserted_hits.fetch_add(n_hits, Ordering::Relaxed);
 
-    let h = asserted_hits.load(Ordering::Relaxed);
-    let m = asserted_misses.load(Ordering::Relaxed);
-    assert!(
-        h >= MIN_ASSERTED_HITS,
-        "asserted only {h} hits (< {MIN_ASSERTED_HITS}); generator may have gone inert",
-    );
-    assert!(
-        m >= MIN_ASSERTED_MISSES,
-        "asserted only {m} misses (< {MIN_ASSERTED_MISSES}); generator may have gone inert",
-    );
+                if !rule.is_universal() {
+                    let misses = MissesGen { rule };
+                    let n_misses = sweep(&misses, miss_bytes, |k| {
+                        assert!(
+                            !rule.accepts(k),
+                            "misses gen produced an accepted key: {k:?}",
+                        );
+                        assert_eq!(reference.lookup(k), None);
+                        assert_eq!(dpdk.lookup(k), None);
+                    });
+                    asserted_misses.fetch_add(n_misses, Ordering::Relaxed);
+                }
+            });
+
+        let h = asserted_hits.load(Ordering::Relaxed);
+        let m = asserted_misses.load(Ordering::Relaxed);
+        assert!(
+            h >= MIN_ASSERTED_HITS,
+            "asserted only {h} hits (< {MIN_ASSERTED_HITS}); generator may have gone inert",
+        );
+        assert!(
+            m >= MIN_ASSERTED_MISSES,
+            "asserted only {m} misses (< {MIN_ASSERTED_MISSES}); generator may have gone inert",
+        );
+    }};
 }
 
 #[test]
 #[dpdk::with_eal]
 fn property_v4() {
-    run_property::<Ipv4Addr, FiveTupleTableV4<Verdict>>("prop_v4", |name, rule| {
-        install_table(
-            &name,
-            NonZero::new(2).expect("nonzero"),
-            vec![
-                RuleSpec::<FiveTuple<Ipv4Addr>, Verdict>::new(
-                    Priority::new(1).expect("nonzero priority"),
-                    CategoryMask::new(1).expect("nonzero mask"),
-                    rule.into_backend_fields::<Dpdk>(),
-                    Verdict::Drop,
-                )
-                .expect("RuleSpec"),
-            ],
-        )
-        .expect("install_table")
-    });
+    run_property!(
+        Ipv4Addr,
+        "prop_v4",
+        |name: String, rule: &FiveTupleRule<Ipv4Addr>| {
+            install_table(
+                &name,
+                NonZero::new(2).expect("nonzero"),
+                vec![
+                    RuleSpec::<FiveTuple<Ipv4Addr>, Verdict>::new(
+                        Priority::new(1).expect("nonzero priority"),
+                        CategoryMask::new(1).expect("nonzero mask"),
+                        rule.into_backend_fields::<Dpdk>(),
+                        Verdict::Drop,
+                    )
+                    .expect("RuleSpec"),
+                ],
+            )
+            .expect("install_table")
+        }
+    );
 }
 
 #[test]
 #[dpdk::with_eal]
 fn property_v6() {
-    run_property::<Ipv6Addr, FiveTupleTableV6<Verdict>>("prop_v6", |name, rule| {
-        install_table(
-            &name,
-            NonZero::new(2).expect("nonzero"),
-            vec![
-                RuleSpec::<FiveTuple<Ipv6Addr>, Verdict>::new(
-                    Priority::new(1).expect("nonzero priority"),
-                    CategoryMask::new(1).expect("nonzero mask"),
-                    rule.into_backend_fields::<Dpdk>(),
-                    Verdict::Drop,
-                )
-                .expect("RuleSpec"),
-            ],
-        )
-        .expect("install_table")
-    });
+    run_property!(
+        Ipv6Addr,
+        "prop_v6",
+        |name: String, rule: &FiveTupleRule<Ipv6Addr>| {
+            install_table(
+                &name,
+                NonZero::new(2).expect("nonzero"),
+                vec![
+                    RuleSpec::<FiveTuple<Ipv6Addr>, Verdict>::new(
+                        Priority::new(1).expect("nonzero priority"),
+                        CategoryMask::new(1).expect("nonzero mask"),
+                        rule.into_backend_fields::<Dpdk>(),
+                        Verdict::Drop,
+                    )
+                    .expect("RuleSpec"),
+                ],
+            )
+            .expect("install_table")
+        }
+    );
 }
