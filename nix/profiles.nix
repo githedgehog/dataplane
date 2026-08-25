@@ -231,9 +231,10 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.shadow-stack.NIX_CFLAGS_LINK);
   instrument.fuzz.NIX_CFLAGS_COMPILE = [
     "-fsanitize=fuzzer-no-link"
+    "-fno-lto"
   ];
   instrument.fuzz.NIX_CXXFLAGS_COMPILE = instrument.fuzz.NIX_CFLAGS_COMPILE;
-  instrument.fuzz.NIX_CFLAGS_LINK = instrument.fuzz.NIX_CFLAGS_COMPILE;
+  instrument.fuzz.NIX_CFLAGS_LINK = [ ];
   instrument.fuzz.RUSTFLAGS = [
     "--cfg=fuzzing"
     "-Cpasses=sancov-module"
