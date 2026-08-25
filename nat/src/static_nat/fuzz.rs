@@ -225,10 +225,20 @@ impl Tally {
 ///
 /// The development guide names this relation directly -- *translate then reverse is the identity on
 /// the five-tuple* -- as the per-packet half of the decomposition.
-fn drive_round_trip(scenario: Scenario) {
+/// `bolero::check!()` takes its target name from the function it is written in -- `item_path` in
+/// `bolero_engine`, which walks up from a marker item defined at the macro site. A `check!()` shared
+/// by several tests therefore registers one target named after the *shared* function, which is not
+/// a `#[test]` and so resolves to nothing when `cargo bolero` goes to run it. Every property in this
+/// module was listed by `cargo bolero list` and none could be selected.
+///
+/// Expanding the driver into each test puts the `check!()` inside a real test function, so each gets
+/// a target of its own. The scenario stays injected and the case body is untouched: what changed is
+/// where the macro is expanded, not what the property says.
+macro_rules! drive_round_trip {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -265,11 +275,12 @@ fn drive_round_trip(scenario: Scenario) {
     );
 
     tally.report("round trip");
+}};
 }
 
 #[test]
 fn a_translated_source_comes_back() {
-    drive_round_trip(Scenario::addresses(false));
+    drive_round_trip!(Scenario::addresses(false));
 }
 
 /// The same, where the mapping moves the port as well as the address.
@@ -280,7 +291,7 @@ fn a_translated_source_comes_back() {
 /// reverse mapping cannot recover the address without also accounting for the port.
 #[test]
 fn a_translated_source_and_port_come_back() {
-    drive_round_trip(Scenario::ports(false));
+    drive_round_trip!(Scenario::ports(false));
 }
 
 /// Two sources that differ stay different after translation.
@@ -292,10 +303,11 @@ fn a_translated_source_and_port_come_back() {
 /// `setup::config_driven` proves the *table* injective. This proves the stage is, which is a
 /// different claim: the table could be right and the write to the packet's headers wrong, and no
 /// table-level property would see it.
-fn drive_injectivity(scenario: Scenario) {
+macro_rules! drive_injectivity {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, _probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -335,11 +347,12 @@ fn drive_injectivity(scenario: Scenario) {
     );
 
     tally.report("injectivity");
+}};
 }
 
 #[test]
 fn distinct_sources_stay_distinct() {
-    drive_injectivity(Scenario::addresses(false));
+    drive_injectivity!(Scenario::addresses(false));
 }
 
 /// The same over address-and-port pairs.
@@ -349,7 +362,7 @@ fn distinct_sources_stay_distinct() {
 /// colliding is a defect an address-only sweep cannot see.
 #[test]
 fn distinct_sources_and_ports_stay_distinct() {
-    drive_injectivity(Scenario::ports(false));
+    drive_injectivity!(Scenario::ports(false));
 }
 
 /// Translating the source leaves everything else alone.
@@ -364,67 +377,70 @@ fn distinct_sources_and_ports_stay_distinct() {
 /// its peer's manifest; the peer offers no translation, so an outbound packet's destination must come
 /// through untouched, and a rewrite would mean the two halves of the table are bleeding into each
 /// other.
-fn drive_frame(scenario: Scenario) {
-    let tally = Tally::default();
+macro_rules! drive_frame {
+    ($scenario:expr) => {{
+        let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
-        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
-            tally.seen.fetch_add(1, Ordering::Relaxed);
-            let Some(fabric) = fabric(&exposes) else {
-                return;
-            };
-            tally.built.fetch_add(1, Ordering::Relaxed);
-            let mut nf = fabric.nf();
-
-            for spec in &probes {
-                let mut probe = (*spec).resolve(&fabric);
-                let (destination, sport, dport) = (probe.destination, probe.sport, probe.dport);
-                let proto = if probe.tcp {
-                    NextHeader::TCP
-                } else {
-                    NextHeader::UDP
+        bolero::check!()
+            .with_generator($scenario)
+            .cloned()
+            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+                tally.seen.fetch_add(1, Ordering::Relaxed);
+                let Some(fabric) = fabric(&exposes) else {
+                    return;
                 };
-                let out = run(&mut nf, vec![probe.take()]);
-                let packet = &out[0];
+                tally.built.fetch_add(1, Ordering::Relaxed);
+                let mut nf = fabric.nf();
 
-                assert_eq!(
-                    packet.ip_destination(),
-                    Some(destination),
-                    "source translation rewrote the destination"
-                );
-                assert_eq!(
-                    packet.transport_dst_port().map(NonZero::get),
-                    Some(dport),
-                    "source translation rewrote the destination port"
-                );
-                assert_eq!(
-                    packet.ip_proto(),
-                    Some(proto),
-                    "source translation changed the transport protocol"
-                );
-                if !fabric.uses_ports {
+                for spec in &probes {
+                    let mut probe = (*spec).resolve(&fabric);
+                    let (destination, sport, dport) = (probe.destination, probe.sport, probe.dport);
+                    let proto = if probe.tcp {
+                        NextHeader::TCP
+                    } else {
+                        NextHeader::UDP
+                    };
+                    let out = run(&mut nf, vec![probe.take()]);
+                    let packet = &out[0];
+
                     assert_eq!(
-                        packet.transport_src_port().map(NonZero::get),
-                        Some(sport),
-                        "source translation rewrote the source port, which no expose asked for"
+                        packet.ip_destination(),
+                        Some(destination),
+                        "source translation rewrote the destination"
                     );
+                    assert_eq!(
+                        packet.transport_dst_port().map(NonZero::get),
+                        Some(dport),
+                        "source translation rewrote the destination port"
+                    );
+                    assert_eq!(
+                        packet.ip_proto(),
+                        Some(proto),
+                        "source translation changed the transport protocol"
+                    );
+                    if !fabric.uses_ports {
+                        assert_eq!(
+                            packet.transport_src_port().map(NonZero::get),
+                            Some(sport),
+                            "source translation rewrote the source port, which no expose asked for"
+                        );
+                    }
+                    tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
-                tally.reached.fetch_add(1, Ordering::Relaxed);
-            }
-        },
-    );
+            });
 
-    tally.report("frame");
+        tally.report("frame");
+    }};
 }
 
 #[test]
 fn translation_touches_only_the_source() {
-    drive_frame(Scenario::addresses(false));
+    drive_frame!(Scenario::addresses(false));
 }
 
 #[test]
 fn port_translation_touches_only_the_source() {
-    drive_frame(Scenario::ports(false));
+    drive_frame!(Scenario::ports(false));
 }
 
 /// Nothing is translated that did not ask to be.
@@ -437,10 +453,11 @@ fn port_translation_touches_only_the_source() {
 ///
 /// A source the exposes do not offer is the same claim from the other side: the stage may only act
 /// on what the configuration named.
-fn drive_permission(scenario: Scenario) {
+macro_rules! drive_permission {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -475,16 +492,17 @@ fn drive_permission(scenario: Scenario) {
     );
 
     tally.report("permission");
+}};
 }
 
 #[test]
 fn nothing_is_translated_without_permission() {
-    drive_permission(Scenario::addresses(true));
+    drive_permission!(Scenario::addresses(true));
 }
 
 #[test]
 fn no_port_is_translated_without_permission() {
-    drive_permission(Scenario::ports(true));
+    drive_permission!(Scenario::ports(true));
 }
 
 /// A packet the stage cannot look up is dropped, and says why.
@@ -496,10 +514,11 @@ fn no_port_is_translated_without_permission() {
 /// A silent pass here is the real failure: a packet whose source vpc is unknown has no table, so
 /// letting it through means forwarding untranslated traffic under a configuration that never
 /// mentioned it.
-fn drive_attribution(scenario: Scenario) {
+macro_rules! drive_attribution {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -539,11 +558,12 @@ fn drive_attribution(scenario: Scenario) {
     );
 
     tally.report("attribution");
+}};
 }
 
 #[test]
 fn a_packet_that_cannot_be_looked_up_says_so() {
-    drive_attribution(Scenario::addresses(true));
+    drive_attribution!(Scenario::addresses(true));
 }
 
 /// A packet whose five-tuple changed is marked as having changed.
@@ -555,10 +575,11 @@ fn a_packet_that_cannot_be_looked_up_says_so() {
 ///
 /// `is_src_natted` carries the same weight in the other direction -- it is what stops a second NAT
 /// stage translating the packet again.
-fn drive_marking(scenario: Scenario) {
+macro_rules! drive_marking {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -594,14 +615,15 @@ fn drive_marking(scenario: Scenario) {
     );
 
     tally.report("marking");
+}};
 }
 
 #[test]
 fn a_modified_packet_is_always_marked() {
-    drive_marking(Scenario::addresses(true));
+    drive_marking!(Scenario::addresses(true));
 }
 
 #[test]
 fn a_port_modified_packet_is_always_marked() {
-    drive_marking(Scenario::ports(true));
+    drive_marking!(Scenario::ports(true));
 }
