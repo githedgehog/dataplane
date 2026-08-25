@@ -300,6 +300,31 @@ fuzz target time="60s" *args="":
         exit 1
       fi
     fi
+    # `cargo-bolero` builds a RUSTFLAGS value and puts it in the environment. Cargo does not merge
+    # an environment RUSTFLAGS with `.cargo/config.toml`'s `rustflags` -- the variable wins outright
+    # and the file is ignored -- so a fuzz build silently loses every flag the file carries, which
+    # showed up as 43 `unexpected cfg` warnings per build once anything looked. bolero appends what
+    # it inherits, so exporting the file's own flags is enough to keep them; read them from cargo
+    # rather than copying them here, so there is one place to change.
+    inherited="$(cargo config get -Zunstable-options --format json-value build.rustflags 2>/dev/null | jq -r 'join(" ")')"
+    export RUSTFLAGS="${inherited} ${RUSTFLAGS:-}"
+
+    # `-Cpasses=sancov-module` instruments every binary cargo builds for the package, but only the
+    # ones bolero links get libFuzzer, which is what defines `__sanitizer_cov_*` and
+    # `__sancov_lowest_stack`. A package carrying an integration test that does not use bolero
+    # therefore cannot link -- unless a sanitizer runtime happens to define them as well, which is
+    # exactly why this stayed hidden until `sanitize=NONE` was tried and why `-p` looked like a fix.
+    #
+    # `fuzzer_no_main` is libFuzzer without its `main`. A linker pulls archive members only to
+    # resolve undefined symbols, so it supplies them where they are missing and contributes nothing
+    # to the fuzz target, where libFuzzer has already resolved them. libFuzzer is C++, hence -lstdc++.
+    sancov_rt="$(clang -print-file-name=libclang_rt.fuzzer_no_main-$(uname -m).a 2>/dev/null || true)"
+    if [ -f "${sancov_rt}" ]; then
+      export RUSTFLAGS="${RUSTFLAGS} -Clink-arg=${sancov_rt} -Clink-arg=-lstdc++"
+    else
+      printf 'warning: no libFuzzer runtime beside clang; packages with a non-bolero test binary will not link.\n' >&2
+    fi
+
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
