@@ -322,26 +322,22 @@ impl StatsCollector {
     #[tracing::instrument(level = "debug")]
     async fn refresh_vpc_store(&mut self) {
         let pairs = snapshot_vpc_pairs(&self.vpcmap_r);
-        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
-
-        let new_alive: HashSet<VpcDiscriminant> = pairs.iter().map(|(d, _)| *d).collect();
         let new_names: HashMap<VpcDiscriminant, String> = pairs.iter().cloned().collect();
 
-        self.alive_vpcs = new_alive;
-
-        // prune any removed VPCs / pairs so they do not show up in snapshots/status
-        self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
-
+        // Nothing below this line has anything to do when the configuration has not moved, and
+        // saying so here is what keeps the common path linear: the prune walks every pair the
+        // store holds, and nothing can put a pair there that the current configuration does not
+        // allow, because every write is gated on `alive_vpcs` first.
         if new_names == self.known_names {
             return;
         }
 
+        self.alive_vpcs = pairs.iter().map(|(disc, _)| *disc).collect();
+
         // A discriminant whose name changed is a different tenant on the same VNI as far as
-        // anything that reads these numbers is concerned, and the series it is exported under has
-        // just been retired below. Its counters have to go with it: they are cumulative, so the
-        // incoming tenant's first scrape would otherwise report every packet the outgoing one ever
-        // sent. The rate window is left to drain on its own -- it is five seconds wide and self
-        // correcting, where a counter never is.
+        // anything that reads these numbers is concerned, and the series it is exported under is
+        // retired below. Its counters have to go with it: they are cumulative, so the incoming
+        // tenant's first scrape would otherwise report every packet the outgoing one ever sent.
         let recycled: HashSet<VpcDiscriminant> = new_names
             .iter()
             .filter(|(disc, name)| {
@@ -365,6 +361,15 @@ impl StatsCollector {
             self.submitted
                 .each_sample_mut(|sample| forget_from(sample, &recycled));
         }
+
+        // Prune before publishing the new names, not after. A reader of the store takes the names
+        // and the counters as two separate snapshots -- `handle_get_dataplane_status` in `mgmt`
+        // does exactly that -- so whichever is written first is what a read landing between them
+        // will pair with stale data from the other. Counters first means the worst such read sees
+        // an old name against no counters; names first would mean a *new* tenant's name against
+        // the outgoing tenant's counters, which is the thing the forget above exists to prevent.
+        self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
+        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
 
         // A gauge cannot be withdrawn from the registry, so retiring a series means pinning it to
         // zero: the alternative is a value frozen at whatever it last carried, which for a `_rate`
@@ -588,8 +593,11 @@ impl StatsCollector {
         // Which pairs have ever carried a packet. A store entry is made by `add_pair_counts`, and
         // only real traffic calls that, so this is exactly the set of peerings that have anything
         // to say.
-        let carried: HashSet<(VpcDiscriminant, VpcDiscriminant)> =
-            pair_snap.iter().map(|&(pair, _)| pair).collect();
+        let mut carried: hashbrown::HashMap<VpcDiscriminant, BTreeSet<VpcDiscriminant>> =
+            hashbrown::HashMap::new();
+        for &((src, dst), _) in &pair_snap {
+            carried.entry(src).or_default().insert(dst);
+        }
         for ((src, dst), fs) in pair_snap {
             if !self.alive_vpcs.contains(&src) || !self.alive_vpcs.contains(&dst) {
                 continue;
@@ -665,25 +673,30 @@ impl StatsCollector {
                 // Smoothed entry for this src (if any)
                 let maybe_tx = smoothed_by_src.get(&src);
 
-                // For every known dst under this src, either set smoothed rate or zero.
-                for (&dst, action) in metrics.peering.iter() {
+                // The peerings worth visiting are the ones the window has something to say
+                // about and the ones that have carried traffic before and so may need correcting
+                // back to zero -- not every peering of every VPC. That last reading is what made
+                // the collector's per-second work grow as the square of the fabric: at 64 VPCs
+                // with a single live pair it visited 4096 peerings, wrote a rate to each, and
+                // `set_pair_rates` created the store entry for all of them, which then made the
+                // prune, every snapshot, and the CLI's pair listing quadratic in turn.
+                let mut publish: BTreeSet<VpcDiscriminant> =
+                    carried.get(&src).cloned().unwrap_or_default();
+                if let Some(tx_summary) = maybe_tx {
+                    publish.extend(tx_summary.dst.iter().map(|(dst, _)| *dst));
+                }
+
+                for dst in publish {
                     if !self.alive_vpcs.contains(&dst) {
                         debug!("skipping rate stats for removed VPC {dst}");
                         continue;
                     }
-                    let smoothed = maybe_tx.and_then(|tx_summary| tx_summary.dst.get(&dst));
-                    if smoothed.is_none() && !carried.contains(&(src, dst)) {
-                        // A peering that has never carried a packet has nothing to publish and
-                        // nothing to correct: its gauges have read zero since they were registered.
-                        // Writing to it anyway is not free -- `set_pair_rates` creates the store
-                        // entry, so the store, every snapshot taken of it, the prune that runs on
-                        // every update, and the pair listing the CLI prints all grow as the square
-                        // of the VPC count rather than with the traffic. Measured at 64 VPCs
-                        // carrying one live pair: 4096 pairs held, and the per-second publish
-                        // dominated by the 4095 of them that were zero.
+                    let Some(action) = metrics.peering.get(&dst) else {
                         continue;
-                    }
-                    let (pps, bps) = smoothed.map_or((0.0, 0.0), |rate| (rate.packets, rate.bytes));
+                    };
+                    let (pps, bps) = maybe_tx
+                        .and_then(|tx_summary| tx_summary.dst.get(&dst))
+                        .map_or((0.0, 0.0), |rate| (rate.packets, rate.bytes));
 
                     // Export to Prometheus gauges
                     action.tx.packet.rate.metric.set(pps);
