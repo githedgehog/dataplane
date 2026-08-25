@@ -109,14 +109,17 @@ fn flow() -> FlowInfo {
     info
 }
 
-/// Run a property inside a runtime whose clock starts paused.
-fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
+/// Run one case on a paused clock.
+///
+/// `bolero::check!()` names its target after the function it is written in, and a `check!()` inside
+/// a closure is named `...::{{closure}}` -- which is not a test, so `cargo bolero` could not select
+/// any property in this module. Wrapping each *case* rather than the whole `check!()` keeps the
+/// paused clock and puts the macro back in the test function where its name comes from.
+fn paused(body: impl FnOnce()) {
+    /// One per process, which under `cargo nextest` is one per property.
+    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
+        std::sync::LazyLock::new(clock::virtual_time::Paused::new);
+    CLOCK.block_on(async { body() });
 }
 
 /// A flow's expiry never moves earlier, whatever is done to it.
@@ -136,10 +139,10 @@ fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
 /// cannot hide.
 #[test]
 fn expiry_never_moves_backwards() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Vec<Op>>()
-            .for_each(|ops: &Vec<Op>| {
+    bolero::check!()
+        .with_type::<Vec<Op>>()
+        .for_each(|ops: &Vec<Op>| {
+            paused(|| {
                 let entry = flow();
                 let mut high_water = entry.expires_at();
 
@@ -153,7 +156,7 @@ fn expiry_never_moves_backwards() {
                     high_water = now;
                 }
             });
-    });
+        });
 }
 
 /// Applying one operation, ignoring the outcome.
@@ -183,9 +186,9 @@ fn apply(flow: &FlowInfo, op: Op) {
 /// silent write behind an error return.
 #[test]
 fn a_refused_refresh_leaves_the_deadline_alone() {
-    with_paused_clock(|| async {
-        bolero::check!().with_type::<(Status, Millis)>().for_each(
-            |(status, millis): &(Status, Millis)| {
+    bolero::check!().with_type::<(Status, Millis)>().for_each(
+        |(status, millis): &(Status, Millis)| {
+            paused(|| {
                 let entry = flow();
                 entry.update_status((*status).into());
                 let before = entry.expires_at();
@@ -204,9 +207,9 @@ fn a_refused_refresh_leaves_the_deadline_alone() {
                         "extend_expiry refused for status {status:?} but moved the deadline anyway"
                     );
                 }
-            },
-        );
-    });
+            });
+        },
+    );
 }
 
 /// A refresh is permitted exactly when the status permits it.
@@ -220,9 +223,9 @@ fn a_refused_refresh_leaves_the_deadline_alone() {
 /// and a one-way check would not see it.
 #[test]
 fn a_refresh_is_permitted_exactly_when_the_status_allows() {
-    with_paused_clock(|| async {
-        bolero::check!().with_type::<(Status, Millis)>().for_each(
-            |(status, millis): &(Status, Millis)| {
+    bolero::check!().with_type::<(Status, Millis)>().for_each(
+        |(status, millis): &(Status, Millis)| {
+            paused(|| {
                 let status = FlowStatus::from(*status);
 
                 let entry = flow();
@@ -242,9 +245,9 @@ fn a_refresh_is_permitted_exactly_when_the_status_allows() {
                     status != FlowStatus::Expired,
                     "extend_expiry on a {status} flow returned {extend:?}"
                 );
-            },
-        );
-    });
+            });
+        },
+    );
 }
 
 /// Invalidating a flow cancels it, and doing it again is harmless.
@@ -255,10 +258,10 @@ fn a_refresh_is_permitted_exactly_when_the_status_allows() {
 /// cancelled whose token still sleeps is an entry that lingers until its original deadline.
 #[test]
 fn invalidating_is_idempotent_and_cancels_the_timer() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Status>()
-            .for_each(|status: &Status| {
+    bolero::check!()
+        .with_type::<Status>()
+        .for_each(|status: &Status| {
+            paused(|| {
                 let entry = flow();
                 let started_active = FlowStatus::from(*status) == FlowStatus::Active;
                 entry.update_status((*status).into());
@@ -285,7 +288,7 @@ fn invalidating_is_idempotent_and_cancels_the_timer() {
                     "invalidating twice did not leave the flow cancelled"
                 );
             });
-    });
+        });
 }
 
 /// A related pair points at each other, and invalidating one invalidates both.
@@ -299,10 +302,10 @@ fn invalidating_is_idempotent_and_cancels_the_timer() {
 /// leaves half a translation live -- the direction that still works then has no reverse.
 #[test]
 fn a_related_pair_refers_to_its_partner() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(u16, u16)>()
-            .for_each(|(a, b): &(u16, u16)| {
+    bolero::check!()
+        .with_type::<(u16, u16)>()
+        .for_each(|(a, b): &(u16, u16)| {
+            paused(|| {
                 let (one, two) = (key(*a), key(b.wrapping_add(1)));
                 let built = FlowInfo::related_pair(
                     clock::now() + Duration::from_secs(1),
@@ -349,7 +352,7 @@ fn a_related_pair_refers_to_its_partner() {
                      survives with no reverse"
                 );
             });
-    });
+        });
 }
 
 /// A pair with the same initiator flag on both halves is refused.
@@ -419,10 +422,10 @@ fn every_status_survives_its_byte() {
 /// arrange.
 #[test]
 fn the_unchecked_refreshes_move_the_deadline_exactly() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(Millis, Millis)>()
-            .for_each(|(a, b): &(Millis, Millis)| {
+    bolero::check!()
+        .with_type::<(Millis, Millis)>()
+        .for_each(|(a, b): &(Millis, Millis)| {
+            paused(|| {
                 let (extend, reset) = (a.duration(), b.duration());
 
                 // An extension adds to what is stored, whatever that was.
@@ -468,7 +471,7 @@ fn the_unchecked_refreshes_move_the_deadline_exactly() {
                 );
                 assert_eq!(subject.expires_at(), held, "and must leave it where it was");
             });
-    });
+        });
 }
 
 /// A flow is active exactly when its status says so.
@@ -478,10 +481,10 @@ fn the_unchecked_refreshes_move_the_deadline_exactly() {
 /// route packets through NAT state that has already been released.
 #[test]
 fn a_flow_is_active_exactly_when_its_status_says_so() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Status>()
-            .for_each(|status: &Status| {
+    bolero::check!()
+        .with_type::<Status>()
+        .for_each(|status: &Status| {
+            paused(|| {
                 let want = FlowStatus::from(*status);
                 let flow = flow();
                 flow.update_status(want);
@@ -491,7 +494,7 @@ fn a_flow_is_active_exactly_when_its_status_says_so() {
                     "is_active disagreed with the status it was asked about"
                 );
             });
-    });
+        });
 }
 
 /// A flow built with a status has that status.
@@ -501,10 +504,10 @@ fn a_flow_is_active_exactly_when_its_status_says_so() {
 /// wrong reason -- the tests it serves would stop covering what they claim.
 #[test]
 fn a_flow_built_with_a_status_has_it() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(u16, Status)>()
-            .for_each(|(port, status): &(u16, Status)| {
+    bolero::check!()
+        .with_type::<(u16, Status)>()
+        .for_each(|(port, status): &(u16, Status)| {
+            paused(|| {
                 let want = FlowStatus::from(*status);
                 let flow = FlowInfo::new_with_status(
                     key(*port),
@@ -517,7 +520,7 @@ fn a_flow_built_with_a_status_has_it() {
                     "the status asked for was not the one built"
                 );
             });
-    });
+        });
 }
 
 /// A generation id is remembered, and `set_genid_pair` reaches the partner.
@@ -528,9 +531,10 @@ fn a_flow_built_with_a_status_has_it() {
 /// is the shape of the defect this branch already fixed once in the masquerade expiry path.
 #[test]
 fn a_genid_is_remembered_and_reaches_the_partner() {
-    with_paused_clock(|| async {
-        bolero::check!().with_type::<(u16, u16, i64)>().for_each(
-            |(a, b, genid): &(u16, u16, i64)| {
+    bolero::check!()
+        .with_type::<(u16, u16, i64)>()
+        .for_each(|(a, b, genid): &(u16, u16, i64)| {
+            paused(|| {
                 let (one, two) = (key(*a), key(b.wrapping_add(1)));
                 let Ok((first, second)) = FlowInfo::related_pair(
                     clock::now() + Duration::from_secs(1),
@@ -563,9 +567,8 @@ fn a_genid_is_remembered_and_reaches_the_partner() {
                     "set_genid_pair must reach the partner, or the halves disagree about which \
                      configuration they belong to"
                 );
-            },
-        );
-    });
+            });
+        });
 }
 
 /// Each flag predicate answers for its own bit and no other.
@@ -575,10 +578,10 @@ fn a_genid_is_remembered_and_reaches_the_partner() {
 /// answered a constant would translate everything or nothing.
 #[test]
 fn each_flag_predicate_answers_for_its_own_bit() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(u16, u16, u8)>()
-            .for_each(|(a, b, bits): &(u16, u16, u8)| {
+    bolero::check!()
+        .with_type::<(u16, u16, u8)>()
+        .for_each(|(a, b, bits): &(u16, u16, u8)| {
+            paused(|| {
                 let flags = FlowInfoFlags::from_bits_truncate(*bits);
                 let (one, two) = (key(*a), key(b.wrapping_add(1)));
                 let Ok((first, _second)) = FlowInfo::related_pair(
@@ -609,7 +612,7 @@ fn each_flag_predicate_answers_for_its_own_bit() {
                     "the initiator predicate answered for the wrong bit"
                 );
             });
-    });
+        });
 }
 
 /// The destination vpc a flow was stamped with is the one it reports.
@@ -619,10 +622,10 @@ fn each_flag_predicate_answers_for_its_own_bit() {
 /// like a flow that had not been through the lookup stage yet.
 #[test]
 fn the_destination_vpc_is_remembered() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Option<u32>>()
-            .for_each(|vni: &Option<u32>| {
+    bolero::check!()
+        .with_type::<Option<u32>>()
+        .for_each(|vni: &Option<u32>| {
+            paused(|| {
                 let want = vni
                     .and_then(|v| crate::vxlan::Vni::new_checked(v % 0x00FF_FFFF).ok())
                     .map(crate::packet::VpcDiscriminant::from_vni);
@@ -634,5 +637,5 @@ fn the_destination_vpc_is_remembered() {
                     "the destination vpc read back must be the one stamped"
                 );
             });
-    });
+        });
 }
