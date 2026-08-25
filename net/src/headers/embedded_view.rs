@@ -2100,40 +2100,43 @@ mod embedded_view_properties {
         );
     }
 
-    fn exercise_the_embedded_split() {
-        bolero::check!()
-            .with_generator(ShapedIcmpError)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let Some(outer) = owned.as_view_mut::<O4V6>() else {
-                    return;
-                };
-                let Some(ew) = outer.as_embedded_mut::<(&Ipv6, &HopByHop, &TruncatedTcp)>() else {
-                    return;
-                };
-                let (ip, ext, tcp) = ew.look_mut();
+    macro_rules! exercise_the_embedded_split {
+        () => {{
+            bolero::check!()
+                .with_generator(ShapedIcmpError)
+                .for_each(|h: &Headers| {
+                    let mut owned = h.clone();
+                    let Some(outer) = owned.as_view_mut::<O4V6>() else {
+                        return;
+                    };
+                    let Some(ew) = outer.as_embedded_mut::<(&Ipv6, &HopByHop, &TruncatedTcp)>()
+                    else {
+                        return;
+                    };
+                    let (ip, ext, tcp) = ew.look_mut();
 
-                let want_hops = ip.hop_limit().wrapping_add(1);
-                ip.set_hop_limit(want_hops);
-                let seen_ext = ext.next_header();
-                let seen_tcp = matches!(tcp, TruncatedTcp::FullHeader(_));
+                    let want_hops = ip.hop_limit().wrapping_add(1);
+                    ip.set_hop_limit(want_hops);
+                    let seen_ext = ext.next_header();
+                    let seen_tcp = matches!(tcp, TruncatedTcp::FullHeader(_));
 
-                assert_eq!(
-                    ip.hop_limit(),
-                    want_hops,
-                    "the write through ipv6 did not stick"
-                );
-                assert_eq!(
-                    ext.next_header(),
-                    seen_ext,
-                    "the extension header changed under a write to ipv6"
-                );
-                assert_eq!(
-                    matches!(tcp, TruncatedTcp::FullHeader(_)),
-                    seen_tcp,
-                    "the quoted transport changed under a write to ipv6"
-                );
-            });
+                    assert_eq!(
+                        ip.hop_limit(),
+                        want_hops,
+                        "the write through ipv6 did not stick"
+                    );
+                    assert_eq!(
+                        ext.next_header(),
+                        seen_ext,
+                        "the extension header changed under a write to ipv6"
+                    );
+                    assert_eq!(
+                        matches!(tcp, TruncatedTcp::FullHeader(_)),
+                        seen_tcp,
+                        "the quoted transport changed under a write to ipv6"
+                    );
+                });
+        }};
     }
 
     macro_rules! split_shards {
@@ -2141,7 +2144,7 @@ mod embedded_view_properties {
             $(
                 #[test]
                 fn $name() {
-                    exercise_the_embedded_split();
+                    exercise_the_embedded_split!();
                 }
             )*
         };
