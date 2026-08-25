@@ -30,7 +30,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
-custom_target!("Pyroscope", LevelFilter::INFO, &["third-party"]);
+custom_target!("Pyroscope", LevelFilter::WARN, &["third-party"]);
 custom_target!("kube", LevelFilter::WARN, &["third-party"]);
 custom_target!("hyper", LevelFilter::WARN, &["third-party"]);
 custom_target!("tower", LevelFilter::WARN, &["third-party"]);
