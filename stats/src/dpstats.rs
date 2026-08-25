@@ -77,7 +77,19 @@ fn apportion_into_batches(
     value: PacketAndByte<u64>,
     mut apply: impl FnMut(&mut TransmitSummary<u64>, PacketAndByte<u64>),
 ) {
-    if (value.packets == 0 && value.bytes == 0) || total_ov == 0 {
+    if value.packets == 0 && value.bytes == 0 {
+        return;
+    }
+    if total_ov == 0 {
+        let Some(batch) = slices.first_mut() else {
+            error!(
+                "no open batch for an update covering {} packets: the schedule has fallen behind",
+                value.packets
+            );
+            return;
+        };
+        let tx = batch.vpc.entry(src).or_insert_with(TransmitSummary::new);
+        apply(tx, value);
         return;
     }
     let mut rem_pkts = value.packets;
@@ -186,6 +198,7 @@ pub struct StatsCollector {
 impl StatsCollector {
     const DEFAULT_CHANNEL_CAPACITY: usize = 256;
     const TIME_TICK: Duration = Duration::from_secs(1);
+    const OUTSTANDING: usize = 10;
 
     #[tracing::instrument(level = "info")]
     pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> (StatsCollector, PacketStatsWriter) {
@@ -242,11 +255,12 @@ impl StatsCollector {
             .collect();
 
         let updates = PacketStatsReader(r);
-        let outstanding: VecDeque<_> = (0..10)
-            .scan(
-                BatchSummary::<u64>::new(clock::now() + Self::TIME_TICK),
-                |prior, _| Some(BatchSummary::new(prior.planned_end + Self::TIME_TICK)),
-            )
+        let outstanding: VecDeque<_> = (0..Self::OUTSTANDING)
+            .scan(clock::now(), |start, _| {
+                let batch = BatchSummary::<u64>::with_start(*start, Self::TIME_TICK);
+                *start += Self::TIME_TICK;
+                Some(batch)
+            })
             .collect();
 
         let store_clone = Arc::clone(&vpc_store);
@@ -398,92 +412,6 @@ impl StatsCollector {
                 })
                 .collect();
 
-            // Proportionally distribute each (src,dst) update across overlapping batches.
-            update.summary.vpc.iter().for_each(|(src, summary)| {
-                summary.dst.iter().for_each(|(dst, stats)| {
-                    if stats.packets == 0 && stats.bytes == 0 {
-                        return;
-                    }
-
-                    let upd_start = update.summary.start;
-                    let upd_end = update.start() + update.duration;
-
-                    // Pre-compute overlaps with all candidate batch slices
-                    let overlaps: Vec<u128> = slices
-                        .iter()
-                        .map(|b| overlap_nanos(b.start, b.planned_end, upd_start, upd_end))
-                        .collect();
-                    let total_ov: u128 = overlaps.iter().copied().sum();
-                    if total_ov == 0 {
-                        return;
-                    }
-
-                    // Integer-safe split: give the remainder to the last overlapping bucket
-                    let mut rem_pkts = stats.packets;
-                    let mut rem_bytes = stats.bytes;
-
-                    let last_idx = overlaps
-                        .iter()
-                        .enumerate()
-                        .rfind(|&(_, &ov)| ov > 0)
-                        .map(|(i, _)| i);
-
-                    for (i, batch) in slices.iter_mut().enumerate() {
-                        let ov = overlaps[i];
-                        if ov == 0 {
-                            continue;
-                        }
-
-                        let is_last = Some(i) == last_idx;
-
-                        let pkts_in = if is_last {
-                            rem_pkts
-                        } else {
-                            let v = ((stats.packets as u128) * ov / total_ov) as u64;
-                            rem_pkts = rem_pkts.saturating_sub(v);
-                            v
-                        };
-
-                        let bytes_in = if is_last {
-                            rem_bytes
-                        } else {
-                            let v = ((stats.bytes as u128) * ov / total_ov) as u64;
-                            rem_bytes = rem_bytes.saturating_sub(v);
-                            v
-                        };
-
-                        if pkts_in == 0 && bytes_in == 0 {
-                            continue;
-                        }
-
-                        let apportioned = PacketAndByte {
-                            packets: pkts_in,
-                            bytes: bytes_in,
-                        };
-
-                        match batch.vpc.get_mut(src) {
-                            None => {
-                                let mut tx_summary = TransmitSummary::new();
-                                tx_summary.dst.insert(*dst, apportioned);
-                                batch.vpc.insert(*src, tx_summary);
-                            }
-                            Some(tx_summary) => match tx_summary.dst.get_mut(dst) {
-                                None => {
-                                    tx_summary.dst.insert(*dst, apportioned);
-                                }
-                                Some(s) => {
-                                    *s += apportioned;
-                                }
-                            },
-                        }
-                    }
-                });
-            });
-
-            // Drops are collected per source (a total that also includes drops whose destination
-            // VPC could not be resolved) and per (src,dst) pair. Neither is rate-smoothed, but both
-            // must reach `submit_expired` via the outstanding batches, so apportion them across the
-            // same overlapping slices as forward traffic.
             let upd_start = update.summary.start;
             let upd_end = update.start() + update.duration;
             let overlaps: Vec<u128> = slices
@@ -497,6 +425,26 @@ impl StatsCollector {
                 .rfind(|&(_, &ov)| ov > 0)
                 .map(|(i, _)| i);
 
+            // Proportionally distribute each (src,dst) update across overlapping batches.
+            update.summary.vpc.iter().for_each(|(src, summary)| {
+                summary.dst.iter().for_each(|(dst, stats)| {
+                    let dst = *dst;
+                    apportion_into_batches(
+                        &mut slices,
+                        &overlaps,
+                        total_ov,
+                        last_idx,
+                        *src,
+                        *stats,
+                        |tx, v| add_into_map(&mut tx.dst, dst, v),
+                    );
+                });
+            });
+
+            // Drops are collected per source (a total that also includes drops whose destination
+            // VPC could not be resolved) and per (src,dst) pair. Neither is rate-smoothed, but both
+            // must reach `submit_expired` via the outstanding batches, so apportion them across the
+            // same overlapping slices as forward traffic.
             update.summary.vpc.iter().for_each(|(src, summary)| {
                 for (dst, drops) in summary.pair_drops.iter() {
                     let dst = *dst;
@@ -1410,7 +1358,7 @@ mod drop_stats_tests {
     }
 
     #[test]
-    fn apportion_no_overlap_records_nothing() {
+    fn apportion_no_overlap_still_counts() {
         let mut b0 = batch(1);
         let mut slices: Vec<&mut BatchSummary<u64>> = vec![&mut b0];
         let src = vpcd(9);
@@ -1428,7 +1376,31 @@ mod drop_stats_tests {
             |tx, v| tx.drops += v,
         );
         drop(slices);
-        assert!(b0.vpc.is_empty());
+        let recorded = b0.vpc.get(&src).map(|tx| tx.drops);
+        assert_eq!(
+            recorded,
+            Some(PacketAndByte {
+                packets: 5,
+                bytes: 50
+            })
+        );
+    }
+
+    #[test]
+    fn apportion_with_no_open_batch_records_nothing() {
+        let mut slices: Vec<&mut BatchSummary<u64>> = vec![];
+        apportion_into_batches(
+            &mut slices,
+            &[],
+            0,
+            None,
+            vpcd(9),
+            PacketAndByte {
+                packets: 5,
+                bytes: 50,
+            },
+            |tx, v| tx.drops += v,
+        );
     }
 }
 
@@ -1637,6 +1609,99 @@ mod rate_oracle {
                     assert!(
                         (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
                         "at tick {tick} the established pair read {pps} pkt/s instead of {LOAD}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn every_packet_fed_in_is_eventually_counted() {
+        const TICKS: usize = 20;
+        const DRAIN: usize = 16;
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (src, dst) = (vpc(100), vpc(200));
+            let (mut collector, store, _map) = collecting(src, dst);
+            for _ in 0..TICKS {
+                collector.update(Some(a_tick_of(src, dst, LOAD))).await;
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+            }
+            for _ in 0..DRAIN {
+                collector.update(None).await;
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+            }
+            let counted = store
+                .snapshot_pairs()
+                .await
+                .into_iter()
+                .find(|((from, to), _)| *from == src && *to == dst)
+                .map_or((0, 0), |(_, stats)| (stats.ctr.packets, stats.ctr.bytes));
+            let fed = LOAD * TICKS as u64;
+            assert_eq!(
+                counted.0, fed,
+                "{fed} packets were fed and {} were counted after the pipeline drained",
+                counted.0
+            );
+            assert_eq!(
+                counted.1,
+                fed * SIZE,
+                "the byte total disagreed with the packets"
+            );
+        });
+    }
+
+    #[test]
+    fn the_ledger_balances_at_every_tick() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (src, dst) = (vpc(100), vpc(200));
+            let (mut collector, store, _map) = collecting(src, dst);
+            for tick in 0..24u64 {
+                collector.update(Some(a_tick_of(src, dst, LOAD))).await;
+                let held: u64 = collector
+                    .outstanding
+                    .iter()
+                    .flat_map(|batch| batch.vpc.values())
+                    .flat_map(|summary| summary.dst.iter().map(|(_, v)| v.packets))
+                    .sum();
+                let credited = store
+                    .snapshot_pairs()
+                    .await
+                    .into_iter()
+                    .find(|((from, to), _)| *from == src && *to == dst)
+                    .map_or(0, |(_, stats)| stats.ctr.packets);
+                let fed = LOAD * (tick + 1);
+                assert_eq!(
+                    credited + held,
+                    fed,
+                    "after {} ticks, {fed} packets had been fed but {credited} were counted and \
+                     {held} were still in open batches",
+                    tick + 1
+                );
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+            }
+        });
+    }
+
+    #[test]
+    fn the_open_batches_tile_the_time_ahead() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (collector, _store, _map) = collecting(vpc(100), vpc(200));
+            let batches: Vec<_> = collector.outstanding.iter().collect();
+            assert_eq!(batches.len(), StatsCollector::OUTSTANDING);
+            for (nth, batch) in batches.iter().enumerate() {
+                assert_eq!(
+                    batch.planned_end.saturating_duration_since(batch.start),
+                    StatsCollector::TIME_TICK,
+                    "batch {nth} does not cover one tick"
+                );
+                if let Some(prior) = nth.checked_sub(1) {
+                    assert_eq!(
+                        batch.start, batches[prior].planned_end,
+                        "batch {nth} does not begin where batch {prior} ends"
                     );
                 }
             }
