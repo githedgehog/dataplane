@@ -238,9 +238,11 @@ impl ConfigProcessor {
 
         let stats_store = &self.proc_params.vpc_stats_store;
 
-        let names = stats_store.snapshot_names().await;
-        let pair_snap = stats_store.snapshot_pairs().await;
-        let vpc_snap = stats_store.snapshot_vpcs().await;
+        let stats::StatsSnapshot {
+            names,
+            pairs: pair_snap,
+            vpcs: vpc_snap,
+        } = stats_store.snapshot().await;
 
         // Helper to check if a flow stats has any traffic
         #[inline]
