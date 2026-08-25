@@ -7,6 +7,7 @@
 use acl_filter::{
     AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
 };
+use common::cliprovider::CliDataProvider;
 use concurrency::sync::{Arc, Mutex};
 use config::external::GenId;
 use config::external::overlay::acl::Acl;
@@ -222,7 +223,53 @@ impl Fleet {
     }
 }
 
+pub(crate) struct CliReaders {
+    sources: Vec<(&'static str, Box<dyn CliDataProvider + Send>)>,
+}
+
+impl CliReaders {
+    pub(crate) fn read_all(&self) -> usize {
+        self.sources
+            .iter()
+            .map(|(_, source)| source.provide().len())
+            .sum()
+    }
+
+    pub(crate) fn read_one(&self, which: usize) -> (&'static str, String) {
+        let (name, source) = &self.sources[which % self.sources.len()];
+        (name, source.provide())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.sources.len()
+    }
+}
+
 impl Blueprint {
+    pub(crate) fn cli_readers(&self) -> CliReaders {
+        CliReaders {
+            sources: vec![
+                ("show flow-table", Box::new(self.flow_table.clone())),
+                (
+                    "show flow-filter",
+                    Box::new(self.flow_filter.handle().inner()),
+                ),
+                (
+                    "show port-forwarding",
+                    Box::new(self.portfw.handle().inner()),
+                ),
+                (
+                    "show static-nat",
+                    Box::new(self.static_nat.handle().inner()),
+                ),
+                (
+                    "show masquerading",
+                    Box::new(self.masquerade.handle().inner()),
+                ),
+            ],
+        }
+    }
+
     pub(crate) fn worker(&self) -> Worker {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
         let mut pipeline = DynPipeline::new().set_data(self.pipeline.clone());
@@ -2068,7 +2115,7 @@ mod acl {
         );
     }
 
-    fn prefix(text: &str) -> Prefix {
+    pub(super) fn prefix(text: &str) -> Prefix {
         text.parse()
             .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
     }
@@ -5539,6 +5586,152 @@ mod model {
         super::assert_covered(
             completed > 0 && enacted > 0,
             "either no conversation completed or no configuration was enacted, so nothing was raced",
+        );
+    }
+
+    #[concurrency::model_test]
+    fn the_cli_can_be_read_while_the_dataplane_works() {
+        const FLOWS: u8 = 2;
+        const APPLIES: u8 = 3;
+
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ANSWERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let readers = blueprint.cli_readers();
+            let entering = handle.clone();
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+
+            let (seen, read) = thread::scope(|scope| {
+                let forwarding = {
+                    let entering = entering.clone();
+                    let gate = gate.clone();
+                    thread::Builder::new()
+                        .name("tenant".to_string())
+                        .spawn_scoped(scope, move || {
+                            let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("tenant");
+                            let mut worker = blueprint.worker();
+                            gate.wait();
+                            let mut seen = Vec::new();
+                            for round in 1..=APPLIES {
+                                for nth in 0..FLOWS {
+                                    seen.push((
+                                        round,
+                                        without_unwinding(|| {
+                                            let src = format!("1.1.0.{}", nth + 1);
+                                            let mut convo = Conversation::new(
+                                                super::routed::Path::fixture(),
+                                                src.parse()
+                                                    .unwrap_or_else(|e| unreachable!("{src}: {e}")),
+                                                "3.3.3.1"
+                                                    .parse()
+                                                    .unwrap_or_else(|e| unreachable!("{e}")),
+                                                u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                80,
+                                            );
+                                            drive(&mut worker, &mut convo);
+                                            (convo.checked(), convo.describe())
+                                        }),
+                                    ));
+                                }
+                                gate.wait();
+                            }
+                            seen
+                        })
+                        .expect("spawn tenant")
+                };
+
+                let reading = {
+                    let gate = gate.clone();
+                    thread::Builder::new()
+                        .name("cli".to_string())
+                        .spawn_scoped(scope, move || {
+                            let _evidence = tracectl::evidence::capture("cli");
+                            gate.wait();
+                            let mut answered = Vec::new();
+                            for round in 1..=APPLIES {
+                                for nth in 0..(2 * readers.len()) {
+                                    answered.push((
+                                        round,
+                                        without_unwinding(|| {
+                                            let (command, text) = readers.read_one(nth);
+                                            (command, text.len())
+                                        }),
+                                    ));
+                                }
+                                gate.wait();
+                            }
+                            answered
+                        })
+                        .expect("spawn cli")
+                };
+
+                gate.wait();
+                for _ in 0..APPLIES {
+                    fleet.reconfigure(&overlay);
+                    gate.wait();
+                }
+
+                (
+                    forwarding.join().expect("tenant panicked"),
+                    reading.join().expect("cli panicked"),
+                )
+            });
+
+            for (round, answer) in read {
+                let (command, length) = answer.unwrap_or_else(|why| {
+                    panic!("`{why}` while answering a cli command in round {round}")
+                });
+                assert!(
+                    length > 0,
+                    "`{command}` answered with nothing in round {round}, so the reader reached \
+                     the state but could not say anything about it"
+                );
+                ANSWERED.fetch_add(1, Ordering::Relaxed);
+            }
+
+            for (round, ran) in seen {
+                let (checked, described) = ran.unwrap_or_else(|why| {
+                    panic!("a conversation in round {round} panicked while the cli read: {why}")
+                });
+                assert!(
+                    checked,
+                    "a conversation in round {round} did not survive the cli being read beside \
+                     it. Reading is supposed to be an observation, not a change. {described}"
+                );
+                COMPLETED.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let (completed, answered) = (
+            COMPLETED.load(Ordering::Relaxed),
+            ANSWERED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} answered={answered}");
+        super::assert_covered(
+            completed > 0 && answered > 0,
+            "either no conversation completed or no cli command was answered, so nothing was raced",
         );
     }
 
