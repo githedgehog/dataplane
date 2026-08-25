@@ -3002,7 +3002,15 @@ mod view_mut_properties {
     );
 
     /// Write through every returned `&mut` so Miri can detect aliasing in [`Fields`](super::pat::Fields).
-    fn exercise_the_mutable_split() {
+    ///
+    /// Expanded at each shard rather than called by them.
+    ///
+    /// `bolero::check!()` takes its target name from the function it is written in, so a helper
+    /// shared by the shards registers one target named after the helper -- which is not a `#[test]`
+    /// and so cannot be selected. Expanding here gives each shard a target of its own, which is
+    /// what the shards were for.
+    macro_rules! exercise_the_mutable_split {
+        () => {{
         bolero::check!()
             .with_generator(ShapedHeaders)
             .for_each(|h: &Headers| {
@@ -3034,6 +3042,7 @@ mod view_mut_properties {
                     "transport changed under a write to eth"
                 );
             });
+    }};
     }
 
     /// Parallel Miri shards for mutable-aliasing coverage.
@@ -3042,7 +3051,7 @@ mod view_mut_properties {
             $(
                 #[test]
                 fn $name() {
-                    exercise_the_mutable_split();
+                    exercise_the_mutable_split!();
                 }
             )*
         };
