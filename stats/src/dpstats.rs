@@ -1189,6 +1189,51 @@ mod drop_stats_tests {
         let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
     }
 
+    /// A batch closes on its schedule whether or not packets are arriving.
+    ///
+    /// This is the contract the driver has to honour, so it is worth pinning here: the stage's
+    /// only sense of time is the `process` call, and the schedule is the reason to call it even
+    /// with nothing to hand it. The kernel worker used to `continue` past the pipeline whenever a
+    /// read came back empty, and its watchdog tick did the same, so an interface that stopped
+    /// carrying traffic held its last batch until traffic resumed. Measured before the driver was
+    /// changed: two packets, ten minutes idle, still in hand -- and then delivered claiming a
+    /// 602-second duration, which the collector dutifully spread over ten minutes of windows.
+    #[test]
+    fn a_batch_closes_on_schedule_with_no_packets_to_process() {
+        let (a, b) = (vpcd(100), vpcd(200));
+        let (sender, receiver) = kanal::bounded(4);
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let tick = Duration::from_secs(1);
+            let mut stats =
+                Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+            run(
+                &mut stats,
+                vec![mk_packet(Some(a), Some(b), Some(DoneReason::Delivered))],
+            );
+            assert!(
+                matches!(receiver.try_recv(), Ok(None)),
+                "the batch was sent before its schedule was up"
+            );
+
+            clock::virtual_time::advance(tick * 2).await;
+            run(&mut stats, vec![]);
+
+            let Ok(Some(update)) = receiver.try_recv() else {
+                panic!("the batch did not close, so the packet in it is not counted anywhere");
+            };
+            assert_eq!(
+                update
+                    .summary
+                    .vpc
+                    .get(&a)
+                    .and_then(|tx| tx.dst.get(&b))
+                    .map(|counts| counts.packets),
+                Some(1)
+            );
+        });
+    }
+
     /// A batch that cannot be sent is not lost.
     ///
     /// The collector reads a bounded channel, and the collector can fall behind -- it used to

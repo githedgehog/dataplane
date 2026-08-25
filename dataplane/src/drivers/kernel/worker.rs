@@ -202,9 +202,14 @@ impl Worker {
                     // N.B. read_packets_from_interface() MUST be cancel-safe for this wake-up not to
                     // cause packet loss, nor loss of the counters it fills. It currently is: it only
                     // awaits before reading anything from the socket.
+                    // The pipeline gets an empty batch rather than being skipped. Nothing in it
+                    // moves a packet, but a stage whose work is timed -- the stats stage closes a
+                    // batch on a schedule -- can only notice the schedule when `process` is
+                    // called. An interface that went quiet used to hold its last batch, and so
+                    // its last packets, until traffic resumed: for ever, if it did not.
                     _ = ticker.tick() => {
                         intf.watchdog.pat();
-                        continue;
+                        Vec::new()
                     }
                 };
 
@@ -221,11 +226,6 @@ impl Worker {
                 let mut tx_drops: u64 = 0; // number of packets dropped on tx
                 let rx_pkts = packets_vec.len() as u64; // number of packets received
                 counters.rx = rx_pkts;
-                if rx_pkts == 0 {
-                    // nothing to process, but the read may have hit errors worth reporting
-                    intf.watchdog.record(&counters);
-                    continue;
-                }
 
                 let packets = packets_vec.into_iter();
                 let out_pkts = pipeline
