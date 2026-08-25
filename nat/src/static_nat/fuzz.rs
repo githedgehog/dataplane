@@ -121,10 +121,11 @@ impl Tally {
     }
 }
 
-fn drive_round_trip(scenario: Scenario) {
+macro_rules! drive_round_trip {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -158,22 +159,24 @@ fn drive_round_trip(scenario: Scenario) {
     );
 
     tally.report("round trip");
+}};
 }
 
 #[test]
 fn a_translated_source_comes_back() {
-    drive_round_trip(Scenario::addresses(false));
+    drive_round_trip!(Scenario::addresses(false));
 }
 
 #[test]
 fn a_translated_source_and_port_come_back() {
-    drive_round_trip(Scenario::ports(false));
+    drive_round_trip!(Scenario::ports(false));
 }
 
-fn drive_injectivity(scenario: Scenario) {
+macro_rules! drive_injectivity {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, _probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -211,131 +214,139 @@ fn drive_injectivity(scenario: Scenario) {
     );
 
     tally.report("injectivity");
+}};
 }
 
 #[test]
 fn distinct_sources_stay_distinct() {
-    drive_injectivity(Scenario::addresses(false));
+    drive_injectivity!(Scenario::addresses(false));
 }
 
 #[test]
 fn distinct_sources_and_ports_stay_distinct() {
-    drive_injectivity(Scenario::ports(false));
+    drive_injectivity!(Scenario::ports(false));
 }
 
-fn drive_frame(scenario: Scenario) {
-    let tally = Tally::default();
+macro_rules! drive_frame {
+    ($scenario:expr) => {{
+        let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
-        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
-            tally.seen.fetch_add(1, Ordering::Relaxed);
-            let Some(fabric) = fabric(&exposes) else {
-                return;
-            };
-            tally.built.fetch_add(1, Ordering::Relaxed);
-            let mut nf = fabric.nf();
-
-            for spec in &probes {
-                let mut probe = (*spec).resolve(&fabric);
-                let (destination, sport, dport) = (probe.destination, probe.sport, probe.dport);
-                let proto = if probe.tcp {
-                    NextHeader::TCP
-                } else {
-                    NextHeader::UDP
+        bolero::check!()
+            .with_generator($scenario)
+            .cloned()
+            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+                tally.seen.fetch_add(1, Ordering::Relaxed);
+                let Some(fabric) = fabric(&exposes) else {
+                    return;
                 };
-                let out = run(&mut nf, vec![probe.take()]);
-                let packet = &out[0];
+                tally.built.fetch_add(1, Ordering::Relaxed);
+                let mut nf = fabric.nf();
 
-                assert_eq!(
-                    packet.ip_destination(),
-                    Some(destination),
-                    "source translation rewrote the destination"
-                );
-                assert_eq!(
-                    packet.transport_dst_port().map(NonZero::get),
-                    Some(dport),
-                    "source translation rewrote the destination port"
-                );
-                assert_eq!(
-                    packet.ip_proto(),
-                    Some(proto),
-                    "source translation changed the transport protocol"
-                );
-                if !fabric.uses_ports {
+                for spec in &probes {
+                    let mut probe = (*spec).resolve(&fabric);
+                    let (destination, sport, dport) = (probe.destination, probe.sport, probe.dport);
+                    let proto = if probe.tcp {
+                        NextHeader::TCP
+                    } else {
+                        NextHeader::UDP
+                    };
+                    let out = run(&mut nf, vec![probe.take()]);
+                    let packet = &out[0];
+
                     assert_eq!(
-                        packet.transport_src_port().map(NonZero::get),
-                        Some(sport),
-                        "source translation rewrote the source port, which no expose asked for"
+                        packet.ip_destination(),
+                        Some(destination),
+                        "source translation rewrote the destination"
                     );
+                    assert_eq!(
+                        packet.transport_dst_port().map(NonZero::get),
+                        Some(dport),
+                        "source translation rewrote the destination port"
+                    );
+                    assert_eq!(
+                        packet.ip_proto(),
+                        Some(proto),
+                        "source translation changed the transport protocol"
+                    );
+                    if !fabric.uses_ports {
+                        assert_eq!(
+                            packet.transport_src_port().map(NonZero::get),
+                            Some(sport),
+                            "source translation rewrote the source port, which no expose asked for"
+                        );
+                    }
+                    tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
-                tally.reached.fetch_add(1, Ordering::Relaxed);
-            }
-        },
-    );
+            });
 
-    tally.report("frame");
+        tally.report("frame");
+    }};
 }
 
 #[test]
 fn translation_touches_only_the_source() {
-    drive_frame(Scenario::addresses(false));
+    drive_frame!(Scenario::addresses(false));
 }
 
 #[test]
 fn port_translation_touches_only_the_source() {
-    drive_frame(Scenario::ports(false));
+    drive_frame!(Scenario::ports(false));
 }
 
-fn drive_permission(scenario: Scenario) {
-    let tally = Tally::default();
+macro_rules! drive_permission {
+    ($scenario:expr) => {{
+        let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
-        |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
-            tally.seen.fetch_add(1, Ordering::Relaxed);
-            let Some(fabric) = fabric(&exposes) else {
-                return;
-            };
-            tally.built.fetch_add(1, Ordering::Relaxed);
-            let mut nf = fabric.nf();
+        bolero::check!()
+            .with_generator($scenario)
+            .cloned()
+            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+                tally.seen.fetch_add(1, Ordering::Relaxed);
+                let Some(fabric) = fabric(&exposes) else {
+                    return;
+                };
+                tally.built.fetch_add(1, Ordering::Relaxed);
+                let mut nf = fabric.nf();
 
-            for spec in &probes {
-                let mut probe = (*spec).resolve(&fabric);
-                if probe.asks_for_translation() && probe.exposed {
-                    continue;
-                }
+                for spec in &probes {
+                    let mut probe = (*spec).resolve(&fabric);
+                    if probe.asks_for_translation() && probe.exposed {
+                        continue;
+                    }
 
-                let (source, sport) = (probe.source, probe.sport);
-                let (stray, arrival) = (probe.stray, probe.arrival);
-                let out = run(&mut nf, vec![probe.take()]);
+                    let (source, sport) = (probe.source, probe.sport);
+                    let (stray, arrival) = (probe.stray, probe.arrival);
+                    let out = run(&mut nf, vec![probe.take()]);
 
-                assert_eq!(
-                    five_tuple_source(&out[0]),
-                    (source, sport),
-                    "static NAT translated {source}:{sport} although {stray:?} forbade it; the \
+                    assert_eq!(
+                        five_tuple_source(&out[0]),
+                        (source, sport),
+                        "static NAT translated {source}:{sport} although {stray:?} forbade it; the \
                      packet arrived as {arrival:?}"
-                );
-                tally.reached.fetch_add(1, Ordering::Relaxed);
-            }
-        },
-    );
+                    );
+                    tally.reached.fetch_add(1, Ordering::Relaxed);
+                }
+            });
 
-    tally.report("permission");
+        tally.report("permission");
+    }};
 }
 
 #[test]
 fn nothing_is_translated_without_permission() {
-    drive_permission(Scenario::addresses(true));
+    drive_permission!(Scenario::addresses(true));
 }
 
 #[test]
 fn no_port_is_translated_without_permission() {
-    drive_permission(Scenario::ports(true));
+    drive_permission!(Scenario::ports(true));
 }
 
-fn drive_attribution(scenario: Scenario) {
+macro_rules! drive_attribution {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -375,17 +386,19 @@ fn drive_attribution(scenario: Scenario) {
     );
 
     tally.report("attribution");
+}};
 }
 
 #[test]
 fn a_packet_that_cannot_be_looked_up_says_so() {
-    drive_attribution(Scenario::addresses(true));
+    drive_attribution!(Scenario::addresses(true));
 }
 
-fn drive_marking(scenario: Scenario) {
+macro_rules! drive_marking {
+    ($scenario:expr) => {{
     let tally = Tally::default();
 
-    bolero::check!().with_generator(scenario).cloned().for_each(
+    bolero::check!().with_generator($scenario).cloned().for_each(
         |(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
@@ -421,14 +434,15 @@ fn drive_marking(scenario: Scenario) {
     );
 
     tally.report("marking");
+}};
 }
 
 #[test]
 fn a_modified_packet_is_always_marked() {
-    drive_marking(Scenario::addresses(true));
+    drive_marking!(Scenario::addresses(true));
 }
 
 #[test]
 fn a_port_modified_packet_is_always_marked() {
-    drive_marking(Scenario::ports(true));
+    drive_marking!(Scenario::ports(true));
 }
