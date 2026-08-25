@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 use concurrency::sync::{Mutex, MutexGuard};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The label set of one series, as a scraper would see it.
 pub(crate) type Labels = BTreeMap<String, String>;
@@ -32,7 +33,13 @@ pub(crate) type Series = BTreeMap<SeriesId, f64>;
 /// Counters and histograms are not kept: `stats` exports its counts as gauges, so there is nothing
 /// yet for them to observe.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Scrape(Arc<Mutex<Series>>);
+pub(crate) struct Scrape {
+    held: Arc<Mutex<Series>>,
+    /// Every call to `register_gauge`, including the re-registrations of a series that already
+    /// exists. Distinct from the number of series: the collector re-registers what it already has,
+    /// and how often it does that is the cost being watched.
+    registrations: Arc<AtomicUsize>,
+}
 
 impl Scrape {
     /// The current value of one series, or `None` if it was never registered.
@@ -42,6 +49,11 @@ impl Scrape {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         self.held().get(&(name.to_string(), labels)).copied()
+    }
+
+    /// How many times a gauge has been registered, counting repeats.
+    pub(crate) fn registrations(&self) -> usize {
+        self.registrations.load(Ordering::Relaxed)
     }
 
     /// Every series exported under `name`, with its labels and current value.
@@ -71,7 +83,7 @@ impl Scrape {
     }
 
     fn held(&self) -> MutexGuard<'_, Series> {
-        self.0.lock()
+        self.held.lock()
     }
 }
 
@@ -141,10 +153,11 @@ impl metrics::Recorder for Scrape {
         // Registering a series that already exists must not disturb its value: the collector
         // re-registers on every update, and a scrape between two updates has to see the last value
         // set rather than a zero.
+        self.registrations.fetch_add(1, Ordering::Relaxed);
         self.held().entry(at.clone()).or_insert(0.0);
         metrics::Gauge::from_arc(Arc::new(Cell {
             at,
-            into: self.0.clone(),
+            into: self.held.clone(),
         }))
     }
 
