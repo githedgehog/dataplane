@@ -823,56 +823,64 @@ mod dataplane_tables {
     }
 
     /// Drive the whole chain for one NAT flavour, and report how much of it got through.
-    fn drive(flavour: NatFlavour) {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
-        let seen = AtomicUsize::new(0);
-        let built = AtomicUsize::new(0);
+    /// Expanded at each caller rather than called by them.
+    ///
+    /// `bolero::check!()` takes its target name from the function it is written in, so callers
+    /// sharing this helper registered one target named after the helper -- which is not a `#[test]`
+    /// and so cannot be selected. The parameter stays; only the expansion site moved.
+    macro_rules! drive {
+        ($flavour:expr) => {{
+            let flavour = $flavour;
+            use concurrency::sync::atomic::{AtomicUsize, Ordering};
+            let seen = AtomicUsize::new(0);
+            let built = AtomicUsize::new(0);
 
-        let generator = GatewayAgentBuilder::new().flavours(vec![flavour]).build();
+            let generator = GatewayAgentBuilder::new().flavours(vec![flavour]).build();
 
-        bolero::check!()
-            .with_generator(generator)
-            .cloned()
-            .for_each(|agent| {
-                seen.fetch_add(1, Ordering::Relaxed);
-                let external = ExternalConfig::try_from(&agent)
-                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
-                let Ok(validated) = external.validate() else {
-                    return;
-                };
-                built.fetch_add(1, Ordering::Relaxed);
-                build_tables(&validated, flavour);
-            });
+            bolero::check!()
+                .with_generator(generator)
+                .cloned()
+                .for_each(|agent| {
+                    seen.fetch_add(1, Ordering::Relaxed);
+                    let external = ExternalConfig::try_from(&agent)
+                        .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                    let Ok(validated) = external.validate() else {
+                        return;
+                    };
+                    built.fetch_add(1, Ordering::Relaxed);
+                    build_tables(&validated, flavour);
+                });
 
-        let seen = seen.load(Ordering::Relaxed);
-        let built = built.load(Ordering::Relaxed);
-        println!("{flavour:?}: {built}/{seen} configurations validated and built their tables");
-        assert!(
-            built * 2 >= seen,
-            "only {built} of {seen} {flavour:?} configurations validated, so this checked much \
+            let seen = seen.load(Ordering::Relaxed);
+            let built = built.load(Ordering::Relaxed);
+            println!("{flavour:?}: {built}/{seen} configurations validated and built their tables");
+            assert!(
+                built * 2 >= seen,
+                "only {built} of {seen} {flavour:?} configurations validated, so this checked much \
              less than it looks like it did"
-        );
+            );
+        }};
     }
 
     #[test]
     fn a_static_nat_configuration_builds_its_tables() {
-        drive(NatFlavour::Static);
+        drive!(NatFlavour::Static);
     }
 
     #[test]
     fn a_masquerade_configuration_builds_its_tables() {
-        drive(NatFlavour::Masquerade);
+        drive!(NatFlavour::Masquerade);
     }
 
     /// The flavour the historical bug was in.
     #[test]
     fn a_port_forwarding_configuration_builds_its_tables() {
-        drive(NatFlavour::PortForward);
+        drive!(NatFlavour::PortForward);
     }
 
     #[test]
     fn a_configuration_with_no_nat_builds_its_tables() {
-        drive(NatFlavour::None);
+        drive!(NatFlavour::None);
     }
 }
 
