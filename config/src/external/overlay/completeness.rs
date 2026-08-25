@@ -554,11 +554,15 @@ fn survey_nat(nat: &VpcExposeNat, seen: &mut Observed) {
 /// into tables.
 const CASES: usize = 512;
 
-/// Survey `CASES` drawn configurations into `seen`.
+/// Survey `CASES` drawn configurations into `seen`, expanded at the test that reads them.
 ///
-/// Returns nothing and fills a borrowed accumulator, because `bolero::check!` expands to a bare
-/// `return` and so cannot appear in a function with a return type.
-fn survey_drawn(seen: &RefCell<Observed>) {
+/// `bolero::check!` expands to a bare `return`, so it cannot sit in a function with a return type
+/// -- which is why the accumulator is borrowed rather than returned. It also takes its target name
+/// from the function it is written in, so while this was a function shared by two tests it
+/// registered one target named after itself, and neither test could be selected.
+macro_rules! survey_drawn {
+    ($seen:expr) => {{
+        let seen = $seen;
     // `bolero` runs each case behind `catch_unwind`, across which a `RefCell` may not be borrowed.
     // Asserted rather than avoided: the accumulator is a map of strings with no invariant to break,
     // so the worst a panic mid-draw can leave is a partly filled census -- and the panic fails the
@@ -573,13 +577,7 @@ fn survey_drawn(seen: &RefCell<Observed>) {
                 .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
             survey(&overlay, &mut seen.borrow_mut());
         });
-}
-
-/// What `CASES` drawn configurations exhibit.
-fn census() -> Observed {
-    let seen = RefCell::new(Observed::default());
-    survey_drawn(&seen);
-    seen.into_inner()
+    }};
 }
 
 /// Every field [`survey`] visits has a verdict, and every verdict names a field it visits.
@@ -588,7 +586,9 @@ fn census() -> Observed {
 /// surveyed field is *classified*, and that a verdict left behind by a deleted field is removed.
 #[test]
 fn every_surveyed_field_is_classified() {
-    let seen = census();
+    let seen = RefCell::new(Observed::default());
+    survey_drawn!(&seen);
+    let seen = seen.into_inner();
     let surveyed: BTreeSet<&str> = seen.0.keys().copied().collect();
     let classified: BTreeSet<&str> = REACH.iter().map(|(field, _)| *field).collect();
 
@@ -640,7 +640,9 @@ fn every_surveyed_field_is_classified() {
 ///   than discovered again later.
 #[test]
 fn the_algebra_reaches_what_it_is_recorded_to_reach() {
-    let seen = census();
+    let seen = RefCell::new(Observed::default());
+    survey_drawn!(&seen);
+    let seen = seen.into_inner();
 
     for (field, reach) in REACH {
         let Some(values) = seen.0.get(field) else {
