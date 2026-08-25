@@ -72,21 +72,19 @@ fn flow() -> FlowInfo {
     info
 }
 
-fn with_paused_clock<F: Future<Output = ()>>(body: impl FnOnce() -> F) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    runtime.block_on(body());
+fn paused(body: impl FnOnce()) {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
+        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
+    CLOCK.block_on(async { body() });
 }
 
 #[test]
 fn expiry_never_moves_backwards() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Vec<Op>>()
-            .for_each(|ops: &Vec<Op>| {
+    bolero::check!()
+        .with_type::<Vec<Op>>()
+        .for_each(|ops: &Vec<Op>| {
+            paused(|| {
                 let entry = flow();
                 let mut high_water = entry.expires_at();
 
@@ -100,7 +98,7 @@ fn expiry_never_moves_backwards() {
                     high_water = now;
                 }
             });
-    });
+        });
 }
 
 fn apply(flow: &FlowInfo, op: Op) {
@@ -117,9 +115,9 @@ fn apply(flow: &FlowInfo, op: Op) {
 
 #[test]
 fn a_refused_refresh_leaves_the_deadline_alone() {
-    with_paused_clock(|| async {
-        bolero::check!().with_type::<(Status, Millis)>().for_each(
-            |(status, millis): &(Status, Millis)| {
+    bolero::check!().with_type::<(Status, Millis)>().for_each(
+        |(status, millis): &(Status, Millis)| {
+            paused(|| {
                 let entry = flow();
                 entry.update_status((*status).into());
                 let before = entry.expires_at();
@@ -138,16 +136,16 @@ fn a_refused_refresh_leaves_the_deadline_alone() {
                         "extend_expiry refused for status {status:?} but moved the deadline anyway"
                     );
                 }
-            },
-        );
-    });
+            });
+        },
+    );
 }
 
 #[test]
 fn a_refresh_is_permitted_exactly_when_the_status_allows() {
-    with_paused_clock(|| async {
-        bolero::check!().with_type::<(Status, Millis)>().for_each(
-            |(status, millis): &(Status, Millis)| {
+    bolero::check!().with_type::<(Status, Millis)>().for_each(
+        |(status, millis): &(Status, Millis)| {
+            paused(|| {
                 let status = FlowStatus::from(*status);
 
                 let entry = flow();
@@ -167,17 +165,17 @@ fn a_refresh_is_permitted_exactly_when_the_status_allows() {
                     status != FlowStatus::Expired,
                     "extend_expiry on a {status} flow returned {extend:?}"
                 );
-            },
-        );
-    });
+            });
+        },
+    );
 }
 
 #[test]
 fn invalidating_is_idempotent_and_cancels_the_timer() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Status>()
-            .for_each(|status: &Status| {
+    bolero::check!()
+        .with_type::<Status>()
+        .for_each(|status: &Status| {
+            paused(|| {
                 let entry = flow();
                 let started_active = FlowStatus::from(*status) == FlowStatus::Active;
                 entry.update_status((*status).into());
@@ -204,15 +202,15 @@ fn invalidating_is_idempotent_and_cancels_the_timer() {
                     "invalidating twice did not leave the flow cancelled"
                 );
             });
-    });
+        });
 }
 
 #[test]
 fn a_related_pair_refers_to_its_partner() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(u16, u16)>()
-            .for_each(|(a, b): &(u16, u16)| {
+    bolero::check!()
+        .with_type::<(u16, u16)>()
+        .for_each(|(a, b): &(u16, u16)| {
+            paused(|| {
                 let (one, two) = (key(*a), key(b.wrapping_add(1)));
                 let built = FlowInfo::related_pair(
                     clock::now() + Duration::from_secs(1),
@@ -258,7 +256,7 @@ fn a_related_pair_refers_to_its_partner() {
                      survives with no reverse"
                 );
             });
-    });
+        });
 }
 
 #[test]
@@ -306,10 +304,10 @@ fn every_status_survives_its_byte() {
 
 #[test]
 fn the_unchecked_refreshes_move_the_deadline_exactly() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(Millis, Millis)>()
-            .for_each(|(a, b): &(Millis, Millis)| {
+    bolero::check!()
+        .with_type::<(Millis, Millis)>()
+        .for_each(|(a, b): &(Millis, Millis)| {
+            paused(|| {
                 let (extend, reset) = (a.duration(), b.duration());
 
                 let subject = flow();
@@ -350,15 +348,15 @@ fn the_unchecked_refreshes_move_the_deadline_exactly() {
                 );
                 assert_eq!(subject.expires_at(), held, "and must leave it where it was");
             });
-    });
+        });
 }
 
 #[test]
 fn a_flow_is_active_exactly_when_its_status_says_so() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Status>()
-            .for_each(|status: &Status| {
+    bolero::check!()
+        .with_type::<Status>()
+        .for_each(|status: &Status| {
+            paused(|| {
                 let want = FlowStatus::from(*status);
                 let flow = flow();
                 flow.update_status(want);
@@ -368,15 +366,15 @@ fn a_flow_is_active_exactly_when_its_status_says_so() {
                     "is_active disagreed with the status it was asked about"
                 );
             });
-    });
+        });
 }
 
 #[test]
 fn a_flow_built_with_a_status_has_it() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(u16, Status)>()
-            .for_each(|(port, status): &(u16, Status)| {
+    bolero::check!()
+        .with_type::<(u16, Status)>()
+        .for_each(|(port, status): &(u16, Status)| {
+            paused(|| {
                 let want = FlowStatus::from(*status);
                 let flow = FlowInfo::new_with_status(
                     key(*port),
@@ -389,14 +387,15 @@ fn a_flow_built_with_a_status_has_it() {
                     "the status asked for was not the one built"
                 );
             });
-    });
+        });
 }
 
 #[test]
 fn a_genid_is_remembered_and_reaches_the_partner() {
-    with_paused_clock(|| async {
-        bolero::check!().with_type::<(u16, u16, i64)>().for_each(
-            |(a, b, genid): &(u16, u16, i64)| {
+    bolero::check!()
+        .with_type::<(u16, u16, i64)>()
+        .for_each(|(a, b, genid): &(u16, u16, i64)| {
+            paused(|| {
                 let (one, two) = (key(*a), key(b.wrapping_add(1)));
                 let Ok((first, second)) = FlowInfo::related_pair(
                     clock::now() + Duration::from_secs(1),
@@ -429,17 +428,16 @@ fn a_genid_is_remembered_and_reaches_the_partner() {
                     "set_genid_pair must reach the partner, or the halves disagree about which \
                      configuration they belong to"
                 );
-            },
-        );
-    });
+            });
+        });
 }
 
 #[test]
 fn each_flag_predicate_answers_for_its_own_bit() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<(u16, u16, u8)>()
-            .for_each(|(a, b, bits): &(u16, u16, u8)| {
+    bolero::check!()
+        .with_type::<(u16, u16, u8)>()
+        .for_each(|(a, b, bits): &(u16, u16, u8)| {
+            paused(|| {
                 let flags = FlowInfoFlags::from_bits_truncate(*bits);
                 let (one, two) = (key(*a), key(b.wrapping_add(1)));
                 let Ok((first, _second)) = FlowInfo::related_pair(
@@ -470,15 +468,15 @@ fn each_flag_predicate_answers_for_its_own_bit() {
                     "the initiator predicate answered for the wrong bit"
                 );
             });
-    });
+        });
 }
 
 #[test]
 fn the_destination_vpc_is_remembered() {
-    with_paused_clock(|| async {
-        bolero::check!()
-            .with_type::<Option<u32>>()
-            .for_each(|vni: &Option<u32>| {
+    bolero::check!()
+        .with_type::<Option<u32>>()
+        .for_each(|vni: &Option<u32>| {
+            paused(|| {
                 let want = vni
                     .and_then(|v| crate::vxlan::Vni::new_checked(v % 0x00FF_FFFF).ok())
                     .map(crate::packet::VpcDiscriminant::from_vni);
@@ -490,5 +488,5 @@ fn the_destination_vpc_is_remembered() {
                     "the destination vpc read back must be the one stamped"
                 );
             });
-    });
+        });
 }
