@@ -304,6 +304,11 @@ impl StatsCollector {
             .collect();
         if !recycled.is_empty() {
             self.vpc_store.forget_vpcs(&recycled).await;
+            self.outstanding
+                .iter_mut()
+                .for_each(|batch| batch.forget(&recycled));
+            self.submitted
+                .each_sample_mut(|sample| forget_from(sample, &recycled));
         }
 
         let was: BTreeSet<String> = self.known_names.values().cloned().collect();
@@ -689,6 +694,28 @@ pub struct TransmitSummary<T> {
 }
 
 const SMALL_MAP_CAPACITY: usize = 8;
+
+impl<T> TransmitSummary<T> {
+    fn forget(&mut self, discs: &HashSet<VpcDiscriminant>) {
+        self.dst.retain(|dst, _| !discs.contains(dst));
+        self.pair_drops.retain(|dst, _| !discs.contains(dst));
+    }
+}
+
+fn forget_from<T>(
+    vpc: &mut hashbrown::HashMap<VpcDiscriminant, TransmitSummary<T>>,
+    discs: &HashSet<VpcDiscriminant>,
+) {
+    vpc.retain(|src, _| !discs.contains(src));
+    vpc.values_mut().for_each(|tx| tx.forget(discs));
+}
+
+impl<T> BatchSummary<T> {
+    fn forget(&mut self, discs: &HashSet<VpcDiscriminant>) {
+        forget_from(&mut self.vpc, discs);
+    }
+}
+
 impl<T> TransmitSummary<T> {
     pub fn new() -> Self
     where
@@ -2124,6 +2151,53 @@ mod exported {
                     found.is_subset(&allowed),
                     "{family} is exported with label shapes {:?}",
                     found.difference(&allowed).collect::<Vec<_>>()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_recycled_vni_is_not_credited_with_traffic_in_flight() {
+        const DRAIN: usize = 14;
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "customer-a"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+
+            map.add(dst, VpcMapName::new(dst, "customer-b"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            for tick in 0..DRAIN {
+                quiet(&mut collector, 1).await;
+                let credited = store
+                    .snapshot_pairs()
+                    .await
+                    .into_iter()
+                    .find(|&((from, to), _)| from == src && to == dst)
+                    .map_or(0, |(_, stats)| stats.ctr.packets);
+                assert_eq!(
+                    credited, 0,
+                    "customer-b has sent nothing, and {tick} ticks after taking the VNI over it \
+                     is credited with {credited} packets"
+                );
+                let rate = scrape
+                    .get(
+                        "vpc_packet_count",
+                        &[("from", "left"), ("to", "customer-b")],
+                    )
+                    .unwrap_or(0.0);
+                assert!(
+                    rate.abs() < CLOSE_ENOUGH,
+                    "customer-b has sent nothing but its count gauge reads {rate}"
                 );
             }
         });
