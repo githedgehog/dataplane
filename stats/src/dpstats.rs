@@ -1826,6 +1826,63 @@ mod rate_oracle {
         });
     }
 
+    /// The ledger balances whatever the traffic does, and whenever it arrives.
+    ///
+    /// The fixed-load properties above pin the arithmetic; this one goes looking. Loads vary, go
+    /// to zero and come back, and -- the part that matters -- an update's window is drawn rather
+    /// than always being the tick that just ended, because "the counts arrived timed at an instant
+    /// nothing was open for" is precisely the shape that lost a tick's traffic at startup.
+    #[test]
+    fn the_ledger_balances_however_the_traffic_arrives() {
+        bolero::check!().with_type().cloned().for_each(
+            |(loads, skews): (Vec<u16>, Vec<u8>)| {
+                if loads.is_empty() {
+                    return;
+                }
+                let clock = clock::virtual_time::Paused::new();
+                clock.block_on(async {
+                    let (src, dst) = (vpc(100), vpc(200));
+                    let (mut collector, store, _map) = collecting(src, dst);
+                    let mut fed = 0u64;
+                    for (nth, &load) in loads.iter().enumerate() {
+                        let load = u64::from(load);
+                        // How far back of `now` this update claims to have started. Zero is the
+                        // ordinary case; the rest are updates arriving late, which is what a
+                        // stalled collector produces.
+                        let skew = skews
+                            .get(nth)
+                            .map_or(0, |&s| u64::from(s % 12));
+                        let mut update = a_tick_of(src, dst, load);
+                        update.summary.start -= StatsCollector::TIME_TICK * skew as u32;
+                        collector.update(Some(update)).await;
+                        fed += load;
+
+                        let held: u64 = collector
+                            .outstanding
+                            .iter()
+                            .flat_map(|batch| batch.vpc.values())
+                            .flat_map(|summary| summary.dst.iter().map(|(_, v)| v.packets))
+                            .sum();
+                        let credited = store
+                            .snapshot_pairs()
+                            .await
+                            .into_iter()
+                            .find(|((from, to), _)| *from == src && *to == dst)
+                            .map_or(0, |(_, stats)| stats.ctr.packets);
+                        assert_eq!(
+                            credited + held,
+                            fed,
+                            "after {} updates, {fed} packets had been fed but {credited} were \
+                             counted and {held} were still in open batches",
+                            nth + 1
+                        );
+                        clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+                    }
+                });
+            },
+        );
+    }
+
     /// A load that never ran is never reported.
     #[test]
     fn an_idle_pair_is_published_as_idle() {
