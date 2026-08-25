@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use concurrency::sync::{Mutex, MutexGuard};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12,9 +12,12 @@ pub(crate) type SeriesId = (String, Labels);
 
 pub(crate) type Series = BTreeMap<SeriesId, f64>;
 
+pub(crate) type Shape = (String, Vec<String>);
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Scrape {
     held: Arc<Mutex<Series>>,
+    shapes: Arc<Mutex<BTreeSet<Shape>>>,
     registrations: Arc<AtomicUsize>,
 }
 
@@ -25,6 +28,15 @@ impl Scrape {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         self.held().get(&(name.to_string(), labels)).copied()
+    }
+
+    pub(crate) fn label_shapes(&self, name: &str) -> BTreeSet<Vec<String>> {
+        self.shapes
+            .lock()
+            .iter()
+            .filter(|(series, _)| series == name)
+            .map(|(_, keys)| keys.clone())
+            .collect()
     }
 
     pub(crate) fn registrations(&self) -> usize {
@@ -122,6 +134,10 @@ impl metrics::Recorder for Scrape {
             .collect();
         let at = (key.name().to_string(), labels);
         self.registrations.fetch_add(1, Ordering::Relaxed);
+        self.shapes.lock().insert((
+            key.name().to_string(),
+            key.labels().map(|label| label.key().to_string()).collect(),
+        ));
         self.held().entry(at.clone()).or_insert(0.0);
         metrics::Gauge::from_arc(Arc::new(Cell {
             at,
