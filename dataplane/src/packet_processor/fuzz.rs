@@ -4201,68 +4201,70 @@ mod generated {
     /// derived load can legitimately meet one -- so the assertion alone would hold with the ACL
     /// deleted. `BY_ACL` is what says the refusals are the ACL's, and `NARROWED` what says some of
     /// them came from a rule that names part of a peering rather than all of it.
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_configuration_carries_nothing_it_denies() {
+    #[test]
+    fn a_configuration_carries_nothing_it_denies() {
         static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static NARROWED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
             .for_each(|(ops, vary, _schedule)| {
-                let draft = Sequence::fold(ops);
-                let validated = draft
-                    .overlay()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
-                    .validate()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+                settled(|| {
+                    let draft = Sequence::fold(ops);
+                    let validated = draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
 
-                let vnis: Vec<Vni> = validated
-                    .vpc_table()
-                    .values()
-                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
-                    .collect();
-                if vnis.is_empty() {
-                    return;
-                }
-                let carried = super::derive::carried_by(&draft);
-                let narrowed = Cell::new(0);
-                let mut loads = loads_where(&validated, vary, &|named| {
-                    if carried(named) {
-                        return false;
+                    let vnis: Vec<Vni> = validated
+                        .vpc_table()
+                        .values()
+                        .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                        .collect();
+                    if vnis.is_empty() {
+                        return;
                     }
-                    // Refused by a rule that names part of the peering rather than by the
-                    // peering's default, which is the half of this property that is new.
-                    if draft.guard_named(named.peering) != Some(Guard::Deny) {
-                        narrowed.set(narrowed.get() + 1);
+                    let carried = super::derive::carried_by(&draft);
+                    let narrowed = Cell::new(0);
+                    let mut loads = loads_where(&validated, vary, &|named| {
+                        if carried(named) {
+                            return false;
+                        }
+                        // Refused by a rule that names part of the peering rather than by the
+                        // peering's default, which is the half of this property that is new.
+                        if draft.guard_named(named.peering) != Some(Guard::Deny) {
+                            narrowed.set(narrowed.get() + 1);
+                        }
+                        true
+                    });
+                    if loads.is_empty() {
+                        return;
                     }
-                    true
+                    NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
+                    CONFIGS.fetch_add(1, Ordering::Relaxed);
+
+                    let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                    for load in &mut loads {
+                        let Some(packet) = load.next() else {
+                            continue;
+                        };
+                        let seen = verdict(&fabric.worker().send(packet));
+                        SENT.fetch_add(1, Ordering::Relaxed);
+                        assert!(
+                            matches!(seen, Verdict::Dropped(_)),
+                            "an acl that refuses this traffic produced {seen:?} for {}",
+                            load.describe()
+                        );
+                        if seen == Verdict::Dropped(DoneReason::AclDropped) {
+                            BY_ACL.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 });
-                if loads.is_empty() {
-                    return;
-                }
-                NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
-                CONFIGS.fetch_add(1, Ordering::Relaxed);
-
-                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
-                for load in &mut loads {
-                    let Some(packet) = load.next() else {
-                        continue;
-                    };
-                    let seen = verdict(&fabric.worker().send(packet));
-                    SENT.fetch_add(1, Ordering::Relaxed);
-                    assert!(
-                        matches!(seen, Verdict::Dropped(_)),
-                        "an acl that refuses this traffic produced {seen:?} for {}",
-                        load.describe()
-                    );
-                    if seen == Verdict::Dropped(DoneReason::AclDropped) {
-                        BY_ACL.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
             });
 
         let (configs, sent, by_acl) = (
@@ -4304,52 +4306,52 @@ mod generated {
     /// legitimate peer could actually send. What must not happen is delivery: the address is
     /// inside a block the configuration routes and outside what it exposes, so a stage that
     /// consulted the block and not the exclusion would forward it into the vpc.
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn an_excluded_address_is_not_reachable() {
+    #[test]
+    fn an_excluded_address_is_not_reachable() {
         static AIMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
-            .for_each(|(ops, vary, _schedule)| {
-                let draft = Sequence::fold(ops);
-                let validated = draft
-                    .overlay()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
-                    .validate()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+            .for_each(|(ops, vary, _schedule)| settled(||     {
+                    let draft = Sequence::fold(ops);
+                    let validated = draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
 
-                let vnis: Vec<Vni> = validated
-                    .vpc_table()
-                    .values()
-                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
-                    .collect();
-                if vnis.is_empty() {
-                    return;
-                }
-                let probes = super::derive::probes_for(&validated, vary, &draft);
-                if probes.is_empty() {
-                    return;
-                }
-
-                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
-                for probe in probes {
-                    let Some(packet) = probe.packet() else {
-                        continue;
-                    };
-                    let seen = verdict(&fabric.worker().send(packet));
-                    AIMED.fetch_add(1, Ordering::Relaxed);
-                    assert!(
-                        matches!(seen, Verdict::Dropped(_)),
-                        "an address the configuration excludes was reached: {seen:?} for {probe:?}"
-                    );
-                    if seen == Verdict::Dropped(DoneReason::Filtered) {
-                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                    let vnis: Vec<Vni> = validated
+                        .vpc_table()
+                        .values()
+                        .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                        .collect();
+                    if vnis.is_empty() {
+                        return;
                     }
-                }
-            });
+                    let probes = super::derive::probes_for(&validated, vary, &draft);
+                    if probes.is_empty() {
+                        return;
+                    }
+
+                    let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                    for probe in probes {
+                        let Some(packet) = probe.packet() else {
+                            continue;
+                        };
+                        let seen = verdict(&fabric.worker().send(packet));
+                        AIMED.fetch_add(1, Ordering::Relaxed);
+                        assert!(
+                            matches!(seen, Verdict::Dropped(_)),
+                            "an address the configuration excludes was reached: {seen:?} for {probe:?}"
+                        );
+                        if seen == Verdict::Dropped(DoneReason::Filtered) {
+                            REFUSED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }));
 
         let (aimed, refused) = (
             AIMED.load(Ordering::Relaxed),
@@ -4856,75 +4858,78 @@ mod destination {
     /// The negative half -- addressed outside every peering, reaches no vpc -- is what stops the
     /// positive half being satisfied by a filter that says yes to everything. Together they are
     /// the claim; either alone is much weaker than it looks.
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
+    #[test]
+    fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
         static REACHED: LazyLock<[AtomicU64; PEERS as usize]> =
             LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
         static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Aims)
             .for_each(|aims| {
-                let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
-                    .chain((0..PEERS).map(|n| vni(peer_vni(n))))
-                    .collect();
-                let overlay = overlay_with_peers(local_prefix(), PEERS).unwrap_or_else(|e| {
-                    unreachable!("the multi-peer contract does not build: {e}")
-                });
-                let Some(mut fabric) = Fabric::routed_over(&overlay, topology(&vnis)) else {
-                    unreachable!("the multi-peer contract does not validate")
-                };
+                settled(|| {
+                    let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
+                        .chain((0..PEERS).map(|n| vni(peer_vni(n))))
+                        .collect();
+                    let overlay = overlay_with_peers(local_prefix(), PEERS).unwrap_or_else(|e| {
+                        unreachable!("the multi-peer contract does not build: {e}")
+                    });
+                    let Some(mut fabric) = Fabric::routed_over(&overlay, topology(&vnis)) else {
+                        unreachable!("the multi-peer contract does not validate")
+                    };
 
-                for aim in aims {
-                    let src: IpAddr = format!("1.1.0.{}", aim.host)
+                    for aim in aims {
+                        let src: IpAddr = format!("1.1.0.{}", aim.host)
+                            .parse()
+                            .unwrap_or_else(|_| unreachable!());
+                        // Addressed either inside one peer's advertised /16 or into 172.16/12, which
+                        // no peering here covers.
+                        let dst: IpAddr = match aim.peer {
+                            Some(n) => format!("10.{}.{}.{}", n + 1, aim.third, aim.host),
+                            None => format!("172.16.{}.{}", aim.third, aim.host),
+                        }
                         .parse()
                         .unwrap_or_else(|_| unreachable!());
-                    // Addressed either inside one peer's advertised /16 or into 172.16/12, which
-                    // no peering here covers.
-                    let dst: IpAddr = match aim.peer {
-                        Some(n) => format!("10.{}.{}.{}", n + 1, aim.third, aim.host),
-                        None => format!("172.16.{}.{}", aim.third, aim.host),
-                    }
-                    .parse()
-                    .unwrap_or_else(|_| unreachable!());
 
-                    let Some(packet) = udp(src, dst, aim.sport, aim.dport) else {
-                        continue;
-                    };
-                    let out = fabric.send(tunnelled(&packet));
-                    let left = matches!(verdict(&out), Verdict::Delivered { .. });
+                        let Some(packet) = udp(src, dst, aim.sport, aim.dport) else {
+                            continue;
+                        };
+                        let out = fabric.send(tunnelled(&packet));
+                        let left = matches!(verdict(&out), Verdict::Delivered { .. });
 
-                    if let Some(n) = aim.peer {
-                        assert!(
-                            left,
-                            "a packet to {dst}, which peer {n} exposes, did not leave: {:?}",
-                            verdict(&out)
-                        );
-                        assert_eq!(
-                            out.try_vxlan().map(net::vxlan::Vxlan::vni),
-                            Some(vni(peer_vni(n))),
-                            "a packet to {dst} left for the wrong vpc"
-                        );
-                        // The destination must survive too: leaving for the right vpc with a
-                        // rewritten address would be a different packet arriving correctly.
-                        let carried = inside(&out).expect("a delivered packet was not tunnelled");
-                        assert_eq!(
-                            carried.ip_destination(),
-                            Some(dst),
-                            "the destination was rewritten on the way out"
-                        );
-                        REACHED[n as usize].fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        assert!(
-                            !left,
-                            "a packet to {dst}, which no peering covers, was sent to {:?}",
-                            out.try_vxlan().map(net::vxlan::Vxlan::vni)
-                        );
-                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                        if let Some(n) = aim.peer {
+                            assert!(
+                                left,
+                                "a packet to {dst}, which peer {n} exposes, did not leave: {:?}",
+                                verdict(&out)
+                            );
+                            assert_eq!(
+                                out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                                Some(vni(peer_vni(n))),
+                                "a packet to {dst} left for the wrong vpc"
+                            );
+                            // The destination must survive too: leaving for the right vpc with a
+                            // rewritten address would be a different packet arriving correctly.
+                            let carried =
+                                inside(&out).expect("a delivered packet was not tunnelled");
+                            assert_eq!(
+                                carried.ip_destination(),
+                                Some(dst),
+                                "the destination was rewritten on the way out"
+                            );
+                            REACHED[n as usize].fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            assert!(
+                                !left,
+                                "a packet to {dst}, which no peering covers, was sent to {:?}",
+                                out.try_vxlan().map(net::vxlan::Vxlan::vni)
+                            );
+                            REFUSED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+                });
             });
 
         let reached: Vec<u64> = REACHED.iter().map(|c| c.load(Ordering::Relaxed)).collect();
