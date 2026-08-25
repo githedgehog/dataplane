@@ -1431,3 +1431,294 @@ mod drop_stats_tests {
         assert!(b0.vpc.is_empty());
     }
 }
+
+/// The rate the collector reports, against the rate it was fed.
+///
+/// # Why this can exist now
+///
+/// Everything between a packet count and an exported rate is time-shaped -- batches that conclude
+/// on a schedule, a window that has to fill, a filter whose coefficients are positional -- so
+/// until a test could drive the clock, the only thing that could be asserted about a rate was that
+/// computing one did not fail. That is how a rate that ran over a scrambled window, and a smoothed
+/// value that could come out negative, both reached production: `smooth()` was called in tests and
+/// its output was never compared with anything.
+///
+/// With the clock driven, the whole chain has a closed form. Feed the collector a steady load,
+/// tick by tick, and the rate it publishes is that load. Not approximately -- Savitzky-Golay of
+/// order 2 reproduces a constant exactly -- but floating point still says to compare within an
+/// epsilon rather than for equality.
+#[cfg(test)]
+mod rate_oracle {
+    use super::{BatchSummary, MetricsUpdate, StatsCollector, VpcMapName};
+    use crate::PacketAndByte;
+    use crate::vpc_stats::VpcStatsStore;
+    use net::vxlan::Vni;
+    use vpcmap::VpcDiscriminant;
+    use vpcmap::map::VpcMapWriter;
+
+    /// Packets per tick, and so -- with `TIME_TICK` at one second -- packets per second.
+    const LOAD: u64 = 1_000;
+    /// Bytes in each of them.
+    const SIZE: u64 = 500;
+    /// Two counts compared after a division and four multiplications, so not `f64::EPSILON`.
+    const CLOSE_ENOUGH: f64 = 1e-6;
+
+    fn vpc(vni: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap_or_else(|_| unreachable!()))
+    }
+
+    /// One tick's worth of traffic from `src` to `dst`, timed to land in the batch now closing.
+    fn a_tick_of(src: VpcDiscriminant, dst: VpcDiscriminant, packets: u64) -> MetricsUpdate {
+        let start = clock::now();
+        let mut summary = BatchSummary::<u64>::new(start + StatsCollector::TIME_TICK);
+        summary.start = start;
+        let mut transmit = crate::TransmitSummary::<u64>::new();
+        transmit.dst.insert(
+            dst,
+            PacketAndByte {
+                packets,
+                bytes: packets * SIZE,
+            },
+        );
+        summary.vpc.insert(src, transmit);
+        MetricsUpdate {
+            duration: StatsCollector::TIME_TICK,
+            summary: Box::new(summary),
+        }
+    }
+
+    /// Run `ticks` seconds of `packets`-per-second from vpc 100 to vpc 200, and report what the
+    /// collector published for the pair.
+    ///
+    /// The clock moves a whole `TIME_TICK` between updates, which is what makes the batching
+    /// deterministic: each update overlaps exactly the batch that is about to conclude, so the
+    /// apportionment across `outstanding` has nothing to spread and the window receives one
+    /// undivided tick at a time.
+    async fn published(ticks: usize, packets: u64) -> Option<(f64, f64)> {
+        let (src, dst) = (vpc(100), vpc(200));
+        let (mut collector, store, _map) = collecting(src, dst);
+        for _ in 0..ticks {
+            collector.update(Some(a_tick_of(src, dst, packets))).await;
+            clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+        }
+        rate_of(&store, src, dst).await
+    }
+
+    /// A collector that knows about `src` and `dst`, and the store it publishes into.
+    ///
+    /// The map writer comes back with them and must be kept alive: the collector holds only a
+    /// *reader*, and a left-right map whose writer has been dropped reads as empty -- so every vpc
+    /// looks removed, `refresh_vpc_store` prunes the pair, and the collector publishes nothing at
+    /// all. Dropping it here reads exactly like a rate that was never computed.
+    fn collecting(
+        src: VpcDiscriminant,
+        dst: VpcDiscriminant,
+    ) -> (
+        StatsCollector,
+        std::sync::Arc<VpcStatsStore>,
+        VpcMapWriter<VpcMapName>,
+    ) {
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        let (collector, _writer, store) =
+            StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+        (collector, store, map)
+    }
+
+    /// What the store says the pair is carrying, or `None` if it has nothing to say.
+    async fn rate_of(
+        store: &VpcStatsStore,
+        src: VpcDiscriminant,
+        dst: VpcDiscriminant,
+    ) -> Option<(f64, f64)> {
+        store
+            .snapshot_pairs()
+            .await
+            .into_iter()
+            .find(|((from, to), _)| *from == src && *to == dst)
+            .map(|(_, stats)| (stats.rate.pps, stats.rate.bps))
+    }
+
+    /// The load offered at tick `t` of a ramp: rising, so that its order matters.
+    fn at_tick(t: usize) -> u64 {
+        LOAD + 100 * t as u64
+    }
+
+    /// [`published`], with a rising load rather than a steady one.
+    async fn published_ramp(ticks: usize) -> Option<(f64, f64)> {
+        let (src, dst) = (vpc(100), vpc(200));
+        let (mut collector, store, _map) = collecting(src, dst);
+        for t in 0..ticks {
+            collector.update(Some(a_tick_of(src, dst, at_tick(t)))).await;
+            clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+        }
+        rate_of(&store, src, dst).await
+    }
+
+    /// A steady load is reported as the load it is.
+    ///
+    /// Not "close to" -- a Savitzky-Golay filter of order 2 reproduces a constant exactly, so any
+    /// departure is a defect in the plumbing rather than in the filter, and an epsilon this tight
+    /// is what makes that distinction.
+    #[test]
+    fn a_steady_load_is_published_as_itself() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let published = published(24, LOAD).await;
+            let (pps, bps) = published.unwrap_or_else(|| {
+                panic!("the collector published no rate at all for a pair carrying {LOAD} pkt/s")
+            });
+            assert!(
+                (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
+                "{LOAD} pkt/s in, {pps} pkt/s out"
+            );
+            let expect = (LOAD * SIZE) as f64;
+            assert!(
+                (bps - expect).abs() < CLOSE_ENOUGH,
+                "{expect} B/s in, {bps} B/s out"
+            );
+        });
+    }
+
+    /// Reported as itself at every point in the window's cycle, not just where the ring lands well.
+    ///
+    /// The window is five samples in a ring, and the defect this is written against reported the
+    /// right answer on one tick in five and something else on the other four. A single run of a
+    /// fixed length can sit on the good one.
+    #[test]
+    fn a_steady_load_is_published_as_itself_at_every_tick() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            for ticks in 16..=32 {
+                let Some((pps, _)) = published(ticks, LOAD).await else {
+                    panic!("no rate published after {ticks} ticks of {LOAD} pkt/s");
+                };
+                assert!(
+                    (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
+                    "after {ticks} ticks, {LOAD} pkt/s in and {pps} pkt/s out"
+                );
+            }
+        });
+    }
+
+    /// A load that changes is reported as what it was doing, in the order it did it.
+    ///
+    /// A steady load cannot say this: five identical samples read the same however they are
+    /// ordered, so a window read back to front reports a constant correctly and a defect in the
+    /// ordering hides completely -- which is how one survived to production. A ramp is the
+    /// cheapest input that is order-sensitive, and Savitzky-Golay of order 2 reproduces a straight
+    /// line exactly, so it still has a closed form.
+    ///
+    /// The published rate is the load `SETTLED` ticks ago. That lag is the pipeline, not the
+    /// filter: a batch has to conclude, and the window's answer is centred rather than leading.
+    /// It is a measured constant, and asserting it exactly is deliberate -- a change in the
+    /// batching that shifted the reported rate in time would otherwise pass unnoticed.
+    #[test]
+    fn a_changing_load_is_published_in_the_order_it_happened() {
+        /// Ticks between a load being fed and its being at the centre of the published window.
+        const SETTLED: usize = 5;
+        /// Ticks before the batch pipeline and the window are both full.
+        const WARM: usize = SETTLED * 2;
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            for ticks in WARM..=(WARM + 16) {
+                let Some((pps, bps)) = published_ramp(ticks).await else {
+                    panic!("no rate published after {ticks} ticks of a rising load");
+                };
+                let expect = at_tick(ticks - SETTLED) as f64;
+                assert!(
+                    (pps - expect).abs() < CLOSE_ENOUGH,
+                    "after {ticks} ticks of a rising load the published rate was {pps} pkt/s, \
+                     not the {expect} pkt/s offered {SETTLED} ticks ago"
+                );
+                assert!(
+                    (bps - expect * SIZE as f64).abs() < CLOSE_ENOUGH,
+                    "the byte rate disagreed with the packet rate: {bps} B/s against {pps} pkt/s"
+                );
+            }
+        });
+    }
+
+    /// A pair that starts carrying traffic does not silence the pairs that already were.
+    ///
+    /// The window is built per (src, dst), and a destination first seen part way through it used
+    /// to end up with fewer samples than the rest. `TransmitSummary::smooth` collects into a
+    /// `Result` and [`StatsCollector::update`] drops the whole smoothing pass on an error, so one
+    /// arriving pair stopped **every** rate on the box, not merely its own. In a fabric where
+    /// tenants come and go, that is most of the time.
+    #[test]
+    fn a_new_destination_does_not_silence_the_others() {
+        /// The tick at which the second destination starts sending.
+        const ARRIVES: usize = 14;
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (src, old, new) = (vpc(100), vpc(200), vpc(300));
+            let mut map = VpcMapWriter::<VpcMapName>::new();
+            for (disc, name) in [(src, "left"), (old, "right"), (new, "newcomer")] {
+                map.add(disc, VpcMapName::new(disc, name), true)
+                    .unwrap_or_else(|e| unreachable!("{e:?}"));
+            }
+            let (mut collector, store, _writer) = {
+                let (collector, _w, store) =
+                    StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+                (collector, store, _w)
+            };
+
+            for tick in 0..(ARRIVES + 12) {
+                let mut update = a_tick_of(src, old, LOAD);
+                if tick >= ARRIVES {
+                    update
+                        .summary
+                        .vpc
+                        .get_mut(&src)
+                        .unwrap_or_else(|| unreachable!("the update names its source"))
+                        .dst
+                        .insert(
+                            new,
+                            PacketAndByte {
+                                packets: LOAD,
+                                bytes: LOAD * SIZE,
+                            },
+                        );
+                }
+                collector.update(Some(update)).await;
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+
+                let Some((pps, _)) = rate_of(&store, src, old).await else {
+                    if tick < 10 {
+                        // Still filling the batch pipeline and the window.
+                        continue;
+                    }
+                    panic!(
+                        "at tick {tick} the established pair had no rate at all, and the only \
+                         thing that changed was another pair starting up"
+                    );
+                };
+                if tick >= 10 {
+                    assert!(
+                        (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
+                        "at tick {tick} the established pair read {pps} pkt/s instead of {LOAD}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// A load that never ran is never reported.
+    #[test]
+    fn an_idle_pair_is_published_as_idle() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let published = published(24, 0).await;
+            if let Some((pps, bps)) = published {
+                assert!(pps.abs() < CLOSE_ENOUGH, "an idle pair reported {pps} pkt/s");
+                assert!(bps.abs() < CLOSE_ENOUGH, "an idle pair reported {bps} B/s");
+            }
+        });
+    }
+}
