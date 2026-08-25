@@ -649,6 +649,23 @@ pub(crate) struct Pick {
 pub(crate) type Poll = Vec<Pick>;
 
 #[cfg(test)]
+pub(crate) fn settled(body: impl FnOnce()) {
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime")
+    });
+
+    RUNTIME.block_on(async {
+        body();
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    });
+}
+
+#[cfg(test)]
 pub(crate) fn run_schedule(
     worker: &mut Worker,
     loads: &mut [Box<dyn Load>],
@@ -1441,56 +1458,59 @@ mod shapes {
         super::assert_within_budget("shapes::Batch", &Batch);
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn every_shape_leaves_the_pipeline_with_a_verdict() {
+    #[test]
+    fn every_shape_leaves_the_pipeline_with_a_verdict() {
         static FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DROPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static BY_SHAPE: LazyLock<[AtomicU64; Shape::ALL.len()]> =
             LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
 
+        let _eal = dpdk::test_support::start_eal();
+
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, stacks)| {
-                let Some(mut fabric) = Fabric::build(exposes) else {
-                    return;
-                };
-                let private = exposes.first().and_then(|e| {
-                    e.ips
-                        .first()
-                        .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
-                });
-
-                for (shape, headers) in stacks {
-                    let mut headers = headers.clone();
-                    aim(&mut headers, private);
-                    let Some(mut packet) = wire(&headers) else {
-                        continue;
+                settled(|| {
+                    let Some(mut fabric) = Fabric::build(exposes) else {
+                        return;
                     };
-                    BY_SHAPE[*shape as usize].fetch_add(1, Ordering::Relaxed);
+                    let private = exposes.first().and_then(|e| {
+                        e.ips
+                            .first()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                    });
 
-                    arrive(&mut packet, local());
-                    let out = fabric.send(packet);
+                    for (shape, headers) in stacks {
+                        let mut headers = headers.clone();
+                        aim(&mut headers, private);
+                        let Some(mut packet) = wire(&headers) else {
+                            continue;
+                        };
+                        BY_SHAPE[*shape as usize].fetch_add(1, Ordering::Relaxed);
 
-                    match verdict(&out) {
-                        Verdict::Forwarded { dst_vpcd, .. } => {
-                            assert_eq!(
-                                dst_vpcd,
-                                Some(remote()),
-                                "forwarded without a destination VPC, on a {shape:?} stack: \
+                        arrive(&mut packet, local());
+                        let out = fabric.send(packet);
+
+                        match verdict(&out) {
+                            Verdict::Forwarded { dst_vpcd, .. } => {
+                                assert_eq!(
+                                    dst_vpcd,
+                                    Some(remote()),
+                                    "forwarded without a destination VPC, on a {shape:?} stack: \
                                  nothing chose where this packet goes"
-                            );
-                            FORWARDED.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Verdict::Dropped(_) => {
-                            DROPPED.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Verdict::Delivered { .. } => {
-                            unreachable!("the overlay slice has no egress stage")
+                                );
+                                FORWARDED.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Verdict::Dropped(_) => {
+                                DROPPED.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Verdict::Delivered { .. } => {
+                                unreachable!("the overlay slice has no egress stage")
+                            }
                         }
                     }
-                }
+                });
             });
 
         let forwarded = FORWARDED.load(Ordering::Relaxed);
@@ -1639,93 +1659,97 @@ mod round_trip {
         super::assert_within_budget("round_trip::Batch", &Batch);
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_translated_flow_comes_back_to_where_it_started() {
+    #[test]
+    fn a_translated_flow_comes_back_to_where_it_started() {
         static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static NOT_FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, flows)| {
-                let Some(mut fabric) = Fabric::build(exposes) else {
-                    return;
-                };
-                let privates = private_addresses(exposes);
-                if privates.is_empty() {
-                    return;
-                }
-
-                for flow in flows {
-                    let prefix = privates[usize::from(flow.prefix) % privates.len()];
-                    let src = match prefix.as_address() {
-                        IpAddr::V4(a) => {
-                            let mut o = a.octets();
-                            o[3] = o[3].wrapping_add(flow.host % 8);
-                            IpAddr::V4(Ipv4Addr::from(o))
-                        }
-                        IpAddr::V6(a) => {
-                            let mut o = a.octets();
-                            o[15] = o[15].wrapping_add(flow.host % 8);
-                            IpAddr::V6(Ipv6Addr::from(o))
-                        }
+                settled(|| {
+                    let Some(mut fabric) = Fabric::build(exposes) else {
+                        return;
                     };
-                    let dst = peer(src);
+                    let privates = private_addresses(exposes);
+                    if privates.is_empty() {
+                        return;
+                    }
 
-                    let Some(mut request) = udp(src, dst, flow.sport, flow.dport) else {
-                        continue;
-                    };
-                    arrive(&mut request, local());
-                    let out = fabric.send(request);
+                    for flow in flows {
+                        let prefix = privates[usize::from(flow.prefix) % privates.len()];
+                        let src = match prefix.as_address() {
+                            IpAddr::V4(a) => {
+                                let mut o = a.octets();
+                                o[3] = o[3].wrapping_add(flow.host % 8);
+                                IpAddr::V4(Ipv4Addr::from(o))
+                            }
+                            IpAddr::V6(a) => {
+                                let mut o = a.octets();
+                                o[15] = o[15].wrapping_add(flow.host % 8);
+                                IpAddr::V6(Ipv6Addr::from(o))
+                            }
+                        };
+                        let dst = peer(src);
 
-                    let Verdict::Forwarded {
-                        src: public_src,
-                        dst: reached,
-                        ..
-                    } = verdict(&out)
-                    else {
-                        NOT_FORWARDED.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    };
-                    let (Some(public_src), Some(reached)) = (public_src, reached) else {
-                        continue;
-                    };
-                    let public_port = out
-                        .transport_src_port()
-                        .unwrap_or_else(|| unreachable!("a udp packet has a source port"))
-                        .get();
+                        let Some(mut request) = udp(src, dst, flow.sport, flow.dport) else {
+                            continue;
+                        };
+                        arrive(&mut request, local());
+                        let out = fabric.send(request);
 
-                    let Some(mut reply) = udp(reached, public_src, flow.dport, public_port) else {
-                        continue;
-                    };
-                    arrive(&mut reply, remote());
-                    let back = fabric.send(reply);
+                        let Verdict::Forwarded {
+                            src: public_src,
+                            dst: reached,
+                            ..
+                        } = verdict(&out)
+                        else {
+                            NOT_FORWARDED.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        };
+                        let (Some(public_src), Some(reached)) = (public_src, reached) else {
+                            continue;
+                        };
+                        let public_port = out
+                            .transport_src_port()
+                            .unwrap_or_else(|| unreachable!("a udp packet has a source port"))
+                            .get();
 
-                    match verdict(&back) {
-                        Verdict::Forwarded { src: s, dst: d, .. } => {
-                            assert_eq!(
-                                d,
-                                Some(src),
-                                "the reply did not come back to the host that sent the request"
-                            );
-                            assert_eq!(s, Some(dst), "the reply's source was rewritten");
-                            assert_eq!(
-                                back.transport_dst_port().map(std::num::NonZero::get),
-                                Some(flow.sport),
-                                "the reply did not get the original source port back"
-                            );
-                            ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Verdict::Dropped(reason) => panic!(
-                            "the reply of a forwarded flow was dropped: {reason:?} \
+                        let Some(mut reply) = udp(reached, public_src, flow.dport, public_port)
+                        else {
+                            continue;
+                        };
+                        arrive(&mut reply, remote());
+                        let back = fabric.send(reply);
+
+                        match verdict(&back) {
+                            Verdict::Forwarded { src: s, dst: d, .. } => {
+                                assert_eq!(
+                                    d,
+                                    Some(src),
+                                    "the reply did not come back to the host that sent the request"
+                                );
+                                assert_eq!(s, Some(dst), "the reply's source was rewritten");
+                                assert_eq!(
+                                    back.transport_dst_port().map(std::num::NonZero::get),
+                                    Some(flow.sport),
+                                    "the reply did not get the original source port back"
+                                );
+                                ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Verdict::Dropped(reason) => panic!(
+                                "the reply of a forwarded flow was dropped: {reason:?} \
                              (request {src} -> {dst} became {public_src}:{public_port})"
-                        ),
-                        Verdict::Delivered { .. } => {
-                            unreachable!("the overlay slice has no egress stage")
+                            ),
+                            Verdict::Delivered { .. } => {
+                                unreachable!("the overlay slice has no egress stage")
+                            }
                         }
                     }
-                }
+                });
             });
 
         let round_tripped = ROUND_TRIPPED.load(Ordering::Relaxed);
@@ -1935,80 +1959,84 @@ mod acl {
         super::assert_within_budget("acl::Batch", &Batch);
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
+    #[test]
+    fn the_acl_verdict_follows_the_protocol_the_packet_carries() {
         static DENIED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static PERMITTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static BEHIND_EXT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static PERMITTED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DENIED_BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
+        let _eal = dpdk::test_support::start_eal();
+
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, default_allow, rule_proto, packets)| {
-                let default = if *default_allow {
-                    AclAction::Allow
-                } else {
-                    AclAction::Deny
-                };
-                let rule = rule_proto.as_match();
-                let Some(mut fabric) =
-                    Fabric::build_with_acl(exposes, Some(&peering_acl(default, rule)))
-                else {
-                    return;
-                };
-                let Some(private) = exposes
-                    .iter()
-                    .flat_map(|e| e.ips.iter().map(PrefixWithOptionalPorts::prefix))
-                    .next()
-                    .map(|p: Prefix| p.as_address())
-                else {
-                    return;
-                };
-                let v6 = private.is_ipv6();
-                let dst = peer(private);
-
-                for (spec, headers) in packets {
-                    let Some(mut packet) = wire(headers, *spec, private, dst) else {
-                        continue;
-                    };
-                    arrive(&mut packet, local());
-                    let out = fabric.send(packet);
-
-                    let permitted = rule_matches(rule, carried(spec.proto, v6)) != *default_allow;
-                    if spec.behind_extension {
-                        BEHIND_EXT.fetch_add(1, Ordering::Relaxed);
-                    }
-
-                    let seen = verdict(&out);
-                    let acl_dropped = seen == Verdict::Dropped(DoneReason::AclDropped);
-                    let forwarded = matches!(seen, Verdict::Forwarded { .. });
-                    if permitted {
-                        assert!(
-                            !acl_dropped,
-                            "the acl dropped a {:?} packet it permits (rule={rule:?} \
-                             default={default:?} behind_extension={})",
-                            spec.proto, spec.behind_extension
-                        );
-                        PERMITTED.fetch_add(1, Ordering::Relaxed);
-                        if forwarded {
-                            PERMITTED_OUT.fetch_add(1, Ordering::Relaxed);
-                        }
+                settled(|| {
+                    let default = if *default_allow {
+                        AclAction::Allow
                     } else {
-                        assert!(
-                            !forwarded,
-                            "a {:?} packet the acl denies was forwarded (rule={rule:?} \
+                        AclAction::Deny
+                    };
+                    let rule = rule_proto.as_match();
+                    let Some(mut fabric) =
+                        Fabric::build_with_acl(exposes, Some(&peering_acl(default, rule)))
+                    else {
+                        return;
+                    };
+                    let Some(private) = exposes
+                        .iter()
+                        .flat_map(|e| e.ips.iter().map(PrefixWithOptionalPorts::prefix))
+                        .next()
+                        .map(|p: Prefix| p.as_address())
+                    else {
+                        return;
+                    };
+                    let v6 = private.is_ipv6();
+                    let dst = peer(private);
+
+                    for (spec, headers) in packets {
+                        let Some(mut packet) = wire(headers, *spec, private, dst) else {
+                            continue;
+                        };
+                        arrive(&mut packet, local());
+                        let out = fabric.send(packet);
+
+                        let permitted =
+                            rule_matches(rule, carried(spec.proto, v6)) != *default_allow;
+                        if spec.behind_extension {
+                            BEHIND_EXT.fetch_add(1, Ordering::Relaxed);
+                        }
+
+                        let seen = verdict(&out);
+                        let acl_dropped = seen == Verdict::Dropped(DoneReason::AclDropped);
+                        let forwarded = matches!(seen, Verdict::Forwarded { .. });
+                        if permitted {
+                            assert!(
+                                !acl_dropped,
+                                "the acl dropped a {:?} packet it permits (rule={rule:?} \
                              default={default:?} behind_extension={})",
-                            spec.proto, spec.behind_extension
-                        );
-                        DENIED.fetch_add(1, Ordering::Relaxed);
-                        if acl_dropped {
-                            DENIED_BY_ACL.fetch_add(1, Ordering::Relaxed);
+                                spec.proto, spec.behind_extension
+                            );
+                            PERMITTED.fetch_add(1, Ordering::Relaxed);
+                            if forwarded {
+                                PERMITTED_OUT.fetch_add(1, Ordering::Relaxed);
+                            }
+                        } else {
+                            assert!(
+                                !forwarded,
+                                "a {:?} packet the acl denies was forwarded (rule={rule:?} \
+                             default={default:?} behind_extension={})",
+                                spec.proto, spec.behind_extension
+                            );
+                            DENIED.fetch_add(1, Ordering::Relaxed);
+                            if acl_dropped {
+                                DENIED_BY_ACL.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
-                }
+                });
             });
 
         let (permitted, permitted_out, denied, denied_by_acl, behind) = (
@@ -2268,71 +2296,74 @@ mod port_forward {
         true
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_forwarded_port_reaches_the_host_behind_it() {
+    #[test]
+    fn a_forwarded_port_reaches_the_host_behind_it() {
         static FORWARDED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ANSWERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Reaches)
             .for_each(|reaches| {
-                let Some(mut fabric) = Fabric::routed(&[expose()], None) else {
-                    unreachable!("the port-forwarding fixture does not configure")
-                };
-
-                for reach in reaches {
-                    let external: IpAddr = format!("172.16.5.{}", reach.host)
-                        .parse()
-                        .unwrap_or_else(|_| unreachable!());
-                    let dport = if reach.past_the_range {
-                        EXTERNAL_PORT + PORTS + (reach.port % PORTS)
-                    } else {
-                        EXTERNAL_PORT + reach.port
+                settled(|| {
+                    let Some(mut fabric) = Fabric::routed(&[expose()], None) else {
+                        unreachable!("the port-forwarding fixture does not configure")
                     };
 
-                    let Some(inbound) = udp(outside(), external, reach.src_port, dport) else {
-                        continue;
-                    };
-                    let out = fabric.send(tunnelled_from(vni(REMOTE_VNI), &inbound));
+                    for reach in reaches {
+                        let external: IpAddr = format!("172.16.5.{}", reach.host)
+                            .parse()
+                            .unwrap_or_else(|_| unreachable!());
+                        let dport = if reach.past_the_range {
+                            EXTERNAL_PORT + PORTS + (reach.port % PORTS)
+                        } else {
+                            EXTERNAL_PORT + reach.port
+                        };
 
-                    if reach.past_the_range {
-                        assert!(
-                            !matches!(verdict(&out), Verdict::Delivered { .. }),
-                            "a packet to {external}:{dport}, past the declared range, was \
+                        let Some(inbound) = udp(outside(), external, reach.src_port, dport) else {
+                            continue;
+                        };
+                        let out = fabric.send(tunnelled_from(vni(REMOTE_VNI), &inbound));
+
+                        if reach.past_the_range {
+                            assert!(
+                                !matches!(verdict(&out), Verdict::Delivered { .. }),
+                                "a packet to {external}:{dport}, past the declared range, was \
                              forwarded anyway"
+                            );
+                            REFUSED.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+
+                        assert!(
+                            matches!(verdict(&out), Verdict::Delivered { .. }),
+                            "a packet to the declared {external}:{dport} was not forwarded: {:?}",
+                            verdict(&out)
                         );
-                        REFUSED.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
+                        let arrived = inside(&out).expect("a forwarded packet was not tunnelled");
+                        let expected_host: IpAddr = format!("10.0.5.{}", reach.host)
+                            .parse()
+                            .unwrap_or_else(|_| unreachable!());
+                        assert_eq!(
+                            arrived.ip_destination(),
+                            Some(expected_host),
+                            "{external}:{dport} reached the wrong host"
+                        );
+                        assert_eq!(
+                            arrived.transport_dst_port().map(std::num::NonZero::get),
+                            Some(INTERNAL_PORT + reach.port),
+                            "{external}:{dport} reached the right host on the wrong port"
+                        );
+                        FORWARDED.fetch_add(1, Ordering::Relaxed);
 
-                    assert!(
-                        matches!(verdict(&out), Verdict::Delivered { .. }),
-                        "a packet to the declared {external}:{dport} was not forwarded: {:?}",
-                        verdict(&out)
-                    );
-                    let arrived = inside(&out).expect("a forwarded packet was not tunnelled");
-                    let expected_host: IpAddr = format!("10.0.5.{}", reach.host)
-                        .parse()
-                        .unwrap_or_else(|_| unreachable!());
-                    assert_eq!(
-                        arrived.ip_destination(),
-                        Some(expected_host),
-                        "{external}:{dport} reached the wrong host"
-                    );
-                    assert_eq!(
-                        arrived.transport_dst_port().map(std::num::NonZero::get),
-                        Some(INTERNAL_PORT + reach.port),
-                        "{external}:{dport} reached the right host on the wrong port"
-                    );
-                    FORWARDED.fetch_add(1, Ordering::Relaxed);
-
-                    if answers(&mut fabric, expected_host, *reach, external, dport) {
-                        ANSWERED.fetch_add(1, Ordering::Relaxed);
+                        if answers(&mut fabric, expected_host, *reach, external, dport) {
+                            ANSWERED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+                });
             });
 
         let (forwarded, answered, refused) = (
@@ -2421,71 +2452,74 @@ mod interleaved {
         super::assert_within_budget("interleaved::Interleaving", &Interleaving);
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn interleaved_traffic_is_each_satisfied() {
+    #[test]
+    fn interleaved_traffic_is_each_satisfied() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static MIXED_LOADS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static MIXED_KINDS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
+        let _eal = dpdk::test_support::start_eal();
+
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Interleaving)
             .for_each(|(senders, schedule)| {
-                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
-                    return;
-                };
-
-                let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-                let mut kinds = Vec::new();
-                let mut loads: Vec<Box<dyn Load>> = Vec::new();
-                for (i, sender) in senders.iter().enumerate() {
-                    let Ok(src) = format!("1.1.{i}.{}", sender.host).parse::<IpAddr>() else {
-                        continue;
+                settled(|| {
+                    let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                        return;
                     };
-                    kinds.push(sender.kind);
-                    loads.push(match sender.kind {
-                        Kind::Conversation => Box::new(Conversation::new(
-                            Path::fixture(),
-                            src,
-                            dst,
-                            sender.sport,
-                            sender.dport,
-                        )),
-                        Kind::Blast => Box::new(Blast::new(
-                            Path::fixture(),
-                            src,
-                            dst,
-                            sender.sport,
-                            sender.dport,
-                            sender.count,
-                        )) as Box<dyn Load>,
-                    });
-                }
 
-                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
-                    let mut loads_in: Vec<usize> = burst.clone();
-                    loads_in.sort_unstable();
-                    loads_in.dedup();
-                    if loads_in.len() > 1 {
-                        MIXED_LOADS.fetch_add(1, Ordering::Relaxed);
+                    let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                    let mut kinds = Vec::new();
+                    let mut loads: Vec<Box<dyn Load>> = Vec::new();
+                    for (i, sender) in senders.iter().enumerate() {
+                        let Ok(src) = format!("1.1.{i}.{}", sender.host).parse::<IpAddr>() else {
+                            continue;
+                        };
+                        kinds.push(sender.kind);
+                        loads.push(match sender.kind {
+                            Kind::Conversation => Box::new(Conversation::new(
+                                Path::fixture(),
+                                src,
+                                dst,
+                                sender.sport,
+                                sender.dport,
+                            )),
+                            Kind::Blast => Box::new(Blast::new(
+                                Path::fixture(),
+                                src,
+                                dst,
+                                sender.sport,
+                                sender.dport,
+                                sender.count,
+                            )) as Box<dyn Load>,
+                        });
                     }
-                    let mut kinds_in: Vec<Kind> = burst.iter().map(|i| kinds[*i]).collect();
-                    kinds_in.sort_unstable_by_key(|k| format!("{k:?}"));
-                    kinds_in.dedup();
-                    if kinds_in.len() > 1 {
-                        MIXED_KINDS.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
 
-                for load in &loads {
-                    if load.checked() {
-                        CHECKED.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
+                        let mut loads_in: Vec<usize> = burst.clone();
+                        loads_in.sort_unstable();
+                        loads_in.dedup();
+                        if loads_in.len() > 1 {
+                            MIXED_LOADS.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let mut kinds_in: Vec<Kind> = burst.iter().map(|i| kinds[*i]).collect();
+                        kinds_in.sort_unstable_by_key(|k| format!("{k:?}"));
+                        kinds_in.dedup();
+                        if kinds_in.len() > 1 {
+                            MIXED_KINDS.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+
+                    for load in &loads {
+                        if load.checked() {
+                            CHECKED.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            ABANDONED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
             });
 
         let (checked, abandoned, mixed_loads, mixed_kinds) = (
@@ -2605,9 +2639,8 @@ mod offers {
         super::assert_within_budget("offers::Offered", &Offered);
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_configuration_carries_everything_it_offers() {
+    #[test]
+    fn a_configuration_carries_everything_it_offers() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -2615,43 +2648,47 @@ mod offers {
         static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static OUTBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
+        let _eal = dpdk::test_support::start_eal();
+
         let overlay = overlay();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Offered)
             .for_each(|(vary, schedule)| {
-                let mut fabric = Fabric::routed_over_validated(
-                    &overlay,
-                    topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]),
-                );
+                settled(|| {
+                    let mut fabric = Fabric::routed_over_validated(
+                        &overlay,
+                        topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]),
+                    );
 
-                let mut loads = loads_for(&overlay, vary);
-                DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
-                for load in &loads {
-                    if load.describe().starts_with("[inbound") {
-                        INBOUND.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        OUTBOUND.fetch_add(1, Ordering::Relaxed);
+                    let mut loads = loads_for(&overlay, vary);
+                    DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+                    for load in &loads {
+                        if load.describe().starts_with("[inbound") {
+                            INBOUND.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            OUTBOUND.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
 
-                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
-                    let mut seen = burst.clone();
-                    seen.sort_unstable();
-                    seen.dedup();
-                    if seen.len() > 1 {
-                        MIXED.fetch_add(1, Ordering::Relaxed);
+                    for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
+                        let mut seen = burst.clone();
+                        seen.sort_unstable();
+                        seen.dedup();
+                        if seen.len() > 1 {
+                            MIXED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
 
-                for load in &loads {
-                    if load.checked() {
-                        CHECKED.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    for load in &loads {
+                        if load.checked() {
+                            CHECKED.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            ABANDONED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+                });
             });
 
         let (checked, abandoned, derived, mixed) = (
@@ -2839,71 +2876,74 @@ mod generated {
         }
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_generated_configuration_carries_its_own_traffic() {
+    #[test]
+    fn a_generated_configuration_carries_its_own_traffic() {
+        let _eal = dpdk::test_support::start_eal();
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
             .for_each(|(ops, vary, schedule)| {
-                let draft = Sequence::fold(ops);
-                let overlay = draft
-                    .overlay()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
-                let validated = overlay
-                    .validate()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+                settled(|| {
+                    let draft = Sequence::fold(ops);
+                    let overlay = draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+                    let validated = overlay
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
 
-                let vnis: Vec<Vni> = validated
-                    .vpc_table()
-                    .values()
-                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
-                    .collect();
-                if vnis.is_empty() {
-                    return;
-                }
-                if validated.vpc_table().peerings().next().is_some() {
-                    PEERED.fetch_add(1, Ordering::Relaxed);
-                }
-                if vnis.len() > 2 {
-                    MULTI.fetch_add(1, Ordering::Relaxed);
-                }
-
-                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
-
-                let (permitting, by_flow, excepting) = (Cell::new(0), Cell::new(0), Cell::new(0));
-                let mut loads = loads_where(
-                    &validated,
-                    vary,
-                    &carried_counting(&draft, &permitting, &by_flow, &excepting),
-                );
-                PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
-                BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
-                EXCEPTING.fetch_add(excepting.get(), Ordering::Relaxed);
-                DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
-                for load in &loads {
-                    if load.describe().starts_with("[inbound") {
-                        INBOUND.fetch_add(1, Ordering::Relaxed);
+                    let vnis: Vec<Vni> = validated
+                        .vpc_table()
+                        .values()
+                        .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                        .collect();
+                    if vnis.is_empty() {
+                        return;
                     }
-                }
-
-                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
-                    let mut seen = burst.clone();
-                    seen.sort_unstable();
-                    seen.dedup();
-                    if seen.len() > 1 {
-                        MIXED.fetch_add(1, Ordering::Relaxed);
+                    if validated.vpc_table().peerings().next().is_some() {
+                        PEERED.fetch_add(1, Ordering::Relaxed);
                     }
-                }
+                    if vnis.len() > 2 {
+                        MULTI.fetch_add(1, Ordering::Relaxed);
+                    }
 
-                for load in &loads {
-                    assert!(
-                        load.checked(),
-                        "a load derived from the configuration did not complete: {}",
-                        load.describe()
+                    let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+
+                    let (permitting, by_flow, excepting) =
+                        (Cell::new(0), Cell::new(0), Cell::new(0));
+                    let mut loads = loads_where(
+                        &validated,
+                        vary,
+                        &carried_counting(&draft, &permitting, &by_flow, &excepting),
                     );
-                    CHECKED.fetch_add(1, Ordering::Relaxed);
-                }
+                    PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
+                    BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
+                    EXCEPTING.fetch_add(excepting.get(), Ordering::Relaxed);
+                    DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+                    for load in &loads {
+                        if load.describe().starts_with("[inbound") {
+                            INBOUND.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+
+                    for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
+                        let mut seen = burst.clone();
+                        seen.sort_unstable();
+                        seen.dedup();
+                        if seen.len() > 1 {
+                            MIXED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+
+                    for load in &loads {
+                        assert!(
+                            load.checked(),
+                            "a load derived from the configuration did not complete: {}",
+                            load.describe()
+                        );
+                        CHECKED.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
             });
 
         report_and_assert_coverage();
@@ -2997,66 +3037,68 @@ mod generated {
         );
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_configuration_carries_nothing_it_denies() {
+    #[test]
+    fn a_configuration_carries_nothing_it_denies() {
         static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static NARROWED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
             .for_each(|(ops, vary, _schedule)| {
-                let draft = Sequence::fold(ops);
-                let validated = draft
-                    .overlay()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
-                    .validate()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+                settled(|| {
+                    let draft = Sequence::fold(ops);
+                    let validated = draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
 
-                let vnis: Vec<Vni> = validated
-                    .vpc_table()
-                    .values()
-                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
-                    .collect();
-                if vnis.is_empty() {
-                    return;
-                }
-                let carried = super::derive::carried_by(&draft);
-                let narrowed = Cell::new(0);
-                let mut loads = loads_where(&validated, vary, &|named| {
-                    if carried(named) {
-                        return false;
+                    let vnis: Vec<Vni> = validated
+                        .vpc_table()
+                        .values()
+                        .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                        .collect();
+                    if vnis.is_empty() {
+                        return;
                     }
-                    if draft.guard_named(named.peering) != Some(Guard::Deny) {
-                        narrowed.set(narrowed.get() + 1);
+                    let carried = super::derive::carried_by(&draft);
+                    let narrowed = Cell::new(0);
+                    let mut loads = loads_where(&validated, vary, &|named| {
+                        if carried(named) {
+                            return false;
+                        }
+                        if draft.guard_named(named.peering) != Some(Guard::Deny) {
+                            narrowed.set(narrowed.get() + 1);
+                        }
+                        true
+                    });
+                    if loads.is_empty() {
+                        return;
                     }
-                    true
+                    NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
+                    CONFIGS.fetch_add(1, Ordering::Relaxed);
+
+                    let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                    for load in &mut loads {
+                        let Some(packet) = load.next() else {
+                            continue;
+                        };
+                        let seen = verdict(&fabric.worker().send(packet));
+                        SENT.fetch_add(1, Ordering::Relaxed);
+                        assert!(
+                            matches!(seen, Verdict::Dropped(_)),
+                            "an acl that refuses this traffic produced {seen:?} for {}",
+                            load.describe()
+                        );
+                        if seen == Verdict::Dropped(DoneReason::AclDropped) {
+                            BY_ACL.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 });
-                if loads.is_empty() {
-                    return;
-                }
-                NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
-                CONFIGS.fetch_add(1, Ordering::Relaxed);
-
-                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
-                for load in &mut loads {
-                    let Some(packet) = load.next() else {
-                        continue;
-                    };
-                    let seen = verdict(&fabric.worker().send(packet));
-                    SENT.fetch_add(1, Ordering::Relaxed);
-                    assert!(
-                        matches!(seen, Verdict::Dropped(_)),
-                        "an acl that refuses this traffic produced {seen:?} for {}",
-                        load.describe()
-                    );
-                    if seen == Verdict::Dropped(DoneReason::AclDropped) {
-                        BY_ACL.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
             });
 
         let (configs, sent, by_acl) = (
@@ -3085,52 +3127,52 @@ mod generated {
         );
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn an_excluded_address_is_not_reachable() {
+    #[test]
+    fn an_excluded_address_is_not_reachable() {
         static AIMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
-            .for_each(|(ops, vary, _schedule)| {
-                let draft = Sequence::fold(ops);
-                let validated = draft
-                    .overlay()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
-                    .validate()
-                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+            .for_each(|(ops, vary, _schedule)| settled(||     {
+                    let draft = Sequence::fold(ops);
+                    let validated = draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
 
-                let vnis: Vec<Vni> = validated
-                    .vpc_table()
-                    .values()
-                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
-                    .collect();
-                if vnis.is_empty() {
-                    return;
-                }
-                let probes = super::derive::probes_for(&validated, vary, &draft);
-                if probes.is_empty() {
-                    return;
-                }
-
-                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
-                for probe in probes {
-                    let Some(packet) = probe.packet() else {
-                        continue;
-                    };
-                    let seen = verdict(&fabric.worker().send(packet));
-                    AIMED.fetch_add(1, Ordering::Relaxed);
-                    assert!(
-                        matches!(seen, Verdict::Dropped(_)),
-                        "an address the configuration excludes was reached: {seen:?} for {probe:?}"
-                    );
-                    if seen == Verdict::Dropped(DoneReason::Filtered) {
-                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                    let vnis: Vec<Vni> = validated
+                        .vpc_table()
+                        .values()
+                        .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                        .collect();
+                    if vnis.is_empty() {
+                        return;
                     }
-                }
-            });
+                    let probes = super::derive::probes_for(&validated, vary, &draft);
+                    if probes.is_empty() {
+                        return;
+                    }
+
+                    let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                    for probe in probes {
+                        let Some(packet) = probe.packet() else {
+                            continue;
+                        };
+                        let seen = verdict(&fabric.worker().send(packet));
+                        AIMED.fetch_add(1, Ordering::Relaxed);
+                        assert!(
+                            matches!(seen, Verdict::Dropped(_)),
+                            "an address the configuration excludes was reached: {seen:?} for {probe:?}"
+                        );
+                        if seen == Verdict::Dropped(DoneReason::Filtered) {
+                            REFUSED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }));
 
         let (aimed, refused) = (
             AIMED.load(Ordering::Relaxed),
@@ -3213,15 +3255,16 @@ mod burst {
         }
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_burst_of_one_flow_allocates_once() {
+    #[test]
+    fn a_burst_of_one_flow_allocates_once() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Burst)
-            .for_each(|members| {
+            .for_each(|members| settled(|| {
                 let m = members[0];
                 let src: IpAddr = format!("1.1.0.{}", m.host)
                     .parse()
@@ -3271,16 +3314,15 @@ mod burst {
                      one packet of it did"
                 );
                 CHECKED.fetch_add(1, Ordering::Relaxed);
-            });
+            }));
 
         let checked = CHECKED.load(Ordering::Relaxed);
         eprintln!("single-flow-bursts={checked}");
         super::assert_covered(checked > 0, "no burst of a single flow was ever delivered");
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_burst_of_one_translated_flow_allocates_once() {
+    #[test]
+    fn a_burst_of_one_translated_flow_allocates_once() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         fn two_sided() -> Option<config::external::overlay::Overlay> {
@@ -3306,10 +3348,12 @@ mod burst {
 
         let overlay = two_sided().expect("a valid two-sided configuration");
 
+        let _eal = dpdk::test_support::start_eal();
+
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Burst)
-            .for_each(|members| {
+            .for_each(|members| settled(|| {
                 let m = members[0];
                 let src: IpAddr = format!("1.1.0.{}", m.host)
                     .parse()
@@ -3370,7 +3414,7 @@ mod burst {
                      flow-table entries than one packet of it did"
                 );
                 CHECKED.fetch_add(1, Ordering::Relaxed);
-            });
+            }));
 
         let checked = CHECKED.load(Ordering::Relaxed);
         eprintln!("translated-single-flow-bursts={checked}");
@@ -3380,62 +3424,67 @@ mod burst {
         );
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_burst_is_treated_the_same_as_one_packet_at_a_time() {
+    #[test]
+    fn a_burst_is_treated_the_same_as_one_packet_at_a_time() {
         static COMPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Burst)
             .for_each(|members| {
-                let packets = || {
-                    members
-                        .iter()
-                        .enumerate()
-                        .map(|(i, m)| {
-                            let src: IpAddr = format!("1.1.{i}.{}", m.host)
-                                .parse()
-                                .unwrap_or_else(|_| unreachable!());
-                            let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-                            udp(src, dst, 1024 + u16::try_from(i).unwrap_or(0), m.dport)
-                                .map(|p| tunnelled(&p))
-                        })
-                        .collect::<Option<Vec<_>>>()
-                };
-                let (Some(singly), Some(together)) = (packets(), packets()) else {
-                    return;
-                };
+                settled(|| {
+                    let packets = || {
+                        members
+                            .iter()
+                            .enumerate()
+                            .map(|(i, m)| {
+                                let src: IpAddr = format!("1.1.{i}.{}", m.host)
+                                    .parse()
+                                    .unwrap_or_else(|_| unreachable!());
+                                let dst: IpAddr =
+                                    "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                                udp(src, dst, 1024 + u16::try_from(i).unwrap_or(0), m.dport)
+                                    .map(|p| tunnelled(&p))
+                            })
+                            .collect::<Option<Vec<_>>>()
+                    };
+                    let (Some(singly), Some(together)) = (packets(), packets()) else {
+                        return;
+                    };
 
-                let (Some(mut a), Some(mut b)) = (
-                    Fabric::routed(&exposes(), None),
-                    Fabric::routed(&exposes(), None),
-                ) else {
-                    return;
-                };
+                    let (Some(mut a), Some(mut b)) = (
+                        Fabric::routed(&exposes(), None),
+                        Fabric::routed(&exposes(), None),
+                    ) else {
+                        return;
+                    };
 
-                let one_at_a_time: Vec<_> =
-                    singly.into_iter().map(|p| treatment(&a.send(p))).collect();
-                let in_a_burst: Vec<_> = b.send_batch(together).iter().map(treatment).collect();
+                    let one_at_a_time: Vec<_> =
+                        singly.into_iter().map(|p| treatment(&a.send(p))).collect();
+                    let in_a_burst: Vec<_> = b.send_batch(together).iter().map(treatment).collect();
 
-                assert_eq!(
-                    one_at_a_time.len(),
-                    in_a_burst.len(),
-                    "a burst did not return as many packets as it was given"
-                );
-                for (i, (alone, batched)) in one_at_a_time.iter().zip(in_a_burst.iter()).enumerate()
-                {
                     assert_eq!(
-                        alone, batched,
-                        "packet {i} of the burst was treated differently from the same packet \
-                         sent on its own"
+                        one_at_a_time.len(),
+                        in_a_burst.len(),
+                        "a burst did not return as many packets as it was given"
                     );
-                    COMPARED.fetch_add(1, Ordering::Relaxed);
-                    if matches!(alone.verdict, Verdict::Delivered { .. }) {
-                        DELIVERED.fetch_add(1, Ordering::Relaxed);
+                    for (i, (alone, batched)) in
+                        one_at_a_time.iter().zip(in_a_burst.iter()).enumerate()
+                    {
+                        assert_eq!(
+                            alone, batched,
+                            "packet {i} of the burst was treated differently from the same packet \
+                         sent on its own"
+                        );
+                        COMPARED.fetch_add(1, Ordering::Relaxed);
+                        if matches!(alone.verdict, Verdict::Delivered { .. }) {
+                            DELIVERED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+                });
             });
 
         let (compared, delivered) = (
@@ -3507,71 +3556,74 @@ mod destination {
         super::assert_within_budget("destination::Aims", &Aims);
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
+    #[test]
+    fn a_packet_leaves_for_the_vpc_that_exposes_its_destination() {
         static REACHED: LazyLock<[AtomicU64; PEERS as usize]> =
             LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
         static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Aims)
             .for_each(|aims| {
-                let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
-                    .chain((0..PEERS).map(|n| vni(peer_vni(n))))
-                    .collect();
-                let overlay = overlay_with_peers(local_prefix(), PEERS).unwrap_or_else(|e| {
-                    unreachable!("the multi-peer contract does not build: {e}")
-                });
-                let Some(mut fabric) = Fabric::routed_over(&overlay, topology(&vnis)) else {
-                    unreachable!("the multi-peer contract does not validate")
-                };
+                settled(|| {
+                    let vnis: Vec<_> = std::iter::once(vni(LOCAL_VNI))
+                        .chain((0..PEERS).map(|n| vni(peer_vni(n))))
+                        .collect();
+                    let overlay = overlay_with_peers(local_prefix(), PEERS).unwrap_or_else(|e| {
+                        unreachable!("the multi-peer contract does not build: {e}")
+                    });
+                    let Some(mut fabric) = Fabric::routed_over(&overlay, topology(&vnis)) else {
+                        unreachable!("the multi-peer contract does not validate")
+                    };
 
-                for aim in aims {
-                    let src: IpAddr = format!("1.1.0.{}", aim.host)
+                    for aim in aims {
+                        let src: IpAddr = format!("1.1.0.{}", aim.host)
+                            .parse()
+                            .unwrap_or_else(|_| unreachable!());
+                        let dst: IpAddr = match aim.peer {
+                            Some(n) => format!("10.{}.{}.{}", n + 1, aim.third, aim.host),
+                            None => format!("172.16.{}.{}", aim.third, aim.host),
+                        }
                         .parse()
                         .unwrap_or_else(|_| unreachable!());
-                    let dst: IpAddr = match aim.peer {
-                        Some(n) => format!("10.{}.{}.{}", n + 1, aim.third, aim.host),
-                        None => format!("172.16.{}.{}", aim.third, aim.host),
-                    }
-                    .parse()
-                    .unwrap_or_else(|_| unreachable!());
 
-                    let Some(packet) = udp(src, dst, aim.sport, aim.dport) else {
-                        continue;
-                    };
-                    let out = fabric.send(tunnelled(&packet));
-                    let left = matches!(verdict(&out), Verdict::Delivered { .. });
+                        let Some(packet) = udp(src, dst, aim.sport, aim.dport) else {
+                            continue;
+                        };
+                        let out = fabric.send(tunnelled(&packet));
+                        let left = matches!(verdict(&out), Verdict::Delivered { .. });
 
-                    if let Some(n) = aim.peer {
-                        assert!(
-                            left,
-                            "a packet to {dst}, which peer {n} exposes, did not leave: {:?}",
-                            verdict(&out)
-                        );
-                        assert_eq!(
-                            out.try_vxlan().map(net::vxlan::Vxlan::vni),
-                            Some(vni(peer_vni(n))),
-                            "a packet to {dst} left for the wrong vpc"
-                        );
-                        let carried = inside(&out).expect("a delivered packet was not tunnelled");
-                        assert_eq!(
-                            carried.ip_destination(),
-                            Some(dst),
-                            "the destination was rewritten on the way out"
-                        );
-                        REACHED[n as usize].fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        assert!(
-                            !left,
-                            "a packet to {dst}, which no peering covers, was sent to {:?}",
-                            out.try_vxlan().map(net::vxlan::Vxlan::vni)
-                        );
-                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                        if let Some(n) = aim.peer {
+                            assert!(
+                                left,
+                                "a packet to {dst}, which peer {n} exposes, did not leave: {:?}",
+                                verdict(&out)
+                            );
+                            assert_eq!(
+                                out.try_vxlan().map(net::vxlan::Vxlan::vni),
+                                Some(vni(peer_vni(n))),
+                                "a packet to {dst} left for the wrong vpc"
+                            );
+                            let carried =
+                                inside(&out).expect("a delivered packet was not tunnelled");
+                            assert_eq!(
+                                carried.ip_destination(),
+                                Some(dst),
+                                "the destination was rewritten on the way out"
+                            );
+                            REACHED[n as usize].fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            assert!(
+                                !left,
+                                "a packet to {dst}, which no peering covers, was sent to {:?}",
+                                out.try_vxlan().map(net::vxlan::Vxlan::vni)
+                            );
+                            REFUSED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+                });
             });
 
         let reached: Vec<u64> = REACHED.iter().map(|c| c.load(Ordering::Relaxed)).collect();
@@ -3795,87 +3847,95 @@ mod routed {
         reparsed
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_tagged_shape_never_reaches_the_wire() {
+    #[test]
+    fn a_tagged_shape_never_reaches_the_wire() {
         static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Batch)
             .for_each(|(exposes, stacks)| {
-                let Some(mut fabric) = Fabric::routed(exposes, None) else {
-                    return;
-                };
-                let private = exposes.first().and_then(|e| {
-                    e.ips
-                        .first()
-                        .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
-                });
-
-                for (shape, headers) in stacks {
-                    let mut headers = headers.clone();
-                    aim(&mut headers, private);
-                    let Some(frame) = wire(&headers) else {
-                        continue;
+                settled(|| {
+                    let Some(mut fabric) = Fabric::routed(exposes, None) else {
+                        return;
                     };
-                    let tagged = *shape == Shape::VlanV4Tcp;
-                    if tagged {
-                        TAGGED.fetch_add(1, Ordering::Relaxed);
-                    }
+                    let private = exposes.first().and_then(|e| {
+                        e.ips
+                            .first()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                    });
 
-                    let out = fabric.send(tunnelled(&frame));
-                    assert!(
-                        !(tagged && matches!(verdict(&out), Verdict::Delivered { .. })),
-                        "a tagged frame was sent out onto the wire"
-                    );
-                }
+                    for (shape, headers) in stacks {
+                        let mut headers = headers.clone();
+                        aim(&mut headers, private);
+                        let Some(frame) = wire(&headers) else {
+                            continue;
+                        };
+                        let tagged = *shape == Shape::VlanV4Tcp;
+                        if tagged {
+                            TAGGED.fetch_add(1, Ordering::Relaxed);
+                        }
+
+                        let out = fabric.send(tunnelled(&frame));
+                        assert!(
+                            !(tagged && matches!(verdict(&out), Verdict::Delivered { .. })),
+                            "a tagged frame was sent out onto the wire"
+                        );
+                    }
+                });
             });
 
         let tagged = TAGGED.load(Ordering::Relaxed);
         eprintln!("tagged={tagged}");
 
-        let mut control = Fabric::routed(&exposes(), None).expect("a valid configuration");
-        assert!(
-            matches!(
-                verdict(&control.send(tunnelled(&inner()))),
-                Verdict::Delivered { .. }
-            ),
-            "the untagged control did not reach the wire, so no delivery was observable here"
-        );
+        settled(|| {
+            let mut control = Fabric::routed(&exposes(), None).expect("a valid configuration");
+            assert!(
+                matches!(
+                    verdict(&control.send(tunnelled(&inner()))),
+                    Verdict::Delivered { .. }
+                ),
+                "the untagged control did not reach the wire, so no delivery was observable here"
+            );
+        });
         super::assert_covered(tagged > 0, "no tagged shape was ever generated");
     }
 
-    #[tokio::test]
-    #[dpdk::with_eal]
-    async fn a_tunnelled_flow_comes_back_through_the_tunnel() {
+    #[test]
+    fn a_tunnelled_flow_comes_back_through_the_tunnel() {
         static ROUND_TRIPPED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Flows)
             .for_each(|flows| {
-                let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
-                    return;
-                };
+                settled(|| {
+                    let Some(mut fabric) = Fabric::routed(&exposes(), None) else {
+                        return;
+                    };
 
-                for flow in flows {
-                    let src: IpAddr = format!("1.1.0.{}", flow.host)
-                        .parse()
-                        .unwrap_or_else(|_| unreachable!());
-                    let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
-                    let mut load =
-                        Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
+                    for flow in flows {
+                        let src: IpAddr = format!("1.1.0.{}", flow.host)
+                            .parse()
+                            .unwrap_or_else(|_| unreachable!());
+                        let dst: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+                        let mut load =
+                            Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
 
-                    drive(fabric.worker(), &mut load);
+                        drive(fabric.worker(), &mut load);
 
-                    if load.checked() {
-                        ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                        if load.checked() {
+                            ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            ABANDONED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
+                });
             });
 
         let round_tripped = ROUND_TRIPPED.load(Ordering::Relaxed);
