@@ -143,6 +143,17 @@ impl VpcStatsStore {
         e.rate.bps = bps;
     }
 
+    pub async fn forget_vpcs(&self, forget: &HashSet<VpcId>) {
+        {
+            let mut pairs = self.pair_stats.write().await;
+            pairs.retain(|(src, dst), _| !forget.contains(src) && !forget.contains(dst));
+        }
+        {
+            let mut vpcs = self.vpc_stats.write().await;
+            vpcs.retain(|vpc, _| !forget.contains(vpc));
+        }
+    }
+
     pub async fn prune_to_vpcs(&self, alive: &HashSet<VpcId>) {
         {
             let mut pairs = self.pair_stats.write().await;
