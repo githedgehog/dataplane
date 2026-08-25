@@ -238,9 +238,14 @@ impl ConfigProcessor {
 
         let stats_store = &self.proc_params.vpc_stats_store;
 
-        let names = stats_store.snapshot_names().await;
-        let pair_snap = stats_store.snapshot_pairs().await;
-        let vpc_snap = stats_store.snapshot_vpcs().await;
+        // One snapshot, not three. Taken separately they come from three different instants, so a
+        // VPC's name could be paired with a different tenant's counters whenever a VNI changed
+        // hands while this was running.
+        let stats::StatsSnapshot {
+            names,
+            pairs: pair_snap,
+            vpcs: vpc_snap,
+        } = stats_store.snapshot().await;
 
         // Helper to check if a flow stats has any traffic
         #[inline]
