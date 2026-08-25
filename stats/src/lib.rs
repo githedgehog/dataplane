@@ -8,6 +8,8 @@ mod dpstats_fuzz;
 mod rate;
 mod rate_fuzz;
 mod register;
+#[cfg(test)]
+mod scrape;
 mod spec;
 mod vpc;
 mod vpc_stats;
