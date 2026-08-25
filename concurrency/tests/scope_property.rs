@@ -98,26 +98,26 @@ fn run_plan(plan: &Plan) {
 
 const TEST_TIME: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn fuzz_test<Arg: Clone + TypeGenerator + RefUnwindSafe + std::fmt::Debug>(
-    test: impl Fn(Arg) + RefUnwindSafe,
-) {
-    bolero::check!()
-        .with_type()
-        .cloned()
-        .with_test_time(TEST_TIME)
-        .for_each(test);
+macro_rules! fuzz_test {
+    ($test:expr) => {{
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .with_test_time(TEST_TIME)
+            .for_each($test);
+    }};
 }
 
 #[test]
 #[cfg(feature = "shuttle")]
 fn scope_conservation_under_shuttle() {
-    fuzz_test(|plan: Plan| shuttle::check_random(move || run_plan(&plan), 1));
+    fuzz_test!(|plan: Plan| shuttle::check_random(move || run_plan(&plan), 1));
 }
 
 #[test]
 #[cfg(feature = "shuttle")]
 fn scope_conservation_under_shuttle_pct() {
-    fuzz_test(|plan: Plan| {
+    fuzz_test!(|plan: Plan| {
         // PCT requires every thread to do at least one atomic op;
         // skip degenerate shapes that wouldn't exercise concurrency.
         let nontrivial = plan
@@ -136,5 +136,5 @@ fn scope_conservation_under_shuttle_pct() {
 #[test]
 #[cfg(not(feature = "shuttle"))]
 fn scope_conservation_under_std() {
-    fuzz_test(|plan: Plan| run_plan(&plan));
+    fuzz_test!(|plan: Plan| run_plan(&plan));
 }
