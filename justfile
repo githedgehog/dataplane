@@ -227,6 +227,16 @@ fuzz target time="60s" *args="":
         exit 1
       fi
     fi
+    inherited="$(cargo config get -Zunstable-options --format json-value build.rustflags 2>/dev/null | jq -r 'join(" ")')"
+    export RUSTFLAGS="${inherited} ${RUSTFLAGS:-}"
+
+    sancov_rt="$(clang -print-file-name=libclang_rt.fuzzer_no_main-$(uname -m).a 2>/dev/null || true)"
+    if [ -f "${sancov_rt}" ]; then
+      export RUSTFLAGS="${RUSTFLAGS} -Clink-arg=${sancov_rt} -Clink-arg=-lstdc++"
+    else
+      printf 'warning: no libFuzzer runtime beside clang; packages with a non-bolero test binary will not link.\n' >&2
+    fi
+
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
