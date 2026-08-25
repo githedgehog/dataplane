@@ -41,13 +41,15 @@ impl ValueGenerator for Scenario {
     }
 }
 
-fn with_runtime(body: impl FnOnce()) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap_or_else(|e| unreachable!("{e}"));
-    let _guard = runtime.enter();
-    body();
+fn settled(body: impl FnOnce()) {
+    const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
+    // nosemgrep: rust-no-direct-std-sync-import
+    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
+        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
+    CLOCK.block_on(async {
+        body();
+        clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+    });
 }
 
 fn fabric(exposes: &[VpcExpose]) -> Option<Fabric> {
@@ -108,11 +110,11 @@ impl Tally {
 fn a_masqueraded_flow_comes_back() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -150,8 +152,7 @@ fn a_masqueraded_flow_comes_back() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("reversibility");
 }
 
@@ -159,11 +160,10 @@ fn a_masqueraded_flow_comes_back() {
 fn a_flow_keeps_its_translation() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-        .with_generator(Scenario { strays: false })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+    .with_generator(Scenario { strays: false })
+    .cloned()
+    .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| settled(||     {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -190,9 +190,7 @@ fn a_flow_keeps_its_translation() {
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
-    });
-
+        }));
     tally.report("stability");
 }
 
@@ -208,11 +206,10 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
 fn an_internal_endpoint_keeps_one_public_address() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-        .with_generator(Scenario { strays: false })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+    .with_generator(Scenario { strays: false })
+    .cloned()
+    .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| settled(||     {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -259,9 +256,7 @@ fn an_internal_endpoint_keeps_one_public_address() {
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
-    });
-
+        }));
     tally.report("address pairing");
 }
 
@@ -277,11 +272,10 @@ fn an_internal_endpoint_keeps_one_public_address() {
 fn distinct_flows_do_not_share_a_translation() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-        .with_generator(Scenario { strays: false })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+    .with_generator(Scenario { strays: false })
+    .cloned()
+    .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| settled(||     {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -309,9 +303,7 @@ fn distinct_flows_do_not_share_a_translation() {
                 }
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
-    });
-
+        }));
     tally.report("exclusivity");
 }
 
@@ -319,11 +311,11 @@ fn distinct_flows_do_not_share_a_translation() {
 fn a_translation_stays_inside_the_public_range() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-            .with_generator(Scenario { strays: false })
-            .cloned()
-            .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+        .with_generator(Scenario { strays: false })
+        .cloned()
+        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+            settled(|| {
                 tally.seen.fetch_add(1, Ordering::Relaxed);
                 let Some(fabric) = fabric(&exposes) else {
                     return;
@@ -353,8 +345,7 @@ fn a_translation_stays_inside_the_public_range() {
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
             });
-    });
-
+        });
     tally.report("containment");
 }
 
@@ -362,11 +353,10 @@ fn a_translation_stays_inside_the_public_range() {
 fn nothing_is_masqueraded_without_permission() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-        .with_generator(Scenario { strays: true })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+    .with_generator(Scenario { strays: true })
+    .cloned()
+    .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| settled(||     {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -395,9 +385,7 @@ fn nothing_is_masqueraded_without_permission() {
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
-    });
-
+        }));
     tally.report("permission");
 }
 
@@ -405,11 +393,10 @@ fn nothing_is_masqueraded_without_permission() {
 fn a_flow_that_cannot_be_masqueraded_says_so() {
     let tally = Tally::default();
 
-    with_runtime(|| {
-        bolero::check!()
-        .with_generator(Scenario { strays: true })
-        .cloned()
-        .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| {
+    bolero::check!()
+    .with_generator(Scenario { strays: true })
+    .cloned()
+    .for_each(|(exposes, probes): (Vec<VpcExpose>, Vec<ProbeSpec>)| settled(||     {
             tally.seen.fetch_add(1, Ordering::Relaxed);
             let Some(fabric) = fabric(&exposes) else {
                 return;
@@ -438,8 +425,6 @@ fn a_flow_that_cannot_be_masqueraded_says_so() {
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
             }
-        });
-    });
-
+        }));
     tally.report("attribution");
 }
