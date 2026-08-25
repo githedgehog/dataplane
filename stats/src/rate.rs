@@ -129,6 +129,10 @@ impl<U> SavitzkyGolayFilter<U> {
             .skip(self.idx)
             .take(self.data.len())
     }
+
+    pub fn each_sample_mut(&mut self, mut edit: impl FnMut(&mut U)) {
+        self.data.iter_mut().for_each(&mut edit);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
