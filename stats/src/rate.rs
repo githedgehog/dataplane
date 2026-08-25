@@ -713,10 +713,70 @@ mod contract {
         }
     }
 
+    /// A second opinion, written to be obviously right rather than to be good.
+    ///
+    /// Nothing here is a filter. Each function is the definition of the thing it computes, spelled
+    /// out in one line, so that reading it is enough to believe it. That is the entire value: the
+    /// Savitzky-Golay code is a stencil with hand-derived coefficients read out of a ring buffer,
+    /// and every defect found in it so far has been in the reading rather than in the
+    /// mathematics -- an order, an index, a fill. A reference that shares none of that machinery
+    /// disagrees loudly when the machinery is wrong, and there are inputs on which the two must
+    /// agree *exactly*, which is what makes the disagreement a proof rather than a hint.
+    ///
+    /// Where they must agree exactly:
+    ///
+    /// | input | derivative | smoothing |
+    /// | --- | --- | --- |
+    /// | constant `k` | both `0` | both `k` |
+    /// | line `a + bt` | both `b` | both the centre sample |
+    ///
+    /// Both hold because Savitzky-Golay of order 2 reproduces any polynomial up to degree 2
+    /// exactly, and the two-point difference is exact on a line by definition. Beyond a line they
+    /// are allowed to differ, and no property here asserts that they do not.
+    pub mod naive {
+        use std::time::Duration;
+
+        /// Seconds in `step`, as the filter itself measures it.
+        ///
+        /// Deliberately the same microsecond truncation the real code uses. A reference that
+        /// measured time more precisely than the thing it checks would report a disagreement on
+        /// every sub-microsecond step, which is a difference in the *test*, not in the code.
+        pub fn seconds(step: Duration) -> f64 {
+            step.as_micros() as f64 / 1_000_000.
+        }
+
+        /// The slope between the last two samples: rise over run, nothing else.
+        pub fn two_point(window: &[u64; 5], step: Duration) -> f64 {
+            (window[4] as f64 - window[3] as f64) / seconds(step)
+        }
+
+        /// The slope across the middle sample, which is where the stencil claims to be centred.
+        pub fn central(window: &[u64; 5], step: Duration) -> f64 {
+            (window[3] as f64 - window[1] as f64) / (2. * seconds(step))
+        }
+
+        /// The flat average of the window.
+        pub fn mean(window: &[u64; 5]) -> f64 {
+            window.iter().map(|&v| v as f64).sum::<f64>() / 5.
+        }
+    }
+
     pub struct DerivativeComparer<F, D> {
         pub f: F,
         pub d: D,
         pub step: Duration,
+        /// How far round the ring buffer the window should have been carried before the samples
+        /// under test are pushed.
+        ///
+        /// Not decoration, and the reason it exists is worth keeping. Every property in this file
+        /// built its filter by pushing exactly five samples, which leaves the cursor at zero and
+        /// the physical order of the ring equal to the order the samples arrived. A conversion
+        /// that read the ring physically instead of chronologically was therefore invisible to all
+        /// twelve of them, and to the twelve fuzzed ones as well -- it shipped, and was found from
+        /// the other end, in production. The generated filters do wrap the ring, but the
+        /// properties over them only ever assert a sign. So: strong oracle and no wrap on one
+        /// side, wrap and no oracle on the other, and the defect sat in the gap. This closes it.
+        pub carried: usize,
     }
 
     impl<F, D, Out> DerivativeComparer<F, D>
@@ -736,6 +796,12 @@ mod contract {
             x: Duration,
         ) -> DerivativeComparison<<SavitzkyGolayFilter<Out> as Derivative>::Output> {
             let mut out = SavitzkyGolayFilter::new(self.step);
+            // Carried first and then overwritten: after `carried + 5` pushes the window holds the
+            // five samples under test and nothing else, but the cursor sits at `carried % 5`
+            // rather than at zero. Same data, ring turned.
+            for i in 0..self.carried {
+                out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
+            }
             for i in 0..5 {
                 out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
             }
@@ -790,7 +856,7 @@ mod test {
             bolero::check!()
                 .with_type()
                 .cloned()
-                .for_each(|(x, c): (Duration, [u64; $n])| {
+                .for_each(|(x, c, carried): (Duration, [u64; $n], u8)| {
                     let x = if x < Duration::from_micros(1) {
                         Duration::from_micros(1)
                     } else if x > Duration::from_secs(10) {
@@ -822,6 +888,8 @@ mod test {
                         f: basic,
                         d: basic_prime,
                         step: Duration::from_secs(1),
+                        // Every rotation of the ring, because the answer must not depend on one.
+                        carried: usize::from(carried) % 5,
                     };
                     let comparison = comparer.compare(x);
                     if comparison.relative_error().is_nan() {
@@ -1133,6 +1201,135 @@ mod test {
     }
 }
 
+
+/// The Savitzky-Golay code against a reference written to be obviously right.
+///
+/// See [`contract::naive`] for why a second opinion is worth having here and where the two must
+/// agree exactly. What this module adds is the other half of the gap that let the ring-order
+/// defect ship: every property below builds its window at **every rotation of the ring**, because
+/// the twelve that had a real oracle all built theirs at rotation zero, and the twelve that
+/// wrapped the ring only ever asserted a sign.
+#[cfg(test)]
+mod second_opinion {
+    use crate::rate::contract::naive;
+    use crate::rate::{Derivative, SavitzkyGolayFilter, Smooth, WINDOW};
+    use std::time::Duration;
+
+    /// Values are compared after a division and up to five multiplications, and every one of them
+    /// is an integer well inside `f64`'s exact range, so the only error is the division.
+    const CLOSE_ENOUGH: f64 = 1e-9;
+
+    /// A filter holding `window`, with the ring carried `rotation` places round first.
+    ///
+    /// The carried samples are pushed and then overwritten, so the window under test is the only
+    /// thing left in it -- but the cursor is no longer at zero, which is the whole point.
+    fn wound(window: &[u64; WINDOW], rotation: usize, step: Duration) -> SavitzkyGolayFilter<u64> {
+        let mut filter = SavitzkyGolayFilter::new(step);
+        for i in 0..rotation {
+            filter.push(window[i % WINDOW]);
+        }
+        for value in window {
+            filter.push(*value);
+        }
+        filter
+    }
+
+    /// A step the filter can divide by, drawn rather than fixed.
+    fn usable(step: Duration) -> Duration {
+        step.clamp(Duration::from_micros(1), Duration::from_secs(60))
+    }
+
+    /// A flat line has no slope, and all three ways of saying so agree.
+    #[test]
+    fn a_flat_line_derives_to_nothing_however_the_ring_sits() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(level, step, rotation): (u32, Duration, u8)| {
+                let step = usable(step);
+                let window = [u64::from(level); WINDOW];
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
+                assert!(got.abs() < CLOSE_ENOUGH, "a flat line derived to {got}");
+                assert!(naive::two_point(&window, step).abs() < CLOSE_ENOUGH);
+                assert!(naive::central(&window, step).abs() < CLOSE_ENOUGH);
+            });
+    }
+
+    /// A straight line derives to its slope, and the stencil agrees with rise over run.
+    ///
+    /// The two share no code: one is a five-point stencil read out of a ring buffer, the other is
+    /// a subtraction. On a line they are both exact, so they must produce the same number, and any
+    /// difference at all is a defect in the machinery rather than in the mathematics.
+    #[test]
+    fn a_straight_line_derives_to_its_slope_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
+                let step = usable(step);
+                let (base, slope) = (u64::from(base), u64::from(slope));
+                let window: [u64; WINDOW] =
+                    std::array::from_fn(|i| base + slope * (i as u64));
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
+                let want = slope as f64 / naive::seconds(step);
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() / scale < CLOSE_ENOUGH,
+                    "a line rising {slope} per step derived to {got}, not {want}"
+                );
+                assert!((got - naive::two_point(&window, step)).abs() / scale < CLOSE_ENOUGH);
+                assert!((got - naive::central(&window, step)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    /// A flat line smooths to itself, and so does its average.
+    #[test]
+    fn a_flat_line_smooths_to_itself_however_the_ring_sits() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(level, step, rotation): (u32, Duration, u8)| {
+                let step = usable(step);
+                let window = [u64::from(level); WINDOW];
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
+                let want = f64::from(level);
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() / scale < CLOSE_ENOUGH,
+                    "a flat {level} smoothed to {got}"
+                );
+                assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
+            });
+    }
+
+    /// A straight line smooths to its middle sample -- which is also its plain average.
+    ///
+    /// Three quantities that must coincide on a line and are computed three unrelated ways: the
+    /// weighted stencil, the middle term of an arithmetic progression, and the flat mean. Anything
+    /// that reorders, drops or duplicates a sample breaks at least one of the three agreements.
+    #[test]
+    fn a_straight_line_smooths_to_its_middle_sample_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
+                let step = usable(step);
+                let (base, slope) = (u64::from(base), u64::from(slope));
+                let window: [u64; WINDOW] =
+                    std::array::from_fn(|i| base + slope * (i as u64));
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
+                let middle = window[WINDOW / 2] as f64;
+                let scale = middle.abs().max(1.0);
+                assert!(
+                    (got - middle).abs() / scale < CLOSE_ENOUGH,
+                    "a line through {middle} smoothed to {got}"
+                );
+                assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+}
 
 #[cfg(test)]
 mod window_order {
