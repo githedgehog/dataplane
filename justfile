@@ -205,10 +205,20 @@ fuzz target time="60s" *args="":
     # asan does not need that, and skipping the std rebuild keeps it far quicker.
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
+    case "{{ sanitize }}" in
+      "") want=address ;;
+      NONE) want=none ;;
+      *) want="{{ sanitize }}" ;;
+    esac
     sysroot="${DATAPLANE_SYSROOT:-}"
     if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
       built_with="$(cat "${sysroot}/.sanitize")"
-      if [ "${built_with}" != "{{ sanitize }}" ]; then
+      built_with="${built_with:-none}"
+      if [ "${want}" != "${built_with}" ] && [ -z "{{ sanitize }}" ]; then
+        printf 'warning: rust is built with %s and this sysroot with %s, so the C dependencies -- dpdk above all -- are not instrumented.\n' \
+          "${want}" "${built_with}" >&2
+        printf '         `just sanitize=NONE fuzz ...` instruments neither and runs about four times quicker.\n' >&2
+      elif [ "${want}" != "${built_with}" ]; then
         printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot was built with sanitize=%s.\n' \
           "{{ sanitize }}" "${built_with:-<none>}" >&2
         printf 'the C dependencies would not be instrumented. Re-enter the shell with:\n' >&2
