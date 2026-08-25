@@ -204,7 +204,7 @@ impl Worker {
                     // awaits before reading anything from the socket.
                     _ = ticker.tick() => {
                         intf.watchdog.pat();
-                        continue;
+                        Vec::new()
                     }
                 };
 
@@ -221,11 +221,6 @@ impl Worker {
                 let mut tx_drops: u64 = 0; // number of packets dropped on tx
                 let rx_pkts = packets_vec.len() as u64; // number of packets received
                 counters.rx = rx_pkts;
-                if rx_pkts == 0 {
-                    // nothing to process, but the read may have hit errors worth reporting
-                    intf.watchdog.record(&counters);
-                    continue;
-                }
 
                 let packets = packets_vec.into_iter();
                 let out_pkts = pipeline
