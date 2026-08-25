@@ -676,10 +676,31 @@ mod contract {
         }
     }
 
+    pub mod naive {
+        use std::time::Duration;
+
+        pub fn seconds(step: Duration) -> f64 {
+            step.as_micros() as f64 / 1_000_000.
+        }
+
+        pub fn two_point(window: &[u64; 5], step: Duration) -> f64 {
+            (window[4] as f64 - window[3] as f64) / seconds(step)
+        }
+
+        pub fn central(window: &[u64; 5], step: Duration) -> f64 {
+            (window[3] as f64 - window[1] as f64) / (2. * seconds(step))
+        }
+
+        pub fn mean(window: &[u64; 5]) -> f64 {
+            window.iter().map(|&v| v as f64).sum::<f64>() / 5.
+        }
+    }
+
     pub struct DerivativeComparer<F, D> {
         pub f: F,
         pub d: D,
         pub step: Duration,
+        pub carried: usize,
     }
 
     impl<F, D, Out> DerivativeComparer<F, D>
@@ -699,6 +720,9 @@ mod contract {
             x: Duration,
         ) -> DerivativeComparison<<SavitzkyGolayFilter<Out> as Derivative>::Output> {
             let mut out = SavitzkyGolayFilter::new(self.step);
+            for i in 0..self.carried {
+                out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
+            }
             for i in 0..5 {
                 out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
             }
@@ -745,10 +769,8 @@ mod test {
     macro_rules! arbitrary_polynomial {
         ($n:expr) => {{
             const NANOS_PER_SEC: u128 = 1_000_000_000;
-            bolero::check!()
-                .with_type()
-                .cloned()
-                .for_each(|(x, c): (Duration, [u64; $n])| {
+            bolero::check!().with_type().cloned().for_each(
+                |(x, c, carried): (Duration, [u64; $n], u8)| {
                     let x = if x < Duration::from_micros(1) {
                         Duration::from_micros(1)
                     } else if x > Duration::from_secs(10) {
@@ -779,6 +801,7 @@ mod test {
                         f: basic,
                         d: basic_prime,
                         step: Duration::from_secs(1),
+                        carried: usize::from(carried) % 5,
                     };
                     let comparison = comparer.compare(x);
                     if comparison.relative_error().is_nan() {
@@ -786,7 +809,8 @@ mod test {
                         return;
                     }
                     assert!(comparison.relative_error().abs() < 0.01);
-                })
+                },
+            )
         }};
     }
     #[test]
@@ -1075,6 +1099,105 @@ mod test {
         assert!((out.packets - (1700.0 / 35.0)).abs() < 1e-9);
         // bytes expected = (-3*10 + 12*10 + 17*10 + 12*20 - 3*20)/35 = 440/35 ≈ 12.5714
         assert!((out.bytes - (440.0 / 35.0)).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod second_opinion {
+    use crate::rate::contract::naive;
+    use crate::rate::{Derivative, SavitzkyGolayFilter, Smooth, WINDOW};
+    use std::time::Duration;
+
+    const CLOSE_ENOUGH: f64 = 1e-9;
+
+    fn wound(window: &[u64; WINDOW], rotation: usize, step: Duration) -> SavitzkyGolayFilter<u64> {
+        let mut filter = SavitzkyGolayFilter::new(step);
+        for i in 0..rotation {
+            filter.push(window[i % WINDOW]);
+        }
+        for value in window {
+            filter.push(*value);
+        }
+        filter
+    }
+
+    fn usable(step: Duration) -> Duration {
+        step.clamp(Duration::from_micros(1), Duration::from_secs(60))
+    }
+
+    #[test]
+    fn a_flat_line_derives_to_nothing_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(level, step, rotation): (u32, Duration, u8)| {
+                let step = usable(step);
+                let window = [u64::from(level); WINDOW];
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
+                assert!(got.abs() < CLOSE_ENOUGH, "a flat line derived to {got}");
+                assert!(naive::two_point(&window, step).abs() < CLOSE_ENOUGH);
+                assert!(naive::central(&window, step).abs() < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    #[test]
+    fn a_straight_line_derives_to_its_slope_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
+                let step = usable(step);
+                let (base, slope) = (u64::from(base), u64::from(slope));
+                let window: [u64; WINDOW] = std::array::from_fn(|i| base + slope * (i as u64));
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
+                let want = slope as f64 / naive::seconds(step);
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() / scale < CLOSE_ENOUGH,
+                    "a line rising {slope} per step derived to {got}, not {want}"
+                );
+                assert!((got - naive::two_point(&window, step)).abs() / scale < CLOSE_ENOUGH);
+                assert!((got - naive::central(&window, step)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    #[test]
+    fn a_flat_line_smooths_to_itself_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(level, step, rotation): (u32, Duration, u8)| {
+                let step = usable(step);
+                let window = [u64::from(level); WINDOW];
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
+                let want = f64::from(level);
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() / scale < CLOSE_ENOUGH,
+                    "a flat {level} smoothed to {got}"
+                );
+                assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    #[test]
+    fn a_straight_line_smooths_to_its_middle_sample_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
+                let step = usable(step);
+                let (base, slope) = (u64::from(base), u64::from(slope));
+                let window: [u64; WINDOW] = std::array::from_fn(|i| base + slope * (i as u64));
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
+                let middle = window[WINDOW / 2] as f64;
+                let scale = middle.abs().max(1.0);
+                assert!(
+                    (got - middle).abs() / scale < CLOSE_ENOUGH,
+                    "a line through {middle} smoothed to {got}"
+                );
+                assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
     }
 }
 
