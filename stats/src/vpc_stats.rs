@@ -143,6 +143,24 @@ impl VpcStatsStore {
         e.rate.bps = bps;
     }
 
+    /// Drop the counters and rates held for these VPCs, leaving their names alone.
+    ///
+    /// Distinct from [`Self::prune_to_vpcs`], which is keyed on a discriminant being absent from
+    /// the map. A discriminant is recycled when one tenant leaves and the next is given the same
+    /// VNI, and if that happens in a single configuration change the discriminant is never absent
+    /// -- only its name changes. Pruning cannot see it, so without this the incoming tenant's
+    /// first scrape reports every packet the outgoing one ever sent.
+    pub async fn forget_vpcs(&self, forget: &HashSet<VpcId>) {
+        {
+            let mut pairs = self.pair_stats.write().await;
+            pairs.retain(|(src, dst), _| !forget.contains(src) && !forget.contains(dst));
+        }
+        {
+            let mut vpcs = self.vpc_stats.write().await;
+            vpcs.retain(|vpc, _| !forget.contains(vpc));
+        }
+    }
+
     pub async fn prune_to_vpcs(&self, alive: &HashSet<VpcId>) {
         {
             let mut pairs = self.pair_stats.write().await;

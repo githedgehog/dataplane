@@ -14,7 +14,7 @@
 //! needs no global mutation and no serialisation between tests. The collector must then be driven
 //! on that same thread -- `clock.block_on(..)` on a paused clock does exactly that.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use concurrency::sync::{Mutex, MutexGuard};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,13 +28,21 @@ pub(crate) type SeriesId = (String, Labels);
 /// Everything exported so far, and its current value.
 pub(crate) type Series = BTreeMap<SeriesId, f64>;
 
+/// A metric name and the label keys one of its series was registered with, in order.
+pub(crate) type Shape = (String, Vec<String>);
+
 /// A recorder that keeps the current value of every gauge registered through it.
 ///
 /// Counters and histograms are not kept: `stats` exports its counts as gauges, so there is nothing
 /// yet for them to observe.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Scrape {
+    /// Every series' current value.
     held: Arc<Mutex<Series>>,
+    /// The label keys of every series as they were *registered*, in order and with repeats. The
+    /// value map cannot show these: it is keyed by a `BTreeMap`, which silently merges a label key
+    /// that appears twice.
+    shapes: Arc<Mutex<BTreeSet<Shape>>>,
     /// Every call to `register_gauge`, including the re-registrations of a series that already
     /// exists. Distinct from the number of series: the collector re-registers what it already has,
     /// and how often it does that is the cost being watched.
@@ -49,6 +57,17 @@ impl Scrape {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         self.held().get(&(name.to_string(), labels)).copied()
+    }
+
+    /// The label keys of every series registered under `name`, in registration order, with
+    /// repeats kept.
+    pub(crate) fn label_shapes(&self, name: &str) -> BTreeSet<Vec<String>> {
+        self.shapes
+            .lock()
+            .iter()
+            .filter(|(series, _)| series == name)
+            .map(|(_, keys)| keys.clone())
+            .collect()
     }
 
     /// How many times a gauge has been registered, counting repeats.
@@ -154,6 +173,10 @@ impl metrics::Recorder for Scrape {
         // re-registers on every update, and a scrape between two updates has to see the last value
         // set rather than a zero.
         self.registrations.fetch_add(1, Ordering::Relaxed);
+        self.shapes.lock().insert((
+            key.name().to_string(),
+            key.labels().map(|label| label.key().to_string()).collect(),
+        ));
         self.held().entry(at.clone()).or_insert(0.0);
         metrics::Gauge::from_arc(Arc::new(Cell {
             at,
