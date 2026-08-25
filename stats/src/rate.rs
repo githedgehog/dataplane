@@ -125,6 +125,8 @@ impl<U> SavitzkyGolayFilter<U> {
 pub enum DerivativeError {
     #[error("Not enough samples to compute derivative: {0} available")]
     NotEnoughSamples(usize),
+    #[error("A zero time step has no derivative: a rate over it would divide by zero")]
+    ZeroStep,
 }
 
 impl Derivative for SavitzkyGolayFilter<u64> {
@@ -148,6 +150,9 @@ impl Derivative for SavitzkyGolayFilter<u64> {
         let weighted_sum = 8u64
             .saturating_mul(data[3].saturating_sub(data[1]))
             .saturating_sub(data[4].saturating_sub(data[0]));
+        if self.step.as_micros() == 0 {
+            return Err(DerivativeError::ZeroStep);
+        }
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -176,8 +181,11 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
             itr.next().unwrap_or_else(|| unreachable!()),
         ];
         let weighted_sum_bytes = 8u64
-            .saturating_mul(data[3].bytes - data[1].bytes)
-            .saturating_sub(data[4].bytes - data[0].bytes);
+            .saturating_mul(data[3].bytes.saturating_sub(data[1].bytes))
+            .saturating_sub(data[4].bytes.saturating_sub(data[0].bytes));
+        if self.step.as_micros() == 0 {
+            return Err(DerivativeError::ZeroStep);
+        }
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum_bytes == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -508,7 +516,7 @@ impl Smooth for SavitzkyGolayFilter<u64> {
             .zip(data.iter())
             .fold(0i128, |s, (&c, &v)| s + (c as i128) * (v as i128));
 
-        Ok((acc as f64) / DEN)
+        Ok(((acc as f64) / DEN).max(0.0))
     }
 }
 
@@ -545,8 +553,8 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
             .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.bytes as i128));
 
         Ok(PacketAndByte {
-            packets: (acc_packets as f64) / DEN,
-            bytes: (acc_bytes as f64) / DEN,
+            packets: ((acc_packets as f64) / DEN).max(0.0),
+            bytes: ((acc_bytes as f64) / DEN).max(0.0),
         })
     }
 }
@@ -845,16 +853,50 @@ mod test {
     }
 
     #[test]
+    fn smoothing_a_counter_is_never_negative() {
+        bolero::check!()
+            .with_type()
+            .for_each(|x: &SavitzkyGolayFilter<u64>| {
+                if let Ok(v) = x.smooth() {
+                    assert!(v >= 0.0, "smoothed a counter to {v}");
+                }
+            });
+    }
+
+    #[test]
+    fn smoothing_a_packet_and_byte_counter_is_never_negative() {
+        bolero::check!()
+            .with_type()
+            .for_each(|x: &SavitzkyGolayFilter<PacketAndByte<u64>>| {
+                if let Ok(v) = x.smooth() {
+                    assert!(v.packets >= 0.0 && v.bytes >= 0.0, "smoothed to {v:?}");
+                }
+            });
+    }
+
+    #[test]
     fn derivative_filter_basic() {
         bolero::check!()
             .with_type()
             .for_each(|x: &SavitzkyGolayFilter<u64>| match x.derivative() {
-                Ok(x) => {
-                    assert!(x >= 0.0);
+                Ok(d) => {
+                    assert!(
+                        d >= 0.0,
+                        "every operand is a saturating unsigned subtraction, so the only way to \
+                         fail this is NaN: got {d} at step {:?}",
+                        x.step
+                    );
                 }
                 Err(DerivativeError::NotEnoughSamples(s)) => {
                     assert_eq!(x.idx, s);
                     assert!(s < 5);
+                }
+                Err(DerivativeError::ZeroStep) => {
+                    assert_eq!(
+                        x.step.as_micros(),
+                        0,
+                        "a step is refused only when it rounds to zero microseconds"
+                    );
                 }
             })
     }
@@ -865,14 +907,15 @@ mod test {
             .with_type()
             .for_each(
                 |x: &SavitzkyGolayFilter<PacketAndByte<u64>>| match x.derivative() {
-                    Ok(x) => {
-                        if !x.packets.is_nan() {
-                            assert!(x.packets >= 0.0);
-                            assert!(x.bytes >= 0.0);
-                        }
+                    Ok(d) => {
+                        assert!(d.packets >= 0.0, "{:?} at step {:?}", d, x.step);
+                        assert!(d.bytes >= 0.0, "{:?} at step {:?}", d, x.step);
                     }
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert_eq!(x.idx, s);
+                    }
+                    Err(DerivativeError::ZeroStep) => {
+                        assert_eq!(x.step.as_micros(), 0);
                     }
                 },
             )
@@ -892,6 +935,9 @@ mod test {
                     }
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert!(s < 5)
+                    }
+                    Err(DerivativeError::ZeroStep) => {
+                        assert_eq!(x.step.as_micros(), 0);
                     }
                 },
             )
