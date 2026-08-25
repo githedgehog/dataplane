@@ -125,6 +125,16 @@ impl<U> SavitzkyGolayFilter<U> {
 pub enum DerivativeError {
     #[error("Not enough samples to compute derivative: {0} available")]
     NotEnoughSamples(usize),
+    /// The window's time step rounds to zero, so a rate over it is a division by zero.
+    ///
+    /// Reported rather than divided, because dividing produced `Ok(NaN)`: a success value that is
+    /// not a number, which every caller then propagates silently. `Duration` has no non-zero
+    /// counterpart in std and building one would constrain a field most of this type's methods do
+    /// not read -- `smooth` never touches the step -- so the precondition is stated where it is
+    /// actually needed. Note this catches sub-microsecond steps too, which round to zero the same
+    /// way an exactly-zero one does.
+    #[error("A zero time step has no derivative: a rate over it would divide by zero")]
+    ZeroStep,
 }
 
 impl Derivative for SavitzkyGolayFilter<u64> {
@@ -148,6 +158,9 @@ impl Derivative for SavitzkyGolayFilter<u64> {
         let weighted_sum = 8u64
             .saturating_mul(data[3].saturating_sub(data[1]))
             .saturating_sub(data[4].saturating_sub(data[0]));
+        if self.step.as_micros() == 0 {
+            return Err(DerivativeError::ZeroStep);
+        }
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -176,8 +189,11 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
             itr.next().unwrap_or_else(|| unreachable!()),
         ];
         let weighted_sum_bytes = 8u64
-            .saturating_mul(data[3].bytes - data[1].bytes)
-            .saturating_sub(data[4].bytes - data[0].bytes);
+            .saturating_mul(data[3].bytes.saturating_sub(data[1].bytes))
+            .saturating_sub(data[4].bytes.saturating_sub(data[0].bytes));
+        if self.step.as_micros() == 0 {
+            return Err(DerivativeError::ZeroStep);
+        }
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum_bytes == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -508,7 +524,14 @@ impl Smooth for SavitzkyGolayFilter<u64> {
             .zip(data.iter())
             .fold(0i128, |s, (&c, &v)| s + (c as i128) * (v as i128));
 
-        Ok((acc as f64) / DEN)
+        // Clamped, because the quantity being smoothed is a count and a count cannot be
+        // negative. The undershoot is real rather than a mistake: the 5-point kernel has negative
+        // edge coefficients, so a sparse window fits a parabola that dips below zero -- `[0,0,0,0,1]`
+        // smooths to -0.0857. That is a sound estimate of a trend and a nonsensical number of
+        // bytes, and it is the second that reaches an operator. It was seen in production as a
+        // small negative rate in the CLI under very low load, and nothing in the tree asserted
+        // against it: the only claim on `smooth` was that it returned `Ok`.
+        Ok(((acc as f64) / DEN).max(0.0))
     }
 }
 
@@ -544,9 +567,10 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
             .zip(data.iter())
             .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.bytes as i128));
 
+        // Clamped for the reason given on the `u64` impl: a count has no negative values.
         Ok(PacketAndByte {
-            packets: (acc_packets as f64) / DEN,
-            bytes: (acc_bytes as f64) / DEN,
+            packets: ((acc_packets as f64) / DEN).max(0.0),
+            bytes: ((acc_bytes as f64) / DEN).max(0.0),
         })
     }
 }
@@ -850,17 +874,59 @@ mod test {
         arbitrary_polynomial!(12);
     }
 
+    /// Smoothing a counter never produces a negative number.
+    ///
+    /// A claim about the domain rather than the arithmetic. The 5-point kernel's edge coefficients
+    /// are negative, so a sparse window genuinely fits a curve that dips below zero -- that is a
+    /// sound trend estimate and a nonsensical count of bytes, and it is the second of those that
+    /// reaches an operator. Until now the only thing asserted anywhere about `smooth` was that it
+    /// returned `Ok`, which is how a negative rate reached a terminal before it reached a test.
+    #[test]
+    fn smoothing_a_counter_is_never_negative() {
+        bolero::check!()
+            .with_type()
+            .for_each(|x: &SavitzkyGolayFilter<u64>| {
+                if let Ok(v) = x.smooth() {
+                    assert!(v >= 0.0, "smoothed a counter to {v}");
+                }
+            });
+    }
+
+    /// The same for the pair, which smooths its two counts independently.
+    #[test]
+    fn smoothing_a_packet_and_byte_counter_is_never_negative() {
+        bolero::check!()
+            .with_type()
+            .for_each(|x: &SavitzkyGolayFilter<PacketAndByte<u64>>| {
+                if let Ok(v) = x.smooth() {
+                    assert!(v.packets >= 0.0 && v.bytes >= 0.0, "smoothed to {v:?}");
+                }
+            });
+    }
+
     #[test]
     fn derivative_filter_basic() {
         bolero::check!()
             .with_type()
             .for_each(|x: &SavitzkyGolayFilter<u64>| match x.derivative() {
-                Ok(x) => {
-                    assert!(x >= 0.0);
+                Ok(d) => {
+                    assert!(
+                        d >= 0.0,
+                        "every operand is a saturating unsigned subtraction, so the only way to \
+                         fail this is NaN: got {d} at step {:?}",
+                        x.step
+                    );
                 }
                 Err(DerivativeError::NotEnoughSamples(s)) => {
                     assert_eq!(x.idx, s);
                     assert!(s < 5);
+                }
+                Err(DerivativeError::ZeroStep) => {
+                    assert_eq!(
+                        x.step.as_micros(),
+                        0,
+                        "a step is refused only when it rounds to zero microseconds"
+                    );
                 }
             })
     }
@@ -871,14 +937,19 @@ mod test {
             .with_type()
             .for_each(
                 |x: &SavitzkyGolayFilter<PacketAndByte<u64>>| match x.derivative() {
-                    Ok(x) => {
-                        if !x.packets.is_nan() {
-                            assert!(x.packets >= 0.0);
-                            assert!(x.bytes >= 0.0);
-                        }
+                    // The `is_nan` guard that used to stand here was this defect, caught and
+                    // stepped around: a zero step divided by zero, so the check was skipped
+                    // rather than the division refused. `bytes` was never guarded, which is
+                    // the only reason the property ever failed.
+                    Ok(d) => {
+                        assert!(d.packets >= 0.0, "{:?} at step {:?}", d, x.step);
+                        assert!(d.bytes >= 0.0, "{:?} at step {:?}", d, x.step);
                     }
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert_eq!(x.idx, s);
+                    }
+                    Err(DerivativeError::ZeroStep) => {
+                        assert_eq!(x.step.as_micros(), 0);
                     }
                 },
             )
@@ -898,6 +969,9 @@ mod test {
                     }
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert!(s < 5)
+                    }
+                    Err(DerivativeError::ZeroStep) => {
+                        assert_eq!(x.step.as_micros(), 0);
                     }
                 },
             )
