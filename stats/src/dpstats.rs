@@ -1431,3 +1431,230 @@ mod drop_stats_tests {
         assert!(b0.vpc.is_empty());
     }
 }
+
+#[cfg(test)]
+mod rate_oracle {
+    use super::{BatchSummary, MetricsUpdate, StatsCollector, VpcMapName};
+    use crate::PacketAndByte;
+    use crate::vpc_stats::VpcStatsStore;
+    use net::vxlan::Vni;
+    use vpcmap::VpcDiscriminant;
+    use vpcmap::map::VpcMapWriter;
+
+    const LOAD: u64 = 1_000;
+    const SIZE: u64 = 500;
+    const CLOSE_ENOUGH: f64 = 1e-6;
+
+    fn vpc(vni: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap_or_else(|_| unreachable!()))
+    }
+
+    fn a_tick_of(src: VpcDiscriminant, dst: VpcDiscriminant, packets: u64) -> MetricsUpdate {
+        let start = clock::now();
+        let mut summary = BatchSummary::<u64>::new(start + StatsCollector::TIME_TICK);
+        summary.start = start;
+        let mut transmit = crate::TransmitSummary::<u64>::new();
+        transmit.dst.insert(
+            dst,
+            PacketAndByte {
+                packets,
+                bytes: packets * SIZE,
+            },
+        );
+        summary.vpc.insert(src, transmit);
+        MetricsUpdate {
+            duration: StatsCollector::TIME_TICK,
+            summary: Box::new(summary),
+        }
+    }
+
+    async fn published(ticks: usize, packets: u64) -> Option<(f64, f64)> {
+        let (src, dst) = (vpc(100), vpc(200));
+        let (mut collector, store, _map) = collecting(src, dst);
+        for _ in 0..ticks {
+            collector.update(Some(a_tick_of(src, dst, packets))).await;
+            clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+        }
+        rate_of(&store, src, dst).await
+    }
+
+    fn collecting(
+        src: VpcDiscriminant,
+        dst: VpcDiscriminant,
+    ) -> (
+        StatsCollector,
+        std::sync::Arc<VpcStatsStore>,
+        VpcMapWriter<VpcMapName>,
+    ) {
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        let (collector, _writer, store) =
+            StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+        (collector, store, map)
+    }
+
+    async fn rate_of(
+        store: &VpcStatsStore,
+        src: VpcDiscriminant,
+        dst: VpcDiscriminant,
+    ) -> Option<(f64, f64)> {
+        store
+            .snapshot_pairs()
+            .await
+            .into_iter()
+            .find(|((from, to), _)| *from == src && *to == dst)
+            .map(|(_, stats)| (stats.rate.pps, stats.rate.bps))
+    }
+
+    fn at_tick(t: usize) -> u64 {
+        LOAD + 100 * t as u64
+    }
+
+    async fn published_ramp(ticks: usize) -> Option<(f64, f64)> {
+        let (src, dst) = (vpc(100), vpc(200));
+        let (mut collector, store, _map) = collecting(src, dst);
+        for t in 0..ticks {
+            collector
+                .update(Some(a_tick_of(src, dst, at_tick(t))))
+                .await;
+            clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+        }
+        rate_of(&store, src, dst).await
+    }
+
+    #[test]
+    fn a_steady_load_is_published_as_itself() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let published = published(24, LOAD).await;
+            let (pps, bps) = published.unwrap_or_else(|| {
+                panic!("the collector published no rate at all for a pair carrying {LOAD} pkt/s")
+            });
+            assert!(
+                (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
+                "{LOAD} pkt/s in, {pps} pkt/s out"
+            );
+            let expect = (LOAD * SIZE) as f64;
+            assert!(
+                (bps - expect).abs() < CLOSE_ENOUGH,
+                "{expect} B/s in, {bps} B/s out"
+            );
+        });
+    }
+
+    #[test]
+    fn a_steady_load_is_published_as_itself_at_every_tick() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            for ticks in 16..=32 {
+                let Some((pps, _)) = published(ticks, LOAD).await else {
+                    panic!("no rate published after {ticks} ticks of {LOAD} pkt/s");
+                };
+                assert!(
+                    (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
+                    "after {ticks} ticks, {LOAD} pkt/s in and {pps} pkt/s out"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_changing_load_is_published_in_the_order_it_happened() {
+        const SETTLED: usize = 5;
+        const WARM: usize = SETTLED * 2;
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            for ticks in WARM..=(WARM + 16) {
+                let Some((pps, bps)) = published_ramp(ticks).await else {
+                    panic!("no rate published after {ticks} ticks of a rising load");
+                };
+                let expect = at_tick(ticks - SETTLED) as f64;
+                assert!(
+                    (pps - expect).abs() < CLOSE_ENOUGH,
+                    "after {ticks} ticks of a rising load the published rate was {pps} pkt/s, \
+                     not the {expect} pkt/s offered {SETTLED} ticks ago"
+                );
+                assert!(
+                    (bps - expect * SIZE as f64).abs() < CLOSE_ENOUGH,
+                    "the byte rate disagreed with the packet rate: {bps} B/s against {pps} pkt/s"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_new_destination_does_not_silence_the_others() {
+        const ARRIVES: usize = 14;
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (src, old, new) = (vpc(100), vpc(200), vpc(300));
+            let mut map = VpcMapWriter::<VpcMapName>::new();
+            for (disc, name) in [(src, "left"), (old, "right"), (new, "newcomer")] {
+                map.add(disc, VpcMapName::new(disc, name), true)
+                    .unwrap_or_else(|e| unreachable!("{e:?}"));
+            }
+            let (mut collector, store, _writer) = {
+                let (collector, _w, store) =
+                    StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+                (collector, store, _w)
+            };
+
+            for tick in 0..(ARRIVES + 12) {
+                let mut update = a_tick_of(src, old, LOAD);
+                if tick >= ARRIVES {
+                    update
+                        .summary
+                        .vpc
+                        .get_mut(&src)
+                        .unwrap_or_else(|| unreachable!("the update names its source"))
+                        .dst
+                        .insert(
+                            new,
+                            PacketAndByte {
+                                packets: LOAD,
+                                bytes: LOAD * SIZE,
+                            },
+                        );
+                }
+                collector.update(Some(update)).await;
+                clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+
+                let Some((pps, _)) = rate_of(&store, src, old).await else {
+                    if tick < 10 {
+                        continue;
+                    }
+                    panic!(
+                        "at tick {tick} the established pair had no rate at all, and the only \
+                         thing that changed was another pair starting up"
+                    );
+                };
+                if tick >= 10 {
+                    assert!(
+                        (pps - LOAD as f64).abs() < CLOSE_ENOUGH,
+                        "at tick {tick} the established pair read {pps} pkt/s instead of {LOAD}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn an_idle_pair_is_published_as_idle() {
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let published = published(24, 0).await;
+            if let Some((pps, bps)) = published {
+                assert!(
+                    pps.abs() < CLOSE_ENOUGH,
+                    "an idle pair reported {pps} pkt/s"
+                );
+                assert!(bps.abs() < CLOSE_ENOUGH, "an idle pair reported {bps} B/s");
+            }
+        });
+    }
+}
