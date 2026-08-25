@@ -31,12 +31,14 @@ let
       kernel
       ;
   };
-  sanitizers = split-str ",+" sanitize;
+  as-set = str: lib.sort (a: b: a < b) (lib.unique (split-str ",+" str));
+  sanitizers = as-set sanitize;
+  instrumentations = as-set instrumentation;
   cargo-features = split-str ",+" features;
   profile' = import ./nix/profiles.nix {
     inherit
       sanitizers
-      instrumentation
+      instrumentations
       profile
       cargo-features
       host-arch
@@ -48,7 +50,7 @@ let
   # `profiles.nix` is a pure attrset of flag lists and builds nothing.
   profile-unsanitized' = import ./nix/profiles.nix {
     inherit
-      instrumentation
+      instrumentations
       profile
       cargo-features
       host-arch
@@ -70,7 +72,7 @@ let
   profile-tests' = import ./nix/profiles.nix {
     inherit
       sanitizers
-      instrumentation
+      instrumentations
       profile
       cargo-features
       host-arch
@@ -82,7 +84,7 @@ let
     {
       "debug" = "dev";
       "release" = "release";
-      "fuzz" = "fuzz";
+      "checked" = "checked";
     }
     .${profile};
   overlays = import ./nix/overlays {
@@ -109,8 +111,8 @@ let
     in
     if platform != "wasm32-wasip1" then over.pkgsCross.${platform'.info.nixarch} else over;
   sysroot-stamp = ''
-    printf '%s' '${sanitize}' > "$out/.sanitize"
-    printf '%s' '${instrumentation}' > "$out/.instrumentation"
+    printf '%s' '${builtins.concatStringsSep "," sanitizers}' > "$out/.sanitize"
+    printf '%s' '${builtins.concatStringsSep "," instrumentations}' > "$out/.instrumentation"
   '';
   sysroot =
     if platform != "wasm32-wasip1" then
@@ -1305,7 +1307,12 @@ let
             ++ cargo-cmd-prefix-tests
           ))
           # Record the remapped source root without changing normal archives.
-          + (if instrumentation == "coverage" then "; echo -n '${src-prefix}' > $out/source-prefix" else "");
+          + (
+            if builtins.elem "coverage" instrumentations then
+              "; echo -n '${src-prefix}' > $out/source-prefix"
+            else
+              ""
+          );
       };
     };
 

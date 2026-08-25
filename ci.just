@@ -85,7 +85,7 @@ check-doctest profile:
 check-docs profile:
     just {{ _lab }} profile={{ profile }} docs
 
-sanitize san profile="fuzz":
+sanitize san profile="checked":
     just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} sanitize={{ san }} test
 
 test-each profile="debug":
@@ -95,10 +95,10 @@ coverage profile="debug":
     just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} instrument=coverage coverage-archive
 
 # Optimized fuzz builds let schedule explorers cover more interleavings.
-shuttle profile="fuzz":
+shuttle profile="checked":
     just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} features=shuttle test
 
-loom profile="fuzz":
+loom profile="checked":
     just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} features=loom test
 
 wasm:
