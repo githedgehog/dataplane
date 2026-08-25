@@ -170,6 +170,26 @@ fn set_gauges_to_zero(base: &str, labels: Vec<(String, String)>) {
     }
 }
 
+/// Register the Prometheus series for a set of VPCs, and hand back the gauges to write through.
+///
+/// One function because there are two moments that need it -- construction and a configuration
+/// change -- and they used to build the label sets differently: the constructor seeded every VPC
+/// with a base label of `from=<its own name>`, which the peering specs then pushed a *second*
+/// `from` on top of. A series carrying one label key twice is not a series Prometheus can
+/// represent, and which of the two sets was live depended on which moment had run last.
+fn register_series(
+    names: &[(VpcDiscriminant, String)],
+) -> hashbrown::HashMap<VpcDiscriminant, RegisteredVpcMetrics> {
+    let vpc_data = names
+        .iter()
+        .map(|(disc, name)| (*disc, name.clone(), vec![]))
+        .collect::<Vec<_>>();
+    VpcMetricsSpec::new(vpc_data)
+        .into_iter()
+        .map(|(disc, spec)| (disc, spec.build()))
+        .collect()
+}
+
 /// Every series the collector can export for a given set of VPC names, as `(metric base, labels)`.
 ///
 /// The whole set rather than one VPC's share of it, because what makes a series retirable is that
@@ -243,42 +263,18 @@ impl StatsCollector {
     ) -> (StatsCollector, PacketStatsWriter, Arc<VpcStatsStore>) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
 
-        // Snapshot current VPC names from the reader to seed metric registrations
-        let vpc_data = match vpcmap_r.enter() {
-            Some(guard) => guard
-                .0
-                .values()
-                .map(|VpcMapName { disc, name }| {
-                    (
-                        *disc,
-                        name.clone(),
-                        vec![("from".to_string(), name.clone())],
-                    )
-                })
-                .collect::<Vec<_>>(),
-            None => {
-                warn!(
-                    "vpcmap reader guard acquisition failed during initialization; seeding empty metrics"
-                );
-                Vec::new()
-            }
-        };
-
         let name_pairs = snapshot_vpc_pairs(&vpcmap_r);
         vpc_store.set_many_vpc_names_sync(name_pairs.clone());
 
         let alive_vpcs: HashSet<VpcDiscriminant> =
-            vpc_data.iter().map(|(disc, _, _)| *disc).collect();
+            name_pairs.iter().map(|(disc, _)| *disc).collect();
 
         let mut known_names: HashMap<VpcDiscriminant, String> = HashMap::new();
-        for (disc, name) in name_pairs {
+        for (disc, name) in name_pairs.iter().cloned() {
             known_names.insert(disc, name);
         }
 
-        let metrics = VpcMetricsSpec::new(vpc_data)
-            .into_iter()
-            .map(|(disc, spec)| (disc, spec.build()))
-            .collect();
+        let metrics = register_series(&name_pairs);
 
         let updates = PacketStatsReader(r);
         // A pipeline of consecutive windows covering the next `OUTSTANDING` ticks, so that
@@ -340,6 +336,25 @@ impl StatsCollector {
             return;
         }
 
+        // A discriminant whose name changed is a different tenant on the same VNI as far as
+        // anything that reads these numbers is concerned, and the series it is exported under has
+        // just been retired below. Its counters have to go with it: they are cumulative, so the
+        // incoming tenant's first scrape would otherwise report every packet the outgoing one ever
+        // sent. The rate window is left to drain on its own -- it is five seconds wide and self
+        // correcting, where a counter never is.
+        let recycled: HashSet<VpcDiscriminant> = new_names
+            .iter()
+            .filter(|(disc, name)| {
+                self.known_names
+                    .get(disc)
+                    .is_some_and(|previously| previously != *name)
+            })
+            .map(|(disc, _)| *disc)
+            .collect();
+        if !recycled.is_empty() {
+            self.vpc_store.forget_vpcs(&recycled).await;
+        }
+
         // A gauge cannot be withdrawn from the registry, so retiring a series means pinning it to
         // zero: the alternative is a value frozen at whatever it last carried, which for a `_rate`
         // reads as live traffic on a link that no longer exists.
@@ -349,14 +364,7 @@ impl StatsCollector {
             set_gauges_to_zero(base, labels.clone());
         }
 
-        let vpc_data = pairs
-            .into_iter()
-            .map(|(disc, name)| (disc, name, vec![]))
-            .collect::<Vec<_>>();
-        self.metrics = VpcMetricsSpec::new(vpc_data)
-            .into_iter()
-            .map(|(disc, spec)| (disc, spec.build()))
-            .collect();
+        self.metrics = register_series(&pairs);
 
         self.known_names = new_names;
     }
@@ -2310,6 +2318,109 @@ mod exported {
                 rate.abs() < CLOSE_ENOUGH,
                 "the link stopped carrying traffic but still reports {rate} pkt/s"
             );
+        });
+    }
+
+    /// A VNI given to a new tenant starts that tenant's counters at nothing.
+    ///
+    /// Recycling a discriminant is expected -- customers come and go and their VNIs are reused --
+    /// and the counter reset that goes with it is the point. But it only happened when the
+    /// discriminant was *absent* from the map for a moment, because that is what `prune_to_vpcs`
+    /// keys on. Do the swap in one configuration change, which is the ordinary way to do it, and
+    /// the discriminant is never absent: only the name changes. The store keeps its entry, and the
+    /// incoming tenant's first scrape reports every packet the outgoing one ever sent -- under the
+    /// incoming tenant's name.
+    #[test]
+    fn a_recycled_vni_does_not_inherit_the_previous_tenants_counters() {
+        const BEFORE: usize = 24;
+        const AFTER: usize = 6;
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "customer-a"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, BEFORE).await;
+
+            // customer A leaves and customer B is given the same VNI, in one change.
+            map.add(dst, VpcMapName::new(dst, "customer-b"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            traffic(&mut collector, src, dst, AFTER).await;
+
+            let counted = scrape
+                .get("vpc_packet_count", &[("from", "left"), ("to", "customer-b")])
+                .unwrap_or_else(|| unreachable!("the new tenant was never exported"));
+            // The pipeline lags by a few ticks, so the count is at most what B has sent.
+            assert!(
+                counted <= (AFTER as u64 * LOAD) as f64,
+                "customer-b has sent at most {} packets but is credited with {counted}; \
+                 customer-a sent {}",
+                AFTER as u64 * LOAD,
+                BEFORE as u64 * LOAD
+            );
+            assert!(
+                scrape
+                    .get("vpc_packet_count", &[("from", "left"), ("to", "customer-a")])
+                    .is_none_or(|stale| stale.abs() < CLOSE_ENOUGH),
+                "customer-a's series is still exporting after the VNI was handed on"
+            );
+        });
+    }
+
+    /// Every series has one of the label shapes the metric family is meant to have.
+    ///
+    /// There were two places that registered these gauges -- construction and a configuration
+    /// change -- and they disagreed: the constructor seeded each VPC with a base label of
+    /// `from=<its own name>`, onto which the peering specs pushed a *second* `from`. Which of the
+    /// two sets was live depended on which had run more recently, and a series carrying one label
+    /// key twice is not something Prometheus can represent at all.
+    ///
+    /// The value map cannot show this, because it keys labels by a `BTreeMap` and a repeated key
+    /// merges away silently. The recorder keeps the registered key list verbatim for this.
+    #[test]
+    fn every_series_has_a_label_shape_the_family_allows() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            // registered at construction ...
+            traffic(&mut collector, src, dst, 4).await;
+            // ... and again on a configuration change
+            map.add(vpc(300), VpcMapName::new(vpc(300), "third"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            traffic(&mut collector, src, dst, 4).await;
+
+            let allowed: std::collections::BTreeSet<Vec<String>> = [
+                vec!["total".to_string()],
+                vec!["drops".to_string()],
+                vec!["from".to_string(), "to".to_string()],
+            ]
+            .into_iter()
+            .collect();
+            for family in ["vpc_packet_count", "vpc_packet_rate", "vpc_byte_count"] {
+                let found = scrape.label_shapes(family);
+                assert!(
+                    found.is_subset(&allowed),
+                    "{family} is exported with label shapes {:?}",
+                    found.difference(&allowed).collect::<Vec<_>>()
+                );
+            }
         });
     }
 
