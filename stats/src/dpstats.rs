@@ -10,7 +10,7 @@ use pipeline::NetworkFunction;
 
 use concurrency::sync::Arc;
 use kanal::ReceiveError;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
@@ -170,10 +170,30 @@ fn set_gauges_to_zero(base: &str, labels: Vec<(String, String)>) {
     }
 }
 
-/// Zero the `vpc_*` gauge family (per-VPC totals/drops and per-pair traffic) for the given labels.
-#[inline]
-fn set_vpc_gauges_to_zero(labels: Vec<(String, String)>) {
-    set_gauges_to_zero("vpc", labels);
+/// Every series the collector can export for a given set of VPC names, as `(metric base, labels)`.
+///
+/// The whole set rather than one VPC's share of it, because what makes a series retirable is that
+/// it is in the *old* set and not the new one -- and that is true for reasons other than a VPC
+/// leaving. A series is named after a VPC, which is mutable configuration, while a VPC's identity
+/// is its discriminant. Rename one and every series carrying the old name is orphaned: no
+/// discriminant left the map, so nothing keyed on departure will ever clear them, and the next
+/// update registers a second, live set under the new name. Differencing name snapshots catches
+/// that and departure with the same rule.
+fn exported_series(names: &BTreeSet<String>) -> BTreeSet<(&'static str, Vec<(String, String)>)> {
+    let mut series = BTreeSet::new();
+    for name in names {
+        series.insert(("vpc", vec![("total".to_string(), name.clone())]));
+        series.insert(("vpc", vec![("drops".to_string(), name.clone())]));
+        for other in names {
+            let pair = vec![
+                ("from".to_string(), name.clone()),
+                ("to".to_string(), other.clone()),
+            ];
+            series.insert(("vpc", pair.clone()));
+            series.insert((PAIR_DROPS_METRIC_BASE, pair));
+        }
+    }
+    series
 }
 
 /// A `StatsCollector` is responsible for collecting and aggregating packet statistics for a
@@ -196,8 +216,8 @@ pub struct StatsCollector {
     /// Shared store for snapshots/rates usable by gRPC, CLI, etc.
     vpc_store: Arc<VpcStatsStore>,
     alive_vpcs: HashSet<VpcDiscriminant>,
-    /// `known` is a reference to the previous snapshot of `alive` VPCs, used to detect removals.
-    known_vpcs: HashSet<VpcDiscriminant>,
+    /// The name snapshot the exported series were last built from. Differencing it against the
+    /// current one says which series no longer have an owner; see [`exported_series`].
     known_names: HashMap<VpcDiscriminant, String>,
 }
 
@@ -254,7 +274,6 @@ impl StatsCollector {
         for (disc, name) in name_pairs {
             known_names.insert(disc, name);
         }
-        let known_vpcs = alive_vpcs.clone();
 
         let metrics = VpcMetricsSpec::new(vpc_data)
             .into_iter()
@@ -291,7 +310,6 @@ impl StatsCollector {
             updates,
             vpc_store,
             alive_vpcs,
-            known_vpcs,
             known_names,
         };
         let writer = PacketStatsWriter(s);
@@ -321,57 +339,27 @@ impl StatsCollector {
         self.vpc_store.set_many_vpc_names_sync(pairs.clone());
 
         let new_alive: HashSet<VpcDiscriminant> = pairs.iter().map(|(d, _)| *d).collect();
+        let new_names: HashMap<VpcDiscriminant, String> = pairs.into_iter().collect();
 
-        let mut removed: Vec<VpcDiscriminant> =
-            self.known_vpcs.difference(&new_alive).copied().collect();
-        removed.sort();
-
-        for (disc, name) in &pairs {
-            self.known_names.insert(*disc, name.clone());
-        }
-
-        self.alive_vpcs = new_alive.clone();
+        self.alive_vpcs = new_alive;
 
         // prune any removed VPCs / pairs so they do not show up in snapshots/status
         self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
 
-        if !removed.is_empty() {
-            let mut alive_names: Vec<String> = pairs.iter().map(|(_, n)| n.clone()).collect();
-            alive_names.sort();
-            alive_names.dedup();
-
-            for disc in removed {
-                let removed_name = self
-                    .known_names
-                    .get(&disc)
-                    .cloned()
-                    .unwrap_or_else(|| format!("{disc:?}"));
-
-                // total/drops series for the removed VPC
-                set_vpc_gauges_to_zero(vec![("total".to_string(), removed_name.clone())]);
-                set_vpc_gauges_to_zero(vec![("drops".to_string(), removed_name.clone())]);
-
-                // peering series (traffic and per-pair drops) in both directions
-                for other_name in &alive_names {
-                    let fwd = vec![
-                        ("from".to_string(), removed_name.clone()),
-                        ("to".to_string(), other_name.clone()),
-                    ];
-                    let rev = vec![
-                        ("from".to_string(), other_name.clone()),
-                        ("to".to_string(), removed_name.clone()),
-                    ];
-                    set_vpc_gauges_to_zero(fwd.clone());
-                    set_vpc_gauges_to_zero(rev.clone());
-                    set_gauges_to_zero(PAIR_DROPS_METRIC_BASE, fwd);
-                    set_gauges_to_zero(PAIR_DROPS_METRIC_BASE, rev);
-                }
-
-                self.known_names.remove(&disc);
-            }
+        if new_names == self.known_names {
+            return;
         }
 
-        self.known_vpcs = new_alive;
+        // A gauge cannot be withdrawn from the registry, so retiring a series means pinning it to
+        // zero: the alternative is a value frozen at whatever it last carried, which for a `_rate`
+        // reads as live traffic on a link that no longer exists.
+        let was: BTreeSet<String> = self.known_names.values().cloned().collect();
+        let now: BTreeSet<String> = new_names.values().cloned().collect();
+        for (base, labels) in exported_series(&was).difference(&exported_series(&now)) {
+            set_gauges_to_zero(base, labels.clone());
+        }
+
+        self.known_names = new_names;
     }
 
     /// Run the collector (async).  Does not return if awaited.
@@ -1893,6 +1881,243 @@ mod rate_oracle {
                 assert!(pps.abs() < CLOSE_ENOUGH, "an idle pair reported {pps} pkt/s");
                 assert!(bps.abs() < CLOSE_ENOUGH, "an idle pair reported {bps} B/s");
             }
+        });
+    }
+}
+
+/// The series an operator scrapes, against the traffic that produced them.
+///
+/// # Why this can exist now
+///
+/// [`rate_oracle`] asserts what reaches [`VpcStatsStore`], which is where the gRPC and CLI reads
+/// come from. It is not what a dashboard reads. Between the store and Prometheus sit the metric
+/// name, the label set, and -- the part with no other witness -- the *lifetime* of a series: when
+/// it starts, and whether anything ever ends it. None of that had a test, because no test in the
+/// crate installed a [`metrics::Recorder`]; every `gauge.set()` in the suite went to the no-op.
+///
+/// The label scheme is what makes lifetime the interesting question. A series is identified by the
+/// VPC *name*, which is mutable configuration, while the only cleanup path is keyed on the VPC
+/// *discriminant*, which is identity. Anything that changes one without changing the other leaves
+/// a series with no owner, and a gauge with no owner keeps exporting its last value forever.
+#[cfg(test)]
+mod exported {
+    use super::{BatchSummary, MetricsUpdate, StatsCollector, VpcMapName};
+    use crate::PacketAndByte;
+    use crate::scrape::Scrape;
+    use crate::vpc_stats::VpcStatsStore;
+    use net::vxlan::Vni;
+    use vpcmap::VpcDiscriminant;
+    use vpcmap::map::VpcMapWriter;
+
+    /// Packets per tick, and so packets per second.
+    const LOAD: u64 = 1_000;
+    /// Bytes in each of them.
+    const SIZE: u64 = 500;
+    /// Rates are floating point; this is what "the same" means for them here.
+    const CLOSE_ENOUGH: f64 = 1e-6;
+
+    fn vpc(vni: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap_or_else(|_| unreachable!()))
+    }
+
+    /// Run `ticks` seconds of `LOAD` pkt/s from `src` to `dst` through the collector.
+    async fn traffic(
+        collector: &mut StatsCollector,
+        src: VpcDiscriminant,
+        dst: VpcDiscriminant,
+        ticks: usize,
+    ) {
+        for _ in 0..ticks {
+            let start = clock::now();
+            let mut summary = BatchSummary::<u64>::new(start + StatsCollector::TIME_TICK);
+            summary.start = start;
+            let mut transmit = crate::TransmitSummary::<u64>::new();
+            transmit.dst.insert(
+                dst,
+                PacketAndByte {
+                    packets: LOAD,
+                    bytes: LOAD * SIZE,
+                },
+            );
+            summary.vpc.insert(src, transmit);
+            collector
+                .update(Some(MetricsUpdate {
+                    duration: StatsCollector::TIME_TICK,
+                    summary: Box::new(summary),
+                }))
+                .await;
+            clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+        }
+    }
+
+    /// Let the collector run with no traffic at all, long enough for the window to drain.
+    async fn quiet(collector: &mut StatsCollector, ticks: usize) {
+        for _ in 0..ticks {
+            collector.update(None).await;
+            clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
+        }
+    }
+
+    /// Every non-zero `vpc_packet_rate` series exported for traffic leaving `from`, whatever the
+    /// far end is called, as `(to, rate)`.
+    fn pair_rates_leaving(scrape: &Scrape, from: &str) -> Vec<(String, f64)> {
+        scrape
+            .series("vpc_packet_rate")
+            .into_iter()
+            .filter(|(labels, rate)| {
+                *rate != 0.0 && labels.get("from").is_some_and(|name| name == from)
+            })
+            .filter_map(|(labels, rate)| Some((labels.get("to")?.clone(), rate)))
+            .collect()
+    }
+
+    /// A load that is being carried is visible on the gauge, not only in the store.
+    ///
+    /// The plainest thing that could be asserted about the export path, and the first test in the
+    /// crate to assert anything about it at all.
+    #[test]
+    fn a_steady_load_reaches_the_gauge_an_operator_reads() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+
+            let rate = scrape
+                .get("vpc_packet_rate", &[("from", "left"), ("to", "right")])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no vpc_packet_rate series exists for left->right; exported:\n{}",
+                        scrape.nonzero().join("\n")
+                    )
+                });
+            assert!(
+                (rate - LOAD as f64).abs() < CLOSE_ENOUGH,
+                "{LOAD} pkt/s offered, {rate} pkt/s exported"
+            );
+        });
+    }
+
+    /// Renaming a VPC moves its series; it does not fork them.
+    ///
+    /// A rename keeps the discriminant and changes the name. The gauges are keyed by name, so the
+    /// next update registers a second set under the new one -- and nothing ever ends the first,
+    /// because the only cleanup path fires on a discriminant leaving the map and this one did not.
+    /// Both series then carry the live rate, so a link running at `LOAD` sums to `2 * LOAD` across
+    /// the family, and the abandoned half keeps reporting that rate after the traffic stops and
+    /// after the VPC is deleted.
+    #[test]
+    fn renaming_a_vpc_does_not_leave_its_old_series_running() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+
+            map.add(dst, VpcMapName::new(dst, "renamed"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            traffic(&mut collector, src, dst, 12).await;
+
+            let live = pair_rates_leaving(&scrape, "left");
+            let total: f64 = live.iter().map(|(_, rate)| rate).sum();
+            assert!(
+                (total - LOAD as f64).abs() < CLOSE_ENOUGH,
+                "one link carrying {LOAD} pkt/s is exported as {total} pkt/s across {live:?}; \
+                 exported:\n{}",
+                scrape.nonzero().join("\n")
+            );
+        });
+    }
+
+    /// A peering both of whose VPCs were deleted stops being exported.
+    ///
+    /// Removal zeroes the series that pair the departed VPC with a *surviving* one, which is the
+    /// wrong set: it is built from the names still in the map. When both ends of a peering leave in
+    /// the same configuration change -- deleting a VPC pair, which is one operator action -- neither
+    /// name survives to drive the loop, and the pair's gauges keep their last value. A stale count
+    /// is bad; a stale *rate* is worse, because it reads as live traffic between two VPCs that no
+    /// longer exist.
+    #[test]
+    fn a_peering_whose_ends_have_both_gone_stops_being_exported() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst, bystander) = (vpc(100), vpc(200), vpc(300));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(bystander, VpcMapName::new(bystander, "bystander"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+
+            map.del(src, false);
+            map.del(dst, true);
+            quiet(&mut collector, 8).await;
+
+            let stale = pair_rates_leaving(&scrape, "left");
+            assert!(
+                stale.is_empty(),
+                "both ends of left->right were deleted, but {stale:?} is still exported; \
+                 exported:\n{}",
+                scrape.nonzero().join("\n")
+            );
+        });
+    }
+
+    /// The same, for the case that does work today: one end leaves and the other survives.
+    ///
+    /// Here the survivor's name drives the zeroing loop, so the pair is cleared. Kept as the
+    /// boundary of the defect above -- the two differ only in how many VPCs left at once.
+    #[test]
+    fn a_peering_whose_far_end_has_gone_stops_being_exported() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+
+            map.del(dst, true);
+            quiet(&mut collector, 8).await;
+
+            let stale = pair_rates_leaving(&scrape, "left");
+            assert!(
+                stale.is_empty(),
+                "right was deleted, but {stale:?} is still exported; exported:\n{}",
+                scrape.nonzero().join("\n")
+            );
         });
     }
 }
