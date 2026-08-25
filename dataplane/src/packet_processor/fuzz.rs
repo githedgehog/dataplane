@@ -421,18 +421,6 @@ pub(crate) struct CliReaders {
 }
 
 impl CliReaders {
-    /// Answer every command once, discarding the text.
-    ///
-    /// The text is not the point and there is no oracle for it: what is being asserted is that
-    /// asking at all is safe while the dataplane is busy. Returns the total length so the
-    /// formatting is not optimised away, and so a caller can tell an answer from an empty one.
-    pub(crate) fn read_all(&self) -> usize {
-        self.sources
-            .iter()
-            .map(|(_, source)| source.provide().len())
-            .sum()
-    }
-
     /// Answer one command, chosen by `which` modulo the number of commands.
     pub(crate) fn read_one(&self, which: usize) -> (&'static str, String) {
         let (name, source) = &self.sources[which % self.sources.len()];
@@ -1320,7 +1308,7 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
-    use config::external::overlay::algebra::{Draft, Guard};
+    use config::external::overlay::algebra::Draft;
     use config::external::overlay::vpcpeering::ValidatedExpose;
     use lpm::prefix::with_ports::L4Protocol;
     use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
