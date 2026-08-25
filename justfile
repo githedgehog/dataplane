@@ -263,10 +263,29 @@ fuzz target time="60s" *args="":
     # sanitizer against a sysroot built without it links a half-instrumented binary and reports
     # nothing, which is worse than not asking: it reads as evidence.
     # See `development/code/sanitizer-build-audit.md`.
+    # `sanitize` is what gets passed on to cargo-bolero, and empty means "pass no --sanitizer",
+    # whereupon cargo-bolero applies its own default of `address`. So `sanitize` is not the
+    # effective rust sanitizer, and comparing it against the sysroot's compares the wrong pair:
+    # it passes the empty default -- rust asan against an uninstrumented sysroot, which is the
+    # half-instrumented build this check exists to refuse -- and refuses `NONE`, the one setting
+    # that does match an uninstrumented sysroot.
+    case "{{ sanitize }}" in
+      "") want=address ;;
+      NONE) want=none ;;
+      *) want="{{ sanitize }}" ;;
+    esac
     sysroot="${DATAPLANE_SYSROOT:-}"
     if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
       built_with="$(cat "${sysroot}/.sanitize")"
-      if [ "${built_with}" != "{{ sanitize }}" ]; then
+      built_with="${built_with:-none}"
+      # The empty default is left passing rather than refused, because refusing it would break
+      # every plain `just fuzz` in the tree at once. It is announced instead, so that a run which
+      # reports nothing is not mistaken for a run which found nothing.
+      if [ "${want}" != "${built_with}" ] && [ -z "{{ sanitize }}" ]; then
+        printf 'warning: rust is built with %s and this sysroot with %s, so the C dependencies -- dpdk above all -- are not instrumented.\n' \
+          "${want}" "${built_with}" >&2
+        printf '         `just sanitize=NONE fuzz ...` instruments neither and runs about four times quicker.\n' >&2
+      elif [ "${want}" != "${built_with}" ]; then
         printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot was built with sanitize=%s.\n' \
           "{{ sanitize }}" "${built_with:-<none>}" >&2
         printf 'the C dependencies would not be instrumented. Re-enter the shell with:\n' >&2
