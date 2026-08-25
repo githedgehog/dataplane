@@ -279,19 +279,13 @@ impl StatsCollector {
     #[tracing::instrument(level = "debug")]
     async fn refresh_vpc_store(&mut self) {
         let pairs = snapshot_vpc_pairs(&self.vpcmap_r);
-        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
-
-        let new_alive: HashSet<VpcDiscriminant> = pairs.iter().map(|(d, _)| *d).collect();
         let new_names: HashMap<VpcDiscriminant, String> = pairs.iter().cloned().collect();
-
-        self.alive_vpcs = new_alive;
-
-        // prune any removed VPCs / pairs so they do not show up in snapshots/status
-        self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
 
         if new_names == self.known_names {
             return;
         }
+
+        self.alive_vpcs = pairs.iter().map(|(disc, _)| *disc).collect();
 
         let recycled: HashSet<VpcDiscriminant> = new_names
             .iter()
@@ -310,6 +304,9 @@ impl StatsCollector {
             self.submitted
                 .each_sample_mut(|sample| forget_from(sample, &recycled));
         }
+
+        self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
+        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
 
         let was: BTreeSet<String> = self.known_names.values().cloned().collect();
         let now: BTreeSet<String> = new_names.values().cloned().collect();
@@ -524,8 +521,11 @@ impl StatsCollector {
 
         // Refresh count gauges from the store (so reuse doesn't carry stale totals).
         let pair_snap = self.vpc_store.snapshot_pairs().await;
-        let carried: HashSet<(VpcDiscriminant, VpcDiscriminant)> =
-            pair_snap.iter().map(|&(pair, _)| pair).collect();
+        let mut carried: hashbrown::HashMap<VpcDiscriminant, BTreeSet<VpcDiscriminant>> =
+            hashbrown::HashMap::new();
+        for &((src, dst), _) in &pair_snap {
+            carried.entry(src).or_default().insert(dst);
+        }
         for ((src, dst), fs) in pair_snap {
             if !self.alive_vpcs.contains(&src) || !self.alive_vpcs.contains(&dst) {
                 continue;
@@ -601,17 +601,23 @@ impl StatsCollector {
                 // Smoothed entry for this src (if any)
                 let maybe_tx = smoothed_by_src.get(&src);
 
-                // For every known dst under this src, either set smoothed rate or zero.
-                for (&dst, action) in metrics.peering.iter() {
+                let mut publish: BTreeSet<VpcDiscriminant> =
+                    carried.get(&src).cloned().unwrap_or_default();
+                if let Some(tx_summary) = maybe_tx {
+                    publish.extend(tx_summary.dst.iter().map(|(dst, _)| *dst));
+                }
+
+                for dst in publish {
                     if !self.alive_vpcs.contains(&dst) {
                         debug!("skipping rate stats for removed VPC {dst}");
                         continue;
                     }
-                    let smoothed = maybe_tx.and_then(|tx_summary| tx_summary.dst.get(&dst));
-                    if smoothed.is_none() && !carried.contains(&(src, dst)) {
+                    let Some(action) = metrics.peering.get(&dst) else {
                         continue;
-                    }
-                    let (pps, bps) = smoothed.map_or((0.0, 0.0), |rate| (rate.packets, rate.bytes));
+                    };
+                    let (pps, bps) = maybe_tx
+                        .and_then(|tx_summary| tx_summary.dst.get(&dst))
+                        .map_or((0.0, 0.0), |rate| (rate.packets, rate.bytes));
 
                     // Export to Prometheus gauges
                     action.tx.packet.rate.metric.set(pps);
