@@ -74,31 +74,50 @@ impl ValueGenerator for Scenario {
     }
 }
 
-/// Run one case on a runtime that is actually driven.
+/// Run one case on a runtime that is actually driven, and leave nothing of it behind.
 ///
 /// `FlowTable::insert` spawns a per-flow expiry timer, so an insert outside a runtime context
 /// panics. A bolero property's body is synchronous, so it cannot await -- and a runtime that is
 /// merely *entered* is never polled, so those timers are spawned and then never run. They pile up,
-/// each pinning the flow table of the case that made it, for as long as the property runs: 44MB at
-/// the seed corpus to over 2GB by case 512, which is an out-of-memory rather than a slow test.
+/// each pinning the flow table of the case that made it, for as long as the property runs.
 ///
-/// So each case is a `block_on` rather than the whole property being one `enter`. The yields give
-/// the timers spawned during the case a chance to be polled and settle before the next one starts.
+/// So each case is a `block_on` rather than the whole property being one `enter`, and the clock is
+/// moved past every flow timeout so the case's timers reach their deadlines instead of parking on
+/// one that never arrives.
+///
+/// **Waking a task is not running it.** `advance` returns as soon as time has moved; the tasks it
+/// woke still have to be polled, and each of them takes more than one poll to retire -- dropping
+/// the last `Arc` to a flow table cascades into dropping every flow in it. Yielding until the
+/// runtime reports no tasks left is what actually frees the case. Measured on
+/// `distinct_published_tuples_reach_distinct_targets`, memory per case: 620KB with no yield at all
+/// (out of memory by case 2312, in four minutes), 76KB with the four yields this used to have,
+/// nothing measurable once it waits for quiescence -- 45MB at case 256 and 47MB at case 5104, with
+/// no loss of throughput.
 fn settled(body: impl FnOnce()) {
     /// Long enough to be past every flow timeout this crate sets.
     const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
+    /// A task that will not retire after this many polls is not going to, and spinning here
+    /// forever would turn a leak into a hang. Reaching it is a defect in its own right, so it is
+    /// not passed over quietly.
+    const GIVE_UP: usize = 4096;
     /// One per process, which under `cargo nextest` is one per property.
     static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
         std::sync::LazyLock::new(clock::virtual_time::Paused::new);
     CLOCK.block_on(async {
         body();
-        // Polling those timers is not enough to retire them: each parks until its flow's deadline,
-        // and a deadline that never arrives is a task that never ends. So the clock is moved past
-        // every flow timeout, which lets the case's timers run out and drop the flow table they
-        // were holding. Without it they accumulate at roughly 700KB apiece -- 2,746 of them and
-        // out of memory by case 900, which is what `just fuzz` hit the first time it could run at
-        // all.
         clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+        let handle = tokio::runtime::Handle::current();
+        for _ in 0..GIVE_UP {
+            if handle.metrics().num_alive_tasks() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "{} tasks from this case would not retire; the flow tables they hold will accumulate \
+             until the run is out of memory",
+            handle.metrics().num_alive_tasks()
+        );
     });
 }
 
