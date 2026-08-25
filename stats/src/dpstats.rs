@@ -164,6 +164,19 @@ fn set_gauges_to_zero(base: &str, labels: Vec<(String, String)>) {
     }
 }
 
+fn register_series(
+    names: &[(VpcDiscriminant, String)],
+) -> hashbrown::HashMap<VpcDiscriminant, RegisteredVpcMetrics> {
+    let vpc_data = names
+        .iter()
+        .map(|(disc, name)| (*disc, name.clone(), vec![]))
+        .collect::<Vec<_>>();
+    VpcMetricsSpec::new(vpc_data)
+        .into_iter()
+        .map(|(disc, spec)| (disc, spec.build()))
+        .collect()
+}
+
 fn exported_series(names: &BTreeSet<String>) -> BTreeSet<(&'static str, Vec<(String, String)>)> {
     let mut series = BTreeSet::new();
     for name in names {
@@ -225,42 +238,18 @@ impl StatsCollector {
     ) -> (StatsCollector, PacketStatsWriter, Arc<VpcStatsStore>) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
 
-        // Snapshot current VPC names from the reader to seed metric registrations
-        let vpc_data = match vpcmap_r.enter() {
-            Some(guard) => guard
-                .0
-                .values()
-                .map(|VpcMapName { disc, name }| {
-                    (
-                        *disc,
-                        name.clone(),
-                        vec![("from".to_string(), name.clone())],
-                    )
-                })
-                .collect::<Vec<_>>(),
-            None => {
-                warn!(
-                    "vpcmap reader guard acquisition failed during initialization; seeding empty metrics"
-                );
-                Vec::new()
-            }
-        };
-
         let name_pairs = snapshot_vpc_pairs(&vpcmap_r);
         vpc_store.set_many_vpc_names_sync(name_pairs.clone());
 
         let alive_vpcs: HashSet<VpcDiscriminant> =
-            vpc_data.iter().map(|(disc, _, _)| *disc).collect();
+            name_pairs.iter().map(|(disc, _)| *disc).collect();
 
         let mut known_names: HashMap<VpcDiscriminant, String> = HashMap::new();
-        for (disc, name) in name_pairs {
+        for (disc, name) in name_pairs.iter().cloned() {
             known_names.insert(disc, name);
         }
 
-        let metrics = VpcMetricsSpec::new(vpc_data)
-            .into_iter()
-            .map(|(disc, spec)| (disc, spec.build()))
-            .collect();
+        let metrics = register_series(&name_pairs);
 
         let updates = PacketStatsReader(r);
         let outstanding: VecDeque<_> = (0..Self::OUTSTANDING)
@@ -304,20 +293,26 @@ impl StatsCollector {
             return;
         }
 
+        let recycled: HashSet<VpcDiscriminant> = new_names
+            .iter()
+            .filter(|(disc, name)| {
+                self.known_names
+                    .get(disc)
+                    .is_some_and(|previously| previously != *name)
+            })
+            .map(|(disc, _)| *disc)
+            .collect();
+        if !recycled.is_empty() {
+            self.vpc_store.forget_vpcs(&recycled).await;
+        }
+
         let was: BTreeSet<String> = self.known_names.values().cloned().collect();
         let now: BTreeSet<String> = new_names.values().cloned().collect();
         for (base, labels) in exported_series(&was).difference(&exported_series(&now)) {
             set_gauges_to_zero(base, labels.clone());
         }
 
-        let vpc_data = pairs
-            .into_iter()
-            .map(|(disc, name)| (disc, name, vec![]))
-            .collect::<Vec<_>>();
-        self.metrics = VpcMetricsSpec::new(vpc_data)
-            .into_iter()
-            .map(|(disc, spec)| (disc, spec.build()))
-            .collect();
+        self.metrics = register_series(&pairs);
 
         self.known_names = new_names;
     }
@@ -2045,6 +2040,92 @@ mod exported {
                 rate.abs() < CLOSE_ENOUGH,
                 "the link stopped carrying traffic but still reports {rate} pkt/s"
             );
+        });
+    }
+
+    #[test]
+    fn a_recycled_vni_does_not_inherit_the_previous_tenants_counters() {
+        const BEFORE: usize = 24;
+        const AFTER: usize = 6;
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "customer-a"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, BEFORE).await;
+
+            map.add(dst, VpcMapName::new(dst, "customer-b"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            traffic(&mut collector, src, dst, AFTER).await;
+
+            let counted = scrape
+                .get(
+                    "vpc_packet_count",
+                    &[("from", "left"), ("to", "customer-b")],
+                )
+                .unwrap_or_else(|| unreachable!("the new tenant was never exported"));
+            assert!(
+                counted <= (AFTER as u64 * LOAD) as f64,
+                "customer-b has sent at most {} packets but is credited with {counted}; \
+                 customer-a sent {}",
+                AFTER as u64 * LOAD,
+                BEFORE as u64 * LOAD
+            );
+            assert!(
+                scrape
+                    .get(
+                        "vpc_packet_count",
+                        &[("from", "left"), ("to", "customer-a")]
+                    )
+                    .is_none_or(|stale| stale.abs() < CLOSE_ENOUGH),
+                "customer-a's series is still exporting after the VNI was handed on"
+            );
+        });
+    }
+
+    #[test]
+    fn every_series_has_a_label_shape_the_family_allows() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 4).await;
+            map.add(vpc(300), VpcMapName::new(vpc(300), "third"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            traffic(&mut collector, src, dst, 4).await;
+
+            let allowed: std::collections::BTreeSet<Vec<String>> = [
+                vec!["total".to_string()],
+                vec!["drops".to_string()],
+                vec!["from".to_string(), "to".to_string()],
+            ]
+            .into_iter()
+            .collect();
+            for family in ["vpc_packet_count", "vpc_packet_rate", "vpc_byte_count"] {
+                let found = scrape.label_shapes(family);
+                assert!(
+                    found.is_subset(&allowed),
+                    "{family} is exported with label shapes {:?}",
+                    found.difference(&allowed).collect::<Vec<_>>()
+                );
+            }
         });
     }
 
