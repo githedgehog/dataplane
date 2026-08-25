@@ -88,11 +88,16 @@ pub trait HashMapSmoothing {
 /// f^{\prime}\!\left(x\right) \approx \frac{8 \left[f\!\left(x + h\right) - f\!\left(x - h\right)\right] - \left[f\!\left(x + 2h\right) - f\!\left(x - 2h\right)\right]}{12 h}
 /// }
 /// ```
+/// The number of samples a [`SavitzkyGolayFilter`] holds; the "5" in "5-point stencil".
+const WINDOW: usize = 5;
+
 #[derive(Debug)]
 pub struct SavitzkyGolayFilter<U> {
     step: Duration,
+    /// Where the *next* sample will be written, which is also where the *oldest* one currently
+    /// lives once the window has wrapped.
     idx: usize,
-    data: ArrayVec<U, 5>,
+    data: ArrayVec<U, WINDOW>,
 }
 
 impl<T> Default for SavitzkyGolayFilter<T> {
@@ -117,7 +122,18 @@ impl<U> SavitzkyGolayFilter<U> {
                 self.data[self.idx] = e.element();
             }
         }
-        self.idx = (self.idx + 1) % 5;
+        self.idx = (self.idx + 1) % WINDOW;
+    }
+
+    /// The samples held, oldest first.
+    ///
+    /// `data` is a ring buffer, so its *physical* order is the order the samples arrived only
+    /// until the window first wraps -- after that the oldest sample sits at `idx`. Every
+    /// Savitzky-Golay coefficient is position-dependent, so a caller that reads `data` directly
+    /// and hands the result to `derivative` or `smooth` is filtering a time-scrambled window.
+    /// Read it through here instead.
+    pub fn chronological(&self) -> impl Iterator<Item = &U> {
+        self.data.iter().cycle().skip(self.idx).take(self.data.len())
     }
 }
 
@@ -141,13 +157,13 @@ impl Derivative for SavitzkyGolayFilter<u64> {
     type Error = DerivativeError;
     type Output = f64;
     fn derivative(&self) -> Result<f64, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         let data_len = self.data.len();
         if data_len < SAMPLES {
             return Err(DerivativeError::NotEnoughSamples(data_len));
         }
         debug_assert!(data_len == SAMPLES);
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [u64; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -175,12 +191,12 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
     type Error = DerivativeError;
     type Output = PacketAndByte<f64>;
     fn derivative(&self) -> Result<PacketAndByte<f64>, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         let data_len = self.data.len();
         if data_len < SAMPLES {
             return Err(DerivativeError::NotEnoughSamples(data_len));
         }
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [PacketAndByte<u64>; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -219,46 +235,39 @@ impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
     type Error = DerivativeError;
 
     fn try_from(value: &SavitzkyGolayFilter<TransmitSummary<u64>>) -> Result<Self, Self::Error> {
-        if value.data.len() != 5 {
+        if value.data.len() != WINDOW {
             return Err(DerivativeError::NotEnoughSamples(value.data.len()));
         }
-        let values: Vec<_> = value
-            .data
-            .iter()
-            .cycle()
-            .skip(value.idx)
-            .take(5)
-            .cloned()
-            .collect();
-        let all_keys: BTreeSet<_> = values
-            .iter()
+        let all_keys: BTreeSet<_> = value
+            .chronological()
             .flat_map(|x| x.dst.iter().map(|(&k, _)| k))
             .collect();
+        // Every destination gets a filter before any sample is read, so that all of them come out
+        // holding a full window. Filling them per-destination as each one first appears instead
+        // leaves a late arrival short, and `TransmitSummary::derivative` collects into a
+        // `Result`: one short filter withholds the rate of *every* destination, not just its own.
         let mut out = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
-        for (idx, summary) in values.iter().enumerate() {
-            all_keys
-                .iter()
-                .for_each(|&k| match (summary.dst.get(&k), out.dst.get_mut(&k)) {
-                    (Some(count), Some(out)) => {
-                        out.packets.push(count.packets);
-                        out.bytes.push(count.bytes);
-                    }
-                    (Some(count), None) => {
-                        let mut packets = SavitzkyGolayFilter::new(value.step);
-                        let mut bytes = SavitzkyGolayFilter::new(value.step);
-                        packets.push(count.packets);
-                        bytes.push(count.bytes);
-                        out.dst.insert(k, PacketAndByte { packets, bytes });
-                    }
-                    (None, Some(out)) => {
-                        debug_assert!(idx != 0);
-                        out.packets.push(out.packets.data[out.packets.idx - 1]);
-                        out.bytes.push(out.bytes.data[out.bytes.idx - 1]);
-                    }
-                    (None, None) => {
-                        // no data yet
-                    }
-                });
+        for &k in &all_keys {
+            out.dst.insert(
+                k,
+                PacketAndByte {
+                    packets: SavitzkyGolayFilter::new(value.step),
+                    bytes: SavitzkyGolayFilter::new(value.step),
+                },
+            );
+        }
+        for summary in value.chronological() {
+            for &k in &all_keys {
+                let Some(out) = out.dst.get_mut(&k) else {
+                    unreachable!("every key was inserted above")
+                };
+                // A destination missing from a sample sent nothing during it. These samples are
+                // per-interval counts rather than running totals (see `Dpstats::TIME_TICK`), so
+                // that is a zero, not a gap to be papered over with the previous value.
+                let count = summary.dst.get(&k).copied().unwrap_or_default();
+                out.packets.push(count.packets);
+                out.bytes.push(count.bytes);
+            }
         }
         Ok(out)
     }
@@ -269,7 +278,7 @@ impl Derivative for SavitzkyGolayFilter<TransmitSummary<u64>> {
     type Output = TransmitSummary<f64>;
 
     fn derivative(&self) -> Result<Self::Output, Self::Error> {
-        if self.data.len() != 5 {
+        if self.data.len() != WINDOW {
             return Err(DerivativeError::NotEnoughSamples(self.data.len()));
         }
         let x = TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(self)?;
@@ -365,23 +374,15 @@ impl From<SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummar
                 }
             })
         });
-        value
-            .data
-            .iter()
-            .cycle()
-            .skip(value.idx)
-            .take(5)
-            .for_each(|map| {
-                map.iter()
-                    .for_each(|(from_key, from)| match out.get_mut(from_key) {
-                        None => {
-                            unreachable!(); // all keys in map should already be here
-                        }
-                        Some(filter) => {
-                            filter.push(from.clone());
-                        }
-                    })
+        value.chronological().for_each(|map| {
+            // A source missing from a sample sent nothing during it, and every source must come
+            // out of this holding the same number of samples: the filters below are read
+            // positionally, so a source that skips a sample would otherwise have the rest of its
+            // window shifted in time.
+            out.iter_mut().for_each(|(key, filter)| {
+                filter.push(map.get(key).cloned().unwrap_or_default());
             });
+        });
         out
     }
 }
@@ -394,47 +395,55 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
     ) -> Self {
         const CAPACITY_PAD: usize = 32;
         let capacity_guess = value.data.iter().map(|map| map.len()).max().unwrap_or(0);
-        let mut out = hashbrown::HashMap::with_capacity(capacity_guess + CAPACITY_PAD);
+        // Every (src, dst) pair the window mentions anywhere, collected before any sample is
+        // read. Each pair's filter then receives exactly one push per sample -- a zero where the
+        // pair is absent -- so all of them come out the same length and aligned to the same
+        // instants. Discovering pairs as they first appear instead leaves a late arrival short
+        // and time-shifted, and `TransmitSummary::smooth` collects into a `Result`, so one short
+        // filter withholds the rate of every pair under that source.
+        let mut pairs: hashbrown::HashMap<VpcDiscriminant, BTreeSet<VpcDiscriminant>> =
+            hashbrown::HashMap::with_capacity(capacity_guess + CAPACITY_PAD);
         value.data.iter().for_each(|map| {
-            map.iter().for_each(|(k, _)| {
-                if out.get(k).is_none() {
-                    out.insert(*k, TransmitSummary::<SavitzkyGolayFilter<u64>>::new());
-                }
+            map.iter().for_each(|(&src, summary)| {
+                let seen = pairs.entry(src).or_default();
+                summary.dst.iter().for_each(|(&dst, _)| {
+                    seen.insert(dst);
+                });
             })
         });
-        value.data.iter().enumerate().for_each(|(idx, map)| {
-            map.iter()
-                .for_each(|(from_key, from)| match out.get_mut(from_key) {
-                    None => {
-                        unreachable!(); // all keys in map should already be here
-                    }
-                    Some(summary) => {
-                        from.dst.iter().for_each(|(to_key, to)| {
-                            match summary.dst.get_mut(to_key) {
-                                None => {
-                                    let mut packets = SavitzkyGolayFilter::new(value.step);
-                                    let mut bytes = SavitzkyGolayFilter::new(value.step);
-                                    packets.push(to.packets);
-                                    bytes.push(to.bytes);
-
-                                    summary
-                                        .dst
-                                        .insert(*to_key, PacketAndByte { packets, bytes });
-                                }
-                                Some(x) => {
-                                    while x.packets.idx < idx {
-                                        x.packets.push(x.packets.data[x.packets.idx - 1]);
-                                    }
-                                    while x.bytes.idx < idx {
-                                        x.bytes.push(x.bytes.data[x.bytes.idx - 1]);
-                                    }
-                                    x.packets.push(to.packets);
-                                    x.bytes.push(to.bytes);
-                                }
-                            }
-                        });
-                    }
-                })
+        let mut out: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
+            hashbrown::HashMap::with_capacity(pairs.len() + CAPACITY_PAD);
+        for (&src, dsts) in &pairs {
+            let mut summary = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
+            for &dst in dsts {
+                summary.dst.insert(
+                    dst,
+                    PacketAndByte {
+                        packets: SavitzkyGolayFilter::new(value.step),
+                        bytes: SavitzkyGolayFilter::new(value.step),
+                    },
+                );
+            }
+            out.insert(src, summary);
+        }
+        value.chronological().for_each(|map| {
+            for (&src, dsts) in &pairs {
+                let Some(summary) = out.get_mut(&src) else {
+                    unreachable!("every source was inserted above")
+                };
+                let observed = map.get(&src);
+                for &dst in dsts {
+                    let Some(filter) = summary.dst.get_mut(&dst) else {
+                        unreachable!("every destination was inserted above")
+                    };
+                    let count = observed
+                        .and_then(|summary| summary.dst.get(&dst))
+                        .copied()
+                        .unwrap_or_default();
+                    filter.packets.push(count.packets);
+                    filter.bytes.push(count.bytes);
+                }
+            }
         });
         out
     }
@@ -499,7 +508,7 @@ impl Smooth for SavitzkyGolayFilter<u64> {
     type Output = f64;
 
     fn smooth(&self) -> Result<f64, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
         const DEN: f64 = 35.0;
 
@@ -509,7 +518,7 @@ impl Smooth for SavitzkyGolayFilter<u64> {
         }
         debug_assert!(len == SAMPLES);
 
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [u64; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -540,7 +549,7 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
     type Output = PacketAndByte<f64>;
 
     fn smooth(&self) -> Result<Self::Output, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
         const DEN: f64 = 35.0;
 
@@ -549,7 +558,7 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
             return Err(DerivativeError::NotEnoughSamples(len));
         }
 
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [PacketAndByte<u64>; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -580,7 +589,7 @@ impl Smooth for SavitzkyGolayFilter<TransmitSummary<u64>> {
     type Output = TransmitSummary<f64>;
 
     fn smooth(&self) -> Result<Self::Output, DerivativeError> {
-        if self.data.len() != 5 {
+        if self.data.len() != WINDOW {
             return Err(DerivativeError::NotEnoughSamples(self.data.len()));
         }
         // Convert to per-destination SG filters first, then smooth those.
@@ -1121,5 +1130,256 @@ mod test {
         assert!((out.packets - (1700.0 / 35.0)).abs() < 1e-9);
         // bytes expected = (-3*10 + 12*10 + 17*10 + 12*20 - 3*20)/35 = 440/35 ≈ 12.5714
         assert!((out.bytes - (440.0 / 35.0)).abs() < 1e-9);
+    }
+}
+
+
+#[cfg(test)]
+mod window_order {
+    use crate::rate::{DerivativeError, SavitzkyGolayFilter, Smooth, WINDOW};
+    use crate::{PacketAndByte, TransmitSummary};
+    use std::time::Duration;
+    use vpcmap::VpcDiscriminant;
+
+    fn vpc(n: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(n.try_into().unwrap_or_else(|_| unreachable!()))
+    }
+
+    /// Traffic from vpc 1 to vpc 2 rising by `SLOPE` packets each tick, pushed `count` times.
+    ///
+    /// A ramp rather than a flat load on purpose: a flat load reads the same however the window is
+    /// ordered, so it cannot tell a correctly ordered window from a scrambled one.
+    fn rising_load(
+        count: usize,
+    ) -> SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>> {
+        let mut window = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for tick in 0..count as u64 {
+            let mut summary = TransmitSummary::<u64>::new();
+            summary.dst.insert(
+                vpc(2),
+                PacketAndByte {
+                    packets: at_tick(tick),
+                    bytes: at_tick(tick) * 100,
+                },
+            );
+            let mut by_src = hashbrown::HashMap::new();
+            by_src.insert(vpc(1), summary);
+            window.push(by_src);
+        }
+        window
+    }
+
+    const BASE: u64 = 1_000;
+    const SLOPE: u64 = 100;
+
+    fn at_tick(tick: u64) -> u64 {
+        BASE + SLOPE * tick
+    }
+
+    /// Savitzky-Golay smoothing of order 2 is exact on a straight line, so a ramp smooths to
+    /// whatever it was doing at the middle of the window -- two ticks before the newest sample.
+    fn expected_after(ticks: usize) -> f64 {
+        at_tick(ticks as u64 - 3) as f64
+    }
+
+    /// The reported rate must not depend on where the ring buffer happens to be.
+    ///
+    /// It did. `data` is a ring, so once the window wraps its physical order is no longer the
+    /// order the samples arrived, and every Savitzky-Golay coefficient is position-dependent.
+    /// Reading it physically filtered a time-scrambled window, and the answer went wrong in a
+    /// period-5 cycle: right on the tick where the ring happened to sit at zero, wrong on the
+    /// other four.
+    #[test]
+    fn a_rising_load_reads_the_same_at_every_ring_offset() {
+        for ticks in WINDOW..=(4 * WINDOW) {
+            let window = rising_load(ticks);
+            let by_src: hashbrown::HashMap<
+                VpcDiscriminant,
+                TransmitSummary<SavitzkyGolayFilter<u64>>,
+            > = (&window).into();
+            let smoothed = by_src
+                .get(&vpc(1))
+                .unwrap_or_else(|| unreachable!())
+                .smooth()
+                .unwrap_or_else(|_| unreachable!());
+            let rate = smoothed
+                .dst
+                .get(&vpc(2))
+                .unwrap_or_else(|| unreachable!())
+                .packets;
+            let expect = expected_after(ticks);
+            assert!(
+                (rate - expect).abs() < 1e-9,
+                "after {ticks} ticks the ramp smoothed to {rate} pkt/s, not {expect}"
+            );
+        }
+    }
+
+    /// Same claim, one level down: the per-source conversion feeds the same coefficients.
+    #[test]
+    fn a_rising_load_derives_the_same_at_every_ring_offset() {
+        for ticks in WINDOW..=(4 * WINDOW) {
+            let window = rising_load(ticks);
+            let by_src: hashbrown::HashMap<
+                VpcDiscriminant,
+                SavitzkyGolayFilter<TransmitSummary<u64>>,
+            > = window.into();
+            let smoothed = by_src
+                .get(&vpc(1))
+                .unwrap_or_else(|| unreachable!())
+                .smooth()
+                .unwrap_or_else(|_| unreachable!());
+            let rate = smoothed
+                .dst
+                .get(&vpc(2))
+                .unwrap_or_else(|| unreachable!())
+                .packets;
+            let expect = expected_after(ticks);
+            assert!(
+                (rate - expect).abs() < 1e-9,
+                "after {ticks} ticks the ramp smoothed to {rate} pkt/s, not {expect}"
+            );
+        }
+    }
+
+    /// A destination that appears part way through the window must not take the others down with
+    /// it.
+    ///
+    /// Filters were created as each destination first appeared, so a late one held fewer than
+    /// `WINDOW` samples. `TransmitSummary::derivative` collects into a `Result`, so that one short
+    /// filter turned into `NotEnoughSamples` for the whole summary -- and `Dpstats` drops the
+    /// entire smoothing pass on an error, so every rate gauge on the box went stale instead.
+    #[test]
+    fn a_destination_that_appears_late_does_not_hide_the_others() {
+        for first_seen in 0..WINDOW {
+            let mut window = SavitzkyGolayFilter::new(Duration::from_secs(1));
+            for tick in 0..WINDOW {
+                let mut summary = TransmitSummary::<u64>::new();
+                summary.dst.insert(
+                    vpc(2),
+                    PacketAndByte {
+                        packets: 100,
+                        bytes: 10_000,
+                    },
+                );
+                if tick >= first_seen {
+                    summary.dst.insert(
+                        vpc(3),
+                        PacketAndByte {
+                            packets: 7,
+                            bytes: 700,
+                        },
+                    );
+                }
+                let mut by_src = hashbrown::HashMap::new();
+                by_src.insert(vpc(1), summary);
+                window.push(by_src);
+            }
+            let by_src: hashbrown::HashMap<
+                VpcDiscriminant,
+                TransmitSummary<SavitzkyGolayFilter<u64>>,
+            > = (&window).into();
+            let smoothed = by_src
+                .get(&vpc(1))
+                .unwrap_or_else(|| unreachable!())
+                .smooth()
+                .unwrap_or_else(|e| panic!("vpc 3 first seen at tick {first_seen}: {e}"));
+            let steady = smoothed
+                .dst
+                .get(&vpc(2))
+                .unwrap_or_else(|| unreachable!())
+                .packets;
+            assert!(
+                (steady - 100.0).abs() < 1e-9,
+                "a steady destination read {steady} pkt/s because another arrived at tick \
+                 {first_seen}"
+            );
+        }
+    }
+
+    /// A destination that stops sending reads as zero, not as its last sample held forever.
+    ///
+    /// These samples are per-interval counts, not running totals, so an absent destination sent
+    /// nothing rather than being unreported.
+    #[test]
+    fn a_destination_that_stops_reads_as_idle() {
+        let mut window = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for tick in 0..WINDOW {
+            let mut summary = TransmitSummary::<u64>::new();
+            if tick == 0 {
+                summary.dst.insert(
+                    vpc(2),
+                    PacketAndByte {
+                        packets: 1_000,
+                        bytes: 100_000,
+                    },
+                );
+            }
+            let mut by_src = hashbrown::HashMap::new();
+            by_src.insert(vpc(1), summary);
+            window.push(by_src);
+        }
+        let by_src: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
+            (&window).into();
+        let smoothed = by_src
+            .get(&vpc(1))
+            .unwrap_or_else(|| unreachable!())
+            .smooth()
+            .unwrap_or_else(|_| unreachable!());
+        let rate = smoothed
+            .dst
+            .get(&vpc(2))
+            .unwrap_or_else(|| unreachable!())
+            .packets;
+        assert!(
+            rate < 1.0,
+            "a destination silent for four of five ticks still read {rate} pkt/s"
+        );
+    }
+
+    /// `chronological` hands back what was pushed, in the order it was pushed.
+    #[test]
+    fn the_window_reads_back_in_push_order() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|pushes: Vec<u64>| {
+                let mut filter = SavitzkyGolayFilter::new(Duration::from_secs(1));
+                for value in &pushes {
+                    filter.push(*value);
+                }
+                let expect: Vec<_> = pushes
+                    .iter()
+                    .rev()
+                    .take(WINDOW)
+                    .rev()
+                    .copied()
+                    .collect();
+                let read: Vec<_> = filter.chronological().copied().collect();
+                assert_eq!(read, expect);
+            });
+    }
+
+    /// Whatever a window holds, every destination comes out of the conversion the same length.
+    #[test]
+    fn every_destination_holds_the_whole_window() {
+        bolero::check!()
+            .with_type()
+            .for_each(|window: &SavitzkyGolayFilter<TransmitSummary<u64>>| {
+                match TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(window) {
+                    Ok(converted) => {
+                        for (dst, filter) in converted.dst.iter() {
+                            assert_eq!(
+                                filter.packets.data.len(),
+                                WINDOW,
+                                "destination {dst} holds a partial window"
+                            );
+                            assert_eq!(filter.bytes.data.len(), WINDOW);
+                        }
+                    }
+                    Err(DerivativeError::NotEnoughSamples(seen)) => assert!(seen < WINDOW),
+                    Err(e) => panic!("{e}"),
+                }
+            });
     }
 }
