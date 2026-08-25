@@ -316,30 +316,20 @@ impl StatsCollector {
         (stats, writer, store_clone)
     }
 
-    /// Update the list of VPCs known to the stats collector (sync snapshot; no awaits).
-    #[tracing::instrument(level = "debug")]
-    fn refresh(&mut self) -> impl Iterator<Item = (VpcDiscriminant, RegisteredVpcMetrics)> {
-        let pairs = snapshot_vpc_pairs(&self.vpcmap_r); // Vec<(disc, name)>
-        // persist names for gRPC/others (no await)
-        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
-
-        let vpc_data = pairs
-            .into_iter()
-            .map(|(disc, name)| (disc, name, vec![]))
-            .collect::<Vec<_>>();
-
-        VpcMetricsSpec::new(vpc_data)
-            .into_iter()
-            .map(|(disc, spec)| (disc, spec.build()))
-    }
-
+    /// Bring the collector's picture of the configuration up to date: which VPCs are alive, what
+    /// they are called, and which Prometheus series exist for them.
+    ///
+    /// The series are rebuilt only when the names change. They used to be rebuilt on every update,
+    /// which is `8N + 8N^2` gauge registrations per update for `N` VPCs -- 125ms of them at `N` =
+    /// 64, against a channel the workers can fill in well under that. Registration is a
+    /// configuration cost and belongs on the configuration path.
     #[tracing::instrument(level = "debug")]
     async fn refresh_vpc_store(&mut self) {
         let pairs = snapshot_vpc_pairs(&self.vpcmap_r);
         self.vpc_store.set_many_vpc_names_sync(pairs.clone());
 
         let new_alive: HashSet<VpcDiscriminant> = pairs.iter().map(|(d, _)| *d).collect();
-        let new_names: HashMap<VpcDiscriminant, String> = pairs.into_iter().collect();
+        let new_names: HashMap<VpcDiscriminant, String> = pairs.iter().cloned().collect();
 
         self.alive_vpcs = new_alive;
 
@@ -358,6 +348,15 @@ impl StatsCollector {
         for (base, labels) in exported_series(&was).difference(&exported_series(&now)) {
             set_gauges_to_zero(base, labels.clone());
         }
+
+        let vpc_data = pairs
+            .into_iter()
+            .map(|(disc, name)| (disc, name, vec![]))
+            .collect::<Vec<_>>();
+        self.metrics = VpcMetricsSpec::new(vpc_data)
+            .into_iter()
+            .map(|(disc, spec)| (disc, spec.build()))
+            .collect();
 
         self.known_names = new_names;
     }
@@ -402,9 +401,6 @@ impl StatsCollector {
     async fn update(&mut self, update: Option<MetricsUpdate>) {
         self.refresh_vpc_store().await;
         if let Some(update) = update {
-            // Refresh Prometheus registrations based on the current VPC snapshot.
-            self.metrics = self.refresh().collect();
-
             // Find outstanding changes which line up with batch
             let mut slices: Vec<_> = self
                 .outstanding
@@ -570,6 +566,11 @@ impl StatsCollector {
 
         // Refresh count gauges from the store (so reuse doesn't carry stale totals).
         let pair_snap = self.vpc_store.snapshot_pairs().await;
+        // Which pairs have ever carried a packet. A store entry is made by `add_pair_counts`, and
+        // only real traffic calls that, so this is exactly the set of peerings that have anything
+        // to say.
+        let carried: HashSet<(VpcDiscriminant, VpcDiscriminant)> =
+            pair_snap.iter().map(|&(pair, _)| pair).collect();
         for ((src, dst), fs) in pair_snap {
             if !self.alive_vpcs.contains(&src) || !self.alive_vpcs.contains(&dst) {
                 continue;
@@ -651,17 +652,19 @@ impl StatsCollector {
                         debug!("skipping rate stats for removed VPC {dst}");
                         continue;
                     }
-                    let (pps, bps) = if let Some(tx_summary) = maybe_tx {
-                        if let Some(rate) = tx_summary.dst.get(&dst) {
-                            (rate.packets, rate.bytes)
-                        } else {
-                            // zero if pair absent in window
-                            (0.0, 0.0)
-                        }
-                    } else {
-                        // here as well
-                        (0.0, 0.0)
-                    };
+                    let smoothed = maybe_tx.and_then(|tx_summary| tx_summary.dst.get(&dst));
+                    if smoothed.is_none() && !carried.contains(&(src, dst)) {
+                        // A peering that has never carried a packet has nothing to publish and
+                        // nothing to correct: its gauges have read zero since they were registered.
+                        // Writing to it anyway is not free -- `set_pair_rates` creates the store
+                        // entry, so the store, every snapshot taken of it, the prune that runs on
+                        // every update, and the pair listing the CLI prints all grow as the square
+                        // of the VPC count rather than with the traffic. Measured at 64 VPCs
+                        // carrying one live pair: 4096 pairs held, and the per-second publish
+                        // dominated by the 4095 of them that were zero.
+                        continue;
+                    }
+                    let (pps, bps) = smoothed.map_or((0.0, 0.0), |rate| (rate.packets, rate.bytes));
 
                     // Export to Prometheus gauges
                     action.tx.packet.rate.metric.set(pps);
@@ -2003,6 +2006,180 @@ mod exported {
             assert!(
                 (rate - LOAD as f64).abs() < CLOSE_ENOUGH,
                 "{LOAD} pkt/s offered, {rate} pkt/s exported"
+            );
+        });
+    }
+
+    /// Carrying traffic does not cost a metric registration.
+    ///
+    /// Every Prometheus series the collector exports was rebuilt, from scratch, on every update:
+    /// `refresh()` walked the VPC snapshot and re-registered the lot. That is `8N + 8N^2` gauges
+    /// per update for `N` VPCs -- the square because every VPC gets a series for its peering with
+    /// every other -- and it ran at whatever rate the workers deliver batches, which is once per
+    /// worker per second or faster. Measured against this recorder before the fix: one rebuild at
+    /// 64 VPCs took 125ms, and the real recorder does strictly more work per registration than
+    /// this one.
+    ///
+    /// The consequence is not slowness, it is silence. The collector reads a bounded channel; when
+    /// it cannot keep up the channel fills, `Stats::process` takes the `Ok(false)` arm of
+    /// `try_send`, and a whole batch of counters is dropped with a `warn!` and no metric. The
+    /// counters are deltas, so the loss is permanent, and it is worst under load -- exactly when
+    /// the numbers are being watched.
+    ///
+    /// Registrations belong to configuration, so this counts them across updates rather than
+    /// timing anything: a wall-clock budget would be a flaky test on a busy machine, and the
+    /// quantity that must not grow with traffic is the count.
+    #[test]
+    fn carrying_traffic_does_not_re_register_the_metrics() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 4).await;
+            let settled = scrape.registrations();
+            traffic(&mut collector, src, dst, 40).await;
+            let after = scrape.registrations();
+            assert_eq!(
+                settled, after,
+                "40 further ticks of unchanged configuration cost {} metric registrations",
+                after - settled
+            );
+        });
+    }
+
+    /// A configuration change does cost one, though: the series follow the names.
+    ///
+    /// The other side of the test above -- if registrations were simply never repeated, the rename
+    /// and removal properties would have nothing to observe.
+    #[test]
+    fn a_configuration_change_does_re_register_the_metrics() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 4).await;
+            let settled = scrape.registrations();
+
+            map.add(vpc(300), VpcMapName::new(vpc(300), "third"), true)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            traffic(&mut collector, src, dst, 4).await;
+            assert!(
+                scrape.registrations() > settled,
+                "a VPC was added and no new series was registered"
+            );
+        });
+    }
+
+    /// What the collector publishes grows with the traffic, not with the square of the fabric.
+    ///
+    /// The rate loop walked every peering of every VPC and wrote a rate to each, zero included.
+    /// `set_pair_rates` creates the store entry, so a fabric of `N` VPCs held `N^2` pairs however
+    /// few of them carried anything -- and everything downstream inherited that: the prune that
+    /// runs on every update, the snapshot taken on every concluded batch, and the pair listing the
+    /// CLI prints. Measured at 64 VPCs with one live pair: 4096 held, and the per-second work of
+    /// the collector dominated by the 4095 that were zero.
+    ///
+    /// A peering that has never carried a packet needs no correction: its gauges have read zero
+    /// since they were registered. One that carried traffic and stopped keeps its store entry, so
+    /// it is still visited and still driven back to zero -- which is the case that loop was there
+    /// for.
+    #[test]
+    fn an_idle_peering_is_not_published() {
+        const FABRIC: u32 = 8;
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        for i in 0..FABRIC {
+            let disc = vpc(100 + i);
+            map.add(disc, VpcMapName::new(disc, &format!("vpc{i}")), i + 1 == FABRIC)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+        }
+        let (src, dst) = (vpc(100), vpc(101));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+
+            let held = store.snapshot_pairs().await;
+            assert_eq!(
+                held.len(),
+                1,
+                "one peering out of {} carried traffic, but the store holds {}: {:?}",
+                FABRIC * FABRIC,
+                held.len(),
+                held.iter().map(|&(pair, _)| pair).collect::<Vec<_>>()
+            );
+
+            // and the one that did carry traffic still reads back as carrying it
+            let rate = scrape
+                .get("vpc_packet_rate", &[("from", "vpc0"), ("to", "vpc1")])
+                .unwrap_or_else(|| unreachable!("the live pair was never exported"));
+            assert!(
+                (rate - LOAD as f64).abs() < CLOSE_ENOUGH,
+                "{LOAD} pkt/s offered, {rate} pkt/s exported"
+            );
+        });
+    }
+
+    /// A peering that carried traffic and stopped is driven back to zero.
+    ///
+    /// The boundary of the test above: skipping idle peerings must not skip the ones that *went*
+    /// idle, or a link that stops carrying traffic keeps reporting the rate it last had.
+    ///
+    /// It does not distinguish the `carried` guard from a bare `smoothed.is_none()`, and that is
+    /// worth saying rather than leaving to be rediscovered. The decay is published tick by tick as
+    /// the window drains, and on the last tick that still holds a real sample that sample sits at
+    /// the stencil's `-3` coefficient, so the value goes negative and the clamp publishes exactly
+    /// zero -- just before the pair leaves the window. Either guard therefore ends at zero here.
+    /// The `carried` guard is kept because "correct what you have published" is the invariant that
+    /// makes that true on purpose rather than by arithmetic that happens to line up.
+    ///
+    /// What it does catch is the decay not being published at all: stop writing the gauge part way
+    /// down and this fails.
+    #[test]
+    fn a_peering_that_falls_idle_is_published_as_idle() {
+        let scrape = Scrape::default();
+        let _installed = metrics::set_default_local_recorder(&scrape);
+        let (src, dst) = (vpc(100), vpc(200));
+        let mut map = VpcMapWriter::<VpcMapName>::new();
+        map.add(src, VpcMapName::new(src, "left"), false)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        map.add(dst, VpcMapName::new(dst, "right"), true)
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let clock = clock::virtual_time::Paused::new();
+        clock.block_on(async {
+            let (mut collector, _writer, _store) =
+                StatsCollector::new_with_store(map.get_reader(), VpcStatsStore::new());
+            traffic(&mut collector, src, dst, 24).await;
+            quiet(&mut collector, 16).await;
+
+            let rate = scrape
+                .get("vpc_packet_rate", &[("from", "left"), ("to", "right")])
+                .unwrap_or_else(|| unreachable!("the pair was never exported at all"));
+            assert!(
+                rate.abs() < CLOSE_ENOUGH,
+                "the link stopped carrying traffic but still reports {rate} pkt/s"
             );
         });
     }
