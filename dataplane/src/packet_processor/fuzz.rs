@@ -228,13 +228,6 @@ pub(crate) struct CliReaders {
 }
 
 impl CliReaders {
-    pub(crate) fn read_all(&self) -> usize {
-        self.sources
-            .iter()
-            .map(|(_, source)| source.provide().len())
-            .sum()
-    }
-
     pub(crate) fn read_one(&self, which: usize) -> (&'static str, String) {
         let (name, source) = &self.sources[which % self.sources.len()];
         (name, source.provide())
@@ -797,7 +790,7 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
-    use config::external::overlay::algebra::{Draft, Guard};
+    use config::external::overlay::algebra::Draft;
     use config::external::overlay::vpcpeering::ValidatedExpose;
     use lpm::prefix::with_ports::L4Protocol;
     use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
