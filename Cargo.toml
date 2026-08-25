@@ -265,7 +265,13 @@ overflow-checks = false
 codegen-units = 1
 rpath = true
 
-[profile.fuzz]
+# Release, with its assertions kept.
+#
+# Named for what it is rather than for fuzzing, which was only its first consumer: coverage wants
+# the same bargain, and instrumentation is a separate axis from optimisation. Cargo profiles are
+# the only lever for `debug-assertions` and `overflow-checks`, which is why this must be a profile
+# even though "fuzz" must not be.
+[profile.checked]
 inherits = "release"
 opt-level = 2
 debug-assertions = true

@@ -31,12 +31,17 @@ let
       kernel
       ;
   };
-  sanitizers = split-str ",+" sanitize;
+  # Sorted so that a set written two ways -- `address,cfi` and `cfi,address`, `fuzz,coverage` and
+  # `coverage,fuzz` -- is one set and, more to the point, one marker string. A guard that compares
+  # markers refuses a perfectly good sysroot otherwise.
+  as-set = str: lib.sort (a: b: a < b) (lib.unique (split-str ",+" str));
+  sanitizers = as-set sanitize;
+  instrumentations = as-set instrumentation;
   cargo-features = split-str ",+" features;
   profile' = import ./nix/profiles.nix {
     inherit
       sanitizers
-      instrumentation
+      instrumentations
       profile
       cargo-features
       host-arch
@@ -49,7 +54,7 @@ let
   profile-tests' = import ./nix/profiles.nix {
     inherit
       sanitizers
-      instrumentation
+      instrumentations
       profile
       cargo-features
       host-arch
@@ -61,7 +66,7 @@ let
     {
       "debug" = "dev";
       "release" = "release";
-      "fuzz" = "fuzz";
+      "checked" = "checked";
     }
     .${profile};
   overlays = import ./nix/overlays {
@@ -93,8 +98,8 @@ let
   # passes -- are independent, and disagreeing silently produces a half-instrumented binary whose
   # green run means nothing. See `development/code/sanitizer-build-audit.md`.
   sysroot-stamp = ''
-    printf '%s' '${sanitize}' > "$out/.sanitize"
-    printf '%s' '${instrumentation}' > "$out/.instrumentation"
+    printf '%s' '${builtins.concatStringsSep "," sanitizers}' > "$out/.sanitize"
+    printf '%s' '${builtins.concatStringsSep "," instrumentations}' > "$out/.instrumentation"
   '';
   sysroot =
     if platform != "wasm32-wasip1" then
@@ -671,7 +676,12 @@ let
             ++ cargo-cmd-prefix-tests
           ))
           # Record the remapped source root without changing normal archives.
-          + (if instrumentation == "coverage" then "; echo -n '${src-prefix}' > $out/source-prefix" else "");
+          + (
+            if builtins.elem "coverage" instrumentations then
+              "; echo -n '${src-prefix}' > $out/source-prefix"
+            else
+              ""
+          );
       };
     };
 
