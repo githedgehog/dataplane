@@ -14,6 +14,26 @@ use vpcmap::VpcDiscriminant;
 pub use self::contract::*;
 
 /// Abstract trait for computing the time rate of change of a function or series of data points.
+///
+/// # Nothing that ships calls this
+///
+/// Checked, as of 2026-08-25: every `.derivative()` in the tree is either one of this trait's own
+/// impls calling another, or a test. The exported rates come from [`Smooth`] --
+/// `StatsCollector::update` is the only caller outside this file and it calls `smooth`. Same for
+/// [`ExponentiallyWeightedMovingAverage`], whose only users are `rate_fuzz`.
+///
+/// That matters for reading the tests below rather than for the arithmetic. The weight of this
+/// file's test suite sits here -- twelve fuzzed polynomial properties and three filter
+/// properties -- on a path no operator's number passes through, while `smooth`, which every
+/// exported rate does pass through, had exactly one claim on it (`is_ok()`) until 2026-08-25. Two
+/// of the three defects found in this file since were in `smooth`'s path.
+///
+/// The other consequence is the regime split in [`contract::PerIntervalCounts`]: a finite
+/// difference only means anything over a running total, so the generators were written to produce
+/// one, and every `smooth` property inherited a generator that could not reach the states `smooth`
+/// actually meets.
+///
+/// Keep it or drop it, but do not read its test count as coverage of the shipped path.
 pub trait Derivative {
     type Error;
     type Output;
@@ -646,10 +666,15 @@ where
 mod contract {
     use crate::rate::{Derivative, SavitzkyGolayFilter};
     use crate::{PacketAndByte, TransmitSummary};
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
     use std::fmt::Debug;
     use std::time::Duration;
 
+    /// A window of a *running total*: large, and rising every tick.
+    ///
+    /// The regime `Derivative` needs, since a finite difference of anything else is meaningless.
+    /// It is **not** the regime the shipped collector feeds `Smooth` -- see
+    /// [`PerIntervalCounts`], and pick deliberately rather than by whichever is the default.
     impl TypeGenerator for SavitzkyGolayFilter<u64> {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let mut step = driver.produce()?;
@@ -667,6 +692,7 @@ mod contract {
         }
     }
 
+    /// [`SavitzkyGolayFilter<u64>`]'s running total, for the paired counter.
     impl TypeGenerator for SavitzkyGolayFilter<PacketAndByte<u64>> {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let mut step = driver.produce()?;
@@ -708,6 +734,74 @@ mod contract {
                         }
                     }
                 }
+            }
+            Some(filter)
+        }
+    }
+
+    /// A window of the counts a *collector* pushes, rather than of a running total.
+    ///
+    /// # Two regimes, and the tests were all in the wrong one
+    ///
+    /// [`SavitzkyGolayFilter`] is fed from two directions and they do not look alike.
+    /// `Derivative` is a finite difference, so it only means anything over a running total, and
+    /// the `TypeGenerator` above builds exactly that: a series that starts large and only ever
+    /// rises. `Smooth` is a weighted average and cares about no such thing -- and `Smooth` is what
+    /// the shipped collector calls. What it hands over is `dpstats`'s *apportioned per-batch
+    /// counts*: small numbers, one per tick, that fall to zero whenever a vpc pair is quiet and
+    /// climb again when it is not.
+    ///
+    /// Every property over a generated filter used the running-total generator, because that is
+    /// the one that existed. Measured over 2,595,038 full windows it produced: **no** window that
+    /// ever decreased, **no** window containing a zero, and **no** window whose smoothed value
+    /// would go negative -- not once. So `smoothing_a_counter_is_never_negative`, written against
+    /// a negative rate seen in production, could not reach a negative rate. Deleting the clamp it
+    /// guards leaves it passing.
+    ///
+    /// This generator is the other regime. Sparse on purpose: the magnitude is drawn as a power of
+    /// two, so small draws give windows of mostly zeros, which is where the five-point kernel's
+    /// negative edge coefficients bite and where a quiet tenant actually lives.
+    pub struct PerIntervalCounts;
+
+    impl ValueGenerator for PerIntervalCounts {
+        type Output = SavitzkyGolayFilter<u64>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut step: Duration = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            // A power of two rather than a bound, so that the whole range from "every tick is
+            // zero" to "counts near the top of the type" is reachable in a handful of draws.
+            let ceiling = 1u64 << (driver.produce::<u8>()? % 63);
+            for _ in 0..entries {
+                filter.push(driver.produce::<u64>()? % ceiling);
+            }
+            Some(filter)
+        }
+    }
+
+    /// [`PerIntervalCounts`], for the paired counter.
+    pub struct PerIntervalPacketAndByte;
+
+    impl ValueGenerator for PerIntervalPacketAndByte {
+        type Output = SavitzkyGolayFilter<PacketAndByte<u64>>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut step: Duration = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let ceiling = 1u64 << (driver.produce::<u8>()? % 63);
+            for _ in 0..entries {
+                filter.push(PacketAndByte {
+                    packets: driver.produce::<u64>()? % ceiling,
+                    bytes: driver.produce::<u64>()? % ceiling,
+                });
             }
             Some(filter)
         }
@@ -838,6 +932,8 @@ mod contract {
 #[cfg(test)]
 mod test {
     use crate::rate::{Derivative, DerivativeComparer, DerivativeError, SavitzkyGolayFilter};
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{PacketAndByte, TransmitSummary};
 
@@ -956,29 +1052,73 @@ mod test {
     /// A claim about the domain rather than the arithmetic. The 5-point kernel's edge coefficients
     /// are negative, so a sparse window genuinely fits a curve that dips below zero -- that is a
     /// sound trend estimate and a nonsensical count of bytes, and it is the second of those that
-    /// reaches an operator. Until now the only thing asserted anywhere about `smooth` was that it
-    /// returned `Ok`, which is how a negative rate reached a terminal before it reached a test.
+    /// reaches an operator. It was seen in production as a small negative rate in the CLI under
+    /// very low load.
+    ///
+    /// # This asserted nothing for a while, and said nothing about it
+    ///
+    /// Written first against the default `TypeGenerator`, which builds a running total -- see
+    /// [`contract::PerIntervalCounts`]. Over 2,595,038 full windows that generator produced no
+    /// window that ever decreased, none containing a zero, and none that would smooth to a
+    /// negative number. The property passed with the clamp it guards deleted, which is the
+    /// definition of testing nothing.
+    ///
+    /// So it draws from the regime the collector actually feeds, and it *counts*: a property about
+    /// a rare state that does not check it reached the state is one refactor away from being
+    /// scenery again, and this one already was.
     #[test]
     fn smoothing_a_counter_is_never_negative() {
+        /// Windows the run actually built whose smoothed value needs the clamp.
+        static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
         bolero::check!()
-            .with_type()
+            .with_generator(crate::rate::contract::PerIntervalCounts)
             .for_each(|x: &SavitzkyGolayFilter<u64>| {
-                if let Ok(v) = x.smooth() {
-                    assert!(v >= 0.0, "smoothed a counter to {v}");
+                let Ok(v) = x.smooth() else {
+                    return;
+                };
+                assert!(v >= 0.0, "smoothed a counter to {v}");
+                if unclamped(&x.chronological().copied().collect::<Vec<_>>()) < 0. {
+                    UNDERSHOT.fetch_add(1, Ordering::Relaxed);
                 }
             });
+
+        let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        assert!(
+            undershot > 0,
+            "no window in the whole run would have smoothed to a negative number, so this said \
+             nothing about the clamp it exists to guard"
+        );
     }
 
     /// The same for the pair, which smooths its two counts independently.
     #[test]
     fn smoothing_a_packet_and_byte_counter_is_never_negative() {
+        /// As above: the state is rare, so reaching it is asserted rather than hoped for.
+        static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
         bolero::check!()
-            .with_type()
+            .with_generator(crate::rate::contract::PerIntervalPacketAndByte)
             .for_each(|x: &SavitzkyGolayFilter<PacketAndByte<u64>>| {
-                if let Ok(v) = x.smooth() {
-                    assert!(v.packets >= 0.0 && v.bytes >= 0.0, "smoothed to {v:?}");
+                let Ok(v) = x.smooth() else {
+                    return;
+                };
+                assert!(v.packets >= 0.0, "smoothed a packet count to {}", v.packets);
+                assert!(v.bytes >= 0.0, "smoothed a byte count to {}", v.bytes);
+                let window: Vec<_> = x.chronological().copied().collect();
+                let packets: Vec<u64> = window.iter().map(|v| v.packets).collect();
+                let bytes: Vec<u64> = window.iter().map(|v| v.bytes).collect();
+                if unclamped(&packets) < 0. || unclamped(&bytes) < 0. {
+                    UNDERSHOT.fetch_add(1, Ordering::Relaxed);
                 }
             });
+
+        let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        assert!(
+            undershot > 0,
+            "no window in the whole run would have smoothed to a negative number, so this said \
+             nothing about the clamp it exists to guard"
+        );
     }
 
     #[test]
@@ -1052,6 +1192,22 @@ mod test {
                     }
                 },
             )
+    }
+
+    /// What [`Smooth`] would have answered without its clamp.
+    ///
+    /// Spelled out here rather than reached through the code under test, because the whole
+    /// question is whether the code under test is being asked anything.
+    fn unclamped(window: &[u64]) -> f64 {
+        const COEFFS: [i64; 5] = [-3, 12, 17, 12, -3];
+        if window.len() < 5 {
+            return 0.;
+        }
+        COEFFS
+            .iter()
+            .zip(window.iter())
+            .fold(0i128, |acc, (&c, &v)| acc + i128::from(c) * i128::from(v)) as f64
+            / 35.
     }
 
     use crate::rate::Smooth;
