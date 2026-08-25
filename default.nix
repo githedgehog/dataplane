@@ -92,6 +92,7 @@ let
       libc
       nightly
       sanitizers
+      instrumentations
       sources
       ;
     profile = profile';
