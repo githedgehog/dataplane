@@ -337,23 +337,20 @@ impl Scenario {
 /// `just test sanitize=thread`), or the full portfolio under shuttle.
 #[concurrency::model_test]
 fn stress_test_concurrency_model() {
-    // Single-threaded runtime is enough: we never need the timer task to
-    // run, only a context for `insert`'s `tokio::task::spawn` to succeed.
-    let rt = cfg_select! {
-        feature = "shuttle" => None::<tokio::runtime::Runtime>,
-        _ => Some(
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("build tokio runtime")
-             )
-    };
-    let handle = rt.as_ref().map(|rt| rt.handle().clone());
     bolero::check!()
         .with_type()
         .cloned()
         .for_each(|scenario: Scenario| {
-            let handle = handle.clone();
+            let rt = cfg_select! {
+                feature = "shuttle" => None::<tokio::runtime::Runtime>,
+                _ => Some(
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("build tokio runtime")
+                     )
+            };
+            let handle = rt.as_ref().map(|rt| rt.handle().clone());
             concurrency::stress(move || {
                 scenario.run(handle.as_ref());
             });
