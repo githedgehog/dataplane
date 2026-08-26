@@ -337,23 +337,29 @@ impl Scenario {
 /// `just test sanitize=thread`), or the full portfolio under shuttle.
 #[concurrency::model_test]
 fn stress_test_concurrency_model() {
-    // Single-threaded runtime is enough: we never need the timer task to
-    // run, only a context for `insert`'s `tokio::task::spawn` to succeed.
-    let rt = cfg_select! {
-        feature = "shuttle" => None::<tokio::runtime::Runtime>,
-        _ => Some(
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("build tokio runtime")
-             )
-    };
-    let handle = rt.as_ref().map(|rt| rt.handle().clone());
     bolero::check!()
         .with_type()
         .cloned()
         .for_each(|scenario: Scenario| {
-            let handle = handle.clone();
+            // Single-threaded runtime is enough: we never need the timer task to run, only a
+            // context for `insert`'s `tokio::task::spawn` to succeed.
+            //
+            // Built **per case**, because dropping it is the only thing that ever releases those
+            // timer tasks, and each one holds an `Arc` to that case's table. A runtime hoisted out
+            // of the loop is dropped once, at the end of the campaign, so every case's table stays
+            // reachable until then: measured at 175KB a case, out of memory in five minutes. See
+            // `settled` in `nat/src/portfw/fuzz.rs` for the same defect reached from the other
+            // side. Under shuttle the timer path is cfg'd out and no runtime is wanted.
+            let rt = cfg_select! {
+                feature = "shuttle" => None::<tokio::runtime::Runtime>,
+                _ => Some(
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("build tokio runtime")
+                     )
+            };
+            let handle = rt.as_ref().map(|rt| rt.handle().clone());
             concurrency::stress(move || {
                 scenario.run(handle.as_ref());
             });
