@@ -189,11 +189,12 @@ where
         // No checksum to update, we're done
         return;
     };
-    let _ = icmp.increment_update_checksum(
+    let updated = icmp.increment_update_checksum(
         T::Checksum::from(current_checksum),
         old_identifier,
         new_identifier,
     );
+    let _ = icmp.set_checksum(updated);
 }
 
 fn translate_inner_tcp_udp_src(
@@ -608,6 +609,20 @@ mod quoted_transport_checksum {
             OLD_PORT,
             PEER_PORT,
         );
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn an_identifier_rewrite_reaches_a_quoted_icmp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::ICMP, OLD_ID, PEER_PORT);
+        nat_translate_icmp_inner_src(
+            &mut translated,
+            IpAddr::V4(NAT_SRC),
+            Some(NatPort::Identifier(NEW_ID)),
+        )
+        .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(NAT_SRC, INNER_DST, NextHeader::ICMP, NEW_ID, PEER_PORT);
         assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
     }
 
