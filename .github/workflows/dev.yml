@@ -325,6 +325,8 @@ jobs:
       - name: "pinact"
         id: "pinact"
         continue-on-error: true
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         uses: *just
         with:
           recipe: "pinact"
