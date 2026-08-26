@@ -10,8 +10,6 @@ use acl::dpdk::lookup::DpdkAclLookup;
 use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
 #[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
-use concurrency::sync::LazyLock;
-use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
@@ -408,16 +406,57 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-// Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const
-// (each instance registers with the loom executor). The atomic itself is still the backend atomic,
-// so fetch_add() stays instrumented; only construction is deferred. On every other backend LazyLock
-// is a thin wrapper over an otherwise-const atomic.
-static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+concurrency::with_std! {
+    // Only this arm uses them: the model-checker arms deliberately take std's
+    // uninstrumented atomic instead.
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+
+    /// Lazily initialized because the facade's `AtomicU64::new` is not a `const fn` on every
+    /// backend. `LazyLock` is a thin wrapper over an otherwise-const atomic here.
+    static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+concurrency::with_loom! {
+    /// See [`table_name`]: an instrumented counter is not process-unique.
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+concurrency::with_shuttle! {
+    /// See [`table_name`]: an instrumented counter is not process-unique.
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// A process-unique rte_acl context name. rte_acl rejects duplicate names, and a hot-swap briefly
 /// keeps the old and new contexts alive at once, so the name must be unique across the process.
+///
+/// # Why the counter is not the facade's atomic under a model checker
+///
+/// The same fault, and the same remedy, as `flow_filter::context::tables::table_name`; that one
+/// carries the long account. In short: a model checker's atomic belongs to the execution that
+/// created it and so **restarts at zero every execution**, while the `rte_acl` registry it names
+/// into is process-global and no execution resets it. The second execution then asks for a name
+/// the first already took. Observed from `dataplane::packet_processor::fuzz::model` as
+/// `failed to create ACL context: An ACL context named 'acl_v4_209' already exists`.
+///
+/// Nothing is lost by dropping the instrumentation: any atomic increment yields distinct names, so
+/// the only thing a scheduler could explore is an interleaving whose outcomes are all correct.
 fn table_name(base: &str) -> String {
-    format!("acl_{base}_{}", TABLE_SEQ.fetch_add(1, Ordering::Relaxed))
+    format!("acl_{base}_{}", next_in_sequence())
 }
 
 /// Build one table for the selected backend from rules in precedence (insertion) order.
