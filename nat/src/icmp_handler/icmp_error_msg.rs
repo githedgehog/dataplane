@@ -86,6 +86,8 @@ pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
         )
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
 
+    fold_inner_address(embedded_headers, old_addr, target_addr);
+
     let Some(target_port) = target_port else {
         // No port to translate, we're done
         return Ok(());
@@ -122,6 +124,30 @@ fn quoted_version(addr: IpAddr) -> EmbeddedIpVersion {
     }
 }
 
+/// Fold a rewrite of one of the quoted packet's addresses into the quoted transport checksum.
+///
+/// TCP, UDP and `ICMPv6` are checksummed over a pseudo-header built from the quoted packet's
+/// addresses, so rewriting one leaves the quoted transport checksum describing an address that is
+/// no longer there. That is true whether or not the same mapping also moves a port, which is why
+/// this is its own step rather than part of port translation: a mapping that only moves an address
+/// still owes the quote a checksum that agrees with it.
+///
+/// Deltas on a one's-complement sum commute, so folding the address before any port is a choice of
+/// order and not of result.
+fn fold_inner_address<H>(embedded_headers: &mut H, old_addr: IpAddr, new_addr: IpAddr)
+where
+    H: TryEmbeddedTransportMut + ?Sized,
+{
+    if old_addr == new_addr {
+        return;
+    }
+    let Some(transport) = embedded_headers.try_embedded_transport_mut() else {
+        // No transport layer in the quote, so no pseudo-header to keep in step.
+        return;
+    };
+    transport.update_checksum_for_address(old_addr, new_addr);
+}
+
 pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     target_addr: IpAddr,
@@ -138,6 +164,8 @@ pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
     inner_ip
         .try_set_destination(target_addr)
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    fold_inner_address(embedded_headers, old_addr, target_addr);
 
     let Some(target_port) = target_port else {
         // No port to translate, we're done
@@ -563,6 +591,64 @@ mod quoted_transport_checksum {
 
     fn port(value: u16) -> NatPort {
         NatPort::new_port(NonZero::new(value).unwrap_or_else(|| unreachable!()))
+    }
+
+    /// A mapping that moves only an address still owes the quote a checksum.
+    ///
+    /// This is the case port translation cannot reach: it returns before it looks at the transport
+    /// header when there is no port to move, so an address-only mapping used to leave the quoted
+    /// checksum describing an address that is no longer in the packet.
+    #[test]
+    fn an_address_only_rewrite_reaches_a_quoted_tcp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::TCP, OLD_PORT, PEER_PORT);
+        nat_translate_icmp_inner_src(&mut translated, IpAddr::V4(NAT_SRC), None)
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(NAT_SRC, INNER_DST, NextHeader::TCP, OLD_PORT, PEER_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn an_address_and_port_rewrite_reaches_a_quoted_udp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::UDP, OLD_PORT, PEER_PORT);
+        nat_translate_icmp_inner_src(&mut translated, IpAddr::V4(NAT_SRC), Some(port(NEW_PORT)))
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(NAT_SRC, INNER_DST, NextHeader::UDP, NEW_PORT, PEER_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn a_destination_rewrite_reaches_a_quoted_tcp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::TCP, OLD_PORT, PEER_PORT);
+        nat_translate_icmp_inner_dst(&mut translated, IpAddr::V4(NAT_DST), Some(port(NEW_PORT)))
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(INNER_SRC, NAT_DST, NextHeader::TCP, OLD_PORT, NEW_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    /// A 128-bit address is eight folds rather than two, and every one of them has to land.
+    #[test]
+    fn an_ipv6_address_rewrite_reaches_a_quoted_tcp_checksum() {
+        let mut translated = quote_v6(
+            INNER_SRC_V6,
+            INNER_DST_V6,
+            NextHeader::TCP,
+            OLD_PORT,
+            PEER_PORT,
+        );
+        nat_translate_icmp_inner_src(&mut translated, IpAddr::V6(NAT_SRC_V6), None)
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v6(
+            NAT_SRC_V6,
+            INNER_DST_V6,
+            NextHeader::TCP,
+            OLD_PORT,
+            PEER_PORT,
+        );
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
     }
 
     /// A UDP datagram over IPv4 may say it computed no checksum, and NAT does not get to change
