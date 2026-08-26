@@ -16,7 +16,7 @@ use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
 use config::GenId;
-use flow_entry::flow_table::table::{FlowTable, FlowTableError};
+use flow_entry::flow_table::table::{FlowTable, FlowTableError, Insertion};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{FlowAddrs, IcmpProtoKey};
 use net::flows::{ExtractRef, FlowInfo, FlowInfoError};
@@ -65,6 +65,27 @@ pub(crate) enum MasqueradeError {
     FlowError(#[from] FlowInfoError),
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader),
+}
+
+/// The flow a packet masquerades with, and where it came from.
+///
+/// Two packets of one new flow can race to create it, and only one of them installs anything. The
+/// loser goes on with the winner's flow, so both end up with a flow to translate against -- but
+/// only the winner owns one, and ownership is what the steps after translation turn on.
+#[derive(Debug)]
+enum MasqueradeFlow {
+    /// Installed by this call, and this call's to re-check and to tear down.
+    Installed(Arc<FlowInfo>),
+    /// Won by another packet, which is doing both of those for it.
+    Held(Arc<FlowInfo>),
+}
+
+impl MasqueradeFlow {
+    fn flow(&self) -> &Arc<FlowInfo> {
+        match self {
+            MasqueradeFlow::Installed(flow) | MasqueradeFlow::Held(flow) => flow,
+        }
+    }
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`Masquerade`] processes
@@ -376,6 +397,12 @@ impl Masquerade {
         }
     }
 
+    /// The flow a packet will masquerade with, and whether this call is what installed it.
+    ///
+    /// Worth keeping apart after the fact: a flow this packet installed is one this packet is
+    /// answerable for -- re-checking it against the allocator it was built from, and tearing it
+    /// down if translation fails -- while a flow it merely lost the race to belongs to whoever won,
+    /// who is doing both of those for it.
     fn create_flow_pair<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
@@ -383,7 +410,7 @@ impl Masquerade {
         current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
         genid: GenId,
-    ) -> Result<Arc<FlowInfo>, MasqueradeError> {
+    ) -> Result<MasqueradeFlow, MasqueradeError> {
         let idle_timeout = alloc.idle_timeout;
 
         // src and dst vpc of this packet
@@ -419,12 +446,32 @@ impl Masquerade {
         // set the genid of the flows
         forward.set_genid_pair(genid);
 
-        // insert in flow-table
-        self.flow_table
-            .insert_from_arc(&forward)
+        // Insert in flow-table, arbitrating on the forward key.
+        //
+        // Two packets of one new flow can reach here at once -- packets of a 5-tuple usually land
+        // on one core, but nothing guarantees it, and the lookup above can miss for both. Each has
+        // allocated a public tuple of its own. With a plain insert the second displaces the first's
+        // forward flow, while the first's reverse -- keyed on an allocation no other allocation can
+        // collide with -- stays live, mapping a public tuple whose allocation is about to go back
+        // to the pool. See `FlowTable::insert_if_absent`.
+        let insertion = self
+            .flow_table
+            .insert_if_absent(&forward)
             .map_err(|e| match e {
                 FlowTableError::CapacityExceeded => MasqueradeError::CapacityExceeded,
             })?;
+        if let Insertion::Occupied(held) = insertion {
+            // The other packet won, so its flow is the flow and this one uses it.
+            //
+            // Nothing has to be released by hand: the reverse half was never inserted, and
+            // dropping the pair built here on the way out drops the `MasqueradeState` holding the
+            // `Allocation`, whose address and port go back to the pool from `AllocatedPort::drop`.
+            debug!(
+                "Lost the race to create flow {}; masquerading with the winner",
+                forward.flowkey()
+            );
+            return Ok(MasqueradeFlow::Held(held));
+        }
 
         // The reverse insert is expected to always succeed: capacity enforcement
         // recognises that reverse has a related flow (forward) already in the table
@@ -435,7 +482,7 @@ impl Masquerade {
             debug_assert!(false, "reverse flow insert failed: {e:?}");
             return Err(MasqueradeError::CapacityExceeded);
         }
-        Ok(forward)
+        Ok(MasqueradeFlow::Installed(forward))
     }
 
     fn new_reverse_session(
@@ -569,11 +616,12 @@ impl Masquerade {
         let genid = allocator.genid();
 
         // create flow pair
-        let installed =
+        let outcome =
             self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc, genid)?;
+        let flow = outcome.flow();
 
         // check that the masquerade state is readable
-        let translate = installed
+        let translate = flow
             .locked
             .read()
             .nat_state
@@ -583,7 +631,11 @@ impl Masquerade {
 
         // translate the packet
         if let Err(e) = masquerade(packet, &translate) {
-            installed.invalidate_pair();
+            // Only a flow this packet installed is this packet's to tear down. A translation
+            // failure against a flow it lost the race to says nothing about that flow.
+            if let MasqueradeFlow::Installed(installed) = &outcome {
+                installed.invalidate_pair();
+            }
             return Err(e.into());
         }
 
@@ -591,7 +643,14 @@ impl Masquerade {
         // the allocator was swapped. So, here we have to check if the allocator we used is still there:
         // it may have been removed or replaced. If so, the newly installed flows may no longer be valid
         // and we have to remove them. Also, the genid may have changed and we need to bump it.
-        self.recheck_flow(&allocator, &installed)
+        //
+        // Only for a flow installed here. A flow won by another packet was built from an allocator
+        // handle of its own, and that packet is re-checking it against that handle; judging it by
+        // this one could invalidate a sound flow over an allocator it never used.
+        match outcome {
+            MasqueradeFlow::Installed(installed) => self.recheck_flow(&allocator, &installed),
+            MasqueradeFlow::Held(_) => Ok(()),
+        }
     }
 
     /// Re-check a freshly installed flow against the latest allocator, that could have been installed
@@ -782,5 +841,125 @@ mod tests {
             unreachable!()
         };
         assert_eq!(udp.destination(), UdpPort::try_from(1234).unwrap());
+    }
+}
+
+/// What two packets of one new flow do when both reach here before either has installed anything.
+///
+/// A burst is stamped by `FlowLookup` before any of it is masqueraded, so both packets arrive with
+/// no flow entry; the live table lookup in `get_masquerade_state` closes that window for packets
+/// handled one after the other, but not for packets handled at the same moment on two cores. Both
+/// then allocate, and both build a pair.
+///
+/// The state the two racers reach is what is set up here directly, rather than by racing threads.
+/// Two threads reach it only on the interleavings where both pass the lookup before either
+/// inserts, so a test that spawned them would assert nothing on every other schedule -- and would
+/// state the arbitration less precisely than naming it does.
+#[cfg(test)]
+mod race {
+    use super::*;
+    use crate::masquerade::probe::Fabric;
+    use crate::static_nat::probe::{build, vni};
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
+    use lpm::prefix::PrefixWithOptionalPorts;
+    use net::buffer::TestBuffer;
+
+    fn prefix(spec: &str) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(spec.parse().unwrap_or_else(|_| unreachable!()), None)
+    }
+
+    fn fabric() -> Fabric {
+        let exposes = vec![
+            VpcExpose::empty()
+                .make_masquerade(None)
+                .unwrap_or_else(|e| unreachable!("{e}"))
+                .ip(prefix("10.0.0.0/24"))
+                .as_range(prefix("172.16.0.0/24"))
+                .unwrap_or_else(|e| unreachable!("{e}")),
+        ];
+        Fabric::build(&exposes).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+    }
+
+    /// The loser masquerades with the winner's flow, and leaves nothing of its own behind.
+    ///
+    /// Three things have to be true of the packet that lost, and only the first is about the flow
+    /// table. Its reverse half must not be in the table: that half is keyed on the allocation only
+    /// it holds, so nothing else will ever displace it, and left behind it goes on mapping a public
+    /// tuple back to this tenant after the tuple has returned to the pool and been handed to
+    /// another. Its allocation must go back: an allocation nobody can reach is one the pool has
+    /// lost. And it must still have a flow to translate against, or the packet is dropped for
+    /// having arrived at the same time as its sibling.
+    #[tokio::test]
+    async fn the_loser_of_a_race_masquerades_with_the_winners_flow() {
+        let fabric = fabric();
+        let (_lookup, masq) = fabric.stages();
+        let allocator = masq
+            .allocator
+            .get()
+            .unwrap_or_else(|| unreachable!("the fabric installed an allocator"));
+
+        let source: IpAddr = "10.0.0.1".parse().unwrap_or_else(|_| unreachable!());
+        let destination: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let mut packet: Packet<TestBuffer> = build(source, destination, false, 4000, 80);
+        let meta = packet.meta_mut();
+        meta.set_overlay(true);
+        meta.set_masquerade(true);
+        meta.src_vpcd = Some(VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
+        meta.dst_vpcd = Some(VpcDiscriminant::from_vni(vni(REMOTE_VNI)));
+
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!("the probe keys"));
+        let (src_vpcd, dst_vpcd) =
+            Masquerade::discriminants(&packet).unwrap_or_else(|_| unreachable!());
+        let genid = allocator.genid();
+
+        // Two allocations for one flow: what each racer is holding by the time it builds a pair.
+        let allocate = || {
+            allocator
+                .allocate(src_vpcd, dst_vpcd, key.src_ip(), key.proto())
+                .unwrap_or_else(|e| unreachable!("the pool has room: {e}"))
+        };
+        let winning = allocate();
+        let losing = allocate();
+        let losing_tuple = (losing.allocation.ip(), losing.allocation.port());
+        assert_ne!(
+            (winning.allocation.ip(), winning.allocation.port()),
+            losing_tuple,
+            "the two racers drew the same tuple, so this races nothing"
+        );
+        let losing_reverse = Masquerade::new_reverse_session(&key, &losing, dst_vpcd)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+
+        let winner = masq
+            .create_flow_pair(&mut packet, &key, &key, winning, genid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let MasqueradeFlow::Installed(winner) = winner else {
+            unreachable!("the first packet did not install the flow");
+        };
+
+        let outcome = masq
+            .create_flow_pair(&mut packet, &key, &key, losing, genid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let MasqueradeFlow::Held(held) = outcome else {
+            panic!("the second packet installed a pair of its own over a live flow");
+        };
+        assert!(
+            Arc::ptr_eq(&held, &winner),
+            "the loser was handed a flow that is not the one holding the key"
+        );
+
+        assert!(
+            masq.flow_table.lookup(&losing_reverse).is_none(),
+            "the loser's reverse half was left in the table, mapping a tuple about to be reused"
+        );
+
+        // Randomisation is off in this fabric, so the pool hands back the lowest free tuple. Being
+        // handed the loser's again is its release, observed from outside the allocator.
+        let next = allocate();
+        assert_eq!(
+            (next.allocation.ip(), next.allocation.port()),
+            losing_tuple,
+            "the loser's allocation never went back to the pool"
+        );
     }
 }
