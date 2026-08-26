@@ -57,7 +57,7 @@ netdev = { workspace = true }
 
 [dev-dependencies]
 clock = { workspace = true, features = ["virtual"] }
-bolero = { workspace = true, default-features = false }
+bolero = { workspace = true, features = ["std"] }
 concurrency = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["test_buffer"] }

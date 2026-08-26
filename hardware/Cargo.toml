@@ -43,7 +43,7 @@ n-vm = { workspace = true }
 test-utils = { workspace = true, features = [] }
 
 # external
-bolero = { workspace = true, features = ["alloc"] }
+bolero = { workspace = true, features = ["std"] }
 hwlocality = { workspace = true, features = ["hwloc-latest"] }
 pci-ids = { workspace = true, features = [] }
 serde = { workspace = true, features = ["std"] }
