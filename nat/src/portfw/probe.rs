@@ -161,6 +161,10 @@ impl Fabric {
         !self.rules.is_empty()
     }
 
+    pub(crate) fn flows(&self) -> &Arc<FlowTable> {
+        &self.flow_table
+    }
+
     pub(crate) fn is_private(&self, addr: IpAddr, port: u16) -> bool {
         self.rules
             .iter()
