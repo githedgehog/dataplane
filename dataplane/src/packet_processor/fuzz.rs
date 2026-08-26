@@ -6264,11 +6264,50 @@ mod model {
     /// That gap is the argument for the backend existing. It is also the limit of it: shuttle sees
     /// `concurrency::sync` primitives and nothing else, so what it explores here is the allocator's
     /// own synchronisation, not `rte_acl`'s.
+    /// # What is drawn, and what is not
+    ///
+    /// The fixture pins `as_range("2.2.0.0/16")`, which is so much public space that the two
+    /// workers always reach clean, separate blocks -- the `2.2.0.0:1024` and `2.2.0.0:1280` above.
+    /// A lost update is likeliest where the space is *tight* and both workers are reaching for the
+    /// same last block. So what is drawn is the size of the public range -- one, two or four
+    /// addresses -- together with how many flows each worker offers and where they come from. The
+    /// assertion is untouched.
+    ///
+    /// **A tight *block* supply turns out not to be reachable through configuration.** Narrowing
+    /// the public port window is the way to get there, and the validator refuses it outright:
+    /// `Forbidden: Port ranges are not supported with masquerade`. A masquerade expose always has
+    /// every port of every public address, so even a single `/32` leaves 256 blocks for two workers
+    /// to divide, and they never contend for the last one. What the draw does reach is the other
+    /// half of the same defect, which the paragraphs above name: several flows from *one* worker
+    /// sharing a block, so a lost update inside a block collides two of that worker's flows. That
+    /// is what varying `flows` is for. Reaching the block-handout corner needs a test that drives
+    /// the allocator directly rather than through a configuration.
+    ///
+    /// A tight range makes exhaustion reachable, which the fixture could assume away. The claim is
+    /// therefore stated over *delivered* flows: each one's tuple is its own. Nothing is softened --
+    /// a duplicate still fails on sight -- but the fixture's blanket "every packet is delivered"
+    /// had to go, because under a drawn range it fails on correct behaviour. `ALLOCATED` and `BARE`
+    /// keep a draw that translated nothing from passing quietly.
+    ///
+    /// Draws are clamped into range rather than rejected. A rejected draw costs the same 32
+    /// executions as a useful one, so under shuttle the budget is better spent bending every draw
+    /// into the shape under test than discarding it.
     #[concurrency::model_test]
     fn two_workers_are_not_given_the_same_public_tuple() {
-        /// Flows per worker: more than one, so a collision *within* a worker's block can happen
-        /// too, and few enough that a burst is still one block rather than an exhaustion test.
-        const FLOWS: u16 = 3;
+        /// Configurations drawn. Small for the reason
+        /// `generated_traffic_survives_being_split_across_two_workers` gives: under shuttle each
+        /// draw costs 32 executions, and each execution lowers a configuration and builds two
+        /// pipelines from it.
+        const CASES: usize = 64;
+
+        /// Draws where at least one flow was translated, so the assertion had something to judge.
+        static ALLOCATED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Draws whose public range served nothing at all.
+        static BARE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        /// Draws whose configuration would not assemble or validate.
+        static UNBUILT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        use lpm::prefix::with_ports::PrefixWithOptionalPorts;
 
         let _eal = dpdk::test_support::start_eal();
 
@@ -6284,99 +6323,173 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                .expect("the fixture exposes form an overlay")
-                .validate()
-                .expect("the fixture overlay validates");
-            // Lowered once, outside the threads, exactly as `start_router` lowers it once. The ACL
-            // contexts are built here too, which keeps the registry lock out of the interleaving
-            // under test rather than making every execution race on it.
-            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-            let blueprint = fleet.blueprint();
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(
+                |(flows, addr_bits, first_a, first_b): (u8, u8, u16, u16)| {
+                    // 1..=6 flows a worker, so a collision *within* one worker's block is reachable
+                    // and a burst is still a burst rather than an exhaustion sweep.
+                    let flows = u16::from(flows % 6) + 1;
+                    // /32, /31 or /30: one, two or four public addresses.
+                    let addr_bits = addr_bits % 3;
+                    // Kept apart so no two flows in a draw are the same flow. The high bit is
+                    // cleared so `first + flows` cannot wrap.
+                    let (first_a, first_b) = (first_a % 20000 + 1000, first_b % 20000 + 30000);
 
-            // A host and a first source port each, far enough apart that no two flows in the run
-            // are the same flow. Two workers rather than more because shuttle's cost is in the
-            // interleavings, and two threads is where the sharing already exists.
-            let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
-            let given: Vec<Reported> = thread::scope(|scope| {
-                let running: Vec<_> = workers
-                    .iter()
-                    .map(|(host, first)| {
-                        let entering = handle.clone();
-                        thread::Builder::new()
-                            .name(format!("worker-{host}"))
-                            .spawn_scoped(scope, move || {
-                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                // Recorded per thread because that is the only granularity there
-                                // is, and handed back because the assertion that judges this
-                                // worker is made after it has exited.
-                                let recording =
-                                    tracectl::evidence::capture(format!("worker-{host}"));
-                                // Built on this thread, not handed to it: the readers it takes out
-                                // are thread-local caches, and this is the `factory().handle()`
-                                // path production uses.
-                                let mut worker = blueprint.worker();
-                                let burst = (0..FLOWS)
-                                    .map(|n| {
-                                        tunnelled(&build_test_udp_ipv4_packet(
-                                            host,
-                                            "3.3.3.1",
-                                            first + n,
-                                            80,
-                                        ))
-                                    })
-                                    .collect();
-                                let tuples = worker
-                                    .send_batch(burst)
-                                    .iter()
-                                    .map(|out| {
-                                        assert!(
-                                            matches!(verdict(out), Verdict::Delivered { .. }),
-                                            "a packet that is delivered single-threaded was not: \
-                                             {:?}",
-                                            verdict(out)
-                                        );
-                                        let tenant = inside(out).expect(
-                                            "a delivered frame leaves this gateway tunnelled",
-                                        );
-                                        (
-                                            tenant.ip_source(),
-                                            tenant.transport_src_port().map(std::num::NonZero::get),
-                                        )
-                                    })
-                                    .collect::<Vec<_>>();
-                                (tuples, recording.evidence())
-                            })
-                            .expect("spawn worker")
-                    })
-                    .collect();
-                running
-                    .into_iter()
-                    .map(|worker| worker.join().expect("worker panicked"))
-                    .collect()
-            });
+                    let public = match format!("2.2.0.0/{}", 32 - u32::from(addr_bits))
+                        .parse::<Prefix>()
+                    {
+                        Ok(prefix) => prefix,
+                        Err(_) => {
+                            UNBUILT.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                    };
+                    let drawn = VpcExpose::empty()
+                        .make_masquerade(None)
+                        .expect("masquerade is a legal flavour for an empty expose")
+                        .ip("1.1.0.0/16".parse::<Prefix>().expect("a literal prefix").into())
+                        // `None` ports, not a drawn window: see the doc comment -- masquerade
+                        // refuses a port range, so the public supply is always every port.
+                        .as_range(PrefixWithOptionalPorts::new(public, None));
+                    let Ok(drawn) = drawn else {
+                        UNBUILT.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    };
+                    let overlay = overlay_with_exposes_and_acl(vec![drawn], None)
+                        .and_then(|overlay| overlay.validate());
+                    let Ok(overlay) = overlay else {
+                        UNBUILT.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    };
 
-            let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) = given.into_iter().unzip();
-            let given: Vec<_> = given.into_iter().flatten().collect();
-            // Held across the assertions below, so a collision arrives with both workers' traces
-            // attached and a pass prints nothing at all.
-            let _explain = tracectl::evidence::dump_on_panic(evidence);
+                    let entering = handle.clone();
+                    concurrency::stress(move || {
+                        // Lowered once, outside the threads, exactly as `start_router` lowers it
+                        // once. The ACL contexts are built here too, which keeps the registry lock
+                        // out of the interleaving under test rather than making every execution
+                        // race on it.
+                        let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                        let fleet =
+                            Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                        let blueprint = fleet.blueprint();
 
-            let mut seen = std::collections::BTreeMap::new();
-            for tuple in &given {
-                let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
-                *count += 1;
-                assert_eq!(
-                    *count,
-                    1,
-                    "{} distinct flows were translated and {tuple:?} was handed out twice, so a \
-                     reply to it cannot be attributed to either of them: {given:?}",
-                    given.len()
-                );
-            }
-        });
+                        // A host and a first source port each. Two workers rather than more because
+                        // shuttle's cost is in the interleavings, and two threads is where the
+                        // sharing already exists.
+                        let workers = [("1.1.0.1", first_a), ("1.1.0.2", first_b)];
+                        let given: Vec<Reported> = thread::scope(|scope| {
+                            let running: Vec<_> = workers
+                                .iter()
+                                .map(|(host, first)| {
+                                    let entering = entering.clone();
+                                    thread::Builder::new()
+                                        .name(format!("worker-{host}"))
+                                        .spawn_scoped(scope, move || {
+                                            let _guard =
+                                                entering.as_ref().map(tokio::runtime::Handle::enter);
+                                            // Recorded per thread because that is the only
+                                            // granularity there is, and handed back because the
+                                            // assertion that judges this worker is made after it
+                                            // has exited.
+                                            let recording =
+                                                tracectl::evidence::capture(format!("worker-{host}"));
+                                            // Built on this thread, not handed to it: the readers
+                                            // it takes out are thread-local caches, and this is the
+                                            // `factory().handle()` path production uses.
+                                            let mut worker = blueprint.worker();
+                                            let burst = (0..flows)
+                                                .map(|n| {
+                                                    tunnelled(&build_test_udp_ipv4_packet(
+                                                        host,
+                                                        "3.3.3.1",
+                                                        first + n,
+                                                        80,
+                                                    ))
+                                                })
+                                                .collect();
+                                            // A flow the range could not serve is dropped, not
+                                            // mistranslated, and says nothing about this property.
+                                            // Only what was translated is judged.
+                                            let tuples = worker
+                                                .send_batch(burst)
+                                                .iter()
+                                                .filter(|out| {
+                                                    matches!(
+                                                        verdict(out),
+                                                        Verdict::Delivered { .. }
+                                                    )
+                                                })
+                                                .map(|out| {
+                                                    let tenant = inside(out).expect(
+                                                        "a delivered frame leaves this gateway \
+                                                         tunnelled",
+                                                    );
+                                                    (
+                                                        tenant.ip_source(),
+                                                        tenant
+                                                            .transport_src_port()
+                                                            .map(std::num::NonZero::get),
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>();
+                                            (tuples, recording.evidence())
+                                        })
+                                        .expect("spawn worker")
+                                })
+                                .collect();
+                            running
+                                .into_iter()
+                                .map(|worker| worker.join().expect("worker panicked"))
+                                .collect()
+                        });
+
+                        let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) =
+                            given.into_iter().unzip();
+                        let given: Vec<_> = given.into_iter().flatten().collect();
+                        // Held across the assertions below, so a collision arrives with both
+                        // workers' traces attached and a pass prints nothing at all.
+                        let _explain = tracectl::evidence::dump_on_panic(evidence);
+
+                        if given.is_empty() {
+                            BARE.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            ALLOCATED.fetch_add(1, Ordering::Relaxed);
+                        }
+
+                        let mut seen = std::collections::BTreeMap::new();
+                        for tuple in &given {
+                            let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
+                            *count += 1;
+                            assert_eq!(
+                                *count,
+                                1,
+                                "{} distinct flows were translated and {tuple:?} was handed out \
+                                 twice, so a reply to it cannot be attributed to either of them: \
+                                 {given:?}",
+                                given.len()
+                            );
+                        }
+                    });
+                },
+            );
+
+        let (allocated, bare, unbuilt) = (
+            ALLOCATED.load(Ordering::Relaxed),
+            BARE.load(Ordering::Relaxed),
+            UNBUILT.load(Ordering::Relaxed),
+        );
+        eprintln!("allocated={allocated} bare={bare} unbuilt={unbuilt}");
+        super::assert_covered(
+            allocated > 0,
+            &format!(
+                "no draw translated a single flow, so nothing was ever compared \
+                 (allocated={allocated} bare={bare} unbuilt={unbuilt})"
+            ),
+        );
     }
 
     /// A generated configuration's own traffic, split across two workers.
@@ -6633,9 +6746,8 @@ mod model {
     /// own [`Worker`] from the shared [`Blueprint`].
     #[concurrency::model_test]
     fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
-        /// Flows opened per worker. Two, so the answering phase has more than one thing to do and
-        /// an interleaving between them exists at all.
-        const FLOWS: u8 = 2;
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
 
         /// Conversations that completed both legs. Counts executions rather than cases -- the
         /// stress body runs many times per test -- so it is a vacuity guard and not a measurement.
@@ -6657,108 +6769,128 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                .expect("the fixture exposes form an overlay")
-                .validate()
-                .expect("the fixture overlay validates");
-            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-            let blueprint = fleet.blueprint();
-            let entering = handle.clone();
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(|(flows, hosts): (u8, u8)| {
+                // Clamped rather than rejected: a rejected draw costs the same 32 executions
+                // under shuttle as a useful one.
+                let flows = flows % 4 + 1;
+                // Which private host each worker's flows start from. Varied so the conversations
+                // are not the same four every execution, and kept apart between workers so no two
+                // are the same flow.
+                let hosts = hosts % 8;
+                let entering = handle.clone();
+            concurrency::stress(move || {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
 
-            // Phase one: each worker opens its own flows and stops with the reply outstanding.
-            let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
-                let running: Vec<_> = (0..2u8)
-                    .map(|which| {
-                        let entering = entering.clone();
-                        thread::Builder::new()
-                            .name(format!("open-{which}"))
-                            .spawn_scoped(scope, move || {
-                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                let _evidence =
-                                    tracectl::evidence::capture(format!("open-{which}"));
-                                let mut worker = blueprint.worker();
-                                (0..FLOWS)
-                                    .map(|nth| {
-                                        // A private host per worker per flow, so no two
-                                        // conversations in the run are the same flow.
-                                        let src = format!("1.1.{which}.{}", nth + 1);
-                                        let mut convo = Conversation::new(
-                                            super::routed::Path::fixture(),
-                                            src.parse().unwrap_or_else(|e| {
-                                                unreachable!("{src} is an address: {e}")
-                                            }),
-                                            "3.3.3.1"
-                                                .parse()
-                                                .unwrap_or_else(|e| unreachable!("{e}")),
-                                            u16::from(nth) + 1000,
-                                            80,
-                                        );
-                                        step(&mut worker, &mut convo);
-                                        convo
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                            .expect("spawn opener")
-                    })
-                    .collect();
-                running
-                    .into_iter()
-                    .map(|opener| opener.join().expect("opener panicked"))
-                    .collect()
-            });
+                // Phase one: each worker opens its own flows and stops with the reply outstanding.
+                let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                    let running: Vec<_> = (0..2u8)
+                        .map(|which| {
+                            let entering = entering.clone();
+                            thread::Builder::new()
+                                .name(format!("open-{which}"))
+                                .spawn_scoped(scope, move || {
+                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                    let _evidence =
+                                        tracectl::evidence::capture(format!("open-{which}"));
+                                    let mut worker = blueprint.worker();
+                                    (0..flows)
+                                        .map(|nth| {
+                                            // A private host per worker per flow, so no two
+                                            // conversations in the run are the same flow.
+                                            let src = format!("1.1.{which}.{}", hosts + nth + 1);
+                                            let mut convo = Conversation::new(
+                                                super::routed::Path::fixture(),
+                                                src.parse().unwrap_or_else(|e| {
+                                                    unreachable!("{src} is an address: {e}")
+                                                }),
+                                                "3.3.3.1"
+                                                    .parse()
+                                                    .unwrap_or_else(|e| unreachable!("{e}")),
+                                                u16::from(nth) + 1000,
+                                                80,
+                                            );
+                                            step(&mut worker, &mut convo);
+                                            convo
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .expect("spawn opener")
+                        })
+                        .collect();
+                    running
+                        .into_iter()
+                        .map(|opener| opener.join().expect("opener panicked"))
+                        .collect()
+                });
 
-            // Phase two: swap. Neither worker answers a flow it opened.
-            let second = opened
-                .pop()
-                .unwrap_or_else(|| unreachable!("two openers ran"));
-            let first = opened
-                .pop()
-                .unwrap_or_else(|| unreachable!("two openers ran"));
+                // Phase two: swap. Neither worker answers a flow it opened.
+                let second = opened
+                    .pop()
+                    .unwrap_or_else(|| unreachable!("two openers ran"));
+                let first = opened
+                    .pop()
+                    .unwrap_or_else(|| unreachable!("two openers ran"));
 
-            let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
-                let running: Vec<_> = [(0u8, second), (1u8, first)]
-                    .into_iter()
-                    .map(|(which, mut theirs)| {
-                        let entering = entering.clone();
-                        thread::Builder::new()
-                            .name(format!("answer-{which}"))
-                            .spawn_scoped(scope, move || {
-                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                let _evidence =
-                                    tracectl::evidence::capture(format!("answer-{which}"));
-                                // A pipeline of its own, from the same tables: the flow state and
-                                // the allocation this thread is about to read were written through
-                                // a different one.
-                                let mut worker = blueprint.worker();
-                                for convo in &mut theirs {
-                                    // A request the configuration refused never reached the state
-                                    // that has a reply, and that is not a defect. See
-                                    // `Load::checked`.
-                                    if !convo.finished() {
-                                        step(&mut worker, convo);
+                let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                    let running: Vec<_> = [(0u8, second), (1u8, first)]
+                        .into_iter()
+                        .map(|(which, mut theirs)| {
+                            let entering = entering.clone();
+                            thread::Builder::new()
+                                .name(format!("answer-{which}"))
+                                .spawn_scoped(scope, move || {
+                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                    let _evidence =
+                                        tracectl::evidence::capture(format!("answer-{which}"));
+                                    // A pipeline of its own, from the same tables: the flow state and
+                                    // the allocation this thread is about to read were written through
+                                    // a different one.
+                                    let mut worker = blueprint.worker();
+                                    for convo in &mut theirs {
+                                        // A request the configuration refused never reached the state
+                                        // that has a reply, and that is not a defect. See
+                                        // `Load::checked`.
+                                        if !convo.finished() {
+                                            step(&mut worker, convo);
+                                        }
                                     }
-                                }
-                                theirs
-                            })
-                            .expect("spawn answerer")
-                    })
-                    .collect();
-                running
-                    .into_iter()
-                    .map(|answerer| answerer.join().expect("answerer panicked"))
-                    .collect()
+                                    theirs
+                                })
+                                .expect("spawn answerer")
+                        })
+                        .collect();
+                    running
+                        .into_iter()
+                        .map(|answerer| answerer.join().expect("answerer panicked"))
+                        .collect()
+                });
+
+                for convo in answered.into_iter().flatten() {
+                    if convo.checked() {
+                        CLOSED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
             });
 
-            for convo in answered.into_iter().flatten() {
-                if convo.checked() {
-                    CLOSED.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    ABANDONED.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        });
+        let (closed, abandoned) = (
+            CLOSED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+        );
+        eprintln!("closed={closed} abandoned={abandoned}");
 
         let (closed, abandoned) = (
             CLOSED.load(Ordering::Relaxed),
@@ -6839,6 +6971,9 @@ mod model {
     /// judges by.
     #[concurrency::model_test]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
+
         /// Errors that found their flow and were translated, so a teardown was possible at all.
         static REPORTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         /// Conversations that survived a concurrent teardown of their neighbour.
@@ -6858,149 +6993,168 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let target: IpAddr = "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}"));
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(|(spare, doomed_port, spared_port): (u8, u16, u16)| {
+                // Clamped rather than rejected: under shuttle a rejected draw costs the same 32
+                // executions as a useful one. The two conversations must stay distinct -- the
+                // property is one being torn down and the *other* surviving -- so the spared host
+                // sits above the doomed one and the port windows cannot overlap.
+                let spare = spare % 8 + 2;
+                let doomed_port = doomed_port % 20000 + 1000;
+                let spared_port = spared_port % 20000 + 30000;
+                // Cloned per draw: `stress` needs an owned `'static` handle, and the draw closure
+                // runs once per case, so moving the outer one out would be a move in an `FnMut`.
+                let handle = handle.clone();
+                concurrency::stress(move || {
+                let target: IpAddr = "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}"));
 
-            for (code, tears_down) in [
-                (net::icmp4::Icmp4DestUnreachable::Network, true),
-                (
-                    net::icmp4::Icmp4DestUnreachable::FragmentationNeeded {
-                        next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
-                    },
-                    false,
-                ),
-            ] {
-                let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                    .expect("the fixture exposes form an overlay")
-                    .validate()
-                    .expect("the fixture overlay validates");
-                // A fleet per case, so the second case cannot inherit the first's flows.
-                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-                let fleet =
-                    Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-                let blueprint = fleet.blueprint();
-                let entering = handle.clone();
-
-                // Phase one: two flows, opened on different workers, both live and both one-way.
-                let opening = entering.clone();
-                let answering = entering.clone();
-                let (doomed, mut spared): ((IpAddr, u16), Conversation) = thread::scope(|scope| {
-                    let doomed = thread::Builder::new()
-                        .name("open-doomed".to_owned())
-                        .spawn_scoped(scope, move || {
-                            let _guard = opening.as_ref().map(tokio::runtime::Handle::enter);
-                            let _evidence = tracectl::evidence::capture("open-doomed");
-                            let mut worker = blueprint.worker();
-                            let request = super::round_trip::udp(
-                                "1.1.0.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
-                                target,
-                                1000,
-                                80,
-                            )
-                            .unwrap_or_else(|| unreachable!("the fixture request builds"));
-                            let out = worker.send(tunnelled(&request));
-                            let carried = inside(&out).unwrap_or_else(|| {
-                                unreachable!(
-                                    "the request was not delivered tunnelled: {:?}",
-                                    verdict(&out)
-                                )
-                            });
-                            let (Some(public), Some(port)) =
-                                (carried.ip_source(), carried.transport_src_port())
-                            else {
-                                unreachable!("a delivered request had no public tuple")
-                            };
-                            (public, port.get())
-                        })
-                        .expect("spawn opener");
-
-                    let spared = thread::Builder::new()
-                        .name("open-spared".to_owned())
-                        .spawn_scoped(scope, move || {
-                            let _guard = answering.as_ref().map(tokio::runtime::Handle::enter);
-                            let _evidence = tracectl::evidence::capture("open-spared");
-                            let mut worker = blueprint.worker();
-                            let mut convo = Conversation::new(
-                                super::routed::Path::fixture(),
-                                "1.1.0.2".parse().unwrap_or_else(|e| unreachable!("{e}")),
-                                target,
-                                2000,
-                                80,
-                            );
-                            step(&mut worker, &mut convo);
-                            convo
-                        })
-                        .expect("spawn opener");
-
+                for (code, tears_down) in [
+                    (net::icmp4::Icmp4DestUnreachable::Network, true),
                     (
-                        doomed.join().expect("opener panicked"),
-                        spared.join().expect("opener panicked"),
-                    )
-                });
+                        net::icmp4::Icmp4DestUnreachable::FragmentationNeeded {
+                            next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
+                        },
+                        false,
+                    ),
+                ] {
+                    let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                        .expect("the fixture exposes form an overlay")
+                        .validate()
+                        .expect("the fixture overlay validates");
+                    // A fleet per case, so the second case cannot inherit the first's flows.
+                    let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                    let fleet =
+                        Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
+                    let entering = handle.clone();
 
-                // Phase two: one worker reports the error while the other answers the flow it kept.
-                let tearing = entering.clone();
-                let keeping = entering.clone();
-                // Named for the message below, which outlives the closure that consumes the code.
-                let named = format!("{code:?}");
-                let spared = thread::scope(|scope| {
-                    let teardown = thread::Builder::new()
-                        .name("teardown".to_owned())
-                        .spawn_scoped(scope, move || {
-                            let _guard = tearing.as_ref().map(tokio::runtime::Handle::enter);
-                            let _evidence = tracectl::evidence::capture("teardown");
-                            let mut worker = blueprint.worker();
-                            let out = worker.send(unreachable(code, doomed, target));
-                            // Delivery is a real vacuity guard: an error whose embedded datagram
-                            // matches no flow is *let through* rather than refused, so a mis-built
-                            // one would sail past every assertion here having done nothing.
-                            matches!(verdict(&out), Verdict::Delivered { .. })
-                        })
-                        .expect("spawn teardown");
+                    // Phase one: two flows, opened on different workers, both live and both one-way.
+                    let opening = entering.clone();
+                    let answering = entering.clone();
+                    let (doomed, mut spared): ((IpAddr, u16), Conversation) = thread::scope(|scope| {
+                        let doomed = thread::Builder::new()
+                            .name("open-doomed".to_owned())
+                            .spawn_scoped(scope, move || {
+                                let _guard = opening.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence = tracectl::evidence::capture("open-doomed");
+                                let mut worker = blueprint.worker();
+                                let request = super::round_trip::udp(
+                                    "1.1.0.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                    target,
+                                    doomed_port,
+                                    80,
+                                )
+                                .unwrap_or_else(|| unreachable!("the fixture request builds"));
+                                let out = worker.send(tunnelled(&request));
+                                let carried = inside(&out).unwrap_or_else(|| {
+                                    unreachable!(
+                                        "the request was not delivered tunnelled: {:?}",
+                                        verdict(&out)
+                                    )
+                                });
+                                let (Some(public), Some(port)) =
+                                    (carried.ip_source(), carried.transport_src_port())
+                                else {
+                                    unreachable!("a delivered request had no public tuple")
+                                };
+                                (public, port.get())
+                            })
+                            .expect("spawn opener");
 
-                    let answer = thread::Builder::new()
-                        .name("answer".to_owned())
-                        .spawn_scoped(scope, move || {
-                            let _guard = keeping.as_ref().map(tokio::runtime::Handle::enter);
-                            let _evidence = tracectl::evidence::capture("answer");
-                            let mut worker = blueprint.worker();
-                            step(&mut worker, &mut spared);
-                            spared
-                        })
-                        .expect("spawn answer");
+                        let spared = thread::Builder::new()
+                            .name("open-spared".to_owned())
+                            .spawn_scoped(scope, move || {
+                                let _guard = answering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence = tracectl::evidence::capture("open-spared");
+                                let mut worker = blueprint.worker();
+                                let mut convo = Conversation::new(
+                                    super::routed::Path::fixture(),
+                                    format!("1.1.0.{spare}")
+                                        .parse()
+                                        .unwrap_or_else(|e| unreachable!("{e}")),
+                                    target,
+                                    spared_port,
+                                    80,
+                                );
+                                step(&mut worker, &mut convo);
+                                convo
+                            })
+                            .expect("spawn opener");
+
+                        (
+                            doomed.join().expect("opener panicked"),
+                            spared.join().expect("opener panicked"),
+                        )
+                    });
+
+                    // Phase two: one worker reports the error while the other answers the flow it kept.
+                    let tearing = entering.clone();
+                    let keeping = entering.clone();
+                    // Named for the message below, which outlives the closure that consumes the code.
+                    let named = format!("{code:?}");
+                    let spared = thread::scope(|scope| {
+                        let teardown = thread::Builder::new()
+                            .name("teardown".to_owned())
+                            .spawn_scoped(scope, move || {
+                                let _guard = tearing.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence = tracectl::evidence::capture("teardown");
+                                let mut worker = blueprint.worker();
+                                let out = worker.send(unreachable(code, doomed, target));
+                                // Delivery is a real vacuity guard: an error whose embedded datagram
+                                // matches no flow is *let through* rather than refused, so a mis-built
+                                // one would sail past every assertion here having done nothing.
+                                matches!(verdict(&out), Verdict::Delivered { .. })
+                            })
+                            .expect("spawn teardown");
+
+                        let answer = thread::Builder::new()
+                            .name("answer".to_owned())
+                            .spawn_scoped(scope, move || {
+                                let _guard = keeping.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence = tracectl::evidence::capture("answer");
+                                let mut worker = blueprint.worker();
+                                step(&mut worker, &mut spared);
+                                spared
+                            })
+                            .expect("spawn answer");
+
+                        assert!(
+                            teardown.join().expect("teardown panicked"),
+                            "the icmp error never reached the flow it named, so this raced against \
+                             nothing"
+                        );
+                        REPORTED.fetch_add(1, Ordering::Relaxed);
+                        answer.join().expect("answer panicked")
+                    });
 
                     assert!(
-                        teardown.join().expect("teardown panicked"),
-                        "the icmp error never reached the flow it named, so this raced against \
-                         nothing"
+                        spared.checked(),
+                        "a flow was disturbed by an icmp teardown of a different flow on another \
+                         worker. {}",
+                        spared.describe()
                     );
-                    REPORTED.fetch_add(1, Ordering::Relaxed);
-                    answer.join().expect("answer panicked")
-                });
+                    SURVIVED.fetch_add(1, Ordering::Relaxed);
 
-                assert!(
-                    spared.checked(),
-                    "a flow was disturbed by an icmp teardown of a different flow on another \
-                     worker. {}",
-                    spared.describe()
-                );
-                SURVIVED.fetch_add(1, Ordering::Relaxed);
-
-                // And the other half of the frame condition: the flow the error *did* name.
-                let mut worker = blueprint.worker();
-                let reply = super::round_trip::udp(target, doomed.0, 80, doomed.1)
-                    .unwrap_or_else(|| unreachable!("the reply builds"));
-                let out = worker.send(super::routed::tunnelled_from(vni(REMOTE_VNI), &reply));
-                let delivered = matches!(verdict(&out), Verdict::Delivered { .. });
-                assert_eq!(
-                    delivered,
-                    !tears_down,
-                    "an icmp error with code {named} left the flow it named {}: {:?}",
-                    if delivered { "alive" } else { "torn down" },
-                    verdict(&out)
-                );
-            }
-        });
+                    // And the other half of the frame condition: the flow the error *did* name.
+                    let mut worker = blueprint.worker();
+                    let reply = super::round_trip::udp(target, doomed.0, 80, doomed.1)
+                        .unwrap_or_else(|| unreachable!("the reply builds"));
+                    let out = worker.send(super::routed::tunnelled_from(vni(REMOTE_VNI), &reply));
+                    let delivered = matches!(verdict(&out), Verdict::Delivered { .. });
+                    assert_eq!(
+                        delivered,
+                        !tears_down,
+                        "an icmp error with code {named} left the flow it named {}: {:?}",
+                        if delivered { "alive" } else { "torn down" },
+                        verdict(&out)
+                    );
+                }
+            });
+            });
 
         let (reported, survived) = (
             REPORTED.load(Ordering::Relaxed),
@@ -7057,7 +7211,7 @@ mod model {
     #[concurrency::model_test]
     fn forwarding_survives_a_route_being_republished_underneath_it() {
         /// Conversations each worker completes while the tables move.
-        const FLOWS: u8 = 2;
+        const CASES: usize = 64;
         /// Routes installed, and therefore fibs published, during the run.
         const CHURN: u8 = 6;
 
@@ -7080,89 +7234,106 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                .expect("the fixture exposes form an overlay")
-                .validate()
-                .expect("the fixture overlay validates");
-            // Owned here rather than by the fleet, so this thread can still borrow it mutably while
-            // the workers hold a shared reference to what was derived from it.
-            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-            let blueprint = fleet.blueprint();
-            let entering = handle.clone();
-            // Two workers and this thread.
-            let start = Arc::new(concurrency::sync::Barrier::new(3));
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(|(flows, churn, host): (u8, u8, u8)| {
+                // Clamped rather than rejected: under shuttle a rejected draw costs the same 32
+                // executions as a useful one. `churn` is how many times the route is republished
+                // beneath the traffic -- the axis the fixture pinned at six -- and `flows` is how
+                // much traffic rides over it while that happens.
+                let flows = flows % 4 + 1;
+                let churn = churn % 8 + 1;
+                let host = host % 8;
+                // Cloned per draw: `stress` needs an owned `'static` handle and this closure runs
+                // once per case.
+                let handle = handle.clone();
+            concurrency::stress(move || {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                // Owned here rather than by the fleet, so this thread can still borrow it mutably while
+                // the workers hold a shared reference to what was derived from it.
+                let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+                // Two workers and this thread.
+                let start = Arc::new(concurrency::sync::Barrier::new(3));
 
-            thread::scope(|scope| {
-                let running: Vec<_> = (0..2u8)
-                    .map(|which| {
-                        let entering = entering.clone();
-                        let start = start.clone();
-                        thread::Builder::new()
-                            .name(format!("forward-{which}"))
-                            .spawn_scoped(scope, move || {
-                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                let _evidence =
-                                    tracectl::evidence::capture(format!("forward-{which}"));
-                                let mut worker = blueprint.worker();
-                                start.wait();
-                                let mut done = 0u64;
-                                for nth in 0..FLOWS {
-                                    let src = format!("1.1.{which}.{}", nth + 1);
-                                    let mut convo = Conversation::new(
-                                        super::routed::Path::fixture(),
-                                        src.parse().unwrap_or_else(|e| unreachable!("{src}: {e}")),
-                                        "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
-                                        u16::from(nth) + 1000,
-                                        80,
-                                    );
-                                    drive(&mut worker, &mut convo);
-                                    assert!(
-                                        convo.checked(),
-                                        "a conversation did not complete while routes were being \
-                                         republished. {}",
-                                        convo.describe()
-                                    );
-                                    done += 1;
-                                }
-                                done
-                            })
-                            .expect("spawn forwarder")
-                    })
-                    .collect();
+                thread::scope(|scope| {
+                    let running: Vec<_> = (0..2u8)
+                        .map(|which| {
+                            let entering = entering.clone();
+                            let start = start.clone();
+                            thread::Builder::new()
+                                .name(format!("forward-{which}"))
+                                .spawn_scoped(scope, move || {
+                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                    let _evidence =
+                                        tracectl::evidence::capture(format!("forward-{which}"));
+                                    let mut worker = blueprint.worker();
+                                    start.wait();
+                                    let mut done = 0u64;
+                                    for nth in 0..flows {
+                                        let src = format!("1.1.{which}.{}", host + nth + 1);
+                                        let mut convo = Conversation::new(
+                                            super::routed::Path::fixture(),
+                                            src.parse().unwrap_or_else(|e| unreachable!("{src}: {e}")),
+                                            "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                            u16::from(nth) + 1000,
+                                            80,
+                                        );
+                                        drive(&mut worker, &mut convo);
+                                        assert!(
+                                            convo.checked(),
+                                            "a conversation did not complete while routes were being \
+                                             republished. {}",
+                                            convo.describe()
+                                        );
+                                        done += 1;
+                                    }
+                                    done
+                                })
+                                .expect("spawn forwarder")
+                        })
+                        .collect();
 
-                // This thread is the config-apply path: it owns the writers and republishes.
-                let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
-                let landing =
-                    FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink())));
-                start.wait();
-                for nth in 0..CHURN {
-                    // Somewhere no packet in this property is addressed, so the only thing under
-                    // test is the act of publishing.
-                    let prefix = format!("9.9.{nth}.0");
-                    tables.route_via(
-                        UNDERLAY_VRF,
-                        Prefix::expect_from((
-                            prefix
-                                .parse::<IpAddr>()
-                                .unwrap_or_else(|e| unreachable!("{e}")),
-                            24,
-                        )),
-                        nhop(&peer),
-                        &landing,
-                    );
-                    PUBLISHED.fetch_add(1, Ordering::Relaxed);
-                }
+                    // This thread is the config-apply path: it owns the writers and republishes.
+                    let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
+                    let landing =
+                        FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink())));
+                    start.wait();
+                    for nth in 0..churn {
+                        // Somewhere no packet in this property is addressed, so the only thing under
+                        // test is the act of publishing.
+                        let prefix = format!("9.9.{nth}.0");
+                        tables.route_via(
+                            UNDERLAY_VRF,
+                            Prefix::expect_from((
+                                prefix
+                                    .parse::<IpAddr>()
+                                    .unwrap_or_else(|e| unreachable!("{e}")),
+                                24,
+                            )),
+                            nhop(&peer),
+                            &landing,
+                        );
+                        PUBLISHED.fetch_add(1, Ordering::Relaxed);
+                    }
 
-                for worker in running {
-                    COMPLETED.fetch_add(
-                        worker.join().expect("forwarder panicked"),
-                        Ordering::Relaxed,
-                    );
-                }
+                    for worker in running {
+                        COMPLETED.fetch_add(
+                            worker.join().expect("forwarder panicked"),
+                            Ordering::Relaxed,
+                        );
+                    }
+                });
             });
-        });
+            });
 
         let (completed, published) = (
             COMPLETED.load(Ordering::Relaxed),
@@ -7238,9 +7409,7 @@ mod model {
     #[concurrency::model_test]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
         /// Versions published after the fixture's own.
-        const CHURN: u8 = 3;
         /// Probes each worker sends per round, alongside that round's publish.
-        const PER_ROUND: u8 = 2;
 
         /// Probes served by the version published in their own round.
         static FRESH: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -7321,179 +7490,199 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                .expect("the fixture exposes form an overlay")
-                .validate()
-                .expect("the fixture overlay validates");
-            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-            // Every waypoint is resolvable before anything moves. The adjacency table is not what
-            // is under test, and a version whose mac had not been learned yet would be dropped for
-            // a reason that has nothing to do with the fib.
-            for nth in 1..=CHURN {
-                let (_, oif) = waypoint(nth);
-                tables.interface(
-                    oif,
-                    &format!("uplink-{nth}"),
-                    SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
-                );
-                tables.attach(oif, UNDERLAY_VRF);
-            }
-            // Every waypoint address is resolvable on every waypoint interface, which is more than
-            // any version needs: a version only ever uses its own pair. The cross product is here
-            // so that a group mixing two versions would be *delivered* -- and so caught by the
-            // check below, which names both halves -- rather than dropped for want of an
-            // adjacency. A drop reads identically to a topology mistake, so leaving the mixed pairs
-            // unresolvable would turn the sharpest failure this property can have into its most
-            // ambiguous one. Established by break test; see the doc comment.
-            for to in 0..=CHURN {
-                for over in 0..=CHURN {
-                    tables.adjacency(waypoint(to).0, waypoint(over).1, framing(to));
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(|(churn, per_round, host): (u8, u8, u8)| {
+                // Clamped rather than rejected: under shuttle a rejected draw costs the same 32
+                // executions as a useful one. `churn` is how many times the next hop moves and
+                // `per_round` how much traffic crosses it between moves -- the two the fixture
+                // pinned at three and two.
+                let churn = churn % 4 + 1;
+                let per_round = per_round % 3 + 1;
+                let host = host % 8 + 1;
+                // Cloned per draw: `stress` needs an owned `'static` handle and this closure runs
+                // once per case.
+                let handle = handle.clone();
+            concurrency::stress(move || {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                // Every waypoint is resolvable before anything moves. The adjacency table is not what
+                // is under test, and a version whose mac had not been learned yet would be dropped for
+                // a reason that has nothing to do with the fib.
+                for nth in 1..=churn {
+                    let (_, oif) = waypoint(nth);
+                    tables.interface(
+                        oif,
+                        &format!("uplink-{nth}"),
+                        SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
+                    );
+                    tables.attach(oif, UNDERLAY_VRF);
                 }
-            }
-            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-            let blueprint = fleet.blueprint();
-            let entering = handle.clone();
-            // Two workers and this thread, rendezvousing once per round.
-            let gate = Arc::new(concurrency::sync::Barrier::new(3));
-            let mut reports = Vec::new();
+                // Every waypoint address is resolvable on every waypoint interface, which is more than
+                // any version needs: a version only ever uses its own pair. The cross product is here
+                // so that a group mixing two versions would be *delivered* -- and so caught by the
+                // check below, which names both halves -- rather than dropped for want of an
+                // adjacency. A drop reads identically to a topology mistake, so leaving the mixed pairs
+                // unresolvable would turn the sharpest failure this property can have into its most
+                // ambiguous one. Established by break test; see the doc comment.
+                for to in 0..=churn {
+                    for over in 0..=churn {
+                        tables.adjacency(waypoint(to).0, waypoint(over).1, framing(to));
+                    }
+                }
+                let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+                // Two workers and this thread, rendezvousing once per round.
+                let gate = Arc::new(concurrency::sync::Barrier::new(3));
+                let mut reports = Vec::new();
 
-            thread::scope(|scope| {
-                let running: Vec<_> = (0..2u8)
-                    .map(|which| {
-                        let entering = entering.clone();
-                        let gate = gate.clone();
-                        thread::Builder::new()
-                            .name(format!("probe-{which}"))
-                            .spawn_scoped(scope, move || {
-                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                let _evidence =
-                                    tracectl::evidence::capture(format!("probe-{which}"));
-                                let mut worker = blueprint.worker();
+                thread::scope(|scope| {
+                    let running: Vec<_> = (0..2u8)
+                        .map(|which| {
+                            let entering = entering.clone();
+                            let gate = gate.clone();
+                            thread::Builder::new()
+                                .name(format!("probe-{which}"))
+                                .spawn_scoped(scope, move || {
+                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                    let _evidence =
+                                        tracectl::evidence::capture(format!("probe-{which}"));
+                                    let mut worker = blueprint.worker();
 
-                                // A fresh five-tuple per probe, so every one of them is a new flow
-                                // and has to consult the fib. Probes that shared a flow would say
-                                // nothing about a route published after the first of them.
-                                let mut port = u16::from(which) * 1000 + 1000;
-                                let send = |worker: &mut Worker, port: &mut u16| -> Seen {
-                                    *port += 1;
-                                    let src = format!("1.1.{which}.1");
-                                    let out = worker.send(tunnelled(&build_test_udp_ipv4_packet(
-                                        &src, "3.3.3.1", *port, 80,
-                                    )));
-                                    let Verdict::Delivered {
-                                        oif: Some(oif),
-                                        dst: Some(dst),
-                                        ..
-                                    } = verdict(&out)
-                                    else {
-                                        return Err(format!(
-                                            "it did not leave the gateway: {:?}",
-                                            verdict(&out)
-                                        ));
+                                    // A fresh five-tuple per probe, so every one of them is a new flow
+                                    // and has to consult the fib. Probes that shared a flow would say
+                                    // nothing about a route published after the first of them.
+                                    let mut port = u16::from(which) * 1000 + 1000;
+                                    let send = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                        *port += 1;
+                                        let src = format!("1.1.{which}.{host}");
+                                        let out = worker.send(tunnelled(&build_test_udp_ipv4_packet(
+                                            &src, "3.3.3.1", *port, 80,
+                                        )));
+                                        let Verdict::Delivered {
+                                            oif: Some(oif),
+                                            dst: Some(dst),
+                                            ..
+                                        } = verdict(&out)
+                                        else {
+                                            return Err(format!(
+                                                "it did not leave the gateway: {:?}",
+                                                verdict(&out)
+                                            ));
+                                        };
+                                        (0..=churn)
+                                            .find(|nth| waypoint(*nth) == (dst, oif))
+                                            .ok_or_else(|| {
+                                                format!(
+                                                    "it left over interface {oif} towards {dst}, which \
+                                                     is no published next hop: either the \
+                                                     encapsulation and the egress came from different \
+                                                     versions, or the group was read while it was \
+                                                     being written"
+                                                )
+                                            })
                                     };
-                                    (0..=CHURN)
-                                        .find(|nth| waypoint(*nth) == (dst, oif))
-                                        .ok_or_else(|| {
-                                            format!(
-                                                "it left over interface {oif} towards {dst}, which \
-                                                 is no published next hop: either the \
-                                                 encapsulation and the egress came from different \
-                                                 versions, or the group was read while it was \
-                                                 being written"
-                                            )
+
+                                    // Caught rather than allowed to escape: see `without_unwinding`.
+                                    // A probe that panicked would miss the barrier below and hang the
+                                    // property instead of failing it.
+                                    let probe = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                        without_unwinding(|| send(worker, port)).unwrap_or_else(|why| {
+                                            Err(format!("sending it panicked: {why}"))
                                         })
-                                };
+                                    };
 
-                                // Caught rather than allowed to escape: see `without_unwinding`.
-                                // A probe that panicked would miss the barrier below and hang the
-                                // property instead of failing it.
-                                let probe = |worker: &mut Worker, port: &mut u16| -> Seen {
-                                    without_unwinding(|| send(worker, port)).unwrap_or_else(|why| {
-                                        Err(format!("sending it panicked: {why}"))
-                                    })
-                                };
-
-                                gate.wait();
-                                let mut seen = Vec::with_capacity(
-                                    usize::from(CHURN) * usize::from(PER_ROUND) + 1,
-                                );
-                                for _ in 1..=CHURN {
-                                    for _ in 0..PER_ROUND {
-                                        seen.push(probe(&mut worker, &mut port));
-                                    }
                                     gate.wait();
-                                }
-                                // Nothing is moving now: every publish returned before the last
-                                // barrier, so there is no version but the last one left to serve.
-                                seen.push(probe(&mut worker, &mut port));
-                                seen
-                            })
-                            .expect("spawn prober")
-                    })
-                    .collect();
+                                    let mut seen = Vec::with_capacity(
+                                        usize::from(churn) * usize::from(per_round) + 1,
+                                    );
+                                    for _ in 1..=churn {
+                                        for _ in 0..per_round {
+                                            seen.push(probe(&mut worker, &mut port));
+                                        }
+                                        gate.wait();
+                                    }
+                                    // Nothing is moving now: every publish returned before the last
+                                    // barrier, so there is no version but the last one left to serve.
+                                    seen.push(probe(&mut worker, &mut port));
+                                    seen
+                                })
+                                .expect("spawn prober")
+                        })
+                        .collect();
 
-                // This thread is the config-apply path: it owns the writers and moves the next hop
-                // the default route in the remote vpc's fib already resolves to. No route is
-                // touched -- re-registering the key is the whole change.
-                let key = nhop(&PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()));
-                gate.wait();
-                for round in 1..=CHURN {
-                    tables.nexthop(REMOTE_VNI, &key, &towards(round));
+                    // This thread is the config-apply path: it owns the writers and moves the next hop
+                    // the default route in the remote vpc's fib already resolves to. No route is
+                    // touched -- re-registering the key is the whole change.
+                    let key = nhop(&PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()));
                     gate.wait();
-                }
+                    for round in 1..=churn {
+                        tables.nexthop(REMOTE_VNI, &key, &towards(round));
+                        gate.wait();
+                    }
 
-                for prober in running {
-                    reports.push(prober.join().expect("prober panicked"));
+                    for prober in running {
+                        reports.push(prober.join().expect("prober panicked"));
+                    }
+                });
+
+                // Judged here rather than in the probers, and that is not a stylistic choice. A prober
+                // that panicked mid-round would never reach the next barrier, so its two peers would
+                // wait on it forever: the property would hang instead of failing, which is the worst
+                // way for a test to be wrong. A prober therefore only observes.
+                for seen in reports {
+                    for (nth, observed) in seen.iter().enumerate() {
+                        let last = nth == seen.len() - 1;
+                        let round = if last {
+                            churn
+                        } else {
+                            u8::try_from(nth).unwrap_or_else(|_| unreachable!()) / per_round + 1
+                        };
+                        let version = match observed {
+                            Ok(version) => *version,
+                            Err(why) => panic!(
+                                "a probe sent in round {round}, while the next hop was moving, is not \
+                                 attributable to any version: {why}"
+                            ),
+                        };
+                        if last {
+                            assert_eq!(
+                                version, churn,
+                                "a probe sent after the churn had finished was forwarded by version \
+                                 {version}, not by version {churn}, the last one published. Every \
+                                 publish returned before the barrier that released this probe, so a \
+                                 reader still serving an earlier version is serving a next hop that \
+                                 no longer exists"
+                            );
+                            continue;
+                        }
+                        assert!(
+                            version == round || version + 1 == round,
+                            "a probe sent in round {round} was forwarded by version {version}. \
+                             Version {} was published before this round opened, so no reader may \
+                             still be serving anything older, and version {round} is the newest that \
+                             exists",
+                            round - 1
+                        );
+                        if version == round {
+                            FRESH.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            STALE.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             });
-
-            // Judged here rather than in the probers, and that is not a stylistic choice. A prober
-            // that panicked mid-round would never reach the next barrier, so its two peers would
-            // wait on it forever: the property would hang instead of failing, which is the worst
-            // way for a test to be wrong. A prober therefore only observes.
-            for seen in reports {
-                for (nth, observed) in seen.iter().enumerate() {
-                    let last = nth == seen.len() - 1;
-                    let round = if last {
-                        CHURN
-                    } else {
-                        u8::try_from(nth).unwrap_or_else(|_| unreachable!()) / PER_ROUND + 1
-                    };
-                    let version = match observed {
-                        Ok(version) => *version,
-                        Err(why) => panic!(
-                            "a probe sent in round {round}, while the next hop was moving, is not \
-                             attributable to any version: {why}"
-                        ),
-                    };
-                    if last {
-                        assert_eq!(
-                            version, CHURN,
-                            "a probe sent after the churn had finished was forwarded by version \
-                             {version}, not by version {CHURN}, the last one published. Every \
-                             publish returned before the barrier that released this probe, so a \
-                             reader still serving an earlier version is serving a next hop that \
-                             no longer exists"
-                        );
-                        continue;
-                    }
-                    assert!(
-                        version == round || version + 1 == round,
-                        "a probe sent in round {round} was forwarded by version {version}. \
-                         Version {} was published before this round opened, so no reader may \
-                         still be serving anything older, and version {round} is the newest that \
-                         exists",
-                        round - 1
-                    );
-                    if version == round {
-                        FRESH.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        STALE.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }
-        });
+            });
 
         let (fresh, stale) = (FRESH.load(Ordering::Relaxed), STALE.load(Ordering::Relaxed));
         eprintln!("fresh={fresh} stale={stale}");
@@ -7559,7 +7748,6 @@ mod model {
     #[concurrency::model_test]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
         /// Conversations each worker completes per round.
-        const FLOWS: u8 = 2;
         /// Rounds, and so enactments, during the run.
         const APPLIES: u8 = 4;
 
@@ -7582,94 +7770,117 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                .expect("the fixture exposes form an overlay")
-                .validate()
-                .expect("the fixture overlay validates");
-            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-            let blueprint = fleet.blueprint();
-            let entering = handle.clone();
-            // Two workers and this thread, rendezvousing once per round.
-            let gate = Arc::new(concurrency::sync::Barrier::new(3));
-            let mut reports = Vec::new();
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
 
-            thread::scope(|scope| {
-                let running: Vec<_> = (0..2u8)
-                    .map(|which| {
-                        let entering = entering.clone();
-                        let gate = gate.clone();
-                        thread::Builder::new()
-                            .name(format!("tenant-{which}"))
-                            .spawn_scoped(scope, move || {
-                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                let _evidence =
-                                    tracectl::evidence::capture(format!("tenant-{which}"));
-                                let mut worker = blueprint.worker();
-                                gate.wait();
-                                let mut seen = Vec::new();
-                                for round in 1..=APPLIES {
-                                    for nth in 0..FLOWS {
-                                        // Judged after the join and caught here, both for the
-                                        // reason `without_unwinding` gives: a tenant that does not
-                                        // reach the barrier below hangs its two peers.
-                                        seen.push((
-                                            round,
-                                            without_unwinding(|| {
-                                                let src = format!("1.1.{which}.{}", nth + 1);
-                                                let mut convo = Conversation::new(
-                                                    super::routed::Path::fixture(),
-                                                    src.parse().unwrap_or_else(|e| {
-                                                        unreachable!("{src}: {e}")
-                                                    }),
-                                                    "3.3.3.1"
-                                                        .parse()
-                                                        .unwrap_or_else(|e| unreachable!("{e}")),
-                                                    u16::from(round) * 100 + u16::from(nth) + 1000,
-                                                    80,
-                                                );
-                                                drive(&mut worker, &mut convo);
-                                                (convo.checked(), convo.describe())
-                                            }),
-                                        ));
-                                    }
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(|(flows, host): (u8, u8)| {
+                // Clamped rather than rejected: under shuttle a rejected draw costs the same 32
+                // executions as a useful one.
+                let flows = flows % 4 + 1;
+                let src_host = host % 8;
+                // `APPLIES` is deliberately *not* drawn. All three participants -- the tenant, the
+                // cli reader and this thread -- rendezvous on one `Barrier::new(3)` once per round,
+                // so the round count is a shared contract between them rather than a parameter of
+                // any one. Drawing it deadlocks: measured, 160s+ with every thread parked at 0.1%
+                // CPU and no panic anywhere, which is what a barrier one participant has stopped
+                // arriving at looks like. `without_unwinding` does not save this -- it is
+                // `Ok(body())` under shuttle by design, since a panic in a green thread ends the
+                // whole execution. Varying the round count needs the rendezvous reworked first.
+                let handle = handle.clone();
+            concurrency::stress(move || {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+                // Two workers and this thread, rendezvousing once per round.
+                let gate = Arc::new(concurrency::sync::Barrier::new(3));
+                let mut reports = Vec::new();
+
+                thread::scope(|scope| {
+                    let running: Vec<_> = (0..2u8)
+                        .map(|which| {
+                            let entering = entering.clone();
+                            let gate = gate.clone();
+                            thread::Builder::new()
+                                .name(format!("tenant-{which}"))
+                                .spawn_scoped(scope, move || {
+                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                    let _evidence =
+                                        tracectl::evidence::capture(format!("tenant-{which}"));
+                                    let mut worker = blueprint.worker();
                                     gate.wait();
-                                }
-                                seen
-                            })
-                            .expect("spawn tenant")
-                    })
-                    .collect();
+                                    let mut seen = Vec::new();
+                                    for round in 1..=APPLIES {
+                                        for nth in 0..flows {
+                                            // Judged after the join and caught here, both for the
+                                            // reason `without_unwinding` gives: a tenant that does not
+                                            // reach the barrier below hangs its two peers.
+                                            seen.push((
+                                                round,
+                                                without_unwinding(|| {
+                                                    let src = format!("1.1.{which}.{}", src_host + nth + 1);
+                                                    let mut convo = Conversation::new(
+                                                        super::routed::Path::fixture(),
+                                                        src.parse().unwrap_or_else(|e| {
+                                                            unreachable!("{src}: {e}")
+                                                        }),
+                                                        "3.3.3.1"
+                                                            .parse()
+                                                            .unwrap_or_else(|e| unreachable!("{e}")),
+                                                        u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                        80,
+                                                    );
+                                                    drive(&mut worker, &mut convo);
+                                                    (convo.checked(), convo.describe())
+                                                }),
+                                            ));
+                                        }
+                                        gate.wait();
+                                    }
+                                    seen
+                                })
+                                .expect("spawn tenant")
+                        })
+                        .collect();
 
-                // This thread is the config-apply path.
-                gate.wait();
-                for _ in 0..APPLIES {
-                    fleet.reconfigure(&overlay);
-                    ENACTED.fetch_add(1, Ordering::Relaxed);
+                    // This thread is the config-apply path.
                     gate.wait();
-                }
+                    for _ in 0..APPLIES {
+                        fleet.reconfigure(&overlay);
+                        ENACTED.fetch_add(1, Ordering::Relaxed);
+                        gate.wait();
+                    }
 
-                for worker in running {
-                    reports.push(worker.join().expect("tenant panicked"));
+                    for worker in running {
+                        reports.push(worker.join().expect("tenant panicked"));
+                    }
+                });
+
+                for seen in reports {
+                    for (round, ran) in seen {
+                        let (checked, described) = ran.unwrap_or_else(|why| {
+                            panic!("a conversation in round {round} panicked mid-enactment: {why}")
+                        });
+                        assert!(
+                            checked,
+                            "a conversation in round {round} did not survive the configuration it was \
+                             already running being enacted again. Every enactment before this round \
+                             had returned, and the one racing it changes nothing. {described}"
+                        );
+                        COMPLETED.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             });
-
-            for seen in reports {
-                for (round, ran) in seen {
-                    let (checked, described) = ran.unwrap_or_else(|why| {
-                        panic!("a conversation in round {round} panicked mid-enactment: {why}")
-                    });
-                    assert!(
-                        checked,
-                        "a conversation in round {round} did not survive the configuration it was \
-                         already running being enacted again. Every enactment before this round \
-                         had returned, and the one racing it changes nothing. {described}"
-                    );
-                    COMPLETED.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        });
+            });
 
         let (completed, enacted) = (
             COMPLETED.load(Ordering::Relaxed),
@@ -7748,7 +7959,6 @@ mod model {
     #[concurrency::model_test]
     fn the_cli_can_be_read_while_the_dataplane_works() {
         /// Conversations the worker completes per round.
-        const FLOWS: u8 = 2;
         /// Rounds, and so enactments, during the run.
         const APPLIES: u8 = 3;
 
@@ -7771,126 +7981,149 @@ mod model {
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
 
-        concurrency::stress(move || {
-            let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                .expect("the fixture exposes form an overlay")
-                .validate()
-                .expect("the fixture overlay validates");
-let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-            let blueprint = fleet.blueprint();
-            // Taken here, on the thread that built the fleet, exactly as `start_router` does.
-            let readers = blueprint.cli_readers();
-            let entering = handle.clone();
-            // One worker, one reader, and this thread, rendezvousing once per round.
-            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
 
-            let (seen, read) = thread::scope(|scope| {
-                let forwarding = {
-                    let entering = entering.clone();
-                    let gate = gate.clone();
-                    thread::Builder::new()
-                        .name("tenant".to_string())
-                        .spawn_scoped(scope, move || {
-                            let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                            let _evidence = tracectl::evidence::capture("tenant");
-                            let mut worker = blueprint.worker();
-                            gate.wait();
-                            let mut seen = Vec::new();
-                            for round in 1..=APPLIES {
-                                for nth in 0..FLOWS {
-                                    // Caught rather than propagated, for the reason
-                                    // `without_unwinding` gives: a thread that does not reach the
-                                    // barrier below hangs its two peers.
-                                    seen.push((
-                                        round,
-                                        without_unwinding(|| {
-                                            let src = format!("1.1.0.{}", nth + 1);
-                                            let mut convo = Conversation::new(
-                                                super::routed::Path::fixture(),
-                                                src.parse().unwrap_or_else(|e| {
-                                                    unreachable!("{src}: {e}")
-                                                }),
-                                                "3.3.3.1"
-                                                    .parse()
-                                                    .unwrap_or_else(|e| unreachable!("{e}")),
-                                                u16::from(round) * 100 + u16::from(nth) + 1000,
-                                                80,
-                                            );
-                                            drive(&mut worker, &mut convo);
-                                            (convo.checked(), convo.describe())
-                                        }),
-                                    ));
-                                }
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type()
+            .cloned()
+            .with_iterations(CASES)
+            .for_each(|(flows, host): (u8, u8)| {
+                // Clamped rather than rejected: under shuttle a rejected draw costs the same 32
+                // executions as a useful one.
+                let flows = flows % 4 + 1;
+                let src_host = host % 8;
+                // `APPLIES` is deliberately *not* drawn. All three participants -- the tenant, the
+                // cli reader and this thread -- rendezvous on one `Barrier::new(3)` once per round,
+                // so the round count is a shared contract between them rather than a parameter of
+                // any one. Drawing it deadlocks: measured, 160s+ with every thread parked at 0.1%
+                // CPU and no panic anywhere, which is what a barrier one participant has stopped
+                // arriving at looks like. `without_unwinding` does not save this -- it is
+                // `Ok(body())` under shuttle by design, since a panic in a green thread ends the
+                // whole execution. Varying the round count needs the rendezvous reworked first.
+                let handle = handle.clone();
+            concurrency::stress(move || {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+    let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                // Taken here, on the thread that built the fleet, exactly as `start_router` does.
+                let readers = blueprint.cli_readers();
+                let entering = handle.clone();
+                // One worker, one reader, and this thread, rendezvousing once per round.
+                let gate = Arc::new(concurrency::sync::Barrier::new(3));
+
+                let (seen, read) = thread::scope(|scope| {
+                    let forwarding = {
+                        let entering = entering.clone();
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name("tenant".to_string())
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence = tracectl::evidence::capture("tenant");
+                                let mut worker = blueprint.worker();
                                 gate.wait();
-                            }
-                            seen
-                        })
-                        .expect("spawn tenant")
-                };
-
-                let reading = {
-                    let gate = gate.clone();
-                    thread::Builder::new()
-                        .name("cli".to_string())
-                        .spawn_scoped(scope, move || {
-                            let _evidence = tracectl::evidence::capture("cli");
-                            gate.wait();
-                            let mut answered = Vec::new();
-                            for round in 1..=APPLIES {
-                                for nth in 0..(2 * readers.len()) {
-                                    answered.push((
-                                        round,
-                                        without_unwinding(|| {
-                                            let (command, text) = readers.read_one(nth);
-                                            (command, text.len())
-                                        }),
-                                    ));
+                                let mut seen = Vec::new();
+                                for round in 1..=APPLIES {
+                                    for nth in 0..flows {
+                                        // Caught rather than propagated, for the reason
+                                        // `without_unwinding` gives: a thread that does not reach the
+                                        // barrier below hangs its two peers.
+                                        seen.push((
+                                            round,
+                                            without_unwinding(|| {
+                                                let src = format!("1.1.0.{}", src_host + nth + 1);
+                                                let mut convo = Conversation::new(
+                                                    super::routed::Path::fixture(),
+                                                    src.parse().unwrap_or_else(|e| {
+                                                        unreachable!("{src}: {e}")
+                                                    }),
+                                                    "3.3.3.1"
+                                                        .parse()
+                                                        .unwrap_or_else(|e| unreachable!("{e}")),
+                                                    u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                    80,
+                                                );
+                                                drive(&mut worker, &mut convo);
+                                                (convo.checked(), convo.describe())
+                                            }),
+                                        ));
+                                    }
+                                    gate.wait();
                                 }
-                                gate.wait();
-                            }
-                            answered
-                        })
-                        .expect("spawn cli")
-                };
+                                seen
+                            })
+                            .expect("spawn tenant")
+                    };
 
-                // This thread is the config-apply path.
-                gate.wait();
-                for _ in 0..APPLIES {
-                    fleet.reconfigure(&overlay);
+                    let reading = {
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name("cli".to_string())
+                            .spawn_scoped(scope, move || {
+                                let _evidence = tracectl::evidence::capture("cli");
+                                gate.wait();
+                                let mut answered = Vec::new();
+                                for round in 1..=APPLIES {
+                                    for nth in 0..(2 * readers.len()) {
+                                        answered.push((
+                                            round,
+                                            without_unwinding(|| {
+                                                let (command, text) = readers.read_one(nth);
+                                                (command, text.len())
+                                            }),
+                                        ));
+                                    }
+                                    gate.wait();
+                                }
+                                answered
+                            })
+                            .expect("spawn cli")
+                    };
+
+                    // This thread is the config-apply path.
                     gate.wait();
+                    for _ in 0..APPLIES {
+                        fleet.reconfigure(&overlay);
+                        gate.wait();
+                    }
+
+                    (
+                        forwarding.join().expect("tenant panicked"),
+                        reading.join().expect("cli panicked"),
+                    )
+                });
+
+                for (round, answer) in read {
+                    let (command, length) = answer.unwrap_or_else(|why| {
+                        panic!("`{why}` while answering a cli command in round {round}")
+                    });
+                    assert!(
+                        length > 0,
+                        "`{command}` answered with nothing in round {round}, so the reader reached \
+                         the state but could not say anything about it"
+                    );
+                    ANSWERED.fetch_add(1, Ordering::Relaxed);
                 }
 
-                (
-                    forwarding.join().expect("tenant panicked"),
-                    reading.join().expect("cli panicked"),
-                )
+                for (round, ran) in seen {
+                    let (checked, described) = ran.unwrap_or_else(|why| {
+                        panic!("a conversation in round {round} panicked while the cli read: {why}")
+                    });
+                    assert!(
+                        checked,
+                        "a conversation in round {round} did not survive the cli being read beside \
+                         it. Reading is supposed to be an observation, not a change. {described}"
+                    );
+                    COMPLETED.fetch_add(1, Ordering::Relaxed);
+                }
             });
-
-            for (round, answer) in read {
-                let (command, length) = answer.unwrap_or_else(|why| {
-                    panic!("`{why}` while answering a cli command in round {round}")
-                });
-                assert!(
-                    length > 0,
-                    "`{command}` answered with nothing in round {round}, so the reader reached \
-                     the state but could not say anything about it"
-                );
-                ANSWERED.fetch_add(1, Ordering::Relaxed);
-            }
-
-            for (round, ran) in seen {
-                let (checked, described) = ran.unwrap_or_else(|why| {
-                    panic!("a conversation in round {round} panicked while the cli read: {why}")
-                });
-                assert!(
-                    checked,
-                    "a conversation in round {round} did not survive the cli being read beside \
-                     it. Reading is supposed to be an observation, not a change. {described}"
-                );
-                COMPLETED.fetch_add(1, Ordering::Relaxed);
-            }
-        });
+            });
 
         let (completed, answered) = (
             COMPLETED.load(Ordering::Relaxed),
