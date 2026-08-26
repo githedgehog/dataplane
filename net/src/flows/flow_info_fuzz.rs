@@ -546,15 +546,22 @@ fn a_genid_is_remembered_and_reaches_the_partner() {
                     return; // identical keys; covered elsewhere
                 };
 
+                // Compared against what the partner held *before* the set, not against the value
+                // being set. A fresh flow's genid is zero (`FlowInfo::new`), so a drawn genid of
+                // zero makes "the partner does not hold this value" true of an untouched partner
+                // and the property fires on correct behaviour -- which it did, on the empty input.
+                // Holding the partner's own reading is the claim that was meant, and it has teeth
+                // for every draw rather than all but one.
+                let untouched = second.genid();
                 first.set_genid(*genid);
                 assert_eq!(
                     first.genid(),
                     *genid,
                     "a genid must read back as it was set"
                 );
-                assert_ne!(
+                assert_eq!(
                     second.genid(),
-                    *genid,
+                    untouched,
                     "setting one half's genid must not reach the other"
                 );
 
