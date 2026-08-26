@@ -407,15 +407,16 @@ fn a_genid_is_remembered_and_reaches_the_partner() {
                     return;
                 };
 
+                let untouched = second.genid();
                 first.set_genid(*genid);
                 assert_eq!(
                     first.genid(),
                     *genid,
                     "a genid must read back as it was set"
                 );
-                assert_ne!(
+                assert_eq!(
                     second.genid(),
-                    *genid,
+                    untouched,
                     "setting one half's genid must not reach the other"
                 );
 
