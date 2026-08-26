@@ -28,6 +28,7 @@ use std::num::NonZero;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedIpVersion {
     Ipv4,
     Ipv6,
@@ -624,7 +625,22 @@ impl EmbeddedTransport {
         }
     }
 
-    pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
+    fn udp_checksum_disabled(&self, quoted: EmbeddedIpVersion, current: u16) -> bool {
+        matches!(self, EmbeddedTransport::Udp(_))
+            && quoted == EmbeddedIpVersion::Ipv4
+            && current == 0
+    }
+
+    pub fn update_checksum(
+        &mut self,
+        quoted: EmbeddedIpVersion,
+        current_checksum: u16,
+        old_value: u16,
+        new_value: u16,
+    ) {
+        if self.udp_checksum_disabled(quoted, current_checksum) {
+            return;
+        }
         match self {
             EmbeddedTransport::Tcp(tcp) => {
                 let updated = tcp.increment_update_checksum(
@@ -640,6 +656,11 @@ impl EmbeddedTransport {
                     old_value,
                     new_value,
                 );
+                let updated = if u16::from(updated) == 0 {
+                    UdpChecksum::new(u16::MAX)
+                } else {
+                    updated
+                };
                 let _ = udp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp4(icmp) => {
@@ -668,11 +689,16 @@ impl EmbeddedTransport {
         if old.is_ipv4() != new.is_ipv4() {
             return;
         }
+        let quoted = if old.is_ipv4() {
+            EmbeddedIpVersion::Ipv4
+        } else {
+            EmbeddedIpVersion::Ipv6
+        };
         for (old_word, new_word) in address_words(old).into_iter().zip(address_words(new)) {
             let Some(current) = self.checksum() else {
                 return;
             };
-            self.update_checksum(current, old_word, new_word);
+            self.update_checksum(quoted, current, old_word, new_word);
         }
     }
 }
