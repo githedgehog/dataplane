@@ -215,6 +215,15 @@ impl Fabric {
         !self.rules.is_empty()
     }
 
+    /// The flow table the stages share.
+    ///
+    /// Exposed for the properties that are about the entries themselves rather than about what
+    /// comes out of the stage: a pair that has been torn down and rebuilt forwards exactly like one
+    /// that was left alone, so no amount of looking at packets tells them apart.
+    pub(crate) fn flows(&self) -> &Arc<FlowTable> {
+        &self.flow_table
+    }
+
     /// Whether any rule's private side covers this address and port.
     pub(crate) fn is_private(&self, addr: IpAddr, port: u16) -> bool {
         self.rules
