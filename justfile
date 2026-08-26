@@ -44,6 +44,10 @@ profile := "debug"
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
 
+# Wall-clock budget bolero gets per property under coverage instrumentation, in milliseconds.
+# Overridable so a slower machine can buy more without editing this file.
+bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
+
 # comma-separated list of cargo features to enable (e.g. "shuttle")
 features := ""
 
@@ -740,6 +744,13 @@ doctest package="" *args: (build (if package == "" { "doctests.all" } else { "do
 [script]
 coverage *args:
     {{ _just_debuggable_ }}
+    # Bolero draws cases against a wall-clock budget, and coverage instrumentation makes each
+    # case far more expensive: an instrumented run drew one or two cases where a clean one draws
+    # hundreds, which is under the floor the fuzz properties' own vacuity guards enforce.  Buy
+    # back a comparable number of draws rather than lowering those guards -- a guard that has
+    # been lowered to fit the slowest configuration no longer catches a property that has
+    # genuinely stopped reaching its assertion.
+    export BOLERO_RANDOM_TEST_TIME_MS="{{ bolero_coverage_test_time_ms }}"
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
     declare -r out="./target/nextest/coverage"
