@@ -1105,6 +1105,7 @@ coverage *args:
     cargo llvm-cov --no-report --branch nextest {{ args }}
     mkdir -p "${out}"
     cargo llvm-cov report --branch --html --output-dir="${out}"
+    cargo llvm-cov report --branch --lcov --output-path="${out}/lcov.info"
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
 
