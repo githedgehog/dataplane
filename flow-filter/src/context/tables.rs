@@ -38,8 +38,6 @@ use acl::dpdk::lookup::{DpdkAclLookup, MAX_BATCH};
 use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
 #[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
-use concurrency::sync::LazyLock;
-use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::external::overlay::ValidatedOverlay;
 use dpdk::acl::{CategoryMask, Priority};
 #[cfg(test)]
@@ -348,6 +346,11 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
 }
 
 concurrency::with_std! {
+    // Only this arm uses them: the model-checker arms deliberately take std's
+    // uninstrumented atomic instead.
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+
     /// Lazily initialized because the facade's `AtomicU64::new` is not a `const fn` on every
     /// backend. `LazyLock` is a thin wrapper over an otherwise-const atomic here.
     static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
