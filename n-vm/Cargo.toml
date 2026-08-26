@@ -39,7 +39,7 @@ command-fds = { workspace = true, default-features = false, features = ["tokio"]
 bollard = { workspace = true, default-features = false, features = ["pipe", "ssl_providerless"] }
 # For target discovery only. `#[n_vm::test]` answers `cargo bolero list` on the host without
 # entering the test body -- see `n_vm::bolero` -- which needs bolero's own `TargetLocation`.
-bolero = { workspace = true, default-features = false, features = [] }
+bolero = { workspace = true, default-features = false, features = ["std"] }
 futures = { workspace = true, default-features = false, features = ["default"] }
 nix = { workspace = true, default-features = false, features = ["signal", "user"] }
 qapi-qmp = { workspace = true, default-features = false, features = [] }
