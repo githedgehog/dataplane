@@ -29,6 +29,19 @@ pub enum Insertion {
     Occupied(Arc<FlowInfo>),
 }
 
+/// What [`FlowTable::insert_if_absent`]'s entry guard found.
+///
+/// Resolved to a value rather than returned from inside the match: the guard has to end before the
+/// table guard does, and returning from under it would keep it alive too long.
+enum Found {
+    /// The key was free, or held a corpse; the flow went in, displacing what is carried here.
+    Inserted(Option<Arc<FlowInfo>>),
+    /// A live flow holds the key.
+    Held(Arc<FlowInfo>),
+    /// The key was free and the table has no room for another.
+    Refused(FlowTableError),
+}
+
 type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 #[derive(Debug)]
@@ -227,7 +240,17 @@ impl FlowTable {
     /// Reject new flows when at capacity.  Exception: always admit the second half of a
     /// related pair (e.g. the reverse NAT flow) to avoid leaving a one-sided entry.
     fn admit(&self, table: &Table, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
-        if table.len() < self.capacity.load(Ordering::Relaxed) {
+        self.admit_at_len(table.len(), val)
+    }
+
+    /// [`Self::admit`], judged against a length read before the caller took an entry guard.
+    ///
+    /// Split out for the caller that has to decide with a shard already locked: `DashMap::len`
+    /// read-locks every shard, including the one an entry guard holds, so asking a table its
+    /// length from inside `entry` deadlocks. Reading it first is no staler than what the plain
+    /// insert path does, which also reads a length and then goes looking for the key.
+    fn admit_at_len(&self, len: usize, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
+        if len < self.capacity.load(Ordering::Relaxed) {
             return Ok(());
         }
         let has_related_in_table = val
@@ -322,36 +345,51 @@ impl FlowTable {
     ///
     /// # Errors
     ///
-    /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
+    /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit and
+    /// the key is free. A key a live flow already holds costs the table nothing to report, so a
+    /// full table does not stop the caller from being handed the flow it lost to -- which is the
+    /// case it most needs the answer in, since a table at its limit is exactly where two packets
+    /// of one flow are most likely to be racing.
     pub fn insert_if_absent(&self, val: &Arc<FlowInfo>) -> Result<Insertion, FlowTableError> {
         let table = self.table.read();
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key} unless it is already held");
 
-        self.admit(&table, val)?;
+        // Read before the entry guard, and consulted only where the table would actually grow.
+        // See `admit_at_len`.
+        let len = table.len();
 
         // The entry guard holds this key's shard, so testing the incumbent and standing aside
-        // cannot race another insert of the same key. It has to end before the table guard does,
-        // hence resolving to a value here rather than returning from inside the match.
-        let displaced = match table.entry(*flow_key) {
+        // cannot race another insert of the same key.
+        let found = match table.entry(*flow_key) {
             dashmap::Entry::Occupied(mut occupied) => {
                 if occupied.get().is_active() {
-                    Err(occupied.get().clone())
+                    Found::Held(occupied.get().clone())
                 } else {
-                    Ok(Some(occupied.insert(val.clone())))
+                    // Replacing a corpse spends no capacity the table is not spending already,
+                    // which is why admission is not consulted on this arm.
+                    Found::Inserted(Some(occupied.insert(val.clone())))
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                vacant.insert(val.clone());
-                Ok(None)
+                if let Err(e) = self.admit_at_len(len, val) {
+                    Found::Refused(e)
+                } else {
+                    vacant.insert(val.clone());
+                    Found::Inserted(None)
+                }
             }
         };
-        let displaced = match displaced {
-            Ok(displaced) => displaced,
-            Err(held) => {
+        let displaced = match found {
+            Found::Inserted(displaced) => displaced,
+            Found::Held(held) => {
                 drop(table);
                 debug!("insert: flow {flow_key} is already held by a live flow");
                 return Ok(Insertion::Occupied(held));
+            }
+            Found::Refused(e) => {
+                drop(table);
+                return Err(e);
             }
         };
 
@@ -786,6 +824,54 @@ mod tests {
             let found = flow_table.lookup(&key).expect("the key is still served");
             assert!(Arc::ptr_eq(&found, &first));
             assert_ne!(second.status(), FlowStatus::Active);
+        }
+
+        /// A full table still reports the flow that holds a key.
+        ///
+        /// Capacity is about how much the table is being asked to hold, and standing aside for an
+        /// incumbent asks it to hold nothing. Weighing capacity first turned the one answer a
+        /// racing caller can act on into an error it can only drop the packet over.
+        #[tokio::test]
+        async fn a_full_table_still_reports_the_flow_that_holds_a_key() {
+            let flow_table = FlowTable::default();
+            flow_table.set_capacity(1);
+            let key = key_for(1029);
+            let far_future = clock::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key, far_future));
+            assert!(matches!(
+                flow_table.insert_if_absent(&first).unwrap(),
+                Insertion::Installed
+            ));
+
+            let second = Arc::new(FlowInfo::new(key, far_future));
+            let outcome = flow_table
+                .insert_if_absent(&second)
+                .expect("a key a live flow holds is not a capacity question");
+            let Insertion::Occupied(held) = outcome else {
+                panic!("a live flow was displaced by a second insertion: {outcome:?}");
+            };
+            assert!(Arc::ptr_eq(&held, &first), "the wrong flow was reported");
+        }
+
+        /// A full table still refuses a key nobody holds.
+        #[tokio::test]
+        async fn a_full_table_refuses_a_free_key() {
+            let flow_table = FlowTable::default();
+            flow_table.set_capacity(1);
+            let far_future = clock::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key_for(1030), far_future));
+            flow_table.insert_if_absent(&first).unwrap();
+
+            let second = Arc::new(FlowInfo::new(key_for(1031), far_future));
+            assert!(
+                matches!(
+                    flow_table.insert_if_absent(&second),
+                    Err(FlowTableError::CapacityExceeded)
+                ),
+                "a full table grew for a key nobody held"
+            );
         }
 
         /// A flow that is no longer live does not hold its key.
