@@ -44,6 +44,8 @@ profile := "debug"
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
 
+bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
+
 # comma-separated list of cargo features to enable (e.g. "shuttle")
 features := ""
 
@@ -740,6 +742,7 @@ doctest package="" *args: (build (if package == "" { "doctests.all" } else { "do
 [script]
 coverage *args:
     {{ _just_debuggable_ }}
+    export BOLERO_RANDOM_TEST_TIME_MS="{{ bolero_coverage_test_time_ms }}"
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
     declare -r out="./target/nextest/coverage"
