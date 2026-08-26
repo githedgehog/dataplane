@@ -28,6 +28,7 @@ use std::num::NonZero;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedIpVersion {
     Ipv4,
     Ipv6,
@@ -639,10 +640,36 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Whether a UDP checksum of `current` is a marker rather than a sum to fold a delta into.
+    ///
+    /// A UDP datagram over IPv4 may leave the field zero to say the sender computed no checksum
+    /// (RFC 768). There is no sum there to update, only the marker, so folding a delta into it
+    /// manufactures a checksum the datagram never carried -- and a wrong one, because the delta
+    /// describes a change to a sum nobody took. Over IPv6 the field is mandatory (RFC 8200,
+    /// section 8.1), so zero is not a marker and the delta applies as usual.
+    fn udp_checksum_disabled(&self, quoted: EmbeddedIpVersion, current: u16) -> bool {
+        matches!(self, EmbeddedTransport::Udp(_))
+            && quoted == EmbeddedIpVersion::Ipv4
+            && current == 0
+    }
+
     /// Fold a 16-bit field change into the header's checksum and store the result.
     ///
+    /// `quoted` is the IP version of the packet this header came out of. It decides what a UDP
+    /// checksum of zero means, which is the difference between updating a sum and inventing one:
+    /// see [`Self::udp_checksum_disabled`].
+    ///
     /// A header too truncated to contain its checksum is left unchanged.
-    pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
+    pub fn update_checksum(
+        &mut self,
+        quoted: EmbeddedIpVersion,
+        current_checksum: u16,
+        old_value: u16,
+        new_value: u16,
+    ) {
+        if self.udp_checksum_disabled(quoted, current_checksum) {
+            return;
+        }
         match self {
             EmbeddedTransport::Tcp(tcp) => {
                 let updated = tcp.increment_update_checksum(
@@ -658,6 +685,15 @@ impl EmbeddedTransport {
                     old_value,
                     new_value,
                 );
+                // Zero is spoken for in both address families -- the disabled marker over IPv4,
+                // illegal over IPv6 -- so a sum that lands there goes out as its other
+                // one's-complement spelling instead (RFC 768, RFC 8200 section 8.1). The two are
+                // the same number, so folding the next word into either gives the same answer.
+                let updated = if u16::from(updated) == 0 {
+                    UdpChecksum::new(u16::MAX)
+                } else {
+                    updated
+                };
                 let _ = udp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp4(icmp) => {
@@ -697,11 +733,16 @@ impl EmbeddedTransport {
         if old.is_ipv4() != new.is_ipv4() {
             return;
         }
+        let quoted = if old.is_ipv4() {
+            EmbeddedIpVersion::Ipv4
+        } else {
+            EmbeddedIpVersion::Ipv6
+        };
         for (old_word, new_word) in address_words(old).into_iter().zip(address_words(new)) {
             let Some(current) = self.checksum() else {
                 return;
             };
-            self.update_checksum(current, old_word, new_word);
+            self.update_checksum(quoted, current, old_word, new_word);
         }
     }
 }

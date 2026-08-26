@@ -330,7 +330,9 @@ mod req3_properties {
     use super::*;
     use crate::buffer::TestBuffer;
     use crate::checksum::Checksum;
-    use crate::headers::{TryEmbeddedTransportMut, TryIcmpAny, TryIcmpAnyMut, TryInnerIpv4Mut};
+    use crate::headers::{
+        EmbeddedIpVersion, TryEmbeddedTransportMut, TryIcmpAny, TryIcmpAnyMut, TryInnerIpv4Mut,
+    };
     use crate::icmp_any::IcmpAnyChecksum;
     use crate::ipv4::Ipv4Checksum;
     use crate::packet::{IcmpErrorMsg, Packet};
@@ -386,18 +388,28 @@ mod req3_properties {
                 // error around whatever the offending datagram's leading bytes were and checksums
                 // the result.
                 let mut transport_broken = good.clone();
+                let quoted = match transport_broken.try_inner_ip() {
+                    // `IcmpErrorPacket::new` succeeded above, so there is an embedded IP header.
+                    None => unreachable!(),
+                    Some(Net::Ipv4(_)) => EmbeddedIpVersion::Ipv4,
+                    Some(Net::Ipv6(_)) => EmbeddedIpVersion::Ipv6,
+                };
                 if let Some(transport) = transport_broken.try_embedded_transport_mut()
                     && let Some(current) = transport.checksum()
                 {
-                    transport.update_checksum(current, 0, 1);
-                    transport_broken.update_checksums();
-                    assert!(
-                        IcmpErrorPacket::new(&transport_broken)
-                            .unwrap_or_else(|| unreachable!())
-                            .validate_checksums()
-                            .is_ok(),
-                        "the embedded transport checksum was consulted"
-                    );
+                    transport.update_checksum(quoted, current, 0, 1);
+                    // A UDP quote over IPv4 may have had checksum generation disabled, and then
+                    // there is no checksum to break: the input has nothing to say about (c).
+                    if transport.checksum() != Some(current) {
+                        transport_broken.update_checksums();
+                        assert!(
+                            IcmpErrorPacket::new(&transport_broken)
+                                .unwrap_or_else(|| unreachable!())
+                                .validate_checksums()
+                                .is_ok(),
+                            "the embedded transport checksum was consulted"
+                        );
+                    }
                 }
 
                 // REQ-3 -- break only the ICMP checksum.
