@@ -890,39 +890,7 @@ impl Headers {
         }
     }
 
-    /// The number of octets which follow the transport header according to the network header.
-    ///
-    /// A frame can carry more octets than its network header accounts for: ethernet pads short
-    /// frames out to 60 octets (`IEEE 802.3` clause 4.2.3.3), and some devices append trailers.
-    /// Those octets belong to no upper layer, so a caller holding a whole frame needs this to find
-    /// where the transport payload ends before computing a checksum over it.
-    ///
-    /// # Returns
-    ///
-    /// Returns `None` when the network or transport header is absent, or when the network header
-    /// claims fewer octets than the headers which follow it occupy -- a malformed packet, for which
-    /// no honest payload length exists.
-    pub(crate) fn transport_payload_len(&self) -> Option<usize> {
-        let ip_payload_len = match self.net.as_ref()? {
-            Net::Ipv4(ip) => usize::from(ip.0.payload_len().ok()?),
-            Net::Ipv6(ip) => usize::from(ip.0.payload_length),
-        };
-        let after_net = self
-            .net_ext
-            .iter()
-            .map(|ext| usize::from(ext.size().get()))
-            .sum::<usize>()
-            + usize::from(self.transport.as_ref()?.size().get());
-        ip_payload_len.checked_sub(after_net)
-    }
-
     /// update the checksums of the headers
-    ///
-    /// `payload` must be exactly the octets which follow the transport header, and no more: it is
-    /// summed in full.  A caller working from a frame buffer should bound it with
-    /// [`Headers::transport_payload_len`] first, as [`Packet::update_checksums`] does.
-    ///
-    /// [`Packet::update_checksums`]: crate::packet::Packet::update_checksums
     pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
         let is_vxlan = self.try_vxlan().is_some();
 

@@ -147,6 +147,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
     /// Get the Ip protocol / next-header of an IPv4 / IPv6 [`Packet`]
     /// Returns None if the packet does not have an IP header
+    #[allow(missing_docs)]
     pub fn ip_proto(&self) -> Option<NextHeader> {
         self.try_ip().map(|net| match net {
             Ipv4(ipv4) => NextHeader(ipv4.protocol()),
