@@ -907,8 +907,7 @@ mod tests {
                         Some(VpcDiscriminant::VNI(
                             Vni::new_checked(u32::from(i) + 1).unwrap(),
                         )),
-                        format!("10.0.{i}.1").parse::<IpAddr>().unwrap(),
-                        format!("10.0.{i}.2").parse::<IpAddr>().unwrap(),
+                        v4_addrs(&format!("10.0.{i}.1"), &format!("10.0.{i}.2")),
                         IpProtoKey::Tcp(TcpProtoKey {
                             src_port: TcpPort::new_checked(1000 + i).unwrap(),
                             dst_port: TcpPort::new_checked(2000 + i).unwrap(),
