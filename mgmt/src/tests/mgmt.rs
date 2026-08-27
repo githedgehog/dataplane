@@ -1070,7 +1070,6 @@ mod validator_completeness {
     ///
     /// Also: it never panics, since reaching the assertions at all means it returned. In wasm a panic
     /// is a trap, so it is a rejection with no reason attached -- worse for the user than any error.
-    #[test]
     ///
     /// # Why IPv4 only
     ///
@@ -1085,6 +1084,7 @@ mod validator_completeness {
     /// the only change needed. The restriction lives here rather than in a second, ignored test
     /// because `cargo bolero` names a fuzz target after the function holding the `check!()`: two tests
     /// sharing one body collapse to a single target, and then neither can be fuzzed.
+    #[test]
     fn whatever_the_validator_accepts_can_be_enacted_over_ipv4() {
         let families = vec![AddressFamily::V4];
 

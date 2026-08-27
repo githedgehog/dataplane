@@ -185,10 +185,10 @@ impl VpcRoutingConfigIpv4 {
         nets.sort_unstable();
         nets.dedup();
 
+        reject_ipv6(nets.iter().copied())?;
+
         /* list of advertised prefixes */
         self.adv_nets.extend(nets.clone());
-
-        reject_ipv6(nets.iter().copied())?;
 
         /* build adv prefix list and route-map */
         let mut adv_plist = PrefixList::new(
@@ -496,12 +496,21 @@ mod chain_properties {
             .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
         let validated = external.validate().ok()?;
         let genid = validated.genid();
-        let internal = match build_internal_config(&validated, None) {
-            Ok(internal) => internal,
-            Err(ConfigError::Unsupported(_)) => return None,
+        Some((genid, build_or_skip(&validated)?))
+    }
+
+    /// Build, or skip a limitation the builder declares.
+    ///
+    /// Every property that builds goes through here, so that widening [`ipv4_agents`] is the single
+    /// change its documentation says it is. It was not: this module had two build sites, and the
+    /// second unwrapped, so the documented way to check whether IPv6 had landed would have failed
+    /// that property on a *legal* configuration with a message blaming the builder.
+    fn build_or_skip(validated: &ValidatedGwConfig) -> Option<InternalConfig> {
+        match build_internal_config(validated, None) {
+            Ok(internal) => Some(internal),
+            Err(ConfigError::Unsupported(_)) => None,
             Err(e) => panic!("a validated configuration would not build: {e}\n{validated:#?}"),
-        };
-        Some((genid, internal))
+        }
     }
 
     /// A configuration that validates can be built and rendered.
@@ -539,8 +548,9 @@ mod chain_properties {
                 let Ok(validated) = external.validate() else {
                     return;
                 };
-                let internal = build_internal_config(&validated, None)
-                    .unwrap_or_else(|e| panic!("a validated configuration would not build: {e}"));
+                let Some(internal) = build_or_skip(&validated) else {
+                    return;
+                };
 
                 let wanted: BTreeSet<u32> = validated
                     .external()
