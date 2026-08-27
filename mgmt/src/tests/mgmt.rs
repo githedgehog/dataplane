@@ -1079,7 +1079,7 @@ mod validator_completeness {
     /// configuration at all. The advertise prefix list is built as `IpVer::V4` with unfiltered
     /// prefixes, so a v6 prefix reaches `PrefixList::add_entry` and comes back as
     /// `ConfigError::InternalFailure`; the import list is `IpVer::V4` *and* filtered by `is_ipv4()`,
-    /// so v6 prefixes are dropped without a word. See `.scratch/next-phase-assessment.md`.
+    /// so v6 prefixes are dropped without a word.
     ///
     /// **Widening this back to `AddressFamily::all()` is how to check whether that is fixed**, and is
     /// the only change needed. The restriction lives here rather than in a second, ignored test
@@ -1443,8 +1443,8 @@ mod relevance {
     /// complete once in 200 seconds.
     ///
     /// This property is the one that trips over it because it renders every artifact, the allocator
-    /// included, twice per case. See `.scratch/next-phase-assessment.md` -- the defect is not confined
-    /// to tests, since that `Display` is a `CliSource` and holds a read lock across the whole print.
+    /// included, twice per case. The defect is not confined to tests: that `Display` is a
+    /// `CliSource`, and it holds a read lock across the whole print.
     ///
     /// # Yield
     ///

@@ -438,7 +438,7 @@ mod chain_properties {
     ///
     /// Neither was reachable from a test until the generated gateway began joining its own gateway
     /// groups, because `build_routing_config_peer` builds nothing for a peering whose group does not
-    /// list this gateway. See `.scratch/ipv6-peering-exec-summary.md`.
+    /// list this gateway.
     ///
     /// **Widening this one function to `AddressFamily::all()` is the check for whether that is fixed**,
     /// and it is deliberately the only place any of these properties names a family.
