@@ -1356,6 +1356,39 @@ mod tests {
         (headers, consumed.get() as usize, buf)
     }
 
+    #[test]
+    fn an_icmp_error_from_the_wire_reports_a_full_payload() {
+        use crate::headers::TryEmbeddedHeaders;
+        use crate::ip::NextHeader;
+        use crate::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
+
+        let packet = build_test_icmp4_destination_unreachable_packet(
+            "10.0.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "10.0.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            NextHeader::UDP,
+            1234,
+            80,
+        )
+        .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let embedded = packet
+            .embedded_headers()
+            .unwrap_or_else(|| unreachable!("an icmp error carries embedded headers"));
+        assert!(
+            embedded.is_full_payload(),
+            "the quoted datagram is complete and nothing follows it, so the whole payload is \
+             present -- reading this as truncated means the window handed to check_full_payload \
+             does not start where the lengths it compares are measured from"
+        );
+        assert_eq!(
+            embedded.payload_length(),
+            Some(0),
+            "the quoted UDP datagram carries no payload beyond its header"
+        );
+    }
+
     //= https://www.rfc-editor.org/rfc/rfc4884#section-3
     //= type=test
     //# When the ICMP Extension Structure is appended to an ICMPv4 message
