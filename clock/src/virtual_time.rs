@@ -20,8 +20,10 @@
 //! So the design is not "keep several clocks in step" -- that cannot be done, because
 //! [`tokio::time::advance`] must run inside the runtime whose clock it moves, and N advances are
 //! never simultaneous, so a broadcast *creates* the backwards read it is meant to prevent. The
-//! design is that there is one [`Paused`] at a time, [`Paused::new`] refuses a second, and every
-//! thread that reads a clock is inside it.
+//! design is that one *property* drives one [`Paused`] and every thread it uses is inside that
+//! one; a second `Paused` elsewhere in the process is not refused, because two clocks are only
+//! harmful when state crosses between them. See [`Paused`] for why refusing it was tried and
+//! reverted.
 //!
 //! # The guard
 //!
@@ -84,11 +86,16 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 const YIELDS: usize = 4;
 
 thread_local! {
-    /// Whether this thread is inside a [`Paused`]'s world.
+    /// How many [`Paused`] worlds this thread is inside.
     ///
     /// Set on the thread that builds one, and inherited by every thread it spawns. A read on a
-    /// thread where this is false is nobody's business but that thread's.
-    static IN_WORLD: Cell<bool> = const { Cell::new(false) };
+    /// thread where this is zero is nobody's business but that thread's.
+    ///
+    /// A depth rather than a flag, for the same reason [`LIVE`] is a count: nothing refuses a
+    /// second `Paused`, so one thread can hold two. Clearing a flag on the inner one's drop would
+    /// disarm the check for the rest of the outer one's life -- the guard silently stopping
+    /// guarding, which is the one failure this module exists to prevent.
+    static IN_WORLD: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Whether [`crate::now`] should refuse a read with no runtime context.
@@ -100,7 +107,7 @@ thread_local! {
 #[inline]
 #[must_use]
 pub(crate) fn armed() -> bool {
-    LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get)
+    LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get) != 0
 }
 
 thread_local! {
@@ -131,8 +138,9 @@ fn inherit_across_spawns() {
             let handle = tokio::runtime::Handle::try_current().ok();
             let in_world = IN_WORLD.with(Cell::get);
             move || {
-                // On the child, before its body.
-                IN_WORLD.with(|flag| flag.set(in_world));
+                // On the child, before its body. The parent's depth is inherited whole: a child of
+                // a thread inside two worlds is inside two, and its own drops are not the parent's.
+                IN_WORLD.with(|depth| depth.set(in_world));
                 if let Some(handle) = handle {
                     // Both deliberate. `EnterGuard` restores the previous context when it drops and
                     // the context should last the thread rather than this closure, so it is
@@ -224,7 +232,7 @@ impl Paused {
         // After the build, so a runtime that failed to build cannot leave the check armed.
         if !cfg!(wall_clock) {
             inherit_across_spawns();
-            IN_WORLD.with(|flag| flag.set(true));
+            IN_WORLD.with(|depth| depth.set(depth.get() + 1));
             LIVE.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -260,7 +268,7 @@ impl Default for Paused {
 impl Drop for Paused {
     fn drop(&mut self) {
         if !cfg!(wall_clock) {
-            IN_WORLD.with(|flag| flag.set(false));
+            IN_WORLD.with(|depth| depth.set(depth.get().saturating_sub(1)));
             LIVE.fetch_sub(1, Ordering::Release);
         }
     }
