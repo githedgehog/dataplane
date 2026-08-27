@@ -350,6 +350,16 @@ impl FlowTable {
     /// full table does not stop the caller from being handed the flow it lost to -- which is the
     /// case it most needs the answer in, since a table at its limit is exactly where two packets
     /// of one flow are most likely to be racing.
+    ///
+    /// # What is not tested
+    ///
+    /// Racing callers, and not for want of trying: a shuttle property over two threads inserting
+    /// one key hangs rather than fails. Both arms of the entry guard touch `concurrency` atoms --
+    /// `is_active` on one, `capacity` and `Weak::upgrade` via `admit_at_len` on the other -- and
+    /// each is a scheduling point, while `dashmap` is a plain dependency whose shard locks shuttle
+    /// cannot see. Preempt inside one and every green thread parks on the single OS thread: 0%
+    /// CPU, no diagnosis, and the suite burns its whole timeout. Instrumenting `dashmap` is the
+    /// prerequisite, so the ordering below is argued rather than checked.
     pub fn insert_if_absent(&self, val: &Arc<FlowInfo>) -> Result<Insertion, FlowTableError> {
         let table = self.table.read();
         let flow_key = val.flowkey();
@@ -358,6 +368,24 @@ impl FlowTable {
         // Read before the entry guard, and consulted only where the table would actually grow.
         // See `admit_at_len`.
         let len = table.len();
+
+        // Active *before* the entry guard, not inside it.
+        //
+        // It has to be set before the flow is reachable: this method decides by asking whether the
+        // incumbent `is_active()`, so a flow that is in the map and not yet Active reads as a corpse,
+        // and a racing caller displaces a live flow and returns `Installed` alongside the caller that
+        // put it there. `insert_common` can publish after its insert because the only other reader,
+        // `drain_stale`, also requires `expires_at <= now`; this method is the reader that window
+        // became visible to.
+        //
+        // Setting it *under* the guard would be the obvious answer and is a trap. `update_status`
+        // writes a `concurrency` atomic, which is a scheduling point under shuttle, while `dashmap`
+        // is a plain dependency whose shard locks shuttle cannot see. A preemption inside a lock the
+        // model checker does not know about parks every green thread on the one OS thread: the suite
+        // deadlocks at 0% CPU rather than reporting anything. Nothing observes `val` before it is
+        // inserted, so publishing early costs nothing -- it only has to be undone on the two paths
+        // that do not insert, and those are outside the guard.
+        let previous = val.update_status(FlowStatus::Active);
 
         // The entry guard holds this key's shard, so testing the incumbent and standing aside
         // cannot race another insert of the same key.
@@ -383,18 +411,18 @@ impl FlowTable {
         let displaced = match found {
             Found::Inserted(displaced) => displaced,
             Found::Held(held) => {
+                val.update_status(previous);
                 drop(table);
                 debug!("insert: flow {flow_key} is already held by a live flow");
                 return Ok(Insertion::Occupied(held));
             }
             Found::Refused(e) => {
+                val.update_status(previous);
                 drop(table);
                 return Err(e);
             }
         };
 
-        // Active only after the insert, as in `insert_common`.
-        val.update_status(FlowStatus::Active);
         drop(table);
 
         #[cfg(not(any(feature = "shuttle", feature = "loom")))]
