@@ -35,7 +35,7 @@ const ACCEPTED: Accepted[] = [
   },
   ...[
     "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1",
-    "https://www.rfc-editor.org/rfc/rfc5382#section-8",
+    "https://www.rfc-editor.org/rfc/rfc5382#section-7.1",
   ].map((requirement) => ({
     requirement,
     mutant:
@@ -620,7 +620,9 @@ function parseArgs(argv: string[]) {
     only: [] as string[],
     jobs: 4,
     output: join(REPO, "target", "spec-interlock"),
-    json: "/tmp/duvet-interlock.json",
+    // Under the repo rather than /tmp, for the same reason as `output` above: the lab
+    // runner shares /tmp between concurrent jobs.
+    json: join(REPO, "target", "duvet-interlock.json"),
     results: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
