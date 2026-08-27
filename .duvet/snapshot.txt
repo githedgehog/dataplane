@@ -180,10 +180,10 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
     TEXT[!MUST,implementation,test]:       When the ICMP Extension Structure is appended to an ICMP message
     TEXT[!MUST,implementation,test]:       and that ICMP message contains an "original datagram" field, the
     TEXT[!MUST,implementation,test]:       "original datagram" field MUST contain at least 128 octets.
-    TEXT[!MUST,implementation,test]:       When the ICMP Extension Structure is appended to an ICMPv4 message
-    TEXT[!MUST,implementation,test]:       and that ICMPv4 message contains an "original datagram" field, the
-    TEXT[!MUST,implementation,test]:       "original datagram" field MUST be zero padded to the nearest
-    TEXT[!MUST,implementation,test]:       32-bit boundary.
+    TEXT[!MUST,implementation]:       When the ICMP Extension Structure is appended to an ICMPv4 message
+    TEXT[!MUST,implementation]:       and that ICMPv4 message contains an "original datagram" field, the
+    TEXT[!MUST,implementation]:       "original datagram" field MUST be zero padded to the nearest
+    TEXT[!MUST,implementation]:       32-bit boundary.
     TEXT[!MUST,implementation]:       When the ICMP Extension Structure is appended to an ICMPv6 message
     TEXT[!MUST,implementation]:       and that ICMPv6 message contains an "original datagram" field, the
     TEXT[!MUST,implementation]:       "original datagram" field MUST be zero padded to the nearest
