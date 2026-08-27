@@ -1400,6 +1400,56 @@ mod tests {
         (headers, consumed.get() as usize, buf)
     }
 
+    /// An ICMP error parsed from a real frame is judged against the right window.
+    ///
+    /// **The seam every other test in this module skips.** All seventeen of them call
+    /// `check_full_payload` directly, with a buffer and lengths of their own choosing -- which is
+    /// how two defects in what the *caller* passes survived: the RFC 4884 length attribute read
+    /// from octet 5 of the Ethernet frame, and the buffer and remaining count captured after
+    /// `cursor.consume` had moved past the embedded headers.
+    ///
+    /// Both are invisible to a direct call and both are decided before this function sees anything,
+    /// so the only test that can hold them is one that starts from a frame. This is that test.
+    ///
+    /// The builder emits an `ICMPv4` Destination Unreachable quoting a complete inner datagram and
+    /// nothing after it, and sets no extension structure -- so the length attribute is zero and
+    /// `check_full_payload` takes the branch that compares the datagram's own length against what
+    /// remains of the buffer. Those agree only when both are measured from the start of the
+    /// embedded headers. Measured from after them, as this did, the remainder is `consumed` octets
+    /// short and the answer flips.
+    #[test]
+    fn an_icmp_error_from_the_wire_reports_a_full_payload() {
+        use crate::headers::TryEmbeddedHeaders;
+        use crate::ip::NextHeader;
+        use crate::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
+
+        let packet = build_test_icmp4_destination_unreachable_packet(
+            "10.0.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "10.0.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            NextHeader::UDP,
+            1234,
+            80,
+        )
+        .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let embedded = packet
+            .embedded_headers()
+            .unwrap_or_else(|| unreachable!("an icmp error carries embedded headers"));
+        assert!(
+            embedded.is_full_payload(),
+            "the quoted datagram is complete and nothing follows it, so the whole payload is \
+             present -- reading this as truncated means the window handed to check_full_payload \
+             does not start where the lengths it compares are measured from"
+        );
+        assert_eq!(
+            embedded.payload_length(),
+            Some(0),
+            "the quoted UDP datagram carries no payload beyond its header"
+        );
+    }
+
     /// A field is accepted at any 32-bit-aligned length, not only at multiples of 32 octets.
     ///
     /// The length attribute counts 32-bit words, so every value it can express is already aligned.

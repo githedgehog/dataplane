@@ -671,17 +671,28 @@ impl Icmp6 {
             self.payload_length(&cursor.inner[start..end])
         };
 
-        let (mut headers, consumed) = EmbeddedHeaders::parse_with(
-            EmbeddedIpVersion::Ipv6,
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-        )
-        .ok()?;
+        // The embedded datagram as `check_full_payload` measures it. Both the lengths it compares --
+        // `full_packet_length`, which it derives from the embedded IP header, and the RFC 4884
+        // length attribute -- are offsets from the *start* of the original datagram. So the buffer
+        // and the remaining count have to begin there too, which means capturing them before
+        // `consume` moves past the embedded headers rather than after.
+        //
+        // Taken after, as this did, they begin `consumed` octets late: the padding check indexes
+        // `buf[full_packet_length..icmp_length]` past the end of the field and into whatever
+        // follows it, and the no-extension case compares a whole-datagram length against a
+        // headers-excluded remainder. `parse_with` below is already handed exactly this slice.
+        let embedded_start = cursor.inner.len() - cursor.remaining as usize;
+        let embedded_remaining = cursor.remaining as usize;
+
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &cursor.inner[embedded_start..])
+                .ok()?;
         cursor.consume(consumed).ok()?;
 
         // Mark whether the payload of the embedded IP packet is full
         headers.check_full_payload(
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-            cursor.remaining as usize,
+            &cursor.inner[embedded_start..],
+            embedded_remaining,
             consumed.get() as usize,
             icmp_payload_length,
         );
