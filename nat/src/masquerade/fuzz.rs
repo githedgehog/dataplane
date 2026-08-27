@@ -142,6 +142,19 @@ impl Tally {
             self.built.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
         );
+        // `cargo bolero` runs the test binary once with `CARGO_BOLERO_SELECT` set, purely to find
+        // out which fuzz targets it holds. `check!()` registers itself and returns without drawing
+        // anything, so this runs with every count at zero -- and the vacuity guard below, right
+        // about a property that drew cases and reached none, is wrong about one that never drew a
+        // case at all. Asserting on that pass refuses the *selection*, and the target can then
+        // never be fuzzed.
+        //
+        // `static_nat::fuzz` avoids this without a guard, and only by accident: its `check!()` sits
+        // at the body scope of `drive_*`, so bolero's `return` leaves the function before `report`
+        // runs. Here `check!()` is inside a closure, so the `return` leaves only the closure.
+        if seen == 0 {
+            return;
+        }
         println!("{what}: {built}/{seen} configurations built, {reached} flows reached it");
         assert!(
             built * 2 >= seen,
