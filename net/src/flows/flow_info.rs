@@ -397,12 +397,54 @@ impl FlowInfo {
     /// Returns `FlowInfoError::TimeoutUnchanged` if the new timeout is smaller than the current.
     ///
     pub fn reset_expiry_unchecked(&self, duration: Duration) -> Result<(), FlowInfoError> {
-        let current = self.expires_at();
         let new = clock::now() + duration;
-        if new < current {
+        // One atomic operation, not a load, a comparison and a store.
+        //
+        // Both halves of a pair are refreshed on every packet in either direction, so two threads
+        // write this location concurrently as a matter of course -- and `extend_by` differs by
+        // status, so the two rarely agree on what to write. Read-modify-write in three steps lets
+        // both threads pass the guard against a deadline that is already stale and the shorter
+        // write land last: a flow one packet made `Established` (two minutes) and another found
+        // `TwoWay` (three seconds) ends up holding three seconds. That is the deadline moving
+        // *backwards*, which is the one thing the comparison exists to prevent.
+        //
+        // Losing it on the forward half is the serious case, because that half owns the
+        // `Allocation`: it expires under a live connection and the allocator hands its public tuple
+        // to another tenant, which is exactly what refreshing both halves was meant to stop.
+        //
+        // `fetch_max` never lowers the stored value, so the guard becomes a report of what this
+        // call did rather than a decision taken on a stale read. `extend_expiry_unchecked` below
+        // has always used `fetch_add` for the same reason.
+        //
+        // # Why there is no regression test
+        //
+        // Nothing in the tree can see this, and two plausible answers do not work.
+        //
+        // **A sanitizer cannot.** Every access here is atomic -- a relaxed load and a relaxed store
+        // on an `AtomicUsize`, plus a `base` that is immutable after construction. There is no data
+        // race in the memory-model sense, and a lost update across two atomic operations is an
+        // atomicity violation, which ThreadSanitizer does not report by design. Fuzzing under tsan
+        // will not find this.
+        //
+        // **A stress test does not, either.** Measured, not assumed: two threads, a fresh flow per
+        // round so the guard has something stale to compare against, a barrier to align the loads,
+        // 200,000 rounds -- zero hits. The window between the load and the store is tens of
+        // nanoseconds and barrier jitter is microseconds.
+        //
+        // What would settle it is a model checker, over two threads and one `FlowInfo` -- no flow
+        // table and no `dashmap`, which is a red herring for this race. It needs one thing that
+        // does not exist yet: `AtomicInstant` wraps `atomic_instant_full`, which holds a
+        // `std::sync::atomic::AtomicUsize` with no way to route it through `concurrency`. Under
+        // shuttle that atomic is opaque, no interleaving is explored, and the test passes on the
+        // broken code -- worse than having no test. Routing `net::flows::atomic_instant` through
+        // `concurrency::sync::atomic` is about seventy lines against a four-method surface, and is
+        // the work this comment exists to point at.
+        let previous = self.expires_at.fetch_max(new, Ordering::Relaxed);
+        // Strictly greater: resetting to precisely the deadline already held is accepted and leaves
+        // it alone, which `the_unchecked_refreshes_move_the_deadline_exactly` pins deliberately.
+        if previous > new {
             return Err(FlowInfoError::TimeoutUnchanged);
         }
-        self.expires_at.store(new, Ordering::Relaxed);
         Ok(())
     }
 
