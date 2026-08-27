@@ -604,7 +604,6 @@ mod tests {
         _ => 10,
     });
 
-
     fn test_router_subsystem() -> Subsystem {
         Subsystem::new("router", CancellationToken::new())
     }
