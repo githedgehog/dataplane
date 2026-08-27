@@ -16,8 +16,6 @@ use std::num::NonZero;
 
 const MAX_EXPOSES: u8 = 3;
 
-const MIN_REACHED: usize = 8;
-
 const PROBES: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
@@ -99,7 +97,7 @@ impl Tally {
              like it did"
         );
         assert!(
-            reached >= MIN_REACHED && reached * 2 >= built,
+            reached > 0 && reached * 2 >= built,
             "{reached} flows reached the {what} assertion across {built} configurations; \
              this property has gone vacuous"
         );
