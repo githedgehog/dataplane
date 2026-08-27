@@ -621,12 +621,25 @@ impl Icmp6 {
         })
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+    //= type=implementation
+    //# An ICMP Extension Structure MAY be appended to ICMPv6 Destination
+    //# Unreachable, and Time Exceeded messages.
+    /// Whether this message may carry an RFC 4884 length attribute.
+    ///
+    /// **Two messages, not three.** The v4 list next door has Parameter Problem in it and is right
+    /// to: RFC 4884 section 4.3 gives `ICMPv4` Parameter Problem a one-octet pointer at offset 4 and
+    /// a length attribute at offset 5. `ICMPv6` Parameter Problem has no length attribute at all --
+    /// bytes 4 through 7 are its 32-bit Pointer -- so reading octet 4 as a length here read the top
+    /// byte of that pointer and multiplied it by eight.
+    ///
+    /// The two lists differing is exactly what makes this easy to get wrong by symmetry, which is
+    /// why the sentence that settles it is quoted above rather than referred to.
     #[must_use]
     pub(crate) fn supports_extensions(&self) -> bool {
-        // See RFC 4884.
         matches!(
             self.icmp_type(),
-            Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_) | Icmp6Type::ParamProblem(_)
+            Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_)
         )
     }
 
