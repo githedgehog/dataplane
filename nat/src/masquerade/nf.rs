@@ -11,7 +11,7 @@ use crate::masquerade::allocator_writer::NatAllocatorReader;
 use crate::masquerade::apalloc::{Allocation, NatAllocator};
 use crate::masquerade::flows::check_masquerading_flow;
 use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
-use crate::masquerade::protocol::next_flow_status;
+use crate::masquerade::protocol::{next_flow_status, transport_proto};
 use crate::masquerade::state::MasqueradeState;
 use clock::Duration;
 use concurrency::sync::{Arc, Weak};
@@ -178,13 +178,17 @@ impl Masquerade {
         packet.meta().dst_vpcd
     }
 
+    /// Which protocols refresh a mapping nobody has answered yet.
+    ///
+    /// Asks `transport_proto`, the same function `next_flow_status` asks. The two
+    /// decisions have to agree: this one names the protocols excluded from the refresh,
+    /// and that one picks the state machine that produces the `OneWay` this is asked
+    /// about. TCP is the deliberate exclusion in both -- its handshake is the answer.
     fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        packet.try_ip().is_some_and(|ip| {
-            matches!(
-                ip.next_header(),
-                NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
-            )
-        })
+        matches!(
+            transport_proto(packet),
+            Some(NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6)
+        )
     }
 
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
