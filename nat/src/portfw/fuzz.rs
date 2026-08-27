@@ -35,8 +35,8 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZero;
 
-/// The fewest reaching draws any property may see before it is considered vacuous.
-const MIN_REACHED: usize = 8;
+// A *ratio*, and no absolute floor -- see `masquerade::fuzz`, where coverage instrumentation
+// failed the absolute one on a property that was working.
 
 /// Exposes per configuration. One per protocol key; see `PortForwardingExposes`.
 const MAX_EXPOSES: u8 = 2;
@@ -133,7 +133,7 @@ impl Tally {
              like it did"
         );
         assert!(
-            reached >= MIN_REACHED && reached * 2 >= built,
+            reached > 0 && reached * 2 >= built,
             "{reached} packets reached the {what} assertion across {built} configurations; this \
              property has gone vacuous"
         );
