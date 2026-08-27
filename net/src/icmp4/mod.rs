@@ -615,11 +615,24 @@ impl Icmp4 {
         )
     }
 
+    /// The RFC 4884 length attribute, in octets, read out of `buf`.
+    ///
+    /// `buf` is **this ICMP header**, not the frame it arrived in. Octet 5 of an `ICMPv4` error
+    /// message is the length attribute; octet 5 of an Ethernet frame is the last byte of the
+    /// destination MAC. See [`Self::parse_payload`], which is the only caller.
+    ///
+    /// The attribute counts 32-bit words, so the result is a multiple of four -- which is the
+    /// alignment `EmbeddedHeaders::check_full_payload` relies on rather than re-checking.
     fn payload_length(&self, buf: &[u8]) -> usize {
         if !self.supports_extensions() {
             return 0;
         }
-        let payload_length = buf[5];
+        // A header shorter than this is not one `supports_extensions` can be true of, but the
+        // read is bounds-checked rather than argued: a panic here is a malformed packet taking
+        // the dataplane down.
+        let Some(&payload_length) = buf.get(5) else {
+            return 0;
+        };
         payload_length as usize * 4
     }
 
@@ -627,6 +640,22 @@ impl Icmp4 {
         if !self.is_error_message() {
             return None;
         }
+
+        // Taken here, before anything else is consumed, because `payload_length` wants *this
+        // header* and this is the only point at which it can be named: `Headers::parse` consumed
+        // it immediately before calling here, so it is the `size()` octets ending where the unread
+        // part of the buffer begins.
+        //
+        // `Reader::inner` is the whole frame and is never advanced -- `consume` only decrements
+        // `remaining` -- so handing it over whole reads octet 5 of the *Ethernet* header instead
+        // of the length attribute, which is what this did until it was corrected. Nothing noticed,
+        // because every test of `check_full_payload` calls it directly with a length of its own.
+        let icmp_payload_length = {
+            let end = cursor.inner.len() - cursor.remaining as usize;
+            let start = end.checked_sub(self.size().get() as usize)?;
+            self.payload_length(&cursor.inner[start..end])
+        };
+
         let (mut headers, consumed) = EmbeddedHeaders::parse_with(
             EmbeddedIpVersion::Ipv4,
             &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
@@ -639,7 +668,7 @@ impl Icmp4 {
             &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
             cursor.remaining as usize,
             consumed.get() as usize,
-            self.payload_length(cursor.inner),
+            icmp_payload_length,
         );
 
         Some(headers)

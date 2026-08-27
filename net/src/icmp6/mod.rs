@@ -630,12 +630,20 @@ impl Icmp6 {
         )
     }
 
+    /// The RFC 4884 length attribute, in octets, read out of `buf`.
+    ///
+    /// `buf` is **this ICMP header**, not the frame it arrived in. See
+    /// [`crate::icmp4::Icmp4::payload_length`], which carries the argument.
+    ///
+    /// The attribute counts 64-bit words here, so the result is a multiple of eight.
     fn payload_length(&self, buf: &[u8]) -> usize {
         // See RFC 4884.
         if !self.supports_extensions() {
             return 0;
         }
-        let payload_length = buf[4];
+        let Some(&payload_length) = buf.get(4) else {
+            return 0;
+        };
         payload_length as usize * 8
     }
 
@@ -643,6 +651,13 @@ impl Icmp6 {
         if !self.is_error_message() {
             return None;
         }
+        // This header, not the frame: see `Icmp4::parse_payload`.
+        let icmp_payload_length = {
+            let end = cursor.inner.len() - cursor.remaining as usize;
+            let start = end.checked_sub(self.size().get() as usize)?;
+            self.payload_length(&cursor.inner[start..end])
+        };
+
         let (mut headers, consumed) = EmbeddedHeaders::parse_with(
             EmbeddedIpVersion::Ipv6,
             &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
@@ -655,7 +670,7 @@ impl Icmp6 {
             &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
             cursor.remaining as usize,
             consumed.get() as usize,
-            self.payload_length(cursor.inner),
+            icmp_payload_length,
         );
 
         Some(headers)
