@@ -3,11 +3,10 @@
 
 //! Display implementations for allocator types
 
-use super::alloc::{AllocatedIp, IpAllocator, NatPool, PoolSet};
+use super::alloc::{AllocatedIp, IpAllocator, PoolSet};
 use super::port_alloc::PortAllocator;
 use super::{NatAllocator, NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
-use concurrency::sync::{Arc, Weak};
 use indenter::indented;
 use std::fmt::{Display, Error, Formatter, Result, Write};
 
@@ -91,50 +90,45 @@ where
     I: NatIpWithBitmap + Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        // The same hazard the allocation paths guard against, reached by printing the table.
+        // Snapshot under the guard, format without it.
         //
-        // The pool holds weak references to the addresses in use; the strong ones belong to the
-        // blocks handed out from each. `NatPool`'s own `fmt` upgrades each weak reference to print
-        // it, and the guard below is held for all of that. Another thread ending the last flow on
-        // an address at that moment leaves one of those upgrades as the only strong reference, and
-        // letting it go runs `AllocatedIp::drop` here, which takes this same lock for writing.
+        // Formatting writes into a `Formatter` the caller owns, which for a `CliSource` means
+        // writing to the CLI's sink -- so holding the pool's read lock across it held it across
+        // I/O, while `allocate_ip` and `deallocate_ip` want the same lock for writing. Nothing
+        // here needs the pool once the ranges are collected and the live addresses upgraded.
         //
-        // Holding an upgrade of every address across the guard keeps the ones taken while printing
-        // from ever being last. They are released below, once the guard is gone.
-        let mut examined: Vec<Arc<AllocatedIp<I>>> = Vec::new();
-        let outcome = {
+        // Upgrading the weak references is also what makes releasing the guard safe rather than
+        // merely tidy. The pool holds weak references and the strong ones belong to the blocks
+        // handed out from each; `AllocatedIp::drop` takes this pool's *write* lock. Holding an
+        // upgrade of every address means none of the ones examined here can be the last, and they
+        // are released at the end of this function with no guard held.
+        let snapshot = {
             let pool = self.read();
-            examined.extend(pool.ips_in_use().filter_map(Weak::upgrade));
-            write!(f, "{pool}")
+            let ranges = pool.ips_in_bitmap().map_err(|()| Error)?;
+            let mut live = Vec::new();
+            let mut dropped = 0u32;
+            for weak in pool.ips_in_use() {
+                match weak.upgrade() {
+                    Some(ip) => live.push(ip),
+                    None => dropped += 1,
+                }
+            }
+            (ranges, live, dropped)
         };
-        drop(examined);
-        outcome
-    }
-}
+        let (ranges, live, dropped) = snapshot;
 
-impl<I> Display for NatPool<I>
-where
-    I: NatIpWithBitmap + Display,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         writeln!(f, "IP ranges in pool:")?;
-        for range in self.ips_in_bitmap().map_err(|()| Error)? {
+        for range in &ranges {
             writeln!(with_indent!(f), "{range}")?;
         }
 
         writeln!(f, "allocated IPs:")?;
-        let (mut found, mut dropped) = (false, 0u32);
-        for weak_ip in self.ips_in_use() {
-            if let Some(ip) = weak_ip.upgrade() {
-                write!(with_indent!(f), "{}", *ip)?;
-                found = true;
-            } else {
-                dropped += 1;
-            }
+        for ip in &live {
+            write!(with_indent!(f), "{}", **ip)?;
         }
         if dropped > 0 {
             writeln!(with_indent!(f), "<{dropped} weak references dropped>")?;
-        } else if !found {
+        } else if live.is_empty() {
             writeln!(with_indent!(f), "(empty)")?;
         }
         Ok(())

@@ -1436,15 +1436,20 @@ mod relevance {
 
     /// # Why IPv4 only
     ///
-    /// `NatAllocator`'s `Display` never returns on an IPv6 masquerade pool. `ips_in_bitmap` walks
-    /// **every set bit** of the pool's bitmap (`for offset in &self.bitmap.0`), which is a few thousand
-    /// iterations for a v4 `/20` and unbounded for a v6 pool. Measured, not surmised: over IPv4 it
-    /// completes 380 times in a one-second run with a worst case of 6ms; over both families it does not
-    /// complete once in 200 seconds.
+    /// `NatAllocator`'s `Display` used to take minutes on an IPv6 masquerade pool -- this property
+    /// is the one that tripped over it, because it renders every artifact, the allocator included,
+    /// twice per case. `ips_in_bitmap` walked every set bit of the pool's bitmap, which
+    /// `NatPool::for_range` seeds with the whole region capped at `u32::MAX`, so any range of `/96`
+    /// or shorter was 2^32 iterations. Measured: over IPv4 it completed 380 times in a one-second
+    /// run with a worst case of 6ms; over both families it did not complete once in 200 seconds.
     ///
-    /// This property is the one that trips over it because it renders every artifact, the allocator
-    /// included, twice per case. The defect is not confined to tests: that `Display` is a
-    /// `CliSource`, and it holds a read lock across the whole print.
+    /// **That is fixed** -- `fix(nat): Walk the pool bitmap by runs, and print it without the lock`
+    /// -- so it is no longer the reason this is IPv4 only. What remains is the reason
+    /// `validator_completeness` gives: `internal.rs` renders no IPv6 peering configuration, so
+    /// `Artifacts::of` gets `ConfigError::Unsupported` from the builder and skips the case. Widening
+    /// the family here is therefore a question of how many cases would become skips rather than a
+    /// question of whether it finishes, and `checked * 40 > seen` below is the guard that would
+    /// answer it.
     ///
     /// # Yield
     ///

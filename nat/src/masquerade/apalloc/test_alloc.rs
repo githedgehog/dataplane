@@ -1028,6 +1028,59 @@ mod std_tests {
         (IpAllocator::new(pool, false), address)
     }
 
+    /// A pool as wide as an ordinary v6 subnet can be printed.
+    ///
+    /// **A regression test with a stopwatch for an oracle, which is unusual and is the point.**
+    /// `NatPool::for_range` seeds the bitmap with every offset in the region, capped at `u32::MAX`,
+    /// so a `/64` -- the size an operator actually writes -- is 2^32 entries. The old
+    /// `ips_in_bitmap` walked them one at a time, doing a `BTreeMap` lookup per offset to convert
+    /// it to an address and then coalescing the results back into ranges: four billion lookups to
+    /// produce the single line a fresh pool has. It did not finish in two hundred seconds, and
+    /// `Display` held the pool's read lock the whole time while allocation and deallocation want it
+    /// for writing.
+    ///
+    /// Walking runs instead makes this one iteration. There is no assertion on elapsed time --
+    /// timing assertions are how a test becomes flaky on a loaded machine -- because none is
+    /// needed: before the change this test does not return, and a test that does not return is a
+    /// failure the runner reports on its own terms.
+    #[test]
+    fn a_v6_subnet_sized_pool_can_be_printed() {
+        // 2001:db8:: .. 2001:db8::ffff:ffff:ffff:ffff -- a /64, and 2^64 addresses.
+        let base = u128::from_be_bytes(
+            "2001:db8::"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap_or_else(|_| unreachable!())
+                .octets(),
+        );
+        let pool = NatPool::<std::net::Ipv6Addr>::for_range(
+            AddrInterval::new(base, base + u128::from(u64::MAX)),
+            ReservedPorts::default(),
+            true,
+        );
+        let allocator = IpAllocator::new(pool, false);
+
+        let shown = allocator.to_string();
+        assert!(
+            shown.contains("IP ranges in pool:"),
+            "the pool did not render its ranges: {shown}"
+        );
+        // Nothing has been allocated, so the free set is one unbroken run -- which is exactly the
+        // case the old walk spent 2^32 iterations discovering.
+        let ranges: Vec<&str> = shown.lines().filter(|line| line.contains(" .. ")).collect();
+        assert_eq!(
+            ranges.len(),
+            1,
+            "a pool with nothing allocated should print exactly one range: {shown}"
+        );
+        // And it ends where the bitmap does. `for_range` caps the region at `u32::MAX` offsets, so
+        // a `/64` is served by its first 2^32 addresses; the rest are not addresses this pool can
+        // hand out. Asserted because it is a real limit rather than an artefact of this test.
+        assert!(
+            ranges[0].contains("[2001:db8:: .. 2001:db8::ffff:ffff]"),
+            "the range should span the bitmap's 2^32 offsets: {shown}"
+        );
+    }
+
     #[test]
     fn claimed_ports_are_never_allocated() {
         let (allocator, _) = allocator_with_claims();
