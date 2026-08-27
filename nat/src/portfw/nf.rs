@@ -221,8 +221,8 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // These could be retrieved from the FlowKey, but we don't have it :( ...
         let src_vpcd = packet.meta().src_vpcd?;
+        let proto = packet.upper_layer_proto()?;
         let net = packet.try_ip()?;
-        let proto = net.next_header();
         let dst_ip = net.dst_addr();
         let dst_port = packet.transport_dst_port()?;
         let key = PortFwKey::new(src_vpcd, proto);
@@ -261,8 +261,8 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // get required properties from packet
         let src_vpcd = packet.meta().src_vpcd?;
+        let proto = packet.upper_layer_proto()?;
         let net = packet.try_ip()?;
-        let proto = net.next_header();
         let src_ip = net.src_addr();
         let src_port = packet.transport_src_port()?;
 
