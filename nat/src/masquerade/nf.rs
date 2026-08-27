@@ -176,6 +176,15 @@ impl Masquerade {
         packet.meta().dst_vpcd
     }
 
+    fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        packet.try_ip().is_some_and(|ip| {
+            matches!(
+                ip.next_header(),
+                NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+            )
+        })
+    }
+
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
     /// communication and the protocol and extend the lifetime of the flow (or invalidate it) accordingly.
     fn refresh_masquerade_state<Buf: PacketBufferMut>(
@@ -203,14 +212,11 @@ impl Masquerade {
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
             //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
-            //= type=todo
+            //= type=implementation
             //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
             //# refresh behavior" of "True".
             NatFlowStatus::OneWay => {
-                // this could happen if a burst of packets are sent before any state is there (snat),
-                // or if we got a TCP segment back without expected flags. This should never happen for
-                // a UDP packet in the reverse direction, though.
-                None
+                Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
             }
         };
 

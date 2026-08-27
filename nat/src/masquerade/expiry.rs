@@ -347,6 +347,70 @@ fn an_expired_flow_is_never_resurrected() {
     });
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+//= type=test
+//# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+//# refresh behavior" of "True".
+#[test]
+fn outbound_traffic_keeps_an_unanswered_mapping_alive() {
+    const STEP: Duration = Duration::from_secs(2);
+    const REFRESHES: u32 = 2;
+
+    let source: IpAddr = "10.0.0.21".parse().unwrap_or_else(|_| unreachable!());
+    let elapsed = Duration::from_secs(u64::from(REFRESHES + 1) * STEP.as_secs());
+    assert!(
+        elapsed > crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT,
+        "the probe must land past the deadline the first packet set, or neither half proves \
+         anything"
+    );
+
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        for _ in 0..=REFRESHES {
+            advance(STEP).await;
+        }
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            None,
+            "a mapping nobody refreshed survived {}s of silence against a {}s timeout, so the \
+             treatment below proves nothing",
+            elapsed.as_secs(),
+            crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs()
+        );
+    });
+
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        for _ in 0..REFRESHES {
+            advance(STEP).await;
+            assert_eq!(
+                open_flow(&mut lookup, &mut masq, source, peer, 5300),
+                Some(translated),
+                "the sender was given a different public tuple mid-stream"
+            );
+        }
+        advance(STEP).await;
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            Some(source),
+            "outbound traffic did not keep an unanswered mapping alive: at t={}s the flow was \
+             gone, so a one-way sender loses its public tuple every {}s however much it sends",
+            elapsed.as_secs(),
+            crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs()
+        );
+    });
+}
+
 #[test]
 fn both_halves_of_a_pair_outlive_one_sided_traffic() {
     with_paused_clock(|| async {
