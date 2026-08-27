@@ -42,8 +42,8 @@ use crate::atable::atablerw::{AtableReader, AtableWriter};
 use crate::evpn::Vtep;
 use crate::fib::fibtable::{FibTableReader, FibTableWriter};
 use crate::fib::fibtype::FibKey;
-use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
+use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 
 /// The three tables the forwarding stages read, built by hand.
@@ -169,12 +169,7 @@ impl RouterTables {
     /// # Panics
     ///
     /// If `ifindex` is already in the table.
-    pub fn interface(
-        &mut self,
-        ifindex: InterfaceIndex,
-        name: &str,
-        mac: SourceMac,
-    ) -> &mut Self {
+    pub fn interface(&mut self, ifindex: InterfaceIndex, name: &str, mac: SourceMac) -> &mut Self {
         let mut config = RouterInterfaceConfig::new(name, ifindex);
         config.set_iftype(IfType::Ethernet(IfDataEthernet { mac }));
         config.set_admin_state(IfState::Up);
@@ -220,12 +215,7 @@ impl RouterTables {
     }
 
     /// Resolve `address` on `ifindex` to `mac`, which is what `Egress` needs to frame a packet.
-    pub fn adjacency(
-        &mut self,
-        address: IpAddr,
-        ifindex: InterfaceIndex,
-        mac: Mac,
-    ) -> &mut Self {
+    pub fn adjacency(&mut self, address: IpAddr, ifindex: InterfaceIndex, mac: Mac) -> &mut Self {
         self.adjacencies
             .add_adjacency(Adjacency::new(address, ifindex, mac), true);
         self
