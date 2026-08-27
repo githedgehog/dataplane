@@ -1132,11 +1132,17 @@ pub mod contract {
     /// `10.0.0.0/8` and `172.16.0.0/12`, so two of them can overlap, and independent draws mix
     /// address families, which a peering refuses.
     ///
-    /// Port forwarding has a third constraint the others do not. A rule is keyed by
-    /// `(source vpc, protocol)`, so two exposes naming the same protocol produce two rules with the
-    /// same key and the second replaces the first in the table -- a legal configuration that
-    /// silently halves what a property is testing. `L4Protocol::Any` expands to both TCP and UDP,
-    /// so it collides with everything. One protocol per expose, assigned by position.
+    /// One protocol per expose, assigned by position, and that is a **restriction of coverage
+    /// rather than a rule the table imposes.** A `PortFwKey` is `(source vpc, protocol)`, but it
+    /// selects a `PortForwarder`, not a rule: the rules inside one live in a range set keyed by
+    /// `(ext_prefix, ext_ports)`, so two same-protocol exposes with disjoint external ranges -- which
+    /// the per-expose blocks above guarantee -- both go in and both survive. A genuine key
+    /// collision is an `OverlappingRange` error, not a silent replacement.
+    ///
+    /// So this could be widened, and widening it is the way to reach two rules under one
+    /// `PortFwKey` and the two-rule expansion `L4Protocol::Any` produces -- which is the only shape
+    /// in which `PortForwarder`'s longest-match lookup has a choice to get wrong, and which nothing
+    /// in `portfw::fuzz` currently reaches.
     #[derive(Debug, Clone, Copy)]
     pub struct PortForwardingExposes(pub u8);
 
