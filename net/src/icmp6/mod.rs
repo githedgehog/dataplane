@@ -621,12 +621,15 @@ impl Icmp6 {
         })
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+    //= type=implementation
+    //# An ICMP Extension Structure MAY be appended to ICMPv6 Destination
+    //# Unreachable, and Time Exceeded messages.
     #[must_use]
     pub(crate) fn supports_extensions(&self) -> bool {
-        // See RFC 4884.
         matches!(
             self.icmp_type(),
-            Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_) | Icmp6Type::ParamProblem(_)
+            Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_)
         )
     }
 
