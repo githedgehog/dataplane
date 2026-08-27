@@ -137,12 +137,44 @@ impl Tally {
     /// The denial ratio matters as much as the arrival one and is easy to miss. A run that only ever
     /// saw permits would pass every assertion below while the drop path -- the only path where the
     /// stage does anything at all -- went entirely unexercised.
+    /// As [`Self::report`], for a property whose subject is not the deny path.
+    ///
+    /// The denial ratio below is a real measurement in exactly one property. Three others bumped
+    /// `denied` on the same line as `reached`, which reduces the assertion to
+    /// `reached * 20 >= reached` -- and `underlay_traffic_is_not_judged` did it having just
+    /// asserted that the packet was *not* denied. An instrument whose zero is unreachable says
+    /// nothing; so does one that cannot read anything but its maximum.
+    fn report_arrivals_only(&self, what: &str) {
+        let (drawn, reached) = (
+            self.drawn.load(Ordering::Relaxed),
+            self.reached.load(Ordering::Relaxed),
+        );
+        if drawn == 0 {
+            return;
+        }
+        println!("{what}: {reached}/{drawn} probes became packets");
+        assert!(
+            reached >= MIN_REACHED && reached * 4 >= drawn,
+            "only {reached} of {drawn} probes became packets, so the {what} assertion is barely \
+             running"
+        );
+    }
+
     fn report(&self, what: &str) {
         let (drawn, reached, denied) = (
             self.drawn.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
             self.denied.load(Ordering::Relaxed),
         );
+        // `cargo bolero` runs the test binary once with `CARGO_BOLERO_SELECT` set, purely to find
+        // out which fuzz targets it holds. `check!()` registers itself and returns without drawing
+        // anything, so this runs with every count at zero -- and the vacuity guard below, which is
+        // right about a property that drew cases and reached none, is wrong about one that never
+        // drew a case at all. Asserting on that pass refuses the *selection*, so the target can
+        // never be fuzzed. The two copies of this helper in `nat` already return early here.
+        if drawn == 0 {
+            return;
+        }
         println!("{what}: {reached}/{drawn} probes became packets, {denied} of them denied");
         assert!(
             reached >= MIN_REACHED && reached * 4 >= drawn,
@@ -259,11 +291,10 @@ fn the_summary_survives_the_round_trip_through_a_packet() {
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
                 // The drop path is not this property's subject; borrow the floor.
-                tally.denied.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-    tally.report("summary round trip");
+    tally.report_arrivals_only("summary round trip");
 }
 
 /// A packet with no discriminants is dropped, and says why.
@@ -297,11 +328,10 @@ fn a_packet_with_no_discriminants_is_dropped() {
                     "a packet with no destination vpc was not refused\nspec: {overlay_spec:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
-                tally.denied.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-    tally.report("missing discriminant");
+    tally.report_arrivals_only("missing discriminant");
 }
 
 /// A packet that is not overlay traffic is left alone.
@@ -334,9 +364,8 @@ fn underlay_traffic_is_not_judged() {
                      {overlay_spec:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
-                tally.denied.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-    tally.report("underlay gate");
+    tally.report_arrivals_only("underlay gate");
 }
