@@ -236,6 +236,8 @@ impl VpcRoutingConfigIpv4 {
         /* is this Ipv4 or IPv6 peering? */
         let ipver = Self::vpc_peering_manifest_ip_ver(peer);
 
+        reject_ipv6(nets.iter().copied())?;
+
         /* build adv prefix list */
         let mut adv_plist = PrefixList::new(
             &vpc.adv_plist(rmanifest.name()),
@@ -255,8 +257,6 @@ impl VpcRoutingConfigIpv4 {
 
         /* set list of prefixes to advertise to VPC */
         self.adv_nets.extend(nets);
-
-        reject_ipv6(nets.iter().copied())?;
 
         /* register prefix list */
         self.adv_plist.push(adv_plist);
@@ -499,12 +499,15 @@ mod chain_properties {
             .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
         let validated = external.validate().ok()?;
         let genid = validated.genid();
-        let internal = match build_internal_config(&validated, None) {
-            Ok(internal) => internal,
-            Err(ConfigError::Unsupported(_)) => return None,
+        Some((genid, build_or_skip(&validated)?))
+    }
+
+    fn build_or_skip(validated: &ValidatedGwConfig) -> Option<InternalConfig> {
+        match build_internal_config(validated, None) {
+            Ok(internal) => Some(internal),
+            Err(ConfigError::Unsupported(_)) => None,
             Err(e) => panic!("a validated configuration would not build: {e}\n{validated:#?}"),
-        };
-        Some((genid, internal))
+        }
     }
 
     #[test]
@@ -533,8 +536,9 @@ mod chain_properties {
                 let Ok(validated) = external.validate() else {
                     return;
                 };
-                let internal = build_internal_config(&validated, None)
-                    .unwrap_or_else(|e| panic!("a validated configuration would not build: {e}"));
+                let Some(internal) = build_or_skip(&validated) else {
+                    return;
+                };
 
                 let wanted: BTreeSet<u32> = validated
                     .external()
