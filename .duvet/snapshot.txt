@@ -27,8 +27,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!MAY]:       b) The value of the NAT UDP mapping timer MAY be configurable.
     TEXT[!SHOULD,todo]:       c) A default value of five minutes or more for the NAT UDP mapping
     TEXT[!SHOULD,todo]:          timer is RECOMMENDED.
-    TEXT[!MUST,test,todo]:    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
-    TEXT[!MUST,test,todo]:       refresh behavior" of "True".
+    TEXT[!MUST,implementation,test]:    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+    TEXT[!MUST,implementation,test]:       refresh behavior" of "True".
     TEXT[!MAY]:       a) The NAT mapping Refresh Direction MAY have a "NAT Inbound
     TEXT[!MAY]:          refresh behavior" of "True".
 
@@ -63,10 +63,10 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!SHOULD]:          the NAT administrator to enable or disable each ALG separately.
 
   SECTION: [Deterministic Properties](#section-8)
-    TEXT[!MUST,test]:    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
-    TEXT[!MUST,test]:       change the NAT translation (Section 4) or the Filtering
-    TEXT[!MUST,test]:       (Section 5) Behavior at any point in time, or under any particular
-    TEXT[!MUST,test]:       conditions.
+    TEXT[!MUST,exception]:    REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
+    TEXT[!MUST,exception]:       change the NAT translation (Section 4) or the Filtering
+    TEXT[!MUST,exception]:       (Section 5) Behavior at any point in time, or under any particular
+    TEXT[!MUST,exception]:       conditions.
 
   SECTION: [ICMP Destination Unreachable Behavior](#section-9)
     TEXT[!SHOULD]: The NAT's default configuration SHOULD NOT filter
@@ -269,13 +269,13 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
     TEXT[!MUST]:          response violates the security policy of the NAT.
 
   SECTION: [NAT Session Refresh](#section-5)
-    TEXT[!MAY]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
-    TEXT[!MAY]:       connection are active, it MAY abandon the session if it has been
-    TEXT[!MAY]:       idle for some time.
-    TEXT[!MUST]: In such cases, the value of the "established
-    TEXT[!MUST]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
-    TEXT[!MUST]:       The value of the "transitory connection idle-timeout" MUST NOT be
-    TEXT[!MUST]:       less than 4 minutes.
+    TEXT[!MAY,todo]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    TEXT[!MAY,todo]:       connection are active, it MAY abandon the session if it has been
+    TEXT[!MAY,todo]:       idle for some time.
+    TEXT[!MUST,todo]: In such cases, the value of the "established
+    TEXT[!MUST,todo]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    TEXT[!MUST,todo]:       The value of the "transitory connection idle-timeout" MUST NOT be
+    TEXT[!MUST,todo]:       less than 4 minutes.
     TEXT[!MAY]:       a) The value of the NAT idle-timeouts MAY be configurable.
     TEXT[!MAY]: A NAT MAY hold state for a connection in
     TEXT[!MAY]:    TIME_WAIT state to accommodate retransmissions of the last ACK.
@@ -334,13 +334,13 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
     TEXT[!SHOULD]:       REQ-4a applies.
     TEXT[!MUST]:       a) The NAT MUST silently drop the original SYN packet if sending a
     TEXT[!MUST]:          response violates the security policy of the NAT.
-    TEXT[!MAY,todo]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
-    TEXT[!MAY,todo]:       connection are active, it MAY abandon the session if it has been
-    TEXT[!MAY,todo]:       idle for some time.
-    TEXT[!MUST,todo]: In such cases, the value of the "established
-    TEXT[!MUST,todo]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
-    TEXT[!MUST,todo]:       The value of the "transitory connection idle-timeout" MUST NOT be
-    TEXT[!MUST,todo]:       less than 4 minutes.
+    TEXT[!MAY]:    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    TEXT[!MAY]:       connection are active, it MAY abandon the session if it has been
+    TEXT[!MAY]:       idle for some time.
+    TEXT[!MUST]: In such cases, the value of the "established
+    TEXT[!MUST]:       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    TEXT[!MUST]:       The value of the "transitory connection idle-timeout" MUST NOT be
+    TEXT[!MUST]:       less than 4 minutes.
     TEXT[!MAY]:       a) The value of the NAT idle-timeouts MAY be configurable.
     TEXT[!SHOULD]:    REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
     TEXT[!SHOULD]:       that all of those ALGs (except for FTP [RFC0959]) be disabled by
