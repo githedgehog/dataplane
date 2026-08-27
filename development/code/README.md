@@ -12,6 +12,8 @@
   wrong thing.
 
 If you need to write a test, prefer [property-based tests] over simple unit tests.
+To find out whether they are saying what the specification asked for, see the
+[specification compliance note][duvet].
 If you need to handle errors, prefer `Result` types over panics in general, but see the
 [error handling guide][error] for details.
 
@@ -21,6 +23,7 @@ If you need to [handle an error][error], follow the guidelines.
 
 [avoid-global-reasoning]: ./avoid-global-reasoning.md
 [property-based tests]: ./property-testing.md
+[duvet]: ./spec-compliance.md
 [error]: ./error-handling.md
 
 ## Testing instructions
