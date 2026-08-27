@@ -145,7 +145,8 @@ fn the_stage_agrees_with_the_configuration() {
                     continue;
                 };
 
-                let want = oracle_resolved_action(&built.overlay, &summary);
+                let judged = expected_summary(&summary);
+                let want = oracle_resolved_action(&built.overlay, &judged);
                 let out: Vec<_> = acl.process(std::iter::once(packet)).collect();
                 let got = out[0].get_done();
 
