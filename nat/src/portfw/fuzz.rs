@@ -106,6 +106,9 @@ impl Tally {
             self.built.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
         );
+        if seen == 0 {
+            return;
+        }
         println!("{what}: {built}/{seen} configurations built, {reached} packets reached it");
         if !judged(built) {
             println!("  {what}: not judged -- {built} configurations is too small a sample");
