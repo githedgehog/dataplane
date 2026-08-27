@@ -52,8 +52,10 @@ use std::num::NonZero;
 /// where a longest-prefix match has a choice to get wrong.
 const MAX_EXPOSES: u8 = 3;
 
-/// The fewest reaching draws any property may see before it is considered vacuous.
-const MIN_REACHED: usize = 8;
+// A *ratio*, and no absolute floor. An absolute one measures how fast the machine was: coverage
+// instrumentation slowed a run to 3 reaching flows across 1 configuration, which satisfies the
+// ratio and failed `reached >= 8`. What the guard is for is a property that has stopped reaching
+// its assertion, and a collapse to zero shows up in `reached > 0`.
 
 /// Probes per configuration. Building the configuration costs far more than resolving a probe
 /// against it, so a batch amortizes the expensive half over the interesting one.
@@ -205,7 +207,7 @@ impl Tally {
         );
         // At least one reaching probes for every two configurations built, and never zero.
         assert!(
-            reached >= MIN_REACHED && reached * 2 >= built,
+            reached > 0 && reached * 2 >= built,
             "{reached} probes reached the {what} assertion across {built} configurations; \
              this property has gone vacuous"
         );

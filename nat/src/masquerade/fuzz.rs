@@ -44,8 +44,10 @@ use std::num::NonZero;
 /// Exposes per configuration.
 const MAX_EXPOSES: u8 = 3;
 
-/// The fewest reaching draws any property may see before it is considered vacuous.
-const MIN_REACHED: usize = 8;
+// A *ratio*, and no absolute floor. An absolute one measures how fast the machine was: coverage
+// instrumentation slowed a run to 3 reaching flows across 1 configuration, which satisfies the
+// ratio and failed `reached >= 8`. What the guard is for is a property that has stopped reaching
+// its assertion, and a collapse to zero shows up in `reached > 0`.
 
 /// Flows per configuration.
 const PROBES: usize = 8;
@@ -163,7 +165,7 @@ impl Tally {
         );
         // At least one reaching flows for every two configurations built, and never zero.
         assert!(
-            reached >= MIN_REACHED && reached * 2 >= built,
+            reached > 0 && reached * 2 >= built,
             "{reached} flows reached the {what} assertion across {built} configurations; \
              this property has gone vacuous"
         );
