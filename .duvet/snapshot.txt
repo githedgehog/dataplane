@@ -27,8 +27,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4787
     TEXT[!MAY]:       b) The value of the NAT UDP mapping timer MAY be configurable.
     TEXT[!SHOULD,todo]:       c) A default value of five minutes or more for the NAT UDP mapping
     TEXT[!SHOULD,todo]:          timer is RECOMMENDED.
-    TEXT[!MUST,test,todo]:    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
-    TEXT[!MUST,test,todo]:       refresh behavior" of "True".
+    TEXT[!MUST,implementation,test]:    REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+    TEXT[!MUST,implementation,test]:       refresh behavior" of "True".
     TEXT[!MAY]:       a) The NAT mapping Refresh Direction MAY have a "NAT Inbound
     TEXT[!MAY]:          refresh behavior" of "True".
 

@@ -200,6 +200,29 @@ impl Masquerade {
         packet.meta().dst_vpcd
     }
 
+    /// Whether a flow still waiting for its first reply should be kept alive by outbound traffic.
+    ///
+    /// `NatFlowStatus::OneWay` means "nothing has come back yet", and what that is worth depends
+    /// entirely on the transport:
+    ///
+    /// * **UDP and ICMP** leave `OneWay` only on an inbound packet, so it is the steady state of a
+    ///   one-way flow rather than a transient. Outbound traffic is the only evidence such a flow will
+    ///   ever produce, and RFC 4787 REQ-6 requires it to refresh the mapping.
+    /// * **TCP** leaves `OneWay` only on a SYN-ACK, so an outbound packet here is a retransmitted SYN
+    ///   -- evidence that nobody answered. Refreshing on it would let a half-open connection hold a
+    ///   public tuple for as long as the sender keeps retrying.
+    ///
+    /// Read from the next-header rather than from the parsed transport, as `next_flow_status` does, so
+    /// that a fragment without a transport header is classified the same way.
+    fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        packet.try_ip().is_some_and(|ip| {
+            matches!(
+                ip.next_header(),
+                NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+            )
+        })
+    }
+
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
     /// communication and the protocol and extend the lifetime of the flow (or invalidate it) accordingly.
     fn refresh_masquerade_state<Buf: PacketBufferMut>(
@@ -227,36 +250,34 @@ impl Masquerade {
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
             //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
-            //= type=todo
+            //= type=implementation
             //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
             //# refresh behavior" of "True".
             //
-            // Not held in this state, and measured rather than inferred. `OneWay` is not only the
-            // odd transient the comment below describes: it is the *steady* state of any flow that
-            // has never had a reply, and returning `None` here means no amount of outbound traffic
-            // moves its deadline.
+            // Refreshed for UDP and ICMP, and deliberately not for TCP, because `OneWay` means two
+            // different things.
             //
-            // A control and a treatment, on a paused clock, five seconds of `OneWay` lifetime:
-            // silent for eight seconds, the reply to the mapping is dropped; an outbound packet at
-            // four seconds and then the same probe at eight, and it is *also* dropped. The packet
-            // changed nothing. An outbound-only flow -- syslog, netflow, telemetry, a resolver
-            // query nobody answers -- is therefore torn down five seconds after its first packet
-            // however much it sends, and rebuilt from scratch on the next one.
+            // For UDP and ICMP it is the *steady* state of any flow that has never had a reply:
+            // `next_flow_status_udp` leaves it only on an inbound packet, so an outbound-only flow
+            // -- syslog, netflow, telemetry, a resolver query nobody answers -- stays here for
+            // life. Returning `None` tore such a flow down five seconds after its **first** packet
+            // however much it sent, and drew a fresh public port on the rebuild. Measured, on a
+            // paused clock: silent for eight seconds, the reply is dropped; an outbound packet at
+            // four seconds and the same probe at eight, and it is *also* dropped. The packet
+            // changed nothing. That is the outbound refresh behaviour REQ-6 requires, and it was
+            // "False" in the one state where a UDP mapping actually lives.
             //
-            // Once a reply arrives the flow reaches `Established` and outbound refresh does work;
-            // `expiry::outbound_traffic_keeps_an_established_mapping_alive` holds that, verified
-            // over five minutes against a two-minute timer. So REQ-6 is met for connections and
-            // missed for one-way traffic.
-            //
-            // Marked `todo` rather than `exception` because this reads like an oversight rather
-            // than a decision: the comment below reasons about the *reverse* direction and treats
-            // `OneWay` as a corner, which is what makes returning `None` look harmless. Nothing
-            // here weighs one-way outbound traffic and declines to support it.
+            // For TCP, `OneWay` is a half-open connection -- `next_flow_status_tcp` leaves it only
+            // on a SYN-ACK -- so an outbound packet here is a retransmitted SYN. That is evidence
+            // nobody answered, not evidence the connection exists, and refreshing on it would let a
+            // half-open connection hold a public tuple for as long as the sender keeps retrying.
+            // RFC 4787 is the UDP document and does not ask for it; RFC 5382 is TCP's, and its
+            // concern for this state is the timer's floor rather than its refresh direction -- see
+            // the REQ-5 citation on `MASQUERADE_ONEWAY_TIMEOUT` above, which remains a `todo`.
             NatFlowStatus::OneWay => {
-                // this could happen if a burst of packets are sent before any state is there (snat),
-                // or if we got a TCP segment back without expected flags. This should never happen for
-                // a UDP packet in the reverse direction, though.
-                None
+                // The interval stays what it was. A flow nobody has answered has earned a short
+                // leash; the defect was measuring it from the first packet rather than the last.
+                Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
             }
         };
 

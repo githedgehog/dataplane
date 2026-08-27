@@ -385,10 +385,10 @@ fn traffic_extends_a_flow_past_its_first_deadline() {
 /// the mapping does then expire. A flow table that expired nothing would pass the first half and
 /// mean nothing by it.
 ///
-/// **This covers established flows only, and that is the whole of what we hold.** A flow that has
-/// never received a reply stays in `OneWay`, where outbound packets do not refresh at all -- measured
-/// and recorded at `Masquerade::refresh_masquerade_state`. It is deliberately not asserted here,
-/// because a test that pinned the current behaviour would make the deviation permanent.
+/// **This covers established flows.** The unanswered case -- a flow still in `OneWay`, which for UDP
+/// is a steady state rather than a transient -- is
+/// `outbound_traffic_keeps_an_unanswered_mapping_alive` above. Between them REQ-6 is held for every
+/// UDP state a mapping can be alive in.
 #[test]
 fn outbound_traffic_keeps_an_established_mapping_alive() {
     with_paused_clock(|| async {
@@ -485,6 +485,97 @@ fn an_expired_flow_is_never_resurrected() {
             reply_to(&mut lookup, &mut masq, peer, dead),
             Some(first),
             "an expired flow answered again after a later flow had been created"
+        );
+    });
+}
+
+/// Outbound traffic keeps a mapping alive before anything has answered it.
+///
+/// **The control and the treatment RFC 4787 REQ-6 asks for.** A UDP flow that never gets a reply
+/// stays in `NatFlowStatus::OneWay` for life -- `next_flow_status_udp` leaves that state only on an
+/// inbound packet -- so it is the steady state of syslog, netflow, telemetry, or a resolver query
+/// nobody answers, not a transient. `refresh_masquerade_state` gave it no extension, so such a flow
+/// was torn down `MASQUERADE_ONEWAY_TIMEOUT` after its **first** packet however much it sent.
+///
+/// # The probe has to be a reply, and it has to come after a gap
+///
+/// The obvious test -- send outbound packets and check the tuple does not change -- is vacuous, and
+/// it took writing it to see why: the allocator is deterministic under `set_randomize(false)`, so a
+/// flow that is torn down and rebuilt is handed *the same* address and port back. Every
+/// outbound-side observable therefore looks identical whether the mapping survived or was
+/// recreated.
+///
+/// What separates them is an inbound packet at a moment when no outbound packet has just recreated
+/// the flow. Both halves below run to `t = 6s` against a five-second one-way timeout, and the last
+/// outbound packet in the treatment is at `t = 4s` -- so the reply lands past the deadline the
+/// *first* packet set and inside the one the *last* packet set. Refreshed, it is delivered; not
+/// refreshed, the mapping died at `t = 5s` and it is dropped.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+//= type=test
+//# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+//# refresh behavior" of "True".
+#[test]
+fn outbound_traffic_keeps_an_unanswered_mapping_alive() {
+    /// Comfortably inside the one-way lifetime, so each packet lands before the previous deadline.
+    const STEP: Duration = Duration::from_secs(2);
+    /// Outbound packets before the probe. Two puts the last one at `t = 4s`.
+    const REFRESHES: u32 = 2;
+
+    let source: IpAddr = "10.0.0.21".parse().unwrap_or_else(|_| unreachable!());
+    let elapsed = Duration::from_secs(u64::from(REFRESHES + 1) * STEP.as_secs());
+    assert!(
+        elapsed > crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT,
+        "the probe must land past the deadline the first packet set, or neither half proves \
+         anything"
+    );
+
+    // The control: silence for the same span, and the mapping is gone.
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        for _ in 0..=REFRESHES {
+            advance(STEP).await;
+        }
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            None,
+            "a mapping nobody refreshed survived {}s of silence against a {}s timeout, so the \
+             treatment below proves nothing",
+            elapsed.as_secs(),
+            crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs()
+        );
+    });
+
+    // The treatment: the same span, with outbound packets, and the probe after a gap.
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        for _ in 0..REFRESHES {
+            advance(STEP).await;
+            assert_eq!(
+                open_flow(&mut lookup, &mut masq, source, peer, 5300),
+                Some(translated),
+                "the sender was given a different public tuple mid-stream"
+            );
+        }
+        // One more step with nothing sent, so what answers here is the mapping's own lifetime
+        // rather than the packet that would have rebuilt it.
+        advance(STEP).await;
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            Some(source),
+            "outbound traffic did not keep an unanswered mapping alive: at t={}s the flow was \
+             gone, so a one-way sender loses its public tuple every {}s however much it sends",
+            elapsed.as_secs(),
+            crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs()
         );
     });
 }
