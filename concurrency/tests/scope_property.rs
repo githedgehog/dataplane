@@ -28,8 +28,6 @@
 
 #![cfg(not(feature = "loom"))]
 
-use std::panic::RefUnwindSafe;
-
 use bolero::TypeGenerator;
 use dataplane_concurrency::sync::Arc;
 use dataplane_concurrency::sync::atomic::{AtomicUsize, Ordering};
