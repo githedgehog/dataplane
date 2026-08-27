@@ -37,7 +37,18 @@ const NEARLY_ESTABLISHED: Duration = Duration::from_secs(100);
 /// Deliberately literal rather than derived -- that test exercises the refresh
 /// path, not a deadline, and scaling these turns "must survive" into "must expire".
 const REFRESHED_FOR: Duration = Duration::from_secs(30);
-const LONG_SILENCE: Duration = Duration::from_mins(5);
+
+/// Long enough to outlast the Established deadline, whatever that deadline becomes.
+///
+/// `DEFAULT_MASQUERADE_IDLE_TIMEOUT` is two minutes and is deliberately *not* scaled by
+/// `TIMEOUT_SCALE`, so a literal here works today. It would stop working the moment REQ-5c
+/// is taken: the snapshot this branch ships records "a default value of five minutes or
+/// more ... is RECOMMENDED" as a todo, and at five minutes a literal five-minute silence
+/// lands on the deadline rather than past it and the last assertion of
+/// `outbound_traffic_keeps_an_established_mapping_alive` fails. Doubling the timeout says
+/// what the test means and survives the change.
+const LONG_SILENCE: Duration =
+    crate::masquerade::apalloc::DEFAULT_MASQUERADE_IDLE_TIMEOUT.saturating_mul(2);
 
 fn vni(raw: u32) -> Vni {
     Vni::new_checked(raw).unwrap_or_else(|_| unreachable!())
@@ -110,16 +121,31 @@ fn reply_to(
         .flatten()
 }
 
+/// What the allocator does to a host whose sessions straddle a pool boundary.
+///
+/// This walk was an `#[ignore]`d characterization probe, cited as evidence that REQ-11 held
+/// for the mapping dimension. Two things were wrong with that. The citation was backed by a
+/// test CI never runs -- duvet is a text scanner and cannot see `#[ignore]`, so a MUST read
+/// as covered by nothing at all. And the walk was host-major: every one of a host's 256
+/// sessions was drawn before the next host started, so the spill onto the second public
+/// address always fell *between* hosts and the probe passed without ever posing the
+/// question. Interleaving the hosts, which is what concurrent traffic looks like, splits
+/// all 254 of them.
+///
+/// So it asserts the departure rather than the compliance, and fails when the departure is
+/// repaired -- at which point this test and the two `type=exception` records it is named by
+/// come down together. See `apalloc::alloc::allocate` for REQ-2, the requirement that would
+/// have to be implemented for a host to keep one public address.
 //= https://www.rfc-editor.org/rfc/rfc4787#section-8
-//= type=test
-//= reason=held for the mapping dimension: pairing is unchanged by exhaustion, measured below
+//= type=exception
+//= reason=the pool spills a host onto a second public address at a port-capacity boundary, so the mapping behaviour under exhaustion is not the behaviour before it; measured here
 //# REQ-11:  A NAT MUST have deterministic behavior, i.e., it MUST NOT
 //# change the NAT translation (Section 4) or the Filtering
 //# (Section 5) Behavior at any point in time, or under any particular
 //# conditions.
 #[test]
-#[ignore = "characterization probe; run with --ignored --nocapture"]
-fn pairing_is_unchanged_by_pool_exhaustion() {
+#[cfg_attr(miri, ignore = "the 65k-session pool walk is too slow under miri")]
+fn pool_exhaustion_splits_a_host_across_public_addresses() {
     use std::collections::{BTreeMap, BTreeSet};
     with_paused_clock(|| async {
         let (fabric, _) = fabric();
@@ -127,11 +153,13 @@ fn pairing_is_unchanged_by_pool_exhaustion() {
         let peer = fabric.peer[0];
         let mut given: BTreeMap<IpAddr, BTreeSet<IpAddr>> = BTreeMap::new();
 
-        for host in 1..=254u16 {
-            let source: IpAddr = format!("10.0.0.{host}")
-                .parse()
-                .unwrap_or_else(|_| unreachable!());
-            for sport in 1024..1024 + 256u16 {
+        // Port-major, so every host is still drawing when the first address runs out. The
+        // host-major order this replaced never put a boundary inside one host's sessions.
+        for sport in 1024..1024 + 256u16 {
+            for host in 1..=254u16 {
+                let source: IpAddr = format!("10.0.0.{host}")
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
                 if let Some((public, _)) = open_flow(&mut lookup, &mut masq, source, peer, sport) {
                     given.entry(source).or_default().insert(public);
                 }
@@ -139,21 +167,21 @@ fn pairing_is_unchanged_by_pool_exhaustion() {
         }
 
         let publics: BTreeSet<_> = given.values().flatten().copied().collect();
+        let split = given.values().filter(|a| a.len() > 1).count();
         println!(
-            "{} hosts, {} public addresses in use",
+            "{} hosts, {} public addresses in use, {split} hosts split",
             given.len(),
             publics.len()
         );
         assert!(
             publics.len() > 1,
-            "the pool never spilled to a second address, so this measured nothing about conflict"
+            "the pool never spilled to a second address, so this measured nothing about pairing"
         );
-        let split: Vec<_> = given.iter().filter(|(_, a)| a.len() > 1).collect();
-        assert!(
-            split.is_empty(),
-            "pooling changed under pressure: {} hosts were given more than one public address, \
-             so the behaviour before the spill is not the behaviour after it",
-            split.len()
+        assert_eq!(
+            split,
+            given.len(),
+            "some host kept a single public address across the spill. If pooling has been made \
+             Paired, delete this test and the REQ-2 and REQ-11 exceptions it is named by"
         );
     });
 }
@@ -361,6 +389,74 @@ fn an_expired_flow_is_never_resurrected() {
             reply_to(&mut lookup, &mut masq, peer, dead),
             Some(first),
             "an expired flow answered again after a later flow had been created"
+        );
+    });
+}
+
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+//= type=test
+//# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+//# refresh behavior" of "True".
+#[test]
+fn outbound_traffic_keeps_an_unanswered_mapping_alive() {
+    // Half a lifetime, so `REFRESHES + 1` of them lands past the deadline the first
+    // packet set while each single step stays inside it. The assertion below is what
+    // caught this being written as a literal: at `emulated`'s 100x scale six seconds
+    // was nowhere near the 500s deadline and neither half of the test proved anything.
+    const STEP: Duration = Duration::from_secs(ONEWAY / 2);
+    const REFRESHES: u32 = 2;
+
+    let source: IpAddr = "10.0.0.21".parse().unwrap_or_else(|_| unreachable!());
+    let elapsed = Duration::from_secs(u64::from(REFRESHES + 1) * STEP.as_secs());
+    assert!(
+        elapsed > crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT,
+        "the probe must land past the deadline the first packet set, or neither half proves \
+         anything"
+    );
+
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        for _ in 0..=REFRESHES {
+            advance(STEP).await;
+        }
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            None,
+            "a mapping nobody refreshed survived {}s of silence against a {}s timeout, so the \
+             treatment below proves nothing",
+            elapsed.as_secs(),
+            crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs()
+        );
+    });
+
+    with_paused_clock(|| async {
+        let (fabric, _) = fabric();
+        let (mut lookup, mut masq) = fabric.stages();
+        let peer = fabric.peer[0];
+
+        let translated = open_flow(&mut lookup, &mut masq, source, peer, 5300)
+            .unwrap_or_else(|| unreachable!("a fixed private source is masqueraded"));
+        for _ in 0..REFRESHES {
+            advance(STEP).await;
+            assert_eq!(
+                open_flow(&mut lookup, &mut masq, source, peer, 5300),
+                Some(translated),
+                "the sender was given a different public tuple mid-stream"
+            );
+        }
+        advance(STEP).await;
+        assert_eq!(
+            reply_to(&mut lookup, &mut masq, peer, translated),
+            Some(source),
+            "outbound traffic did not keep an unanswered mapping alive: at t={}s the flow was \
+             gone, so a one-way sender loses its public tuple every {}s however much it sends",
+            elapsed.as_secs(),
+            crate::Masquerade::MASQUERADE_ONEWAY_TIMEOUT.as_secs()
         );
     });
 }

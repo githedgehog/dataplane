@@ -22,7 +22,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use tracing::{debug, error};
 
-const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
+pub(crate) const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
 impl NatAllocator {
     pub(crate) fn build_pool44(config: &MasqueradeConfig) -> PoolTable<Ipv4Addr, Ipv4Addr> {
