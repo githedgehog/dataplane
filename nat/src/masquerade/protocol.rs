@@ -136,12 +136,21 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     action: NatAction,     // action of the flow hit
     status: NatFlowStatus, // current status
 ) -> NatFlowStatus {
+    // The protocol the packet carries, walking past any IPv6 extension headers, falling back to
+    // the IP header's next-header field when the chain could not be walked to its end.
+    //
+    // Matching on the field alone -- which is what this did -- sends a TCP flow behind a
+    // Hop-by-Hop header to the catch-all arm, so it gets neither the SYN/FIN/RST tracking nor the
+    // established timeout that its state machine is for. The old comment defended reading the
+    // field on the grounds that the transport headers "may not be present w/ fragmentation";
+    // `upper_layer_proto` reads the *chain*, fragment header included, so it answers that concern
+    // rather than trading it away, and the `unwrap_or_else` keeps the old answer for a chain
+    // nobody finished reading.
+    let ip = packet.try_ip().unwrap_or_else(|| unreachable!()); // packet without IP hdr should not make it here
     let proto = packet
-        .try_ip()
-        .unwrap_or_else(|| unreachable!()) // packet without IP hdr should not make it here
-        .next_header();
+        .upper_layer_proto()
+        .unwrap_or_else(|| ip.next_header());
 
-    // match on next-header, instead of relying on headers, as those may not be present w/ fragmentation
     match proto {
         NextHeader::UDP => next_flow_status_udp(action, status).udp_status_patch(packet, action),
         NextHeader::ICMP | NextHeader::ICMP6 => next_flow_status_icmp(action, status),

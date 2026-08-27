@@ -234,8 +234,11 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // These could be retrieved from the FlowKey, but we don't have it :( ...
         let src_vpcd = packet.meta().src_vpcd?;
+        // The protocol the packet carries, not the IP header's next-header field: see
+        // `portfw::packet::is_port_forwardable`. A rule is keyed on the protocol, so keying the
+        // lookup on the first extension header of an IPv6 packet finds nothing.
+        let proto = packet.upper_layer_proto()?;
         let net = packet.try_ip()?;
-        let proto = net.next_header();
         let dst_ip = net.dst_addr();
         let dst_port = packet.transport_dst_port()?;
         let key = PortFwKey::new(src_vpcd, proto);
@@ -274,8 +277,9 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // get required properties from packet
         let src_vpcd = packet.meta().src_vpcd?;
+        // As on the forward path.
+        let proto = packet.upper_layer_proto()?;
         let net = packet.try_ip()?;
-        let proto = net.next_header();
         let src_ip = net.src_addr();
         let src_port = packet.transport_src_port()?;
 
