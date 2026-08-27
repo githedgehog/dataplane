@@ -120,6 +120,12 @@ impl Tally {
             self.built.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
         );
+        // See `masquerade::fuzz::Tally::report`, which this was copied from and which carries the
+        // argument: `check!()` inside a closure returns from the closure, so under
+        // `CARGO_BOLERO_SELECT` this runs with every count at zero and refuses the selection.
+        if seen == 0 {
+            return;
+        }
         println!("{what}: {built}/{seen} configurations built, {reached} packets reached it");
         assert!(
             built * 2 >= seen,
