@@ -29,11 +29,16 @@ impl Absorb<PortFwTableChange> for PortFwTable {
 pub struct PortFwTableWriter(WriteHandle<PortFwTable, PortFwTableChange>);
 pub struct PortFwTableReader(ReadHandle<PortFwTable>);
 
-#[allow(clippy::unnecessary_wraps)]
-fn validate_ruleset(_ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
-    // deferring the implementation of this since it will change
-    // when we introduce port ranges
-    Ok(())
+/// Whether the table will accept this ruleset, asked before it is published.
+///
+/// This used to return `Ok(())` unconditionally, which made `update_table` infallible: the rules
+/// are installed later, inside `Absorb::absorb_first`, and that cannot report anything, so a rule
+/// the table refused was logged and dropped while the caller was told the update succeeded.
+///
+/// `mgmt`'s "whatever the validator accepts, the dataplane can enact" property asserts on this
+/// `Result`, so until now its port-forwarding leg could not fail.
+fn validate_ruleset(ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
+    PortFwTable::dry_run(ruleset)
 }
 
 impl PortFwTableWriter {
@@ -120,6 +125,49 @@ mod test {
             None,
         )
         .unwrap()
+    }
+
+    /// A ruleset the table cannot hold is refused by the writer, not swallowed by the absorb.
+    ///
+    /// **The wiring, not the check.** `PortFwTable::dry_run` has a test of its own next door, and
+    /// it passes whether or not anything calls it -- which is exactly how this defect survived:
+    /// `validate_ruleset` returned `Ok(())` unconditionally, the rules were installed later inside
+    /// `Absorb::absorb_first`, and that cannot report anything, so a refused rule was logged and
+    /// dropped while the caller was told the update succeeded.
+    ///
+    /// `mgmt`'s "whatever the validator accepts, the dataplane can enact" property asserts on this
+    /// `Result`. Its port-forwarding leg could not fail until the call below existed.
+    #[test]
+    fn a_ruleset_the_table_cannot_hold_is_refused() {
+        let rule = |ext: (u16, u16), int: (u16, u16)| {
+            PortFwEntry::new(
+                PortFwKey::new(
+                    VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                    NextHeader::TCP,
+                ),
+                VpcDiscriminant::VNI(3000.try_into().unwrap()),
+                Prefix::from_str("70.71.72.73/32").unwrap(),
+                Prefix::from_str("192.168.1.1/32").unwrap(),
+                ext,
+                int,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        let mut writer = PortFwTableWriter::new();
+        writer
+            .update_table(&[rule((3000, 3009), (30, 39)), rule((3010, 3019), (40, 49))])
+            .expect("rules that do not overlap are installable together");
+
+        let refused =
+            writer.update_table(&[rule((3000, 3009), (30, 39)), rule((3005, 3014), (50, 59))]);
+        assert!(
+            refused.is_err(),
+            "a ruleset whose rules claim overlapping external ports was accepted by the writer, \
+             so the table now holds fewer rules than the caller believes it asked for"
+        );
     }
 
     #[test]

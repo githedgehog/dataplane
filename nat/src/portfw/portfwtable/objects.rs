@@ -252,6 +252,31 @@ impl PortFwTable {
         Self::default()
     }
 
+    /// Whether a ruleset can be installed, without installing it.
+    ///
+    /// [`PortFwTable::update`] cannot report a refusal. It runs inside `Absorb::absorb_first`,
+    /// which returns nothing, so a rule [`PortFwTable::add_entry`] rejects is logged and dropped
+    /// and the table quietly holds fewer rules than the configuration asked for. Checking first is
+    /// what lets `PortFwTableWriter::update_table` fail instead of returning `Ok` regardless.
+    ///
+    /// A scratch table answers the same question as the real update. `update` first removes every
+    /// entry the incoming ruleset does not contain, so whatever survives is a subset of it, and
+    /// re-adding a subset takes `add_entry`'s "identical except for the timers" path. What is left
+    /// to catch is a ruleset that disagrees with *itself*, which is what this builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first rule the table would refuse. Which rule that is may differ from the one
+    /// `update` would have logged, since it inserts in reverse; overlap is symmetric, so whether
+    /// there is an error does not depend on the order.
+    pub(crate) fn dry_run(ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
+        let mut scratch = Self::default();
+        for rule in ruleset {
+            scratch.add_entry(Arc::new(rule.clone()))?;
+        }
+        Ok(())
+    }
+
     /// Add a `Arc<PortFwEntry>` to this `PortFwTable`.
     fn add_entry(&mut self, entry: Arc<PortFwEntry>) -> Result<(), PortFwTableError> {
         let key = &entry.key;
@@ -294,7 +319,12 @@ impl PortFwTable {
         let mut ruleset = ruleset.to_vec();
         while let Some(rule) = ruleset.pop().map(Arc::from) {
             if let Err(e) = self.add_entry(rule.clone()) {
-                error!("Failure adding port-forwarding rule (config validation failed)");
+                // Should be unreachable: `PortFwTableWriter::update_table` runs `dry_run` over the
+                // same ruleset first and refuses it there, where the caller can see the refusal.
+                // Reached anyway means the two disagree, so say which rule and why rather than
+                // dropping it in silence -- this is the path that used to lose rules without a
+                // word, and the error was bound and never printed.
+                error!("Dropping port-forwarding rule {rule}: {e}");
             }
         }
     }
@@ -492,6 +522,51 @@ mod test {
 
         fwtable.add_entry(entry2).unwrap();
         assert_eq!(fwtable.0.len(), 1);
+    }
+
+    /// A ruleset that overlaps itself is refused before anything is published.
+    ///
+    /// **The guard that makes `PortFwTableWriter::update_table` fallible.** The rules are installed
+    /// inside `Absorb::absorb_first`, which returns nothing, so the refusal `add_entry` produces
+    /// there can only be logged -- the caller is told the update succeeded and the table quietly
+    /// holds one rule where the configuration asked for two. `mgmt`'s "whatever the validator
+    /// accepts, the dataplane can enact" property asserts on that `Result`, and until `dry_run`
+    /// existed its port-forwarding leg could not fail.
+    ///
+    /// Two rules under one `PortFwKey` claiming external ports that overlap is the shape: the same
+    /// key selects the same `PortForwarder`, and its range set refuses a range that intersects one
+    /// already there.
+    #[test]
+    fn a_self_overlapping_ruleset_is_refused_up_front() {
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            proto: NextHeader::TCP,
+        };
+        let rule = |ext_ports: (u16, u16), int_ports: (u16, u16)| {
+            PortFwEntry::new(
+                key,
+                VpcDiscriminant::VNI(3000.try_into().unwrap()),
+                Prefix::from_str("70.71.72.73/32").unwrap(),
+                Prefix::from_str("192.168.1.1/32").unwrap(),
+                ext_ports,
+                int_ports,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        // Disjoint external ranges under one key are legal, and stay legal.
+        PortFwTable::dry_run(&[rule((3000, 3009), (30, 39)), rule((3010, 3019), (40, 49))])
+            .expect("two rules that do not overlap are installable together");
+
+        // Overlapping ones are not, and `dry_run` is where that is now reported.
+        let refused =
+            PortFwTable::dry_run(&[rule((3000, 3009), (30, 39)), rule((3005, 3014), (50, 59))]);
+        assert!(
+            matches!(refused, Err(PortFwTableError::OverlappingRange(_))),
+            "a ruleset whose rules claim overlapping external ports was accepted: {refused:?}"
+        );
     }
 
     #[test]
