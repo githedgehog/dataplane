@@ -89,12 +89,31 @@ struct Tally {
 }
 
 impl Tally {
+    fn report_arrivals_only(&self, what: &str) {
+        let (drawn, reached) = (
+            self.drawn.load(Ordering::Relaxed),
+            self.reached.load(Ordering::Relaxed),
+        );
+        if drawn == 0 {
+            return;
+        }
+        println!("{what}: {reached}/{drawn} probes became packets");
+        assert!(
+            reached >= MIN_REACHED && reached * 4 >= drawn,
+            "only {reached} of {drawn} probes became packets, so the {what} assertion is barely \
+             running"
+        );
+    }
+
     fn report(&self, what: &str) {
         let (drawn, reached, denied) = (
             self.drawn.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
             self.denied.load(Ordering::Relaxed),
         );
+        if drawn == 0 {
+            return;
+        }
         println!("{what}: {reached}/{drawn} probes became packets, {denied} of them denied");
         assert!(
             reached >= MIN_REACHED && reached * 4 >= drawn,
@@ -194,11 +213,10 @@ fn the_summary_survives_the_round_trip_through_a_packet() {
                     "ports came back swapped or wrong\nspec: {overlay_spec:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
-                tally.denied.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-    tally.report("summary round trip");
+    tally.report_arrivals_only("summary round trip");
 }
 
 #[test]
@@ -226,11 +244,10 @@ fn a_packet_with_no_discriminants_is_dropped() {
                     "a packet with no destination vpc was not refused\nspec: {overlay_spec:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
-                tally.denied.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-    tally.report("missing discriminant");
+    tally.report_arrivals_only("missing discriminant");
 }
 
 #[test]
@@ -259,9 +276,8 @@ fn underlay_traffic_is_not_judged() {
                      {overlay_spec:?}"
                 );
                 tally.reached.fetch_add(1, Ordering::Relaxed);
-                tally.denied.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-    tally.report("underlay gate");
+    tally.report_arrivals_only("underlay gate");
 }
