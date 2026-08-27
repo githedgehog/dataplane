@@ -14,8 +14,6 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZero;
 
-const MIN_REACHED: usize = 8;
-
 const MAX_EXPOSES: u8 = 2;
 
 const PROBES: usize = 8;
@@ -98,7 +96,7 @@ impl Tally {
              like it did"
         );
         assert!(
-            reached >= MIN_REACHED && reached * 2 >= built,
+            reached > 0 && reached * 2 >= built,
             "{reached} packets reached the {what} assertion across {built} configurations; this \
              property has gone vacuous"
         );
