@@ -153,7 +153,11 @@ impl<U> SavitzkyGolayFilter<U> {
     /// and hands the result to `derivative` or `smooth` is filtering a time-scrambled window.
     /// Read it through here instead.
     pub fn chronological(&self) -> impl Iterator<Item = &U> {
-        self.data.iter().cycle().skip(self.idx).take(self.data.len())
+        self.data
+            .iter()
+            .cycle()
+            .skip(self.idx)
+            .take(self.data.len())
     }
 
     /// Every sample held, for editing in place.
@@ -440,8 +444,10 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
                 });
             })
         });
-        let mut out: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
-            hashbrown::HashMap::with_capacity(pairs.len() + CAPACITY_PAD);
+        let mut out: hashbrown::HashMap<
+            VpcDiscriminant,
+            TransmitSummary<SavitzkyGolayFilter<u64>>,
+        > = hashbrown::HashMap::with_capacity(pairs.len() + CAPACITY_PAD);
         for (&src, dsts) in &pairs {
             let mut summary = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
             for &dst in dsts {
@@ -958,10 +964,8 @@ mod test {
     macro_rules! arbitrary_polynomial {
         ($n:expr) => {{
             const NANOS_PER_SEC: u128 = 1_000_000_000;
-            bolero::check!()
-                .with_type()
-                .cloned()
-                .for_each(|(x, c, carried): (Duration, [u64; $n], u8)| {
+            bolero::check!().with_type().cloned().for_each(
+                |(x, c, carried): (Duration, [u64; $n], u8)| {
                     let x = if x < Duration::from_micros(1) {
                         Duration::from_micros(1)
                     } else if x > Duration::from_secs(10) {
@@ -1002,7 +1006,8 @@ mod test {
                         return;
                     }
                     assert!(comparison.relative_error().abs() < 0.01);
-                })
+                },
+            )
         }};
     }
     #[test]
@@ -1366,7 +1371,6 @@ mod test {
     }
 }
 
-
 /// The Savitzky-Golay code against a reference written to be obviously right.
 ///
 /// See [`contract::naive`] for why a second opinion is worth having here and where the two must
@@ -1407,10 +1411,8 @@ mod second_opinion {
     /// A flat line has no slope, and all three ways of saying so agree.
     #[test]
     fn a_flat_line_derives_to_nothing_however_the_ring_sits() {
-        bolero::check!()
-            .with_type()
-            .cloned()
-            .for_each(|(level, step, rotation): (u32, Duration, u8)| {
+        bolero::check!().with_type().cloned().for_each(
+            |(level, step, rotation): (u32, Duration, u8)| {
                 let step = usable(step);
                 let window = [u64::from(level); WINDOW];
                 let filter = wound(&window, usize::from(rotation) % WINDOW, step);
@@ -1418,7 +1420,8 @@ mod second_opinion {
                 assert!(got.abs() < CLOSE_ENOUGH, "a flat line derived to {got}");
                 assert!(naive::two_point(&window, step).abs() < CLOSE_ENOUGH);
                 assert!(naive::central(&window, step).abs() < CLOSE_ENOUGH);
-            });
+            },
+        );
     }
 
     /// A straight line derives to its slope, and the stencil agrees with rise over run.
@@ -1432,8 +1435,7 @@ mod second_opinion {
             |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
                 let step = usable(step);
                 let (base, slope) = (u64::from(base), u64::from(slope));
-                let window: [u64; WINDOW] =
-                    std::array::from_fn(|i| base + slope * (i as u64));
+                let window: [u64; WINDOW] = std::array::from_fn(|i| base + slope * (i as u64));
                 let filter = wound(&window, usize::from(rotation) % WINDOW, step);
                 let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
                 let want = slope as f64 / naive::seconds(step);
@@ -1451,10 +1453,8 @@ mod second_opinion {
     /// A flat line smooths to itself, and so does its average.
     #[test]
     fn a_flat_line_smooths_to_itself_however_the_ring_sits() {
-        bolero::check!()
-            .with_type()
-            .cloned()
-            .for_each(|(level, step, rotation): (u32, Duration, u8)| {
+        bolero::check!().with_type().cloned().for_each(
+            |(level, step, rotation): (u32, Duration, u8)| {
                 let step = usable(step);
                 let window = [u64::from(level); WINDOW];
                 let filter = wound(&window, usize::from(rotation) % WINDOW, step);
@@ -1466,7 +1466,8 @@ mod second_opinion {
                     "a flat {level} smoothed to {got}"
                 );
                 assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
-            });
+            },
+        );
     }
 
     /// A straight line smooths to its middle sample -- which is also its plain average.
@@ -1480,8 +1481,7 @@ mod second_opinion {
             |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
                 let step = usable(step);
                 let (base, slope) = (u64::from(base), u64::from(slope));
-                let window: [u64; WINDOW] =
-                    std::array::from_fn(|i| base + slope * (i as u64));
+                let window: [u64; WINDOW] = std::array::from_fn(|i| base + slope * (i as u64));
                 let filter = wound(&window, usize::from(rotation) % WINDOW, step);
                 let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
                 let middle = window[WINDOW / 2] as f64;
@@ -1710,13 +1710,7 @@ mod window_order {
                 for value in &pushes {
                     filter.push(*value);
                 }
-                let expect: Vec<_> = pushes
-                    .iter()
-                    .rev()
-                    .take(WINDOW)
-                    .rev()
-                    .copied()
-                    .collect();
+                let expect: Vec<_> = pushes.iter().rev().take(WINDOW).rev().copied().collect();
                 let read: Vec<_> = filter.chronological().copied().collect();
                 assert_eq!(read, expect);
             });
@@ -1725,23 +1719,25 @@ mod window_order {
     /// Whatever a window holds, every destination comes out of the conversion the same length.
     #[test]
     fn every_destination_holds_the_whole_window() {
-        bolero::check!()
-            .with_type()
-            .for_each(|window: &SavitzkyGolayFilter<TransmitSummary<u64>>| {
-                match TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(window) {
-                    Ok(converted) => {
-                        for (dst, filter) in converted.dst.iter() {
-                            assert_eq!(
-                                filter.packets.data.len(),
-                                WINDOW,
-                                "destination {dst} holds a partial window"
-                            );
-                            assert_eq!(filter.bytes.data.len(), WINDOW);
-                        }
+        bolero::check!().with_type().for_each(
+            |window: &SavitzkyGolayFilter<TransmitSummary<u64>>| match TransmitSummary::<
+                SavitzkyGolayFilter<u64>,
+            >::try_from(
+                window
+            ) {
+                Ok(converted) => {
+                    for (dst, filter) in converted.dst.iter() {
+                        assert_eq!(
+                            filter.packets.data.len(),
+                            WINDOW,
+                            "destination {dst} holds a partial window"
+                        );
+                        assert_eq!(filter.bytes.data.len(), WINDOW);
                     }
-                    Err(DerivativeError::NotEnoughSamples(seen)) => assert!(seen < WINDOW),
-                    Err(e) => panic!("{e}"),
                 }
-            });
+                Err(DerivativeError::NotEnoughSamples(seen)) => assert!(seen < WINDOW),
+                Err(e) => panic!("{e}"),
+            },
+        );
     }
 }

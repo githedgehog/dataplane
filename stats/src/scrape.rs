@@ -14,8 +14,8 @@
 //! needs no global mutation and no serialisation between tests. The collector must then be driven
 //! on that same thread -- `clock.block_on(..)` on a paused clock does exactly that.
 
-use std::collections::{BTreeMap, BTreeSet};
 use concurrency::sync::{Mutex, MutexGuard};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -184,7 +184,11 @@ impl metrics::Recorder for Scrape {
         }))
     }
 
-    fn register_histogram(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Histogram {
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
         metrics::Histogram::noop()
     }
 }

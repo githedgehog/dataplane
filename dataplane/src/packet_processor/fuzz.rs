@@ -451,7 +451,10 @@ impl Blueprint {
                     "show port-forwarding",
                     Box::new(self.portfw.handle().inner()),
                 ),
-                ("show static-nat", Box::new(self.static_nat.handle().inner())),
+                (
+                    "show static-nat",
+                    Box::new(self.static_nat.handle().inner()),
+                ),
                 (
                     "show masquerading",
                     Box::new(self.masquerade.handle().inner()),
@@ -6357,154 +6360,150 @@ mod model {
             .with_type()
             .cloned()
             .with_iterations(CASES)
-            .for_each(
-                |(flows, addr_bits, first_a, first_b): (u8, u8, u16, u16)| {
-                    // 1..=6 flows a worker, so a collision *within* one worker's block is reachable
-                    // and a burst is still a burst rather than an exhaustion sweep.
-                    let flows = u16::from(flows % 6) + 1;
-                    // /32, /31 or /30: one, two or four public addresses.
-                    let addr_bits = addr_bits % 3;
-                    // Kept apart so no two flows in a draw are the same flow. The high bit is
-                    // cleared so `first + flows` cannot wrap.
-                    let (first_a, first_b) = (first_a % 20000 + 1000, first_b % 20000 + 30000);
+            .for_each(|(flows, addr_bits, first_a, first_b): (u8, u8, u16, u16)| {
+                // 1..=6 flows a worker, so a collision *within* one worker's block is reachable
+                // and a burst is still a burst rather than an exhaustion sweep.
+                let flows = u16::from(flows % 6) + 1;
+                // /32, /31 or /30: one, two or four public addresses.
+                let addr_bits = addr_bits % 3;
+                // Kept apart so no two flows in a draw are the same flow. The high bit is
+                // cleared so `first + flows` cannot wrap.
+                let (first_a, first_b) = (first_a % 20000 + 1000, first_b % 20000 + 30000);
 
-                    let public = match format!("2.2.0.0/{}", 32 - u32::from(addr_bits))
-                        .parse::<Prefix>()
-                    {
+                let public =
+                    match format!("2.2.0.0/{}", 32 - u32::from(addr_bits)).parse::<Prefix>() {
                         Ok(prefix) => prefix,
                         Err(_) => {
                             UNBUILT.fetch_add(1, Ordering::Relaxed);
                             return;
                         }
                     };
-                    let drawn = VpcExpose::empty()
-                        .make_masquerade(None)
-                        .expect("masquerade is a legal flavour for an empty expose")
-                        .ip("1.1.0.0/16".parse::<Prefix>().expect("a literal prefix").into())
-                        // `None` ports, not a drawn window: see the doc comment -- masquerade
-                        // refuses a port range, so the public supply is always every port.
-                        .as_range(PrefixWithOptionalPorts::new(public, None));
-                    let Ok(drawn) = drawn else {
-                        UNBUILT.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    };
-                    let overlay = overlay_with_exposes_and_acl(vec![drawn], None)
-                        .and_then(|overlay| overlay.validate());
-                    let Ok(overlay) = overlay else {
-                        UNBUILT.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    };
+                let drawn = VpcExpose::empty()
+                    .make_masquerade(None)
+                    .expect("masquerade is a legal flavour for an empty expose")
+                    .ip("1.1.0.0/16"
+                        .parse::<Prefix>()
+                        .expect("a literal prefix")
+                        .into())
+                    // `None` ports, not a drawn window: see the doc comment -- masquerade
+                    // refuses a port range, so the public supply is always every port.
+                    .as_range(PrefixWithOptionalPorts::new(public, None));
+                let Ok(drawn) = drawn else {
+                    UNBUILT.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                let overlay = overlay_with_exposes_and_acl(vec![drawn], None)
+                    .and_then(|overlay| overlay.validate());
+                let Ok(overlay) = overlay else {
+                    UNBUILT.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
 
-                    let entering = handle.clone();
-                    concurrency::stress(move || {
-                        // Lowered once, outside the threads, exactly as `start_router` lowers it
-                        // once. The ACL contexts are built here too, which keeps the registry lock
-                        // out of the interleaving under test rather than making every execution
-                        // race on it.
-                        let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-                        let fleet =
-                            Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-                        let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+                concurrency::stress(move || {
+                    // Lowered once, outside the threads, exactly as `start_router` lowers it
+                    // once. The ACL contexts are built here too, which keeps the registry lock
+                    // out of the interleaving under test rather than making every execution
+                    // race on it.
+                    let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                    let fleet =
+                        Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
 
-                        // A host and a first source port each. Two workers rather than more because
-                        // shuttle's cost is in the interleavings, and two threads is where the
-                        // sharing already exists.
-                        let workers = [("1.1.0.1", first_a), ("1.1.0.2", first_b)];
-                        let given: Vec<Reported> = thread::scope(|scope| {
-                            let running: Vec<_> = workers
-                                .iter()
-                                .map(|(host, first)| {
-                                    let entering = entering.clone();
-                                    thread::Builder::new()
-                                        .name(format!("worker-{host}"))
-                                        .spawn_scoped(scope, move || {
-                                            let _guard =
-                                                entering.as_ref().map(tokio::runtime::Handle::enter);
-                                            // Recorded per thread because that is the only
-                                            // granularity there is, and handed back because the
-                                            // assertion that judges this worker is made after it
-                                            // has exited.
-                                            let recording =
-                                                tracectl::evidence::capture(format!("worker-{host}"));
-                                            // Built on this thread, not handed to it: the readers
-                                            // it takes out are thread-local caches, and this is the
-                                            // `factory().handle()` path production uses.
-                                            let mut worker = blueprint.worker();
-                                            let burst = (0..flows)
-                                                .map(|n| {
-                                                    tunnelled(&build_test_udp_ipv4_packet(
-                                                        host,
-                                                        "3.3.3.1",
-                                                        first + n,
-                                                        80,
-                                                    ))
-                                                })
-                                                .collect();
-                                            // A flow the range could not serve is dropped, not
-                                            // mistranslated, and says nothing about this property.
-                                            // Only what was translated is judged.
-                                            let tuples = worker
-                                                .send_batch(burst)
-                                                .iter()
-                                                .filter(|out| {
-                                                    matches!(
-                                                        verdict(out),
-                                                        Verdict::Delivered { .. }
-                                                    )
-                                                })
-                                                .map(|out| {
-                                                    let tenant = inside(out).expect(
-                                                        "a delivered frame leaves this gateway \
+                    // A host and a first source port each. Two workers rather than more because
+                    // shuttle's cost is in the interleavings, and two threads is where the
+                    // sharing already exists.
+                    let workers = [("1.1.0.1", first_a), ("1.1.0.2", first_b)];
+                    let given: Vec<Reported> = thread::scope(|scope| {
+                        let running: Vec<_> = workers
+                            .iter()
+                            .map(|(host, first)| {
+                                let entering = entering.clone();
+                                thread::Builder::new()
+                                    .name(format!("worker-{host}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        // Recorded per thread because that is the only
+                                        // granularity there is, and handed back because the
+                                        // assertion that judges this worker is made after it
+                                        // has exited.
+                                        let recording =
+                                            tracectl::evidence::capture(format!("worker-{host}"));
+                                        // Built on this thread, not handed to it: the readers
+                                        // it takes out are thread-local caches, and this is the
+                                        // `factory().handle()` path production uses.
+                                        let mut worker = blueprint.worker();
+                                        let burst = (0..flows)
+                                            .map(|n| {
+                                                tunnelled(&build_test_udp_ipv4_packet(
+                                                    host,
+                                                    "3.3.3.1",
+                                                    first + n,
+                                                    80,
+                                                ))
+                                            })
+                                            .collect();
+                                        // A flow the range could not serve is dropped, not
+                                        // mistranslated, and says nothing about this property.
+                                        // Only what was translated is judged.
+                                        let tuples = worker
+                                            .send_batch(burst)
+                                            .iter()
+                                            .filter(|out| {
+                                                matches!(verdict(out), Verdict::Delivered { .. })
+                                            })
+                                            .map(|out| {
+                                                let tenant = inside(out).expect(
+                                                    "a delivered frame leaves this gateway \
                                                          tunnelled",
-                                                    );
-                                                    (
-                                                        tenant.ip_source(),
-                                                        tenant
-                                                            .transport_src_port()
-                                                            .map(std::num::NonZero::get),
-                                                    )
-                                                })
-                                                .collect::<Vec<_>>();
-                                            (tuples, recording.evidence())
-                                        })
-                                        .expect("spawn worker")
-                                })
-                                .collect();
-                            running
-                                .into_iter()
-                                .map(|worker| worker.join().expect("worker panicked"))
-                                .collect()
-                        });
+                                                );
+                                                (
+                                                    tenant.ip_source(),
+                                                    tenant
+                                                        .transport_src_port()
+                                                        .map(std::num::NonZero::get),
+                                                )
+                                            })
+                                            .collect::<Vec<_>>();
+                                        (tuples, recording.evidence())
+                                    })
+                                    .expect("spawn worker")
+                            })
+                            .collect();
+                        running
+                            .into_iter()
+                            .map(|worker| worker.join().expect("worker panicked"))
+                            .collect()
+                    });
 
-                        let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) =
-                            given.into_iter().unzip();
-                        let given: Vec<_> = given.into_iter().flatten().collect();
-                        // Held across the assertions below, so a collision arrives with both
-                        // workers' traces attached and a pass prints nothing at all.
-                        let _explain = tracectl::evidence::dump_on_panic(evidence);
+                    let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) = given.into_iter().unzip();
+                    let given: Vec<_> = given.into_iter().flatten().collect();
+                    // Held across the assertions below, so a collision arrives with both
+                    // workers' traces attached and a pass prints nothing at all.
+                    let _explain = tracectl::evidence::dump_on_panic(evidence);
 
-                        if given.is_empty() {
-                            BARE.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            ALLOCATED.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if given.is_empty() {
+                        BARE.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ALLOCATED.fetch_add(1, Ordering::Relaxed);
+                    }
 
-                        let mut seen = std::collections::BTreeMap::new();
-                        for tuple in &given {
-                            let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
-                            *count += 1;
-                            assert_eq!(
-                                *count,
-                                1,
-                                "{} distinct flows were translated and {tuple:?} was handed out \
+                    let mut seen = std::collections::BTreeMap::new();
+                    for tuple in &given {
+                        let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
+                        *count += 1;
+                        assert_eq!(
+                            *count,
+                            1,
+                            "{} distinct flows were translated and {tuple:?} was handed out \
                                  twice, so a reply to it cannot be attributed to either of them: \
                                  {given:?}",
-                                given.len()
-                            );
-                        }
-                    });
-                },
-            );
+                            given.len()
+                        );
+                    }
+                });
+            });
 
         let (allocated, bare, unbuilt) = (
             ALLOCATED.load(Ordering::Relaxed),
@@ -6817,107 +6816,111 @@ mod model {
                 // are the same flow.
                 let hosts = hosts % 8;
                 let entering = handle.clone();
-            concurrency::stress(move || {
-                let overlay = overlay_with_exposes_and_acl(exposes(), None)
-                    .expect("the fixture exposes form an overlay")
-                    .validate()
-                    .expect("the fixture overlay validates");
-                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
-                let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
-                let blueprint = fleet.blueprint();
+                concurrency::stress(move || {
+                    let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                        .expect("the fixture exposes form an overlay")
+                        .validate()
+                        .expect("the fixture overlay validates");
+                    let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                    let fleet =
+                        Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
 
-                // Phase one: each worker opens its own flows and stops with the reply outstanding.
-                let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
-                    let running: Vec<_> = (0..2u8)
-                        .map(|which| {
-                            let entering = entering.clone();
-                            thread::Builder::new()
-                                .name(format!("open-{which}"))
-                                .spawn_scoped(scope, move || {
-                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                    let _evidence =
-                                        tracectl::evidence::capture(format!("open-{which}"));
-                                    let mut worker = blueprint.worker();
-                                    (0..flows)
-                                        .map(|nth| {
-                                            // A private host per worker per flow, so no two
-                                            // conversations in the run are the same flow.
-                                            let src = format!("1.1.{which}.{}", hosts + nth + 1);
-                                            let mut convo = Conversation::new(
-                                                super::routed::Path::fixture(),
-                                                src.parse().unwrap_or_else(|e| {
-                                                    unreachable!("{src} is an address: {e}")
-                                                }),
-                                                "3.3.3.1"
-                                                    .parse()
-                                                    .unwrap_or_else(|e| unreachable!("{e}")),
-                                                u16::from(nth) + 1000,
-                                                80,
-                                            );
-                                            step(&mut worker, &mut convo);
-                                            convo
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .expect("spawn opener")
-                        })
-                        .collect();
-                    running
-                        .into_iter()
-                        .map(|opener| opener.join().expect("opener panicked"))
-                        .collect()
-                });
+                    // Phase one: each worker opens its own flows and stops with the reply outstanding.
+                    let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                        let running: Vec<_> = (0..2u8)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                thread::Builder::new()
+                                    .name(format!("open-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("open-{which}"));
+                                        let mut worker = blueprint.worker();
+                                        (0..flows)
+                                            .map(|nth| {
+                                                // A private host per worker per flow, so no two
+                                                // conversations in the run are the same flow.
+                                                let src =
+                                                    format!("1.1.{which}.{}", hosts + nth + 1);
+                                                let mut convo = Conversation::new(
+                                                    super::routed::Path::fixture(),
+                                                    src.parse().unwrap_or_else(|e| {
+                                                        unreachable!("{src} is an address: {e}")
+                                                    }),
+                                                    "3.3.3.1"
+                                                        .parse()
+                                                        .unwrap_or_else(|e| unreachable!("{e}")),
+                                                    u16::from(nth) + 1000,
+                                                    80,
+                                                );
+                                                step(&mut worker, &mut convo);
+                                                convo
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .expect("spawn opener")
+                            })
+                            .collect();
+                        running
+                            .into_iter()
+                            .map(|opener| opener.join().expect("opener panicked"))
+                            .collect()
+                    });
 
-                // Phase two: swap. Neither worker answers a flow it opened.
-                let second = opened
-                    .pop()
-                    .unwrap_or_else(|| unreachable!("two openers ran"));
-                let first = opened
-                    .pop()
-                    .unwrap_or_else(|| unreachable!("two openers ran"));
+                    // Phase two: swap. Neither worker answers a flow it opened.
+                    let second = opened
+                        .pop()
+                        .unwrap_or_else(|| unreachable!("two openers ran"));
+                    let first = opened
+                        .pop()
+                        .unwrap_or_else(|| unreachable!("two openers ran"));
 
-                let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
-                    let running: Vec<_> = [(0u8, second), (1u8, first)]
-                        .into_iter()
-                        .map(|(which, mut theirs)| {
-                            let entering = entering.clone();
-                            thread::Builder::new()
-                                .name(format!("answer-{which}"))
-                                .spawn_scoped(scope, move || {
-                                    let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
-                                    let _evidence =
-                                        tracectl::evidence::capture(format!("answer-{which}"));
-                                    // A pipeline of its own, from the same tables: the flow state and
-                                    // the allocation this thread is about to read were written through
-                                    // a different one.
-                                    let mut worker = blueprint.worker();
-                                    for convo in &mut theirs {
-                                        // A request the configuration refused never reached the state
-                                        // that has a reply, and that is not a defect. See
-                                        // `Load::checked`.
-                                        if !convo.finished() {
-                                            step(&mut worker, convo);
+                    let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                        let running: Vec<_> = [(0u8, second), (1u8, first)]
+                            .into_iter()
+                            .map(|(which, mut theirs)| {
+                                let entering = entering.clone();
+                                thread::Builder::new()
+                                    .name(format!("answer-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("answer-{which}"));
+                                        // A pipeline of its own, from the same tables: the flow state and
+                                        // the allocation this thread is about to read were written through
+                                        // a different one.
+                                        let mut worker = blueprint.worker();
+                                        for convo in &mut theirs {
+                                            // A request the configuration refused never reached the state
+                                            // that has a reply, and that is not a defect. See
+                                            // `Load::checked`.
+                                            if !convo.finished() {
+                                                step(&mut worker, convo);
+                                            }
                                         }
-                                    }
-                                    theirs
-                                })
-                                .expect("spawn answerer")
-                        })
-                        .collect();
-                    running
-                        .into_iter()
-                        .map(|answerer| answerer.join().expect("answerer panicked"))
-                        .collect()
-                });
+                                        theirs
+                                    })
+                                    .expect("spawn answerer")
+                            })
+                            .collect();
+                        running
+                            .into_iter()
+                            .map(|answerer| answerer.join().expect("answerer panicked"))
+                            .collect()
+                    });
 
-                for convo in answered.into_iter().flatten() {
-                    if convo.checked() {
-                        CLOSED.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        ABANDONED.fetch_add(1, Ordering::Relaxed);
+                    for convo in answered.into_iter().flatten() {
+                        if convo.checked() {
+                            CLOSED.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            ABANDONED.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                }
-            });
+                });
             });
 
         let (closed, abandoned) = (

@@ -1280,8 +1280,7 @@ mod drop_stats_tests {
         let clock = clock::virtual_time::Paused::new();
         clock.block_on(async {
             let tick = Duration::from_secs(1);
-            let mut stats =
-                Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+            let mut stats = Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
             run(
                 &mut stats,
                 vec![mk_packet(Some(a), Some(b), Some(DoneReason::Delivered))],
@@ -1330,8 +1329,7 @@ mod drop_stats_tests {
         let clock = clock::virtual_time::Paused::new();
         clock.block_on(async {
             let tick = Duration::from_secs(1);
-            let mut stats =
-                Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
+            let mut stats = Stats::with_delivery_schedule("test", PacketStatsWriter(sender), tick);
 
             for _ in 0..FED {
                 clock::virtual_time::advance(tick * 2).await;
@@ -1750,7 +1748,9 @@ mod rate_oracle {
         let (src, dst) = (vpc(100), vpc(200));
         let (mut collector, store, _map) = collecting(src, dst);
         for t in 0..ticks {
-            collector.update(Some(a_tick_of(src, dst, at_tick(t)))).await;
+            collector
+                .update(Some(a_tick_of(src, dst, at_tick(t))))
+                .await;
             clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
         }
         rate_of(&store, src, dst).await
@@ -1950,7 +1950,11 @@ mod rate_oracle {
                 "{fed} packets were fed and {} were counted after the pipeline drained",
                 counted.0
             );
-            assert_eq!(counted.1, fed * SIZE, "the byte total disagreed with the packets");
+            assert_eq!(
+                counted.1,
+                fed * SIZE,
+                "the byte total disagreed with the packets"
+            );
         });
     }
 
@@ -2029,8 +2033,10 @@ mod rate_oracle {
     /// nothing was open for" is precisely the shape that lost a tick's traffic at startup.
     #[test]
     fn the_ledger_balances_however_the_traffic_arrives() {
-        bolero::check!().with_type().cloned().for_each(
-            |(loads, skews): (Vec<u16>, Vec<u8>)| {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|(loads, skews): (Vec<u16>, Vec<u8>)| {
                 if loads.is_empty() {
                     return;
                 }
@@ -2044,9 +2050,7 @@ mod rate_oracle {
                         // How far back of `now` this update claims to have started. Zero is the
                         // ordinary case; the rest are updates arriving late, which is what a
                         // stalled collector produces.
-                        let skew = skews
-                            .get(nth)
-                            .map_or(0, |&s| u64::from(s % 12));
+                        let skew = skews.get(nth).map_or(0, |&s| u64::from(s % 12));
                         let mut update = a_tick_of(src, dst, load);
                         update.summary.start -= StatsCollector::TIME_TICK * skew as u32;
                         collector.update(Some(update)).await;
@@ -2074,8 +2078,7 @@ mod rate_oracle {
                         clock::virtual_time::advance(StatsCollector::TIME_TICK).await;
                     }
                 });
-            },
-        );
+            });
     }
 
     /// A load that never ran is never reported.
@@ -2085,7 +2088,10 @@ mod rate_oracle {
         clock.block_on(async {
             let published = published(24, 0).await;
             if let Some((pps, bps)) = published {
-                assert!(pps.abs() < CLOSE_ENOUGH, "an idle pair reported {pps} pkt/s");
+                assert!(
+                    pps.abs() < CLOSE_ENOUGH,
+                    "an idle pair reported {pps} pkt/s"
+                );
                 assert!(bps.abs() < CLOSE_ENOUGH, "an idle pair reported {bps} B/s");
             }
         });
@@ -2253,7 +2259,8 @@ mod exported {
             traffic(&mut collector, src, dst, 40).await;
             let after = scrape.registrations();
             assert_eq!(
-                settled, after,
+                settled,
+                after,
                 "40 further ticks of unchanged configuration cost {} metric registrations",
                 after - settled
             );
@@ -2313,8 +2320,12 @@ mod exported {
         let mut map = VpcMapWriter::<VpcMapName>::new();
         for i in 0..FABRIC {
             let disc = vpc(100 + i);
-            map.add(disc, VpcMapName::new(disc, &format!("vpc{i}")), i + 1 == FABRIC)
-                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            map.add(
+                disc,
+                VpcMapName::new(disc, &format!("vpc{i}")),
+                i + 1 == FABRIC,
+            )
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
         }
         let (src, dst) = (vpc(100), vpc(101));
 
@@ -2422,7 +2433,10 @@ mod exported {
             traffic(&mut collector, src, dst, AFTER).await;
 
             let counted = scrape
-                .get("vpc_packet_count", &[("from", "left"), ("to", "customer-b")])
+                .get(
+                    "vpc_packet_count",
+                    &[("from", "left"), ("to", "customer-b")],
+                )
                 .unwrap_or_else(|| unreachable!("the new tenant was never exported"));
             // The pipeline lags by a few ticks, so the count is at most what B has sent.
             assert!(
@@ -2434,7 +2448,10 @@ mod exported {
             );
             assert!(
                 scrape
-                    .get("vpc_packet_count", &[("from", "left"), ("to", "customer-a")])
+                    .get(
+                        "vpc_packet_count",
+                        &[("from", "left"), ("to", "customer-a")]
+                    )
                     .is_none_or(|stale| stale.abs() < CLOSE_ENOUGH),
                 "customer-a's series is still exporting after the VNI was handed on"
             );
@@ -2537,7 +2554,10 @@ mod exported {
                      is credited with {credited} packets"
                 );
                 let rate = scrape
-                    .get("vpc_packet_count", &[("from", "left"), ("to", "customer-b")])
+                    .get(
+                        "vpc_packet_count",
+                        &[("from", "left"), ("to", "customer-b")],
+                    )
                     .unwrap_or(0.0);
                 assert!(
                     rate.abs() < CLOSE_ENOUGH,
