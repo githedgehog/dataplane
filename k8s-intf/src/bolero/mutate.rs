@@ -114,7 +114,6 @@ fn is_static(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
         .is_some_and(|nat| nat.r#static.is_some())
 }
 
-#[allow(clippy::too_many_lines)]
 fn stateful_throughout(manifest: &GatewayAgentPeeringsPeering) -> bool {
     let exposes = manifest.expose.as_deref().unwrap_or(&[]);
     !exposes.is_empty()
