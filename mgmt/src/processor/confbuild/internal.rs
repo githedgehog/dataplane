@@ -15,7 +15,7 @@ use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use config::external::overlay::vpcpeering::ValidatedManifest;
 use config::{ConfigError, ConfigResult};
 
-use lpm::prefix::Prefix;
+use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use std::net::Ipv4Addr;
@@ -46,22 +46,28 @@ fn vpc_import_prefix_list_for_peer(
         Some(vpc.import_plist_peer_desc(rmanifest.name())),
     );
     for expose in rmanifest.valexp() {
+        reject_ipv6(expose.ips().iter().map(PrefixWithOptionalPorts::prefix))?;
         // allow native prefixes, natted or not
-        let native_prefixes =
-            expose
-                .ips()
-                .iter()
-                .filter(|p| p.prefix().is_ipv4())
-                .map(|prefix_with_ports| {
-                    PrefixListEntry::new(
-                        PrefixListAction::Permit,
-                        PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
-                        Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
-                    )
-                });
+        let native_prefixes = expose.ips().iter().map(|prefix_with_ports| {
+            PrefixListEntry::new(
+                PrefixListAction::Permit,
+                PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
+                Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
+            )
+        });
         plist.add_entries(native_prefixes)?;
     }
     Ok(plist)
+}
+
+fn reject_ipv6(prefixes: impl IntoIterator<Item = Prefix>) -> ConfigResult {
+    if prefixes.into_iter().any(|prefix| prefix.is_ipv6()) {
+        return Err(ConfigError::Unsupported(
+            "IPv6 prefixes in a vpc peering: the FRR configuration built from a peering is \
+             IPv4-only, so such a peering cannot be rendered",
+        ));
+    }
+    Ok(())
 }
 
 /// Build AF l2vpn EVPN config for a VPC VRF
@@ -158,6 +164,8 @@ impl VpcRoutingConfigIpv4 {
 
         /* list of advertised prefixes */
         self.adv_nets.extend(nets.clone());
+
+        reject_ipv6(nets.iter().copied())?;
 
         /* build adv prefix list and route-map */
         let mut adv_plist = PrefixList::new(
@@ -414,9 +422,11 @@ mod chain_properties {
             .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
         let validated = external.validate().ok()?;
         let genid = validated.genid();
-        let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
-            panic!("a validated configuration would not build: {e}\n{validated:#?}")
-        });
+        let internal = match build_internal_config(&validated, None) {
+            Ok(internal) => internal,
+            Err(ConfigError::Unsupported(_)) => return None,
+            Err(e) => panic!("a validated configuration would not build: {e}\n{validated:#?}"),
+        };
         Some((genid, internal))
     }
 
