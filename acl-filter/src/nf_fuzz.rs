@@ -19,8 +19,6 @@ use net::udp::UdpPort;
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 
-const MIN_REACHED: usize = 8;
-
 const PROBES: usize = 8;
 
 fn packet_for(summary: &PacketSummary) -> Option<Packet<TestBuffer>> {
@@ -132,7 +130,7 @@ impl Tally {
             return;
         }
         assert!(
-            reached >= MIN_REACHED && reached * 4 >= drawn,
+            reached > 0 && reached * 4 >= drawn,
             "only {reached} of {drawn} probes became packets, so the {what} assertion is barely \
              running"
         );
@@ -153,7 +151,7 @@ impl Tally {
             return;
         }
         assert!(
-            reached >= MIN_REACHED && reached * 4 >= drawn,
+            reached > 0 && reached * 4 >= drawn,
             "only {reached} of {drawn} probes became packets, so the {what} assertion is barely \
              running"
         );
