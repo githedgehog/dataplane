@@ -785,6 +785,11 @@ spec-interlock *args:
     {{ _just_debuggable_ }}
     ./scripts/spec-interlock.ts {{ args }}
 
+[script]
+duvet-summary *args:
+    {{ _just_debuggable_ }}
+    ./scripts/duvet-summary.ts {{ args }} | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
 # Use Nix-built archives so local and CI coverage report the same binaries.
 [script]
 coverage-archive package="tests.all" *args:
