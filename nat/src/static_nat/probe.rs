@@ -20,7 +20,6 @@ use net::packet::{Packet, VpcDiscriminant};
 use net::tcp::port::TcpPort;
 use net::udp::UdpPort;
 use net::vxlan::Vni;
-use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 pub(crate) const PROBE_TTL: u8 = 64;
@@ -50,7 +49,9 @@ impl Endpoint {
     }
 }
 
-pub(crate) fn endpoints(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<Endpoint> {
+pub(crate) fn endpoints<'a>(
+    prefixes: impl IntoIterator<Item = &'a PrefixWithOptionalPorts>,
+) -> Vec<Endpoint> {
     let mut out = Vec::new();
     for prefix_with_ports in prefixes {
         let ports = prefix_with_ports.ports();
@@ -89,17 +90,26 @@ pub(crate) struct Fabric {
 
 impl Fabric {
     pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
-        let private: Vec<Endpoint> = exposes.iter().flat_map(|e| endpoints(&e.ips)).collect();
-        let public: Vec<Endpoint> = exposes
-            .iter()
-            .filter_map(|e| e.nat.as_ref())
-            .flat_map(|nat| endpoints(&nat.as_range))
-            .collect();
-        let uses_ports = private.iter().chain(&public).any(|e| e.ports.is_some());
-
         let overlay = overlay_with_exposes(exposes.to_vec()).ok()?;
         let validated = overlay.validate().ok()?;
         let tables = build_nat_configuration(validated.vpc_table()).ok()?;
+
+        let local: Vec<&config::external::overlay::vpcpeering::ValidatedExpose> = validated
+            .vpc_table()
+            .values()
+            .filter(|vpc| vpc.vni() == vni(LOCAL_VNI))
+            .flat_map(config::external::overlay::vpc::ValidatedVpc::peerings)
+            .flat_map(|peering| peering.local().valexp())
+            .collect();
+        let private: Vec<Endpoint> = local
+            .iter()
+            .flat_map(|expose| endpoints(expose.ips().iter()))
+            .collect();
+        let public: Vec<Endpoint> = local
+            .iter()
+            .flat_map(|expose| endpoints(expose.as_range_or_empty().iter()))
+            .collect();
+        let uses_ports = private.iter().chain(&public).any(|e| e.ports.is_some());
 
         let peer = match private.first().map(|e| e.addr) {
             Some(IpAddr::V6(_)) => vec![
