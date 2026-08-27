@@ -203,12 +203,6 @@ fn is_static(expose: &GatewayAgentPeeringsPeeringExpose) -> bool {
         .is_some_and(|nat| nat.r#static.is_some())
 }
 
-/// Apply `mutation` to `agent`, reporting whether it found anything to change.
-///
-/// A mutation that finds no target leaves the configuration legal, which is harmless -- the
-/// properties are all conditional on what the validator says -- but it does mean the case tested
-/// nothing new, so the caller counts them.
-#[allow(clippy::too_many_lines)]
 /// Whether every expose of a manifest translates statefully.
 ///
 /// `scope: flow` needs one side of a peering to be stateful throughout, since a flow-scoped rule has

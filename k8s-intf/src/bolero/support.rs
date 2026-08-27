@@ -487,8 +487,27 @@ pub mod blocks {
     /// saturates, so a caller asking for more vpcs or exposes than a `u8` of slots can separate gets
     /// collisions rather than a panic -- see [`SUBNET_SLOTS`] and the 256 slots of `172.16.0.0/12`
     /// for the budget.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `vpc` is outside the range [`SUBNET_SLOTS`] reserves, or if the slot
+    /// this works out to would fall outside the public block. Both are silent collisions otherwise:
+    /// the generator goes on producing overlapping prefixes, which the validator refuses, and the
+    /// only symptom is that the properties downstream get quieter. Debug-only because this is
+    /// generator support and the saturating arithmetic keeps a release build honest.
     #[must_use]
     pub fn expose_slot(vpc: u8, slots_per_vpc: u8, expose: u8) -> u8 {
+        debug_assert!(
+            vpc < SUBNET_SLOTS,
+            "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its subnets \
+             would land on top of an expose's prefixes and the two would overlap"
+        );
+        let wanted = u32::from(vpc) * u32::from(slots_per_vpc) + u32::from(expose);
+        debug_assert!(
+            u8::try_from(wanted).is_ok(),
+            "vpc {vpc} expose {expose} needs slot {wanted} of 256, so the saturating arithmetic \
+             below will hand it a slot another expose already holds"
+        );
         vpc.saturating_mul(slots_per_vpc).saturating_add(expose)
     }
 
