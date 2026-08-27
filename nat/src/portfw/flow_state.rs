@@ -240,23 +240,35 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
     let seconds = extend_by.as_secs();
 
-    // refresh the flow. In general, we only refresh the flow in one direction ...
+    // Refresh the flow -- and its partner, on every packet rather than on one transition.
+    //
+    // A pair is one connection. A packet in either direction is evidence that the whole thing is
+    // alive, which is what conntrack has always done and what `masquerade::nf` does since
+    // `fix(masquerade): Keep both halves of a flow pair alive`. Refreshing only the half a packet
+    // happened to hit let the other expire under a live connection whenever traffic ran mostly one
+    // way -- and for a published service that is the ordinary case, not a corner: a client
+    // uploading refreshes the forward half on every packet while the reverse half, which carries
+    // the translation the replies need, times out beneath it.
+    //
+    // Milder here than in masquerade, where the forward half owns the `Allocation` and its expiry
+    // hands a public tuple to another tenant. Port forwarding maps from the rule, so nothing is
+    // released and no tenant sees another's traffic; what is lost is the connection.
+    //
+    // `reset_expiry_unchecked` refuses to move a deadline earlier, so extending the partner can
+    // only ever lengthen its life.
     if let Some(flow) = packet.meta_mut().flow_info.as_ref() {
         if flow.reset_expiry_unchecked(extend_by).is_ok() {
             debug!("Extended flow lifetime by {seconds}s");
         }
 
-        // .. except if we transition to established, as that is a sound indication of legit traffic
-        if new_status == NatFlowStatus::Established && new_status != current_status {
-            flow.related
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .inspect(|reverse| {
-                    if reverse.reset_expiry_unchecked(extend_by).is_ok() {
-                        debug!("Extended reverse-flow lifetime by {seconds}s");
-                    }
-                });
-        }
+        flow.related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .inspect(|reverse| {
+                if reverse.reset_expiry_unchecked(extend_by).is_ok() {
+                    debug!("Extended reverse-flow lifetime by {seconds}s");
+                }
+            });
 
         // update flow info generation
         flow.set_genid(genid);
