@@ -3011,38 +3011,39 @@ mod view_mut_properties {
     /// what the shards were for.
     macro_rules! exercise_the_mutable_split {
         () => {{
-        bolero::check!()
-            .with_generator(ShapedHeaders)
-            .for_each(|h: &Headers| {
-                let mut owned = h.clone();
-                let Some(view) = owned.as_view_mut::<(&Eth, &Net, &Transport)>() else {
-                    return;
-                };
-                let (eth, net, transport) = view.look_mut();
+            bolero::check!()
+                .with_generator(ShapedHeaders)
+                .for_each(|h: &Headers| {
+                    let mut owned = h.clone();
+                    let Some(view) = owned.as_view_mut::<(&Eth, &Net, &Transport)>() else {
+                        return;
+                    };
+                    let (eth, net, transport) = view.look_mut();
 
-                // Read each write back through the same reference.
-                let want_src =
-                    crate::eth::mac::SourceMac::try_from(crate::eth::mac::Mac([2, 0, 0, 0, 0, 1]))
-                        .unwrap_or_else(|_| {
-                            unreachable!("a locally-administered unicast mac is a valid source")
-                        });
-                eth.set_source(want_src);
-                let seen_net = net.dst_addr();
-                let seen_transport = transport.dst_port();
+                    // Read each write back through the same reference.
+                    let want_src = crate::eth::mac::SourceMac::try_from(crate::eth::mac::Mac([
+                        2, 0, 0, 0, 0, 1,
+                    ]))
+                    .unwrap_or_else(|_| {
+                        unreachable!("a locally-administered unicast mac is a valid source")
+                    });
+                    eth.set_source(want_src);
+                    let seen_net = net.dst_addr();
+                    let seen_transport = transport.dst_port();
 
-                assert_eq!(
-                    eth.source(),
-                    want_src,
-                    "the write through eth did not stick"
-                );
-                assert_eq!(net.dst_addr(), seen_net, "net changed under a write to eth");
-                assert_eq!(
-                    transport.dst_port(),
-                    seen_transport,
-                    "transport changed under a write to eth"
-                );
-            });
-    }};
+                    assert_eq!(
+                        eth.source(),
+                        want_src,
+                        "the write through eth did not stick"
+                    );
+                    assert_eq!(net.dst_addr(), seen_net, "net changed under a write to eth");
+                    assert_eq!(
+                        transport.dst_port(),
+                        seen_transport,
+                        "transport changed under a write to eth"
+                    );
+                });
+        }};
     }
 
     /// Parallel Miri shards for mutable-aliasing coverage.
