@@ -654,17 +654,18 @@ impl Icmp6 {
             self.payload_length(&cursor.inner[start..end])
         };
 
-        let (mut headers, consumed) = EmbeddedHeaders::parse_with(
-            EmbeddedIpVersion::Ipv6,
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-        )
-        .ok()?;
+        let embedded_start = cursor.inner.len() - cursor.remaining as usize;
+        let embedded_remaining = cursor.remaining as usize;
+
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &cursor.inner[embedded_start..])
+                .ok()?;
         cursor.consume(consumed).ok()?;
 
         // Mark whether the payload of the embedded IP packet is full
         headers.check_full_payload(
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-            cursor.remaining as usize,
+            &cursor.inner[embedded_start..],
+            embedded_remaining,
             consumed.get() as usize,
             icmp_payload_length,
         );
