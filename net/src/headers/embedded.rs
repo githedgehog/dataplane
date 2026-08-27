@@ -48,6 +48,15 @@ pub struct EmbeddedHeaders {
     full_payload_length: Option<u16>,
 }
 
+/// RFC 4884 section 4's backwards-compatibility floor for the "original datagram" field.
+///
+/// The errata were read before this shipped, because the vendored corpus carries only the
+/// base RFC and the project had recorded the constant as written without them. RFC 4884 has
+/// exactly one erratum -- ID 3, Verified, Technical, against section 7 -- and it replaces
+/// "the data structure" with "the ICMP Extension Structure" in the description of the
+/// extension checksum. Nothing touches section 3, section 4, this floor, or the padding and
+/// length-attribute rules cited in `check_full_payload`. Checked 2026-09-06 against
+/// <https://errata.rfc-editor.org/rfc4884>; re-check if a second erratum appears.
 const MIN_ORIGINAL_DATAGRAM_OCTETS: usize = 128;
 
 impl EmbeddedHeaders {
@@ -237,61 +246,52 @@ impl EmbeddedHeaders {
             //
             // From RFC 4884: The length attribute represents the length of the padded "original
             // datagram" field.
-            match self.net {
-                Some(Net::Ipv4(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() {
-                        return;
-                    }
-                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
-                    //# When the ICMP Extension Structure is appended to an ICMP message
-                    //# and that ICMP message contains an "original datagram" field, the
-                    //# "original datagram" field MUST contain at least 128 octets.
-                    if icmp_length < MIN_ORIGINAL_DATAGRAM_OCTETS {
-                        return;
-                    }
-                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
-                    //# When the ICMP Extension Structure is appended to an ICMPv4 message
-                    //# and that ICMPv4 message contains an "original datagram" field, the
-                    //# "original datagram" field MUST be zero padded to the nearest
-                    //# 32-bit boundary.
-                    if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                Some(Net::Ipv6(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() {
-                        return;
-                    }
-                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
-                    //# When the ICMP Extension Structure is appended to an ICMP message
-                    //# and that ICMP message contains an "original datagram" field, the
-                    //# "original datagram" field MUST contain at least 128 octets.
-                    if icmp_length < MIN_ORIGINAL_DATAGRAM_OCTETS {
-                        return;
-                    }
-                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
-                    //# When the ICMP Extension Structure is appended to an ICMPv6 message
-                    //# and that ICMPv6 message contains an "original datagram" field, the
-                    //# "original datagram" field MUST be zero padded to the nearest
-                    //# 64-bit boundary.
-                    if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                None => {
-                    unreachable!() // Checked earlier in the function
-                }
+            debug_assert!(self.net.is_some(), "checked earlier in the function");
+
+            if icmp_length < full_packet_length {
+                // The embedded message is shorter than the original packet
+                return;
             }
+            if icmp_length > buf.len() {
+                return;
+            }
+            //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+            //# When the ICMP Extension Structure is appended to an ICMP message
+            //# and that ICMP message contains an "original datagram" field, the
+            //# "original datagram" field MUST contain at least 128 octets.
+            if icmp_length < MIN_ORIGINAL_DATAGRAM_OCTETS {
+                return;
+            }
+            // The two alignment requirements below are satisfied by construction rather
+            // than by a check here, and that is the whole argument for citing them: the
+            // length attribute is not measured in octets. `icmp_length` is the field
+            // value multiplied by four for ICMPv4 and by eight for ICMPv6, so every value
+            // this parser can produce is already on the boundary the RFC names. An
+            // explicit `is_multiple_of` test would be a tautology -- the earlier
+            // `!icmp_length.is_multiple_of(32)` was worse than that, comparing an octet
+            // count against a bit count.
+            //
+            // What is checked is that the surplus over the original datagram is zero.
+            // A conformant sender pads to exactly `max(128, round_up(len, alignment))`,
+            // and a longer field is out of spec -- but a receiver has no reason to
+            // discard a determination it can make: the original datagram really is all
+            // present, and the surplus really is padding, because the extension structure
+            // starts after the declared field. Being generous about the length and strict
+            // about the content is the direction that loses nothing.
+            //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+            //# When the ICMP Extension Structure is appended to an ICMPv4 message
+            //# and that ICMPv4 message contains an "original datagram" field, the
+            //# "original datagram" field MUST be zero padded to the nearest
+            //# 32-bit boundary.
+            //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+            //# When the ICMP Extension Structure is appended to an ICMPv6 message
+            //# and that ICMPv6 message contains an "original datagram" field, the
+            //# "original datagram" field MUST be zero padded to the nearest
+            //# 64-bit boundary.
+            if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
+                self.full_payload_length = Some(transport_payload_length as u16);
+            }
+            return;
         }
 
         // Check that the full headers + payload are present
@@ -1356,21 +1356,59 @@ mod tests {
         (headers, consumed.get() as usize, buf)
     }
 
-    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
-    //= type=test
-    //# When the ICMP Extension Structure is appended to an ICMPv4 message
-    //# and that ICMPv4 message contains an "original datagram" field, the
-    //# "original datagram" field MUST be zero padded to the nearest
-    //# 32-bit boundary.
     #[test]
-    fn a_field_is_accepted_at_any_32_bit_aligned_length() {
+    fn an_icmp_error_from_the_wire_reports_a_full_payload() {
+        use crate::headers::TryEmbeddedHeaders;
+        use crate::ip::NextHeader;
+        use crate::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
+
+        let packet = build_test_icmp4_destination_unreachable_packet(
+            "10.0.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "10.0.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            NextHeader::UDP,
+            1234,
+            80,
+        )
+        .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let embedded = packet
+            .embedded_headers()
+            .unwrap_or_else(|| unreachable!("an icmp error carries embedded headers"));
+        assert!(
+            embedded.is_full_payload(),
+            "the quoted datagram is complete and nothing follows it, so the whole payload is \
+             present -- reading this as truncated means the window handed to check_full_payload \
+             does not start where the lengths it compares are measured from"
+        );
+        assert_eq!(
+            embedded.payload_length(),
+            Some(0),
+            "the quoted UDP datagram carries no payload beyond its header"
+        );
+    }
+
+    /// Over-padding past the minimum is accepted, not treated as a short quote.
+    ///
+    /// A conformant `ICMPv4` sender pads a 120-octet datagram to exactly 128 -- the nearest
+    /// 32-bit boundary, then the 128-octet floor. Nothing here checks that, deliberately:
+    /// this exercise is the receiver's side of the leniency argued at `check_full_payload`,
+    /// where a longer field still carries the whole original datagram and the surplus is
+    /// still padding. It is named for what it asserts rather than for the requirement,
+    /// because the alignment requirement holds by construction and no test can see it: the
+    /// length attribute is in 32-bit words, so `check_full_payload` cannot be handed an
+    /// unaligned length by the parser, and handing it one directly proves nothing about the
+    /// parser.
+    #[test]
+    fn a_field_padded_past_the_minimum_is_still_a_full_quote() {
         for field_len in [128usize, 132, 136, 140, 144, 148, 152, 156] {
             let (mut headers, consumed, buf) = v4_with_field_of(field_len, 0);
             headers.check_full_payload(&buf, buf.len(), consumed, field_len);
             assert!(
                 headers.is_full_payload(),
-                "a {field_len}-octet field is 32-bit aligned and at least 128 octets, so it must \
-                 be accepted"
+                "a {field_len}-octet field holds the whole 120-octet datagram followed by \
+                 zeroes, so it must be accepted"
             );
             assert_eq!(headers.payload_length(), Some(80));
         }
