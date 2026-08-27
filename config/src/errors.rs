@@ -46,6 +46,8 @@ pub enum ConfigError {
     FailureApply(String),
     #[error("Forbidden: {0}")]
     Forbidden(&'static str),
+    #[error("Not supported yet: {0}")]
+    Unsupported(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
     #[error("Bad VTEP local address {0}: {1}")]
