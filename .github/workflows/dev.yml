@@ -390,6 +390,24 @@ jobs:
         with:
           recipe: "license-headers"
 
+      - name: "duvet-check"
+        id: "duvet-check"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "duvet-check"
+
+      # Deliberately no `id`. `check-lint-wiring` requires every lint step that has one to
+      # have its outcome read below, and reading it is what would make this a required
+      # check -- the aggregator fails on any outcome that is not success or skipped. This
+      # step formats tables into the job summary; `duvet-check` above is the gate.
+      - name: "duvet-summary"
+        if: always()
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "duvet-summary"
+
       - name: "Flag any lint failures"
         if: always()
         env:
@@ -406,6 +424,7 @@ jobs:
             check-push-filter=${{ steps.check-push-filter.outcome }}
             check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
+            duvet-check=${{ steps.duvet-check.outcome }}
         run: |
           set -euo pipefail
           status=0
