@@ -1790,27 +1790,49 @@ mod tests {
         }
     }
 
-    /// A large answer arrives whole, across hundreds of chunks.
+    /// A multi-chunk answer arrives whole.
     ///
     /// The CLI protocol cuts a response into 2048-octet datagrams, each with a
     /// trailing octet saying whether more follow, and the client reassembles
-    /// until that octet says stop. Eight thousand routes make a fib listing of
-    /// roughly 850KiB -- some four hundred chunks -- so a reassembly that lost
-    /// its place, or a "more" flag set from the wrong end of the loop, shows up
-    /// here as a short read rather than as a subtly truncated table.
+    /// until that octet says stop. The failures worth catching -- a reassembly
+    /// that loses its place, a "more" flag set from the wrong end of the loop --
+    /// are all visible in a handful of chunks; the off-by-one shows at two.
     ///
-    /// This does *not* reach `cli_wake_on_writeable`, and that is not for want
-    /// of size. `open_cli_sock` sets the loop's `SndBuf` to `CLI_RX_BUFF_SIZE`,
-    /// which is 16MiB, and on a unix datagram socket it is the sender's buffer
-    /// that bounds how much unread traffic may be outstanding. Reaching the
-    /// cache path therefore needs about 16MiB of answer the client has not
-    /// read -- on the order of a hundred and fifty thousand routes. That is a
-    /// disproportionate test for one function, and it is measured here so the
-    /// next reader does not have to rediscover it.
+    /// # Why this is not eight thousand routes any more
+    ///
+    /// It was, and the size bought nothing but the phrase "hundreds of chunks".
+    /// What it cost was `announce_routes`, which is a send and a `recv` per
+    /// route against `PATIENCE` as a per-`recv` socket timeout: eight thousand
+    /// round trips before the test reaches its subject, all of them setup. On a
+    /// loaded runner one of those reads missed a ten-second window and the test
+    /// failed in `CpiPeer::recv`, having never exercised reassembly at all.
+    ///
+    /// Tuning the count against a measurement would not fix that -- the next
+    /// runner is slower or busier and the measurement is stale. Making the setup
+    /// cheap enough that it is not the thing under time pressure does: 256
+    /// routes is fourteen chunks, thirty-two times less work, and the same
+    /// assertions.
+    ///
+    /// # What is still out of reach, deliberately
+    ///
+    /// `cli_wake_on_writeable`, and that was never a matter of size.
+    /// `open_cli_sock` sets the loop's `SndBuf` to `CLI_RX_BUFF_SIZE`, which is
+    /// 16MiB, and on a unix datagram socket it is the sender's buffer that
+    /// bounds how much unread traffic may be outstanding. Reaching the cache
+    /// path needs about 16MiB of answer the client has not read -- on the order
+    /// of a hundred and fifty thousand routes. Eight thousand did not come close
+    /// either, which is the other half of why shrinking loses nothing.
     #[test]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     fn a_large_answer_arrives_whole() {
-        const ROUTES: usize = 8192;
+        /// Enough to span several chunks with headroom, few enough that
+        /// announcing them is not the expensive part of the test.
+        const ROUTES: usize = 256;
+        /// As `cli::cliproto::CLI_MSG_CHUNK_SIZE`, which is private to that crate.
+        const CHUNK: usize = 2048;
+        /// Below this the answer would fit in too few datagrams to exercise the
+        /// reassembly loop; 256 routes render to about fourteen.
+        const LEAST_CHUNKS: usize = 6;
 
         let rio = RunningRio::start();
         let peer = CpiPeer::attach(&rio.dir);
@@ -1834,9 +1856,10 @@ mod tests {
             .expect("the whole answer should arrive, across as many chunks as it takes");
         let body = answer.result.expect("the listing should succeed");
 
+        let chunks = body.len().div_ceil(CHUNK);
         assert!(
-            body.len() > 100 * 2048,
-            "the answer must span many chunks for this to test reassembly, got {} octets",
+            chunks >= LEAST_CHUNKS,
+            "the answer spans {chunks} chunks, too few to exercise reassembly ({} octets)",
             body.len()
         );
         // The first and last routes announced: a reassembly that stopped early
