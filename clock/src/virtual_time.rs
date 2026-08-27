@@ -11,14 +11,14 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 const YIELDS: usize = 4;
 
 thread_local! {
-    static IN_WORLD: Cell<bool> = const { Cell::new(false) };
+    static IN_WORLD: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(not(wall_clock))]
 #[inline]
 #[must_use]
 pub(crate) fn armed() -> bool {
-    LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get)
+    LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get) != 0
 }
 
 thread_local! {
@@ -46,7 +46,7 @@ fn inherit_across_spawns() {
             let in_world = IN_WORLD.with(Cell::get);
             // ...and this half on the child, before its body starts.
             move || {
-                IN_WORLD.with(|flag| flag.set(in_world));
+                IN_WORLD.with(|depth| depth.set(in_world));
                 if let Some(handle) = handle {
                     INHERITED.with(|slot| drop(slot.set(handle)));
                 }
@@ -116,7 +116,7 @@ impl Paused {
 
         if !cfg!(wall_clock) {
             inherit_across_spawns();
-            IN_WORLD.with(|flag| flag.set(true));
+            IN_WORLD.with(|depth| depth.set(depth.get() + 1));
             LIVE.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -142,7 +142,7 @@ impl Default for Paused {
 impl Drop for Paused {
     fn drop(&mut self) {
         if !cfg!(wall_clock) {
-            IN_WORLD.with(|flag| flag.set(false));
+            IN_WORLD.with(|depth| depth.set(depth.get().saturating_sub(1)));
             LIVE.fetch_sub(1, Ordering::Release);
         }
     }
