@@ -596,6 +596,23 @@ async function runTriple(
   };
 }
 
+interface Recorded {
+  index: string;
+  spec: string;
+  section: string;
+  outcome: Result["outcome"];
+  detail?: string;
+  implementations: string[];
+  tests: string[];
+  caught: number;
+  missed: string[];
+  unreached: string[];
+  tolerated: string[];
+  accepted: { mutant: string; reason: string }[];
+  unviable: number;
+  timeout: number;
+}
+
 function parseArgs(argv: string[]) {
   const args = {
     list: false,
@@ -604,6 +621,7 @@ function parseArgs(argv: string[]) {
     jobs: 4,
     output: join(REPO, "target", "spec-interlock"),
     json: "/tmp/duvet-interlock.json",
+    results: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
@@ -631,6 +649,9 @@ function parseArgs(argv: string[]) {
       case "--json":
         args.json = value();
         break;
+      case "--results":
+        args.results = value();
+        break;
       default:
         throw new Error(`unknown argument ${flag}`);
     }
@@ -643,6 +664,9 @@ async function main(): Promise<number> {
   if (args.help) {
     console.log(
       "usage: spec-interlock.ts [--list] [--only <requirement>]... [--jobs N]",
+    );
+    console.log(
+      "  [--results <path>] records the verdicts as JSON for scripts/duvet-summary.ts",
     );
     console.log(
       "  results and the instrumented build are kept under target/spec-interlock; the build is",
@@ -700,6 +724,7 @@ async function main(): Promise<number> {
 
   await Deno.mkdir(args.output, { recursive: true });
   const used = new Set<Accepted>();
+  const recorded: Recorded[] = [];
   let failures = 0;
   for (const triple of triples) {
     console.log(
@@ -761,6 +786,25 @@ async function main(): Promise<number> {
         `    (${skipped} unviable or timed out, not counted either way)`,
       );
     }
+    recorded.push({
+      index: triple.index,
+      spec: triple.spec,
+      section: triple.section,
+      outcome: result.outcome,
+      detail: result.detail,
+      implementations: triple.implementations.map(showRegion),
+      tests: triple.tests,
+      caught: result.caught?.length ?? 0,
+      missed: result.missed ?? [],
+      unreached: result.unreached ?? [],
+      tolerated: result.tolerated ?? [],
+      accepted: (result.accepted ?? []).map(({ mutant, reason }) => ({
+        mutant,
+        reason,
+      })),
+      unviable: result.unviable?.length ?? 0,
+      timeout: result.timeout?.length ?? 0,
+    });
     for (const entry of result.accepted ?? []) {
       console.log(`    accepted: ${entry.mutant}`);
       console.log(`        ${entry.reason}`);
@@ -777,6 +821,13 @@ async function main(): Promise<number> {
       console.log(`    requirement ${entry.requirement}`);
       console.log(`    mutant      ${entry.mutant}`);
     }
+  }
+
+  if (args.results) {
+    await Deno.writeTextFile(
+      args.results,
+      `${JSON.stringify({ requirements: recorded }, null, 2)}\n`,
+    );
   }
 
   console.log();
