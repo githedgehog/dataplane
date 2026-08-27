@@ -216,7 +216,15 @@ fn the_stage_agrees_with_the_configuration() {
                     continue;
                 };
 
-                let want = oracle_resolved_action(&built.overlay, &summary);
+                // The *built* summary, not the drawn one. `packet_for` clamps port 0 to 1, since
+                // 0 is not a port either transport can carry -- so asking the oracle about the drawn
+                // summary compares its verdict on port 0 against the stage's verdict on port 1, and
+                // a ruleset that distinguishes them fails a correct implementation. That the packet
+                // really does carry this summary is what
+                // `the_summary_survives_the_round_trip_through_a_packet` establishes, so taking it
+                // here restates nothing.
+                let judged = expected_summary(&summary);
+                let want = oracle_resolved_action(&built.overlay, &judged);
                 let out: Vec<_> = acl.process(std::iter::once(packet)).collect();
                 let got = out[0].get_done();
 
