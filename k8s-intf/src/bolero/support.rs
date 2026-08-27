@@ -438,6 +438,17 @@ pub mod blocks {
 
     #[must_use]
     pub fn expose_slot(vpc: u8, slots_per_vpc: u8, expose: u8) -> u8 {
+        debug_assert!(
+            vpc < SUBNET_SLOTS,
+            "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its subnets \
+             would land on top of an expose's prefixes and the two would overlap"
+        );
+        let wanted = u32::from(vpc) * u32::from(slots_per_vpc) + u32::from(expose);
+        debug_assert!(
+            u8::try_from(wanted).is_ok(),
+            "vpc {vpc} expose {expose} needs slot {wanted} of 256, so the saturating arithmetic \
+             below will hand it a slot another expose already holds"
+        );
         vpc.saturating_mul(slots_per_vpc).saturating_add(expose)
     }
 
