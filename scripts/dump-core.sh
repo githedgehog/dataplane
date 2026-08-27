@@ -15,7 +15,28 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 declare -r pid="$1"
-declare -r core="${2:-/tmp/dataplane.core}"
+
+# A core is the whole address space -- configuration, keys, packets in flight --
+# and this runs as root.  Two things follow for the default path.
+#
+# It must not be a fixed name in a world-writable directory: `generate-core-file`
+# does not open with O_NOFOLLOW, so an unprivileged user who plants a symlink
+# there first gets root's gdb to write through it.  `mktemp -d` gives a fresh
+# directory nobody else can have pre-created.
+#
+# And it must not be readable by anyone who happens to be on the box.  The umask
+# covers both the directory and the file gdb creates inside it.
+umask 077
+declare core="${2:-}"
+if [ -z "${core}" ]; then
+    core="$(mktemp -d -t dataplane-core-XXXXXX)/dataplane.core"
+elif [ -L "${core}" ]; then
+    # An explicit path is the caller's business, but a symlink is never what was
+    # meant and is how the attack above is written.
+    >&2 echo "${0##*/}: refusing to write a core through the symlink '${core}'"
+    exit 2
+fi
+declare -r core
 
 if [[ ! "${pid}" =~ ^[0-9]+$ ]]; then
     >&2 echo "${0##*/}: '${pid}' is not a pid"
@@ -74,8 +95,12 @@ fi
 declare state
 state="$(sed -e 's/^.*) //' -e 's/ .*//' "/proc/${pid}/stat" 2>/dev/null || echo gone)"
 declare -r state
+# 't' is TASK_TRACED -- gdb did not let go.  'T' is TASK_STOPPED: it did, but the
+# process is sitting on a signal, which for an operator asking "is it forwarding
+# again" is the same answer.
 case "${state}" in
-    t) >&2 echo "${0##*/}: ${pid} is still stopped; detach it by hand"; exit 1 ;;
+    t) >&2 echo "${0##*/}: ${pid} is still in ptrace-stop; detach it by hand"; exit 1 ;;
+    T) >&2 echo "${0##*/}: ${pid} is stopped on a signal; SIGCONT it"; exit 1 ;;
     gone) >&2 echo "${0##*/}: ${pid} did not survive"; exit 1 ;;
 esac
 
