@@ -187,6 +187,16 @@ impl Tally {
             self.built.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
         );
+        // `cargo bolero` runs the test binary once with `CARGO_BOLERO_SELECT` set, purely to find
+        // out which fuzz targets it holds. `check!()` registers itself and returns without drawing
+        // anything, so this runs with every count at zero -- and the vacuity guard below, which is
+        // right about a property that drew cases and reached none, is wrong about one that never
+        // drew a case at all. Asserting on that pass refuses the *selection*, so the target can
+        // never be fuzzed: the whole of `nat` was unreachable through `just fuzz` until this
+        // returned early.
+        if seen == 0 {
+            return;
+        }
         println!("{what}: {built}/{seen} configurations built, {reached} probes reached it");
         assert!(
             built * 2 >= seen,
