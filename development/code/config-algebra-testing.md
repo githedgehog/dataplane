@@ -87,8 +87,8 @@ once, and should be, since batching is what production does.
 ### Deletion is where the bugs live
 
 An algebra of only additive operations will look healthy and find little. The interesting failures are
-in removal and modification, because a deletion's footprint is *everything that referred to the
-deleted thing*.
+in removal and modification, because a deletion's footprint is _everything that referred to the
+deleted thing_.
 
 Both known scars are of this kind: rollback to a blank config leaves the previous config's ACL, NAT
 and flow-filter tables live (the blank path returns early, before every table writer), and the
@@ -302,8 +302,8 @@ claim:
 
 1. **Preserved** -- state still legal under the new config keeps behaving identically. Same verdict,
    same translation. This is what "do not break established connections" means concretely.
-2. **Invalidated attributably** -- state made illegal by the operation is torn down *and observably
-   so*: a counted drop with a reason, never a silent blackhole.
+2. **Invalidated attributably** -- state made illegal by the operation is torn down _and observably
+   so_: a counted drop with a reason, never a silent blackhole.
 3. **Never resurrected** -- state from the old config must not leak into decisions under the new one.
    A port allocation released by a removed VPC must not be handed out while anything still refers to
    it.
