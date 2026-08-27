@@ -15,7 +15,7 @@ use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use config::external::overlay::vpcpeering::ValidatedManifest;
 use config::{ConfigError, ConfigResult};
 
-use lpm::prefix::Prefix;
+use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use std::net::Ipv4Addr;
@@ -46,22 +46,51 @@ fn vpc_import_prefix_list_for_peer(
         Some(vpc.import_plist_peer_desc(rmanifest.name())),
     );
     for expose in rmanifest.valexp() {
+        reject_ipv6(expose.ips().iter().map(PrefixWithOptionalPorts::prefix))?;
         // allow native prefixes, natted or not
-        let native_prefixes =
-            expose
-                .ips()
-                .iter()
-                .filter(|p| p.prefix().is_ipv4())
-                .map(|prefix_with_ports| {
-                    PrefixListEntry::new(
-                        PrefixListAction::Permit,
-                        PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
-                        Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
-                    )
-                });
+        let native_prefixes = expose.ips().iter().map(|prefix_with_ports| {
+            PrefixListEntry::new(
+                PrefixListAction::Permit,
+                PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
+                Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
+            )
+        });
         plist.add_entries(native_prefixes)?;
     }
     Ok(plist)
+}
+
+/// Refuse a peering this module cannot render, by name and before anything is built.
+///
+/// Nothing here uses [`IpVer::V6`]. Left to themselves the two prefix lists fail differently and
+/// both badly:
+///
+/// * the advertise list is `IpVer::V4` over *unfiltered* prefixes, so a v6 prefix fails
+///   `PrefixListEntry::is_version_compatible` and comes back as `ConfigError::InternalFailure` --
+///   which is the one rejection `mgmt`'s own mutation property asserts a configuration must never
+///   get, because "this is our bug" is not something an operator can act on;
+/// * the import list was `IpVer::V4` *and* filtered by `is_ipv4()`, so v6 prefixes were dropped in
+///   silence. That is worse than the error: the configuration applies, reports success, and carries
+///   no traffic.
+///
+/// `build_internal_config` runs in `process_incoming_config` **before** `apply`, so this is a clean
+/// rejection and nothing has been committed when it fires. What it changes is what the operator is
+/// told, and it closes the silent half.
+///
+/// Deliberately here and not in `VpcExpose::validate`: it is this module that is IPv4-only. NAT's
+/// static, masquerade and port-forwarding tables all build and translate v6 today, and refusing a
+/// v6 expose outright would take that away to guard a limitation it does not have.
+///
+/// Lifting this means building both lists per family and threading `IpVer` through the renderer.
+/// Deleting this function is how to check that it is done.
+fn reject_ipv6(prefixes: impl IntoIterator<Item = Prefix>) -> ConfigResult {
+    if prefixes.into_iter().any(|prefix| prefix.is_ipv6()) {
+        return Err(ConfigError::Unsupported(
+            "IPv6 prefixes in a vpc peering: the FRR configuration built from a peering is \
+             IPv4-only, so such a peering cannot be rendered",
+        ));
+    }
+    Ok(())
 }
 
 /// Build AF l2vpn EVPN config for a VPC VRF
@@ -158,6 +187,8 @@ impl VpcRoutingConfigIpv4 {
 
         /* list of advertised prefixes */
         self.adv_nets.extend(nets.clone());
+
+        reject_ipv6(nets.iter().copied())?;
 
         /* build adv prefix list and route-map */
         let mut adv_plist = PrefixList::new(
@@ -428,20 +459,20 @@ mod chain_properties {
     ///
     /// # Why IPv4 only
     ///
-    /// Because IPv6 peering configuration cannot be rendered, and these properties say so loudly the
-    /// moment they are allowed to see it. `internal.rs` never uses `IpVer::V6`:
+    /// Because IPv6 peering configuration cannot be rendered: `internal.rs` never uses `IpVer::V6`,
+    /// and [`reject_ipv6`] now says so rather than letting the two prefix lists fail in their own
+    /// ways. Neither was reachable from a test until the generated gateway began joining its own
+    /// gateway groups, because `build_routing_config_peer` builds nothing for a peering whose group
+    /// does not list this gateway.
     ///
-    /// * the advertise prefix list is built `IpVer::V4` over *unfiltered* prefixes, so a v6 prefix
-    ///   reaches `PrefixList::add_entry` and returns `ConfigError::InternalFailure`;
-    /// * the import prefix list is `IpVer::V4` *and* filtered by `is_ipv4()`, so v6 prefixes are
-    ///   dropped in silence -- no error, and no route either.
+    /// The restriction is not load-bearing any more -- [`chain`] treats a declared limitation as a
+    /// skip -- so widening it is safe. What it buys is *coverage*: with both families the generator
+    /// spends about half its cases on configurations that are skipped rather than checked, and the
+    /// vacuity property's count would say so.
     ///
-    /// Neither was reachable from a test until the generated gateway began joining its own gateway
-    /// groups, because `build_routing_config_peer` builds nothing for a peering whose group does not
-    /// list this gateway.
-    ///
-    /// **Widening this one function to `AddressFamily::all()` is the check for whether that is fixed**,
-    /// and it is deliberately the only place any of these properties names a family.
+    /// **Widening this to `AddressFamily::all()` and watching that count is how to tell whether v6
+    /// has been implemented**, and it is deliberately the only place any of these properties names
+    /// a family.
     fn ipv4_agents() -> GatewayAgents {
         GatewayAgentBuilder::new()
             .families(vec![AddressFamily::V4])
@@ -454,14 +485,22 @@ mod chain_properties {
     /// Validation failing is not a defect: `LegalValue` generates values that are legal against the
     /// *schema*, and plenty of those describe configurations that are semantically wrong -- two vpcs
     /// claiming one vni, exposes that overlap. The claim starts after validation succeeds.
+    ///
+    /// Neither is [`ConfigError::Unsupported`]. That is the builder declining to build something it
+    /// has no implementation for, by name -- see [`reject_ipv6`] -- and "whatever validates, builds"
+    /// is a claim about configurations the dataplane says it can carry. Every other build error
+    /// still panics, which is the whole point of the property: an `InternalFailure` from here is a
+    /// configuration that passed every check and then could not be turned into one.
     fn chain(agent: &GatewayAgent) -> Option<(GenId, InternalConfig)> {
         let external = ExternalConfig::try_from(agent)
             .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
         let validated = external.validate().ok()?;
         let genid = validated.genid();
-        let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
-            panic!("a validated configuration would not build: {e}\n{validated:#?}")
-        });
+        let internal = match build_internal_config(&validated, None) {
+            Ok(internal) => internal,
+            Err(ConfigError::Unsupported(_)) => return None,
+            Err(e) => panic!("a validated configuration would not build: {e}\n{validated:#?}"),
+        };
         Some((genid, internal))
     }
 

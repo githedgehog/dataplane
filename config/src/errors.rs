@@ -46,6 +46,13 @@ pub enum ConfigError {
     FailureApply(String),
     #[error("Forbidden: {0}")]
     Forbidden(&'static str),
+    /// The configuration describes something the dataplane has no implementation for.
+    ///
+    /// Distinct from [`ConfigError::Forbidden`], which is about a configuration that is wrong. This
+    /// one is well-formed and simply not built yet, so the message says what is missing rather than
+    /// what the operator did.
+    #[error("Not supported yet: {0}")]
+    Unsupported(&'static str),
     #[error("Bad VPC Id")]
     BadVpcId(String),
     #[error("Bad VTEP local address {0}: {1}")]
