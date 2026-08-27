@@ -387,6 +387,30 @@ jobs:
         with:
           recipe: "license-headers"
 
+      # duvet is deterministic and takes milliseconds, so unlike the interlock it can gate.
+      # It refuses to run without `.duvet/`, which is why this step cannot move to a chapter
+      # below the one that vendors the specifications.
+      - name: "duvet-check"
+        id: "duvet-check"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "duvet-check"
+
+      # The tables themselves, which the recipe appends to this job's summary. Nobody gates on
+      # the numbers, but the outcome is read like every other step's: a report that quietly
+      # stops being produced is the failure this whole area exists to refuse. It runs even when
+      # duvet-check failed, because a drifted snapshot is exactly when the tables are worth
+      # reading. It carries no interlock verdicts -- mutation testing is hours, so nothing in CI
+      # runs it. See development/code/spec-compliance.md.
+      - name: "duvet-summary"
+        id: "duvet-summary"
+        if: always()
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "duvet-summary"
+
       - name: "Flag any lint failures"
         if: always()
         env:
@@ -403,6 +427,8 @@ jobs:
             check-push-filter=${{ steps.check-push-filter.outcome }}
             check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
+            duvet-check=${{ steps.duvet-check.outcome }}
+            duvet-summary=${{ steps.duvet-summary.outcome }}
         run: |
           set -euo pipefail
           status=0
