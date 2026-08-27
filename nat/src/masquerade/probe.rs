@@ -98,7 +98,11 @@ impl Fabric {
         let public: Vec<Prefix> = validated
             .vpc_table()
             .values()
-            .flat_map(|vpc| vpc.peerings())
+            // The offering vpc only. The peer has a manifest of its own, and although it offers no
+            // translation today, walking every vpc's peerings would fold whatever it did offer into
+            // the set a translation is asserted to land inside.
+            .filter(|vpc| vpc.vni() == vni(LOCAL_VNI))
+            .flat_map(config::external::overlay::vpc::ValidatedVpc::peerings)
             .flat_map(|peering| peering.local().valexp())
             .flat_map(|expose| expose.as_range_or_empty().iter())
             .map(lpm::prefix::PrefixWithOptionalPorts::prefix)

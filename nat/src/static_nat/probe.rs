@@ -49,7 +49,6 @@ use net::packet::{Packet, VpcDiscriminant};
 use net::tcp::port::TcpPort;
 use net::udp::UdpPort;
 use net::vxlan::Vni;
-use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 /// The TTL every probe is built with, so that a property can tell a translation from a rewrite of
@@ -99,7 +98,9 @@ impl Endpoint {
 ///
 /// The static NAT generator keeps both sides of an expose small enough that this is a handful of
 /// endpoints, which is what lets a property enumerate rather than sample.
-pub(crate) fn endpoints(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> Vec<Endpoint> {
+pub(crate) fn endpoints<'a>(
+    prefixes: impl IntoIterator<Item = &'a PrefixWithOptionalPorts>,
+) -> Vec<Endpoint> {
     let mut out = Vec::new();
     for prefix_with_ports in prefixes {
         let ports = prefix_with_ports.ports();
@@ -164,17 +165,38 @@ impl Fabric {
     /// a time and two of them may overlap, which a manifest refuses. The properties count how often
     /// it happens so that a generator change that starts rejecting everything cannot pass quietly.
     pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
-        let private: Vec<Endpoint> = exposes.iter().flat_map(|e| endpoints(&e.ips)).collect();
-        let public: Vec<Endpoint> = exposes
-            .iter()
-            .filter_map(|e| e.nat.as_ref())
-            .flat_map(|nat| endpoints(&nat.as_range))
-            .collect();
-        let uses_ports = private.iter().chain(&public).any(|e| e.ports.is_some());
-
         let overlay = overlay_with_exposes(exposes.to_vec()).ok()?;
         let validated = overlay.validate().ok()?;
         let tables = build_nat_configuration(validated.vpc_table()).ok()?;
+
+        // Both sets come from the *validated* overlay rather than from `exposes`, for the reason
+        // `masquerade::probe::Fabric::build` gives: validation collapses exclusion prefixes, so the
+        // raw lists are supersets of what the tables were built from. The consequence is worse on
+        // this side than on that one. `private` is what `every_source` sweeps, so an excluded
+        // address in it would make `a_translated_source_comes_back` and
+        // `distinct_sources_stay_distinct` fail on a correct implementation; `public` is what
+        // membership is tested against, so a superset there accepts a translation to an address
+        // the operator excluded. Latent either way -- `StaticNatExposes` emits no exclusions --
+        // which is the only reason the two agree and not something a property should rest on.
+        // The offering vpc only. `overlay_with_exposes` gives the peer a manifest of its own --
+        // one unrelated /24 with no translation -- and walking every vpc's peerings would sweep
+        // those 256 addresses as though they were sources this configuration maps.
+        let local: Vec<&config::external::overlay::vpcpeering::ValidatedExpose> = validated
+            .vpc_table()
+            .values()
+            .filter(|vpc| vpc.vni() == vni(LOCAL_VNI))
+            .flat_map(config::external::overlay::vpc::ValidatedVpc::peerings)
+            .flat_map(|peering| peering.local().valexp())
+            .collect();
+        let private: Vec<Endpoint> = local
+            .iter()
+            .flat_map(|expose| endpoints(expose.ips().iter()))
+            .collect();
+        let public: Vec<Endpoint> = local
+            .iter()
+            .flat_map(|expose| endpoints(expose.as_range_or_empty().iter()))
+            .collect();
+        let uses_ports = private.iter().chain(&public).any(|e| e.ports.is_some());
 
         // The peer prefix `overlay_with_exposes` fixes, in whichever family the exposes chose.
         let peer = match private.first().map(|e| e.addr) {
