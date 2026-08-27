@@ -26,17 +26,32 @@ pub(crate) enum NatPacketError {
     UnsupportedTraffic,
 }
 
+// Both of these take the protocol the packet *carries*, which the caller reads with
+// `Packet::upper_layer_proto`, rather than the IP header's next-header field.
+//
+// For IPv6 the two differ whenever an extension header is present: the next-header field names
+// the first extension header, not the transport. Deciding on it means a published TCP service is
+// simply not recognised as port-forwardable the moment a sender puts one Hop-by-Hop header in
+// front -- and the sender chooses whether there is one. Same defect as
+// `fix(acl-filter,flow-filter): Match on the protocol the packet carries`, in the stage that half
+// of the traffic actually goes through.
+//
+// `None` -- a chain that ran past `MAX_NET_EXTENSIONS` and was never finished -- is not
+// port-forwardable and not ICMP, so such a packet falls to the `UnsupportedTraffic` arm rather
+// than being guessed at.
 #[inline]
-fn is_port_forwardable(net: &Net) -> bool {
-    matches!(net.next_header(), NextHeader::UDP | NextHeader::TCP)
+fn is_port_forwardable(proto: Option<NextHeader>) -> bool {
+    matches!(proto, Some(NextHeader::UDP | NextHeader::TCP))
 }
 
+// The IP version is still checked alongside the protocol, so that ICMPv4 in IPv6 (or the reverse)
+// stays unsupported rather than becoming translatable.
 #[inline]
-fn is_icmp(net: &Net) -> bool {
-    match net {
-        Net::Ipv4(ipv4) => ipv4.next_header() == NextHeader::ICMP,
-        Net::Ipv6(ipv6) => ipv6.next_header() == NextHeader::ICMP6,
-    }
+fn is_icmp(proto: Option<NextHeader>, net: &Net) -> bool {
+    matches!(
+        (proto, net),
+        (Some(NextHeader::ICMP), Net::Ipv4(_)) | (Some(NextHeader::ICMP6), Net::Ipv6(_))
+    )
 }
 
 #[inline]
@@ -52,6 +67,8 @@ fn snat_packet<Buf: PacketBufferMut>(
     );
 
     let mut modified = false;
+    // Read before the mutable borrow the match takes.
+    let proto = packet.upper_layer_proto();
     match packet
         .headers_mut()
         .pat_mut()
@@ -61,7 +78,7 @@ fn snat_packet<Buf: PacketBufferMut>(
         .done()
     {
         // traffic can be port forwarded: it's Ip + UDP/TCP
-        Some((_, ip, tp)) if is_port_forwardable(ip) => {
+        Some((_, ip, tp)) if is_port_forwardable(proto) => {
             if ip.src_addr() != new_src_ip.inner() {
                 ip.try_set_source(new_src_ip)?;
                 modified = true;
@@ -74,7 +91,7 @@ fn snat_packet<Buf: PacketBufferMut>(
             }
         }
         // needed for ICMP error handling
-        Some((_, ip, Transport::Icmp4(_) | Transport::Icmp6(_))) if is_icmp(ip) => {
+        Some((_, ip, Transport::Icmp4(_) | Transport::Icmp6(_))) if is_icmp(proto, ip) => {
             if ip.src_addr() != new_src_ip.inner() {
                 ip.try_set_source(new_src_ip)?;
                 modified = true;
@@ -104,6 +121,8 @@ fn dnat_packet<Buf: PacketBufferMut>(
     );
 
     let mut modified = false;
+    // Read before the mutable borrow the match takes.
+    let proto = packet.upper_layer_proto();
     match packet
         .headers_mut()
         .pat_mut()
@@ -112,7 +131,7 @@ fn dnat_packet<Buf: PacketBufferMut>(
         .transport()
         .done()
     {
-        Some((_, ip, tp)) if is_port_forwardable(ip) => {
+        Some((_, ip, tp)) if is_port_forwardable(proto) => {
             if ip.dst_addr() != new_dst_ip {
                 ip.try_set_destination(new_dst_ip)?;
                 modified = true;
@@ -125,7 +144,7 @@ fn dnat_packet<Buf: PacketBufferMut>(
             }
         }
         // needed for ICMP error handling
-        Some((_, ip, Transport::Icmp4(_) | Transport::Icmp6(_))) if is_icmp(ip) => {
+        Some((_, ip, Transport::Icmp4(_) | Transport::Icmp6(_))) if is_icmp(proto, ip) => {
             if ip.dst_addr() != new_dst_ip {
                 ip.try_set_destination(new_dst_ip)?;
                 modified = true;
