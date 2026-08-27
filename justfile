@@ -813,6 +813,21 @@ spec-interlock *args:
     # See development/code/spec-compliance.md.
     ./scripts/spec-interlock.ts {{ args }}
 
+# Render the compliance tables as markdown, for a job summary
+[script]
+duvet-summary *args:
+    {{ _just_debuggable_ }}
+    # Replaces the HTML report, whose viewer we do not build (see nix/pkgs/duvet). Pass
+    # `--results <path>`, as written by `just spec-interlock --results <path>`, to carry the
+    # interlock's verdicts; without it the summary says the interlock has not run rather than
+    # implying the citations are checked.
+    #
+    # Appended to the job summary when there is one, and printed either way. The redirection
+    # lives here rather than in the workflow because `.github/actions/just` passes recipe
+    # arguments to `just` without a shell to interpret them, so a `>>` in the workflow would
+    # arrive as a filename.
+    ./scripts/duvet-summary.ts {{ args }} | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
 # Use Nix-built archives so local and CI coverage report the same binaries.
 [script]
 coverage-archive package="tests.all" *args:
