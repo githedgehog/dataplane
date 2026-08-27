@@ -252,6 +252,14 @@ impl PortFwTable {
         Self::default()
     }
 
+    pub(crate) fn dry_run(ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
+        let mut scratch = Self::default();
+        for rule in ruleset {
+            scratch.add_entry(Arc::new(rule.clone()))?;
+        }
+        Ok(())
+    }
+
     /// Add a `Arc<PortFwEntry>` to this `PortFwTable`.
     fn add_entry(&mut self, entry: Arc<PortFwEntry>) -> Result<(), PortFwTableError> {
         let key = &entry.key;
@@ -294,7 +302,7 @@ impl PortFwTable {
         let mut ruleset = ruleset.to_vec();
         while let Some(rule) = ruleset.pop().map(Arc::from) {
             if let Err(e) = self.add_entry(rule.clone()) {
-                error!("Failure adding port-forwarding rule (config validation failed)");
+                error!("Dropping port-forwarding rule {rule}: {e}");
             }
         }
     }
@@ -492,6 +500,37 @@ mod test {
 
         fwtable.add_entry(entry2).unwrap();
         assert_eq!(fwtable.0.len(), 1);
+    }
+
+    #[test]
+    fn a_self_overlapping_ruleset_is_refused_up_front() {
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            proto: NextHeader::TCP,
+        };
+        let rule = |ext_ports: (u16, u16), int_ports: (u16, u16)| {
+            PortFwEntry::new(
+                key,
+                VpcDiscriminant::VNI(3000.try_into().unwrap()),
+                Prefix::from_str("70.71.72.73/32").unwrap(),
+                Prefix::from_str("192.168.1.1/32").unwrap(),
+                ext_ports,
+                int_ports,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        PortFwTable::dry_run(&[rule((3000, 3009), (30, 39)), rule((3010, 3019), (40, 49))])
+            .expect("two rules that do not overlap are installable together");
+
+        let refused =
+            PortFwTable::dry_run(&[rule((3000, 3009), (30, 39)), rule((3005, 3014), (50, 59))]);
+        assert!(
+            matches!(refused, Err(PortFwTableError::OverlappingRange(_))),
+            "a ruleset whose rules claim overlapping external ports was accepted: {refused:?}"
+        );
     }
 
     #[test]
