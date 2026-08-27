@@ -175,8 +175,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
   SECTION: [Summary of Changes to ICMP](#section-3)
     TEXT[!MAY]:       An ICMP Extension Structure MAY be appended to ICMPv4 Destination
     TEXT[!MAY]:       Unreachable, Time Exceeded, and Parameter Problem messages.
-    TEXT[!MAY]:       An ICMP Extension Structure MAY be appended to ICMPv6 Destination
-    TEXT[!MAY]:       Unreachable, and Time Exceeded messages.
+    TEXT[!MAY,implementation]:       An ICMP Extension Structure MAY be appended to ICMPv6 Destination
+    TEXT[!MAY,implementation]:       Unreachable, and Time Exceeded messages.
     TEXT[!MUST,implementation,test]:       When the ICMP Extension Structure is appended to an ICMP message
     TEXT[!MUST,implementation,test]:       and that ICMP message contains an "original datagram" field, the
     TEXT[!MUST,implementation,test]:       "original datagram" field MUST contain at least 128 octets.
