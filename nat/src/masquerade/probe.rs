@@ -90,14 +90,18 @@ impl Fabric {
             .iter()
             .flat_map(|e| e.ips.iter().map(|p| p.prefix().as_address()))
             .collect();
-        let public: Vec<Prefix> = exposes
-            .iter()
-            .filter_map(|e| e.nat.as_ref())
-            .flat_map(|nat| {
-                nat.as_range
-                    .iter()
-                    .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
-            })
+        // From the *validated* overlay, not from `exposes`. Validation collapses exclusion
+        // prefixes, so the raw `as_range` is a superset of what the allocator's pool is built
+        // from -- and a containment property asserted against the superset would accept a
+        // translation to an address the operator explicitly excluded. The generator emits no
+        // exclusions today, which is the only reason the two agree.
+        let public: Vec<Prefix> = validated
+            .vpc_table()
+            .values()
+            .flat_map(|vpc| vpc.peerings())
+            .flat_map(|peering| peering.local().valexp())
+            .flat_map(|expose| expose.as_range_or_empty().iter())
+            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
             .collect();
 
         let peer = match private.first() {
