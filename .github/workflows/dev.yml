@@ -390,6 +390,21 @@ jobs:
         with:
           recipe: "license-headers"
 
+      - name: "duvet-check"
+        id: "duvet-check"
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "duvet-check"
+
+      - name: "duvet-summary"
+        id: "duvet-summary"
+        if: always()
+        continue-on-error: true
+        uses: *just
+        with:
+          recipe: "duvet-summary"
+
       - name: "Flag any lint failures"
         if: always()
         env:
@@ -406,6 +421,8 @@ jobs:
             check-push-filter=${{ steps.check-push-filter.outcome }}
             check-deps-reuse=${{ steps.check-deps-reuse.outcome }}
             license-headers=${{ steps.license-headers.outcome }}
+            duvet-check=${{ steps.duvet-check.outcome }}
+            duvet-summary=${{ steps.duvet-summary.outcome }}
         run: |
           set -euo pipefail
           status=0
