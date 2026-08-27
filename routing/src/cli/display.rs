@@ -34,6 +34,7 @@ use crate::evpn::{RmacEntry, RmacStore, Vtep};
 use chrono::DateTime;
 use common::cliprovider::{Heading, line};
 
+use clock::Instant;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
@@ -42,7 +43,6 @@ use std::fmt::Write;
 use std::os::unix::net::SocketAddr;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
-use std::time::Instant;
 
 use tracing::{error, warn};
 
