@@ -45,7 +45,8 @@ impl Fabric {
         let public: Vec<Prefix> = validated
             .vpc_table()
             .values()
-            .flat_map(|vpc| vpc.peerings())
+            .filter(|vpc| vpc.vni() == vni(LOCAL_VNI))
+            .flat_map(config::external::overlay::vpc::ValidatedVpc::peerings)
             .flat_map(|peering| peering.local().valexp())
             .flat_map(|expose| expose.as_range_or_empty().iter())
             .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
