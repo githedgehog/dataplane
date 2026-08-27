@@ -89,6 +89,9 @@ impl Tally {
             self.built.load(Ordering::Relaxed),
             self.reached.load(Ordering::Relaxed),
         );
+        if seen == 0 {
+            return;
+        }
         println!("{what}: {built}/{seen} configurations built, {reached} flows reached it");
         assert!(
             built * 2 >= seen,
