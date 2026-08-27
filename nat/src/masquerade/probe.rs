@@ -42,14 +42,13 @@ impl Fabric {
             .iter()
             .flat_map(|e| e.ips.iter().map(|p| p.prefix().as_address()))
             .collect();
-        let public: Vec<Prefix> = exposes
-            .iter()
-            .filter_map(|e| e.nat.as_ref())
-            .flat_map(|nat| {
-                nat.as_range
-                    .iter()
-                    .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
-            })
+        let public: Vec<Prefix> = validated
+            .vpc_table()
+            .values()
+            .flat_map(|vpc| vpc.peerings())
+            .flat_map(|peering| peering.local().valexp())
+            .flat_map(|expose| expose.as_range_or_empty().iter())
+            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
             .collect();
 
         let peer = match private.first() {
