@@ -783,6 +783,30 @@ async function runTriple(
   };
 }
 
+/**
+ * One requirement's verdict, in the form another program reads.
+ *
+ * Deliberately the printed verdict rather than a second computation of it:
+ * `scripts/duvet-summary.ts` renders this into a job summary, and a summary that can disagree
+ * with the run it summarises is worse than no summary at all.
+ */
+interface Recorded {
+  index: string;
+  spec: string;
+  section: string;
+  outcome: Result["outcome"];
+  detail?: string;
+  implementations: string[];
+  tests: string[];
+  caught: number;
+  missed: string[];
+  unreached: string[];
+  tolerated: string[];
+  accepted: { mutant: string; reason: string }[];
+  unviable: number;
+  timeout: number;
+}
+
 /** `--flag value` and `--flag`, which is all this tool needs. */
 function parseArgs(argv: string[]) {
   const args = {
@@ -792,6 +816,8 @@ function parseArgs(argv: string[]) {
     jobs: 4,
     output: join(REPO, "target", "spec-interlock"),
     json: "/tmp/duvet-interlock.json",
+    /** Where to record the verdicts. Empty means nowhere; the run still prints them. */
+    results: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
@@ -819,6 +845,9 @@ function parseArgs(argv: string[]) {
       case "--json":
         args.json = value();
         break;
+      case "--results":
+        args.results = value();
+        break;
       default:
         throw new Error(`unknown argument ${flag}`);
     }
@@ -831,6 +860,9 @@ async function main(): Promise<number> {
   if (args.help) {
     console.log(
       "usage: spec-interlock.ts [--list] [--only <requirement>]... [--jobs N]",
+    );
+    console.log(
+      "  [--results <path>] records the verdicts as JSON for scripts/duvet-summary.ts",
     );
     // Said out loud because it is a surprise otherwise: nothing here cleans up after itself.
     console.log(
@@ -894,6 +926,7 @@ async function main(): Promise<number> {
 
   await Deno.mkdir(args.output, { recursive: true });
   const used = new Set<Accepted>();
+  const recorded: Recorded[] = [];
   let failures = 0;
   for (const triple of triples) {
     console.log(
@@ -958,6 +991,25 @@ async function main(): Promise<number> {
         `    (${skipped} unviable or timed out, not counted either way)`,
       );
     }
+    recorded.push({
+      index: triple.index,
+      spec: triple.spec,
+      section: triple.section,
+      outcome: result.outcome,
+      detail: result.detail,
+      implementations: triple.implementations.map(showRegion),
+      tests: triple.tests,
+      caught: result.caught?.length ?? 0,
+      missed: result.missed ?? [],
+      unreached: result.unreached ?? [],
+      tolerated: result.tolerated ?? [],
+      accepted: (result.accepted ?? []).map(({ mutant, reason }) => ({
+        mutant,
+        reason,
+      })),
+      unviable: result.unviable?.length ?? 0,
+      timeout: result.timeout?.length ?? 0,
+    });
     // Printed on every run, not hidden. An accepted mutant is a judgement somebody made, and it
     // should be as visible as the finding it replaced -- otherwise the list only ever grows.
     for (const entry of result.accepted ?? []) {
@@ -979,6 +1031,13 @@ async function main(): Promise<number> {
       console.log(`    requirement ${entry.requirement}`);
       console.log(`    mutant      ${entry.mutant}`);
     }
+  }
+
+  if (args.results) {
+    await Deno.writeTextFile(
+      args.results,
+      `${JSON.stringify({ requirements: recorded }, null, 2)}\n`,
+    );
   }
 
   console.log();
