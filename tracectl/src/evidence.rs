@@ -84,6 +84,8 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Write as _;
+// The `Arc` wraps the buffer above, and for the same reason -- see "Model checkers".
+// nosemgrep: rust-no-direct-std-sync-import
 use std::sync::Arc;
 
 use tracing::field::{Field, Visit};

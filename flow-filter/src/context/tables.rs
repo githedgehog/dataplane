@@ -363,6 +363,7 @@ concurrency::with_loom! {
     static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn next_in_sequence() -> u64 {
+        // nosemgrep: rust-no-direct-std-sync-import
         TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
@@ -373,6 +374,7 @@ concurrency::with_shuttle! {
     static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn next_in_sequence() -> u64 {
+        // nosemgrep: rust-no-direct-std-sync-import
         TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }

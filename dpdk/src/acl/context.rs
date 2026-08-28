@@ -122,6 +122,7 @@ concurrency::with_std! {
 
 concurrency::with_loom! {
     /// See [`ACL_CREATE_LOCK`]: a model-checked mutex cannot live in a `static`.
+    // nosemgrep: rust-no-direct-std-sync-import
     type RegistryMutex = std::sync::Mutex<()>;
 
     fn hold(lock: &'static RegistryMutex) -> impl Sized {
@@ -132,6 +133,7 @@ concurrency::with_loom! {
 
 concurrency::with_shuttle! {
     /// See [`ACL_CREATE_LOCK`]: a model-checked mutex cannot live in a `static`.
+    // nosemgrep: rust-no-direct-std-sync-import
     type RegistryMutex = std::sync::Mutex<()>;
 
     fn hold(lock: &'static RegistryMutex) -> impl Sized {
