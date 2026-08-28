@@ -173,9 +173,17 @@ impl PortForwarder {
 
         // Insert the two related flows, arbitrating on the forward key.
         //
-        // Two packets of one new flow can reach here at once, each having built a pair. Both pairs
-        // carry the same translation -- it comes from the matched rule, not from an allocation --
-        // so whichever wins is immaterial and this packet is already translated either way. What
+        // Two packets of one new flow can reach here at once, each having built a pair. Within one
+        // configuration both pairs carry the same translation -- it comes from the matched rule,
+        // not from an allocation -- so whichever wins is immaterial and this packet is already
+        // translated either way.
+        //
+        // Across a configuration update they need not: two packets holding old and new rule
+        // snapshots can map one public tuple to different destinations, and the loser has already
+        // translated its packet by the time it gets here, so it leaves for one backend while only
+        // the winner's reverse mapping exists. That needs the same tuple on two cores *and* a swap
+        // landing between them; it is recorded rather than fixed because the fix is to compare the
+        // two entries, and there is no test that can reach the interleaving yet. What
         // is not immaterial is the interleaving where the loser's *reverse* insert lands after the
         // winner's: displacing a flow invalidates its partner, so the winner's forward half is
         // struck down by a reverse half that then stays live under it. The pair is left with a
