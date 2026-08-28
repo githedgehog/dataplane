@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use concurrency::sync::{Mutex, MutexGuard};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) type Labels = BTreeMap<String, String>;
 
