@@ -1542,7 +1542,7 @@ mod rate_oracle {
         dst: VpcDiscriminant,
     ) -> (
         StatsCollector,
-        std::sync::Arc<VpcStatsStore>,
+        concurrency::sync::Arc<VpcStatsStore>,
         VpcMapWriter<VpcMapName>,
     ) {
         let mut map = VpcMapWriter::<VpcMapName>::new();
