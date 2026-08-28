@@ -326,8 +326,22 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 
     /// Update the network and transport checksums based on the current headers.
+    ///
+    /// Only the octets the network header vouches for are summed.  A frame can hold more than
+    /// that: ethernet pads short frames out to 60 octets, and some devices append trailers.  Those
+    /// octets are not payload, and including them corrupts the result -- the pseudo header length
+    /// comes out too large for TCP and `ICMPv6`, and any non-zero octet perturbs the sum for every
+    /// protocol.
+    ///
+    /// A buffer holding *less* than the network header claims is left as-is: the packet is
+    /// truncated, and no choice of payload yields a checksum the far end will accept.
     pub fn update_checksums(&mut self) -> &mut Self {
-        self.headers.update_checksums(&self.payload);
+        let payload = self.payload.as_ref();
+        let payload = match self.headers.transport_payload_len() {
+            Some(len) if len <= payload.len() => &payload[..len],
+            _ => payload,
+        };
+        self.headers.update_checksums(payload);
         self.meta_mut().set_checksum_refresh(false);
         self
     }
@@ -886,5 +900,144 @@ mod qos_roundtrip_tests {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod padding_tests {
+    use crate::buffer::TestBuffer;
+    use crate::checksum::Checksum;
+    use crate::headers::{TryHeaders, TryIcmp4, TryIp, TryTcp, TryUdp};
+    use crate::packet::Packet;
+    use crate::tcp::TcpChecksumPayload;
+    use crate::udp::UdpChecksumPayload;
+
+    /// The smallest frame ethernet will carry, per `IEEE 802.3` clause 4.2.3.3.
+    const MIN_ETHERNET_FRAME: usize = 60;
+
+    /// An ethernet + IPv4 frame carrying `l4`, with the IPv4 total length describing `l4` exactly.
+    fn frame(protocol: u8, l4: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]); // destination mac
+        frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]); // source mac
+        frame.extend_from_slice(&[0x08, 0x00]); // ipv4
+        frame.extend_from_slice(&[0x45, 0x00]);
+        #[allow(clippy::cast_possible_truncation)] // test input is small
+        frame.extend_from_slice(&((20 + l4.len()) as u16).to_be_bytes());
+        frame.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x40, protocol, 0x00, 0x00]);
+        frame.extend_from_slice(&[192, 168, 0, 1]); // source ip
+        frame.extend_from_slice(&[192, 168, 0, 2]); // destination ip
+        frame.extend_from_slice(l4);
+        frame
+    }
+
+    /// A bare TCP acknowledgement: no options, no payload, 20 octets.
+    fn tcp_ack() -> Vec<u8> {
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&1000_u16.to_be_bytes()); // source port
+        tcp.extend_from_slice(&2000_u16.to_be_bytes()); // destination port
+        tcp.extend_from_slice(&[0, 0, 0, 1]); // sequence number
+        tcp.extend_from_slice(&[0, 0, 0, 2]); // acknowledgement number
+        tcp.extend_from_slice(&[0x50, 0x10]); // data offset 5, ACK
+        tcp.extend_from_slice(&1024_u16.to_be_bytes()); // window
+        tcp.extend_from_slice(&[0, 0]); // checksum
+        tcp.extend_from_slice(&[0, 0]); // urgent pointer
+        tcp
+    }
+
+    /// A UDP datagram header describing `payload`.
+    fn udp(payload: &[u8]) -> Vec<u8> {
+        let mut udp = Vec::new();
+        udp.extend_from_slice(&1000_u16.to_be_bytes()); // source port
+        udp.extend_from_slice(&2000_u16.to_be_bytes()); // destination port
+        #[allow(clippy::cast_possible_truncation)] // test input is small
+        udp.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+        udp.extend_from_slice(&[0, 0]); // checksum
+        udp.extend_from_slice(payload);
+        udp
+    }
+
+    /// An `ICMPv4` echo request, 8 octets.
+    fn icmp4_echo_request() -> Vec<u8> {
+        vec![8, 0, 0, 0, 0x00, 0x2a, 0x00, 0x01]
+    }
+
+    fn parse(frame: &[u8]) -> Packet<TestBuffer> {
+        Packet::new(TestBuffer::from_raw_data(frame)).expect("frame does not parse")
+    }
+
+    /// Pad `frame` out to the ethernet minimum with `filler`.
+    ///
+    /// `IEEE 802.3` requires the padding but does not constrain its content, so a peer may send
+    /// anything here.  Historically it has sent the contents of uninitialized memory
+    /// (`CVE-2003-0001`).
+    fn pad(mut frame: Vec<u8>, filler: u8) -> Vec<u8> {
+        assert!(frame.len() < MIN_ETHERNET_FRAME, "frame needs no padding");
+        frame.resize(MIN_ETHERNET_FRAME, filler);
+        frame
+    }
+
+    #[test]
+    fn tcp_checksum_excludes_zeroed_ethernet_padding() {
+        let mut packet = parse(&pad(frame(6, &tcp_ack()), 0));
+        packet.update_checksums();
+        let net = packet.headers().try_ip().expect("no ip header").clone();
+        packet
+            .headers()
+            .try_tcp()
+            .expect("no tcp header")
+            .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
+            .expect("padding leaked into the tcp checksum");
+    }
+
+    #[test]
+    fn udp_checksum_excludes_non_zero_ethernet_padding() {
+        let mut packet = parse(&pad(frame(17, &udp(&[])), 0xab));
+        packet.update_checksums();
+        let net = packet.headers().try_ip().expect("no ip header").clone();
+        packet
+            .headers()
+            .try_udp()
+            .expect("no udp header")
+            .validate_checksum(&UdpChecksumPayload::new(&net, &[]))
+            .expect("padding leaked into the udp checksum");
+    }
+
+    #[test]
+    fn icmp4_checksum_excludes_non_zero_ethernet_padding() {
+        let mut packet = parse(&pad(frame(1, &icmp4_echo_request()), 0xab));
+        packet.update_checksums();
+        packet
+            .headers()
+            .try_icmp4()
+            .expect("no icmp header")
+            .validate_checksum(&[])
+            .expect("padding leaked into the icmp checksum");
+    }
+
+    #[test]
+    fn checksum_still_covers_a_real_payload() {
+        let payload: Vec<u8> = (0..32_u8).collect();
+        let mut packet = parse(&frame(17, &udp(&payload)));
+        assert_eq!(packet.payload().as_ref(), payload.as_slice());
+        packet.update_checksums();
+        let net = packet.headers().try_ip().expect("no ip header").clone();
+        packet
+            .headers()
+            .try_udp()
+            .expect("no udp header")
+            .validate_checksum(&UdpChecksumPayload::new(&net, &payload))
+            .expect("payload dropped out of the udp checksum");
+    }
+
+    /// A payload shorter than the network header claims cannot be checksummed correctly by anyone.
+    /// All this asks is that we compute *something* rather than panic on the short slice.
+    #[test]
+    fn truncated_payload_does_not_panic() {
+        let payload: Vec<u8> = (0..32_u8).collect();
+        let mut frame = frame(17, &udp(&payload));
+        frame.truncate(frame.len() - 8);
+        let mut packet = parse(&frame);
+        packet.update_checksums();
     }
 }
