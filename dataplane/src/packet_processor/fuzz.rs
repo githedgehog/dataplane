@@ -3047,7 +3047,6 @@ mod generated {
     #[dpdk::with_eal]
     async fn a_generated_configuration_carries_its_own_traffic() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -3097,12 +3096,24 @@ mod generated {
                     }
                 }
 
+                // Abandonment is a failure here, not a statistic.
+                //
+                // `Load::checked` is documented as something a run may legitimately lack: a
+                // configuration that does not carry a load's traffic is not a defect. This
+                // property is where that does not apply. `loads_for` derives its loads *from*
+                // the validated overlay and skips any expose it cannot build traffic for, so
+                // every load it hands back is traffic this configuration says it carries, and
+                // one that gives up contradicts the property's own title.
+                //
+                // Counting instead let a regression in one vpc, expose type or direction pass
+                // as long as any other load anywhere completed.
                 for load in &loads {
-                    if load.checked() {
-                        CHECKED.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        ABANDONED.fetch_add(1, Ordering::Relaxed);
-                    }
+                    assert!(
+                        load.checked(),
+                        "a load derived from the configuration did not complete: {}",
+                        load.describe()
+                    );
+                    CHECKED.fetch_add(1, Ordering::Relaxed);
                 }
             });
 
@@ -3116,9 +3127,8 @@ mod generated {
             MULTI.load(Ordering::Relaxed),
         );
         eprintln!(
-            "checked={checked} abandoned={} derived={derived} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
-            ABANDONED.load(Ordering::Relaxed)
+            "checked={checked} derived={derived} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}"
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
