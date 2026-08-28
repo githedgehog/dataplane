@@ -42,6 +42,7 @@
 use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use bolero::TypeGenerator;
 use concurrency::sync::Arc;
+use config::external::overlay::vpc::ValidatedVpc;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
     LOCAL_VNI, REMOTE_VNI, overlay_with_exposes,
@@ -98,7 +99,7 @@ impl Fabric {
         let public: Vec<Prefix> = validated
             .vpc_table()
             .values()
-            .flat_map(|vpc| vpc.peerings())
+            .flat_map(ValidatedVpc::peerings)
             .flat_map(|peering| peering.local().valexp())
             .flat_map(|expose| expose.as_range_or_empty().iter())
             .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
