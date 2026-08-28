@@ -346,13 +346,33 @@ impl Masquerade {
         &self,
         packet: &Packet<Buf>,
     ) -> Option<NatTranslate> {
-        let looked_up;
-        let flow_info = if let Some(stamped) = packet.meta().flow_info.as_ref() {
-            stamped
-        } else {
-            looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
-            &looked_up
-        };
+        // The stamp when it is usable, the table otherwise -- including when the stamp is there
+        // and useless, which is the case a plain `if let Some(..) = stamp` gets wrong.
+        //
+        // A burst is stamped before any of it is masqueraded, so if the stamped entry has since
+        // expired or been cancelled, *every* packet of that burst carries the same dead `Arc`.
+        // Stopping at it means the SYN that replaces the entry is invisible to the data segment
+        // behind it, which is then refused as "TCP without SYN" -- the failure consulting the
+        // table was added to prevent, reappearing whenever the stamp is present rather than
+        // absent. Arbitration on insert does not cover it: that drop happens before any insert.
+        if let Some(stamped) = packet.meta().flow_info.as_ref()
+            && let Some(xlate) = Self::masquerade_state_of(packet, stamped)
+        {
+            return Some(xlate);
+        }
+        let looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+        Self::masquerade_state_of(packet, &looked_up)
+    }
+
+    // The masquerade translation a flow carries, if the flow is live and has one.
+    //
+    // Split out so the stamp and the table are judged by the same standard: `None` here means
+    // "this flow cannot answer for the packet", which is what makes falling through to the table
+    // safe rather than a second chance at a decision already taken.
+    fn masquerade_state_of<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+        flow_info: &Arc<FlowInfo>,
+    ) -> Option<NatTranslate> {
         if !flow_info.is_active() {
             debug!("Hit INACTIVE flow: {}", flow_info.logfmt());
             return None;
