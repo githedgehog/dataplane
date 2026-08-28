@@ -5167,14 +5167,11 @@ mod model {
                 let addr_bits = addr_bits % 3;
                 let (first_a, first_b) = (first_a % 20000 + 1000, first_b % 20000 + 30000);
 
-                let public =
-                    match format!("2.2.0.0/{}", 32 - u32::from(addr_bits)).parse::<Prefix>() {
-                        Ok(prefix) => prefix,
-                        Err(_) => {
-                            UNBUILT.fetch_add(1, Ordering::Relaxed);
-                            return;
-                        }
-                    };
+                let Ok(public) = format!("2.2.0.0/{}", 32 - u32::from(addr_bits)).parse::<Prefix>()
+                else {
+                    UNBUILT.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
                 let drawn = VpcExpose::empty()
                     .make_masquerade(None)
                     .expect("masquerade is a legal flavour for an empty expose")
@@ -5914,6 +5911,8 @@ mod model {
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
+        const CASES: usize = 64;
+
         static FRESH: AtomicU64 = AtomicU64::new(0);
         static STALE: AtomicU64 = AtomicU64::new(0);
 
@@ -5966,8 +5965,6 @@ mod model {
             )
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
-
-        const CASES: usize = 64;
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -6139,6 +6136,8 @@ mod model {
         ignore = "DashMap shard locks can block Shuttle's scheduler thread"
     )]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
+        const CASES: usize = 64;
+
         const APPLIES: u8 = 4;
 
         static COMPLETED: AtomicU64 = AtomicU64::new(0);
@@ -6156,8 +6155,6 @@ mod model {
             )
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
-
-        const CASES: usize = 64;
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -6271,6 +6268,8 @@ mod model {
                   park the single thread shuttle schedules its green threads onto"
     )]
     fn the_cli_can_be_read_while_the_dataplane_works() {
+        const CASES: usize = 64;
+
         const APPLIES: u8 = 3;
 
         static COMPLETED: AtomicU64 = AtomicU64::new(0);
@@ -6288,8 +6287,6 @@ mod model {
             )
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
-
-        const CASES: usize = 64;
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
