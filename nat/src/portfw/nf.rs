@@ -61,7 +61,25 @@ impl PortForwarder {
             return None;
         };
 
-        if let Some((dst_ip, dst_port, proto)) =
+        // The protocol the packet carries, not the IP header's next-header field, and read before
+        // the match borrows the headers.
+        //
+        // `.net().transport()` skips extension headers -- `ExtGapCheck` is permissive from a `Net`
+        // position -- so an IPv6 packet with one Hop-by-Hop header in front of its TCP header
+        // reaches the qualifying arm, and `net.next_header()` there names Hop-by-Hop. The rule is
+        // keyed on the transport protocol, so the lookup finds nothing and a published service is
+        // unreachable from any sender that inserts one extension header. This is the fresh-flow
+        // path; `get_rule_from_pkt_fw_path` and `_rev_path` read it the same way.
+        //
+        // `None` is a chain that ran past `MAX_NET_EXTENSIONS` and was never walked to its end.
+        // Such a packet is not port-forwardable, which is the same answer `is_port_forwardable`
+        // gives it rather than guessing at a protocol nobody read.
+        let Some(proto) = packet.upper_layer_proto() else {
+            debug!("Ignoring packet: header chain was never walked to a transport");
+            return None;
+        };
+
+        if let Some((dst_ip, dst_port)) =
             match packet.headers().pat().eth().net().transport().done() {
                 Some((_, _net, Transport::Tcp(tcp))) if !tcp.is_first_segment() => {
                     debug!("Ignoring TCP packet: it has no SYN and we have no state for it");
@@ -73,7 +91,7 @@ impl PortForwarder {
                 {
                     if let Ok(dst_ip) = UnicastIpAddr::try_from(dst_ip) {
                         debug!("Packet qualifies for port-forwarding");
-                        Some((dst_ip, dst_port, net.next_header()))
+                        Some((dst_ip, dst_port))
                     } else {
                         debug!("Ignoring packet: destination IP is not unicast");
                         None
@@ -469,6 +487,55 @@ mod race {
     /// and the same translation, because a port-forwarding answer comes from the rule rather than
     /// from an allocation. Replacing one with the other leaves a table that looks identical and a
     /// connection that has been torn down and rebuilt underneath its own first packets.
+    /// The same expose as `fabric`, in v6, so `Fabric::build` picks v6 peers.
+    fn v6_fabric() -> Fabric {
+        let expose = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .ip(side("2001:db8::/126", 9000, 9003))
+            .as_range(side("2001:db8:1::/126", 8000, 8003))
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        Fabric::build(&[expose]).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+    }
+
+    /// An IPv6 TCP SYN carrying one Hop-by-Hop extension header ahead of the transport.
+    ///
+    /// Built through `HeaderStack` and deparsed, because the extension header is the point: the
+    /// `build_test_*` helpers emit a transport directly behind the IP header.
+    fn v6_hop_by_hop_syn(src: &str, dst: &str, sport: u16, dport: u16) -> Packet<TestBuffer> {
+        use net::eth::ethtype::EthType;
+        use net::headers::builder::HeaderStack;
+        use net::ipv6::UnicastIpv6Addr;
+        use net::packet::test_utils::make_default_for_eth;
+        use net::parse::DeParse;
+        use net::tcp::port::TcpPort;
+
+        let headers = HeaderStack::new()
+            .eth(|eth| *eth = make_default_for_eth(EthType::IPV6))
+            .ipv6(|ip| {
+                ip.set_source(
+                    UnicastIpv6Addr::new(src.parse().unwrap_or_else(|_| unreachable!()))
+                        .unwrap_or_else(|_| unreachable!()),
+                );
+                ip.set_destination(dst.parse().unwrap_or_else(|_| unreachable!()));
+                ip.set_hop_limit(64);
+            })
+            .hop_by_hop(|_| {})
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(sport).unwrap_or_else(|_| unreachable!()));
+                tcp.set_destination(TcpPort::try_from(dport).unwrap_or_else(|_| unreachable!()));
+                tcp.set_syn(true);
+            })
+            .build_headers()
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let mut buffer: TestBuffer = TestBuffer::new();
+        headers
+            .deparse(buffer.as_mut())
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        Packet::new(buffer).unwrap_or_else(|_| unreachable!("the fixture parses"))
+    }
+
     fn entries(fabric: &Fabric) -> Vec<usize> {
         let mut ids: Vec<usize> = fabric
             .flows()
@@ -477,6 +544,38 @@ mod race {
             .collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// A fresh IPv6 flow behind an extension header finds its rule.
+    ///
+    /// The fresh-flow path builds `PortFwKey` from the protocol it reads off the packet.
+    /// `.net().transport()` skips extension headers, so this packet reaches the qualifying arm
+    /// either way -- what decides it is whether the protocol read there is the transport or the
+    /// IP header's next-header field. Reading the latter names Hop-by-Hop, which matches no rule,
+    /// and a published service is unreachable from any sender that inserts one extension header.
+    ///
+    /// Asserted on the flow pair rather than on the translation, because the pair only exists if
+    /// a rule was found: `do_port_forwarding` is not reached otherwise.
+    #[tokio::test]
+    async fn a_fresh_flow_behind_an_extension_header_is_forwarded() {
+        let fabric = v6_fabric();
+        let (mut lookup, mut pfw) = fabric.stages();
+        let arrival = Arrival::inbound();
+
+        let mut packet = v6_hop_by_hop_syn("2001:db8:ffff::1", "2001:db8:1::1", 1234, 8001);
+        arrival.stamp(&mut packet);
+
+        let mut stamped = lookup.process(std::iter::once(packet));
+        let mut packet = stamped.next().unwrap_or_else(|| unreachable!());
+        drop(stamped);
+        packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+
+        pfw.process(std::iter::once(packet)).for_each(drop);
+        assert_eq!(
+            entries(&fabric).len(),
+            2,
+            "a TCP SYN behind one Hop-by-Hop header did not match its port-forwarding rule"
+        );
     }
 
     /// The second packet of a burst keeps the flow the first one installed.
