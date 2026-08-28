@@ -5,7 +5,6 @@ set unstable := true
 set shell := ["/usr/bin/env", "bash", "-euo", "pipefail", "-c"]
 set script-interpreter := ["/usr/bin/env", "bash", "-euo", "pipefail"]
 
-mod bench
 mod ci
 mod miri
 
@@ -41,6 +40,9 @@ kernel := if platform == "wasm32-wasip1" { "wasip1" } else { "linux" }
 
 # cargo build profile (debug/release/fuzz)
 profile := "debug"
+
+export callgrind_package := "dataplane-routing"
+export callgrind_bench := "fib_lookup_callgrind"
 
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
@@ -199,6 +201,79 @@ fuzz target time="60s" *args="":
         {{ if sanitize != "" { "--sanitizer " + sanitize } else { "" } }} \
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
+
+[private]
+[script]
+_bench-release-only:
+    {{ _just_debuggable_ }}
+    if [ '{{ profile }}' != "release" ]; then
+      echo "error: benchmarks want profile=release, not '{{ profile }}'" >&2
+      echo "       run: just profile=release bench" >&2
+      exit 1
+    fi
+
+[doc("Wall-clock time, via criterion")]
+[script]
+bench *args: _bench-release-only (build "benches")
+    {{ _just_debuggable_ }}
+    shopt -s nullglob
+    for bench in ./results/benches/bin/*; do
+      case "${bench}" in
+        *_callgrind) continue ;;
+      esac
+      "${bench}" --bench {{ args }}
+    done
+    if [ -f target/criterion/report/index.html ]; then
+      echo
+      echo "html report: target/criterion/report/index.html"
+    fi
+
+[doc("Instructions and cache traffic, via iai-callgrind")]
+[script]
+bench-callgrind *args:
+    {{ _just_debuggable_ }}
+    cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" {{ args }}
+
+[doc("Compare against a baseline and print a markdown report")]
+[script]
+bench-compare baseline="base" *args:
+    {{ _just_debuggable_ }}
+    mkdir -p results/bench
+    # Decide save-or-compare *before* running, and scope the question to this suite's own
+    # output directory. Two things went wrong when this was one condition. A file anywhere
+    # under `target/iai` -- another package, another benchmark -- answered "a baseline
+    # exists", and the run then found none for any benchmark here, succeeded, and reported a
+    # new baseline it had not written; every repeat did the same. And with the comparison run
+    # inside the `if`, any non-zero exit (a compile error, a panicking benchmark, a runner
+    # version mismatch) fell through to the `else` and overwrote the baseline being compared
+    # against -- with stderr discarded, so nothing said why.
+    # iai-callgrind writes to `target/iai[/<triple>]/<CARGO_PKG_NAME>/<module path>/<bench>`,
+    # so match on the two components that identify this suite and stay agnostic about the
+    # optional target triple above them and the group nesting below.
+    scope="*/${callgrind_package}/${callgrind_bench}/*"
+    if find target/iai -type f -path "${scope}" -name '*base@{{ baseline }}*' -print -quit 2>/dev/null | grep -q .; then
+      cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+        --baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
+    else
+      echo "no baseline '{{ baseline }}' for ${callgrind_package}/${callgrind_bench}; recording one" >&2
+      cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+        --save-baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
+    fi
+    ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
+
+[doc("Record a baseline for `bench-compare`, without reporting")]
+[script]
+bench-baseline name="base":
+    {{ _just_debuggable_ }}
+    cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+      --save-baseline='{{ name }}' > /dev/null
+    echo "recorded baseline '{{ name }}'"
+
+[doc("Serve the criterion html report over http")]
+[script]
+bench-serve port="8080":
+    {{ _just_debuggable_ }}
+    just serve ./target/criterion '{{ port }}' report/index.html
 
 [script]
 build-each *args: (build "workspace" args)
