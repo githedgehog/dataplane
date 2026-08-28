@@ -3147,7 +3147,7 @@ mod generated {
 #[cfg(test)]
 mod burst {
     use super::round_trip::udp;
-    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
+    use super::routed::{exposes, inside, tunnelled};
     use super::*;
     use net::headers::TryVxlan;
     use std::sync::LazyLock;
@@ -3587,7 +3587,7 @@ mod routed {
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
     use super::{Load, drive};
-    use net::buffer::{PacketBufferMut, TestBuffer};
+    use net::buffer::TestBuffer;
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::ip::dscp::Dscp;
     use net::ip::ecn::Ecn;
@@ -3596,7 +3596,6 @@ mod routed {
     };
     use net::parse::DeParse;
     use net::vlan::Vid;
-    use std::collections::BTreeMap;
     use std::sync::LazyLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
