@@ -2281,7 +2281,6 @@ mod generated {
     #[dpdk::with_eal]
     async fn a_generated_configuration_carries_its_own_traffic() {
         static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -2329,11 +2328,12 @@ mod generated {
                 }
 
                 for load in &loads {
-                    if load.checked() {
-                        CHECKED.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        ABANDONED.fetch_add(1, Ordering::Relaxed);
-                    }
+                    assert!(
+                        load.checked(),
+                        "a load derived from the configuration did not complete: {}",
+                        load.describe()
+                    );
+                    CHECKED.fetch_add(1, Ordering::Relaxed);
                 }
             });
 
@@ -2347,9 +2347,8 @@ mod generated {
             MULTI.load(Ordering::Relaxed),
         );
         eprintln!(
-            "checked={checked} abandoned={} derived={derived} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
-            ABANDONED.load(Ordering::Relaxed)
+            "checked={checked} derived={derived} peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}"
         );
         super::assert_covered(peered > 0, "no generated configuration ever had a peering");
         super::assert_covered(
