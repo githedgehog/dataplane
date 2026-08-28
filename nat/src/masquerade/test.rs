@@ -9,7 +9,7 @@ use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::{IcmpErrorHandler, Masquerade, NatPort};
 use ahash::HashMap;
 use common::cliprovider::Frame;
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Weak};
 use config::GenId;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
@@ -2476,7 +2476,7 @@ async fn an_icmp_error_does_not_tear_down_the_query_session_it_reports_on() {
         flow.is_active(),
         "the Query session was torn down by the Error message reporting on it"
     );
-    let related = flow.related.as_ref().and_then(std::sync::Weak::upgrade);
+    let related = flow.related.as_ref().and_then(Weak::upgrade);
     assert!(
         related.is_none_or(|related| related.is_active()),
         "the Query session's reverse flow was torn down by the Error message"
