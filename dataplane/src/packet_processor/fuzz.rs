@@ -1055,8 +1055,8 @@ impl<Buf: PacketBufferMut, F: Fn(&str, &Packet<Buf>) + 'static> NetworkFunction<
 /// pipeline into a failing test, which is worse than no contract at all.
 mod contract {
     use super::*;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
 
     /// How many packets each contract has actually judged, as opposed to waved past its guard.
     ///
@@ -1298,7 +1298,7 @@ mod smoke {
 
         let before: Vec<u64> = contract::JUDGED
             .iter()
-            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .map(|c| c.load(concurrency::sync::atomic::Ordering::Relaxed))
             .collect();
 
         let mut fabric = Fabric::routed(&routed::exposes(), None).expect("a valid configuration");
@@ -1314,7 +1314,7 @@ mod smoke {
             .iter()
             .enumerate()
         {
-            let after = contract::JUDGED[i].load(std::sync::atomic::Ordering::Relaxed);
+            let after = contract::JUDGED[i].load(concurrency::sync::atomic::Ordering::Relaxed);
             assert!(
                 after > before[i],
                 "the `{name}` contract judged no packet of an ordinary delivered flow: its guard \
@@ -1449,6 +1449,8 @@ mod smoke {
 mod shapes {
     use super::*;
     use bolero::{Driver, ValueGenerator};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::Prefix;
     use net::headers::builder::ChainBase;
@@ -1457,8 +1459,6 @@ mod shapes {
     use net::ipv6::UnicastIpv6Addr;
     use net::parse::DeParse;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const MAX_EXPOSES: u8 = 2;
 
@@ -1722,6 +1722,8 @@ mod shapes {
 mod round_trip {
     use super::*;
     use bolero::{Driver, ValueGenerator};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
     use net::headers::builder::HeaderStack;
@@ -1730,8 +1732,6 @@ mod round_trip {
     use net::parse::DeParse;
     use net::udp::UdpPort;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const MAX_EXPOSES: u8 = 2;
     const FLOWS_PER_FABRIC: usize = 8;
@@ -1986,6 +1986,8 @@ mod round_trip {
 mod acl {
     use super::*;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::acl::{AclAction, AclProtoMatch};
     use config::external::overlay::vpcpeering::contract::{MasqueradeExposes, peering_acl};
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
@@ -1996,8 +1998,6 @@ mod acl {
     use net::ipv6::UnicastIpv6Addr;
     use net::parse::DeParse;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const MAX_EXPOSES: u8 = 2;
     const PACKETS_PER_FABRIC: usize = 12;
@@ -2324,11 +2324,11 @@ mod port_forward {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled_from};
     use super::*;
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
     use net::headers::TryVxlan;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// The service range inside the vpc, and the range the outside world reaches it on.
     ///
@@ -2578,9 +2578,9 @@ mod port_forward {
 mod interleaved {
     use super::routed::{Blast, Conversation, Path, exposes};
     use super::*;
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use std::ops::Bound::Included;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const LOADS: usize = 6;
     const POLLS: usize = 10;
@@ -2772,12 +2772,12 @@ mod interleaved {
 mod offers {
     use super::derive::{Vary, loads_for};
     use super::*;
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::overlay_with_exposes;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
     use std::ops::Bound::Included;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const SENDERS: usize = 6;
     const POLLS: usize = 10;
@@ -2974,10 +2974,10 @@ mod generated {
     use super::derive::{Vary, loads_for};
     use super::*;
     use bolero::ValueGenerator;
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::algebra::{Op, Sequence};
     use std::ops::Bound::Included;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const SENDERS: usize = 6;
     const POLLS: usize = 8;
@@ -3159,9 +3159,9 @@ mod burst {
     use super::round_trip::udp;
     use super::routed::{exposes, inside, tunnelled};
     use super::*;
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use net::headers::TryVxlan;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     const BURST: usize = 8;
 
@@ -3412,11 +3412,11 @@ mod destination {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled};
     use super::*;
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::{overlay_with_peers, peer_vni};
     use lpm::prefix::Prefix;
     use net::headers::TryVxlan;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// How many peer vpcs the local one is peered with.
     ///
@@ -3597,6 +3597,8 @@ mod routed {
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
     use super::{Load, drive};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use net::buffer::TestBuffer;
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::ip::dscp::Dscp;
@@ -3606,8 +3608,6 @@ mod routed {
     };
     use net::parse::DeParse;
     use net::vlan::Vid;
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A flow to try, as a host in the private range and the ports it uses.
     #[derive(Debug, Clone, Copy)]

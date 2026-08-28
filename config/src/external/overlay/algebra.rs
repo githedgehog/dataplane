@@ -1240,7 +1240,7 @@ impl Draft {
 mod tests {
     use super::*;
     use bolero::check;
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    use concurrency::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     /// How many sequences reached each kind of operation.
     ///
