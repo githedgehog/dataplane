@@ -806,8 +806,8 @@ mod contract {
 #[cfg(test)]
 mod test {
     use crate::rate::{Derivative, DerivativeComparer, DerivativeError, SavitzkyGolayFilter};
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{PacketAndByte, TransmitSummary};
 
