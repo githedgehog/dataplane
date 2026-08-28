@@ -88,7 +88,16 @@ callgrind *args:
 compare baseline="base" *args:
     {{ _just_debuggable_ }}
     mkdir -p results/bench
-    if [ -d "target/iai" ] && cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+    # Ask whether *this* baseline was stored, not whether any run has ever happened.
+    #
+    # `-d target/iai` was the old test and it answers the wrong question: `just bench callgrind`
+    # creates that directory too, and `--baseline=name` exits 0 when `name` is absent -- it just
+    # reports no comparison. Together those skipped the save branch, so two consecutive `compare`
+    # runs could both print "recorded a new one" and store nothing.
+    #
+    # The name is a file suffix -- `callgrind.<id>.out.base@<name>` -- not a directory.
+    if find target/iai -type f -name '*base@{{ baseline }}*' -print -quit 2>/dev/null | grep -q . \
+        && cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
         --baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl 2>/dev/null; then
       ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
     else
