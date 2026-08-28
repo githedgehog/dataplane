@@ -25,6 +25,12 @@ ignore = [
     "RUSTSEC-2024-0436",
     # proc-macro-error2 is unmaintained but is needed by multi_index_map_derive, and our own fixin; ignore until both dependencies have migrated away from it.
     "RUSTSEC-2026-0173",
+    # bincode 1.3.3 is unmaintained -- the team stopped deliberately and considers it
+    # complete, so there is nothing to upgrade to. It reaches us only through
+    # `iai-callgrind`, which is a dev-dependency of `routing` alone and is absent from every
+    # shipped artifact. That is the invariant to re-check rather than re-derive: it stops
+    # holding the moment `iai-callgrind` appears in a normal `[dependencies]` table.
+    "RUSTSEC-2025-0141",
 ]
 
 [licenses]
