@@ -64,10 +64,8 @@ npins add github githedgehog frr-agent --branch master # floats with branch on p
 npins add github githedgehog dplane-rpc --branch master # floats with branch on pin bump
 npins add github githedgehog dplane-plugin --branch hh-master-10.6 # floats with branch on pin bump
 
-# duvet is pinned to a branch of our fork for the same reason rdma-core and dpdk are: the upstream
-# tree cannot be built as it stands. It keeps its `Cargo.lock` out of git and ships one only in the
-# published crate, and `buildRustPackage` needs the lockfile in the tree. The branch is upstream's
-# release commit plus that lockfile, so bumping means rebasing one commit onto the next release.
+# The duvet fork adds the lockfile missing from upstream's git tree.
+# When bumping, rebase that lockfile commit onto the new release.
 npins add github githedgehog duvet --branch v0.4.3-hh # floats with branch on pin bump
 
 npins add github opengrep opengrep

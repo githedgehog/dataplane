@@ -44,8 +44,6 @@ profile := "debug"
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
 
-# Wall-clock budget bolero gets per property under coverage instrumentation, in milliseconds.
-# Overridable so a slower machine can buy more without editing this file.
 bolero_coverage_test_time_ms := env("BOLERO_COVERAGE_TEST_TIME_MS", "15000")
 
 # comma-separated list of cargo features to enable (e.g. "shuttle")
@@ -744,12 +742,8 @@ doctest package="" *args: (build (if package == "" { "doctests.all" } else { "do
 [script]
 coverage *args:
     {{ _just_debuggable_ }}
-    # Bolero draws cases against a wall-clock budget, and coverage instrumentation makes each
-    # case far more expensive: an instrumented run drew one or two cases where a clean one draws
-    # hundreds, which is under the floor the fuzz properties' own vacuity guards enforce.  Buy
-    # back a comparable number of draws rather than lowering those guards -- a guard that has
-    # been lowered to fit the slowest configuration no longer catches a property that has
-    # genuinely stopped reaching its assertion.
+    # Coverage can reduce Bolero below the properties' vacuity thresholds. Raise this budget;
+    # do not weaken the guards to accommodate instrumentation.
     export BOLERO_RANDOM_TEST_TIME_MS="{{ bolero_coverage_test_time_ms }}"
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
@@ -772,16 +766,7 @@ duvet *args:
 [script]
 duvet-check:
     {{ _just_debuggable_ }}
-    # `duvet report` takes milliseconds and is bit-for-bit deterministic, so unlike mutation
-    # testing this can be a gate, and it is the cheapest correctness check in the repo. It is
-    # one because the snapshot had already drifted two commits after being introduced: a
-    # regenerate-by-hand rule is one nobody runs.
-    #
-    # The inputs are checked first because their absence is the one way this gate passes while
-    # measuring nothing: `duvet report` succeeds over zero specifications, and `git diff` over a
-    # file that does not exist is empty, so a tree with no `.duvet` reports compliance rather than
-    # the truth. A gate that cannot tell "nothing has drifted" from "there is nothing here" is
-    # worse than no gate, because it is believed.
+    # Duvet succeeds with zero inputs, so verify that the gate has something to measure.
     for input in .duvet/config.toml .duvet/snapshot.txt; do
       if [ ! -f "${input}" ]; then
         echo "error: ${input} is missing; this check has nothing to compare and cannot pass" >&2
@@ -799,33 +784,18 @@ duvet-check:
 [script]
 mutants *args:
     {{ _just_debuggable_ }}
-    # Deliberately not a gate, and deliberately not the whole workspace by default: a full
-    # sweep is hours, and the product is the list of survivors rather than the score. Scope
-    # it, as in `just mutants -p dataplane-nat` or `just mutants --in-diff <(git diff main)`.
     cargo mutants --test-tool nextest {{ args }}
 
 # Check that each `type=test` citation tests its `type=implementation` citation
 [script]
 spec-interlock *args:
     {{ _just_debuggable_ }}
-    # The cross-check duvet cannot do alone: mutate only the cited implementation region, run
-    # only the cited tests, and report a citation whose test notices nothing as decorative.
-    # See development/code/spec-compliance.md.
     ./scripts/spec-interlock.ts {{ args }}
 
 # Render the compliance tables as markdown, for a job summary
 [script]
 duvet-summary *args:
     {{ _just_debuggable_ }}
-    # Replaces the HTML report, whose viewer we do not build (see nix/pkgs/duvet). Pass
-    # `--results <path>`, as written by `just spec-interlock --results <path>`, to carry the
-    # interlock's verdicts; without it the summary says the interlock has not run rather than
-    # implying the citations are checked.
-    #
-    # Appended to the job summary when there is one, and printed either way. The redirection
-    # lives here rather than in the workflow because `.github/actions/just` passes recipe
-    # arguments to `just` without a shell to interpret them, so a `>>` in the workflow would
-    # arrive as a filename.
     ./scripts/duvet-summary.ts {{ args }} | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 # Use Nix-built archives so local and CI coverage report the same binaries.

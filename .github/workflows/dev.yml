@@ -325,11 +325,7 @@ jobs:
       - name: "pinact"
         id: "pinact"
         continue-on-error: true
-        # `--verify` resolves every pinned SHA against the API. Unauthenticated that is 60 calls
-        # an hour shared across everything running on the runner's address, which a stack of
-        # branches pushed together exhausts before the first job finishes -- the lint then fails
-        # for the rate limit rather than for an unpinned action. The default token's read scope
-        # is all this needs, and raises the limit to 5000.
+        # Authentication prevents stacked builds from exhausting the shared unauthenticated limit.
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         uses: *just

@@ -2,64 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-/**
- * Check that a `type=test` citation actually tests its `type=implementation` citation.
- *
- * duvet checks that a citation *exists*. It cannot check that the test named by one says
- * anything about the code named by the other: both are comments, and a refactor can separate
- * them without either changing. That gap is what makes a citation decorative, and it is
- * invisible in every report the three tools produce on their own.
- *
- * This closes it by making the tools check each other. For each requirement duvet has matched
- * to both an implementation and a test, mutate *only* the cited implementation region and run
- * *only* the cited tests. A mutant that survives is a change to the code that claims to
- * implement the requirement which the test claiming to check it does not notice.
- *
- * The unit is a (requirement, implementation, test) triple rather than a file, because that is
- * what the claim is about. `cargo mutants -f <file>` would answer a weaker question -- "is this
- * file tested" -- and would drown the signal in mutants belonging to requirements nobody cited.
- */
-
-// No imports, deliberately. `jsr:@std/...` would be fetched on first run, which puts this tool
-// behind the network in exactly the situation it is most wanted -- a CI or nix sandbox with
-// none -- for a path join and an argument parse. The same reasoning vendors the specifications
-// under `.duvet/`; see development/code/spec-compliance.md.
+// Keep dependency-free: module imports may require network access in Nix and CI sandboxes.
 
 const join = (...parts: string[]) => parts.join("/").replaceAll(/\/+/g, "/");
 const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 
-/**
- * duvet emits no `type` key for the default annotation kind, which is the implementation
- * citation. Spelling it here keeps the defaulting in one place.
- */
 const IMPLEMENTATION = "CITATION";
 const TEST = "TEST";
 
-/** A duvet citation line: `//= <url>`, `//= type=<kind>`, or the quoted text `//# ...`. */
 const CITATION_LINE = /^\s*\/\/[=#]/;
 const ATTRIBUTE_LINE = /^\s*#\[/;
-/** `fn name(`, `pub fn name(`, `async fn name(`. The name is what nextest filters on. */
 const FN_LINE = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/;
-/** A mutant as cargo-mutants names it in `caught.txt` and friends: `path:line:col: what`. */
 const MUTANT_LINE = /^([^:]+):(\d+):(\d+): /;
 
-/**
- * A mutant that survives its requirement's cited tests, and why that is the correct outcome.
- *
- * `development/code/mutation-testing.md` asks for every mutant to be *classified*, not killed:
- * some are equivalent, and the cheapest way to turn one green is to assert whatever the code
- * already does, which entrenches the behaviour instead of checking it. Without somewhere to
- * record that judgement the interlock reports an equivalent mutant as decorative forever, and
- * the pressure is to write the entrenching test.
- *
- * Kept here rather than in a data file for the reason `.cargo/mutants.toml` gives for holding
- * cargo-mutants' exclusions: the reasoning stays in one place, next to what acts on it.
- */
+// Accepted mutants are exemptions: bind each one to a requirement and preserve its justification.
 interface Accepted {
-  /** The requirement, so an accept cannot silently cover a different citation. */
   requirement: string;
-  /** cargo-mutants' own stable name -- `<path>: <what>`, with no line or column, so that the
-   * entry survives the function being moved or reformatted. */
   mutant: string;
   reason: string;
 }
@@ -77,7 +35,6 @@ const ACCEPTED: Accepted[] = [
       "The guard is kept because a future allocator that can fail for a non-exhaustion reason " +
       "must not draw a second public address for a host that already holds one.",
   },
-  // The same code answers to both specifications, so the judgement is recorded against each.
   ...[
     "https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1",
     "https://www.rfc-editor.org/rfc/rfc5382#section-8",
@@ -97,14 +54,12 @@ const ACCEPTED: Accepted[] = [
   })),
 ];
 
-/** cargo-mutants' stable name for a mutant: its `<path>: <what>`, dropping line and column. */
 function stableName(mutant: string): string {
   const match = MUTANT_LINE.exec(mutant);
   if (!match) return mutant;
   return `${match[1]}: ${mutant.slice(match[0].length)}`;
 }
 
-/** A half-open line range `[start, end)`, 1-indexed, in `path`. */
 interface Region {
   path: string;
   start: number;
@@ -113,7 +68,6 @@ interface Region {
 
 const showRegion = (r: Region) => `${r.path}:${r.start}-${r.end - 1}`;
 
-/** One requirement, the code cited as implementing it, and the tests cited as checking it. */
 interface Triple {
   index: string;
   spec: string;
@@ -162,18 +116,6 @@ async function run(
   };
 }
 
-/**
- * How many times the cited tests executed each line of the files they are cited against.
- *
- * Cheap next to mutation -- one instrumented run rather than one build and test cycle per
- * mutant -- and it answers a question mutation cannot separate out on its own: a mutant that
- * survives because the test never reached it needs a different input, while one that survives
- * although the test ran straight through it needs a different assertion.
- *
- * The instrumented build gets its own target directory. Sharing the default one would make
- * every ordinary `cargo test` afterwards rebuild from scratch, because the coverage flags
- * differ.
- */
 async function lineCounts(
   pkg: string,
   tests: string[],
@@ -181,22 +123,13 @@ async function lineCounts(
   outDir: string,
   sharedTarget: string,
 ): Promise<Map<string, number> | null> {
-  // Added to the parent environment rather than replacing it: `Deno.Command` inherits unless
-  // `clearEnv` is set, which keeps PATH and the toolchain selection intact without this tool
-  // needing `--allow-env`.
   const env = {
     LLVM_COV: join(REPO, "devroot", "bin", "llvm-cov"),
     LLVM_PROFDATA: join(REPO, "devroot", "bin", "llvm-profdata"),
-    // Shared across requirements, not per-requirement: the instrumented build is the slow part
-    // and is identical for every citation in the same package.
     CARGO_TARGET_DIR: sharedTarget,
   };
-  // `--output-path` will not create the directory it writes into.
   await Deno.mkdir(outDir, { recursive: true });
 
-  // Returning null rather than an empty map matters: an empty map is indistinguishable from
-  // "nothing was executed", and would relabel every survivor as unreached -- a confident wrong
-  // answer, which is worse than no answer.
   const step = async (args: string[]) => {
     const { code, stderr } = await run("cargo", args, env);
     if (code !== 0) {
@@ -207,13 +140,9 @@ async function lineCounts(
     return code === 0;
   };
 
-  // Only the profiles, not the build: the build is the slow part and is reusable.
   const jsonPath = join(outDir, "coverage.json");
   const ok =
     await step(["llvm-cov", "clean", "--workspace", "--profraw-only"]) &&
-    // The same filterset the mutation run uses, and for the same reason: a bare name is a
-    // substring filter, so coverage collected under one would answer for tests the citation
-    // does not name.
     await step([
       "llvm-cov",
       "--no-report",
@@ -238,8 +167,6 @@ async function lineCounts(
   for (const file of report.data?.[0]?.files ?? []) {
     const match = paths.find((p) => file.filename.endsWith(p));
     if (!match) continue;
-    // A segment is [line, column, count, hasCount, ...]. One line can carry several, so the
-    // largest wins: the question here is only whether execution ever got there.
     for (const [line, _col, count, hasCount] of file.segments ?? []) {
       if (!hasCount) continue;
       const key = `${match}:${line}`;
@@ -249,25 +176,13 @@ async function lineCounts(
   return counts;
 }
 
-/**
- * Run `duvet report` and read back its JSON.
- *
- * Always regenerated rather than cached: a stale report would silently check the previous
- * commit's citations, which is the failure this tool exists to catch.
- */
+// Always regenerate: a cached report can check citations from a different tree.
 async function duvetReport(jsonPath: string): Promise<Report> {
   const { code } = await run("duvet", ["report", "--json", jsonPath]);
   if (code !== 0) throw new Error("duvet report failed");
   return JSON.parse(await Deno.readTextFile(jsonPath));
 }
 
-/**
- * The first index at or after `start` that is not part of a citation comment.
- *
- * Ordinary `//` comments between the citation and the code it annotates are prose about the
- * citation -- every existing site has some -- so they are skipped too, as are the attributes
- * and doc comments that precede an item.
- */
 function skipCitationBlock(lines: string[], start: number): number {
   let i = start;
   while (i < lines.length) {
@@ -285,21 +200,12 @@ function skipCitationBlock(lines: string[], start: number): number {
   return i;
 }
 
-/**
- * The line index just past the item or statement beginning at `start`.
- *
- * Brace matching rather than a Rust parser: the cited construct is a statement or a single
- * item, and the alternative -- taking the whole enclosing function -- would attribute mutants
- * to a requirement that does not cover them.
- */
 function itemExtent(lines: string[], start: number): number {
   let depth = 0;
   let opened = false;
   let i = start;
   while (i < lines.length) {
-    // Strings and char literals containing braces would break this. None of the cited sites
-    // has one, and a miscount shows up as a region that fails to bound a mutant, not as a
-    // silently wrong verdict.
+    // This is not a Rust parser: braces inside strings or character literals skew the range.
     const code = lines[i].split("//")[0];
     const opens = (code.match(/\{/g) ?? []).length;
     depth += opens - (code.match(/\}/g) ?? []).length;
@@ -315,7 +221,6 @@ async function readLines(path: string): Promise<string[]> {
   return (await Deno.readTextFile(path)).split("\n");
 }
 
-/** The code a `type=implementation` citation at `line` annotates. */
 async function implementationRegion(
   source: string,
   line: number,
@@ -325,7 +230,6 @@ async function implementationRegion(
   return { path: source, start: start + 1, end: itemExtent(lines, start) + 1 };
 }
 
-/** The name of the test function a `type=test` citation at `line` annotates. */
 async function testName(
   source: string,
   line: number,
@@ -347,7 +251,6 @@ async function testName(
   );
 }
 
-/** Every requirement duvet has matched to both an implementation and a test. */
 async function collect(report: Report): Promise<Triple[]> {
   const triples: Triple[] = [];
   for (const [index, status] of Object.entries(report.statuses)) {
@@ -381,7 +284,6 @@ async function collect(report: Report): Promise<Triple[]> {
   return triples;
 }
 
-/** The cargo package owning a workspace-relative source path. */
 async function packageOf(path: string): Promise<string> {
   const manifest = join(REPO, path.split("/")[0], "Cargo.toml");
   for (const line of (await Deno.readTextFile(manifest)).split("\n")) {
@@ -392,14 +294,8 @@ async function packageOf(path: string): Promise<string> {
   throw new Error(`${manifest}: no package name`);
 }
 
-/**
- * A `cargo mutants --re` pattern narrowing the run towards `regions`.
- *
- * Best effort only, for cost. It cannot be trusted as the selector: cargo-mutants applies
- * neither `--re` nor `--exclude-re` nor `.cargo/mutants.toml` to `StructField`-genre mutants,
- * so a pattern matching nothing still yields every "delete field X from struct Y" in the
- * package. `selectRegions` is what actually decides which mutants count.
- */
+// cargo-mutants does not apply regex filters to StructField mutants. This only reduces build cost;
+// selectRegions is the authoritative scope check.
 function mutantFilter(regions: Region[]): string {
   const byFile = new Map<string, Set<number>>();
   for (const region of regions) {
@@ -414,13 +310,6 @@ function mutantFilter(regions: Region[]): string {
   return `^(?:${parts.join("|")})`;
 }
 
-/**
- * The mutants that fall inside a cited implementation region.
- *
- * The verdict is computed here rather than delegated to cargo-mutants' own filters, because
- * those leak (see `mutantFilter`). A mutant outside every cited region says nothing about the
- * citation under test and is discarded rather than counted either way.
- */
 function selectRegions(mutants: string[], regions: Region[]): string[] {
   return mutants.filter((mutant) => {
     const match = MUTANT_LINE.exec(mutant);
@@ -432,38 +321,17 @@ function selectRegions(mutants: string[], regions: Region[]): string[] {
   });
 }
 
-/**
- * A nextest filterset selecting the cited tests and nothing else.
- *
- * A bare test name is a *substring* filter: passing `foo` also runs `foo_now`. That widens both
- * the coverage run and the mutation run past the citation, and an uncited test whose name merely
- * contains a cited one can then kill the mutants and earn the citation a verdict nobody wrote a
- * test for. A citation names a function rather than a path, so each pattern anchors the end of
- * the name and, at the front, a module boundary.
- *
- * The names come from `FN_LINE` and so are `[A-Za-z_][A-Za-z0-9_]*`: no regex metacharacter can
- * appear in one, and there is nothing to escape.
- */
+// Bare nextest names are substring filters and can let an uncited test kill a mutant.
+// Anchor function names to module boundaries and the end of the test name.
 function testFilterset(tests: string[]): string {
   return tests.map((name) => `test(/(^|::)${name}$/)`).join(" + ");
 }
 
-/** The part of `cargo nextest list --message-format json` this tool reads. */
 interface Suite {
   testcases?: Record<string, { "filter-match"?: { status?: string } }>;
 }
 
-/**
- * The cited tests nextest cannot find, or null if it could not be asked.
- *
- * Without this the tool's central failure mode is silent: a renamed test makes the filterset
- * match nothing, nextest exits 0 having run nothing, every mutant survives, and a citation that
- * is merely stale is reported as decorative. `cargo nextest list` exits 0 whether or not a name
- * matches anything, so the answer is in the listing rather than in the status.
- *
- * Every cited name is checked rather than any of them: a citation naming two tests is a claim
- * about both, and one that still exists would otherwise cover for one that does not.
- */
+// nextest list exits 0 for zero matches; inspect every selected name to detect stale citations.
 async function missingTests(
   pkg: string,
   tests: string[],
@@ -485,8 +353,6 @@ async function missingTests(
   } catch {
     return null;
   }
-  // The listing carries every test in the binary it built; `filter-match` is what the filterset
-  // said about each one.
   const selected: string[] = [];
   for (const suite of Object.values(suites)) {
     for (const [name, testcase] of Object.entries(suite.testcases ?? {})) {
@@ -498,7 +364,6 @@ async function missingTests(
   );
 }
 
-/** The summaries cargo-mutants gives a mutant it finished with. */
 const TERMINAL = new Set([
   "CaughtMutant",
   "MissedMutant",
@@ -506,34 +371,16 @@ const TERMINAL = new Set([
   "Unviable",
 ]);
 
-/**
- * The cargo-mutants exit codes that mean the run reached the end.
- *
- * 0 is every mutant caught, 2 is some survived, 3 is some timed out; each is a completed
- * measurement. 1 is usage and 4 is a failing baseline. An unrecognized code is not assumed to be
- * benign: a verdict drawn from a run nobody can account for is the thing this tool exists to
- * refuse.
- */
+// cargo-mutants exit codes 0, 2, and 3 all represent completed measurements.
 const COMPLETED = new Set([0, 2, 3]);
 
-/** The part of cargo-mutants' `outcomes.json` this tool reads. */
 interface Outcome {
-  /** The string `"Baseline"`, or a `{ Mutant: ... }` object. */
   scenario: unknown;
   summary: string;
 }
 
-/**
- * Why a mutation run cannot be classified, or null if it can be.
- *
- * The buckets are files, and a run that died partway through leaves a `caught.txt` holding
- * whatever it reached first. Reading them without asking how the run ended turns a tool failure
- * into a verdict: a failing baseline leaves both buckets empty and reads as "generated no
- * mutants", and an interrupted run reads as `held` on the mutants it happened to catch before it
- * stopped. `outcomes.json` records what was attempted and how each attempt ended, and
- * `mutants.json` -- written before the first mutant is built -- records what the run set out to
- * do; the two together are the only evidence that the buckets are a whole measurement.
- */
+// Result buckets survive failed or interrupted runs. Require a passing baseline and a terminal
+// outcome for every generated mutant before treating them as evidence.
 async function auditMutants(
   outDir: string,
   code: number,
@@ -558,9 +405,6 @@ async function auditMutants(
     };
   }
   const all: Outcome[] = outcomes.outcomes ?? [];
-  // The baseline is cargo-mutants running the cited tests against unmutated code. Its absence
-  // and its failure are different things, and reporting either one as the other sends whoever
-  // reads it to the wrong place.
   const baseline = all.find((o) => o.scenario === "Baseline");
   if (!baseline) {
     return {
@@ -612,23 +456,18 @@ interface Result {
     | "stale"
     | "unsupported"
     | "no-mutants"
-    /** The cited tests fail on unmutated code, so no mutant result means anything. */
     | "failing"
-    /** The measurement did not happen or did not finish; no verdict is available. */
     | "error";
   detail?: string;
   caught?: string[];
   missed?: string[];
   accepted?: Accepted[];
-  /** Survivors on a line the cited tests never executed: the test needs a different input. */
   unreached?: string[];
-  /** Survivors on a line they did execute: the test needs a different assertion. */
   tolerated?: string[];
   unviable?: string[];
   timeout?: string[];
 }
 
-/** Mutate the cited implementation, run only the cited tests, and report survivors. */
 async function runTriple(
   triple: Triple,
   output: string,
@@ -665,9 +504,6 @@ async function runTriple(
   const outDir = join(output, `requirement-${triple.index}`);
   const files = [...new Set(triple.implementations.map((r) => r.path))].sort();
 
-  // Coverage first, because it is cheap and can settle the question outright. A cited test that
-  // never executes a single line of the cited region cannot be testing the requirement, whatever
-  // the mutants would have said, and skipping them saves the build-and-test cycle per mutant.
   const counts = await lineCounts(
     pkg,
     triple.tests,
@@ -730,8 +566,6 @@ async function runTriple(
     ["caught", "missed", "unviable", "timeout"].map(read),
   );
 
-  // Split the survivors into the ones somebody has judged equivalent and the ones nobody has.
-  // Only the second kind is a finding.
   const accepted: Accepted[] = [];
   const missed = survived.filter((mutant) => {
     const entry = ACCEPTED.find((a) =>
@@ -745,11 +579,7 @@ async function runTriple(
     }
     return true;
   });
-  // A region whose every mutant is unviable or timed out is not evidence either way: nothing
-  // ran that the test could have noticed. Reporting that as "held" would credit the citation
-  // for a check that never happened, which is the exact failure this tool exists to catch.
-  // An accepted survivor is the opposite case -- somebody read that mutant and wrote down why
-  // it lives -- so a region holding nothing else has been answered rather than missed.
+  // Unviable- or timeout-only regions provide no evidence; accepted survivors do.
   if (!caught.length && !missed.length && !accepted.length) {
     const why = unviable.length || timeout.length
       ? `${unviable.length} unviable and ${timeout.length} timed out, so none could be tested`
@@ -763,10 +593,7 @@ async function runTriple(
       timeout,
     };
   }
-  // Split the survivors by whether the cited tests got to them at all. The two need opposite
-  // fixes, and telling them apart by hand meant reading a coverage report anyway.
-  // With no coverage there is no basis to split them, and guessing would relabel every
-  // survivor as unreached. Leave both buckets empty; the reporter then lists them plainly.
+  // Without coverage, leave survivors unclassified rather than guessing reachability.
   const reached = (mutant: string) => {
     const match = MUTANT_LINE.exec(mutant);
     return match ? (counts!.get(`${match[1]}:${match[2]}`) ?? 0) > 0 : false;
@@ -783,13 +610,6 @@ async function runTriple(
   };
 }
 
-/**
- * One requirement's verdict, in the form another program reads.
- *
- * Deliberately the printed verdict rather than a second computation of it:
- * `scripts/duvet-summary.ts` renders this into a job summary, and a summary that can disagree
- * with the run it summarises is worse than no summary at all.
- */
 interface Recorded {
   index: string;
   spec: string;
@@ -807,7 +627,6 @@ interface Recorded {
   timeout: number;
 }
 
-/** `--flag value` and `--flag`, which is all this tool needs. */
 function parseArgs(argv: string[]) {
   const args = {
     list: false,
@@ -816,7 +635,6 @@ function parseArgs(argv: string[]) {
     jobs: 4,
     output: join(REPO, "target", "spec-interlock"),
     json: "/tmp/duvet-interlock.json",
-    /** Where to record the verdicts. Empty means nowhere; the run still prints them. */
     results: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -864,7 +682,6 @@ async function main(): Promise<number> {
     console.log(
       "  [--results <path>] records the verdicts as JSON for scripts/duvet-summary.ts",
     );
-    // Said out loud because it is a surprise otherwise: nothing here cleans up after itself.
     console.log(
       "  results and the instrumented build are kept under target/spec-interlock; the build is",
     );
@@ -878,8 +695,7 @@ async function main(): Promise<number> {
   let triples = await collect(report);
   if (args.only.length) {
     triples = triples.filter((t) => args.only.includes(t.index));
-    // `--only` is the cheap path for a citation somebody has just changed, so a typo in one --
-    // or a requirement duvet has renumbered under it -- must not read as a clean run.
+    // Reject typos rather than turning a targeted check into a clean no-op.
     const unmatched = args.only.filter((id) =>
       !triples.some((t) => t.index === id)
     );
@@ -914,9 +730,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  // Nothing to check is not the same as nothing wrong: an empty report is what a tree with no
-  // vendored specifications produces, and reporting `0/0` over one is the failure mode this
-  // tool exists to refuse in the citations it checks.
+  // Duvet can succeed with no inputs; never report an empty interlock as success.
   if (!triples.length) {
     console.error(
       "error: no requirement carries both an implementation and a test citation; there is nothing to check",
@@ -981,9 +795,6 @@ async function main(): Promise<number> {
       failures += 1;
       console.log(`    ${result.outcome.toUpperCase()}: ${result.detail}`);
     }
-    // Counted but not listed: an unviable mutant is one that did not compile, which says
-    // nothing about the test. The count is kept because a region that is *entirely* unviable
-    // is the `no-mutants` case above, and that distinction is worth being able to see.
     const skipped = (result.unviable?.length ?? 0) +
       (result.timeout?.length ?? 0);
     if (skipped && result.outcome !== "no-mutants") {
@@ -1010,17 +821,14 @@ async function main(): Promise<number> {
       unviable: result.unviable?.length ?? 0,
       timeout: result.timeout?.length ?? 0,
     });
-    // Printed on every run, not hidden. An accepted mutant is a judgement somebody made, and it
-    // should be as visible as the finding it replaced -- otherwise the list only ever grows.
+    // Keep exemptions visible in normal output.
     for (const entry of result.accepted ?? []) {
       console.log(`    accepted: ${entry.mutant}`);
       console.log(`        ${entry.reason}`);
     }
   }
 
-  // An accept that matches nothing is worse than no accept: it reads as a considered judgement
-  // while silently covering a mutant that no longer exists, and it would go on hiding whatever
-  // takes that name next.
+  // Fail stale exemptions so they cannot silently match a future mutant.
   const stale = ACCEPTED.filter((entry) => !used.has(entry));
   const checkedAll = !args.only.length;
   if (stale.length && checkedAll) {
