@@ -6370,14 +6370,11 @@ mod model {
                 // cleared so `first + flows` cannot wrap.
                 let (first_a, first_b) = (first_a % 20000 + 1000, first_b % 20000 + 30000);
 
-                let public =
-                    match format!("2.2.0.0/{}", 32 - u32::from(addr_bits)).parse::<Prefix>() {
-                        Ok(prefix) => prefix,
-                        Err(_) => {
-                            UNBUILT.fetch_add(1, Ordering::Relaxed);
-                            return;
-                        }
-                    };
+                let Ok(public) = format!("2.2.0.0/{}", 32 - u32::from(addr_bits)).parse::<Prefix>()
+                else {
+                    UNBUILT.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
                 let drawn = VpcExpose::empty()
                     .make_masquerade(None)
                     .expect("masquerade is a legal flavour for an empty expose")
@@ -7445,8 +7442,8 @@ mod model {
     /// its predecessor's mac changed nothing at all.
     #[concurrency::model_test]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
-        /// Versions published after the fixture's own.
-        /// Probes each worker sends per round, alongside that round's publish.
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
 
         /// Probes served by the version published in their own round.
         static FRESH: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -7526,9 +7523,6 @@ mod model {
             )
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
-
-        /// Configurations drawn. Under shuttle each costs 32 executions.
-        const CASES: usize = 64;
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -7784,6 +7778,9 @@ mod model {
     /// range moved, round 2 fails, which is what makes the passing case mean something.
     #[concurrency::model_test]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
+
         /// Conversations each worker completes per round.
         /// Rounds, and so enactments, during the run.
         const APPLIES: u8 = 4;
@@ -7806,9 +7803,6 @@ mod model {
             )
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
-
-        /// Configurations drawn. Under shuttle each costs 32 executions.
-        const CASES: usize = 64;
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
@@ -7995,6 +7989,9 @@ mod model {
     /// between two functions in one file.
     #[concurrency::model_test]
     fn the_cli_can_be_read_while_the_dataplane_works() {
+        /// Configurations drawn. Under shuttle each costs 32 executions.
+        const CASES: usize = 64;
+
         /// Conversations the worker completes per round.
         /// Rounds, and so enactments, during the run.
         const APPLIES: u8 = 3;
@@ -8017,9 +8014,6 @@ mod model {
             )
         };
         let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
-
-        /// Configurations drawn. Under shuttle each costs 32 executions.
-        const CASES: usize = 64;
 
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
