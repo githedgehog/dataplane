@@ -42,7 +42,7 @@ config = { workspace = true, features = ["bolero"] }
 fixin = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
-net = { workspace = true, features = ["bolero"] }
+net = { workspace = true, features = ["bolero", "builder"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tracectl = { workspace = true }
 
