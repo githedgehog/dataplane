@@ -13,12 +13,12 @@ attributes cannot be looped over -- so `for_each_shape!` expands one definition 
 criterion and into attributes for callgrind.
 
 ```sh
-just bench criterion  # wall-clock on this machine
-just bench callgrind  # instructions and modelled cache traffic
-just bench compare    # the above against a baseline, as a markdown report
+just profile=release bench       # wall-clock on this machine
+just bench-callgrind             # instructions and modelled cache traffic
+just bench-compare               # the above against a baseline, as a markdown report
 ```
 
-Criterion also writes an html report -- `just bench serve` puts it on a local port, which is worth
+Criterion also writes an html report -- `just bench-serve` puts it on a local port, which is worth
 doing rather than opening the file directly: the pages fetch their siblings relatively and a
 `file://` origin refuses, so the index renders and everything under it comes up empty. The same
 recipe shape serves the coverage report, as `just serve-coverage`.
@@ -194,7 +194,7 @@ starting until there is a reason to trust the answer.
 
 ## Reporting a run in CI
 
-`just bench compare` runs the callgrind benches, compares them against a baseline, and prints a
+`just bench-compare` runs the callgrind benches, compares them against a baseline, and prints a
 markdown report: a one-line headline, a table of every metric, and -- only when something moved
 past the threshold -- a bar chart. `scripts/bench-report.ts` does the rendering and can be pointed
 at any iai-callgrind JSON run.
@@ -211,9 +211,9 @@ the base commit with `--save-baseline`, run the head commit with `--baseline`, b
 
 ```sh
 git checkout "$BASE_SHA" -- .
-just bench baseline base        # records
+just bench-baseline base        # records
 git checkout "$HEAD_SHA" -- .
-just bench compare base > report.md   # compares
+just bench-compare base > report.md   # compares
 ```
 
 iai-callgrind keeps the baseline under `target/iai` for the length of the job, each record already
@@ -282,9 +282,10 @@ The fixture is leaked in `setup` so the drop is a no-op.
 instructions. Knowing roughly what a number should be is what turns a wrong benchmark into an
 obviously wrong benchmark.
 
-**Check you are benchmarking an optimised build.** `just bench criterion` goes through the nix
-build, which defaults to the `debug` profile for everything else in this repository; it used to
-inherit that. The same lookup measured about nine times slower and with none of the inlining that
-makes the release build's shape worth reasoning about -- numbers that are wrong in a way that
-still looks like a measurement. The recipe now asks for `release` explicitly. `cargo bench` is
-unaffected: its `bench` profile inherits from `release` already.
+**Check you are benchmarking an optimised build.** `just bench` goes through the nix build, which
+defaults to the `debug` profile for everything else in this repository. The same lookup measured
+about nine times slower and with none of the inlining that makes the release build's shape worth
+reasoning about -- numbers that are wrong in a way that still looks like a measurement. Rather
+than carry its own default, which would silently diverge from every other recipe, `bench` refuses
+any profile but `release`: pass `just profile=release bench`. `cargo bench` is unaffected -- its
+`bench` profile inherits from `release` already.
