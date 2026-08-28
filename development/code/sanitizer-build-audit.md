@@ -62,7 +62,7 @@ instrumented now fails the build instead of linking quietly.
 
 Confirmed along the way that dpdk really is instrumented, from its own build log:
 
-```
+```text
 dpdk-v26.03-hh> warning: Redundant instrumentation detected, with module flag: nosanitize_thread
 ```
 
@@ -79,7 +79,7 @@ stamp existing, so a sysroot built before this degrades to the old behaviour rat
 ## Still open
 
 `nix build -f default.nix check --argstr sanitize thread` fails in `dataplane-interface-manager`
-with `cannot find `select` in `tokio``. That is feature unification, not sanitization -- `check`
+with `cannot find`select` in `tokio``. That is feature unification, not sanitization -- `check`
 builds one package at a time, so it does not get the feature set a workspace build unifies -- and
 it is unrelated to anything here. Worth fixing on its own.
 

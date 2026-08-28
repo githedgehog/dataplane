@@ -14,10 +14,10 @@
 //! needs no global mutation and no serialisation between tests. The collector must then be driven
 //! on that same thread -- `clock.block_on(..)` on a paused clock does exactly that.
 
+use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use concurrency::sync::{Mutex, MutexGuard};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The label set of one series, as a scraper would see it.
 pub(crate) type Labels = BTreeMap<String, String>;

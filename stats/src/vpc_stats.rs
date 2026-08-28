@@ -258,9 +258,9 @@ impl VpcStatsStore {
 #[cfg(test)]
 mod under_readers {
     use super::{VpcId, VpcStatsStore};
+    use concurrency::sync::Arc;
+    use concurrency::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use net::vxlan::Vni;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use vpcmap::VpcDiscriminant;
 
     /// Handovers the writer performs.
