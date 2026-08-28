@@ -466,6 +466,14 @@ impl Masquerade {
             // Nothing has to be released by hand: the reverse half was never inserted, and
             // dropping the pair built here on the way out drops the `MasqueradeState` holding the
             // `Allocation`, whose address and port go back to the pool from `AllocatedPort::drop`.
+            //
+            // The winner publishes its forward flow Active before inserting the reverse half, so
+            // this packet can leave translated while no reverse flow exists yet. A reply arriving
+            // inside that gap is dropped and retransmitted. That is the trade `Publish a flow as
+            // Active before it can be found` makes deliberately: the window it closes is two
+            // winners for one key, where the loser's reverse outlives the allocation it maps and a
+            // reply reaches the wrong tenant. A dropped reply needs the winner descheduled for a
+            // round trip between two adjacent inserts; the other needs no timing luck at all.
             debug!(
                 "Lost the race to create flow {}; masquerading with the winner",
                 forward.flowkey()
