@@ -34,6 +34,9 @@ ignore = [
     # vIOMMU -- so that bump is a port, not a version bump.  Ignore until it is
     # done.
     "RUSTSEC-2023-0081",
+    # bincode is unmaintained and is used only by the routing benchmark harness.
+    # Revisit this exception if it becomes a runtime dependency.
+    "RUSTSEC-2025-0141",
 ]
 
 [licenses]
