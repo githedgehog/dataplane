@@ -3869,7 +3869,6 @@ mod routed {
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_tagged_shape_never_reaches_the_wire() {
-        static DELIVERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
         static TAGGED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
 
         bolero::check!()
@@ -3901,21 +3900,38 @@ mod routed {
                     }
 
                     let out = fabric.send(tunnelled(&frame));
-                    if matches!(verdict(&out), Verdict::Delivered { .. }) {
-                        assert!(!tagged, "a tagged frame was sent out onto the wire");
-                        DELIVERED.fetch_add(1, Ordering::Relaxed);
-                    }
+                    assert!(
+                        !(tagged && matches!(verdict(&out), Verdict::Delivered { .. })),
+                        "a tagged frame was sent out onto the wire"
+                    );
                 }
             });
 
-        let delivered = DELIVERED.load(Ordering::Relaxed);
         let tagged = TAGGED.load(Ordering::Relaxed);
-        eprintln!("delivered={delivered} tagged={tagged}");
+        eprintln!("tagged={tagged}");
 
-        // Both guards, because either alone can be satisfied by the pipeline doing nothing: a
-        // fabric that refused everything would never deliver, and a generator that never drew a
-        // tag would make the assertion above unreachable.
-        super::assert_covered(delivered > 0, "nothing ever reached the wire");
+        // The positive control, and the reason it is not a generated packet.
+        //
+        // The guard this replaces asked whether *some drawn* frame had been delivered. That is
+        // a random variable twice over -- the configuration is drawn and so is the frame -- and
+        // under coverage instrumentation the budget buys only a couple of cases. CI failed it
+        // with `delivered=0 tagged=4`: nothing was wrong, the draw simply never produced a
+        // deliverable pair. Aiming a *built* frame at a *generated* configuration does not fix
+        // it either, because whether that frame is carried still depends on the exposes drawn,
+        // and the filter refuses it as `Filtered`.
+        //
+        // So the control is a fixed frame against the fixed fixture, deliverable by
+        // construction. It states what the guard was for -- this pipeline still delivers an
+        // untagged frame, so a delivery is something the assertion above could have seen -- and
+        // states it in every run rather than in the lucky ones.
+        let mut control = Fabric::routed(&exposes(), None).expect("a valid configuration");
+        assert!(
+            matches!(
+                verdict(&control.send(tunnelled(&inner()))),
+                Verdict::Delivered { .. }
+            ),
+            "the untagged control did not reach the wire, so no delivery was observable here"
+        );
         super::assert_covered(tagged > 0, "no tagged shape was ever generated");
     }
 
