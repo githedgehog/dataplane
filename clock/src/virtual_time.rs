@@ -69,6 +69,9 @@
 
 use crate::Duration;
 use std::cell::Cell;
+// Counts live `Paused` sections for the harness's own bookkeeping, so it is deliberately not a
+// scheduling point the model checker explores. `concurrency` is a dev-dependency here anyway.
+// nosemgrep: rust-no-direct-std-sync-import
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How many [`Paused`] sections are alive. Zero almost always.

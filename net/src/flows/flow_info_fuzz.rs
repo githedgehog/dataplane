@@ -117,8 +117,12 @@ fn flow() -> FlowInfo {
 /// paused clock and puts the macro back in the test function where its name comes from.
 fn paused(body: impl FnOnce()) {
     /// One per process, which under `cargo nextest` is one per property.
+    // The harness's own clock, not concurrency under test: one paused section per process,
+    // outside anything a model checker should schedule. Same reason `clock` itself keeps
+    // `std::sync` -- and a facade `LazyLock` here stops the virtual clock working at all.
+    // nosemgrep: rust-no-direct-std-sync-import
     static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
-        std::sync::LazyLock::new(clock::virtual_time::Paused::new);
+        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
     CLOCK.block_on(async { body() });
 }
 

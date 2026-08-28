@@ -152,6 +152,9 @@ pub const fn is_routed() -> bool {
 /// visibly odd rather than silently floored to zero.
 #[must_use]
 pub fn elapsed_since_first_reading() -> Option<(bool, Duration)> {
+    // Diagnostic bookkeeping, not concurrency under test: this is the origin a log stamp is
+    // measured from. `concurrency` is a dev-dependency here on purpose -- see Cargo.toml.
+    // nosemgrep: rust-no-direct-std-sync-import
     static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let reading = checked_now()?;
     let origin = *ORIGIN.get_or_init(|| reading);

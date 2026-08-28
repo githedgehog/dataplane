@@ -1113,12 +1113,13 @@ pub(crate) type Poll = Vec<Pick>;
 #[cfg(test)]
 pub(crate) fn settled(body: impl FnOnce()) {
     /// One per process, which under `cargo nextest` is one per property.
-    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime")
-    });
+    static RUNTIME: concurrency::sync::LazyLock<tokio::runtime::Runtime> =
+        concurrency::sync::LazyLock::new(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build tokio runtime")
+        });
 
     RUNTIME.block_on(async {
         body();

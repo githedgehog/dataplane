@@ -80,8 +80,12 @@ fn settled(body: impl FnOnce()) {
     /// Long enough to be past every flow timeout this crate sets.
     const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
     /// One per process, which under `cargo nextest` is one per property.
+    // The harness's own clock, not concurrency under test: one paused section per process,
+    // outside anything a model checker should schedule. Same reason `clock` itself keeps
+    // `std::sync` -- and a facade `LazyLock` here stops the virtual clock working at all.
+    // nosemgrep: rust-no-direct-std-sync-import
     static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
-        std::sync::LazyLock::new(clock::virtual_time::Paused::new);
+        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
     CLOCK.block_on(async {
         body();
         // Polling those timers is not enough to retire them: each parks until its flow's deadline,
