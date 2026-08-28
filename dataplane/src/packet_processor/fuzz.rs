@@ -3694,13 +3694,13 @@ mod model {
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
+    use concurrency::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use concurrency::sync::{LazyLock, OnceLock};
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
     use config::external::overlay::algebra::{Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use std::sync::{LazyLock, OnceLock};
 
     type Tuple = (Option<IpAddr>, Option<u16>);
 
@@ -3945,7 +3945,8 @@ mod model {
                 }
                 SPLIT.fetch_add(1, Ordering::Relaxed);
 
-                let drawn = std::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let drawn =
+                    concurrency::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
@@ -4854,8 +4855,14 @@ mod model {
                     return;
                 }
 
-                let drawn =
-                    std::sync::Arc::new((running, enacted, vnis, vary.clone(), footprint, *change));
+                let drawn = concurrency::sync::Arc::new((
+                    running,
+                    enacted,
+                    vnis,
+                    vary.clone(),
+                    footprint,
+                    *change,
+                ));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
@@ -5094,15 +5101,15 @@ mod model {
         ];
         for (nth, part) in steps.into_iter().enumerate() {
             let gapped = nth == steps.len() - 1;
-            let disturbed = std::sync::atomic::AtomicU64::new(0);
-            let carried = std::sync::atomic::AtomicU64::new(0);
+            let disturbed = concurrency::sync::atomic::AtomicU64::new(0);
+            let carried = concurrency::sync::atomic::AtomicU64::new(0);
 
             for round in 0..ROUNDS {
                 let tables = topology(&vnis);
                 let fleet =
                     Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
                 let blueprint = fleet.blueprint();
-                let gate = std::sync::Barrier::new(3);
+                let gate = concurrency::sync::Barrier::new(3);
                 std::thread::scope(|scope| {
                     for which in 0..2u16 {
                         let handle = handle.clone();
@@ -5164,10 +5171,10 @@ mod model {
     #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
     #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
     async fn report_why_the_masquerade_swap_disturbs_traffic() {
+        use concurrency::sync::atomic::AtomicBool;
         use config::external::overlay::algebra::{
             Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
         };
-        use std::sync::atomic::AtomicBool;
 
         fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
             let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
@@ -5272,7 +5279,7 @@ mod model {
                     fleet.enact(&running, Enact::Masquerade);
                 }
                 let blueprint = fleet.blueprint();
-                let gate = std::sync::Barrier::new(3);
+                let gate = concurrency::sync::Barrier::new(3);
                 let handed: Mutex<Vec<(IpAddr, u16)>> = Mutex::new(Vec::new());
                 let writing = tracectl::evidence::Capture::new("config-apply")
                     .depth(8192)
