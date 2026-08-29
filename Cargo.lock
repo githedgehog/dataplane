@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "afpacket",
  "arrayvec",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-acl"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "arrayvec",
  "bolero",
@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-acl-filter"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "dataplane-acl",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-args"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bytecheck",
  "clap",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-cli"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "clap",
  "colored",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-common"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "arc-swap",
  "dataplane-concurrency",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-concurrency"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "arc-swap",
  "bolero",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-concurrency-macros"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-config"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "arc-swap",
  "bolero",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-dpdk"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "dataplane-concurrency",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-dpdk-sys"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bindgen",
  "dataplane-dpdk-sysroot-helper",
@@ -1384,11 +1384,11 @@ dependencies = [
 
 [[package]]
 name = "dataplane-dpdk-sysroot-helper"
-version = "0.25.2"
+version = "0.26.0"
 
 [[package]]
 name = "dataplane-dpdk-test-macros"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -1398,18 +1398,18 @@ dependencies = [
 
 [[package]]
 name = "dataplane-errno"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "dataplane-fixed-size"
-version = "0.25.2"
+version = "0.26.0"
 
 [[package]]
 name = "dataplane-flow-entry"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "ahash",
  "bolero",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-flow-filter"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "dataplane-acl",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-hardware"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "bytecheck",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-id"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "rkyv",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-init"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "dataplane-dpdk-sysroot-helper",
  "dataplane-hardware",
@@ -1505,7 +1505,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-interface-manager"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "caps",
@@ -1533,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-k8s-intf"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "dataplane-concurrency",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-k8s-less"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "dataplane-k8s-intf",
  "dataplane-tracectl",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-left-right-tlcache"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "ahash",
  "dataplane-concurrency",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-lifecycle"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "dataplane-concurrency",
  "tokio",
@@ -1591,11 +1591,11 @@ dependencies = [
 
 [[package]]
 name = "dataplane-lookup"
-version = "0.25.2"
+version = "0.26.0"
 
 [[package]]
 name = "dataplane-lpm"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bnum",
  "bolero",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-match-action"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "arrayvec",
  "bolero",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-match-action-derive"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-mgmt"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "bolero",
  "bytes",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-nat"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-net"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "ahash",
  "arrayvec",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-pipeline"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "dataplane-concurrency",
  "dataplane-id",
@@ -1759,11 +1759,11 @@ dependencies = [
 
 [[package]]
 name = "dataplane-rekon"
-version = "0.25.2"
+version = "0.26.0"
 
 [[package]]
 name = "dataplane-routing"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-stats"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "arrayvec",
  "bolero",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-sysfs"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "dataplane-concurrency",
  "n-vm",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-test-utils"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "caps",
  "nix 0.31.3",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-tracectl"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "color-eyre",
  "dataplane-common",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-validator"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "dataplane-config",
  "dataplane-k8s-intf",
@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-vpcmap"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "ahash",
  "bolero",
