@@ -1248,7 +1248,6 @@ fn invalidation_decision_matches_spec() {
                 },
                 needs_masquerade: case.flow_masquerade,
                 needs_port_forwarding: case.flow_port_forwarding,
-                is_initiator: true,
                 flow_info,
             });
 

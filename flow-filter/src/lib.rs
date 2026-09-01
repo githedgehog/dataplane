@@ -308,7 +308,7 @@ impl FlowFilter {
         // We only need to pass this information when re-validating a flow in the return direction.
         // For the forward direction, we use the regular entries in the flow-filter tables, just as
         // if we were checking for a new flow.
-        if flow_summary.is_initiator {
+        if flow_summary.is_initiator() {
             return (None, SourceGate::Ungated);
         }
         if flow_summary.needs_masquerade {
@@ -373,7 +373,6 @@ struct FlowSummary {
     dst_vpcd: VpcDiscriminant,
     needs_masquerade: bool,
     needs_port_forwarding: bool,
-    is_initiator: bool,
     flow_info: Arc<FlowInfo>,
 }
 
@@ -391,9 +390,12 @@ impl FlowSummary {
             dst_vpcd,
             needs_masquerade: locked_info.nat_state.is_some(),
             needs_port_forwarding: locked_info.port_fw_state.is_some(),
-            is_initiator: flow_info.get_flags().is_initiator(),
             flow_info: flow_info.clone(),
         })
+    }
+
+    fn is_initiator(&self) -> bool {
+        self.flow_info.get_flags().is_initiator()
     }
 }
 
