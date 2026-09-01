@@ -213,7 +213,14 @@ impl Masquerade {
         {
             return Some(xlate);
         }
-        let looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+
+        let looked_up = FlowKey::try_from(packet)
+            .ok()
+            .and_then(|current| self.flow_table.lookup(&current))
+            .or_else(|| {
+                let initial = packet.meta().flow_key.as_deref().copied()?;
+                self.flow_table.lookup(&initial)
+            })?;
         Self::masquerade_state_of(packet, &looked_up)
     }
 
