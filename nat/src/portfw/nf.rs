@@ -5,7 +5,7 @@
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
 use concurrency::sync::{Arc, Weak};
-use flow_entry::flow_table::table::FlowTable;
+use flow_entry::flow_table::table::{FlowTable, Insertion};
 
 use net::buffer::PacketBufferMut;
 use net::flows::{ExtractMut, ExtractRef, FlowInfo};
@@ -149,10 +149,16 @@ impl PortForwarder {
         }
         drop(locked);
 
-        // insert the two related flows
-        if let Err(e) = self.flow_table.insert_from_arc(&fw_flow) {
-            warn!("Failed to insert flow (forward) in the flow table: {e}");
-            packet.done(DoneReason::FlowCapacityExceeded);
+        let insertion = match self.flow_table.insert_if_absent(&fw_flow) {
+            Ok(insertion) => insertion,
+            Err(e) => {
+                warn!("Failed to insert flow (forward) in the flow table: {e}");
+                packet.done(DoneReason::FlowCapacityExceeded);
+                return;
+            }
+        };
+        if matches!(insertion, Insertion::Occupied(_)) {
+            debug!("Lost the race to create port-forwarding flow {fw_key}; kept the winner's");
             return;
         }
 
@@ -398,5 +404,89 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
 
     fn set_data(&mut self, data: Arc<PipelineData>) {
         self.pipeline_data = data;
+    }
+}
+
+#[cfg(test)]
+mod race {
+    use super::*;
+    use crate::portfw::probe::{Arrival, Fabric};
+    use crate::static_nat::probe::build;
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use lpm::prefix::{L4Protocol, PortRange, PrefixWithOptionalPorts};
+    use net::buffer::TestBuffer;
+    use pipeline::NetworkFunction;
+    use std::net::IpAddr;
+
+    fn side(prefix: &str, first: u16, last: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(
+            prefix.parse().unwrap_or_else(|_| unreachable!()),
+            Some(PortRange::new(first, last).unwrap_or_else(|_| unreachable!())),
+        )
+    }
+
+    fn fabric() -> Fabric {
+        let expose = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .ip(side("10.0.0.0/30", 9000, 9003))
+            .as_range(side("172.16.0.0/30", 8000, 8003))
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        Fabric::build(&[expose]).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+    }
+
+    fn entries(fabric: &Fabric) -> Vec<usize> {
+        let mut ids: Vec<usize> = fabric
+            .flows()
+            .snapshot(|_, _| true)
+            .map(|flow| Arc::as_ptr(&flow) as usize)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_second_packet_of_one_burst_keeps_the_first_packets_flow() {
+        let fabric = fabric();
+        let (mut lookup, mut pfw) = fabric.stages();
+        let arrival = Arrival::inbound();
+
+        let peer: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let published: IpAddr = "172.16.0.1".parse().unwrap_or_else(|_| unreachable!());
+        let packet = || {
+            let mut packet: Packet<TestBuffer> = build(peer, published, true, 1234, 8001);
+            arrival.stamp(&mut packet);
+            packet
+        };
+
+        let mut stamped = lookup.process(vec![packet(), packet()].into_iter());
+        let mut first = stamped.next().unwrap_or_else(|| unreachable!());
+        let mut second = stamped.next().unwrap_or_else(|| unreachable!());
+        drop(stamped);
+        for packet in [&mut first, &mut second] {
+            packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+        }
+
+        pfw.process(std::iter::once(first)).for_each(drop);
+        let installed = entries(&fabric);
+        assert_eq!(
+            installed.len(),
+            2,
+            "the first packet of the burst did not install a pair"
+        );
+
+        pfw.process(std::iter::once(second)).for_each(drop);
+        assert_eq!(
+            entries(&fabric),
+            installed,
+            "the second packet of the burst replaced the pair the first one installed"
+        );
+        assert!(
+            fabric
+                .flows()
+                .snapshot(|_, _| true)
+                .all(|flow| flow.is_active()),
+            "the burst left a half of the pair no longer live"
+        );
     }
 }
