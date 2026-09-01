@@ -14,7 +14,7 @@ use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use port_alloc::PortAllocator;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -477,54 +477,26 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         Ok(arc_ip)
     }
 
-    // Returns a set of IP ranges present in the pool (available for new IP address allocation),
-    // based on `self.bitmap`
-    //
-    // Used for Display
     pub(crate) fn ips_in_bitmap(&self) -> Result<BTreeSet<IpRange>, ()> {
-        fn ip_to_bits(ip: IpAddr) -> u128 {
-            match ip {
-                IpAddr::V4(ip) => u128::from(u32::from(ip)),
-                IpAddr::V6(ip) => u128::from(ip),
-            }
-        }
+        debug_assert_eq!(
+            self.bitmap_mapping.len(),
+            1,
+            "ips_in_bitmap treats an offset run as an address run, which holds only for a \
+             single-prefix mapping"
+        );
+
         let to_addr = |offset: u32| {
             I::try_from_offset(offset, &self.bitmap_mapping)
                 .map(|ip| ip.to_ip_addr())
                 .map_err(|_| ())
         };
 
-        let mut offset_ranges = BTreeSet::new();
-        let mut start_offset: Option<IpAddr> = None;
-        let mut last_addr: Option<IpAddr> = None;
-        for offset in &self.bitmap.0 {
-            match (start_offset, last_addr) {
-                (None, _) => {
-                    // First bitmap entry, start a new range
-                    last_addr = Some(to_addr(offset)?);
-                    start_offset = last_addr;
-                }
-                (Some(start), Some(last)) => {
-                    let addr = to_addr(offset)?;
-                    if ip_to_bits(addr) == ip_to_bits(last) + 1 {
-                        // New offset in the range, just bump last offset
-                        last_addr = Some(addr);
-                    } else {
-                        // Insert previous range, and start a new one
-                        offset_ranges.insert(IpRange::new(start, last));
-                        last_addr = Some(addr);
-                        start_offset = last_addr;
-                    }
-                }
-                _ => unreachable!(),
-            }
+        let mut ranges = BTreeSet::new();
+        let mut runs = self.bitmap.0.iter();
+        while let Some(run) = runs.next_range() {
+            ranges.insert(IpRange::new(to_addr(*run.start())?, to_addr(*run.end())?));
         }
-        if let (Some(start), Some(last)) = (start_offset, last_addr) {
-            // Insert last range found
-            offset_ranges.insert(IpRange::new(start, last));
-        }
-
-        Ok(offset_ranges)
+        Ok(ranges)
     }
 }
 
