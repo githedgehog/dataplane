@@ -288,6 +288,9 @@ impl FlowTable {
         Ok(Some(ret))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`FlowTableError::CapacityExceeded`] if the key is free and the table is full.
     pub fn insert_if_absent(&self, val: &Arc<FlowInfo>) -> Result<Insertion, FlowTableError> {
         let table = self.table.read();
         let flow_key = val.flowkey();
@@ -756,7 +759,7 @@ mod tests {
             let flow_table = FlowTable::default();
             flow_table.set_capacity(1);
             let key = key_for(1029);
-            let far_future = clock::now() + Duration::from_hours(1);
+            let far_future = Instant::now() + Duration::from_hours(1);
 
             let first = Arc::new(FlowInfo::new(key, far_future));
             assert!(matches!(
@@ -778,7 +781,7 @@ mod tests {
         async fn a_full_table_refuses_a_free_key() {
             let flow_table = FlowTable::default();
             flow_table.set_capacity(1);
-            let far_future = clock::now() + Duration::from_hours(1);
+            let far_future = Instant::now() + Duration::from_hours(1);
 
             let first = Arc::new(FlowInfo::new(key_for(1030), far_future));
             flow_table.insert_if_absent(&first).unwrap();
