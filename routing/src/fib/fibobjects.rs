@@ -262,3 +262,167 @@ pub enum PktInstruction {
     Encap(Encapsulation),  /* encapsulate the packet */
     Egress(EgressObject),  /* send the packet over interface to some ip */
 }
+
+#[cfg(test)]
+mod squash_properties {
+    use super::*;
+    use crate::rib::encapsulation::VxlanEncapsulation;
+    use bolero::{Driver, ValueGenerator};
+    use std::net::Ipv4Addr;
+    use std::num::NonZero;
+    use std::ops::Bound::Included;
+
+    const ADDRESSES: [IpAddr; 3] = [
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
+    ];
+    const IFNAMES: [&str; 2] = ["eth0", "eth1"];
+
+    fn index(raw: u8) -> InterfaceIndex {
+        InterfaceIndex::new(NonZero::new(u32::from(raw)).unwrap_or_else(|| unreachable!()))
+    }
+
+    fn choose<T: Clone>(pick: u8, choices: &[T]) -> Option<T> {
+        (pick > 0).then(|| choices[usize::from(pick - 1)].clone())
+    }
+
+    fn egress<D: Driver>(driver: &mut D) -> Option<EgressObject> {
+        let ifindex = driver.gen_u8(Included(&0), Included(&3))?;
+        let address = driver.gen_u8(Included(&0), Included(&3))?;
+        let ifname = driver.gen_u8(Included(&0), Included(&2))?;
+        Some(EgressObject::new(
+            choose(ifindex, &[index(1), index(2), index(3)]),
+            choose(address, &ADDRESSES),
+            choose(ifname, &IFNAMES).map(str::to_string),
+        ))
+    }
+
+    fn instruction<D: Driver>(driver: &mut D) -> Option<PktInstruction> {
+        Some(match driver.gen_u8(Included(&0), Included(&3))? {
+            0 => PktInstruction::Local(index(driver.gen_u8(Included(&1), Included(&3))?)),
+            1 => PktInstruction::Drop,
+            2 => PktInstruction::Encap(Encapsulation::Vxlan(VxlanEncapsulation::new(
+                Vni::new_checked(u32::from(driver.gen_u8(Included(&1), Included(&3))?))
+                    .unwrap_or_else(|_| unreachable!()),
+                ADDRESSES[0],
+            ))),
+            _ => PktInstruction::Egress(egress(driver)?),
+        })
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Entry;
+
+    impl ValueGenerator for Entry {
+        type Output = FibEntry;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<FibEntry> {
+            let count = driver.gen_u8(Included(&0), Included(&5))?;
+            let mut entry = FibEntry::new();
+            for _ in 0..count {
+                entry.add(instruction(driver)?);
+            }
+            Some(entry)
+        }
+    }
+
+    fn egresses(entry: &FibEntry) -> Vec<&EgressObject> {
+        entry
+            .iter()
+            .filter_map(|inst| match inst {
+                PktInstruction::Egress(e) => Some(e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn others(entry: &FibEntry) -> Vec<&PktInstruction> {
+        entry
+            .iter()
+            .filter(|inst| !matches!(inst, PktInstruction::Egress(_)))
+            .collect()
+    }
+
+    #[test]
+    fn squash_preserves_the_other_instructions_in_order() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                let before: Vec<PktInstruction> = others(&entry).into_iter().cloned().collect();
+                let mut squashed = entry.clone();
+                squashed.squash();
+                if entry.len() == 1 {
+                    assert_eq!(squashed, entry);
+                    return;
+                }
+                let after: Vec<PktInstruction> = others(&squashed).into_iter().cloned().collect();
+                assert_eq!(after, before, "for {entry:?}");
+            });
+    }
+
+    #[test]
+    fn squash_leaves_at_most_one_egress_and_puts_it_last() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                if entry.len() == 1 {
+                    return;
+                }
+                let mut squashed = entry.clone();
+                squashed.squash();
+
+                assert!(egresses(&squashed).len() <= 1, "for {entry:?}");
+                if let Some(position) = squashed
+                    .iter()
+                    .position(|inst| matches!(inst, PktInstruction::Egress(_)))
+                {
+                    assert_eq!(position, squashed.len() - 1, "for {entry:?}");
+                }
+            });
+    }
+
+    #[test]
+    fn squash_merges_first_interface_last_address_first_name() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                if entry.len() == 1 {
+                    return;
+                }
+                let inputs = egresses(&entry);
+                let ifindex = inputs.iter().find_map(|e| *e.ifindex());
+                let address = inputs.iter().rev().find_map(|e| *e.address());
+                let ifname = inputs.iter().find_map(|e| e.ifname().clone());
+
+                let mut squashed = entry.clone();
+                squashed.squash();
+
+                match egresses(&squashed).first() {
+                    Some(merged) => {
+                        assert_eq!(*merged.ifindex(), ifindex, "interface, for {entry:?}");
+                        assert_eq!(*merged.address(), address, "address, for {entry:?}");
+                        assert_eq!(*merged.ifname(), ifname, "name, for {entry:?}");
+                    }
+                    None => assert!(ifindex.is_none(), "for {entry:?}"),
+                }
+            });
+    }
+
+    #[test]
+    fn squash_is_idempotent() {
+        bolero::check!()
+            .with_generator(Entry)
+            .cloned()
+            .for_each(|entry: FibEntry| {
+                let mut once = entry.clone();
+                once.squash();
+                let mut twice = once.clone();
+                twice.squash();
+                assert_eq!(twice, once, "for {entry:?}");
+            });
+    }
+}
