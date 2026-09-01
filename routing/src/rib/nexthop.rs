@@ -161,6 +161,10 @@ impl Hash for Nhop {
     }
 }
 
+pub(crate) type NhopId = *const Nhop;
+
+pub(crate) type Visited = Vec<NhopId>;
+
 impl Nhop {
     /// Create a new Nhop object from a key object
     fn from_key(key: &NhopKey) -> Self {
@@ -184,23 +188,30 @@ impl Nhop {
         self
     }
 
-    /// Recursive method to check if a next-hop resolves via another, `checked`.
-    /// We use this method to avoid resolution loops that would happen in case of routing loops.
-    /// Resolution loops would cause us to stack overflow. This method is recursive, but
-    /// short-circuits in case of loop. The method takes the advantage that there cannot be two
-    /// next-hops with the same key.
+    pub(crate) fn id(&self) -> NhopId {
+        std::ptr::from_ref(self)
+    }
+
     fn resolves_with(&self, checked: &Nhop) -> bool {
-        // resolve to oneself is forbidden
-        if self.key == checked.key {
+        self.resolves_with_rec(checked, &mut Visited::new())
+    }
+
+    fn resolves_with_rec(&self, checked: &Nhop, visited: &mut Visited) -> bool {
+        if self.id() == checked.id() {
             error!("Loop detected for next-hop {}!", self.key);
             return true;
         }
+        if visited.contains(&self.id()) {
+            return false;
+        }
+        visited.push(self.id());
+
         // resolvers should not refer back to the checked next-hop
         let resolvers = self.resolvers.borrow();
         resolvers
             .iter()
             .filter_map(Weak::upgrade)
-            .any(|res| res.resolves_with(checked))
+            .any(|res| res.resolves_with_rec(checked, visited))
     }
 
     /// Tell if a next-hop requires resolution
@@ -263,9 +274,13 @@ impl Nhop {
         self.resolvers.replace(resolvers);
     }
 
-    /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
     #[cfg(test)]
-    fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
+    fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>, visited: &mut Visited) {
+        if visited.contains(&self.id()) {
+            return;
+        }
+        visited.push(self.id());
+
         let Ok(resolvers) = self.resolvers.try_borrow_mut() else {
             error!("Try-borrow-mut() failed on next-hop resolvers!");
             return;
@@ -297,7 +312,7 @@ impl Nhop {
                         self.key.ifname.clone(),
                     ));
                 } else {
-                    r.quick_resolve_rec(result);
+                    r.quick_resolve_rec(result, visited);
                 }
             }
         }
@@ -311,7 +326,7 @@ impl Nhop {
     #[cfg(test)]
     pub fn quick_resolve(&self) -> BTreeSet<NhopKey> {
         let mut out: BTreeSet<NhopKey> = BTreeSet::new();
-        self.quick_resolve_rec(&mut out);
+        self.quick_resolve_rec(&mut out, &mut Visited::new());
         out
     }
 }
@@ -1044,6 +1059,25 @@ mod tests {
         a.add_resolver(&checked);
         assert!(a.resolves_with(checked.as_ref()));
     }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    fn test_display_of_a_resolution_loop_terminates() {
+        let mut store = NhopStore::new();
+        let a = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
+        let b = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
+        a.add_resolver(&b);
+        b.add_resolver(&a);
+
+        let nhop = format!("{a}");
+        assert!(nhop.contains("(LOOP)"), "loop not reported in {nhop}");
+
+        let whole_store = format!("{store}");
+        assert!(
+            whole_store.contains("(LOOP)"),
+            "loop not reported in {whole_store}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1054,40 +1088,23 @@ mod fibgroup_properties {
     use std::ops::Bound::Included;
 
     const MAX_NODES: u8 = 6;
+    const MAX_RESOLVERS: u8 = 2;
 
     #[derive(Debug, Clone)]
-    struct Dag {
-        shape: Vec<Vec<u8>>,
+    struct Graph {
+        edges: Vec<Vec<usize>>,
         grounded: Vec<bool>,
     }
 
-    impl Dag {
-        fn edges(&self) -> Vec<(usize, usize)> {
-            let mut edges = Vec::new();
-            for (from, offsets) in self.shape.iter().enumerate() {
-                for offset in offsets {
-                    let to = from + usize::from(*offset);
-                    if to < self.shape.len() {
-                        edges.push((from, to));
-                    }
-                }
-            }
-            edges
-        }
-
+    impl Graph {
         fn reachable_from(&self, start: usize) -> Vec<bool> {
-            let edges = self.edges();
-            let mut seen = vec![false; self.shape.len()];
+            let mut seen = vec![false; self.edges.len()];
             let mut stack = vec![start];
             while let Some(node) = stack.pop() {
                 if std::mem::replace(&mut seen[node], true) {
                     continue;
                 }
-                for (from, to) in &edges {
-                    if *from == node {
-                        stack.push(*to);
-                    }
-                }
+                stack.extend_from_slice(&self.edges[node]);
             }
             seen
         }
@@ -1097,33 +1114,33 @@ mod fibgroup_properties {
     struct Graphs;
 
     impl ValueGenerator for Graphs {
-        type Output = Dag;
+        type Output = Graph;
 
-        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Dag> {
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Graph> {
             let nodes = usize::from(driver.gen_u8(Included(&1), Included(&MAX_NODES))?);
-            let mut shape = Vec::with_capacity(nodes);
+            let last = u8::try_from(nodes - 1).ok()?;
+            let mut edges = Vec::with_capacity(nodes);
             let mut grounded = Vec::with_capacity(nodes);
-            for index in 0..nodes {
-                let behind = u8::try_from(nodes - index - 1).ok()?;
-                let count = driver.gen_u8(Included(&0), Included(&behind.min(2)))?;
-                let mut edges = Vec::new();
+            for _ in 0..nodes {
+                let count = driver.gen_u8(Included(&0), Included(&MAX_RESOLVERS))?;
+                let mut resolvers = Vec::with_capacity(usize::from(count));
                 for _ in 0..count {
-                    edges.push(driver.gen_u8(Included(&1), Included(&behind.max(1)))?);
+                    resolvers.push(usize::from(driver.gen_u8(Included(&0), Included(&last))?));
                 }
-                shape.push(edges);
+                edges.push(resolvers);
                 grounded.push(driver.produce::<bool>()?);
             }
-            Some(Dag { shape, grounded })
+            Some(Graph { edges, grounded })
         }
     }
 
-    fn realize(dag: &Dag) -> (NhopStore, Vec<Rc<Nhop>>) {
+    fn realize(graph: &Graph) -> (NhopStore, Vec<Rc<Nhop>>) {
         let mut store = NhopStore::new();
-        let nodes: Vec<Rc<Nhop>> = (0..dag.shape.len())
+        let nodes: Vec<Rc<Nhop>> = (0..graph.edges.len())
             .map(|index| {
                 let raw = u8::try_from(index).unwrap_or_else(|_| unreachable!());
                 let mut key = NhopKey::from_address(&format!("10.0.0.{}", raw + 1));
-                if dag.grounded[index] {
+                if graph.grounded[index] {
                     key.ifindex = Some(
                         InterfaceIndex::try_new(u32::from(raw) + 1)
                             .unwrap_or_else(|_| unreachable!()),
@@ -1133,36 +1150,44 @@ mod fibgroup_properties {
             })
             .collect();
 
-        for (from, to) in dag.edges() {
-            nodes[from].add_resolver(&nodes[to]);
+        for (from, resolvers) in graph.edges.iter().enumerate() {
+            for to in resolvers {
+                nodes[from].add_resolver(&nodes[*to]);
+            }
         }
         (store, nodes)
     }
 
-    fn expected(node: &Rc<Nhop>, prefix: &FibEntry, out: &mut Vec<FibEntry>) {
+    fn expected(
+        graph: &Graph,
+        nodes: &[Rc<Nhop>],
+        from: usize,
+        path: &mut Vec<usize>,
+        prefix: &FibEntry,
+        out: &mut Vec<FibEntry>,
+    ) {
+        if path.contains(&from) {
+            return;
+        }
+        path.push(from);
+
         let mut entry = prefix.clone();
-        entry.extend_from_slice(&node.instructions.borrow().clone());
+        entry.extend_from_slice(&nodes[from].instructions.borrow());
 
-        let resolvers: Vec<Rc<Nhop>> = node
-            .resolvers
-            .borrow()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
-
-        if resolvers.is_empty() {
-            if node.must_be_resolved() {
-                return;
-            }
-            entry.squash();
-            if entry.is_valid() {
-                out.push(entry);
+        if graph.edges[from].is_empty() {
+            if !nodes[from].must_be_resolved() {
+                entry.squash();
+                if entry.is_valid() {
+                    out.push(entry);
+                }
             }
         } else {
-            for resolver in resolvers {
-                expected(&resolver, &entry, out);
+            for to in &graph.edges[from] {
+                expected(graph, nodes, *to, path, &entry, out);
             }
         }
+
+        path.pop();
     }
 
     #[test]
@@ -1171,21 +1196,27 @@ mod fibgroup_properties {
         bolero::check!()
             .with_generator(Graphs)
             .cloned()
-            .for_each(|dag: Dag| {
-                let (_store, nodes) = realize(&dag);
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
                 for node in &nodes {
                     node.build_nhop_instructions(&rstore);
                 }
 
-                let root = &nodes[0];
                 let mut want = Vec::new();
-                expected(root, &FibEntry::new(), &mut want);
+                expected(
+                    &graph,
+                    &nodes,
+                    0,
+                    &mut Vec::new(),
+                    &FibEntry::new(),
+                    &mut want,
+                );
                 if want.is_empty() {
                     want.push(FibEntry::drop_fibentry());
                 }
 
-                let got = root.build_nhop_fibgroup();
-                assert_eq!(got.entries(), &want, "for {dag:?}");
+                let got = nodes[0].build_nhop_fibgroup();
+                assert_eq!(got.entries(), &want, "for {graph:?}");
             });
     }
 
@@ -1195,17 +1226,38 @@ mod fibgroup_properties {
         bolero::check!()
             .with_generator(Graphs)
             .cloned()
-            .for_each(|dag: Dag| {
-                let (_store, nodes) = realize(&dag);
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
                 for node in &nodes {
                     node.build_nhop_instructions(&rstore);
                 }
                 let group = nodes[0].build_nhop_fibgroup();
-                assert!(!group.is_empty(), "for {dag:?}");
+                assert!(!group.is_empty(), "for {graph:?}");
                 for entry in group.iter() {
-                    assert!(entry.is_valid(), "unusable entry {entry:?} for {dag:?}");
+                    assert!(entry.is_valid(), "unusable entry {entry:?} for {graph:?}");
                 }
             });
+    }
+
+    #[test]
+    fn a_next_hop_in_a_resolution_loop_drops() {
+        let rstore = RmacStore::new();
+        let mut store = NhopStore::new();
+
+        let a = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
+        let b = store.add_nhop(&NhopKey::from_address("8.0.0.2"));
+        let c = store.add_nhop(&NhopKey::from_address("9.0.0.3"));
+        a.add_resolver(&b);
+        b.add_resolver(&c);
+        c.add_resolver(&a);
+        store.rebuild_nhop_instructions(&rstore);
+
+        let group = a.build_nhop_fibgroup();
+        assert_eq!(
+            group.entries(),
+            &vec![FibEntry::drop_fibentry()],
+            "a packet caught in a routing loop must be dropped"
+        );
     }
 
     #[test]
@@ -1213,15 +1265,15 @@ mod fibgroup_properties {
         bolero::check!()
             .with_generator(Graphs)
             .cloned()
-            .for_each(|dag: Dag| {
-                let (_store, nodes) = realize(&dag);
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
                 for (from, node) in nodes.iter().enumerate() {
-                    let reachable = dag.reachable_from(from);
+                    let reachable = graph.reachable_from(from);
                     for (to, other) in nodes.iter().enumerate() {
                         assert_eq!(
                             node.resolves_with(other),
                             reachable[to],
-                            "{from} -> {to}, for {dag:?}"
+                            "{from} -> {to}, for {graph:?}"
                         );
                     }
                 }
@@ -1233,10 +1285,29 @@ mod fibgroup_properties {
         bolero::check!()
             .with_generator(Graphs)
             .cloned()
-            .for_each(|dag: Dag| {
-                let (_store, nodes) = realize(&dag);
+            .for_each(|graph: Graph| {
+                let (_store, nodes) = realize(&graph);
                 for node in &nodes {
                     assert!(node.resolves_with(node));
+                }
+            });
+    }
+
+    #[test]
+    fn no_next_hop_resolves_via_another_store() {
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|graph: Graph| {
+                let (_here, here) = realize(&graph);
+                let (_there, there) = realize(&graph);
+                for (from, node) in here.iter().enumerate() {
+                    for (to, other) in there.iter().enumerate() {
+                        assert!(
+                            !node.resolves_with(other),
+                            "{from} resolves via {to} in another store, for {graph:?}"
+                        );
+                    }
                 }
             });
     }
