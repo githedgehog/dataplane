@@ -204,8 +204,17 @@ impl Masquerade {
 
     // Get the flow info referred to by the packet and, if found, check its masquerade state.
     // Refresh the flow status and update the flow or invalidate it
-    fn get_masquerade_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatTranslate> {
-        let flow_info = packet.meta().flow_info.as_ref()?;
+    fn get_masquerade_state<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+    ) -> Option<NatTranslate> {
+        let looked_up;
+        let flow_info = if let Some(stamped) = packet.meta().flow_info.as_ref() {
+            stamped
+        } else {
+            looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+            &looked_up
+        };
         if !flow_info.is_active() {
             debug!("Hit INACTIVE flow: {}", flow_info.logfmt());
             return None;
@@ -404,7 +413,7 @@ impl Masquerade {
         let nfi = self.name();
 
         // Hot path: if we have a session with masquerade state, translate the packet
-        if let Some(translate) = Self::get_masquerade_state(packet) {
+        if let Some(translate) = self.get_masquerade_state(packet) {
             return Ok(masquerade(packet, &translate)?);
         }
 
