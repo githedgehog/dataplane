@@ -240,23 +240,19 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
     let seconds = extend_by.as_secs();
 
-    // refresh the flow. In general, we only refresh the flow in one direction ...
     if let Some(flow) = packet.meta_mut().flow_info.as_ref() {
         if flow.reset_expiry_unchecked(extend_by).is_ok() {
             debug!("Extended flow lifetime by {seconds}s");
         }
 
-        // .. except if we transition to established, as that is a sound indication of legit traffic
-        if new_status == NatFlowStatus::Established && new_status != current_status {
-            flow.related
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .inspect(|reverse| {
-                    if reverse.reset_expiry_unchecked(extend_by).is_ok() {
-                        debug!("Extended reverse-flow lifetime by {seconds}s");
-                    }
-                });
-        }
+        flow.related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .inspect(|reverse| {
+                if reverse.reset_expiry_unchecked(extend_by).is_ok() {
+                    debug!("Extended reverse-flow lifetime by {seconds}s");
+                }
+            });
 
         // update flow info generation
         flow.set_genid(genid);
