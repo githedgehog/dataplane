@@ -9,7 +9,7 @@ pub mod table;
 mod concurrent_fuzz;
 
 pub use nf_lookup::FlowLookup;
-pub use table::{FlowTable, FlowTableReadGuard};
+pub use table::{FlowTable, FlowTableReadGuard, Insertion};
 
 pub use net::flows::atomic_instant::AtomicInstant;
 pub use net::flows::flow_info::*;

@@ -19,6 +19,12 @@ pub enum FlowTableError {
     CapacityExceeded,
 }
 
+#[derive(Debug)]
+pub enum Insertion {
+    Installed,
+    Occupied(Arc<FlowInfo>),
+}
+
 type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 #[derive(Debug)]
@@ -212,25 +218,41 @@ impl FlowTable {
         });
     }
 
+    fn admit(&self, table: &Table, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
+        if table.len() < self.capacity.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let has_related_in_table = val
+            .related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|rel| rel.is_active());
+
+        if has_related_in_table {
+            Ok(())
+        } else {
+            Err(FlowTableError::CapacityExceeded)
+        }
+    }
+
+    fn displace(old: Option<&Arc<FlowInfo>>) {
+        let Some(old) = old else {
+            return;
+        };
+        old.update_status(FlowStatus::Detached);
+        old.token.cancel();
+        if let Some(related) = old.related.as_ref().and_then(Weak::upgrade) {
+            debug!("insert: invalidating the partner of a displaced flow");
+            related.invalidate();
+        }
+    }
+
     fn insert_common(&self, val: &Arc<FlowInfo>) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
         let table = self.table.read();
-        let capacity = self.capacity.load(Ordering::Relaxed);
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key}");
 
-        // Reject new flows when at capacity.  Exception: always admit the second half of a
-        // related pair (e.g. the reverse NAT flow) to avoid leaving a one-sided entry.
-        if table.len() >= capacity {
-            let has_related_in_table = val
-                .related
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .is_some_and(|rel| rel.is_active());
-
-            if !has_related_in_table {
-                return Err(FlowTableError::CapacityExceeded);
-            }
-        }
+        self.admit(&table, val)?;
 
         let result = table.insert(*flow_key, val.clone());
         // Set Active only after the insert so that the invariant holds: Active iff in the
@@ -243,10 +265,7 @@ impl FlowTable {
         #[cfg(not(any(feature = "shuttle", feature = "loom")))]
         Self::start_timer(self.table.clone(), val.clone());
 
-        if let Some(old) = result.as_ref() {
-            old.update_status(FlowStatus::Detached);
-            old.token.cancel();
-        }
+        Self::displace(result.as_ref());
 
         let Some(ret) = result else {
             return Ok(None);
@@ -257,6 +276,46 @@ impl FlowTable {
         }
 
         Ok(Some(ret))
+    }
+
+    pub fn insert_if_absent(&self, val: &Arc<FlowInfo>) -> Result<Insertion, FlowTableError> {
+        let table = self.table.read();
+        let flow_key = val.flowkey();
+        debug!("insert: inserting flow {flow_key} unless it is already held");
+
+        self.admit(&table, val)?;
+
+        let displaced = match table.entry(*flow_key) {
+            dashmap::Entry::Occupied(mut occupied) => {
+                if occupied.get().is_active() {
+                    Err(occupied.get().clone())
+                } else {
+                    Ok(Some(occupied.insert(val.clone())))
+                }
+            }
+            dashmap::Entry::Vacant(vacant) => {
+                vacant.insert(val.clone());
+                Ok(None)
+            }
+        };
+        let displaced = match displaced {
+            Ok(displaced) => displaced,
+            Err(held) => {
+                drop(table);
+                debug!("insert: flow {flow_key} is already held by a live flow");
+                return Ok(Insertion::Occupied(held));
+            }
+        };
+
+        val.update_status(FlowStatus::Active);
+        drop(table);
+
+        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
+        Self::start_timer(self.table.clone(), val.clone());
+
+        Self::displace(displaced.as_ref());
+
+        Ok(Insertion::Installed)
     }
 
     /// Lookup a flow in the table.
@@ -412,6 +471,7 @@ mod tests {
 
     #[concurrency_mode(std)]
     mod std_tests {
+        use net::flows::FlowInfoFlags;
         use std::time::Instant;
         use tracing_test::traced_test;
 
@@ -632,6 +692,91 @@ mod tests {
 
             let () = tokio::time::sleep(Duration::from_secs(5)).await;
             assert_eq!(flow_table.active_len().unwrap(), 0);
+        }
+
+        fn key_for(src_port: u16) -> FlowKey {
+            FlowKey::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                "1.2.3.4".parse::<IpAddr>().unwrap(),
+                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(src_port).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            )
+        }
+
+        #[tokio::test]
+        async fn an_active_flow_holds_its_key_against_a_second_insertion() {
+            let flow_table = FlowTable::default();
+            let key = key_for(1025);
+            let far_future = Instant::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key, far_future));
+            assert!(matches!(
+                flow_table.insert_if_absent(&first).unwrap(),
+                Insertion::Installed
+            ));
+
+            let second = Arc::new(FlowInfo::new(key, far_future));
+            let outcome = flow_table.insert_if_absent(&second).unwrap();
+            let Insertion::Occupied(held) = outcome else {
+                panic!("a live flow was displaced by a second insertion: {outcome:?}");
+            };
+            assert!(Arc::ptr_eq(&held, &first), "the wrong flow was reported");
+
+            let found = flow_table.lookup(&key).expect("the key is still served");
+            assert!(Arc::ptr_eq(&found, &first));
+            assert_ne!(second.status(), FlowStatus::Active);
+        }
+
+        #[tokio::test]
+        async fn a_flow_that_is_not_live_is_displaced() {
+            let flow_table = FlowTable::default();
+            let key = key_for(1026);
+            let far_future = Instant::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key, far_future));
+            flow_table.insert_if_absent(&first).unwrap();
+            first.invalidate();
+
+            let second = Arc::new(FlowInfo::new(key, far_future));
+            assert!(
+                matches!(
+                    flow_table.insert_if_absent(&second).unwrap(),
+                    Insertion::Installed
+                ),
+                "a flow that was no longer live held its key"
+            );
+            let found = flow_table.lookup(&key).expect("the key is served");
+            assert!(Arc::ptr_eq(&found, &second));
+        }
+
+        #[tokio::test]
+        async fn displacing_a_flow_invalidates_its_partner() {
+            let flow_table = FlowTable::default();
+            let (forward_key, reverse_key) = (key_for(1027), key_for(1028));
+            let far_future = Instant::now() + Duration::from_hours(1);
+
+            let (forward, reverse) = FlowInfo::related_pair(
+                far_future,
+                forward_key,
+                FlowInfoFlags::INITIATOR,
+                reverse_key,
+                FlowInfoFlags::default(),
+            )
+            .expect("related_pair should succeed for distinct keys");
+            flow_table.insert_from_arc(&forward).unwrap();
+            flow_table.insert_from_arc(&reverse).unwrap();
+            assert!(reverse.is_active());
+
+            let replacement = Arc::new(FlowInfo::new(forward_key, far_future));
+            flow_table.insert_from_arc(&replacement).unwrap();
+
+            assert!(
+                !reverse.is_active(),
+                "the partner of a displaced flow was left live in the table"
+            );
         }
 
         #[tokio::test]
