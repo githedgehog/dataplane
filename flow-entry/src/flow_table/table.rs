@@ -295,6 +295,8 @@ impl FlowTable {
 
         let len = table.len();
 
+        let previous = val.update_status(FlowStatus::Active);
+
         let found = match table.entry(*flow_key) {
             dashmap::Entry::Occupied(mut occupied) => {
                 if occupied.get().is_active() {
@@ -315,17 +317,18 @@ impl FlowTable {
         let displaced = match found {
             Found::Inserted(displaced) => displaced,
             Found::Held(held) => {
+                val.update_status(previous);
                 drop(table);
                 debug!("insert: flow {flow_key} is already held by a live flow");
                 return Ok(Insertion::Occupied(held));
             }
             Found::Refused(e) => {
+                val.update_status(previous);
                 drop(table);
                 return Err(e);
             }
         };
 
-        val.update_status(FlowStatus::Active);
         drop(table);
 
         #[cfg(not(any(feature = "shuttle", feature = "loom")))]
