@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
-use crate::rib::nexthop::{FwAction, Nhop};
+use crate::rib::nexthop::{FwAction, Nhop, Visited};
 use crate::rib::vrf::RouteOrigin;
 
 use std::rc::Weak;
@@ -104,7 +104,27 @@ impl Nhop {
     /// Recursive helper to build [`FibGroup`] for a next-hop. We accumulate
     /// a next-hop's packet instructions with those of its resolvers.
     //////////////////////////////////////////////////////////////////////
-    fn build_nhop_fibgroup_rec(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
+    fn build_nhop_fibgroup_rec(
+        &self,
+        fibgroup: &mut FibGroup,
+        entry: FibEntry,
+        path: &mut Visited,
+    ) {
+        if path.contains(&self.id()) {
+            warn!("Resolution loop at next-hop {self}: will not use this path");
+            return;
+        }
+        path.push(self.id());
+        self.build_nhop_fibgroup_visit(fibgroup, entry, path);
+        path.pop();
+    }
+
+    fn build_nhop_fibgroup_visit(
+        &self,
+        fibgroup: &mut FibGroup,
+        mut entry: FibEntry,
+        path: &mut Visited,
+    ) {
         // add the instructions for a next-hop to the entry
         let instructions = self.instructions.borrow().clone();
         entry.extend_from_slice(&instructions);
@@ -136,7 +156,7 @@ impl Nhop {
             }
         } else {
             for resolver in resolvers.iter().filter_map(Weak::upgrade) {
-                resolver.build_nhop_fibgroup_rec(fibgroup, entry.clone());
+                resolver.build_nhop_fibgroup_rec(fibgroup, entry.clone(), path);
             }
         }
     }
@@ -149,7 +169,7 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn build_nhop_fibgroup(&self) -> FibGroup {
         let mut fibgroup = FibGroup::new();
-        self.build_nhop_fibgroup_rec(&mut fibgroup, FibEntry::new());
+        self.build_nhop_fibgroup_rec(&mut fibgroup, FibEntry::new(), &mut Visited::new());
         if fibgroup.is_empty() {
             warn!("Next-hop {self} has empty fibgroup: will add DROP FibEntry");
             fibgroup.add(FibEntry::drop_fibentry());
