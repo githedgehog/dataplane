@@ -25,6 +25,12 @@ pub enum Insertion {
     Occupied(Arc<FlowInfo>),
 }
 
+enum Found {
+    Inserted(Option<Arc<FlowInfo>>),
+    Held(Arc<FlowInfo>),
+    Refused(FlowTableError),
+}
+
 type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 #[derive(Debug)]
@@ -219,7 +225,11 @@ impl FlowTable {
     }
 
     fn admit(&self, table: &Table, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
-        if table.len() < self.capacity.load(Ordering::Relaxed) {
+        self.admit_at_len(table.len(), val)
+    }
+
+    fn admit_at_len(&self, len: usize, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
+        if len < self.capacity.load(Ordering::Relaxed) {
             return Ok(());
         }
         let has_related_in_table = val
@@ -283,27 +293,35 @@ impl FlowTable {
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key} unless it is already held");
 
-        self.admit(&table, val)?;
+        let len = table.len();
 
-        let displaced = match table.entry(*flow_key) {
+        let found = match table.entry(*flow_key) {
             dashmap::Entry::Occupied(mut occupied) => {
                 if occupied.get().is_active() {
-                    Err(occupied.get().clone())
+                    Found::Held(occupied.get().clone())
                 } else {
-                    Ok(Some(occupied.insert(val.clone())))
+                    Found::Inserted(Some(occupied.insert(val.clone())))
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                vacant.insert(val.clone());
-                Ok(None)
+                if let Err(e) = self.admit_at_len(len, val) {
+                    Found::Refused(e)
+                } else {
+                    vacant.insert(val.clone());
+                    Found::Inserted(None)
+                }
             }
         };
-        let displaced = match displaced {
-            Ok(displaced) => displaced,
-            Err(held) => {
+        let displaced = match found {
+            Found::Inserted(displaced) => displaced,
+            Found::Held(held) => {
                 drop(table);
                 debug!("insert: flow {flow_key} is already held by a live flow");
                 return Ok(Insertion::Occupied(held));
+            }
+            Found::Refused(e) => {
+                drop(table);
+                return Err(e);
             }
         };
 
@@ -728,6 +746,48 @@ mod tests {
             let found = flow_table.lookup(&key).expect("the key is still served");
             assert!(Arc::ptr_eq(&found, &first));
             assert_ne!(second.status(), FlowStatus::Active);
+        }
+
+        #[tokio::test]
+        async fn a_full_table_still_reports_the_flow_that_holds_a_key() {
+            let flow_table = FlowTable::default();
+            flow_table.set_capacity(1);
+            let key = key_for(1029);
+            let far_future = clock::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key, far_future));
+            assert!(matches!(
+                flow_table.insert_if_absent(&first).unwrap(),
+                Insertion::Installed
+            ));
+
+            let second = Arc::new(FlowInfo::new(key, far_future));
+            let outcome = flow_table
+                .insert_if_absent(&second)
+                .expect("a key a live flow holds is not a capacity question");
+            let Insertion::Occupied(held) = outcome else {
+                panic!("a live flow was displaced by a second insertion: {outcome:?}");
+            };
+            assert!(Arc::ptr_eq(&held, &first), "the wrong flow was reported");
+        }
+
+        #[tokio::test]
+        async fn a_full_table_refuses_a_free_key() {
+            let flow_table = FlowTable::default();
+            flow_table.set_capacity(1);
+            let far_future = clock::now() + Duration::from_hours(1);
+
+            let first = Arc::new(FlowInfo::new(key_for(1030), far_future));
+            flow_table.insert_if_absent(&first).unwrap();
+
+            let second = Arc::new(FlowInfo::new(key_for(1031), far_future));
+            assert!(
+                matches!(
+                    flow_table.insert_if_absent(&second),
+                    Err(FlowTableError::CapacityExceeded)
+                ),
+                "a full table grew for a key nobody held"
+            );
         }
 
         #[tokio::test]
