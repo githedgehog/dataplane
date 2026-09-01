@@ -208,13 +208,19 @@ impl Masquerade {
         &self,
         packet: &Packet<Buf>,
     ) -> Option<NatTranslate> {
-        let looked_up;
-        let flow_info = if let Some(stamped) = packet.meta().flow_info.as_ref() {
-            stamped
-        } else {
-            looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
-            &looked_up
-        };
+        if let Some(stamped) = packet.meta().flow_info.as_ref()
+            && let Some(xlate) = Self::masquerade_state_of(packet, stamped)
+        {
+            return Some(xlate);
+        }
+        let looked_up = self.flow_table.lookup(&FlowKey::try_from(packet).ok()?)?;
+        Self::masquerade_state_of(packet, &looked_up)
+    }
+
+    fn masquerade_state_of<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+        flow_info: &Arc<FlowInfo>,
+    ) -> Option<NatTranslate> {
         if !flow_info.is_active() {
             debug!("Hit INACTIVE flow: {}", flow_info.logfmt());
             return None;
