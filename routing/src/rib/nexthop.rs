@@ -1045,3 +1045,199 @@ mod tests {
         assert!(a.resolves_with(checked.as_ref()));
     }
 }
+
+#[cfg(test)]
+mod fibgroup_properties {
+    use super::*;
+    use crate::fib::fibobjects::FibEntry;
+    use bolero::{Driver, ValueGenerator};
+    use std::ops::Bound::Included;
+
+    const MAX_NODES: u8 = 6;
+
+    #[derive(Debug, Clone)]
+    struct Dag {
+        shape: Vec<Vec<u8>>,
+        grounded: Vec<bool>,
+    }
+
+    impl Dag {
+        fn edges(&self) -> Vec<(usize, usize)> {
+            let mut edges = Vec::new();
+            for (from, offsets) in self.shape.iter().enumerate() {
+                for offset in offsets {
+                    let to = from + usize::from(*offset);
+                    if to < self.shape.len() {
+                        edges.push((from, to));
+                    }
+                }
+            }
+            edges
+        }
+
+        fn reachable_from(&self, start: usize) -> Vec<bool> {
+            let edges = self.edges();
+            let mut seen = vec![false; self.shape.len()];
+            let mut stack = vec![start];
+            while let Some(node) = stack.pop() {
+                if std::mem::replace(&mut seen[node], true) {
+                    continue;
+                }
+                for (from, to) in &edges {
+                    if *from == node {
+                        stack.push(*to);
+                    }
+                }
+            }
+            seen
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Graphs;
+
+    impl ValueGenerator for Graphs {
+        type Output = Dag;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Dag> {
+            let nodes = usize::from(driver.gen_u8(Included(&1), Included(&MAX_NODES))?);
+            let mut shape = Vec::with_capacity(nodes);
+            let mut grounded = Vec::with_capacity(nodes);
+            for index in 0..nodes {
+                let behind = u8::try_from(nodes - index - 1).ok()?;
+                let count = driver.gen_u8(Included(&0), Included(&behind.min(2)))?;
+                let mut edges = Vec::new();
+                for _ in 0..count {
+                    edges.push(driver.gen_u8(Included(&1), Included(&behind.max(1)))?);
+                }
+                shape.push(edges);
+                grounded.push(driver.produce::<bool>()?);
+            }
+            Some(Dag { shape, grounded })
+        }
+    }
+
+    fn realize(dag: &Dag) -> (NhopStore, Vec<Rc<Nhop>>) {
+        let mut store = NhopStore::new();
+        let nodes: Vec<Rc<Nhop>> = (0..dag.shape.len())
+            .map(|index| {
+                let raw = u8::try_from(index).unwrap_or_else(|_| unreachable!());
+                let mut key = NhopKey::from_address(&format!("10.0.0.{}", raw + 1));
+                if dag.grounded[index] {
+                    key.ifindex = Some(
+                        InterfaceIndex::try_new(u32::from(raw) + 1)
+                            .unwrap_or_else(|_| unreachable!()),
+                    );
+                }
+                store.add_nhop(&key)
+            })
+            .collect();
+
+        for (from, to) in dag.edges() {
+            nodes[from].add_resolver(&nodes[to]);
+        }
+        (store, nodes)
+    }
+
+    fn expected(node: &Rc<Nhop>, prefix: &FibEntry, out: &mut Vec<FibEntry>) {
+        let mut entry = prefix.clone();
+        entry.extend_from_slice(&node.instructions.borrow().clone());
+
+        let resolvers: Vec<Rc<Nhop>> = node
+            .resolvers
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+
+        if resolvers.is_empty() {
+            if node.must_be_resolved() {
+                return;
+            }
+            entry.squash();
+            if entry.is_valid() {
+                out.push(entry);
+            }
+        } else {
+            for resolver in resolvers {
+                expected(&resolver, &entry, out);
+            }
+        }
+    }
+
+    #[test]
+    fn a_fibgroup_is_the_usable_paths_through_the_graph() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|dag: Dag| {
+                let (_store, nodes) = realize(&dag);
+                for node in &nodes {
+                    node.build_nhop_instructions(&rstore);
+                }
+
+                let root = &nodes[0];
+                let mut want = Vec::new();
+                expected(root, &FibEntry::new(), &mut want);
+                if want.is_empty() {
+                    want.push(FibEntry::drop_fibentry());
+                }
+
+                let got = root.build_nhop_fibgroup();
+                assert_eq!(got.entries(), &want, "for {dag:?}");
+            });
+    }
+
+    #[test]
+    fn every_entry_in_a_fibgroup_is_usable() {
+        let rstore = RmacStore::new();
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|dag: Dag| {
+                let (_store, nodes) = realize(&dag);
+                for node in &nodes {
+                    node.build_nhop_instructions(&rstore);
+                }
+                let group = nodes[0].build_nhop_fibgroup();
+                assert!(!group.is_empty(), "for {dag:?}");
+                for entry in group.iter() {
+                    assert!(entry.is_valid(), "unusable entry {entry:?} for {dag:?}");
+                }
+            });
+    }
+
+    #[test]
+    fn resolves_with_answers_reachability() {
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|dag: Dag| {
+                let (_store, nodes) = realize(&dag);
+                for (from, node) in nodes.iter().enumerate() {
+                    let reachable = dag.reachable_from(from);
+                    for (to, other) in nodes.iter().enumerate() {
+                        assert_eq!(
+                            node.resolves_with(other),
+                            reachable[to],
+                            "{from} -> {to}, for {dag:?}"
+                        );
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn a_next_hop_resolves_via_itself() {
+        bolero::check!()
+            .with_generator(Graphs)
+            .cloned()
+            .for_each(|dag: Dag| {
+                let (_store, nodes) = realize(&dag);
+                for node in &nodes {
+                    assert!(node.resolves_with(node));
+                }
+            });
+    }
+}
