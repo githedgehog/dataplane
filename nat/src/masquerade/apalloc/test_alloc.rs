@@ -1029,6 +1029,38 @@ mod std_tests {
     }
 
     #[test]
+    fn a_v6_subnet_sized_pool_can_be_printed() {
+        let base = u128::from_be_bytes(
+            "2001:db8::"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap_or_else(|_| unreachable!())
+                .octets(),
+        );
+        let pool = NatPool::<std::net::Ipv6Addr>::for_range(
+            AddrInterval::new(base, base + u128::from(u64::MAX)),
+            ReservedPorts::default(),
+            true,
+        );
+        let allocator = IpAllocator::new(pool, false);
+
+        let shown = allocator.to_string();
+        assert!(
+            shown.contains("IP ranges in pool:"),
+            "the pool did not render its ranges: {shown}"
+        );
+        let ranges: Vec<&str> = shown.lines().filter(|line| line.contains(" .. ")).collect();
+        assert_eq!(
+            ranges.len(),
+            1,
+            "a pool with nothing allocated should print exactly one range: {shown}"
+        );
+        assert!(
+            ranges[0].contains("[2001:db8:: .. 2001:db8::ffff:ffff]"),
+            "the range should span the bitmap's 2^32 offsets: {shown}"
+        );
+    }
+
+    #[test]
     fn claimed_ports_are_never_allocated() {
         let (allocator, _) = allocator_with_claims();
 
