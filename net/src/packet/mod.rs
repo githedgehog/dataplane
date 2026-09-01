@@ -898,10 +898,15 @@ mod qos_roundtrip_tests {
 mod padding_tests {
     use crate::buffer::TestBuffer;
     use crate::checksum::Checksum;
-    use crate::headers::{TryHeaders, TryIcmp4, TryIp, TryTcp, TryUdp};
+    use crate::eth::ethtype::EthType;
+    use crate::headers::{Headers, Net, TryHeaders, TryIcmp4, TryIp, TryTcp, TryUdp};
     use crate::packet::Packet;
+    use crate::packet::test_utils::make_default_for_eth;
     use crate::tcp::TcpChecksumPayload;
     use crate::udp::UdpChecksumPayload;
+    use crate::udp::UdpEncap;
+    use crate::vxlan::{Vni, Vxlan, VxlanEncap};
+    use arrayvec::ArrayVec;
 
     const MIN_ETHERNET_FRAME: usize = 60;
 
@@ -1018,5 +1023,151 @@ mod padding_tests {
         frame.truncate(frame.len() - 8);
         let mut packet = parse(&frame);
         packet.update_checksums();
+    }
+
+    fn tcp(payload: &[u8]) -> Vec<u8> {
+        let mut tcp = tcp_ack();
+        tcp.extend_from_slice(payload);
+        tcp
+    }
+
+    fn vxlan_wrap(inner: &[u8]) -> Vec<u8> {
+        let mut packet =
+            Packet::new(TestBuffer::from_raw_data(inner)).expect("inner frame does not parse");
+        packet
+            .vxlan_encap(&vxlan_encap_params())
+            .expect("vxlan encap failed");
+        packet
+            .serialize()
+            .expect("vxlan frame does not serialize")
+            .as_ref()
+            .to_vec()
+    }
+
+    fn vxlan_encap_params() -> VxlanEncap {
+        let mut ip = crate::ipv4::Ipv4::default();
+        ip.set_source(
+            crate::ipv4::addr::UnicastIpv4Addr::new("10.0.0.1".parse().unwrap()).unwrap(),
+        );
+        ip.set_destination("10.0.0.2".parse().unwrap());
+        ip.set_ttl(64);
+        ip.set_next_header(crate::ip::NextHeader::UDP);
+
+        let headers = Headers {
+            eth: Some(make_default_for_eth(EthType::IPV4)),
+            vlan: ArrayVec::default(),
+            net: Some(Net::Ipv4(ip)),
+            net_ext: ArrayVec::default(),
+            transport: None,
+            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(42).unwrap()))),
+            embedded_ip: None,
+        };
+        VxlanEncap::new(headers).unwrap_or_else(|e| unreachable!("{e:?}"))
+    }
+
+    #[test]
+    fn vxlan_carries_padding_that_the_inner_checksum_must_ignore() {
+        let inner = pad(frame(6, &tcp_ack()), 0xab);
+        assert_eq!(
+            inner.len(),
+            MIN_ETHERNET_FRAME,
+            "the inner frame should have been padded"
+        );
+
+        let mut packet = parse(&vxlan_wrap(&inner));
+        packet
+            .vxlan_decap()
+            .expect("not a vxlan packet")
+            .expect("inner frame does not parse");
+        packet.update_checksums();
+
+        let net = packet
+            .headers()
+            .try_ip()
+            .expect("no inner ip header")
+            .clone();
+        packet
+            .headers()
+            .try_tcp()
+            .expect("no inner tcp header")
+            .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
+            .expect("inner ethernet padding leaked into the tcp checksum");
+    }
+
+    #[test]
+    fn trailing_octets_never_enter_a_tcp_checksum() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(payload, trailer)| {
+                let payload = &payload[..payload.len().min(256)];
+                let trailer = &trailer[..trailer.len().min(64)];
+                let mut bytes = frame(6, &tcp(payload));
+                bytes.extend_from_slice(trailer);
+                let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&bytes)) else {
+                    return;
+                };
+                packet.update_checksums();
+                let net = packet.headers().try_ip().expect("no ip header").clone();
+                packet
+                    .headers()
+                    .try_tcp()
+                    .expect("no tcp header")
+                    .validate_checksum(&TcpChecksumPayload::new(&net, payload))
+                    .expect("trailing octets leaked into the tcp checksum");
+            });
+    }
+
+    #[test]
+    fn trailing_octets_never_enter_a_udp_checksum() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(payload, trailer)| {
+                let payload = &payload[..payload.len().min(256)];
+                let trailer = &trailer[..trailer.len().min(64)];
+                let mut bytes = frame(17, &udp(payload));
+                bytes.extend_from_slice(trailer);
+                let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&bytes)) else {
+                    return;
+                };
+                packet.update_checksums();
+                let net = packet.headers().try_ip().expect("no ip header").clone();
+                packet
+                    .headers()
+                    .try_udp()
+                    .expect("no udp header")
+                    .validate_checksum(&UdpChecksumPayload::new(&net, payload))
+                    .expect("trailing octets leaked into the udp checksum");
+            });
+    }
+
+    #[test]
+    fn trailing_octets_never_enter_a_vxlan_inner_tcp_checksum() {
+        bolero::check!()
+            .with_type::<(Vec<u8>, Vec<u8>)>()
+            .for_each(|(payload, trailer)| {
+                let payload = &payload[..payload.len().min(128)];
+                let trailer = &trailer[..trailer.len().min(64)];
+                let mut inner = frame(6, &tcp(payload));
+                inner.extend_from_slice(trailer);
+                let Ok(mut packet) = Packet::new(TestBuffer::from_raw_data(&vxlan_wrap(&inner)))
+                else {
+                    return;
+                };
+                let Some(Ok(_)) = packet.vxlan_decap() else {
+                    return;
+                };
+                packet.update_checksums();
+                let net = packet
+                    .headers()
+                    .try_ip()
+                    .expect("no inner ip header")
+                    .clone();
+                packet
+                    .headers()
+                    .try_tcp()
+                    .expect("no inner tcp header")
+                    .validate_checksum(&TcpChecksumPayload::new(&net, payload))
+                    .expect("inner trailing octets leaked into the tcp checksum");
+            });
     }
 }
