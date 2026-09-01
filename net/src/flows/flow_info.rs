@@ -397,12 +397,11 @@ impl FlowInfo {
     /// Returns `FlowInfoError::TimeoutUnchanged` if the new timeout is smaller than the current.
     ///
     pub fn reset_expiry_unchecked(&self, duration: Duration) -> Result<(), FlowInfoError> {
-        let current = self.expires_at();
         let new = Instant::now() + duration;
-        if new < current {
+        let previous = self.expires_at.fetch_max(new, Ordering::Relaxed);
+        if previous > new {
             return Err(FlowInfoError::TimeoutUnchanged);
         }
-        self.expires_at.store(new, Ordering::Relaxed);
         Ok(())
     }
 
