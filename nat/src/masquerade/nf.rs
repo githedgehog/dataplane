@@ -180,14 +180,9 @@ impl Masquerade {
             }
         };
 
-        // extend the duration of the flow according to the new status
         if let Some(extend_by) = extend_by {
             let _ = flow_info.reset_expiry_unchecked(extend_by);
-            // if we transition to established, let the related flow get the configured timeout too
-            if current != new_status
-                && new_status == NatFlowStatus::Established
-                && let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade)
-            {
+            if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
                 let _ = related.reset_expiry_unchecked(extend_by);
             }
         }
