@@ -630,12 +630,15 @@ impl Icmp6 {
         )
     }
 
-    fn payload_length(&self, buf: &[u8]) -> usize {
+    // Expects a buffer starting at the beginning of the ICMP header
+    fn payload_length(&self, header: &[u8]) -> usize {
         // See RFC 4884.
         if !self.supports_extensions() {
             return 0;
         }
-        let payload_length = buf[4];
+        let Some(&payload_length) = header.get(4) else {
+            return 0;
+        };
         payload_length as usize * 8
     }
 
@@ -643,19 +646,24 @@ impl Icmp6 {
         if !self.is_error_message() {
             return None;
         }
-        let (mut headers, consumed) = EmbeddedHeaders::parse_with(
-            EmbeddedIpVersion::Ipv6,
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-        )
-        .ok()?;
+        // We've just parsed the ICMP header: the bytes left in the cursor hold the whole ICMP
+        // payload, that is, the embedded IP packet fragment, optionally followed with some padding
+        // and ICMP Extension Structures
+        let icmp_payload_offset = cursor.inner.len() - cursor.remaining as usize;
+        let icmp_payload = &cursor.inner[icmp_payload_offset..];
+        let icmp_header =
+            &cursor.inner[icmp_payload_offset.saturating_sub(self.size().get() as usize)..];
+
+        let (mut headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, icmp_payload).ok()?;
         cursor.consume(consumed).ok()?;
 
         // Mark whether the payload of the embedded IP packet is full
         headers.check_full_payload(
-            &cursor.inner[cursor.inner.len() - cursor.remaining as usize..],
-            cursor.remaining as usize,
+            icmp_payload,
+            icmp_payload.len(),
             consumed.get() as usize,
-            self.payload_length(cursor.inner),
+            self.payload_length(icmp_header),
         );
 
         Some(headers)
@@ -1184,8 +1192,19 @@ mod contract {
 
 #[cfg(test)]
 mod test {
-    use crate::icmp6::{Icmp6, Icmp6Type};
+    use crate::buffer::TestBuffer;
+    use crate::eth::ethtype::EthType;
+    use crate::headers::{
+        EmbeddedHeadersBuilder, HeadersBuilder, Net, Transport, TryEmbeddedHeaders,
+    };
+    use crate::icmp6::{Icmp6, Icmp6DestUnreachable, Icmp6Type};
+    use crate::ip::NextHeader;
+    use crate::ipv6::Ipv6;
+    use crate::packet::Packet;
+    use crate::packet::test_utils::make_default_for_eth;
     use crate::parse::{DeParse, Parse};
+    use crate::tcp::{Tcp, TcpPort};
+    use std::net::Ipv6Addr;
 
     /// A Packet Too Big with MTU below 1280 should be treated as unknown
     /// `ICMPv6`, since RFC 8200 section 5 sets 1280 as the IPv6 minimum.
@@ -1232,6 +1251,138 @@ mod test {
                     Icmp6::parse(buffer).unwrap_or_else(|e| unreachable!("{e:?}", e = e));
                 assert_eq!(parsed.size(), bytes_read);
                 parse_back_test_helper(&parsed);
+            });
+    }
+
+    // Detection of a full payload for the embedded IP packet fragment
+
+    const ETH_LEN: usize = 14;
+    const IPV6_LEN: usize = 40;
+    const ICMP6_LEN: usize = 8;
+    const TCP_LEN: u16 = 20;
+
+    // Build an ICMPv6 Destination Unreachable message quoting an IPv6/TCP packet.
+    //
+    // The message carries "payload_len" bytes of TCP payload, while the quoted IP header announces
+    // "announced_payload_len" bytes of TCP payload for the original packet: the two differ when
+    // the quoted packet is truncated. "trailer" is appended after the quoted packet fragment, to
+    // hold the padding and the ICMP Extension Structures, if any. "length_attribute" is the value
+    // for the optional length attribute of the ICMP header (RFC 4884), in units of 64-bit words.
+    fn build_icmp6_error_msg(
+        payload_len: usize,
+        announced_payload_len: u16,
+        trailer: &[u8],
+        length_attribute: u8,
+    ) -> Packet<TestBuffer> {
+        let mut inner_ipv6 = Ipv6::default();
+        inner_ipv6.set_source(
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)
+                .try_into()
+                .unwrap(),
+        );
+        inner_ipv6.set_destination(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
+        inner_ipv6.set_next_header(NextHeader::TCP);
+
+        let inner_tcp = Tcp::new(
+            TcpPort::new_checked(80).unwrap(),
+            TcpPort::new_checked(443).unwrap(),
+        );
+
+        let mut embedded_headers = EmbeddedHeadersBuilder::default();
+        embedded_headers.net(Some(Net::Ipv6(inner_ipv6)));
+        embedded_headers.transport(Some(inner_tcp.into()));
+        let mut embedded_headers = embedded_headers.build().unwrap();
+        embedded_headers
+            .set_network_payload_length(TCP_LEN + announced_payload_len)
+            .unwrap();
+        let embedded_len = embedded_headers.size().get() as usize;
+        assert_eq!(embedded_len, IPV6_LEN + TCP_LEN as usize);
+
+        let icmp = Icmp6::with_type(Icmp6Type::DestUnreachable(Icmp6DestUnreachable::NoRoute));
+        assert_eq!(icmp.size().get() as usize, ICMP6_LEN);
+
+        let mut ipv6 = Ipv6::default();
+        ipv6.set_source(
+            Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 1)
+                .try_into()
+                .unwrap(),
+        );
+        ipv6.set_destination(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 2));
+        ipv6.set_next_header(NextHeader::ICMP6);
+        let outer_payload_len = ICMP6_LEN + embedded_len + payload_len + trailer.len();
+        ipv6.set_payload_length(u16::try_from(outer_payload_len).unwrap());
+
+        let mut headers = HeadersBuilder::default();
+        headers.eth(Some(make_default_for_eth(EthType::IPV6)));
+        headers.net(Some(Net::Ipv6(ipv6)));
+        headers.transport(Some(Transport::Icmp6(icmp)));
+        headers.embedded_ip(Some(embedded_headers));
+        let headers = headers.build().unwrap();
+
+        let headers_len = headers.size().get() as usize;
+        assert_eq!(headers_len, ETH_LEN + IPV6_LEN + ICMP6_LEN + embedded_len);
+        let mut buf = vec![0u8; headers_len + payload_len + trailer.len()];
+        headers.deparse(&mut buf).unwrap();
+        buf[headers_len..headers_len + payload_len].fill(0xa5);
+        buf[headers_len + payload_len..].copy_from_slice(trailer);
+
+        // Set the optional length attribute of the ICMP header: etherparse zeroes the unused bytes
+        // that RFC 4884 repurposes for it
+        buf[ETH_LEN + IPV6_LEN + 4] = length_attribute;
+
+        Packet::new(TestBuffer::from_raw_data(&buf)).unwrap()
+    }
+
+    fn embedded_payload_length(packet: &Packet<TestBuffer>) -> Option<u16> {
+        let embedded_headers = packet.embedded_headers().unwrap();
+        assert_eq!(
+            embedded_headers.is_full_payload(),
+            embedded_headers.payload_length().is_some()
+        );
+        embedded_headers.payload_length()
+    }
+
+    // The length announced by the header of the quoted IP packet tells whether the ICMP Error
+    // message carries the full payload of the original packet.
+    #[test]
+    fn detects_full_or_truncated_embedded_payload() {
+        bolero::check!()
+            .with_generator((0u16..=400, bolero::generator::produce::<Option<u16>>()))
+            .for_each(|(payload_len, missing_payload_len)| {
+                // The original packet may have carried more data than the message quotes
+                let missing_payload_len = missing_payload_len.map_or(0, |missing| missing % 401);
+                let announced_payload_len = payload_len + missing_payload_len;
+                let packet =
+                    build_icmp6_error_msg(usize::from(*payload_len), announced_payload_len, &[], 0);
+                let expected = (missing_payload_len == 0).then_some(*payload_len);
+                assert_eq!(embedded_payload_length(&packet), expected);
+            });
+    }
+
+    // When the message carries ICMP Extension Structures, the length of the quoted packet comes
+    // from the optional length attribute of the ICMP header (RFC 4884).
+    #[test]
+    fn detects_full_embedded_payload_with_icmp_extensions() {
+        const QUOTED_HEADERS_LEN: usize = IPV6_LEN + TCP_LEN as usize;
+        let min_payload_len = u16::try_from(128 - QUOTED_HEADERS_LEN).unwrap();
+        // RFC 4884: the "original datagram" field must hold at least 128 octets, and be zero-padded
+        // to the nearest 64-bit boundary. Keep the quoted packet large enough for the former, and
+        // small enough for the length attribute, in units of 64-bit words, to fit on a byte.
+        bolero::check!()
+            .with_generator((min_payload_len..=900, 0u8..=8))
+            .for_each(|(payload_len, extension_words)| {
+                let quoted_len = QUOTED_HEADERS_LEN + usize::from(*payload_len);
+                let padding_len = quoted_len.next_multiple_of(64) - quoted_len;
+                let mut trailer = vec![0u8; padding_len];
+                trailer.resize(padding_len + usize::from(*extension_words) * 8, 0x55);
+                let length_attribute = u8::try_from((quoted_len + padding_len) / 8).unwrap();
+                let packet = build_icmp6_error_msg(
+                    usize::from(*payload_len),
+                    *payload_len,
+                    &trailer,
+                    length_attribute,
+                );
+                assert_eq!(embedded_payload_length(&packet), Some(*payload_len));
             });
     }
 }
