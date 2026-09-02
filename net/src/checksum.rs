@@ -110,19 +110,22 @@ pub trait Checksum {
         Ok(ret)
     }
 
-    /// Perform an incremental update of the checksum in the header, to account for the change of a
+    /// Compute an incremental update of the checksum in the header, to account for the change of a
     /// 16-bit value in the header, without recomputing the whole checksum but using the algorithm
     /// described in RFC 1624 "Computation of the Internet Checksum via Incremental Update"
     //
     // Implement this as a default method rather than relying on individual's Self::Checksum types
-    // implementations, because etherparse currendly doesn't offer a way to compute incremental
+    // implementations, because etherparse currently doesn't offer a way to compute incremental
     // updates for checksums.
-    fn increment_update_checksum(
-        &mut self,
+    fn incremental_checksum(
         current_checksum: Self::Checksum,
         old_value: u16,
         new_value: u16,
     ) -> Self::Checksum {
+        if old_value == new_value {
+            return current_checksum;
+        }
+
         // From RFC 1624:
         //
         // Given the following notation:
@@ -159,14 +162,34 @@ pub trait Checksum {
         result.into()
     }
 
-    /// Perform an incremental update of the checksum in the header, like `increment_update_checksum`
-    /// but for a 32-bit value change.
+    /// Perform an incremental update (in-place) of the checksum in the header for a 16-bit value
+    /// change.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `Self::Error` if setting the checksum fails,
+    fn increment_update_checksum(
+        &mut self,
+        current_checksum: Self::Checksum,
+        old_value: u16,
+        new_value: u16,
+    ) -> Result<&mut Self, Self::Error> {
+        let new_checksum = Self::incremental_checksum(current_checksum, old_value, new_value);
+        self.set_checksum(new_checksum)
+    }
+
+    /// Perform an incremental update (in-place) of the checksum in the header for a 32-bit value
+    /// change.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `Self::Error` if setting the checksum fails,
     fn increment_update_checksum_32bit(
         &mut self,
         current_checksum: Self::Checksum,
         old_value: u32,
         new_value: u32,
-    ) -> Self::Checksum {
+    ) -> Result<&mut Self, Self::Error> {
         let old_value_first_half = (old_value >> 16) as u16;
         #[allow(clippy::cast_possible_truncation)] // truncation is intentional
         let old_value_second_half = old_value as u16;
@@ -174,16 +197,14 @@ pub trait Checksum {
         #[allow(clippy::cast_possible_truncation)] // truncation is intentional
         let new_value_second_half = new_value as u16;
 
-        let intermediary_checksum = self.increment_update_checksum(
+        let tmp_checksum = Self::incremental_checksum(
             current_checksum,
             old_value_first_half,
             new_value_first_half,
         );
-        self.increment_update_checksum(
-            intermediary_checksum,
-            old_value_second_half,
-            new_value_second_half,
-        )
+        let new_checksum =
+            Self::incremental_checksum(tmp_checksum, old_value_second_half, new_value_second_half);
+        self.set_checksum(new_checksum)
     }
 }
 
@@ -229,8 +250,7 @@ mod tests {
         ipv4.0.total_len = new_len_value;
 
         // Update and validate checksum
-        let new_checksum = ipv4.increment_update_checksum(checksum, old_value, new_len_value);
-        ipv4.set_checksum(new_checksum)
+        ipv4.increment_update_checksum(checksum, old_value, new_len_value)
             .expect("set checksum failed");
         ipv4.validate_checksum(&())
             .expect("expected valid checksum after total length field change");
@@ -242,9 +262,7 @@ mod tests {
         ipv4.set_destination(new_ip);
 
         // Update and validate checksum
-        let new_checksum =
-            ipv4.increment_update_checksum_32bit(checksum, old_value, new_addr_value);
-        ipv4.set_checksum(new_checksum)
+        ipv4.increment_update_checksum_32bit(checksum, old_value, new_addr_value)
             .expect("set checksum failed");
         ipv4.validate_checksum(&())
             .expect("expected valid checksum after destination address change");

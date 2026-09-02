@@ -610,43 +610,31 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Incrementally update the checksum of the embedded transport header, but discard the error if
+    /// the header is truncated and too short.
     pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
+        let (raw, old, new) = (current_checksum, old_value, new_value);
+        if old == new {
+            return;
+        }
         match self {
             EmbeddedTransport::Tcp(tcp) => {
-                let updated = tcp.increment_update_checksum(
-                    TcpChecksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = tcp.set_checksum(updated);
+                let _ = tcp.increment_update_checksum(TcpChecksum::new(raw), old, new);
             }
             EmbeddedTransport::Udp(udp) => {
-                let updated = udp.increment_update_checksum(
-                    UdpChecksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = udp.set_checksum(updated);
+                let _ = udp.increment_update_checksum(UdpChecksum::new(raw), old, new);
             }
             EmbeddedTransport::Icmp4(icmp) => {
-                let updated = icmp.increment_update_checksum(
-                    Icmp4Checksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = icmp.set_checksum(updated);
+                let _ = icmp.increment_update_checksum(Icmp4Checksum::new(raw), old, new);
             }
             EmbeddedTransport::Icmp6(icmp) => {
-                let updated = icmp.increment_update_checksum(
-                    Icmp6Checksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = icmp.set_checksum(updated);
+                let _ = icmp.increment_update_checksum(Icmp6Checksum::new(raw), old, new);
             }
         }
     }
 
+    /// Incrementally update the checksum of the embedded transport header for a change in the
+    /// source or destination address, but discard the error if the header is truncated and too short
     pub fn update_checksum_for_address(&mut self, old: IpAddr, new: IpAddr) {
         if matches!(self, EmbeddedTransport::Icmp4(_)) {
             return;
