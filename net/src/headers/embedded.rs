@@ -610,6 +610,25 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Set the checksum of the embedded transport header, but discard the error if the header is
+    /// truncated.
+    pub fn set_checksum_if_possible(&mut self, checksum: u16) {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => {
+                let _ = tcp.set_checksum(TcpChecksum::new(checksum));
+            }
+            EmbeddedTransport::Udp(udp) => {
+                let _ = udp.set_checksum(UdpChecksum::new(checksum));
+            }
+            EmbeddedTransport::Icmp4(icmp) => {
+                let _ = icmp.set_checksum(Icmp4Checksum::new(checksum));
+            }
+            EmbeddedTransport::Icmp6(icmp) => {
+                let _ = icmp.set_checksum(Icmp6Checksum::new(checksum));
+            }
+        }
+    }
+
     /// Incrementally update the checksum of the embedded transport header, but discard the error if
     /// the header is truncated and too short.
     pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {

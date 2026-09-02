@@ -233,7 +233,7 @@ pub enum ChecksumError<T: Checksum + ?Sized> {
 #[cfg(test)]
 mod tests {
     use crate::checksum::Checksum;
-    use crate::ipv4::Ipv4;
+    use crate::ipv4::{Ipv4, Ipv4Checksum};
     use std::net::Ipv4Addr;
 
     fn update_and_check_checksum(ipv4: &Ipv4, new_len_value: u16, new_addr_value: u32) {
@@ -274,6 +274,60 @@ mod tests {
             .with_type()
             .for_each(|(header, len, addr)| {
                 update_and_check_checksum(header, *len, *addr);
+            });
+    }
+
+    // Chain incremental updates for the given (old value, new value) changes, starting from the
+    // given checksum. The header is irrelevant: incremental_checksum() only works out the new
+    // checksum from the previous one and from the values that changed.
+    fn chain_incremental_checksums(
+        checksum: u16,
+        changes: impl IntoIterator<Item = (u16, u16)>,
+    ) -> u16 {
+        changes
+            .into_iter()
+            .fold(Ipv4Checksum::new(checksum), |checksum, (old, new)| {
+                Ipv4::incremental_checksum(checksum, old, new)
+            })
+            .into()
+    }
+
+    // The updates in a chain are additions in one's complement arithmetic, which is commutative:
+    // the order in which we apply them doesn't affect the resulting checksum, not even the
+    // representation that we get for it.
+    #[test]
+    fn incremental_checksum_chain_is_order_independent() {
+        bolero::check!()
+            .with_type()
+            .for_each(|changes: &(u16, [(u16, u16); 4])| {
+                let (checksum, changes) = changes;
+                let expected = chain_incremental_checksums(*checksum, *changes);
+                for rotation in 1..changes.len() {
+                    let mut rotated = *changes;
+                    rotated.rotate_left(rotation);
+                    assert_eq!(chain_incremental_checksums(*checksum, rotated), expected);
+                }
+                let mut reversed = *changes;
+                reversed.reverse();
+                assert_eq!(chain_incremental_checksums(*checksum, reversed), expected);
+            });
+    }
+
+    // Whether we apply an update to the checksum at all is not indifferent, even when the value
+    // that it accounts for didn't change: one's complement arithmetic has two representations for
+    // zero, and an update with no net effect turns the negative one, 0xffff, into the positive one,
+    // 0x0000. The two are equivalent for the sake of validating a checksum, but they are not
+    // interchangeable for UDP, where 0x0000 means "no checksum" (RFC 768).
+    //
+    // Make sure we never update when the old and new values are the same.
+    #[test]
+    fn test_incremental_update_checksum_without_change_is_noop() {
+        bolero::check!()
+            .with_type()
+            .for_each(|(raw, value): &(u16, u16)| {
+                let old_checksum = Ipv4Checksum::new(*raw);
+                let new_checksum = Ipv4::incremental_checksum(old_checksum, *value, *value);
+                assert_eq!(new_checksum, old_checksum);
             });
     }
 }

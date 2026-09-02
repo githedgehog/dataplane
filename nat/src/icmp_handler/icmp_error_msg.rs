@@ -246,13 +246,17 @@ mod bolero_tests {
     use net::checksum::ChecksumError;
     use net::headers::TryHeaders;
     use net::headers::{
-        Net, TryEmbeddedTransport, TryIcmpAnyMut, TryInnerIp, TryInnerIpv4Mut, TryIp, TryIpv4,
+        Net, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAnyMut, TryInnerIp, TryInnerIpv4Mut,
+        TryIp, TryIpv4,
     };
     use net::icmp_any::IcmpAnyChecksum;
+    use net::icmp6::Icmp6ChecksumPayload;
     use net::ipv4::{Ipv4Checksum, UnicastIpv4Addr};
     use net::ipv6::UnicastIpv6Addr;
     use net::packet::IcmpErrorMsg;
     use net::packet::icmp_err::{IcmpErrorPacket, IcmpErrorPacketError};
+    use net::tcp::TcpChecksumPayload;
+    use net::udp::UdpChecksumPayload;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[derive(Debug, Clone, Copy)]
@@ -329,6 +333,162 @@ mod bolero_tests {
             .map(|ip| (ip.src_addr(), ip.dst_addr()))
     }
 
+    fn get_inner_transport_checksum(packet: &Packet<TestBuffer>) -> Option<u16> {
+        packet
+            .try_embedded_transport()
+            .and_then(EmbeddedTransport::checksum)
+    }
+
+    // Compute from scratch the checksum of the embedded transport header, over the inner headers
+    // and the embedded transport payload.
+    //
+    // Returns None when the embedded IP packet fragment is truncated, because we then miss some of
+    // the data covered by the checksum, and can't recompute it.
+    fn compute_inner_transport_checksum(packet: &Packet<TestBuffer>) -> Option<u16> {
+        let embedded_headers = packet.embedded_headers()?;
+        // The bytes left in the packet hold the embedded transport payload, followed with the
+        // optional ICMP padding and Extension Structures which are not covered by the checksum
+        let payload_length = usize::from(embedded_headers.payload_length()?);
+        let payload = packet.payload().as_ref().get(..payload_length)?;
+        let inner_net = embedded_headers.try_inner_ip()?;
+        match embedded_headers.try_embedded_transport()? {
+            EmbeddedTransport::Tcp(tcp) => tcp
+                .compute_checksum(&TcpChecksumPayload::new(inner_net, payload))
+                .map(u16::from)
+                .ok(),
+            EmbeddedTransport::Udp(udp) => udp
+                .compute_checksum(&UdpChecksumPayload::new(inner_net, payload))
+                .map(u16::from)
+                .ok(),
+            EmbeddedTransport::Icmp4(icmp4) => icmp4.compute_checksum(payload).map(u16::from).ok(),
+            EmbeddedTransport::Icmp6(icmp6) => {
+                let Net::Ipv6(inner_ipv6) = inner_net else {
+                    return None;
+                };
+                let checksum_payload = Icmp6ChecksumPayload::new(
+                    inner_ipv6.source().inner(),
+                    inner_ipv6.destination(),
+                    payload,
+                );
+                icmp6
+                    .compute_checksum(&checksum_payload)
+                    .map(u16::from)
+                    .ok()
+            }
+        }
+    }
+
+    fn set_inner_transport_checksum(packet: &mut Packet<TestBuffer>, checksum: u16) {
+        if let Some(transport) = packet.try_embedded_transport_mut() {
+            EmbeddedTransport::set_checksum_if_possible(transport, checksum);
+        }
+    }
+
+    // Reference implementation of the incremental checksum update from RFC 1624, relying on
+    //
+    //     HC' = ~(~HC + ~m + m')    --    [Eqn. 3]
+    //
+    // instead of the [Eqn. 4] variant used by increment_update_checksum(), so that we don't
+    // validate the implementation against itself.
+    fn expected_incremental_checksum(current_checksum: u16, old_value: u16, new_value: u16) -> u16 {
+        fn add_ones_complement(a: u16, b: u16) -> u16 {
+            let mut sum = u32::from(a) + u32::from(b);
+            while sum > 0xffff {
+                sum = (sum & 0xffff) + (sum >> 16);
+            }
+            u16::try_from(sum).unwrap_or_else(|_| unreachable!())
+        }
+        if old_value == new_value {
+            // Like Checksum::incremental_checksum(), skip a value that doesn't change: folding it
+            // in would be neutral, but for a 0xffff checksum, which it would rewrite as 0x0000
+            return current_checksum;
+        }
+        !add_ones_complement(
+            add_ones_complement(!current_checksum, !old_value),
+            new_value,
+        )
+    }
+
+    // Pair up the 16-bit words of an IP address change, in the order in which they are covered by
+    // the pseudo-header. The translation skips the update altogether when the address doesn't
+    // change, so return no pair in that case.
+    fn address_word_changes(old: IpAddr, new: IpAddr) -> Vec<(u16, u16)> {
+        fn words(addr: IpAddr) -> Vec<u16> {
+            match addr {
+                IpAddr::V4(addr) => {
+                    let [a, b, c, d] = addr.octets();
+                    vec![u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d])]
+                }
+                IpAddr::V6(addr) => addr.segments().to_vec(),
+            }
+        }
+        if old == new {
+            return Vec::new();
+        }
+        words(old).into_iter().zip(words(new)).collect()
+    }
+
+    // Check that the checksum of the inner transport header accounts for the new addresses, ports
+    // or ICMP identifier, with incremental updates. This is all we can check when the embedded IP
+    // packet fragment is truncated, as we can't recompute the checksum from scratch in that case.
+    fn check_inner_transport_checksum(
+        packet: &Packet<TestBuffer>,
+        initial_checksum: Option<u16>,
+        initial_addresses: (IpAddr, IpAddr),
+        initial_ports: Option<TransportFields>,
+        new_ports: Option<TransportFields>,
+    ) {
+        // The checksum of ICMPv4 covers no pseudo-header, the inner IP addresses don't affect it
+        let addresses_covered = !matches!(
+            packet.try_embedded_transport(),
+            Some(EmbeddedTransport::Icmp4(_))
+        );
+        let new_addresses = get_inner_addresses(packet).unwrap();
+
+        // Replicate the incremental updates that the translation performs. The order in which we
+        // chain them is indifferent: they are additions in one's complement arithmetic, which is
+        // commutative, down to the representation of the resulting checksum.
+        let mut changes = Vec::new();
+        if addresses_covered {
+            changes.extend(address_word_changes(initial_addresses.0, new_addresses.0));
+        }
+        match (initial_ports, new_ports) {
+            (
+                Some(TransportFields::Ports(initial_src, _)),
+                Some(TransportFields::Ports(new_src, _)),
+            ) if initial_src != new_src => changes.push((initial_src, new_src)),
+            (
+                Some(TransportFields::Identifier(initial)),
+                Some(TransportFields::Identifier(new)),
+            ) if initial != new => changes.push((initial, new)),
+            _ => {}
+        }
+        if addresses_covered {
+            changes.extend(address_word_changes(initial_addresses.1, new_addresses.1));
+        }
+        if let (
+            Some(TransportFields::Ports(_, initial_dst)),
+            Some(TransportFields::Ports(_, new_dst)),
+        ) = (initial_ports, new_ports)
+            && initial_dst != new_dst
+        {
+            changes.push((initial_dst, new_dst));
+        }
+
+        let expected = initial_checksum.map(|checksum| {
+            changes
+                .into_iter()
+                .fold(checksum, |checksum, (old_value, new_value)| {
+                    expected_incremental_checksum(checksum, old_value, new_value)
+                })
+        });
+        assert_eq!(
+            get_inner_transport_checksum(packet),
+            expected,
+            "inner transport checksum not incrementally updated as expected"
+        );
+    }
+
     fn get_inner_ports(packet: &Packet<TestBuffer>) -> Option<TransportFields> {
         match packet.try_embedded_transport() {
             Some(EmbeddedTransport::Tcp(tcp)) => Some(TransportFields::Ports(
@@ -352,6 +512,7 @@ mod bolero_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_translation() {
         bolero::check!()
             .with_generator((
@@ -365,8 +526,26 @@ mod bolero_tests {
             ))
             .for_each(
                 |(icmp_error_msg, src_v4, dst_v4, src_v6, dst_v6, src_port, dst_port)| {
-                    let initial_outer_addresses = get_outer_addresses(icmp_error_msg).unwrap();
-                    let initial_ports = get_inner_ports(icmp_error_msg);
+                    let mut icmp_error_msg_clone = icmp_error_msg.clone();
+
+                    // The generator doesn't set checksums. When the embedded IP packet fragment is
+                    // not truncated, set a valid checksum on the embedded transport header, so that
+                    // we can recompute it from scratch after the translation and compare.
+                    let inner_payload_is_full =
+                        match compute_inner_transport_checksum(&icmp_error_msg_clone) {
+                            Some(checksum) => {
+                                set_inner_transport_checksum(&mut icmp_error_msg_clone, checksum);
+                                true
+                            }
+                            None => false,
+                        };
+
+                    let initial_outer_addresses =
+                        get_outer_addresses(&icmp_error_msg_clone).unwrap();
+                    let initial_inner_addresses = get_inner_addresses(&icmp_error_msg_clone);
+                    let initial_ports = get_inner_ports(&icmp_error_msg_clone);
+                    let initial_inner_checksum =
+                        get_inner_transport_checksum(&icmp_error_msg_clone);
                     let tr_data = match icmp_error_msg.headers().try_ip() {
                         Some(Net::Ipv4(_)) => NatTranslationData {
                             src_addr: Some(IpAddr::V4(Ipv4Addr::from(*src_v4))),
@@ -384,7 +563,6 @@ mod bolero_tests {
                     };
 
                     // Translate inner IP addresses, and possibly inner ports
-                    let mut icmp_error_msg_clone = icmp_error_msg.clone();
                     let inner_translation_result =
                         nat_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
                     if (*src_port == Some(NatPort::Identifier(0))
@@ -448,6 +626,23 @@ mod bolero_tests {
                         },
                         (None, None) => {}
                         _ => unreachable!(),
+                    }
+
+                    // Check the checksum of the inner transport header has been updated
+                    if inner_payload_is_full {
+                        assert_eq!(
+                            get_inner_transport_checksum(&icmp_error_msg_clone).unwrap(),
+                            compute_inner_transport_checksum(&icmp_error_msg_clone).unwrap(),
+                            "inner transport checksum doesn't match the recomputed value"
+                        );
+                    } else {
+                        check_inner_transport_checksum(
+                            &icmp_error_msg_clone,
+                            initial_inner_checksum,
+                            initial_inner_addresses.unwrap(),
+                            initial_ports,
+                            new_ports,
+                        );
                     }
 
                     if new_ports.is_some() {
