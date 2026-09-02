@@ -275,6 +275,22 @@ jobs:
     env:
       USER: "runner"
       JUST_VARS: "" # the `.github/actions/just` composite action runs under `set -u`; must be set even when empty
+      # `check-dependencies` runs `cargo deny check`, which clones the RustSec
+      # advisory database from github.com on every run.  Anonymous clones are
+      # rate limited, and a throttled request is answered with an auth
+      # challenge rather than a 429, so git reports it as
+      #   fatal: could not read Username for 'https://github.com'
+      # and the lint job fails for a reason that has nothing to do with the
+      # diff.  Spending the job's own token raises the limit.
+      #
+      # This is a stopgap.  The durable fix is to stop fetching at lint time:
+      # pin the advisory database through npins and run `cargo deny --offline`,
+      # which 0.20.2 supports.  That trades this flake for a pinned database
+      # that only learns about new advisories when the pin is bumped, so it
+      # wants a scheduled job checking against a fresh copy.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ github.token }}@github.com/.insteadOf"
+      GIT_CONFIG_VALUE_0: "https://github.com/"
     steps:
       - *checkout
       - *nix-setup
