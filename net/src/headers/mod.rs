@@ -890,6 +890,20 @@ impl Headers {
         }
     }
 
+    pub(crate) fn transport_payload_len(&self) -> Option<usize> {
+        let ip_payload_len = match self.net.as_ref()? {
+            Net::Ipv4(ip) => usize::from(ip.0.payload_len().ok()?),
+            Net::Ipv6(ip) => usize::from(ip.0.payload_length),
+        };
+        let after_net = self
+            .net_ext
+            .iter()
+            .map(|ext| usize::from(ext.size().get()))
+            .sum::<usize>()
+            + usize::from(self.transport.as_ref()?.size().get());
+        ip_payload_len.checked_sub(after_net)
+    }
+
     /// update the checksums of the headers
     pub(crate) fn update_checksums(&mut self, payload: impl AsRef<[u8]>) {
         let is_vxlan = self.try_vxlan().is_some();
