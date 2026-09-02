@@ -5,7 +5,7 @@ use std::ops::Bound;
 
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 
-use crate::bolero::support::generate_prefixes;
+use crate::bolero::support::{PrefixPool, generate_routable_prefixes};
 use crate::bolero::{LegalValue, SubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
@@ -17,19 +17,102 @@ use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeNatStatic,
 };
 
+/// The one legal shape of a "default" expose.
+///
+/// A default expose carries no prefixes at all -- the converter rejects `ips`/`as` on one, and
+/// `VpcExpose::validate` rejects `nots`/`nat` as well -- so there is nothing here to randomize.
+/// A manifest may hold at most one, which is why this is a plain constructor for the caller that
+/// owns the expose list rather than a branch inside [`LegalValueExposeGenerator`].
+#[must_use]
+pub fn default_expose() -> GatewayAgentPeeringsPeeringExpose {
+    GatewayAgentPeeringsPeeringExpose {
+        r#as: None,
+        ips: None,
+        default: Some(true),
+        nat: None,
+    }
+}
+
 /// Generate a legal value for `GatewayAgentPeeringsPeeringExpose`
 ///
 /// This is not exhaustive over all legal values due to the complexity of doing this. For example,
 /// the CIDR generators are not exhaustive; and we use a single port range for all CIDRs rather than
 /// trying different combinations.
+///
+/// Never produces a "default" expose; see [`default_expose`].
+///
+/// By default the result is legal with respect to *conversion* only.  For one that also survives
+/// `VpcExpose::validate`, see [`LegalValueExposeGenerator::from_pool`].
+///
+/// Both modes draw addresses from the reserved-block-avoiding generators in
+/// [`crate::bolero::support`], even though conversion accepts any parseable prefix and only
+/// validation rejects reserved space.  That makes the default mode narrower than it needs to be,
+/// deliberately: nothing on the conversion path branches on prefix length or on which block a
+/// prefix falls in -- `process_ip_block` parses the string and stores it -- so the wider range
+/// buys no coverage, and one address-generation path is easier to reason about than two.
 pub struct LegalValueExposeGenerator<'a> {
     subnets: &'a SubnetMap,
+    pool: Option<&'a PrefixPool>,
 }
 
 impl<'a> LegalValueExposeGenerator<'a> {
     #[must_use]
     pub fn new(subnets: &'a SubnetMap) -> Self {
-        Self { subnets }
+        Self {
+            subnets,
+            pool: None,
+        }
+    }
+
+    /// Draw addresses from `pool`, and restrict generation to exposes that pass validation.
+    ///
+    /// `VpcExpose::validate` couples an expose's fields together in ways that cannot be satisfied
+    /// by generating each field independently:
+    ///
+    /// - `ips`, `nots`, `as` and `notAs` must all be the same IP version;
+    /// - static NAT requires `ips` and `as` to cover the same *number of addresses*;
+    /// - port forwarding requires exactly one prefix per side, no exclusions, and a port range on
+    ///   each side;
+    /// - masquerade forbids port ranges entirely;
+    /// - and, across the whole manifest, no two exposes may overlap.
+    ///
+    /// This mode satisfies all of them by generating the tractable subset: one address family per
+    /// expose, `ips` drawn from the shared pool (so overlap is impossible by construction), and no
+    /// exclusions, NAT, or `vpcSubnet` references.
+    ///
+    /// FIXME: extending this to NAT means generating `ips`/`as` in matched sizes per NAT mode, and
+    /// to `vpcSubnet` references means coordinating the VPC subnet generator with the same pool.
+    /// Until then, those shapes are exercised at the conversion level only
+    /// (`converters::k8s::config::expose`).
+    #[must_use]
+    pub fn from_pool(mut self, pool: &'a PrefixPool) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
+    /// The validation-legal subset: a single family, pool-allocated `ips`, nothing else.
+    fn generate_from_pool<D: Driver>(
+        d: &mut D,
+        pool: &PrefixPool,
+    ) -> Option<GatewayAgentPeeringsPeeringExpose> {
+        let v4 = d.gen_bool(None)?;
+        let count = d.gen_u16(Bound::Included(&1), Bound::Included(&4))?;
+        let ips = pool
+            .take(count, v4)
+            .into_iter()
+            .map(|cidr| GatewayAgentPeeringsPeeringExposeIps {
+                cidr: Some(cidr),
+                not: None,
+                vpc_subnet: None,
+            })
+            .collect();
+        Some(GatewayAgentPeeringsPeeringExpose {
+            r#as: None,
+            ips: Some(ips),
+            // Explicit `false` is legal and takes the same path as absent; cover both spellings.
+            default: d.gen_bool(None)?.then_some(false),
+            nat: None,
+        })
     }
 }
 
@@ -37,6 +120,10 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
     type Output = GatewayAgentPeeringsPeeringExpose;
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
+        if let Some(pool) = self.pool {
+            return Self::generate_from_pool(d, pool);
+        }
+
         let num_ips = d.gen_u16(Bound::Included(&1), Bound::Included(&16))?;
         let num_nots = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
         let num_subnets = std::cmp::max(
@@ -57,7 +144,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         let num_v4_not_as = d.gen_u16(Bound::Included(&0), Bound::Included(&num_as_not))?;
         let num_v6_not_as = num_as_not - num_v4_not_as;
 
-        let ips = generate_prefixes(d, num_v4_ips, num_v6_ips)?
+        let ips = generate_routable_prefixes(d, num_v4_ips, num_v6_ips)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: Some(p),
@@ -65,7 +152,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
-        let nots = generate_prefixes(d, num_v4_nots, num_v6_nots)?
+        let nots = generate_routable_prefixes(d, num_v4_nots, num_v6_nots)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
@@ -73,13 +160,13 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
-        let r#as = generate_prefixes(d, num_v4_as, num_v6_as)?
+        let r#as = generate_routable_prefixes(d, num_v4_as, num_v6_as)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: Some(p),
                 not: None,
             });
-        let not_as = generate_prefixes(d, num_v4_not_as, num_v6_not_as)?
+        let not_as = generate_routable_prefixes(d, num_v4_not_as, num_v6_not_as)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: None,
@@ -112,7 +199,8 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         Some(GatewayAgentPeeringsPeeringExpose {
             r#as: Some(final_as).filter(|f| !f.is_empty()),
             ips: Some(final_ips).filter(|f| !f.is_empty()),
-            default: None,
+            // Explicit `false` is legal and takes the same path as absent; cover both spellings.
+            default: d.gen_bool(None)?.then_some(false),
             nat: if has_as {
                 Some(
                     d.produce::<LegalValue<GatewayAgentPeeringsPeeringExposeNat>>()?
