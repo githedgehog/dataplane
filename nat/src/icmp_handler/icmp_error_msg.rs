@@ -80,15 +80,24 @@ pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
         .embedded_headers_mut()
         .ok_or(IcmpErrorMsgError::NoEmbeddedHeaders)?;
 
-    embedded_headers
+    let inner_ip = embedded_headers
         .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?
+        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?;
+    let old_addr = inner_ip.src_addr();
+    inner_ip
         .try_set_source(
             target_addr
                 .try_into()
                 .map_err(|_| IcmpErrorMsgError::NotUnicast(target_addr))?,
         )
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    // The inner IP addresses belong to the pseudo-header covered by the checksum of the inner
+    // transport header, for TCP/UDP/ICMPv6 (but not ICMPv4). Update the checksum if relevant.
+    if let Some(transport) = embedded_headers.try_embedded_transport_mut() {
+        // Note: update_checksum_for_address is a no-op for ICMPv4
+        transport.update_checksum_for_address(old_addr, target_addr);
+    }
 
     let Some(target_port) = target_port else {
         // No port to translate, we're done
@@ -122,11 +131,19 @@ pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
         .embedded_headers_mut()
         .ok_or(IcmpErrorMsgError::NoEmbeddedHeaders)?;
 
-    embedded_headers
+    let inner_ip = embedded_headers
         .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?
+        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?;
+    let old_addr = inner_ip.dst_addr();
+    inner_ip
         .try_set_destination(target_addr)
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    // See the comment on the source address translation: update the checksum of the inner
+    // transport header to account for the new address in the pseudo-header.
+    if let Some(transport) = embedded_headers.try_embedded_transport_mut() {
+        transport.update_checksum_for_address(old_addr, target_addr);
+    }
 
     let Some(target_port) = target_port else {
         // No port to translate, we're done
