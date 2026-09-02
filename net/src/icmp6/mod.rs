@@ -1099,7 +1099,7 @@ mod contract {
                     unreachable!()
                 }
                 Some(EmbeddedTransport::Icmp6(_)) => {
-                    let net_gen = GenWithNextHeader(NextHeader::ICMP);
+                    let net_gen = GenWithNextHeader(NextHeader::ICMP6);
                     Some(Net::Ipv6(net_gen.generate(driver)?))
                 }
                 None => {
