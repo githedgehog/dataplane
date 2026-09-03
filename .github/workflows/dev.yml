@@ -241,6 +241,61 @@ jobs:
           recipe: "ci::check-clippy"
           recipe_args: "${{ matrix.profile }}"
 
+      # TEMPORARY (PR #1800): can the container tier be replaced by a user
+      # namespace? Everything the Docker container provides -- an empty netns,
+      # tap creation, an assembled root, device access -- is available to an
+      # unprivileged process on a workstation. Whether it is available *here*,
+      # inside an unprivileged runner container, is what this asks. Drop once
+      # the answer is recorded.
+      - name: "user namespace probe"
+        continue-on-error: true
+        shell: "bash"
+        run: |
+          set +e
+          echo "### this process"
+          grep -E '^(CapEff|Seccomp|NoNewPrivs)' /proc/self/status
+          echo "  max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>&1)"
+
+          echo "### devices the VMM needs, as seen from *this* container"
+          echo "### (Docker maps these into the n-vm container today; without it"
+          echo "###  the VMM would run here instead and would need them here)"
+          for d in /dev/kvm /dev/vhost-vsock /dev/vhost-net /dev/net/tun; do
+            if [ -e "$d" ]; then
+              printf '  %-18s %s' "$d" "$(stat -c '%A %U:%G' "$d" 2>&1)"
+              if (exec 3<>"$d") 2>/dev/null; then echo "  open rw: yes"; else echo "  open rw: NO"; fi
+            else
+              printf '  %-18s ABSENT\n' "$d"
+            fi
+          done
+
+          cat > "${RUNNER_TEMP}/userns-probe.sh" <<'PROBE'
+          set +e
+          for flags in -Ur -Urn -Urnm; do
+            if unshare "${flags}" true 2>/tmp/unshare-err; then
+              echo "  unshare ${flags}: yes"
+            else
+              echo "  unshare ${flags}: NO -- $(cat /tmp/unshare-err)"
+            fi
+          done
+
+          unshare -Urn sh -c '
+            grep -E "^CapEff" /proc/self/status
+            ip tuntap add dev tap0 mode tap && echo "tap creation: yes" || echo "tap creation: NO"
+          ' 2>&1 | sed 's/^/  in user+net: /'
+
+          unshare -Urnm sh -c '
+            root=$(mktemp -d)
+            mkdir -p "${root}/store" "${root}/put_old"
+            mount --bind /nix/store "${root}/store" && echo "bind /nix/store: yes" || echo "bind /nix/store: NO"
+            mount --bind "${root}" "${root}" && cd "${root}" &&
+              pivot_root . put_old && echo "pivot_root: yes" || echo "pivot_root: NO"
+          ' 2>&1 | sed 's/^/  in user+mount: /'
+          PROBE
+
+          echo "### namespace creation"
+          nix-shell -p util-linux iproute2 --run "bash ${RUNNER_TEMP}/userns-probe.sh" 2>&1 | sed 's/^/  /'
+          exit 0
+
       - name: "test"
         uses: *just
         with:
