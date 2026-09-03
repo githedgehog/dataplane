@@ -1040,15 +1040,42 @@ pub mod contract {
 
     const MAX_PORTS: u16 = 1024;
 
+    /// Which address family an expose should use.
+    ///
+    /// A manifest may not mix families, so a caller building several exposes for one
+    /// manifest has to fix this once rather than let each expose draw its own. Letting
+    /// them draw independently produced a manifest the validator refuses outright, which
+    /// showed up as a large and unexplained share of discarded cases.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Family {
+        /// Let the driver choose. The right default for a lone expose.
+        #[default]
+        Either,
+        V4,
+        V6,
+    }
+
+    impl Family {
+        fn is_v4<D: Driver>(self, driver: &mut D) -> Option<bool> {
+            match self {
+                Family::Either => driver.produce::<bool>(),
+                Family::V4 => Some(true),
+                Family::V6 => Some(false),
+            }
+        }
+    }
+
     #[derive(Debug, Clone, Copy, Default)]
-    pub struct PortForwardingExpose;
+    pub struct PortForwardingExpose {
+        pub family: Family,
+    }
 
     impl ValueGenerator for PortForwardingExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let host_bits = driver.gen_u8(Included(&0), Included(&MAX_HOST_BITS))?;
-            let (internal, external) = if driver.produce::<bool>()? {
+            let (internal, external) = if self.family.is_v4(driver)? {
                 v4_pair(driver, host_bits)?
             } else {
                 v6_pair(driver, host_bits)?
@@ -1079,13 +1106,15 @@ pub mod contract {
     }
 
     #[derive(Debug, Clone, Copy, Default)]
-    pub struct MasqueradeExpose;
+    pub struct MasqueradeExpose {
+        pub family: Family,
+    }
 
     impl ValueGenerator for MasqueradeExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
-            let v4 = driver.produce::<bool>()?;
+            let v4 = self.family.is_v4(driver)?;
             let privates = driver.gen_u8(Included(&1), Included(&3))?;
             let publics = driver.gen_u8(Included(&1), Included(&2))?;
             let base = driver.produce::<u8>()?;
@@ -1138,7 +1167,9 @@ pub mod contract {
     }
 
     #[derive(Debug, Clone, Copy, Default)]
-    pub struct StaticNatExpose;
+    pub struct StaticNatExpose {
+        pub family: Family,
+    }
 
     const MAX_TOTAL_LOG: u8 = 6;
 
@@ -1146,7 +1177,7 @@ pub mod contract {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
-            let v4 = driver.produce::<bool>()?;
+            let v4 = self.family.is_v4(driver)?;
             let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
 
             let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
@@ -1327,7 +1358,7 @@ pub mod contract {
         #[test]
         fn every_generated_expose_validates() {
             bolero::check!()
-                .with_generator(PortForwardingExpose)
+                .with_generator(PortForwardingExpose::default())
                 .for_each(|expose: &VpcExpose| {
                     let validated = expose.validate();
                     assert!(
@@ -1394,7 +1425,7 @@ pub mod contract {
         #[test]
         fn every_generated_masquerade_expose_validates() {
             bolero::check!()
-                .with_generator(MasqueradeExpose)
+                .with_generator(MasqueradeExpose::default())
                 .for_each(|expose: &VpcExpose| {
                     let validated = expose.validate().unwrap_or_else(|e| {
                         panic!("generated expose was rejected: {expose} -- {e:?}")
@@ -1408,7 +1439,7 @@ pub mod contract {
         #[test]
         fn a_generated_expose_can_be_offered_in_an_overlay() {
             bolero::check!()
-                .with_generator(MasqueradeExpose)
+                .with_generator(MasqueradeExpose::default())
                 .cloned()
                 .for_each(|expose: VpcExpose| {
                     let shown = expose.to_string();
@@ -1423,7 +1454,7 @@ pub mod contract {
         fn every_generated_static_nat_expose_validates() {
             let mut shapes_differed = false;
             bolero::check!()
-                .with_generator(StaticNatExpose)
+                .with_generator(StaticNatExpose::default())
                 .for_each(|expose: &VpcExpose| {
                     let validated = expose.validate().unwrap_or_else(|e| {
                         panic!("generated expose was rejected: {expose} -- {e:?}")
@@ -1443,7 +1474,7 @@ pub mod contract {
         #[test]
         fn a_generated_expose_survives_validation_as_port_forwarding() {
             bolero::check!()
-                .with_generator(PortForwardingExpose)
+                .with_generator(PortForwardingExpose::default())
                 .for_each(|expose: &VpcExpose| {
                     let validated = expose.validate().unwrap_or_else(|e| panic!("{e:?}"));
                     assert!(validated.has_port_forwarding());
