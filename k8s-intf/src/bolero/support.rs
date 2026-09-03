@@ -264,20 +264,28 @@ pub mod blocks {
 
     pub const SUBNET_SLOTS: u8 = 16;
 
+    /// Panics if the caller's sizes cannot be separated.
+    ///
+    /// Unconditional rather than `debug_assert!`, and no saturating fallback. Disjoint
+    /// slots are what stops two exposes minting the same prefix, and a release build,
+    /// which is where a fuzzing engine runs, is precisely where a silent overlap would
+    /// go unnoticed. It would then present as the validator wrongly refusing a
+    /// configuration, which is a long way from the size the caller actually asked for.
     #[must_use]
     pub fn expose_slot(vpc: u8, slots_per_vpc: u8, expose: u8) -> u8 {
-        debug_assert!(
-            vpc < SUBNET_SLOTS,
-            "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its subnets \
-             would land on top of an expose's prefixes and the two would overlap"
-        );
+        if vpc >= SUBNET_SLOTS {
+            unreachable!(
+                "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its \
+                 subnets would land on top of an expose's prefixes and the two would overlap"
+            );
+        }
         let wanted = u32::from(vpc) * u32::from(slots_per_vpc) + u32::from(expose);
-        debug_assert!(
-            u8::try_from(wanted).is_ok(),
-            "vpc {vpc} expose {expose} needs slot {wanted} of 256, so the saturating arithmetic \
-             below will hand it a slot another expose already holds"
-        );
-        vpc.saturating_mul(slots_per_vpc).saturating_add(expose)
+        u8::try_from(wanted).unwrap_or_else(|_| {
+            unreachable!(
+                "vpc {vpc} expose {expose} needs slot {wanted} of 256, so it would be handed a \
+                 slot another expose already holds"
+            )
+        })
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -392,6 +400,14 @@ pub mod blocks {
     ) -> Option<Vec<String>> {
         if count == 0 {
             return Some(Vec::new());
+        }
+        // Subnets are laid out by vpc index in the same space `expose_slot` carves up, so
+        // the same budget applies here. This had no check at all.
+        if vpc >= SUBNET_SLOTS {
+            unreachable!(
+                "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its \
+                 subnets would overlap another vpc's exposes"
+            );
         }
         let slot_len = u32::from(min_len(family));
         let mut out = Vec::with_capacity(usize::from(count));
