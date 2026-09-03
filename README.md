@@ -153,6 +153,49 @@ You can override this with the `oci_repo` argument
 just oci_repo=my-registry.example.com:5000 push-container dataplane
 ```
 
+## Packet drivers
+
+The dataplane can move packets in more than one way, selected with `--driver`:
+
+| Driver   | Notes                                                                 |
+| -------- | --------------------------------------------------------------------- |
+| `af-xdp` | The default. `AF_XDP` sockets; no copy where the NIC driver allows it |
+| `kernel` | `AF_PACKET` sockets; works anywhere, copies every frame               |
+| `dpdk`   | Not wired up yet                                                      |
+
+### AF_XDP
+
+`AF_XDP` is what the dataplane uses when it is not told otherwise, so nothing
+has to be passed to get it:
+
+```bash
+dataplane --interface eth0=kernel@eth0 --interface eth1=kernel@eth1
+```
+
+The process needs `CAP_NET_RAW` to open the sockets and `CAP_BPF` to load the
+XDP program that redirects packets to them, and `/sys/fs/bpf` should be mounted
+so libxdp can pin what it loads. Where a process cannot be given those, pass
+`--driver kernel` instead.
+
+The driver runs one worker per RX queue, each with a socket on every interface.
+Zero-copy is tried first on every one of them and copy mode used where the NIC
+driver will not do it, which the log says at startup.
+
+Building it links libxdp, which the build compiles from source along with the
+libbpf it bundles. `--no-default-features` leaves it out, for a build without
+that toolchain; such a build has only the kernel driver and has to be told to
+use it.
+
+By default the redirect is done by the program libxdp loads for us. To use
+ours, in `xdp-ebpf/`, build it first and enable the feature that compiles it
+into the binary:
+
+```bash
+cargo +nightly install bpf-linker   # once
+just build-ebpf
+cargo build -p dataplane --features xdp/embedded-ebpf
+```
+
 ## Common build arguments
 
 Most just recipes accept the following arguments, which can be combined freely:
