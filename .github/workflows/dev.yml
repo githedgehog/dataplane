@@ -195,6 +195,22 @@ jobs:
       USER: "runner"
       # The `just` action runs under `set -u`, so this stays defined.
       JUST_VARS: ""
+      # These runners are containers on bare metal talking to the host's
+      # Docker daemon, so the daemon cannot see this container's /nix. Measured
+      # on a runner: /nix/store holds 7386 entries here and 0 as the daemon
+      # sees it, while `_work` is the same block device at the same path in
+      # both namespaces. So the closure the container mounts is exported to a
+      # directory under `_work`, where the two agree. `setup-roots` fills it;
+      # `n-vm` reads the same variable and rewrites its bind mount sources,
+      # leaving the targets alone. See `n_vm_host_share` in the justfile.
+      #
+      # Beside the checkout rather than inside it. Two reasons: the workspace
+      # is served to the guest over virtiofs, and -- the one that actually
+      # bites -- `default.nix` filters `./.` as its source, and the markdown
+      # and C-header filters would sweep a few GiB of copied store into every
+      # build. `runner.temp` would be the natural home but the `runner`
+      # context is not available to a job-level `env`.
+      N_VM_HOST_SHARE_DIR: "${{ github.workspace }}/../n-vm-share"
     strategy:
       fail-fast: false
       # Each entry gets its own runner; this limits shared-pool occupancy.
@@ -524,6 +540,14 @@ jobs:
 
       - name: "coverage-archive"
         uses: *just
+        env:
+          # Headroom on the VM kill deadline for an instrumented guest, which
+          # is slower than a plain one and writes its coverage profile on the
+          # way out. Cheap insurance rather than a measured requirement: this
+          # is when a hung guest is shot, not a delay anything waits out, and
+          # overrunning it surfaces as "no parseable test verdict from guest"
+          # -- a passing test reported as a broken harness.
+          N_VM_OVERHEAD_SCALE: "3"
         with:
           recipe: "ci::coverage"
           recipe_args: "${{ matrix.profile }}"

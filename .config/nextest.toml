@@ -136,8 +136,29 @@ store-failure-output = true
 # filter = 'test(flaky test name here)'
 # retries = 3
 
+# Every package that boots a guest, not just the one that owns the harness.
+#
+# A VM claims a 1GiB hugepage for its guest memory and the host pool is small -- two pages on the
+# machine this was found on. Nothing arbitrates that pool, so tests that boot concurrently race for
+# it and the losers fail with "the 1073741824-byte hugepage pool has 0 free page(s)". That is a
+# resource conflict wearing the costume of a flaky test, and it made ten of `dataplane-n-vm`'s
+# eighteen integration tests fail in a whole-workspace run while all eighteen passed with
+# `--test-threads 1`.
+#
+# The list is `#[n_vm::test]`'s users. It has to be maintained by hand, which is the weakness of
+# fixing this here: a package that starts booting guests and is not added to it fails in a way that
+# looks like its own bug. The durable fix is for `n-vm` to acquire the pool itself and wait rather
+# than fail -- a test harness that only works when the consuming repo's runner config is right is
+# not one that can be handed to another repo.
 [[profile.default.overrides]]
-filter = 'package(dataplane)'
+filter = '''
+    package(dataplane)
+  + package(dataplane-n-vm)
+  + package(dataplane-n-it)
+  + package(dataplane-hardware)
+  + package(dataplane-interface-manager)
+  + package(dataplane-mgmt)
+'''
 platform = 'cfg(unix)'
 test-group = 'vm'
 

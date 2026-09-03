@@ -1,0 +1,65 @@
+[package]
+name = "dataplane-n-vm"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[lib]
+name = "n_vm"
+
+[features]
+# Builds the `n-vm-reap` maintenance tool.  Off by default so that a plain
+# `cargo test -p dataplane-n-vm` does not link a binary it will never run.
+reap = []
+
+# Cleans up containers a SIGKILL left behind; see the binary's own docs.
+# Named with dashes to match how it is invoked, and pointed at explicitly
+# because the file name is not a valid Rust identifier.
+#
+# Gated behind `reap` because cargo builds a package's binaries whenever it
+# builds that package's integration tests, and a binary is not a fuzz
+# target: under the sancov RUSTFLAGS a libFuzzer build uses it picks up
+# instrumentation whose runtime only the fuzz target links, and fails on
+# undefined `__sanitizer_cov_*` symbols.  Keeping it out of the default set
+# leaves `dataplane-n-vm` buildable under those flags.
+[[bin]]
+name = "n-vm-reap"
+path = "src/bin/n-vm-reap.rs"
+required-features = ["reap"]
+
+[dependencies]
+# internal
+n-vm-macros = { workspace = true }
+n-vm-protocol = { workspace = true }
+
+# external
+cloud-hypervisor-client = { workspace = true, default-features = false, features = [] }
+command-fds = { workspace = true, default-features = false, features = ["tokio"] }
+bollard = { workspace = true, default-features = false, features = ["pipe", "ssl_providerless"] }
+# For target discovery only. `#[n_vm::test]` answers `cargo bolero list` on the host without
+# entering the test body -- see `n_vm::bolero` -- which needs bolero's own `TargetLocation`.
+bolero = { workspace = true, default-features = false, features = ["std"] }
+futures = { workspace = true, default-features = false, features = ["default"] }
+nix = { workspace = true, default-features = false, features = ["signal", "user"] }
+qapi-qmp = { workspace = true, default-features = false, features = [] }
+qapi-spec = { workspace = true, default-features = false, features = [] }
+miette = { workspace = true, default-features = false, features = ["derive", "fancy"] }
+rand = { workspace = true, default-features = false, features = ["thread_rng"] }
+rtnetlink = { workspace = true, default-features = false, features = ["tokio_socket"] }
+serde = { workspace = true, default-features = false, features = ["derive"] }
+serde_json = { workspace = true, default-features = false, features = ["std"] }
+thiserror = { workspace = true, default-features = false, features = [] }
+tokio = { workspace = true, default-features = false, features = ["rt", "process", "macros", "fs", "net", "signal", "time", "io-util", "io-std", "rt-multi-thread"] }
+tokio-stream = { workspace = true, default-features = false, features = [] }
+tokio-util = { workspace = true, default-features = false, features = ["codec"] }
+tokio-vsock = { workspace = true, default-features = false, features = [] }
+tracing = { workspace = true, default-features = false, features = [] }
+tracing-subscriber = { workspace = true, default-features = false, features = ["fmt"] }
+
+# Declared here rather than in the workspace's RUSTFLAGS so that it travels
+# with the crate: `n-vm` opts into no workspace lints, which is what keeps
+# returning it to `githedgehog/testn` a code move rather than a decoupling
+# project. See the host-hugepage tests in `tests/integration.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)'] }

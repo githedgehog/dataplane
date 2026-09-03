@@ -130,6 +130,25 @@ nightly := "false"
 [private]
 docker_sock := "/var/run/docker.sock"
 
+# Directory the Docker daemon can see, when it cannot see this checkout's
+# /nix/store. Empty -- the ordinary case -- means the daemon runs on this host
+# and resolves store paths itself.
+#
+# n-vm's container tier hands the daemon bind-mount *sources*, and the daemon
+# resolves them in its own mount namespace. On a CI runner that is itself a
+# container talking to the host's daemon, /nix belongs to the runner image and
+# the bare metal has nothing at those paths. Because every mount asks Docker to
+# create a missing mount point, the daemon answers by creating an *empty*
+# directory rather than failing, so the guest root comes up empty and the first
+# mount beneath it dies on a read-only filesystem.
+#
+# Set this to a directory on a filesystem both sides share -- under this
+# workspace, which is the one path a containerised runner and its host agree on
+# -- and `setup-roots` will export the roots' closure into it. `n-vm` reads the
+# same variable and rewrites the mount sources; the targets stay `/nix/store`,
+# so rpaths in the guest are unaffected.
+n_vm_host_share := env("N_VM_HOST_SHARE_DIR", "")
+
 # Build a nix derivation with standard build arguments
 [script]
 build target="dataplane.tar" *args:
@@ -168,10 +187,30 @@ pre-flight: (check-dependencies) (fmt "--check") (test) (lint) (doctest)
     echo "pre flight checks pass"
 
 [script]
-test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
+test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
-    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
+    # Export the scratch-container roots `setup-roots` just built, so that
+    # `#[n_vm::test]` tests find them. The guard is for a tree where
+    # `setup-roots` was skipped; the tests fail loudly rather than skip, so
+    # this is a clearer error, not a fallback.
+    if [[ -e testroot && -e vmroot ]]; then
+        export N_VM_TEST_ROOT="$(pwd)/testroot"
+        export N_VM_VM_ROOT="$(pwd)/vmroot"
+    fi
+    # `trybuild` (n-vm-macros' compile-fail suite) shells out to
+    # `cargo --offline` for a scratch project under `target/tests/trybuild`,
+    # which resolves against the local registry cache rather than the nix
+    # vendor directory the workspace was built from. CI builds through nix and
+    # never populates that cache, so the suite fails there with "no matching
+    # package named `proc-macro2`" while passing on any developer machine.
+    # `--locked` means every download is checksum-checked against Cargo.lock,
+    # and a warm cache makes this a no-op.
+    cargo fetch --locked
+    # `--no-tests pass`: a single-package archive whose only test(s) are
+    # `#[cfg_attr(emulated, ignore)]` (e.g. n-vm-macros' trybuild test under
+    # cross) runs zero tests; treat that as success, matching `test-each`.
+    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) --no-tests pass {{ filter }}
 
 # List the bolero targets `just fuzz` can run. Args go to `cargo bolero list`
 [script]
@@ -221,8 +260,16 @@ check-each *args: (build "check" args)
     {{ _just_debuggable_ }}
 
 [script]
-test-each *args: (build "tests.pkg" args)
+test-each *args: (setup-roots) (build "tests.pkg" args)
     {{ _just_debuggable_ }}
+    # Same two requirements as `test`: the per-package archives include
+    # `dataplane-n-vm`'s guest-booting suite, and n-vm-macros' trybuild suite
+    # resolves against the local registry cache.
+    if [[ -e testroot && -e vmroot ]]; then
+        export N_VM_TEST_ROOT="$(pwd)/testroot"
+        export N_VM_VM_ROOT="$(pwd)/vmroot"
+    fi
+    cargo fetch --locked
     declare -a fail=()
     for test_archive in results/tests.pkg*/*.tar.zst; do
         if ! cargo nextest run --archive-file "${test_archive}" --workspace-remap "$(pwd)" --no-tests pass; then
@@ -238,11 +285,24 @@ test-each *args: (build "tests.pkg" args)
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
     {{ _just_debuggable_ }}
 
-# Create devroot and sysroot symlinks for local development
+# Remove test containers n-vm left behind. Args go to n-vm-reap (--force, --list, --all)
+[script]
+reap *args:
+    {{ _just_debuggable_ }}
+    # The host tier cleans up after itself on every route it can reach,
+    # including SIGTERM and SIGINT, so this is only needed after a SIGKILL, an
+    # OOM kill, or a reboot -- none of which give a process the chance to tidy
+    # up. Containers whose creating process is still alive are left alone
+    # unless `--all` is passed, so this is safe to run while other tests are
+    # going. Without a tty it refuses to remove anything; CI should pass
+    # `--force`.
+    cargo run --quiet -p dataplane-n-vm --features reap --bin n-vm-reap -- {{ args }}
+
+# Create devroot, sysroot, testroot, and vmroot symlinks for local development
 [script]
 setup-roots *args:
     {{ _just_debuggable_ }}
-    for root in devroot sysroot; do
+    for root in devroot sysroot testroot vmroot; do
       nix build -f default.nix "${root}" \
         --argstr default-features '{{ default_features }}' \
         --argstr features '{{ features }}' \
@@ -257,6 +317,86 @@ setup-roots *args:
         --out-link "${root}" \
         {{ args }}
     done
+
+    if [ -n "{{ n_vm_host_share }}" ]; then
+      just n_vm_host_share="{{ n_vm_host_share }}" export-scratch-roots
+    fi
+
+# Copy the scratch roots' nix closure somewhere the Docker daemon can read it.
+# See `n_vm_host_share`; a no-op unless that is set.
+[script]
+export-scratch-roots:
+    {{ _just_debuggable_ }}
+    declare -r share="{{ n_vm_host_share }}"
+    if [ -z "${share}" ]; then
+      echo "n_vm_host_share is unset; nothing to export"
+      exit 0
+    fi
+    declare -r store="${share}/nix/store"
+    # `tmp` is the other half: the forwarded-environment directory is a bind
+    # source too, and a container-local /tmp is no more visible than /nix.
+    mkdir -p "${store}" "${share}/tmp"
+
+    # The closure, not the whole store. `/nix/store` is mounted into the
+    # container whole, so the export has to cover everything the container
+    # resolves through it, which is two things:
+    #
+    #   testroot/vmroot  the host tier's qemu, cloud-hypervisor and virtiofsd,
+    #                    the guest kernel, and n-it inside the guest root
+    #   sysroot          what the *test binary* is linked against. Missing this
+    #                    is not a missing-file error: the binary is there and
+    #                    execs, and the kernel reports ENOENT for its absent
+    #                    ELF interpreter, so the container exits 127 with
+    #                    "No such file or directory" naming a path that plainly
+    #                    exists.
+    #
+    # devroot is deliberately not here. It is the toolchain -- 4.6 GiB against
+    # sysroot's 2.0 -- and nothing inside the container compiles.
+    declare -a roots=( testroot vmroot sysroot )
+    declare -a resolved=()
+    for root in "${roots[@]}"; do
+      if [ ! -e "${root}" ]; then
+        >&2 echo "::error::${root} is missing; run setup-roots first"
+        exit 1
+      fi
+      resolved+=( "$(readlink -f "${root}")" )
+    done
+    declare -a paths
+    mapfile -t paths < <(nix-store --query --requisites "${resolved[@]}")
+
+    declare -i copied=0 kept=0
+    for path in "${paths[@]}"; do
+      declare dest="${store}/$(basename "${path}")"
+      # A store path is immutable, so an entry that is already here is already
+      # right. This is what makes the second job on a runner cheap.
+      if [ -e "${dest}" ]; then
+        kept+=1
+        continue
+      fi
+      # Copy to a private name and rename, so a concurrent job never observes
+      # a half-copied path under a name that promises a whole one.
+      declare staging="${store}/.staging-$$-$(basename "${path}")"
+      rm -rf -- "${staging}"
+      cp -a --no-preserve=ownership -- "${path}" "${staging}"
+      # A store path's directories are r-xr-xr-x, which nix relies on to keep
+      # them immutable. A copy has no such contract, and inheriting the mode
+      # makes the export undeletable: `rm -rf` cannot unlink a child of a
+      # directory it cannot write. Whoever cleans this runner should not have
+      # to know that.
+      chmod -R u+w -- "${staging}"
+      if ! mv -T -- "${staging}" "${dest}" 2>/dev/null; then
+        # Lost the race; the winner's copy is as good as ours.
+        chmod -R u+w -- "${staging}" 2>/dev/null || true
+        rm -rf -- "${staging}"
+      fi
+      copied+=1
+    done
+    # Reported from nix rather than `du`: on a copy-on-write filesystem `du`
+    # run straight after the copy reports blocks that are still dirty, which
+    # made a 1.8 GiB export read as 26 MiB.
+    printf 'exported %d store paths to %s (%d already present, %s closure)\n' \
+        "${copied}" "${store}" "${kept}" \
+        "$(nix path-info -S "${resolved[@]}" 2>/dev/null | awk '{t+=$2} END {printf "%.1f GiB", t/1024/1024/1024}')"
 
 # Build the dataplane container image
 [script]
@@ -740,9 +880,20 @@ doctest package="" *args: (build (if package == "" { "doctests.all" } else { "do
 # Run instrumented tests and report coverage. Args are forwarded to nextest; for example,
 # `just coverage -p dataplane-nat` scopes the run to this crate.
 [script]
-coverage *args:
+coverage *args: (setup-roots)
     {{ _just_debuggable_ }}
     export BOLERO_RANDOM_TEST_TIME_MS="{{ bolero_coverage_test_time_ms }}"
+    # Export the scratch-container roots `setup-roots` just built, so that
+    # `#[n_vm::test]` tests find them. The guard is for a tree where
+    # `setup-roots` was skipped; the tests fail loudly rather than skip, so
+    # this is a clearer error, not a fallback.
+    if [[ -e testroot && -e vmroot ]]; then
+      export N_VM_TEST_ROOT="$(pwd)/testroot"
+      export N_VM_VM_ROOT="$(pwd)/vmroot"
+    fi
+    # See the `test` recipe: trybuild resolves its scratch project against the
+    # local registry cache.
+    cargo fetch --locked
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
     declare -r out="./target/nextest/coverage"
@@ -792,7 +943,7 @@ duvet-summary *args:
 
 # Use Nix-built archives so local and CI coverage report the same binaries.
 [script]
-coverage-archive package="tests.all" *args:
+coverage-archive package="tests.all" *args: (setup-roots)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     just \
@@ -852,6 +1003,17 @@ coverage-archive package="tests.all" *args:
 
     # Nextest changes cwd; `%m` also pools compatible profiles across tests.
     export LLVM_PROFILE_FILE="${profraw}/cov-%m.profraw"
+
+    # This recipe -- not `coverage` -- is what CI runs (`ci::coverage`), and it
+    # runs the tests on the runner rather than in the nix sandbox, so the
+    # guest-booting tests need the same two things `test` gives them.
+    if [[ -e testroot && -e vmroot ]]; then
+        export N_VM_TEST_ROOT="${root}/testroot"
+        export N_VM_VM_ROOT="${root}/vmroot"
+    fi
+    # See the `test` recipe: trybuild resolves its scratch project against the
+    # local registry cache, which a nix-only CI job never populates.
+    cargo fetch --locked
 
     # Report partial coverage before propagating a test failure.
     declare -i test_status=0

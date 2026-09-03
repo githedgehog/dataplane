@@ -194,6 +194,501 @@ let
       zizmor
     ]);
   };
+  # Whether the guest architecture (= the test binary's target arch, i.e.
+  # the nix host platform) differs from the build machine's arch.  When it
+  # does, the test VM is software-emulated (TCG) rather than KVM-accelerated.
+  is-cross-guest = platform'.arch != host-arch;
+
+  # The bootable kernel image filename as linux-fancy emits it.
+  # x86_64 produces a `bzImage`; aarch64 produces a raw `Image`.  Both are
+  # installed into the manifest as `vmlinuz`, so nothing downstream has to
+  # care which one this build produced.
+  kernel-image-name = if platform'.arch == "aarch64" then "Image" else "bzImage";
+
+  # Guest architecture as spelled in the kernel manifest.  Must match
+  # `n_vm::Arch::manifest_name`.
+  kernel-manifest-arch = if platform'.arch == "aarch64" then "aarch64" else "x86_64";
+
+  # Directory holding the kernel built from our own config fragments.
+  #
+  # "union" because it carries the union of what the whole test suite needs
+  # -- today from the hand-maintained fragment list in
+  # nix/overlays/dataplane-dev.nix, later checked against the requirements
+  # the tests declare.  Named separately from the profiles because several
+  # profiles share one kernel: the artifacts are installed once and
+  # referenced by each.
+  union-kernel-dir = "union";
+
+  # Directory for the deliberately-modular kernel (see modular.config).
+  modular-kernel-dir = "modular";
+
+  # Directory for the pinned Flatcar release -- the kernel we actually ship
+  # on, and the reason the modular path exists at all.
+  flatcar-kernel-dir = "flatcar";
+
+  # Directory for the pinned Ubuntu kernel.  A second distro, to test that
+  # the modular path generalises rather than fitting Flatcar in particular.
+  ubuntu-kernel-dir = "ubuntu";
+
+  # Every guest kernel that gets installed, keyed by its artifact directory.
+  #
+  # Keyed by *kernel* rather than by profile because several profiles can
+  # share one: the image is installed once and referenced by each.  `boot`
+  # is a property of the kernel, not of the profile -- it follows from
+  # whether that kernel can reach its own root.
+  guest-kernels = {
+    ${union-kernel-dir} = {
+      image = "${pkgs.linux-fancy}/${kernel-image-name}";
+      configfile = pkgs.linux-fancy.configfile;
+      boot = "direct";
+      initramfs = null;
+      modules = null;
+      modDirVersion = null;
+    };
+    ${modular-kernel-dir} = {
+      image = "${pkgs.linux-fancy-modular}/${kernel-image-name}";
+      configfile = pkgs.linux-fancy-modular.configfile;
+      boot = "initramfs";
+      initramfs = initramfs-modular;
+      modules = pkgs.linux-fancy-modular.modules;
+      inherit (pkgs.linux-fancy-modular) modDirVersion;
+    };
+  }
+  # Flatcar is pinned to an `amd64-usr` release, so the profile simply does
+  # not exist for another guest architecture.  Omitted rather than pointed
+  # at the x86_64 artifacts: the manifest's `arch` is derived from the build
+  # platform, so including it would claim an aarch64 kernel and hand over an
+  # x86_64 one -- a mismatch `check_arch` cannot catch because the manifest
+  # would be lying rather than disagreeing.
+  #
+  # Flatcar does publish arm64 releases; wiring one up is a matter of a
+  # second pin, not new mechanism.
+  // lib.optionalAttrs (kernel-manifest-arch == "x86_64") {
+    ${flatcar-kernel-dir} = {
+      inherit (flatcar-kernel-adapted)
+        image
+        configfile
+        modules
+        modDirVersion
+        ;
+      boot = "initramfs";
+      initramfs = initramfs-flatcar;
+    };
+    # Ubuntu publishes arm64 kernels too, so unlike Flatcar this is not
+    # inherently x86_64-only; it is pinned to an `amd64` .deb today and
+    # gated for the same reason -- claiming an aarch64 kernel while handing
+    # over an x86_64 one is a lie `check_arch` cannot catch.  Lifting it is
+    # a second set of pins, not new mechanism, but the arm64 `vmlinuz` is a
+    # compressed `Image` and wants checking against QEMU's `-kernel` first.
+    ${ubuntu-kernel-dir} = {
+      inherit (ubuntu-kernel-adapted)
+        image
+        configfile
+        modules
+        modDirVersion
+        ;
+      boot = "initramfs";
+      initramfs = initramfs-ubuntu;
+    };
+  };
+
+  # The environments a test can run in.
+  #
+  # A profile is a (kernel, hypervisor) pair.  Today they differ only in
+  # hypervisor, which is exactly the axis `n-vm/tests/integration.rs`
+  # currently sweeps *by hand* -- `test_which_runs_in_vm_with_iommu` and
+  # `..._with_qemu_iommu` are the same test written twice.  Making it a
+  # profile is what lets those collapse.
+  #
+  # Profile names are Rust identifiers because each becomes a module name in
+  # the generated test tree (`some_test::qemu`), so nextest can filter on
+  # one environment.
+  kernel-profiles = {
+    cloud_hypervisor = {
+      hypervisor = "cloud_hypervisor";
+      kernel-dir = union-kernel-dir;
+    };
+    qemu = {
+      hypervisor = "qemu";
+      kernel-dir = union-kernel-dir;
+    };
+    # The modular kernel, whose virtiofs is a module, so it can only be
+    # reached through an initramfs.  QEMU because it is the backend whose
+    # initrd handling we exercise first; a cloud-hypervisor variant is a
+    # one-line addition once that is proven.
+    modular = {
+      hypervisor = "qemu";
+      kernel-dir = modular-kernel-dir;
+    };
+  }
+  // lib.optionalAttrs (kernel-manifest-arch == "x86_64") {
+    # The kernel the dataplane actually ships on.  The whole point: our own
+    # kernel is built from a config we chose, so it cannot tell us whether
+    # the code works on the one we deploy.  x86_64 only -- see
+    # `guest-kernels`.
+    flatcar = {
+      hypervisor = "qemu";
+      kernel-dir = flatcar-kernel-dir;
+    };
+    # A distro kernel that is *not* the one we ship on, which is the point:
+    # Flatcar passing tells us the code works where we deploy, but only a
+    # second distro can tell us whether the harness itself generalises.
+    ubuntu = {
+      hypervisor = "qemu";
+      kernel-dir = ubuntu-kernel-dir;
+    };
+  };
+
+  # The profile used when a test does not name one.
+  default-kernel-profile = "cloud_hypervisor";
+
+  # nix's declaration of which guest kernels exist, read by the container
+  # tier (see `n_vm::kernel_manifest`).
+  #
+  # This is the seam that keeps `cargo` from ever having to invoke `nix`:
+  # the artifacts are materialized first (`just setup-roots`), and the tests
+  # only read them.  Paths are container-absolute because the container tier
+  # is what consumes them -- every first-level `testroot` entry is
+  # bind-mounted at the container root, so `kernels/` lands at `/kernels`.
+  kernel-manifest = builtins.toJSON {
+    default = default-kernel-profile;
+    profiles = lib.mapAttrs (
+      _name: profile:
+      let
+        k = guest-kernels.${profile.kernel-dir};
+        dir = "/kernels/${profile.kernel-dir}";
+      in
+      {
+        arch = kernel-manifest-arch;
+        inherit (profile) hypervisor;
+        # `boot` follows from the kernel, not from the profile: it is
+        # "direct" when the kernel can mount its own root, and "initramfs"
+        # when the transport that reaches the root is itself a module.
+        inherit (k) boot;
+        kernel = "${dir}/vmlinuz";
+        config = "${dir}/config";
+      }
+      // lib.optionalAttrs (k.initramfs != null) { initramfs = "${dir}/initramfs"; }
+      // lib.optionalAttrs (k.modules != null) {
+        modules = "${dir}/modules/${k.modDirVersion}";
+      }
+    ) kernel-profiles;
+  };
+
+  # Minimal derivation containing the bootable kernel image and the
+  # manifest describing it.
+  #
+  # The full linux-fancy output includes modules, headers, etc. that are
+  # not needed inside the test container -- we extract just the bootable
+  # image so that symlinkJoin produces the `kernels/` tree in testroot
+  # without pulling in the rest of the kernel tree.
+  #
+  # IMPORTANT: this is `pkgs.linux-fancy` (the *host*-platform kernel), not
+  # `pkgs.pkgsBuildHost.linux-fancy` (the *build*-platform kernel).  The
+  # guest kernel must match the guest (= test binary) architecture.  For a
+  # native build the two package sets coincide, so this is a no-op for
+  # x86_64; for a cross build it selects the aarch64 kernel.
+  # The `config` is the kernel's own resolved `.config`, recorded so that a
+  # test's declared kernel requirements can be checked against what this
+  # kernel actually provides -- before booting, with a message naming the
+  # missing symbol rather than a mysterious runtime failure.
+  #
+  # `linux-fancy.configfile` is the merged, dependency-resolved output of
+  # nix/pkgs/linux/merge-config.nix, which is what `linuxManualConfig` built
+  # from.  A *foreign* kernel has no such derivation and its config is
+  # recovered from the image with `extract-ikconfig` instead; both land here
+  # under the same name, so nothing downstream has to care which it was.
+  kernel-image = pkgs.runCommand "kernel-image" { } (
+    ''
+      mkdir -p $out
+      cp ${pkgs.writeText "n-vm-manifest.json" kernel-manifest} \
+        $out/n-vm-manifest.json
+    ''
+    + lib.concatStrings (
+      lib.mapAttrsToList (dir: k: ''
+        mkdir -p $out/kernels/${dir}
+        cp ${k.image} $out/kernels/${dir}/vmlinuz
+        cp ${k.configfile} $out/kernels/${dir}/config
+        ${lib.optionalString (k.initramfs != null) ''
+          cp ${k.initramfs}/initramfs $out/kernels/${dir}/initramfs
+        ''}
+        ${lib.optionalString (k.modules != null) ''
+          mkdir -p $out/kernels/${dir}/modules
+          cp -r ${k.modules}/lib/modules/${k.modDirVersion} \
+            $out/kernels/${dir}/modules/${k.modDirVersion}
+          chmod -R u+w $out/kernels/${dir}/modules
+        ''}
+      '') guest-kernels
+    )
+  );
+
+  # Builds the initramfs for a kernel whose boot-critical drivers are
+  # modules.
+  #
+  # Only needed when the root filesystem transport is `=m`: mounting the
+  # workspace needs virtiofs, virtiofs is a module, and the module tree
+  # lives on the workspace.  The initramfs is the only channel that escapes
+  # that, because the kernel unpacks it itself, from memory, before any
+  # driver loads.
+  #
+  # The dependency closure and load order are resolved *here*, by the real
+  # `modprobe` against the real module tree, rather than in the guest.  We
+  # know the answer at build time, so the pre-init should not be
+  # rediscovering it at boot: it reads an ordered list and calls
+  # `finit_module` down it.  No `modules.dep` parsing, no dependency
+  # resolution, no uevent handling in the VM.
+  #
+  # `boot-modules` are the modules needed to reach the root.  Feature
+  # modules a test asks for are loaded later by `n-it`, from the mounted
+  # tree, and do not belong here.
+  mk-initramfs =
+    {
+      kernel,
+      pre-init,
+      boot-modules ? [ "virtiofs" ],
+    }:
+    pkgs.runCommand "n-vm-initramfs"
+      {
+        nativeBuildInputs = with pkgs.pkgsBuildHost; [
+          cpio
+          kmod
+          xz
+          zstd
+        ];
+      }
+      ''
+        root=$(mktemp -d)
+        mkdir -p "$root/modules" "$root/newroot"
+
+        # Ask modprobe for the closure, in load order.  `--show-depends`
+        # prints one `insmod <path>` line per module, dependencies first.
+        for m in ${pkgs.lib.escapeShellArgs boot-modules}; do
+          modprobe --dirname ${kernel.modules} \
+                   --set-version ${kernel.modDirVersion} \
+                   --show-depends "$m" \
+            || { echo "no such module in the tree: $m" >&2; exit 1; }
+        done | awk '$1 == "insmod" { print $2 }' > /tmp/ordered
+
+        # Dedupe while preserving order: a shared dependency (fuse, here)
+        # appears once per dependent, and loading it twice is an error.
+        : > "$root/modules.load"
+        declare -A seen
+        while read -r ko; do
+          [ -n "$ko" ] || continue
+          base=$(basename "$ko")
+          # Decompress on the way in.  A distro tree ships `.ko.xz`, and
+          # `finit_module` cannot read that unless the kernel was built
+          # with CONFIG_MODULE_DECOMPRESS -- which is not something we can
+          # rely on for someone else's kernel.  Doing it here means the
+          # pre-init never needs a decompressor.
+          case "$base" in
+            *.ko.xz)  base=''${base%.xz}; xz  -dc "$ko" > "$root/modules/$base" ;;
+            *.ko.zst) base=''${base%.zst}; zstd -dc "$ko" > "$root/modules/$base" ;;
+            *.ko)     cp "$ko" "$root/modules/$base" ;;
+            *) echo "unrecognised module file: $ko" >&2; exit 1 ;;
+          esac
+          [ -n "''${seen[$base]:-}" ] && continue
+          seen[$base]=1
+          echo "/modules/$base" >> "$root/modules.load"
+        done < /tmp/ordered
+
+        cp ${pre-init} "$root/init"
+        chmod +x "$root/init"
+
+        mkdir -p $out
+
+        # The kernel sniffs the initramfs format from its magic bytes, so
+        # the filename carries no information and the compressor is chosen
+        # from what *this* kernel can actually decompress.  Read from the
+        # config at build time rather than at eval time, which keeps this
+        # free of import-from-derivation.
+        #
+        # Not assumable: our kernel has CONFIG_RD_GZIP=n and
+        # CONFIG_RD_ZSTD=y, while Flatcar ships a `.cpio.gz`.  Guessing
+        # would produce a kernel panic with no useful message.
+        cpio_out=$out/initramfs
+        (cd "$root" && find . -print0 | cpio --null -o -H newc --quiet) > /tmp/initramfs.cpio
+
+        if grep -q '^CONFIG_RD_ZSTD=y' ${kernel.configfile}; then
+          zstd -19 -T0 -q -o "$cpio_out" /tmp/initramfs.cpio
+        elif grep -q '^CONFIG_RD_GZIP=y' ${kernel.configfile}; then
+          gzip -9 -c /tmp/initramfs.cpio > "$cpio_out"
+        elif grep -q '^CONFIG_RD_XZ=y' ${kernel.configfile}; then
+          xz -9 -c --check=crc32 /tmp/initramfs.cpio > "$cpio_out"
+        else
+          # Always supported, and a few hundred KB is not worth a panic.
+          cp /tmp/initramfs.cpio "$cpio_out"
+        fi
+
+        cp "$root/modules.load" $out/modules.load
+      '';
+
+  # The pre-init, linked statically.
+  #
+  # It runs as PID 1 before /nix/store is mounted, so it cannot be
+  # dynamically linked: its ELF interpreter would name a path that does not
+  # exist yet, and the kernel would fail to exec it.
+  #
+  # Two things are needed and neither is the default.  `+crt-static` asks
+  # for a static link; glibc's static archives then have to be found, and
+  # they live in a *separate output* that is not part of the sysroot -- so
+  # without the library path the link fails on `-lc` and friends.
+  #
+  # `overrideAttrs` rather than an argument to `workspace-builder` because
+  # `args` is merged with `//`, which would replace the whole `env` attrset
+  # rather than adding to it, discarding the sysroot and toolchain settings
+  # every other crate depends on.
+  n-preinit-static = workspace."n-preinit".overrideAttrs (orig: {
+    env = orig.env // {
+      # The search path goes through `-Clink-arg=-L`, not `LIBRARY_PATH`.
+      #
+      # `LIBRARY_PATH` is honoured by the *native* cc-wrapper, so it worked
+      # for an x86_64 build and silently did nothing for a cross one: the
+      # target-prefixed wrapper ignores it, and the link failed on `-lc`
+      # with the archives sitting right there in the store.  `-Clink-arg`
+      # reaches the linker either way, which is why the sysroot is already
+      # passed that way in nix/profiles.nix.
+      RUSTFLAGS =
+        "${orig.env.RUSTFLAGS} -Ctarget-feature=+crt-static "
+        + "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib";
+    };
+  });
+
+  # Flatcar's repackaged kernel, adapted to the shape `mk-initramfs` and the
+  # kernel-image installer expect of a kernel derivation.
+  #
+  # The adapter exists because those two consumers were written against a
+  # nixpkgs kernel: they ask for `.modules`, `.modDirVersion` and
+  # `.configfile`.  Flatcar's is not built here, so it has none of them --
+  # it has a directory layout instead.  Mapping it here keeps the consumers
+  # ignorant of which kind of kernel they were handed, which is the point of
+  # the normalized output shape.
+  # Written as a function because there are two of these now: the mapping is
+  # a property of the *layout* the distro packages produce, not of any one
+  # distro, and both `pkgs/flatcar` and `pkgs/ubuntu` deliberately produce
+  # the same one.
+  adapt-distro-kernel = k: {
+    drv = k;
+    configfile = "${k}/config";
+    # Discovered by the package rather than restated here; a version bump
+    # would otherwise leave the modules under a directory nothing reads.
+    modDirVersion = lib.removeSuffix "\n" (builtins.readFile "${k}/mod-dir-version");
+    modules = k;
+    image = "${k}/vmlinuz";
+  };
+
+  flatcar-kernel-adapted = adapt-distro-kernel pkgs.flatcar-kernel;
+
+  ubuntu-kernel-adapted = adapt-distro-kernel pkgs.ubuntu-kernel;
+
+  # The initramfs for Flatcar's kernel.
+  #
+  # The same derivation as the modular kernel's, given a different kernel --
+  # which is the point of normalising the shape.  Flatcar's modules are
+  # `.ko.xz`, which `mk-initramfs` decompresses on the way in because
+  # Flatcar does not set CONFIG_MODULE_DECOMPRESS.
+  initramfs-flatcar = mk-initramfs {
+    kernel = flatcar-kernel-adapted;
+    pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+    boot-modules = [
+      "virtiofs"
+      "vmw_vsock_virtio_transport"
+    ];
+  };
+
+  # The initramfs for Ubuntu's kernel.
+  #
+  # Same derivation again, with two differences from Flatcar's that are
+  # handled without new mechanism: the modules are `.ko.zst` rather than
+  # `.ko.xz`, and `fuse` is built in (`CONFIG_FUSE_FS=y`) rather than
+  # modular, so virtiofs pulls in no dependency and the closure is one
+  # module shorter.
+  initramfs-ubuntu = mk-initramfs {
+    kernel = ubuntu-kernel-adapted;
+    pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+    boot-modules = [
+      "virtiofs"
+      "vmw_vsock_virtio_transport"
+    ];
+  };
+
+  # The initramfs for the modular kernel.
+  initramfs-modular = mk-initramfs {
+    kernel = pkgs.linux-fancy-modular;
+    pre-init = "${n-preinit-static}/bin/dataplane-n-preinit";
+    # `virtiofs` to reach the root, `vmw_vsock_virtio_transport` because
+    # n-it needs the result channel the moment it starts and cannot load it
+    # itself -- it is the process the channel reports on.  modprobe expands
+    # each to its own dependency closure.
+    boot-modules = [
+      "virtiofs"
+      "vmw_vsock_virtio_transport"
+    ];
+  };
+
+  # The QEMU system emulator for the test VM, always a build-native (host
+  # CI arch) binary that runs in the Docker container.
+  #
+  # The test VMs always run headless (`-nographic`), so QEMU's GUI display
+  # backends (gtk/sdl/vnc/spice/...) are dead weight.  Left enabled they
+  # drag gtk4/gtk3/cairo/pango/vte/libepoxy/SDL into every test/dev root.
+  # `nixosTestRunner = true` is nixpkgs' headless "boot a VM" profile: it
+  # disables exactly those backends and its only other effect is a 9p
+  # uid0 patch we never exercise (we mount via vhost-user-fs, not -virtfs).
+  #
+  # - Native guest: `qemu_test` (= `qemu_kvm` + `nixosTestRunner`): the
+  #   prebuilt, cache-hit, host-cpu-only emulator (`qemu-system-<host>`
+  #   with KVM).  Headless, so no gtk in the common (native) devroot.
+  # - Cross guest: the base `qemu`, headless and restricted to just the
+  #   targets we need: the guest `*-softmmu` we actually emulate under TCG
+  #   (e.g. `aarch64-softmmu`) plus the build-host `*-softmmu` (so QEMU's
+  #   `qemu-kvm` compat symlink -> `qemu-system-<host>` resolves; omitting
+  #   it trips the `noBrokenSymlinks` install check).  A genuine-cross
+  #   `pkgsBuildHost` qemu is not in the binary cache regardless (Hydra
+  #   never builds that derivation), so trimming targets + dropping the GUI
+  #   keeps that unavoidable build small.
+  #
+  # Both provide `bin/qemu-system-<arch>`, matching
+  # `n_vm::Arch::qemu_system_binary`.
+  qemu-system =
+    if is-cross-guest then
+      pkgs.pkgsBuildHost.qemu.override {
+        nixosTestRunner = true;
+        hostCpuTargets = [
+          "${host-arch}-softmmu"
+          "${platform'.arch}-softmmu"
+        ];
+      }
+    else
+      pkgs.pkgsBuildHost.qemu_test;
+
+  # Container-tier tools for the scratch-container test infrastructure.
+  #
+  # This derivation provides the binaries needed inside the Docker
+  # container that launches the test VM: the hypervisor(s), virtiofsd,
+  # and a Linux kernel image (bzImage built from config fragments by
+  # the linux-fancy derivation in nix/overlays/dataplane-dev.nix).
+  #
+  # When used with a scratch container, subdirectories of this derivation
+  # (e.g. bin/, lib/) are volume-mounted at their standard container
+  # paths, and top-level files (e.g. bzImage) are bind-mounted at the
+  # container root.  The container also mounts /nix/store from the host
+  # so that the symlinks created by symlinkJoin resolve to the actual
+  # binaries and their transitive library dependencies.
+  #
+  # See development/ideam.md for the design rationale.
+  # NOTE: cloud-hypervisor and virtiofsd stay on `pkgsBuildHost` (they run
+  # on the x86 container host).  Only the kernel is host-arch; the qemu
+  # choice is arch-aware (see `qemu-system`).
+  testroot = pkgs.symlinkJoin {
+    name = "dataplane-test-root";
+    paths = [
+      pkgs.pkgsBuildHost.cloud-hypervisor
+      pkgs.pkgsBuildHost.virtiofsd
+      qemu-system
+      kernel-image
+    ];
+  };
   devenv = pkgs.mkShell {
     name = "dataplane-dev-shell";
     packages = [ devroot ];
@@ -284,8 +779,6 @@ let
         "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=";
       "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4" =
         "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=";
-      "git+https://github.com/githedgehog/testn.git?tag=v0.0.10#e49aba8400beb2cb117a3f542b114080cf572283" =
-        "sha256-XwEKLdc2Y7fteSKKOERgjKTdxELy7K/wOVuB/SSj3ng=";
     };
   };
   # Rename per-revision images so the CI push filter keeps them out of Cachix;
@@ -580,6 +1073,108 @@ let
       inherit pname;
     }
   ) package-list;
+  # VM guest root filesystem for the scratch-container test infrastructure.
+  #
+  # This derivation is shared into the VM via virtiofsd and becomes the
+  # guest's root filesystem (mounted as virtiofs with tag "root").
+  #
+  # It contains:
+  # - The n-it init system binary (runs as PID 1 in the VM).
+  # - glibc and libgcc shared libraries (so dynamically linked test
+  #   binaries can run inside the VM).
+  #
+  # The forwarded-environment directory (test-env, see VM_ENV_DIR) is
+  # pre-created for the same reason: container.rs bind-mounts a host
+  # directory holding the NUL-separated KEY=VALUE file there.
+  #
+  # The test binary directory is bind-mounted by container.rs at
+  # /vm.root/test-bin (see VM_TEST_BIN_DIR in n-vm-protocol), so it
+  # appears at /test-bin in the VM guest.  The /test-bin directory is
+  # pre-created here so Docker can create the bind mount without needing
+  # to mkdir on the read-only nix store path.
+  #
+  # See development/ideam.md for the design rationale.
+  vmroot = pkgs.runCommand "dataplane-vm-root" { } ''
+    mkdir -p $out/bin $out/lib $out/test-bin $out/test-env
+
+    # Essential guest directories.
+    #
+    # The VM root filesystem is mounted read-only via virtiofs, so the
+    # kernel cannot create directories on demand.  These empty mount
+    # points must exist so that:
+    #
+    #   /dev   -- kernel auto-mounts devtmpfs (provides /dev/console,
+    #            /dev/null, etc. needed by init and test processes)
+    #   /proc  -- n-it mounts procfs (needed for /proc/cmdline parsing
+    #            and general process introspection)
+    #   /sys   -- n-it mounts sysfs
+    #   /tmp   -- n-it mounts tmpfs (writable scratch space)
+    #   /run   -- n-it mounts tmpfs (runtime state)
+    #   /etc   -- some libc/nss functions expect this to exist
+    #
+    # Without /dev in particular, the kernel logs
+    # "devtmpfs: error mounting -2" and init may fail with ENOEXEC (-8)
+    # because /dev/console cannot be opened.
+    mkdir -p $out/dev $out/proc $out/sys $out/tmp $out/run $out/etc $out/var
+
+    # /var/run -> /run symlink.
+    #
+    # Many daemons (including DPDK) default to writing runtime state
+    # under /var/run.  On a conventional Linux system /var/run is
+    # either a symlink to /run or a tmpfs in its own right.  Since our
+    # root filesystem is read-only via virtiofs, we bake the symlink
+    # into the image so that /var/run/dpdk (and friends) resolve to
+    # the writable /run tmpfs mounted by n-it.
+    #
+    # This mirrors what the dataplane container image already does
+    # (see the `dataplane.tar` buildPhase above).
+    ln -s /run $out/var/run
+
+    # n-it init system binary.
+    # The cargo package is "dataplane-n-it" but the VM expects the
+    # binary at /bin/n-it (see INIT_BINARY_PATH in n-vm-protocol).
+    ln -s ${workspace."n-it"}/bin/dataplane-n-it $out/bin/n-it
+
+    # glibc runtime libraries -- needed by dynamically linked test
+    # binaries running inside the VM.
+    for f in ${pkgs.pkgsHostHost.libc.out}/lib/*.so*; do
+      [ -e "$f" ] || continue
+      ln -s "$f" "$out/lib/$(basename "$f")"
+    done
+
+    # libgcc runtime libraries (libgcc_s.so, etc.)
+    for f in ${pkgs.pkgsHostHost.glibc.libgcc}/lib/*.so*; do
+      [ -e "$f" ] || continue
+      ln -s "$f" "$out/lib/$(basename "$f")"
+    done
+
+    # Create a real /nix/store directory (empty mount point).
+    #
+    # The container tier bind-mounts the host's /nix/store here so that
+    # virtiofsd serves it as a real directory to the VM guest.  This
+    # replaces the previous /nix -> /nix absolute symlink, which caused
+    # ELOOP (error -40) inside the guest: the FUSE protocol returns
+    # symlinks to the guest kernel for resolution, and /nix -> /nix is
+    # self-referential from the guest's VFS perspective.
+    #
+    # Nix-built test binaries have rpaths like
+    # /nix/store/{hash}-glibc-X.Y/lib; with /nix/store bind-mounted
+    # through virtiofsd, those paths resolve correctly inside the VM.
+    mkdir -p $out/nix/store
+
+    # Empty mount point for the host's cargo workspace (see
+    # VM_WORKSPACE_DIR in n-vm-protocol).  The container tier bind-mounts
+    # the workspace root here and n-it makes it the test process's working
+    # directory, so that paths captured at compile time relative to the
+    # workspace root -- `file!()`, which bolero records and later
+    # canonicalizes to find its corpus -- resolve inside the guest.
+    #
+    # Pre-created for the same reason as /nix/store above: this derivation
+    # is a read-only nix store path, so Docker cannot create the mount
+    # point itself.
+    # Must match VM_WORKSPACE_DIR in n-vm-protocol.
+    mkdir -p $out/workspace
+  '';
 
   workspace-check =
     {
@@ -1206,12 +1801,15 @@ in
     devroot
     doctests
     docs
+    mk-initramfs
     package-list
     pkgs
     sources
     src
     sysroot
+    testroot
     tests
+    vmroot
     workspace
     ;
   profile = profile';
