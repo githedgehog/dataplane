@@ -62,4 +62,4 @@ dpdk-sysroot-helper = { workspace = true }
 # per package because cargo's `[lints]` are, and the n-vm crate's own
 # declaration does not reach here.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)', 'cfg(nic_loopback_tests)'] }
