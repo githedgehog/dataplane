@@ -512,6 +512,9 @@ impl From<TxOffload> for TxOffloadConfig {
 }
 
 impl TxOffload {
+    /// Disable TX offloads. `DevConfig::tx_offloads = None` enables all supported offloads.
+    pub const NONE: TxOffload = TxOffload(0);
+
     /// GENEVE tunnel segmentation offload.
     pub const GENEVE_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
@@ -562,6 +565,11 @@ impl TxOffload {
                 | TX_OFFLOAD_VXLAN_TNL_TSO,
         )
     };
+}
+
+impl RxOffload {
+    /// Disable RX offloads. `DevConfig::rx_offloads = None` enables all supported offloads.
+    pub const NONE: RxOffload = RxOffload(0);
 }
 
 impl BitOr for TxOffload {
@@ -759,6 +767,32 @@ impl DevInfo {
     pub fn rx_offload_caps(&self) -> RxOffload {
         self.inner.rx_offload_capa.into()
     }
+
+    #[tracing::instrument(level = "trace")]
+    /// RX offloads allowed in queue configuration.
+    /// Port-wide capabilities may include offloads that cannot be set per queue.
+    pub fn rx_queue_offload_caps(&self) -> RxOffload {
+        self.inner.rx_queue_offload_capa.into()
+    }
+
+    #[tracing::instrument(level = "trace")]
+    /// TX offloads allowed in queue configuration.
+    /// See [`DevInfo::rx_queue_offload_caps`].
+    pub fn tx_queue_offload_caps(&self) -> TxOffload {
+        self.inner.tx_queue_offload_capa.into()
+    }
+
+    /// The largest MTU the device advertises support for, or `0` if it advertises no range.
+    #[must_use]
+    pub fn max_mtu(&self) -> u16 {
+        self.inner.max_mtu
+    }
+
+    /// The smallest MTU the device advertises support for.
+    #[must_use]
+    pub fn min_mtu(&self) -> u16 {
+        self.inner.min_mtu
+    }
 }
 
 /// Sealed device states: [`Stopped`] and [`Started`].
@@ -820,6 +854,32 @@ impl<S: DevState> Dev<S> {
                 hairpin_queues: core::ptr::read(&this.hairpin_queues),
                 state: PhantomData,
             }
+        }
+    }
+}
+
+impl<S: DevState> Dev<S> {
+    /// Enable or disable promiscuous mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's error, including `ENOTSUP` when unsupported.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn set_promiscuous(&mut self, enable: bool) -> Result<(), ErrorCode> {
+        let port = self.info.index().as_u16();
+        let ret = if enable {
+            unsafe { rte_eth_promiscuous_enable(port) }
+        } else {
+            unsafe { rte_eth_promiscuous_disable(port) }
+        };
+        if ret == 0 {
+            debug!(
+                "Promiscuous mode {state} on port {port}",
+                state = if enable { "enabled" } else { "disabled" }
+            );
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
         }
     }
 }
