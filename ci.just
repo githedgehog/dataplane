@@ -105,10 +105,23 @@ reserve-hugepages count="4":
     priv "echo {{ count }} > ${pool}/nr_hugepages" || true
     declare got
     got="$(priv "cat ${pool}/nr_hugepages" || echo 0)"
+
+    # A gigabyte page needs a physically contiguous gigabyte, and a machine
+    # that has been up a while rarely has one to hand -- which is why the
+    # kernel documentation reserves 1 GiB pages at boot. Compaction is the one
+    # thing worth trying first: it migrates movable pages to free contiguous
+    # runs, costs a few seconds, and disturbs nothing else on the host (unlike
+    # dropping caches, which would take the page cache away from every other
+    # job on this machine).
     if [ "${got}" -lt "{{ count }}" ]; then
-      # Raising the count is best-effort by design: the kernel allocates what
-      # it can find contiguously and reports what it got.
-      echo "::warning::asked for {{ count }} 1 GiB hugepages, got ${got} (was ${have}); memory is likely fragmented"
+      priv "echo 1 > /proc/sys/vm/compact_memory" || true
+      priv "echo {{ count }} > ${pool}/nr_hugepages" || true
+      got="$(priv "cat ${pool}/nr_hugepages" || echo 0)"
+    fi
+
+    if [ "${got}" -lt "{{ count }}" ]; then
+      echo "::warning::asked for {{ count }} 1 GiB hugepages, got ${got} (was ${have}), even after compaction."
+      echo "::warning::runtime allocation of 1 GiB pages needs a contiguous gigabyte. The durable fix is a boot parameter on this host: \`default_hugepagesz=1G hugepagesz=1G hugepages={{ count }}\`."
     else
       echo "1 GiB hugepages: ${have} -> ${got}"
     fi
