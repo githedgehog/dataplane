@@ -18,7 +18,7 @@ use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
-use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
@@ -248,6 +248,8 @@ pub enum DevConfigError {
         /// The device's maximum supported MTU.
         max: u16,
     },
+    /// RSS hashing was requested but the device advertises no RSS hash functions.
+    RssUnsupported,
 }
 
 impl DevConfig {
@@ -276,6 +278,9 @@ impl DevConfig {
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
+        if self.rss.is_some() && !dev.supports_rss() {
+            return Err(DevConfigError::RssUnsupported);
+        }
         // Keep the RSS key alive until rte_eth_dev_configure copies it.
         let mut rss_key_buf: [u8; 40];
         let mut eth_conf = rte_eth_conf {
@@ -292,7 +297,12 @@ impl DevConfig {
             },
             rxmode: rte_eth_rxmode {
                 mtu: u32::from(mtu),
-                mq_mode: RTE_ETH_MQ_RX_RSS,
+                // Devices without RSS support reject RTE_ETH_MQ_RX_RSS.
+                mq_mode: if dev.supports_rss() {
+                    RTE_ETH_MQ_RX_RSS
+                } else {
+                    RTE_ETH_MQ_RX_NONE
+                },
                 // Used only when TCP LRO is enabled; zero requests the driver default.
                 max_lro_pkt_size: dev.inner.max_lro_pkt_size,
                 offloads: {
@@ -816,6 +826,12 @@ impl DevInfo {
     #[must_use]
     pub fn min_mtu(&self) -> u16 {
         self.inner.min_mtu
+    }
+
+    /// Whether the device advertises RSS support.
+    #[must_use]
+    pub fn supports_rss(&self) -> bool {
+        self.inner.flow_type_rss_offloads != 0
     }
 }
 
