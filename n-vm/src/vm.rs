@@ -38,12 +38,27 @@ const VM_OVERHEAD_ALLOWANCE_KVM: Duration = Duration::from_secs(60);
 /// a guest kernel boot alone can take tens of seconds.
 const VM_OVERHEAD_ALLOWANCE_TCG: Duration = Duration::from_secs(300);
 
-/// The VM's overhead allowance for the given acceleration mode.
-const fn vm_overhead_allowance(accel: config::Accel) -> Duration {
-    match accel {
+/// The VM's overhead allowance for the given acceleration mode, scaled by
+/// [`ENV_OVERHEAD_SCALE`](n_vm_protocol::ENV_OVERHEAD_SCALE).
+///
+/// A run-time knob rather than a build-time one, for the reason
+/// [`ENV_VIRTIOFS_CACHE`](n_vm_protocol::ENV_VIRTIOFS_CACHE) gives: rebuilding
+/// `n-vm` to change a timeout also changes the binary under test. It is also
+/// the only form that stays honest outside this workspace -- a `cfg` would
+/// have to name dataplane's `instrumented`, which means nothing to another
+/// consumer of this crate.
+///
+/// The scale exists because coverage is not a small tax on a guest. Measured
+/// on the CI runners, the `n-vm` suite went from 76s uninstrumented to 155s,
+/// and `a_vm_boots_the_kernel_profile_it_named` overran the 60s allowance at
+/// 96s -- reported not as "slow" but as "no parseable test verdict from
+/// guest", because the timeout shoots the VM and the verdict dies with it.
+fn vm_overhead_allowance(accel: config::Accel) -> Duration {
+    let base = match accel {
         config::Accel::Kvm => VM_OVERHEAD_ALLOWANCE_KVM,
         config::Accel::Tcg => VM_OVERHEAD_ALLOWANCE_TCG,
-    }
+    };
+    base.mul_f64(n_vm_protocol::overhead_scale())
 }
 
 /// How long the VM may run before it is shut down by force.
@@ -890,6 +905,20 @@ mod timeout_tests {
                 );
             }
         }
+    }
+
+    /// A scale of one is the identity, so an ordinary run is untouched by the
+    /// knob existing.
+    #[test]
+    fn the_default_scale_leaves_the_allowance_alone() {
+        assert_eq!(
+            VM_OVERHEAD_ALLOWANCE_KVM.mul_f64(1.0),
+            VM_OVERHEAD_ALLOWANCE_KVM,
+        );
+        assert!(
+            VM_OVERHEAD_ALLOWANCE_TCG > VM_OVERHEAD_ALLOWANCE_KVM,
+            "emulating every instruction cannot be the cheaper mode",
+        );
     }
 
     #[test]
