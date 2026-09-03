@@ -533,7 +533,28 @@ impl ContainerParams {
         shares: &[ResolvedShare],
         env_host_dir: Option<&Path>,
     ) -> Vec<bollard::models::Mount> {
-        let bin_dir = self.bin_dir_str();
+        Self::build_mounts_in(
+            n_vm_protocol::host_share_dir().as_deref(),
+            self,
+            shares,
+            env_host_dir,
+        )
+    }
+
+    /// [`build_mounts`](Self::build_mounts) with the host share given rather
+    /// than read from the environment.
+    ///
+    /// Split out because the share is process-wide state that changes every
+    /// mount source: a test asserting a source cannot be correct both with and
+    /// without it, and CI sets it for the whole job.
+    fn build_mounts_in(
+        share: Option<&str>,
+        params: &Self,
+        shares: &[ResolvedShare],
+        env_host_dir: Option<&Path>,
+    ) -> Vec<bollard::models::Mount> {
+        let this = params;
+        let bin_dir = this.bin_dir_str();
         let mut mounts = vec![
             Self::read_only_bind_mount(bin_dir, bin_dir.to_owned()),
             Self::read_only_bind_mount(bin_dir, format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}")),
@@ -552,7 +573,11 @@ impl ContainerParams {
             ));
         }
 
-        mounts.extend(Self::build_scratch_mounts(&self.scratch_roots, shares));
+        mounts.extend(Self::build_scratch_mounts_in(
+            share,
+            &this.scratch_roots,
+            shares,
+        ));
 
         mounts
     }
@@ -668,14 +693,12 @@ impl ContainerParams {
     }
 
     /// Builds the additional bind mounts required in scratch mode.
-    fn build_scratch_mounts(
+    fn build_scratch_mounts_in(
+        share: Option<&str>,
         roots: &ScratchRoots,
         shares: &[ResolvedShare],
     ) -> Vec<bollard::models::Mount> {
-        let test_root = roots
-            .test_root
-            .to_str()
-            .expect("test_root validated as canonicalized path");
+        let visible = |path: &str| n_vm_protocol::host_visible_path_in(share, path);
         let vm_root = roots
             .vm_root
             .to_str()
@@ -687,7 +710,7 @@ impl ContainerParams {
         // may be outside this container; the target is not. So sources go
         // through `host_visible_path` and targets stay as the guest expects.
         mounts.push(Self::read_only_bind_mount(
-            &n_vm_protocol::host_visible_path(n_vm_protocol::NIX_STORE_DIR),
+            &visible(n_vm_protocol::NIX_STORE_DIR),
             n_vm_protocol::NIX_STORE_DIR.to_owned(),
         ));
 
@@ -699,9 +722,22 @@ impl ContainerParams {
                     continue;
                 };
                 let path = entry.path();
+                // Resolved, because a first-level entry may be a symlink into
+                // another store path -- `n-vm-manifest.json` points at the
+                // kernel image. The daemon resolves a mount source in its own
+                // namespace, where an absolute /nix/store target means nothing,
+                // and answers a source it cannot stat by trying to create it:
+                // "mkdir .../n-vm-manifest.json: file exists".
+                let Some(entry_source) = std::fs::canonicalize(&path)
+                    .unwrap_or(path.clone())
+                    .to_str()
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
                 if path.is_dir() || path.is_file() {
                     mounts.push(Self::read_only_bind_mount(
-                        &n_vm_protocol::host_visible_path(&format!("{test_root}/{name}")),
+                        &visible(&entry_source),
                         format!("/{name}"),
                     ));
                 }
@@ -709,13 +745,13 @@ impl ContainerParams {
         }
 
         mounts.push(Self::read_only_bind_mount(
-            &n_vm_protocol::host_visible_path(vm_root),
+            &visible(vm_root),
             VM_ROOT_SHARE_PATH.to_owned(),
         ));
 
         // Guest binaries keep /nix/store rpaths; expose the real store via virtiofs.
         mounts.push(Self::read_only_bind_mount(
-            &n_vm_protocol::host_visible_path(n_vm_protocol::NIX_STORE_DIR),
+            &visible(n_vm_protocol::NIX_STORE_DIR),
             format!("{VM_ROOT_SHARE_PATH}/nix/store"),
         ));
 
@@ -1961,7 +1997,7 @@ mod tests {
     #[test]
     fn mounts_include_bin_dir_at_original_path() {
         let params = sample_params();
-        let mounts = params.build_mounts(&[], None);
+        let mounts = ContainerParams::build_mounts_in(None, &params, &[], None);
         let direct = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/target/debug/deps"));
@@ -1981,7 +2017,7 @@ mod tests {
     fn mounts_include_the_forwarded_env_dir_when_there_is_one() {
         let params = sample_params();
         let env_dir = std::path::Path::new("/tmp/n-vm-env-1-tests_my_test");
-        let mounts = params.build_mounts(&[], Some(env_dir));
+        let mounts = ContainerParams::build_mounts_in(None, &params, &[], Some(env_dir));
         let expected_target = format!("{VM_ROOT_SHARE_PATH}/{VM_ENV_DIR}");
         let mount = mounts
             .iter()
@@ -2001,7 +2037,7 @@ mod tests {
     /// unaffected by this path existing.
     #[test]
     fn no_env_dir_means_no_env_mount() {
-        let mounts = sample_params().build_mounts(&[], None);
+        let mounts = ContainerParams::build_mounts_in(None, &sample_params(), &[], None);
         let unexpected = format!("{VM_ROOT_SHARE_PATH}/{VM_ENV_DIR}");
         assert!(
             !mounts
@@ -2013,7 +2049,7 @@ mod tests {
     #[test]
     fn mounts_include_bin_dir_at_vm_test_bin_dir() {
         let params = sample_params();
-        let mounts = params.build_mounts(&[], None);
+        let mounts = ContainerParams::build_mounts_in(None, &params, &[], None);
         let expected_target = format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}");
         let mirror = mounts
             .iter()
@@ -2033,7 +2069,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
+        let mounts = ContainerParams::build_scratch_mounts_in(None, &roots, &[]);
         let nix_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/nix/store"));
@@ -2052,7 +2088,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
+        let mounts = ContainerParams::build_scratch_mounts_in(None, &roots, &[]);
         let vm_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some(VM_ROOT_SHARE_PATH));
@@ -2066,12 +2102,53 @@ mod tests {
     }
 
     #[test]
+    fn a_host_share_redirects_every_store_source_and_no_target() {
+        // The regression this exists for: CI sets N_VM_HOST_SHARE_DIR for the
+        // whole job, so `build_scratch_mounts` reading it directly made the two
+        // tests above fail there and pass here. Assert both modes explicitly
+        // instead, and assert the thing that actually has to hold -- sources
+        // move, targets do not.
+        let roots = ScratchRoots {
+            test_root: PathBuf::from("/nix/store/fake-test-root"),
+            vm_root: PathBuf::from("/nix/store/fake-vm-root"),
+        };
+        let plain = ContainerParams::build_scratch_mounts_in(None, &roots, &[]);
+        let shared = ContainerParams::build_scratch_mounts_in(Some("/w/.share"), &roots, &[]);
+
+        assert_eq!(
+            plain.len(),
+            shared.len(),
+            "a share changes where mounts come from, never how many there are",
+        );
+        for (plain, shared) in plain.iter().zip(shared.iter()) {
+            assert_eq!(
+                plain.target, shared.target,
+                "targets are resolved inside the container and must not move",
+            );
+            let before = plain.source.as_deref().unwrap_or_default();
+            let after = shared.source.as_deref().unwrap_or_default();
+            if let Some(rest) = before.strip_prefix("/nix/store") {
+                assert_eq!(
+                    after,
+                    format!("/w/.share/nix/store{rest}"),
+                    "a store source belongs under the share",
+                );
+            } else {
+                assert_eq!(
+                    before, after,
+                    "{before} is not in the store and must be left alone",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn scratch_mounts_are_bind_mounts_with_expected_permissions() {
         let roots = ScratchRoots {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
+        let mounts = ContainerParams::build_scratch_mounts_in(None, &roots, &[]);
         // At minimum we expect /nix/store, /vm.root, and /dev/hugepages.
         // testroot subdirectory mounts depend on what's on disk, so
         // we can't assert an exact count, but we can verify invariants
@@ -2112,7 +2189,7 @@ mod tests {
             test_root: PathBuf::from("/nix/store/fake-test-root"),
             vm_root: PathBuf::from("/nix/store/fake-vm-root"),
         };
-        let mounts = ContainerParams::build_scratch_mounts(&roots, &[]);
+        let mounts = ContainerParams::build_scratch_mounts_in(None, &roots, &[]);
         let hp_mount = mounts
             .iter()
             .find(|m| m.target.as_deref() == Some("/dev/hugepages"));
@@ -2132,7 +2209,7 @@ mod tests {
     #[test]
     fn all_mounts_are_private_non_recursive_bind_mounts() {
         let params = sample_params();
-        let mounts = params.build_mounts(&[], None);
+        let mounts = ContainerParams::build_mounts_in(None, &params, &[], None);
         for mount in &mounts {
             assert_eq!(mount.typ, Some(bollard::models::MountTypeEnum::BIND),);
             let opts = mount.bind_options.as_ref().expect("bind_options");
