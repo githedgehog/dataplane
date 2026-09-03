@@ -100,11 +100,7 @@ impl AclGenerator {
     }
 
     fn prefix<D: Driver>(d: &mut D, choices: &[String]) -> Option<String> {
-        if choices.is_empty() {
-            return None;
-        }
-        let index = d.gen_usize(Bound::Included(&0), Bound::Excluded(&choices.len()))?;
-        Some(choices[index].clone())
+        crate::bolero::support::choose(d, choices)
     }
 
     fn rule<D: Driver>(&self, d: &mut D, index: u8) -> Option<GatewayAgentPeeringsAclRules> {

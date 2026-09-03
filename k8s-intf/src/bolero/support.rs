@@ -6,129 +6,6 @@ use std::ops::Bound;
 
 use bolero::{Driver, ValueGenerator};
 
-fn v4cdir_from_bytes(addr_bytes: u32, mask: u8) -> String {
-    let and_mask = u32::MAX.unbounded_shl(32 - u32::from(mask));
-    let addr = Ipv4Addr::from(addr_bytes & and_mask);
-    format!("{addr}/{mask}")
-}
-
-fn v6cdir_from_bytes(addr_bytes: u128, mask: u8) -> String {
-    let and_mask = u128::MAX.unbounded_shl(128 - u32::from(mask));
-    let addr = Ipv6Addr::from(addr_bytes & and_mask);
-    format!("{addr}/{mask}")
-}
-
-pub struct UniqueV4CidrGenerator {
-    count: u16,
-    mask: u8,
-}
-
-impl UniqueV4CidrGenerator {
-    #[must_use]
-    pub fn new(count: u16, mask: u8) -> Self {
-        Self { count, mask }
-    }
-}
-
-impl ValueGenerator for UniqueV4CidrGenerator {
-    type Output = Vec<String>;
-
-    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        if self.mask == 0 && self.count > 0 {
-            d.produce::<u32>(); // generate a value to satisfy the bolero driver
-            return Some(vec!["0.0.0.0/0".to_string()]);
-        }
-
-        let available_addrs = 1_u32.unbounded_shl(u32::from(self.mask));
-        let max_to_generate = if available_addrs > 0 {
-            // Unwrap should never fail here because count is u16 and we take the min
-            // The - 1 is to discount the 0 address which we won't generate
-            #[allow(clippy::unwrap_used)]
-            u16::try_from((available_addrs - 1).min(u32::from(self.count))).unwrap()
-        } else {
-            self.count
-        };
-
-        let addr_bytes_seed = d.gen_u32(
-            Bound::Included(&0x1000_0000_u32),
-            Bound::Included(&u32::MAX),
-        )?;
-        let mut cidrs = Vec::with_capacity(usize::from(self.count));
-        let mut addrs_left = max_to_generate;
-        let mut addr_bytes = addr_bytes_seed.unbounded_shr(u32::from(32 - self.mask));
-        let addr_bytes_mask = u32::MAX.unbounded_shr(u32::from(32 - self.mask));
-        while addrs_left > 0 {
-            if addr_bytes & addr_bytes_mask == 0 {
-                // Smallest valid v4 address with given mask
-                addr_bytes = 1;
-            }
-            let cidr = v4cdir_from_bytes(
-                addr_bytes.unbounded_shl(u32::from(32 - self.mask)),
-                self.mask,
-            );
-            cidrs.push(cidr);
-            addrs_left -= 1;
-            addr_bytes = addr_bytes.wrapping_add(1);
-        }
-        Some(cidrs)
-    }
-}
-
-#[derive(Debug)]
-pub struct UniqueV6CidrGenerator {
-    pub count: u16,
-    pub mask: u8,
-}
-
-impl UniqueV6CidrGenerator {
-    #[must_use]
-    pub fn new(count: u16, mask: u8) -> Self {
-        Self { count, mask }
-    }
-}
-
-impl ValueGenerator for UniqueV6CidrGenerator {
-    type Output = Vec<String>;
-
-    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        if self.mask == 0 && self.count > 0 {
-            d.produce::<u32>(); // generate a value to satisfy the bolero driver
-            return Some(vec!["::/0".to_string()]);
-        }
-
-        let available_addrs = 1_u128.unbounded_shl(u32::from(self.mask));
-
-        let max_to_generate = if available_addrs > 0 {
-            // Unwrap should never fail here because count is u16 and we take the min
-            // The - 1 is to discount the 0 address which we won't generate
-            #[allow(clippy::unwrap_used)]
-            u16::try_from((available_addrs - 1).min(u128::from(self.count))).unwrap()
-        } else {
-            self.count
-        };
-
-        let addr_bytes_seed = d.gen_u128(Bound::Included(&1_u128), Bound::Included(&u128::MAX))?;
-        let mut cidrs = Vec::with_capacity(usize::from(self.count));
-        let mut addrs_left = max_to_generate;
-        let mut addr_bytes = addr_bytes_seed.unbounded_shr(u32::from(128 - self.mask));
-        let addr_bytes_mask = u128::MAX.unbounded_shr(u32::from(128 - self.mask));
-        while addrs_left > 0 {
-            if addr_bytes & addr_bytes_mask == 0 {
-                // Smallest valid v6 address with mask
-                addr_bytes = 1;
-            }
-            let cidr = v6cdir_from_bytes(
-                addr_bytes.unbounded_shl(u32::from(128 - self.mask)),
-                self.mask,
-            );
-            cidrs.push(cidr);
-            addrs_left -= 1;
-            addr_bytes = addr_bytes.wrapping_add(1);
-        }
-        Some(cidrs)
-    }
-}
-
 /// How many high-order bits it takes to give each of `count` addresses a distinct
 /// prefix, plus one so the all-zero prefix is not the only choice.
 ///
@@ -260,45 +137,17 @@ impl ValueGenerator for UniqueV6InterfaceAddressGenerator {
     }
 }
 
+/// Draw one of `choices`.
+///
+/// `None` for an empty slice, rather than asking the driver for a value out of an empty
+/// range. This is the one place that decides how a choice is made, so moving to a
+/// generator that shrinks better happens here instead of at every call site.
 pub fn choose<T: Clone, D: Driver>(d: &mut D, choices: &[T]) -> Option<T> {
+    if choices.is_empty() {
+        return None;
+    }
     let index = d.gen_usize(Bound::Included(&0), Bound::Excluded(&choices.len()))?;
-    Some(choices[index].clone())
-}
-
-const MIN_V4_MASK: u8 = 8;
-const MIN_V6_MASK: u8 = 16;
-
-pub fn generate_v4_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr4_gen = UniqueV4CidrGenerator::new(
-        count,
-        d.gen_u8(Bound::Included(&MIN_V4_MASK), Bound::Included(&32))?,
-    );
-    cidr4_gen.generate(d)
-}
-
-pub fn generate_v6_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr6_gen = UniqueV6CidrGenerator::new(
-        count,
-        d.gen_u8(Bound::Included(&MIN_V6_MASK), Bound::Included(&128))?,
-    );
-    cidr6_gen.generate(d)
-}
-
-pub fn generate_prefixes<D: Driver>(
-    d: &mut D,
-    v4_count: u16,
-    v6_count: u16,
-) -> Option<Vec<String>> {
-    let mut prefixes = Vec::with_capacity(usize::from(v4_count) + usize::from(v6_count));
-    if v4_count > 0 {
-        let v4_prefixes = generate_v4_prefixes(d, v4_count)?;
-        prefixes.extend(v4_prefixes);
-    }
-    if v6_count > 0 {
-        let v6_prefixes = generate_v6_prefixes(d, v6_count)?;
-        prefixes.extend(v6_prefixes);
-    }
-    Some(prefixes)
+    choices.get(index).cloned()
 }
 
 #[cfg(test)]
@@ -330,61 +179,6 @@ mod test {
     const UNIQUE_COUNTS: [u16; 5] = [0, 1, 10, 16, 100];
     #[cfg(miri)]
     const UNIQUE_COUNTS: [u16; 4] = [0, 1, 10, 16];
-    const ITERATIONS: usize = cfg_select! {
-        emulated => 3,
-        _ => 1000,
-    };
-
-    #[test]
-    fn test_unique_v4_cidr_generator() {
-        for mask in 0..=32 {
-            let generator = crate::bolero::support::UniqueV4CidrGenerator::new(10, mask);
-            bolero::check!()
-                .with_generator(generator)
-                .with_iterations(ITERATIONS) // Takes too long with auto-iterations
-                .for_each(|cidrs| {
-                    let mut seen = std::collections::HashSet::new();
-                    for cidr in cidrs {
-                        assert!(seen.insert(cidr), "Duplicate CIDR found: {cidr}");
-                    }
-                    assert!(
-                        !cidrs.is_empty(),
-                        "No CIDRs generated for mask={mask}, count=10"
-                    );
-                    assert!(cidrs.iter().all(|cidr| {
-                        let (ip, mask) = cidr.split_once('/').unwrap();
-                        assert!(mask.parse::<u8>().unwrap() <= 32);
-                        ip.parse::<std::net::Ipv4Addr>().is_ok()
-                    }));
-                });
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "just too slow on miri")]
-    fn test_unique_v6_cidr_generator() {
-        for mask in 0..=128 {
-            let generator = crate::bolero::support::UniqueV6CidrGenerator::new(10, mask);
-            bolero::check!()
-                .with_generator(generator)
-                .with_iterations(ITERATIONS) // Takes too long with auto-iterations
-                .for_each(|cidrs| {
-                    let mut seen = std::collections::HashSet::new();
-                    assert!(
-                        !cidrs.is_empty(),
-                        "No CIDRs generated for mask={mask}, count=10"
-                    );
-                    for cidr in cidrs {
-                        assert!(seen.insert(cidr), "Duplicate CIDR found: {cidr}");
-                    }
-                    assert!(cidrs.iter().all(|cidr| {
-                        let (ip, mask) = cidr.split_once('/').unwrap();
-                        assert!(mask.parse::<u8>().unwrap() <= 128);
-                        ip.parse::<std::net::Ipv6Addr>().is_ok()
-                    }));
-                });
-        }
-    }
 
     #[test]
     fn test_unique_v4_interface_address_generator() {
