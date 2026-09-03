@@ -205,10 +205,20 @@ fuzz target time="60s" *args="":
     # asan does not need that, and skipping the std rebuild keeps it far quicker.
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
+    case "{{ sanitize }}" in
+      "") want=address ;;
+      NONE) want=none ;;
+      *) want="{{ sanitize }}" ;;
+    esac
     sysroot="${DATAPLANE_SYSROOT:-}"
     if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
       built_with="$(cat "${sysroot}/.sanitize")"
-      if [ "${built_with}" != "{{ sanitize }}" ]; then
+      built_with="${built_with:-none}"
+      if [ "${want}" != "${built_with}" ] && [ -z "{{ sanitize }}" ]; then
+        printf 'warning: rust is built with %s and this sysroot with %s, so the C dependencies -- dpdk above all -- are not instrumented.\n' \
+          "${want}" "${built_with}" >&2
+        printf '         `just sanitize=NONE fuzz ...` instruments neither and runs about four times quicker.\n' >&2
+      elif [ "${want}" != "${built_with}" ]; then
         printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot was built with sanitize=%s.\n' \
           "{{ sanitize }}" "${built_with:-<none>}" >&2
         printf 'the C dependencies would not be instrumented. Re-enter the shell with:\n' >&2
@@ -217,9 +227,20 @@ fuzz target time="60s" *args="":
         exit 1
       fi
     fi
+    inherited="$(cargo config get -Zunstable-options --format json-value build.rustflags 2>/dev/null | jq -r 'join(" ")')"
+    export RUSTFLAGS="${inherited} ${RUSTFLAGS:-}"
+
+    sancov_rt="$(clang -print-file-name=libclang_rt.fuzzer_no_main-$(uname -m).a 2>/dev/null || true)"
+    if [ -f "${sancov_rt}" ]; then
+      export RUSTFLAGS="${RUSTFLAGS} -Clink-arg=${sancov_rt} -Clink-arg=-lstdc++"
+    else
+      printf 'warning: no libFuzzer runtime beside clang; packages with a non-bolero test binary will not link.\n' >&2
+    fi
+
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \
+        --profile checked \
         --corpus-dir "${corpus_dir}" \
         -l '{{ fuzz_max_input_length }}' \
         -E='-len_control={{ fuzz_len_control }}' \
@@ -339,9 +360,19 @@ setup-roots *args:
         {{ args }}
     done
 
+[private]
+[script]
+_refuse-instrumented-artifact:
+    if [ -n '{{ instrument }}' ] && [ '{{ instrument }}' != "none" ]; then
+      printf 'refusing to build a container at instrument=%s: an instrumented build is a diagnostic,\n' '{{ instrument }}' >&2
+      printf 'not an artifact, and instrumentation is not part of the version -- so this image would\n' >&2
+      printf 'take a clean image tag and replace it.\n' >&2
+      exit 1
+    fi
+
 # Build the dataplane container image
 [script]
-build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
+build-container target="dataplane" *args: _refuse-instrumented-artifact (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
     case "{{target}}" in

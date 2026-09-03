@@ -362,28 +362,27 @@ fn survey_nat(nat: &VpcExposeNat, seen: &mut Observed) {
 
 const CASES: usize = 512;
 
-fn survey_drawn(seen: &RefCell<Observed>) {
-    let seen = std::panic::AssertUnwindSafe(seen);
-    bolero::check!()
-        .with_generator(Sequence::default())
-        .with_iterations(CASES)
-        .for_each(|ops| {
-            let overlay = Sequence::fold(ops)
-                .overlay()
-                .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
-            survey(&overlay, &mut seen.borrow_mut());
-        });
-}
-
-fn census() -> Observed {
-    let seen = RefCell::new(Observed::default());
-    survey_drawn(&seen);
-    seen.into_inner()
+macro_rules! survey_drawn {
+    ($seen:expr) => {{
+        let seen = $seen;
+        let seen = std::panic::AssertUnwindSafe(seen);
+        bolero::check!()
+            .with_generator(Sequence::default())
+            .with_iterations(CASES)
+            .for_each(|ops| {
+                let overlay = Sequence::fold(ops)
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+                survey(&overlay, &mut seen.borrow_mut());
+            });
+    }};
 }
 
 #[test]
 fn every_surveyed_field_is_classified() {
-    let seen = census();
+    let seen = RefCell::new(Observed::default());
+    survey_drawn!(&seen);
+    let seen = seen.into_inner();
     let surveyed: BTreeSet<&str> = seen.0.keys().copied().collect();
     let classified: BTreeSet<&str> = REACH.iter().map(|(field, _)| *field).collect();
 
@@ -417,7 +416,9 @@ fn every_surveyed_field_is_classified() {
 
 #[test]
 fn the_algebra_reaches_what_it_is_recorded_to_reach() {
-    let seen = census();
+    let seen = RefCell::new(Observed::default());
+    survey_drawn!(&seen);
+    let seen = seen.into_inner();
 
     for (field, reach) in REACH {
         let Some(values) = seen.0.get(field) else {

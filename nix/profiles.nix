@@ -5,7 +5,7 @@
   host-arch,
   profile,
   sanitizers,
-  instrumentation,
+  instrumentations,
   cargo-features ? [ ],
   for-tests ? false,
 }:
@@ -64,7 +64,7 @@ let
       ]
   )
   ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
-  ++ (if instrumentation == "coverage" then [ "--cfg=instrumented" ] else [ ])
+  ++ (if builtins.elem "coverage" instrumentations then [ "--cfg=instrumented" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
@@ -229,6 +229,22 @@ let
     "-Ctarget-feature=-crt-static" # shadow-stack doesn't work with static libc
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.shadow-stack.NIX_CFLAGS_LINK);
+  instrument.fuzz.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=fuzzer-no-link"
+    "-fno-lto"
+  ];
+  instrument.fuzz.NIX_CXXFLAGS_COMPILE = instrument.fuzz.NIX_CFLAGS_COMPILE;
+  instrument.fuzz.NIX_CFLAGS_LINK = [ ];
+  instrument.fuzz.RUSTFLAGS = [
+    "--cfg=fuzzing"
+    "-Cpasses=sancov-module"
+    "-Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
+    "-Cllvm-args=-sanitizer-coverage-level=4"
+    "-Cllvm-args=-sanitizer-coverage-pc-table"
+    "-Cllvm-args=-sanitizer-coverage-trace-compares"
+    "-Cllvm-args=-sanitizer-coverage-stack-depth"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") instrument.fuzz.NIX_CFLAGS_LINK);
   instrument.none.NIX_CFLAGS_COMPILE = [ ];
   instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
@@ -260,14 +276,14 @@ let
       optimize-for.performance
       secure
     ];
-    fuzz = release;
+    checked = release;
   };
 in
 combine-profiles (
   [
     profile-map."${profile}"
     march."${arch}"
-    instrument."${instrumentation}"
   ]
+  ++ (map (i: instrument.${i}) instrumentations)
   ++ (map (s: sanitize.${s}) sanitizers)
 )

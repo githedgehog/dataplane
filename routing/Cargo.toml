@@ -61,7 +61,7 @@ lpm = { workspace = true, features = ["testing"] }
 clock = { workspace = true, features = ["virtual"] }
 criterion = { workspace = true }
 iai-callgrind = { workspace = true }
-bolero = { workspace = true, default-features = false }
+bolero = { workspace = true, features = ["std"] }
 concurrency = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }

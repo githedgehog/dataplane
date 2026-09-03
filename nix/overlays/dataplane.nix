@@ -3,6 +3,7 @@
 {
   sources,
   sanitizers,
+  instrumentations,
   platform,
   profile,
   ...
@@ -206,6 +207,7 @@ in
                 (builtins.elem "thread" sanitizers)
                 || (builtins.elem "address" sanitizers)
                 || (builtins.elem "safe-stack" sanitizers)
+                || (builtins.elem "fuzz" instrumentations)
               )
               [
                 # This allows address / thread sanitizer to build (some sanitizers do not like -Wl,-z,defs or
