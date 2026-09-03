@@ -265,42 +265,70 @@ fn test_which_runs_in_vm_with_qemu_iommu() {
     assert_eq!(2 + 2, 4);
 }
 
-/// Ignored rather than deleted, and ignored rather than skipped.
+/// The four tests below need a host hugepage pool, and CI does not have one.
 ///
-/// The CI runners have no 1 GiB pool and cannot grow one: a privileged
-/// container does reach the host's `nr_hugepages`, and the kernel still
-/// answers 0, before and after compaction. Reserving them needs
-/// `default_hugepagesz=1G hugepagesz=1G hugepages=4` on the host's command
-/// line, which needs a reboot.
+/// Gated rather than deleted, and gated rather than skipped. They are valid
+/// tests of a path that matters -- a host hugepage is what makes a guest's
+/// memory physically contiguous, which is the only thing DPDK driving a
+/// device through an IOMMU can tell apart -- and they pass on a workstation
+/// that reserves pages. What they are not is something CI should be arranging
+/// for itself.
 ///
-/// `#[ignore]` rather than n-vm's own skip because this is not a mismatch
-/// between the test and the machine it was handed -- the machine could run
-/// it, given a boot parameter. An ignore says "not yet", is visible in the
-/// run summary, and comes back with `--ignored` on a host that has the pages.
-/// A skip would file it alongside "cloud-hypervisor cannot emulate aarch64",
-/// which is permanent and true everywhere.
+/// Reserving pages *from* CI was tried and withdrawn. A privileged container
+/// does reach the host's `nr_hugepages`, so it works mechanically, but 1 GiB
+/// pages need a physically contiguous gigabyte the kernel could not find
+/// (0 allocated, before and after compaction), and pinning 2 MiB pages on a
+/// shared runner took memory away from everything else on it: the coverage
+/// suite went from 76s to 155s and `a_vm_boots_the_kernel_profile_it_named`
+/// from 3s to 96s, its guest going silent. Reserving at boot --
+/// `default_hugepagesz=1G hugepagesz=1G hugepages=4` -- is the arrangement
+/// that costs nothing at run time, and it is the runner's to make.
 ///
-/// [`vm_boots_with_host_hugepages_2m`] keeps the surrounding code covered
-/// meanwhile.
+/// `#[cfg_attr(not(host_hugepage_tests), ignore)]` rather than n-vm's own
+/// skip: a skip is the right answer to a mismatch that is permanent and true
+/// everywhere, like cloud-hypervisor being unable to emulate aarch64. This is
+/// not that. Run them with:
+///
+/// ```text
+/// RUSTFLAGS='--cfg=host_hugepage_tests' cargo test -p dataplane-n-vm --test integration
+/// ```
+///
+/// or on any host with pages, `cargo test ... -- --ignored`.
 #[n_vm::test(config = HOST_1G_VM)]
-#[ignore = "needs a 1 GiB host hugepage; CI runners reserve none (boot parameter required)"]
+#[cfg_attr(
+    not(host_hugepage_tests),
+    ignore = "needs a host hugepage pool; run with --cfg=host_hugepage_tests"
+)]
 fn vm_boots_with_host_hugepages() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
-/// See [`vm_boots_with_host_hugepages`] for why this is ignored.
+/// See [`vm_boots_with_host_hugepages`].
 #[n_vm::test(config = HOST_1G_VM_QEMU)]
-#[ignore = "needs a 1 GiB host hugepage; CI runners reserve none (boot parameter required)"]
+#[cfg_attr(
+    not(host_hugepage_tests),
+    ignore = "needs a host hugepage pool; run with --cfg=host_hugepage_tests"
+)]
 fn vm_boots_with_host_hugepages_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
+/// See [`vm_boots_with_host_hugepages`].
 #[n_vm::test(config = HOST_2M_VM)]
+#[cfg_attr(
+    not(host_hugepage_tests),
+    ignore = "needs a host hugepage pool; run with --cfg=host_hugepage_tests"
+)]
 fn vm_boots_with_host_hugepages_2m() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
+/// See [`vm_boots_with_host_hugepages`].
 #[n_vm::test(config = HOST_2M_VM_QEMU)]
+#[cfg_attr(
+    not(host_hugepage_tests),
+    ignore = "needs a host hugepage pool; run with --cfg=host_hugepage_tests"
+)]
 fn vm_boots_with_host_hugepages_2m_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
