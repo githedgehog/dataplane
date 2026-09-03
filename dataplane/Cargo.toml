@@ -9,7 +9,7 @@ version.workspace = true
 default = []
 # AF_XDP packet driver. Needs libxdp, which the `dataplane-xdp` build compiles
 # from source, so it is not in the default build.
-af-xdp = ["dep:xdp", "xdp/runtime"]
+af-xdp = ["dep:xdp", "xdp/runtime", "nix/fs", "nix/mount"]
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
 loom = ["concurrency/loom"]

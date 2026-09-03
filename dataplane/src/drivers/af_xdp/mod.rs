@@ -24,6 +24,7 @@
     clippy::panic
 )]
 
+mod bpffs;
 mod worker;
 
 use concurrency::sync::Arc;
@@ -148,6 +149,12 @@ impl DriverAfXdp {
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<XdpBuffer>>,
         status_writer: DriverStatusWriter,
     ) -> Result<(), DriverError> {
+        // libxdp pins what it loads under the BPF filesystem, and uses those
+        // pins to know when the last socket on an interface has gone and its
+        // program can be detached. Without them a program is left behind on
+        // every interface we ran on.
+        bpffs::ensure_mounted();
+
         let interfaces = kif::prepare(args)?;
 
         // Attach whatever is going to redirect packets to our sockets before
