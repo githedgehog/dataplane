@@ -13,7 +13,6 @@ use concurrency::sync::Arc;
 
 use std::fmt::Display;
 
-use crate::drivers::kernel::DriverKernel;
 use crate::drivers::watchdog::{Activity, RxCounters};
 
 // The unique Id of a worker
@@ -102,8 +101,27 @@ impl WorkerStatus {
     }
 }
 
+/// What a driver is, and the periods its supervisor works to. Fixed for the
+/// life of the process, but reported with the status so that a reader knows
+/// which driver, and which cadence, the numbers below came from.
+#[derive(Clone, Copy, Default)]
+pub struct DriverParams {
+    /// Name of the driver, as it is given on the command line.
+    pub name: &'static str,
+    /// Most packets a worker will take from an interface in one go.
+    pub rx_batch: usize,
+    /// How often, in seconds, the supervisor samples worker activity.
+    pub poll_period: u16,
+    /// How often, in seconds, a worker pats its watchdog when it is idle.
+    pub pat_period: u16,
+    /// How long, in seconds, the supervisor waits for a pat before calling a
+    /// worker stuck.
+    pub check_period: u16,
+}
+
 #[derive(Clone, Default)]
 pub struct DriverStatus {
+    pub params: DriverParams,
     pub workers: Vec<WorkerStatus>,
 }
 
@@ -231,10 +249,11 @@ fn fmt_rx_drop(f: &mut std::fmt::Formatter<'_>, rx: &RxTaskStatus) -> std::fmt::
 impl Display for DriverStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("Packet driver status").fmt(f)?;
-        writeln!(f, " max rx batch: {} pkts", DriverKernel::MAX_RX_PKT_BATCH)?;
-        write!(f, " activity poll: {} s", DriverKernel::TASK_POLL_PERIOD)?;
-        write!(f, "  watchdog pat: {} s", DriverKernel::TASK_PAT_PERIOD)?;
-        writeln!(f, "  watchdog check: {} s", DriverKernel::TASK_CHECK_PERIOD)?;
+        writeln!(f, " driver: {}", self.params.name)?;
+        writeln!(f, " max rx batch: {} pkts", self.params.rx_batch)?;
+        write!(f, " activity poll: {} s", self.params.poll_period)?;
+        write!(f, "  watchdog pat: {} s", self.params.pat_period)?;
+        writeln!(f, "  watchdog check: {} s", self.params.check_period)?;
 
         writeln!(f)?;
         if self.workers.is_empty() {

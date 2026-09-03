@@ -6,6 +6,7 @@ use thiserror::Error;
 pub mod kernel;
 pub(crate) mod kif;
 pub mod status;
+pub(crate) mod supervisor;
 pub mod watchdog;
 
 #[derive(Error, Debug)]
