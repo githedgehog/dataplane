@@ -6,6 +6,13 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
+/// Whether a vpc's routing configuration imports routes from the vrfs it peers with.
+///
+/// Compile-time false, so `vpc_import_prefix_list_for_peer` and the two other sites
+/// guarded by it are unreachable today. Worth knowing before flipping it: those sites
+/// used to drop IPv6 prefixes silently and now refuse the whole configuration by name,
+/// so turning this on turns a quiet omission into a hard failure for any peering that
+/// carries IPv6.
 const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
