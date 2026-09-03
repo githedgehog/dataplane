@@ -292,7 +292,12 @@ let
   # second pin, not new mechanism.
   // lib.optionalAttrs (kernel-manifest-arch == "x86_64") {
     ${flatcar-kernel-dir} = {
-      inherit (flatcar-kernel-adapted) image configfile modules modDirVersion;
+      inherit (flatcar-kernel-adapted)
+        image
+        configfile
+        modules
+        modDirVersion
+        ;
       boot = "initramfs";
       initramfs = initramfs-flatcar;
     };
@@ -303,7 +308,12 @@ let
     # a second set of pins, not new mechanism, but the arm64 `vmlinuz` is a
     # compressed `Image` and wants checking against QEMU's `-kernel` first.
     ${ubuntu-kernel-dir} = {
-      inherit (ubuntu-kernel-adapted) image configfile modules modDirVersion;
+      inherit (ubuntu-kernel-adapted)
+        image
+        configfile
+        modules
+        modDirVersion
+        ;
       boot = "initramfs";
       initramfs = initramfs-ubuntu;
     };
@@ -1235,7 +1245,6 @@ let
     # Must match VM_WORKSPACE_DIR in n-vm-protocol.
     mkdir -p $out/workspace
   '';
-
 
   workspace-check =
     {
