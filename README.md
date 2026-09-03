@@ -180,6 +180,14 @@ The driver runs one worker per RX queue, each with a socket on every interface.
 Zero-copy is tried first on every one of them and copy mode used where the NIC
 driver will not do it, which the log says at startup.
 
+The kernel will not register a UMEM whose chunks are larger than a page, so a
+packet above about 3.8KB does not fit in one and is carried in several. Those
+are gathered into one buffer on the way in and split again on the way out,
+which costs a copy each way; everything smaller is untouched. Without it a
+jumbo MTU would not work at all -- the kernel refuses to attach an XDP program
+that does not declare it to an interface whose MTU exceeds a buffer, and drops
+what will not fit.
+
 ### What the host still receives
 
 Redirecting a packet to an `AF_XDP` socket is final: the network stack never

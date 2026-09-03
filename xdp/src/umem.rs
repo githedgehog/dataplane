@@ -34,7 +34,21 @@ pub const XDP_HEADROOM: u16 = 256;
 pub const DATA_OFFSET: u16 = XDP_HEADROOM;
 
 /// The largest packet a single frame can hold.
-pub const MAX_PACKET_LEN: u16 = FRAME_SIZE - DATA_OFFSET;
+///
+/// The kernel will not register a UMEM whose chunks are larger than a page, so
+/// this is a ceiling we cannot raise. A packet longer than this arrives across
+/// several frames and leaves across several more; see [`LINEAR_SIZE`].
+pub const MAX_FRAME_PACKET_LEN: u16 = FRAME_SIZE - DATA_OFFSET;
+
+/// Size of the buffer a packet is gathered into when it arrives across more
+/// than one frame.
+///
+/// Large enough for a jumbo frame and the headroom a buffer carries, with room
+/// to spare, and a power of two so the allocator has an easy time of it.
+pub const LINEAR_SIZE: u16 = 16384;
+
+/// The largest packet the driver can carry.
+pub const MAX_PACKET_LEN: u16 = LINEAR_SIZE - DATA_OFFSET;
 
 /// The mapped UMEM region, shared by every frame carved out of it.
 ///

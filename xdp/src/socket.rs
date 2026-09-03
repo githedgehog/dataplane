@@ -53,10 +53,22 @@ use xsk_rs::{CompQueue, FillQueue, RxQueue, Umem};
 
 use crate::buffer::XdpBuffer;
 use crate::program::Redirect;
-use crate::umem::{FRAME_SIZE, MAX_PACKET_LEN, UmemRegion};
+use crate::umem::{
+    DATA_OFFSET, FRAME_SIZE, LINEAR_SIZE, MAX_FRAME_PACKET_LEN, MAX_PACKET_LEN, UmemRegion,
+};
 
 /// Frames handled in one ring operation.
 pub const BATCH_SIZE: usize = 64;
+
+/// The most frames one packet can span, which is what it takes to hold
+/// [`MAX_PACKET_LEN`] at [`MAX_FRAME_PACKET_LEN`] a frame.
+const MAX_FRAGMENTS: usize = MAX_PACKET_LEN.div_ceil(MAX_FRAME_PACKET_LEN) as usize;
+
+/// The descriptor option that says a packet continues in the next descriptor.
+///
+/// xsk-rs reads it back through `FrameDesc::has_more_frames`, but does not
+/// give a way to set it by name.
+const XDP_PKT_CONTD: u32 = 1;
 
 /// Start of the frame the byte at `addr` falls in.
 ///
@@ -94,6 +106,13 @@ pub const DEFAULT_RING_SIZE: u32 = 1024;
 /// Enough to keep a fill ring full, with the rest covering the frames in
 /// flight through the pipeline and on the TX ring.
 pub const DEFAULT_FRAMES_PER_SOCKET: u32 = 2048;
+
+/// Buffers kept for packets that arrive across more than one frame.
+///
+/// Only packets too long for a frame need one, and only for as long as they
+/// are in the pipeline, so this is sized for a batch of them in flight rather
+/// than for the frame pool.
+pub const DEFAULT_LINEAR_BUFFERS: usize = 256;
 
 /// Anything that can go wrong setting up or driving an `AF_XDP` socket.
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +165,8 @@ pub struct XskConfig {
     pub tx_ring_size: u32,
     /// Bind in copy mode without trying zero-copy first.
     pub force_copy: bool,
+    /// Buffers to keep for packets that span more than one frame.
+    pub linear_buffers: usize,
 }
 
 impl Default for XskConfig {
@@ -157,6 +178,7 @@ impl Default for XskConfig {
             rx_ring_size: DEFAULT_RING_SIZE,
             tx_ring_size: DEFAULT_RING_SIZE,
             force_copy: false,
+            linear_buffers: DEFAULT_LINEAR_BUFFERS,
         }
     }
 }
@@ -212,7 +234,11 @@ impl XskConfig {
                     BindFlags::XDP_ZEROCOPY
                 } else {
                     BindFlags::XDP_COPY
-                } | BindFlags::XDP_USE_NEED_WAKEUP,
+                } | BindFlags::XDP_USE_NEED_WAKEUP
+                    // Without this the kernel drops anything that does not fit
+                    // in one frame rather than splitting it across several,
+                    // which is every packet above ~3.8KB.
+                    | BindFlags::XDP_USE_SG,
             );
 
         // We bring our own program, so libxdp must not load one of its own.
@@ -241,6 +267,12 @@ pub struct XskUmem {
     returned_tx: Sender<usize>,
     /// The frames buffers have handed back, not yet on the free list.
     returned_rx: Receiver<usize>,
+    /// Buffers for packets that span more than one frame.
+    linear: Vec<Box<[u8]>>,
+    /// Handed to each such buffer so it comes back when dropped.
+    linear_tx: Sender<Box<[u8]>>,
+    /// The ones handed back, not yet on the free list.
+    linear_rx: Receiver<Box<[u8]>>,
     /// Geometry and bind options for the sockets created from this UMEM.
     config: XskConfig,
 }
@@ -287,6 +319,10 @@ impl XskUmem {
         };
 
         let (returned_tx, returned_rx) = channel();
+        let (linear_tx, linear_rx) = channel();
+        let linear = (0..config.linear_buffers)
+            .map(|_| vec![0u8; LINEAR_SIZE as usize].into_boxed_slice())
+            .collect();
 
         debug!(
             "UMEM mapped: {} frames of {FRAME_SIZE} bytes ({} MiB)",
@@ -301,6 +337,9 @@ impl XskUmem {
             descs,
             returned_tx,
             returned_rx,
+            linear,
+            linear_tx,
+            linear_rx,
             config,
         })
     }
@@ -380,6 +419,8 @@ impl XskUmem {
             rx_descs: vec![FrameDesc::default(); BATCH_SIZE],
             cq_descs: vec![FrameDesc::default(); BATCH_SIZE],
             fill_descs: Vec::with_capacity(BATCH_SIZE),
+            tx_descs: Vec::with_capacity(MAX_FRAGMENTS),
+            rx_packet: Vec::with_capacity(MAX_FRAGMENTS),
             tx_queued: false,
         };
 
@@ -409,6 +450,10 @@ impl XskUmem {
         let mut reclaimed = 0;
         while let Ok(frame_addr) = self.returned_rx.try_recv() {
             self.release(frame_addr);
+            reclaimed += 1;
+        }
+        while let Ok(buffer) = self.linear_rx.try_recv() {
+            self.linear.push(buffer);
             reclaimed += 1;
         }
         reclaimed
@@ -448,7 +493,7 @@ impl XskUmem {
         // is done with it and no other buffer refers to it. Its address and
         // length come from the descriptor the kernel filled in.
         unsafe {
-            XdpBuffer::new(
+            XdpBuffer::frame(
                 self.region.clone(),
                 frame_addr,
                 data_offset,
@@ -459,39 +504,133 @@ impl XskUmem {
         }
     }
 
-    /// Copy `data` into a free frame and return its descriptor, ready to be
-    /// put on a TX ring.
-    fn stage(&mut self, data: &[u8]) -> Result<(usize, FrameDesc), XskError> {
+    /// Gather a packet that arrived across `descs` into one buffer.
+    ///
+    /// The pipeline needs the packet as one run of bytes, and the fragments
+    /// are in frames that are nowhere near each other, so this is a copy. It
+    /// happens only for packets too long for a single frame.
+    ///
+    /// The frames are handed straight back: unlike the single-frame case, the
+    /// buffer that comes out does not hold them.
+    ///
+    /// Returns `None` if there is no buffer free to gather into, or if the
+    /// packet is longer than one can hold, having released the frames either
+    /// way.
+    fn gather(&mut self, descs: &[FrameDesc]) -> Option<XdpBuffer> {
+        let total: usize = descs.iter().map(|desc| desc.lengths().data()).sum();
+
+        let gathered = if total > MAX_PACKET_LEN as usize {
+            warn!(
+                "Dropping a {total} byte packet, which is longer than the {MAX_PACKET_LEN} \
+                 bytes a buffer holds"
+            );
+            None
+        } else if let Some(storage) = self.linear.pop() {
+            #[allow(clippy::cast_possible_truncation)] // checked against MAX_PACKET_LEN above
+            let mut buffer =
+                XdpBuffer::linear(storage, DATA_OFFSET, total as u16, self.linear_tx.clone());
+            let start = DATA_OFFSET as usize;
+            let storage = buffer.storage_mut();
+            let mut at = start;
+            for desc in descs {
+                let len = desc.lengths().data();
+                // SAFETY: the frame was just consumed from the RX ring, so it
+                // is ours and holds `len` bytes at `desc.addr()`.
+                let fragment =
+                    unsafe { std::slice::from_raw_parts(self.region.ptr_at(desc.addr()), len) };
+                storage[at..at + len].copy_from_slice(fragment);
+                at += len;
+            }
+            trace!("Gathered a {total} byte packet from {} frames", descs.len());
+            Some(buffer)
+        } else {
+            warn!("Dropping a {total} byte packet: no buffer free to gather it into");
+            None
+        };
+
+        // The fragments are copied out either way, so the frames go back
+        // whether or not a packet came of them.
+        for desc in descs {
+            self.release(frame_start(desc.addr()));
+        }
+        gathered
+    }
+
+    /// Copy `data` into as many free frames as it needs, and return their
+    /// descriptors in the order they must be put on the TX ring.
+    ///
+    /// A packet that arrived in a frame of this same UMEM is copied into
+    /// another one, which the shared UMEM ought to make unnecessary. Sending
+    /// the frame where it lies would mean handing the ring a descriptor for
+    /// the packet's own address and length, and xsk-rs keeps `FrameDesc`'s
+    /// address private and its constructor crate-internal; the only way to
+    /// give a descriptor a length is to write through a cursor at the frame's
+    /// fixed data offset, which is this copy. Avoiding it needs a change
+    /// upstream, or dropping to libxdp-sys.
+    ///
+    /// A packet that fits in one frame takes one, which is the common case.
+    /// One that does not is split, and every descriptor but the last is marked
+    /// as having more to come, which is how the kernel is told they are one
+    /// packet.
+    ///
+    /// The frames are handed back on failure, so a caller that gets an error
+    /// has leaked nothing.
+    fn stage(&mut self, data: &[u8], staged: &mut Vec<FrameDesc>) -> Result<(), XskError> {
         if data.len() > MAX_PACKET_LEN as usize {
             return Err(XskError::PacketTooLong { len: data.len() });
         }
-        let index = self.claim().ok_or(XskError::NoFreeFrames)?;
-        let Some(desc) = self.descs.get_mut(index) else {
-            return Err(XskError::NoFreeFrames);
-        };
 
-        // SAFETY: the frame was just taken off the free list, so neither the
-        // kernel nor a buffer is looking at it.
-        let written = {
-            let mut data_mut = unsafe { self.umem.data_mut(desc) };
-            let mut cursor = data_mut.cursor();
-            // The frame may have carried a longer packet before; writing starts
-            // where the cursor is, and the descriptor's length is where it ends.
-            cursor.set_pos(0);
-            cursor.write_all(data)
-        };
+        staged.clear();
+        let mut rest = data;
+        while !rest.is_empty() {
+            let Some(index) = self.claim() else {
+                self.unstage(staged);
+                return Err(XskError::NoFreeFrames);
+            };
+            let take = rest.len().min(MAX_FRAME_PACKET_LEN as usize);
+            let (fragment, remainder) = rest.split_at(take);
+            rest = remainder;
 
-        match written {
-            Ok(()) => Ok((index, self.descs[index])),
-            Err(e) => {
+            // SAFETY: the frame was just taken off the free list, so neither
+            // the kernel nor a buffer is looking at it.
+            let written = {
+                let desc = &mut self.descs[index];
+                let mut data_mut = unsafe { self.umem.data_mut(desc) };
+                let mut cursor = data_mut.cursor();
+                // The frame may have carried a longer packet before; writing
+                // starts where the cursor is, and the descriptor's length is
+                // where it ends.
+                cursor.set_pos(0);
+                cursor.write_all(fragment)
+            };
+            if let Err(e) = written {
                 self.free.push_back(index);
-                Err(XskError::Io(e))
+                self.unstage(staged);
+                return Err(XskError::Io(e));
             }
+
+            let mut desc = self.descs[index];
+            // Every fragment but the last says there is more to come. The last
+            // one is fixed up below, once we know it is the last.
+            desc.set_options(XDP_PKT_CONTD);
+            staged.push(desc);
+        }
+
+        if let Some(last) = staged.last_mut() {
+            last.set_options(0);
+        }
+        Ok(())
+    }
+
+    /// Hand staged frames back, for a packet that will not be sent after all.
+    fn unstage(&mut self, staged: &mut Vec<FrameDesc>) {
+        for desc in staged.drain(..) {
+            self.release(frame_start(desc.addr()));
         }
     }
 }
 
-/// One `AF_XDP` socket, bound to an (interface, queue) pair.
+/// One `AF_XDP` socket, bound to an (interface, queue) pair./// One `AF_XDP` socket, bound to an (interface, queue) pair.
 ///
 /// The socket borrows the [`XskUmem`] it was bound to for every operation that
 /// moves frames, which is what keeps a single free list behind sockets that
@@ -515,6 +654,10 @@ pub struct XskSocket {
     cq_descs: Vec<FrameDesc>,
     /// Scratch for [`FillQueue::produce`].
     fill_descs: Vec<FrameDesc>,
+    /// Scratch for the descriptors of one packet being sent.
+    tx_descs: Vec<FrameDesc>,
+    /// Scratch for the descriptors of one packet being received.
+    rx_packet: Vec<FrameDesc>,
     /// Whether anything has been put on the TX ring since the last flush.
     tx_queued: bool,
 }
@@ -540,12 +683,43 @@ impl XskSocket {
             "{}:q{}: {received} frames off the RX ring",
             self.if_name, self.queue_id
         );
-        packets.extend(
-            self.rx_descs[..received]
-                .iter()
-                .map(|desc| umem.buffer(desc)),
-        );
-        received
+
+        let before = packets.len();
+        for desc in &self.rx_descs[..received] {
+            let continues = desc.has_more_frames();
+
+            // The common case: a packet that fits one frame, kept where the
+            // kernel put it.
+            if !continues && self.rx_packet.is_empty() {
+                packets.push(umem.buffer(desc));
+                continue;
+            }
+
+            self.rx_packet.push(*desc);
+            if continues && self.rx_packet.len() < MAX_FRAGMENTS {
+                continue;
+            }
+
+            if continues {
+                // More fragments than a packet we can hold has. Give up on it
+                // rather than growing without bound on a ring that is telling
+                // us something impossible.
+                warn!(
+                    "{}:q{}: dropping a packet that spans more than {MAX_FRAGMENTS} frames",
+                    self.if_name, self.queue_id
+                );
+                for desc in &self.rx_packet {
+                    umem.release(frame_start(desc.addr()));
+                }
+            } else if let Some(packet) = umem.gather(&self.rx_packet) {
+                packets.push(packet);
+            }
+            self.rx_packet.clear();
+        }
+
+        // A packet whose last fragment has not arrived yet stays in
+        // `rx_packet` and is finished on the next pass.
+        packets.len() - before
     }
 
     /// Copy `data` into a free frame and put it on the TX ring.
@@ -559,19 +733,23 @@ impl XskSocket {
     /// [`XskError::PacketTooLong`] if the packet does not fit a frame, or
     /// [`XskError::TxRingFull`] if the kernel has not kept up.
     pub fn send(&mut self, umem: &mut XskUmem, data: &[u8]) -> Result<(), XskError> {
-        let (index, desc) = umem.stage(data)?;
+        umem.stage(data, &mut self.tx_descs)?;
 
-        // SAFETY: the frame is off the free list and holds the packet we just
-        // wrote, so it is on no other ring.
-        let queued = unsafe { self.tx.produce_one(&desc) };
-        if queued == 0 {
-            umem.free.push_back(index);
+        // The fragments of one packet have to be next to each other on the
+        // ring, which is what producing them in one go gets us: the ring
+        // either takes them all or takes none.
+        // SAFETY: every frame is off the free list and holds part of the
+        // packet we just wrote, so none is on another ring.
+        let queued = unsafe { self.tx.produce(&self.tx_descs) };
+        if queued != self.tx_descs.len() {
+            umem.unstage(&mut self.tx_descs);
             return Err(XskError::TxRingFull);
         }
 
+        self.tx_descs.clear();
         self.tx_queued = true;
         trace!(
-            "{}:q{}: queued {} bytes for transmission",
+            "{}:q{}: queued {} bytes for transmission in {queued} frame(s)",
             self.if_name,
             self.queue_id,
             data.len()

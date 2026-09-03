@@ -107,7 +107,13 @@ fn read_at<T: Copy>(ctx: &XdpContext, offset: usize) -> Option<T> {
 }
 
 /// Decide where a packet goes, and send it there.
-#[xdp]
+///
+/// `frags` says the program copes with a packet that arrives in more than one
+/// buffer, which is what the kernel requires before it will attach one to an
+/// interface whose MTU is larger than a buffer. It costs nothing here: the
+/// headers this reads are all in the first buffer, which is the only part
+/// `data`..`data_end` covers either way.
+#[xdp(frags)]
 pub fn xdp_redirect(ctx: XdpContext) -> u32 {
     if is_for_the_host(&ctx) {
         return xdp_action::XDP_PASS;
