@@ -1457,9 +1457,11 @@ version = "0.27.0"
 dependencies = [
  "bolero",
  "bytecheck",
+ "dataplane-dpdk",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
  "dataplane-n-vm",
+ "dataplane-net",
  "dataplane-sysfs",
  "dataplane-test-utils",
  "fixin",

@@ -37,6 +37,10 @@ sysfs = { workspace = true }
 
 [dev-dependencies]
 # internal
+# `tests/dpdk_in_vm.rs` drives a real DPDK device inside a guest and parses
+# what comes back off the wire; neither is needed by the library itself.
+dpdk = { workspace = true, features = [] }
+net = { workspace = true, features = [] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
 n-vm = { workspace = true }
@@ -53,3 +57,9 @@ tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }
+
+# `tests/dpdk_in_vm.rs` gates its 1 GiB-host-page variants on this; declared
+# per package because cargo's `[lints]` are, and the n-vm crate's own
+# declaration does not reach here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)'] }
