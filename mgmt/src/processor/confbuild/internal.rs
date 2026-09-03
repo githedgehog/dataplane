@@ -552,6 +552,55 @@ mod chain_properties {
                     .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
                     .collect();
                 assert_eq!(built, wanted, "vrfs do not match the vpcs they come from");
+
+                // Matching the set of vnis leaves almost everything about a vrf unchecked:
+                // two vrfs sharing a vni collapse into one element, and name, description,
+                // vpc id and table id are never looked at. Pointing every vrf at the wrong
+                // kernel routing table passed this.
+                let mut table_ids = BTreeSet::new();
+                for vpc in validated.external().overlay().vpc_table().values() {
+                    let vrf = internal
+                        .vrfs
+                        .iter_by_name()
+                        .find(|vrf| vrf.vni == Some(vpc.vni()))
+                        .unwrap_or_else(|| panic!("no vrf carries the vni of {}", vpc.name()));
+
+                    assert_eq!(vrf.name, vpc.vrf_name(), "vrf name");
+                    assert_eq!(vrf.vpc_id.as_ref(), Some(vpc.id()), "vrf vpc id");
+                    assert_eq!(
+                        vrf.description.as_deref(),
+                        Some(vpc.name()),
+                        "vrf description"
+                    );
+
+                    // A vrf's route table is the vpc's vni, so that an operator can reach
+                    // it by the number they already know. The exception is a vni that
+                    // collides with a table id the kernel reserves, which is moved above
+                    // the vni space instead.
+                    let tableid = vrf
+                        .tableid
+                        .unwrap_or_else(|| panic!("the vrf for {} has no route table", vpc.name()));
+                    let vni = vpc.vni().as_u32();
+                    let expected = match vni {
+                        253..=255 => Vni::MAX + (vni - 252),
+                        _ => vni,
+                    };
+                    assert_eq!(
+                        u32::from(tableid),
+                        expected,
+                        "the vrf for {} points at the wrong route table",
+                        vpc.name()
+                    );
+                    assert!(
+                        !matches!(u32::from(tableid), 253..=255),
+                        "the vrf for {} claims a route table the kernel reserves",
+                        vpc.name()
+                    );
+                    assert!(
+                        table_ids.insert(tableid),
+                        "two vrfs share route table {tableid:?}, so one of them will not exist"
+                    );
+                }
             });
     }
 
