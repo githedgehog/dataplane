@@ -129,6 +129,17 @@ impl ValueGenerator for UniqueV6CidrGenerator {
     }
 }
 
+/// How many high-order bits it takes to give each of `count` addresses a distinct
+/// prefix, plus one so the all-zero prefix is not the only choice.
+///
+/// This is a property of the counter, not of the address, so it is the same for v4
+/// and v6. Sizing it from the address width instead is what pinned every generated
+/// interface address into a short suffix of the space.
+fn distinguishing_bits(count: u16) -> u32 {
+    debug_assert!(count > 0, "a zero count has no addresses to distinguish");
+    count.next_power_of_two().ilog2() + 1
+}
+
 pub struct UniqueV4InterfaceAddressGenerator {
     pub count: u16,
 }
@@ -159,7 +170,7 @@ impl ValueGenerator for UniqueV4InterfaceAddressGenerator {
         }
         // Calculate a mask to get a unique prefix for each address
         // plus 1 because all 0s for the first octect is not a valid prefix
-        let num_prefix_bits = u32::BITS - self.count.next_power_of_two().leading_zeros();
+        let num_prefix_bits = distinguishing_bits(self.count);
         let largest_num_addr_bits = 32 - num_prefix_bits;
         let smallest_mask = num_prefix_bits;
 
@@ -208,7 +219,7 @@ impl ValueGenerator for UniqueV6InterfaceAddressGenerator {
             return Some(vec![]);
         }
         // Calculate a mask so that we get a unique prefix for each address
-        let num_prefix_bits = u128::BITS - self.count.next_power_of_two().leading_zeros();
+        let num_prefix_bits = distinguishing_bits(self.count);
         let largest_num_addr_bits = 128 - num_prefix_bits;
         let smallest_mask = num_prefix_bits;
 
@@ -292,6 +303,29 @@ pub fn generate_prefixes<D: Driver>(
 
 #[cfg(test)]
 mod test {
+    /// The mask floor an interface generator imposes is a property of how many
+    /// addresses it must keep apart, nothing else. A single address needs one bit,
+    /// so it must still be free to be a /1, and ten addresses need five.
+    ///
+    /// Pinning these down deterministically rather than by sampling: the defect this
+    /// guards against silently raised the floor to 17 for v4 and 113 for v6, which a
+    /// property that only checks uniqueness cannot see.
+    #[test]
+    fn a_mask_floor_is_sized_by_the_count_not_the_address() {
+        use crate::bolero::support::distinguishing_bits;
+        assert_eq!(distinguishing_bits(1), 1);
+        assert_eq!(distinguishing_bits(2), 2);
+        assert_eq!(distinguishing_bits(3), 3);
+        assert_eq!(distinguishing_bits(4), 3);
+        assert_eq!(distinguishing_bits(10), 5);
+        assert_eq!(distinguishing_bits(100), 8);
+        // Every count leaves room for a v4 host part, and none of them is anywhere
+        // near the width of an address.
+        for count in [1u16, 2, 10, 100, 1000] {
+            assert!(distinguishing_bits(count) < 32);
+        }
+    }
+
     #[cfg(not(miri))]
     const UNIQUE_COUNTS: [u16; 5] = [0, 1, 10, 16, 100];
     #[cfg(miri)]
