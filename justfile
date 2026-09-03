@@ -130,6 +130,25 @@ nightly := "false"
 [private]
 docker_sock := "/var/run/docker.sock"
 
+# Directory the Docker daemon can see, when it cannot see this checkout's
+# /nix/store. Empty -- the ordinary case -- means the daemon runs on this host
+# and resolves store paths itself.
+#
+# n-vm's container tier hands the daemon bind-mount *sources*, and the daemon
+# resolves them in its own mount namespace. On a CI runner that is itself a
+# container talking to the host's daemon, /nix belongs to the runner image and
+# the bare metal has nothing at those paths. Because every mount asks Docker to
+# create a missing mount point, the daemon answers by creating an *empty*
+# directory rather than failing, so the guest root comes up empty and the first
+# mount beneath it dies on a read-only filesystem.
+#
+# Set this to a directory on a filesystem both sides share -- under this
+# workspace, which is the one path a containerised runner and its host agree on
+# -- and `setup-roots` will export the roots' closure into it. `n-vm` reads the
+# same variable and rewrites the mount sources; the targets stay `/nix/store`,
+# so rpaths in the guest are unaffected.
+n_vm_host_share := env("N_VM_HOST_SHARE_DIR", "")
+
 # Build a nix derivation with standard build arguments
 [script]
 build target="dataplane.tar" *args:
@@ -298,6 +317,86 @@ setup-roots *args:
         --out-link "${root}" \
         {{ args }}
     done
+
+    if [ -n "{{ n_vm_host_share }}" ]; then
+      just n_vm_host_share="{{ n_vm_host_share }}" export-scratch-roots
+    fi
+
+# Copy the scratch roots' nix closure somewhere the Docker daemon can read it.
+# See `n_vm_host_share`; a no-op unless that is set.
+[script]
+export-scratch-roots:
+    {{ _just_debuggable_ }}
+    declare -r share="{{ n_vm_host_share }}"
+    if [ -z "${share}" ]; then
+      echo "n_vm_host_share is unset; nothing to export"
+      exit 0
+    fi
+    declare -r store="${share}/nix/store"
+    # `tmp` is the other half: the forwarded-environment directory is a bind
+    # source too, and a container-local /tmp is no more visible than /nix.
+    mkdir -p "${store}" "${share}/tmp"
+
+    # The closure, not the whole store. `/nix/store` is mounted into the
+    # container whole, so the export has to cover everything the container
+    # resolves through it, which is two things:
+    #
+    #   testroot/vmroot  the host tier's qemu, cloud-hypervisor and virtiofsd,
+    #                    the guest kernel, and n-it inside the guest root
+    #   sysroot          what the *test binary* is linked against. Missing this
+    #                    is not a missing-file error: the binary is there and
+    #                    execs, and the kernel reports ENOENT for its absent
+    #                    ELF interpreter, so the container exits 127 with
+    #                    "No such file or directory" naming a path that plainly
+    #                    exists.
+    #
+    # devroot is deliberately not here. It is the toolchain -- 4.6 GiB against
+    # sysroot's 2.0 -- and nothing inside the container compiles.
+    declare -a roots=( testroot vmroot sysroot )
+    declare -a resolved=()
+    for root in "${roots[@]}"; do
+      if [ ! -e "${root}" ]; then
+        >&2 echo "::error::${root} is missing; run setup-roots first"
+        exit 1
+      fi
+      resolved+=( "$(readlink -f "${root}")" )
+    done
+    declare -a paths
+    mapfile -t paths < <(nix-store --query --requisites "${resolved[@]}")
+
+    declare -i copied=0 kept=0
+    for path in "${paths[@]}"; do
+      declare dest="${store}/$(basename "${path}")"
+      # A store path is immutable, so an entry that is already here is already
+      # right. This is what makes the second job on a runner cheap.
+      if [ -e "${dest}" ]; then
+        kept+=1
+        continue
+      fi
+      # Copy to a private name and rename, so a concurrent job never observes
+      # a half-copied path under a name that promises a whole one.
+      declare staging="${store}/.staging-$$-$(basename "${path}")"
+      rm -rf -- "${staging}"
+      cp -a --no-preserve=ownership -- "${path}" "${staging}"
+      # A store path's directories are r-xr-xr-x, which nix relies on to keep
+      # them immutable. A copy has no such contract, and inheriting the mode
+      # makes the export undeletable: `rm -rf` cannot unlink a child of a
+      # directory it cannot write. Whoever cleans this runner should not have
+      # to know that.
+      chmod -R u+w -- "${staging}"
+      if ! mv -T -- "${staging}" "${dest}" 2>/dev/null; then
+        # Lost the race; the winner's copy is as good as ours.
+        chmod -R u+w -- "${staging}" 2>/dev/null || true
+        rm -rf -- "${staging}"
+      fi
+      copied+=1
+    done
+    # Reported from nix rather than `du`: on a copy-on-write filesystem `du`
+    # run straight after the copy reports blocks that are still dirty, which
+    # made a 1.8 GiB export read as 26 MiB.
+    printf 'exported %d store paths to %s (%d already present, %s closure)\n' \
+        "${copied}" "${store}" "${kept}" \
+        "$(nix path-info -S "${resolved[@]}" 2>/dev/null | awk '{t+=$2} END {printf "%.1f GiB", t/1024/1024/1024}')"
 
 # Build the dataplane container image
 [script]
