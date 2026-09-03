@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn an_expose_becomes_the_rules_it_describes() {
         bolero::check!()
-            .with_generator(PortForwardingExpose)
+            .with_generator(PortForwardingExpose::default())
             .cloned()
             .for_each(|expose: VpcExpose| {
                 let nat = expose.nat.as_ref().expect("port forwarding sets nat");
