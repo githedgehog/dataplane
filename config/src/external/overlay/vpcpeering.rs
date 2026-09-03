@@ -1278,6 +1278,22 @@ pub mod contract {
     /// Returns an error if either vpc is rejected by the [`VpcTable`], or if the
     /// peering between them is rejected by the [`VpcPeeringTable`].
     pub fn overlay_with_exposes(exposes: Vec<VpcExpose>) -> Result<Overlay, ConfigError> {
+        overlay_with_exposes_in_group(exposes, "default")
+    }
+
+    /// Build the fixed two-vpc overlay, with the peering handed to a named gateway group.
+    ///
+    /// Which group owns a peering decides whether a given gateway renders it at all, so
+    /// a caller testing that distinction needs to say.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vpc is rejected by the [`VpcTable`], or if the
+    /// peering between them is rejected by the [`VpcPeeringTable`].
+    pub fn overlay_with_exposes_in_group(
+        exposes: Vec<VpcExpose>,
+        gwgroup: &str,
+    ) -> Result<Overlay, ConfigError> {
         let remote_prefix = match exposes
             .first()
             .and_then(|expose| expose.ips.first().map(PrefixWithOptionalPorts::prefix))
@@ -1300,10 +1316,11 @@ pub mod contract {
                 .into()),
         );
         let mut peerings = VpcPeeringTable::new();
-        peerings.add(VpcPeering::with_default_group(
+        peerings.add(VpcPeering::new(
             "VPC-1--VPC-2",
             local,
             remote,
+            gwgroup.to_string(),
         ))?;
 
         Ok(Overlay::new(vpc_table, peerings))
