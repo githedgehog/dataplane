@@ -962,6 +962,22 @@ impl<S: DevState> Dev<S> {
 }
 
 impl<S: DevState> Dev<S> {
+    /// The device's primary MAC address, as the PMD reports it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the address could not be read.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn mac_address(&self) -> Result<net::eth::mac::Mac, ErrorCode> {
+        let mut addr: rte_ether_addr = unsafe { core::mem::zeroed() };
+        let ret = unsafe { rte_eth_macaddr_get(self.info.index().as_u16(), &raw mut addr) };
+        if ret == 0 {
+            Ok(net::eth::mac::Mac(addr.addr_bytes))
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+
     /// Enable or disable promiscuous mode on the device.
     ///
     /// # Errors
