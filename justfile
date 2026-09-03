@@ -179,6 +179,15 @@ test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" 
         export N_VM_TEST_ROOT="$(pwd)/testroot"
         export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
+    # `trybuild` (n-vm-macros' compile-fail suite) shells out to
+    # `cargo --offline` for a scratch project under `target/tests/trybuild`,
+    # which resolves against the local registry cache rather than the nix
+    # vendor directory the workspace was built from. CI builds through nix and
+    # never populates that cache, so the suite fails there with "no matching
+    # package named `proc-macro2`" while passing on any developer machine.
+    # `--locked` means every download is checksum-checked against Cargo.lock,
+    # and a warm cache makes this a no-op.
+    cargo fetch --locked
     # `--no-tests pass`: a single-package archive whose only test(s) are
     # `#[cfg_attr(emulated, ignore)]` (e.g. n-vm-macros' trybuild test under
     # cross) runs zero tests; treat that as success, matching `test-each`.
@@ -234,12 +243,14 @@ check-each *args: (build "check" args)
 [script]
 test-each *args: (setup-roots) (build "tests.pkg" args)
     {{ _just_debuggable_ }}
-    # The per-package archives include `dataplane-n-vm`'s guest-booting suite,
-    # so this recipe needs the roots exactly as `test` does.
+    # Same two requirements as `test`: the per-package archives include
+    # `dataplane-n-vm`'s guest-booting suite, and n-vm-macros' trybuild suite
+    # resolves against the local registry cache.
     if [[ -e testroot && -e vmroot ]]; then
         export N_VM_TEST_ROOT="$(pwd)/testroot"
         export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
+    cargo fetch --locked
     declare -a fail=()
     for test_archive in results/tests.pkg*/*.tar.zst; do
         if ! cargo nextest run --archive-file "${test_archive}" --workspace-remap "$(pwd)" --no-tests pass; then
@@ -783,6 +794,7 @@ coverage *args: (setup-roots)
     fi
     # See the `test` recipe: trybuild resolves its scratch project against the
     # local registry cache.
+    cargo fetch --locked
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
     declare -r out="./target/nextest/coverage"
@@ -902,6 +914,7 @@ coverage-archive package="tests.all" *args: (setup-roots)
     fi
     # See the `test` recipe: trybuild resolves its scratch project against the
     # local registry cache, which a nix-only CI job never populates.
+    cargo fetch --locked
 
     # Report partial coverage before propagating a test failure.
     declare -i test_status=0
