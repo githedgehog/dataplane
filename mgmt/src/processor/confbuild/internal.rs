@@ -9,10 +9,12 @@ use tracing::{debug, error, warn};
 /// Whether a vpc's routing configuration imports routes from the vrfs it peers with.
 ///
 /// Compile-time false, so `vpc_import_prefix_list_for_peer` and the two other sites
-/// guarded by it are unreachable today. Worth knowing before flipping it: those sites
-/// used to drop IPv6 prefixes silently and now refuse the whole configuration by name,
-/// so turning this on turns a quiet omission into a hard failure for any peering that
-/// carries IPv6.
+/// guarded by it are unreachable today.
+///
+/// It does not gate how IPv6 is handled. `build_routing_config_peer` calls
+/// `reject_ipv6` on the prefixes a peering advertises whatever this is set to, so a
+/// peering carrying IPv6 is already refused by name on the live path. Flipping this on
+/// only moves which `reject_ipv6` call reports it first.
 const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
