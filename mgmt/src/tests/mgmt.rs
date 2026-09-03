@@ -522,6 +522,7 @@ pub mod test {
 #[cfg(test)]
 mod peering_chain {
     use bolero::{Driver, ValueGenerator};
+    use config::ConfigError;
     use config::ExternalConfig;
     use config::external::ExternalConfigBuilder;
     use config::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
@@ -574,12 +575,20 @@ mod peering_chain {
         }
     }
 
+    /// The groups the offered configuration carries.
+    ///
+    /// The gateway has to be a member of the group its peering names. `VpcPeering::
+    /// with_default_group` names "default", and `build_routing_config` looks the gateway
+    /// up in that group and skips the peer when it is not there. With a member of some
+    /// other name, the whole per-peering half of the FRR build never ran: no advertised
+    /// networks, no prefix lists, no route-map entries, and none of the generated exposes
+    /// reached any routing code.
     fn gw_groups_with_default() -> GwGroupTable {
         let mut groups = sample_gw_groups();
         let mut default = GwGroup::new("default");
         default
             .add_member(GwGroupMember::new(
-                "gw-default",
+                GW_NAME,
                 1,
                 IpAddr::from_str("172.128.0.9").unwrap_or_else(|_| unreachable!()),
             ))
@@ -590,10 +599,23 @@ mod peering_chain {
         groups
     }
 
+    /// The name this configuration gives the gateway building it. It has to match the
+    /// member added to the "default" group by [`gw_groups_with_default`].
+    const GW_NAME: &str = "test-gw";
+
+    /// Whether an expose offers IPv6. The validator already forces one family across an
+    /// expose, so the first prefix decides it.
+    fn is_v6(expose: &VpcExpose) -> bool {
+        expose
+            .ips
+            .first()
+            .is_some_and(|prefix| prefix.prefix().is_ipv6())
+    }
+
     fn external_offering(exposes: Vec<VpcExpose>) -> ExternalConfig {
         let overlay = overlay_with_exposes(exposes).unwrap_or_else(|e| unreachable!("{e}"));
         ExternalConfigBuilder::default()
-            .gwname("test-gw".to_string())
+            .gwname(GW_NAME.to_string())
             .genid(1)
             .device(sample_device_config())
             .underlay(sample_underlay_config())
@@ -610,6 +632,7 @@ mod peering_chain {
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         static BUILT: AtomicUsize = AtomicUsize::new(0);
         static MULTI: AtomicUsize = AtomicUsize::new(0);
+        static UNSUPPORTED_V6: AtomicUsize = AtomicUsize::new(0);
 
         bolero::check!()
             .with_generator(AnyNatExposes)
@@ -636,9 +659,25 @@ mod peering_chain {
                     MULTI.fetch_add(1, Ordering::Relaxed);
                 }
 
-                let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
-                    panic!("a validated {flavours:?} configuration would not build: {e}\n{exposes:#?}")
-                });
+                let internal = match build_internal_config(&validated, None) {
+                    Ok(internal) => internal,
+                    // The FRR configuration built from a peering is IPv4-only, so a
+                    // validated IPv6 peering cannot be rendered. That gap is real and the
+                    // user meets it at apply time, not at submit time. Check it here
+                    // rather than skip past it: only an IPv6 configuration may reach this,
+                    // and if one ever builds, this arm is what says the limitation lifted.
+                    Err(ConfigError::Unsupported(_)) => {
+                        assert!(
+                            exposes.iter().any(is_v6),
+                            "an IPv4 {flavours:?} configuration was refused as unsupported\n{exposes:#?}"
+                        );
+                        UNSUPPORTED_V6.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(e) => panic!(
+                        "a validated {flavours:?} configuration would not build: {e}\n{exposes:#?}"
+                    ),
+                };
 
                 let vnis: Vec<u32> = internal
                     .vrfs
@@ -697,7 +736,11 @@ mod peering_chain {
         let seen = SEEN.load(Ordering::Relaxed);
         let built = BUILT.load(Ordering::Relaxed);
         let multi = MULTI.load(Ordering::Relaxed);
-        println!("{built}/{seen} configurations built, {multi} of them with several exposes");
+        let unsupported = UNSUPPORTED_V6.load(Ordering::Relaxed);
+        println!(
+            "{built}/{seen} configurations built, {multi} of them with several exposes, \
+             {unsupported} refused as ipv6"
+        );
         // A rate needs a sample. Under miri and qemu this property gets a handful of
         // cases, where these would measure nothing and flake; the counts above still
         // print for a human or a coverage run.
@@ -709,6 +752,14 @@ mod peering_chain {
             assert!(
                 multi > 0,
                 "no configuration with more than one expose was built"
+            );
+            // Half the generated exposes are IPv6, so the refusal has to be getting hit.
+            // If it stops, either the generator went IPv4-only or the builder learned to
+            // render IPv6, and either way the arm above needs revisiting.
+            assert!(
+                unsupported > 0,
+                "no ipv6 configuration reached the builder, so the ipv4-only limitation is \
+                 no longer being exercised"
             );
         }
     }
