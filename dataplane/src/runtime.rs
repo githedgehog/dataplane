@@ -359,6 +359,16 @@ pub fn main() {
                             driver_status_writer,
                         ))
                     }
+                    #[cfg(not(feature = "af-xdp"))]
+                    "af-xdp" => {
+                        error!(
+                            "This dataplane was built without the af-xdp feature, so it \
+                             cannot run the driver it would otherwise default to. Rebuild \
+                             with it, or pass --driver kernel. Stopping dataplane..."
+                        );
+                        shutdown.fail();
+                        None
+                    }
                     other => {
                         error!("Unknown driver '{other}'. Stopping dataplane...");
                         shutdown.fail();
