@@ -1005,6 +1005,14 @@ mod validator_completeness {
 
     use crate::processor::confbuild::internal::build_internal_config;
 
+    /// Build every dataplane artifact a validated configuration implies.
+    ///
+    /// `mutation` names the mutation that was *drawn*, which is not the same as one that
+    /// was applied. The caller reaches this only when the mutation found no target, since
+    /// a mutation that did apply is required to have been refused. So the mutation names
+    /// in the messages below are there to identify the draw, not to describe a
+    /// configuration that carries the mutation: the enactment half of this property runs
+    /// on unmutated input, and the mutations earn their keep in the refusal half.
     fn enact(validated: &ValidatedGwConfig, mutation: Mutation) {
         let genid = validated.genid();
 
