@@ -214,10 +214,12 @@ impl ValueGenerator for ExposeGenerator<'_> {
                 }
             }
 
-            let named = self.matching_subnets();
-            if !named.is_empty() {
-                let take = d.gen_usize(Bound::Included(&0), Bound::Included(&named.len()))?;
-                for name in named.into_iter().take(take) {
+            // Decide each subnet on its own. Taking a prefix of the list instead meant an
+            // expose could never name the second subnet without also naming the first, so
+            // a gap in the references, and any ordering that depends on one, was
+            // unreachable.
+            for name in self.matching_subnets() {
+                if d.produce::<bool>()? {
                     ips.push(GatewayAgentPeeringsPeeringExposeIps {
                         cidr: None,
                         not: None,
