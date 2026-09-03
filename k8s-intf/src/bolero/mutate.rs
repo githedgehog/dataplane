@@ -67,9 +67,20 @@ fn lengthen(cidr: &str, by: u8) -> Option<String> {
     Some(format!("{address}/{longer}"))
 }
 
+/// The prefix that shares this one's parent: the last bit of its network part, flipped.
+///
+/// A default route has no network part and so has no sibling. Saying so here is not
+/// decoration: the shift below is by `width - len`, which for a `/0` is the full width
+/// of the integer. That panics in debug and, were the panic ever compiled out, would
+/// quietly hand back the prefix it was asked to move away from, so the mutation would
+/// report a change it did not make. Nothing generates a `/0` today, but that rests on a
+/// `min_len` invariant kept in another module.
 fn sibling(cidr: &str) -> Option<String> {
     let (address, len) = cidr.split_once('/')?;
     let len: u8 = len.parse().ok()?;
+    if len == 0 {
+        return None;
+    }
     if address.contains(':') {
         let bits = address.parse::<std::net::Ipv6Addr>().ok()?.to_bits();
         let flipped = bits ^ (1u128 << (128u8.checked_sub(len)?));
@@ -78,6 +89,24 @@ fn sibling(cidr: &str) -> Option<String> {
         let bits = address.parse::<std::net::Ipv4Addr>().ok()?.to_bits();
         let flipped = bits ^ (1u32 << (32u8.checked_sub(len)?));
         Some(format!("{}/{len}", std::net::Ipv4Addr::from(flipped)))
+    }
+}
+
+#[cfg(test)]
+mod sibling_tests {
+    use super::sibling;
+
+    #[test]
+    fn a_default_route_has_no_sibling() {
+        assert_eq!(sibling("0.0.0.0/0"), None);
+        assert_eq!(sibling("::/0"), None);
+    }
+
+    #[test]
+    fn a_sibling_shares_a_parent() {
+        assert_eq!(sibling("10.0.0.0/8").as_deref(), Some("11.0.0.0/8"));
+        assert_eq!(sibling("11.0.0.0/8").as_deref(), Some("10.0.0.0/8"));
+        assert_eq!(sibling("0.0.0.0/1").as_deref(), Some("128.0.0.0/1"));
     }
 }
 
