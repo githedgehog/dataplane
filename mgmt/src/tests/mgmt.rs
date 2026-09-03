@@ -529,7 +529,7 @@ mod peering_chain {
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::{
         Family, LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
-        overlay_with_exposes,
+        overlay_with_exposes, overlay_with_exposes_in_group,
     };
     use routing::Render;
     use std::net::IpAddr;
@@ -640,6 +640,54 @@ mod peering_chain {
             .unwrap_or_else(|e| unreachable!("{e}"))
     }
 
+    /// A peering this gateway does not render cannot make its configuration illegal.
+    ///
+    /// The routing builder renders a peering only when this gateway is a member of the
+    /// group the peering names, so an IPv6 peering owned by another gateway's group is
+    /// never rendered and so can never fail to render. Refusing it at validation would
+    /// throw out the whole configuration -- this gateway's own IPv4 peerings with it --
+    /// over work it does not do, for a configuration that built perfectly well before.
+    ///
+    /// The pair is the point: the same peering in the group this gateway *is* in has to
+    /// be refused, or the check has stopped checking anything.
+    #[test]
+    fn only_an_ipv6_peering_this_gateway_renders_is_refused() {
+        fn config_with_ipv6_peering_in(group: &str) -> ExternalConfig {
+            let expose = VpcExpose::empty().ip("2001:db8:1::/64"
+                .parse::<lpm::prefix::Prefix>()
+                .unwrap_or_else(|e| unreachable!("{e}"))
+                .into());
+            let overlay = overlay_with_exposes_in_group(vec![expose], group)
+                .unwrap_or_else(|e| unreachable!("{e}"));
+            ExternalConfigBuilder::default()
+                .gwname(GW_NAME.to_string())
+                .genid(1)
+                .device(sample_device_config())
+                .underlay(sample_underlay_config())
+                .overlay(overlay)
+                .gwgroups(gw_groups_with_default())
+                .communities(sample_community_table())
+                .build()
+                .unwrap_or_else(|e| unreachable!("{e}"))
+        }
+
+        // "gw-group-1" holds gw1, gw2 and gw3, and not this gateway.
+        let validated = config_with_ipv6_peering_in("gw-group-1")
+            .validate()
+            .unwrap_or_else(|e| {
+                panic!("an IPv6 peering another gateway renders was refused to this one: {e}")
+            });
+        build_internal_config(&validated, None)
+            .unwrap_or_else(|e| panic!("a validated configuration would not build: {e}"));
+
+        // "default" holds this gateway, so this one it would have to render.
+        let refused = config_with_ipv6_peering_in("default").validate();
+        assert!(
+            matches!(refused, Err(ConfigError::Unsupported(_))),
+            "an IPv6 peering this gateway renders was accepted: {refused:?}"
+        );
+    }
+
     #[test]
     fn a_config_with_a_nat_peering_builds_and_renders() {
         use concurrency::sync::atomic::{AtomicUsize, Ordering};
@@ -659,6 +707,19 @@ mod peering_chain {
 
                 let validated = match external.validate() {
                     Ok(validated) => validated,
+                    // A peering is IPv4-only, and validation is where that is decided:
+                    // anything accepted here has to apply cleanly, so a configuration the
+                    // routing builder could not render must not get this far. Only an
+                    // IPv6 configuration may take this arm, and if one ever validates,
+                    // this is what says the limitation lifted.
+                    Err(ConfigError::Unsupported(_)) => {
+                        assert!(
+                            exposes.iter().any(is_v6),
+                            "an IPv4 {flavours:?} configuration was refused as unsupported\n{exposes:#?}"
+                        );
+                        UNSUPPORTED_V6.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
                     Err(e) => {
                         assert!(
                             exposes.len() > 1,
@@ -673,25 +734,11 @@ mod peering_chain {
                     MULTI.fetch_add(1, Ordering::Relaxed);
                 }
 
-                let internal = match build_internal_config(&validated, None) {
-                    Ok(internal) => internal,
-                    // The FRR configuration built from a peering is IPv4-only, so a
-                    // validated IPv6 peering cannot be rendered. That gap is real and the
-                    // user meets it at apply time, not at submit time. Check it here
-                    // rather than skip past it: only an IPv6 configuration may reach this,
-                    // and if one ever builds, this arm is what says the limitation lifted.
-                    Err(ConfigError::Unsupported(_)) => {
-                        assert!(
-                            exposes.iter().any(is_v6),
-                            "an IPv4 {flavours:?} configuration was refused as unsupported\n{exposes:#?}"
-                        );
-                        UNSUPPORTED_V6.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    }
-                    Err(e) => panic!(
-                        "a validated {flavours:?} configuration would not build: {e}\n{exposes:#?}"
-                    ),
-                };
+                // Nothing that validates may fail to build. That is the whole point of
+                // moving the IPv6 refusal into validation, so there is no arm here for it.
+                let internal = build_internal_config(&validated, None).unwrap_or_else(|e| {
+                    panic!("a validated {flavours:?} configuration would not build: {e}\n{exposes:#?}")
+                });
 
                 let vnis: Vec<u32> = internal
                     .vrfs
@@ -788,20 +835,24 @@ mod peering_chain {
         // cases, where these would measure nothing and flake; the counts above still
         // print for a human or a coverage run.
         if seen > super::ENOUGH_CASES {
+            // Roughly half the generated configurations are IPv6 and are refused by name,
+            // which is the correct answer rather than a skip, so they come out of the
+            // denominator. Measured at 2282 of the remaining 2917.
+            let could_build = seen - unsupported;
             assert!(
-                built * 2 >= seen,
-                "most configurations were skipped: {built}/{seen}"
+                built * 2 >= could_build,
+                "most configurations that could have been built were skipped: {built}/{could_build}"
             );
             assert!(
                 multi > 0,
                 "no configuration with more than one expose was built"
             );
             // Half the generated exposes are IPv6, so the refusal has to be getting hit.
-            // If it stops, either the generator went IPv4-only or the builder learned to
-            // render IPv6, and either way the arm above needs revisiting.
+            // If it stops, either the generator went IPv4-only or the gateway learned to
+            // carry IPv6, and either way the arm above needs revisiting.
             assert!(
                 unsupported > 0,
-                "no ipv6 configuration reached the builder, so the ipv4-only limitation is \
+                "no ipv6 configuration reached the refusal, so the ipv4-only limitation is \
                  no longer being exercised"
             );
         }

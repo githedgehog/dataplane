@@ -11,10 +11,9 @@ use tracing::{debug, error, warn};
 /// Compile-time false, so `vpc_import_prefix_list_for_peer` and the two other sites
 /// guarded by it are unreachable today.
 ///
-/// It does not gate how IPv6 is handled. `build_routing_config_peer` calls
-/// `reject_ipv6` on the prefixes a peering advertises whatever this is set to, so a
-/// peering carrying IPv6 is already refused by name on the live path. Flipping this on
-/// only moves which `reject_ipv6` call reports it first.
+/// It does not gate how IPv6 is handled. `ExternalConfig::validate` refuses a peering that
+/// carries IPv6 whatever this is set to, so neither `reject_ipv6` call can fire through
+/// a validated configuration; flipping this on only adds a second backstop.
 const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
@@ -69,10 +68,22 @@ fn vpc_import_prefix_list_for_peer(
     Ok(plist)
 }
 
+/// Backstop for the IPv4-only limitation that `ExternalConfig::validate` enforces.
+///
+/// This used to be where an IPv6 peering was refused, which made it a refusal at apply
+/// time: the configuration was accepted, reported good, and then rejected as a whole
+/// when the routing config was built, taking its IPv4 vpcs with it. Anything accepted
+/// at validation has to apply cleanly, so `check_peerings_are_ipv4` now turns such a peering
+/// away at submit time and nothing reaching here can carry IPv6.
+///
+/// It is kept because the alternative to refusing by name is what this replaced: the
+/// advertise list failed `is_version_compatible` and came back as an `InternalFailure`,
+/// and the import list dropped v6 prefixes in silence. Neither is a thing to fall back
+/// to if the validation ever loosens.
 fn reject_ipv6(prefixes: impl IntoIterator<Item = Prefix>) -> ConfigResult {
     if prefixes.into_iter().any(|prefix| prefix.is_ipv6()) {
         return Err(ConfigError::Unsupported(
-            "IPv6 prefixes in a vpc peering: the FRR configuration built from a peering is \
+            "IPv6 prefixes in a vpc peering: the routing configuration built from a peering is \
              IPv4-only, so such a peering cannot be rendered",
         ));
     }
@@ -444,11 +455,11 @@ mod chain_properties {
     /// Build, without treating any failure as a skip.
     ///
     /// This used to fold `ConfigError::Unsupported` into a `None` that each caller
-    /// quietly returned on. That error has exactly one producer, `reject_ipv6`, and
-    /// these properties generate IPv4 only, so the arm never fired. It stood ready to
-    /// turn a real "the validator accepted what the builder refuses" defect into an
-    /// invisible skip the moment the generator learned IPv6, and nothing counted how
-    /// often it was taken.
+    /// quietly returned on. It stood ready to turn a real "the validator accepted what
+    /// the builder refuses" defect into an invisible skip, and nothing counted how often
+    /// it was taken. There is no such defect to hide any more -- validation refuses an
+    /// IPv6 peering itself -- but that is a reason to state the invariant, not to keep
+    /// a skip that would swallow the next one.
     fn build(validated: &ValidatedGwConfig) -> InternalConfig {
         build_internal_config(validated, None).unwrap_or_else(|e| {
             panic!("a validated configuration would not build: {e}\n{validated:#?}")
