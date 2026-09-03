@@ -1,0 +1,62 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.2.2"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the NAT device receives the ICMP Error packet, the NAT device
+MUST use the packet embedded within the ICMP Error message (i.e., the
+IP packet from Host-x to Host-y) to look up the NAT Session to which
+the embedded packet belongs.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the NAT device does not have an
+active mapping for the embedded packet, the NAT SHOULD silently drop
+the ICMP Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise, the NAT device MUST use the
+matching NAT Session to translate the embedded packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+So, if the NAT device has active mapping for the
+IP address of the intermediate node Router-y, the NAT device MUST
+translate the source IP address of the ICMP Error packet with the
+public IP address in the mapping.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In all other cases, the NAT device
+MUST simply use its own IP address in the external domain to
+translate the source IP address.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-5: If a NAT device receives an ICMP Error packet from the private
+realm, and the NAT does not have an active mapping for the
+embedded payload, the NAT SHOULD silently drop the ICMP Error
+packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the NAT has active mapping for the embedded
+payload, then the NAT MUST do the following prior to
+forwarding the packet, unless explicitly overridden by local
+policy:
+'''
+

@@ -1,0 +1,17 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-8"
+
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT MAY drop or appropriately handle Non-
+QueryError ICMP messages.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-11: A NAT MAY drop or appropriately handle Non-QueryError
+ICMP messages.
+'''
+

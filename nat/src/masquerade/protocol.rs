@@ -120,12 +120,11 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     action: NatAction,     // action of the flow hit
     status: NatFlowStatus, // current status
 ) -> NatFlowStatus {
+    let ip = packet.try_ip().unwrap_or_else(|| unreachable!());
     let proto = packet
-        .try_ip()
-        .unwrap_or_else(|| unreachable!()) // packet without IP hdr should not make it here
-        .next_header();
+        .upper_layer_proto()
+        .unwrap_or_else(|| ip.next_header());
 
-    // match on next-header, instead of relying on headers, as those may not be present w/ fragmentation
     match proto {
         NextHeader::UDP => next_flow_status_udp(action, status).udp_status_patch(packet, action),
         NextHeader::ICMP | NextHeader::ICMP6 => next_flow_status_icmp(action, status),

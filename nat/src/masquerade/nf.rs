@@ -732,3 +732,100 @@ mod tests {
         assert_eq!(udp.destination(), UdpPort::try_from(1234).unwrap());
     }
 }
+
+#[cfg(test)]
+mod race {
+    use super::*;
+    use crate::masquerade::probe::Fabric;
+    use crate::static_nat::probe::{build, vni};
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use config::external::overlay::vpcpeering::contract::{LOCAL_VNI, REMOTE_VNI};
+    use lpm::prefix::PrefixWithOptionalPorts;
+    use net::buffer::TestBuffer;
+
+    fn prefix(spec: &str) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(spec.parse().unwrap_or_else(|_| unreachable!()), None)
+    }
+
+    fn fabric() -> Fabric {
+        let exposes = vec![
+            VpcExpose::empty()
+                .make_masquerade(None)
+                .unwrap_or_else(|e| unreachable!("{e}"))
+                .ip(prefix("10.0.0.0/24"))
+                .as_range(prefix("172.16.0.0/24"))
+                .unwrap_or_else(|e| unreachable!("{e}")),
+        ];
+        Fabric::build(&exposes).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+    }
+
+    #[tokio::test]
+    async fn the_loser_of_a_race_masquerades_with_the_winners_flow() {
+        let fabric = fabric();
+        let (_lookup, masq) = fabric.stages();
+        let allocator = masq
+            .allocator
+            .get()
+            .unwrap_or_else(|| unreachable!("the fabric installed an allocator"));
+
+        let source: IpAddr = "10.0.0.1".parse().unwrap_or_else(|_| unreachable!());
+        let destination: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let mut packet: Packet<TestBuffer> = build(source, destination, false, 4000, 80);
+        let meta = packet.meta_mut();
+        meta.set_overlay(true);
+        meta.set_masquerade(true);
+        meta.src_vpcd = Some(VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
+        meta.dst_vpcd = Some(VpcDiscriminant::from_vni(vni(REMOTE_VNI)));
+
+        let key = FlowKey::try_from(&packet).unwrap_or_else(|_| unreachable!("the probe keys"));
+        let (src_vpcd, dst_vpcd) =
+            Masquerade::discriminants(&packet).unwrap_or_else(|_| unreachable!());
+        let genid = allocator.genid();
+
+        let allocate = || {
+            allocator
+                .allocate(src_vpcd, dst_vpcd, key.src_ip(), key.proto())
+                .unwrap_or_else(|e| unreachable!("the pool has room: {e}"))
+        };
+        let winning = allocate();
+        let losing = allocate();
+        let losing_tuple = (losing.allocation.ip(), losing.allocation.port());
+        assert_ne!(
+            (winning.allocation.ip(), winning.allocation.port()),
+            losing_tuple,
+            "the two racers drew the same tuple, so this races nothing"
+        );
+        let losing_reverse = Masquerade::new_reverse_session(&key, &losing, dst_vpcd)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+
+        let winner = masq
+            .create_flow_pair(&mut packet, &key, &key, winning, genid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let MasqueradeFlow::Installed(winner) = winner else {
+            unreachable!("the first packet did not install the flow");
+        };
+
+        let outcome = masq
+            .create_flow_pair(&mut packet, &key, &key, losing, genid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let MasqueradeFlow::Held(held) = outcome else {
+            panic!("the second packet installed a pair of its own over a live flow");
+        };
+        assert!(
+            Arc::ptr_eq(&held, &winner),
+            "the loser was handed a flow that is not the one holding the key"
+        );
+
+        assert!(
+            masq.flow_table.lookup(&losing_reverse).is_none(),
+            "the loser's reverse half was left in the table, mapping a tuple about to be reused"
+        );
+
+        let next = allocate();
+        assert_eq!(
+            (next.allocation.ip(), next.allocation.port()),
+            losing_tuple,
+            "the loser's allocation never went back to the pool"
+        );
+    }
+}

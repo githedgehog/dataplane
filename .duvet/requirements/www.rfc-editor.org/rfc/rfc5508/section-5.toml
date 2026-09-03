@@ -1,0 +1,51 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-5"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+Specifically,
+NAT devices enforcing Basic NAT [NAT-TRAD] MUST support the traversal
+of hairpinned ICMP Query sessions.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All NAT devices (i.e., Basic NAT as well as NAPT
+devices) MUST support the traversal of hairpinned ICMP Error
+messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In addition, the NAT device MUST translate the destination
+IP address of the outer IP header to be same as the source IP address
+of the embedded IP packet after the translation.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7: NAT devices enforcing Basic NAT [NAT-TRAD] MUST support the
+traversal of hairpinned ICMP Query sessions.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All NAT devices
+(i.e., Basic NAT as well as NAPT devices) MUST support the
+traversal of hairpinned ICMP Error messages:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) When forwarding a hairpinned ICMP Error message, the NAT
+device MUST translate the destination IP address of the
+outer IP header to be same as the source IP address of the
+embedded IP packet after the translation.
+'''
+

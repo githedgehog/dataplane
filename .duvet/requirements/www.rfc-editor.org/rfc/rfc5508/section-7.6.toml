@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.6"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+Section 4.3.3.10 of [RFC1812] says an IP router MUST support the
+router part of the ICMP Router Discovery Protocol on all connected
+networks on which the router supports either IP multicast or IP
+broadcast addressing.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT device MAY support Router Advertisement and Solicitations.
+'''
+

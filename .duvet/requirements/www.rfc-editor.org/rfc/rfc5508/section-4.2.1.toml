@@ -1,0 +1,45 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.2.1"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If the NAT device does not have an
+active mapping for the embedded packet, the NAT SHOULD silently drop
+the ICMP Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Otherwise, the NAT device MUST use the
+matching NAT Session to translate the embedded packet; that is,
+translate the source IP address of the embedded packet (e.g., Host-y'
+-> Host-y) and transport headers.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The NAT device MUST also use the matching NAT Session to translate
+the destination IP address in the outer IP header.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-4: If a NAT device receives an ICMP Error packet from an external
+realm, and the NAT device does not have an active mapping for
+the embedded payload, the NAT SHOULD silently drop the ICMP
+Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the NAT has active mapping for the embedded
+payload, then the NAT MUST do the following prior to
+forwarding the packet, unless explicitly overridden by local
+policy:
+'''
+

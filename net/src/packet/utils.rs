@@ -145,8 +145,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .map_err(|_| PacketUtilError::IpVersionMismatch(ip))
     }
 
-    /// Get the Ip protocol / next-header of an IPv4 / IPv6 [`Packet`]
-    /// Returns None if the packet does not have an IP header
+    #[must_use]
+    #[allow(missing_docs)]
+    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+        self.headers.upper_layer_proto()
+    }
+
     #[allow(missing_docs)]
     pub fn ip_proto(&self) -> Option<NextHeader> {
         self.try_ip().map(|net| match net {

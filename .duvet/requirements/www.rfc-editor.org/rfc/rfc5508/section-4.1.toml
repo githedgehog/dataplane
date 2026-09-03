@@ -1,0 +1,85 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-4.1"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When an ICMP Error packet is received, if the
+ICMP checksum fails to validate, the NAT SHOULD silently drop the
+ICMP Error packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+For this reason, if the IP checksum of the embedded
+packet within an ICMP Error message fails to validate, the NAT SHOULD
+silently drop the Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+Specifically, if the embedded packet includes
+IP options, the NAT device MUST traverse past the IP options to
+locate the start of transport header for the embedded packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+A NAT device SHOULD NOT validate the transport checksum of the
+embedded packet within an ICMP Error message, even when it is
+possible to do so.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In the case that the ICMP Error payload includes ICMP extensions
+[ICMP-EXT], the NAT device MUST exclude the optional zero-padding and
+the ICMP extensions when evaluating transport checksum for the
+embedded packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+fails to validate, the NAT SHOULD silently drop the ICMP Error
+packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) If the IP checksum of the embedded packet fails to
+validate, the NAT SHOULD silently drop the Error packet;
+and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+b) If the embedded packet includes IP options, the NAT device
+MUST traverse past the IP options to locate the start of
+the transport header for the embedded packet; and
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+c) The NAT device SHOULD NOT validate the transport checksum
+of the embedded packet within an ICMP Error message, even
+when it is possible to do so; and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+d) If the ICMP Error payload contains ICMP extensions
+[ICMP-EXT], the NAT device MUST exclude the optional zero-
+padding and the ICMP extensions when evaluating transport
+checksum for the embedded packet.
+'''
+

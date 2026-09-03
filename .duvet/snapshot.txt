@@ -210,8 +210,8 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc4884
   SECTION: [ICMP Messages That Can Be Extended](#section-4.6)
     TEXT[!MAY]:    The ICMP Extension Structure MAY be appended to messages of the
     TEXT[!MAY]:    following types:
-    TEXT[!MUST]:    The ICMP Extension Structure MUST NOT be appended to any of the other
-    TEXT[!MUST]:    ICMP messages mentioned in Section 4.
+    TEXT[!MUST,implementation,test]:    The ICMP Extension Structure MUST NOT be appended to any of the other
+    TEXT[!MUST,implementation,test]:    ICMP messages mentioned in Section 4.
 
   SECTION: [Compliant Application Receives ICMP Message with No Extensions](#section-5.4)
     TEXT[!MUST]: If the length attribute is zero, the compliant application
@@ -354,3 +354,316 @@ SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5382
     TEXT[!SHOULD]:       Unreachable (Type 3) messages.
     TEXT[!MUST,implementation,test]:    REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
     TEXT[!MUST,implementation,test]:       NAT mapping or TCP connection for which the ICMP was generated.
+
+SPECIFICATION: https://www.rfc-editor.org/rfc/rfc5508
+  SECTION: [ICMP Query Mapping](#section-3.1)
+    TEXT[!MUST]:    Unless explicitly overridden by local policy, a NAT device MUST
+    TEXT[!MUST]:    permit ICMP Queries and their associated responses, when the Query is
+    TEXT[!MUST]:    initiated from a private host to the external hosts.
+    TEXT[!SHOULD]:    NAT mapping of ICMP Query Identifiers SHOULD be external-host
+    TEXT[!SHOULD]:    independent.
+    TEXT[!SHOULD]: If host
+    TEXT[!SHOULD]:    A reused the Query Id X to send ICMP Queries to the same or different
+    TEXT[!SHOULD]:    external host, the NAT device SHOULD reuse the same Query Id mapping
+    TEXT[!SHOULD]:    (i.e., map the private host's Query Id X to Query Id X' on NAT's
+    TEXT[!SHOULD]:    public IP address) instead of assigning a different mapping.
+    TEXT[!SHOULD]:    Below is justification for making the endpoint-independent mapping
+    TEXT[!SHOULD]:    for ICMP Query Id a SHOULD [RFC2119] requirement.
+    TEXT[!SHOULD]: Given the dichotomy between legacy applications not
+    TEXT[!SHOULD]:    requiring endpoint-independent mapping and future applications that
+    TEXT[!SHOULD]:    might require it, the requirement level is kept at SHOULD [RFC2119].
+    TEXT[!MUST]:    REQ-1: Unless explicitly overridden by local policy, a NAT device
+    TEXT[!MUST]:           MUST permit ICMP Queries and their associated responses, when
+    TEXT[!MUST]:           the Query is initiated from a private host to the external
+    TEXT[!MUST]:           hosts.
+    TEXT[!SHOULD]:           a) NAT mapping of ICMP Query Identifiers SHOULD be external-
+    TEXT[!SHOULD]:              host independent.
+
+  SECTION: [ICMP Query Session Timeouts](#section-3.2)
+    TEXT[!MUST]:    An ICMP Query session timer MUST NOT expire in less than 60 seconds.
+    TEXT[!SHOULD]:    It is RECOMMENDED that the ICMP Query session timer be made
+    TEXT[!SHOULD]:    configurable.
+    TEXT[!MUST]:    REQ-2: An ICMP Query session timer MUST NOT expire in less than 60
+    TEXT[!MUST]:           seconds.
+    TEXT[!SHOULD]:           a) It is RECOMMENDED that the ICMP Query session timer be made
+    TEXT[!SHOULD]:              configurable.
+
+  SECTION: [ICMP Error Payload Validation](#section-4.1)
+    TEXT[!SHOULD]: When an ICMP Error packet is received, if the
+    TEXT[!SHOULD]:    ICMP checksum fails to validate, the NAT SHOULD silently drop the
+    TEXT[!SHOULD]:    ICMP Error packet.
+    TEXT[!SHOULD]: For this reason, if the IP checksum of the embedded
+    TEXT[!SHOULD]:    packet within an ICMP Error message fails to validate, the NAT SHOULD
+    TEXT[!SHOULD]:    silently drop the Error packet.
+    TEXT[!MUST]: Specifically, if the embedded packet includes
+    TEXT[!MUST]:    IP options, the NAT device MUST traverse past the IP options to
+    TEXT[!MUST]:    locate the start of transport header for the embedded packet.
+    TEXT[!SHOULD]:    A NAT device SHOULD NOT validate the transport checksum of the
+    TEXT[!SHOULD]:    embedded packet within an ICMP Error message, even when it is
+    TEXT[!SHOULD]:    possible to do so.
+    TEXT[!MUST]:    In the case that the ICMP Error payload includes ICMP extensions
+    TEXT[!MUST]:    [ICMP-EXT], the NAT device MUST exclude the optional zero-padding and
+    TEXT[!MUST]:    the ICMP extensions when evaluating transport checksum for the
+    TEXT[!MUST]:    embedded packet.
+    TEXT[!SHOULD,implementation,test]:    REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+    TEXT[!SHOULD,implementation,test]:           fails to validate, the NAT SHOULD silently drop the ICMP Error
+    TEXT[!SHOULD,implementation,test]:           packet.
+    TEXT[!SHOULD,implementation,test]:           a) If the IP checksum of the embedded packet fails to
+    TEXT[!SHOULD,implementation,test]:              validate, the NAT SHOULD silently drop the Error packet;
+    TEXT[!SHOULD,implementation,test]:              and
+    TEXT[!MUST]:           b) If the embedded packet includes IP options, the NAT device
+    TEXT[!MUST]:              MUST traverse past the IP options to locate the start of
+    TEXT[!MUST]:              the transport header for the embedded packet; and
+    TEXT[!SHOULD,implementation,test]:           c) The NAT device SHOULD NOT validate the transport checksum
+    TEXT[!SHOULD,implementation,test]:              of the embedded packet within an ICMP Error message, even
+    TEXT[!SHOULD,implementation,test]:              when it is possible to do so; and
+    TEXT[!MUST]:           d) If the ICMP Error payload contains ICMP extensions
+    TEXT[!MUST]:              [ICMP-EXT], the NAT device MUST exclude the optional zero-
+    TEXT[!MUST]:              padding and the ICMP extensions when evaluating transport
+    TEXT[!MUST]:              checksum for the embedded packet.
+
+  SECTION: [ICMP Error Packet Received from the External Realm](#section-4.2.1)
+    TEXT[!SHOULD]: If the NAT device does not have an
+    TEXT[!SHOULD]:    active mapping for the embedded packet, the NAT SHOULD silently drop
+    TEXT[!SHOULD]:    the ICMP Error packet.
+    TEXT[!MUST]: Otherwise, the NAT device MUST use the
+    TEXT[!MUST]:    matching NAT Session to translate the embedded packet; that is,
+    TEXT[!MUST]:    translate the source IP address of the embedded packet (e.g., Host-y'
+    TEXT[!MUST]:    -> Host-y) and transport headers.
+    TEXT[!MUST]:    The NAT device MUST also use the matching NAT Session to translate
+    TEXT[!MUST]:    the destination IP address in the outer IP header.
+    TEXT[!SHOULD]:    REQ-4: If a NAT device receives an ICMP Error packet from an external
+    TEXT[!SHOULD]:           realm, and the NAT device does not have an active mapping for
+    TEXT[!SHOULD]:           the embedded payload, the NAT SHOULD silently drop the ICMP
+    TEXT[!SHOULD]:           Error packet.
+    TEXT[!MUST]: If the NAT has active mapping for the embedded
+    TEXT[!MUST]:           payload, then the NAT MUST do the following prior to
+    TEXT[!MUST]:           forwarding the packet, unless explicitly overridden by local
+    TEXT[!MUST]:           policy:
+
+  SECTION: [ICMP Error Packet Received from the Private Realm](#section-4.2.2)
+    TEXT[!MUST]:    When the NAT device receives the ICMP Error packet, the NAT device
+    TEXT[!MUST]:    MUST use the packet embedded within the ICMP Error message (i.e., the
+    TEXT[!MUST]:    IP packet from Host-x to Host-y) to look up the NAT Session to which
+    TEXT[!MUST]:    the embedded packet belongs.
+    TEXT[!SHOULD]: If the NAT device does not have an
+    TEXT[!SHOULD]:    active mapping for the embedded packet, the NAT SHOULD silently drop
+    TEXT[!SHOULD]:    the ICMP Error packet.
+    TEXT[!MUST]: Otherwise, the NAT device MUST use the
+    TEXT[!MUST]:    matching NAT Session to translate the embedded packet.
+    TEXT[!MUST]: So, if the NAT device has active mapping for the
+    TEXT[!MUST]:    IP address of the intermediate node Router-y, the NAT device MUST
+    TEXT[!MUST]:    translate the source IP address of the ICMP Error packet with the
+    TEXT[!MUST]:    public IP address in the mapping.
+    TEXT[!MUST]: In all other cases, the NAT device
+    TEXT[!MUST]:    MUST simply use its own IP address in the external domain to
+    TEXT[!MUST]:    translate the source IP address.
+    TEXT[!SHOULD]:    REQ-5: If a NAT device receives an ICMP Error packet from the private
+    TEXT[!SHOULD]:           realm, and the NAT does not have an active mapping for the
+    TEXT[!SHOULD]:           embedded payload, the NAT SHOULD silently drop the ICMP Error
+    TEXT[!SHOULD]:           packet.
+    TEXT[!MUST]: If the NAT has active mapping for the embedded
+    TEXT[!MUST]:           payload, then the NAT MUST do the following prior to
+    TEXT[!MUST]:           forwarding the packet, unless explicitly overridden by local
+    TEXT[!MUST]:           policy:
+
+  SECTION: [NAT Sessions Pertaining to ICMP Error Payload](#section-4.3)
+    TEXT[!MUST]:    While processing an ICMP Error packet pertaining to an ICMP Query or
+    TEXT[!MUST]:    Query response message, a NAT device MUST NOT refresh or delete the
+    TEXT[!MUST]:    NAT Session that pertains to the embedded payload within the ICMP
+    TEXT[!MUST]:    Error packet.
+    TEXT[!MUST,implementation,test]:    REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+    TEXT[!MUST,implementation,test]:           Query or Query response message, a NAT device MUST NOT refresh
+    TEXT[!MUST,implementation,test]:           or delete the NAT Session that pertains to the embedded
+    TEXT[!MUST,implementation,test]:           payload within the ICMP Error packet.
+
+  SECTION: [Hairpinning Support for ICMP Packets](#section-5)
+    TEXT[!MUST]: Specifically,
+    TEXT[!MUST]:    NAT devices enforcing Basic NAT [NAT-TRAD] MUST support the traversal
+    TEXT[!MUST]:    of hairpinned ICMP Query sessions.
+    TEXT[!MUST]: All NAT devices (i.e., Basic NAT as well as NAPT
+    TEXT[!MUST]:    devices) MUST support the traversal of hairpinned ICMP Error
+    TEXT[!MUST]:    messages.
+    TEXT[!MUST]: In addition, the NAT device MUST translate the destination
+    TEXT[!MUST]:    IP address of the outer IP header to be same as the source IP address
+    TEXT[!MUST]:    of the embedded IP packet after the translation.
+    TEXT[!MUST]:    REQ-7: NAT devices enforcing Basic NAT [NAT-TRAD] MUST support the
+    TEXT[!MUST]:           traversal of hairpinned ICMP Query sessions.
+    TEXT[!MUST]: All NAT devices
+    TEXT[!MUST]:           (i.e., Basic NAT as well as NAPT devices) MUST support the
+    TEXT[!MUST]:           traversal of hairpinned ICMP Error messages:
+    TEXT[!MUST]:           a) When forwarding a hairpinned ICMP Error message, the NAT
+    TEXT[!MUST]:              device MUST translate the destination IP address of the
+    TEXT[!MUST]:              outer IP header to be same as the source IP address of the
+    TEXT[!MUST]:              embedded IP packet after the translation.
+
+  SECTION: [Rejection of Outbound Flows Disallowed by NAT](#section-6)
+    TEXT[!SHOULD]:    When a NAT device is unable to establish a NAT Session for a new
+    TEXT[!SHOULD]:    transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+    TEXT[!SHOULD]:    constraints or administrative restrictions, the NAT device SHOULD
+    TEXT[!SHOULD]:    send an ICMP destination unreachable message, with a code of 13
+    TEXT[!SHOULD]:    (Communication administratively prohibited) to the sender, and drop
+    TEXT[!SHOULD]:    the original packet.
+    TEXT[!SHOULD]:    REQ-8: When a NAT device is unable to establish a NAT Session for a
+    TEXT[!SHOULD]:    new transport-layer (TCP, UDP, ICMP, etc.) flow due to resource
+    TEXT[!SHOULD]:    constraints or administrative restrictions, the NAT device SHOULD
+    TEXT[!SHOULD]:    send an ICMP destination unreachable message, with a code of 13
+    TEXT[!SHOULD]:    (Communication administratively prohibited) to the sender, and drop
+    TEXT[!SHOULD]:    the original packet.
+
+  SECTION: [Conformance to RFC 1812](#section-7)
+    TEXT[!MAY]:    REQ-9: A NAT device MAY implement a policy control that prevents ICMP
+    TEXT[!MAY]:           messages being generated toward certain interface(s).
+    TEXT[!MUST]: MUST support:
+    TEXT[!MAY]: MAY support:
+    TEXT[!SHOULD]: SHOULD NOT support:
+    TEXT[!SHOULD]:           In addition, a NAT device is RECOMMENDED to conform to the
+    TEXT[!SHOULD]:           following implementation considerations:
+
+  SECTION: [Generating "Packet Too Big" ICMP Error Message](#section-7.1.1)
+    TEXT[!MUST]: Further, [PMTU] states
+    TEXT[!MUST]:    that the router MUST include the MTU of that next-hop network in the
+    TEXT[!MUST]:    low-order 16 bits of the ICMP header field that is labeled "unused"
+    TEXT[!MUST]:    in the ICMP specification [ICMP].
+    TEXT[!MUST]:    A NAT device MUST honor the DF bit in the IP header of the packets
+    TEXT[!MUST]:    that transit the device.
+    TEXT[!MUST]: If
+    TEXT[!MUST]:    the DF bit is set on a transit IP packet and the NAT device cannot
+    TEXT[!MUST]:    forward the packet without fragmentation, the NAT device MUST send a
+    TEXT[!MUST]:    "Packet Too Big" ICMP message (ICMP type 3, code 4) with the next-hop
+    TEXT[!MUST]:    MTU back to the sender and drop the original IP packet.
+    TEXT[!MUST]:    If the DF bit is not set and the MTU on the forwarding interface of
+    TEXT[!MUST]:    the NAT device mandates fragmentation, the NAT device MUST fragment
+    TEXT[!MUST]:    the packet and forward the fragments [RFC1812].
+
+  SECTION: [Forwarding "Packet Too Big" ICMP Error Message](#section-7.1.2)
+    TEXT[!MUST]:    When the NAT device is the recipient of a "Packet Too Big" ICMP
+    TEXT[!MUST]:    message from the network, the NAT device MUST forward the ICMP
+    TEXT[!MUST]:    message back to the intended recipient, pursuant to the previously
+    TEXT[!MUST]:    stated requirements (REQ-3, REQ-4, and REQ-5).
+
+  SECTION: [Time Exceeded Message](#section-7.2)
+    TEXT[!MUST]:    A NAT device MUST generate a "Time Exceeded" ICMP Error message when
+    TEXT[!MUST]:    it discards a packet due to an expired Time to Live (TTL) field.
+    TEXT[!MUST]:    NAT device MAY have a per-interface option to disable origination of
+    TEXT[!MUST]:    these messages on that interface, but that option MUST default to
+    TEXT[!MUST]:    allowing the messages to be originated.
+
+  SECTION: [Source Route Options](#section-7.3)
+    TEXT[!MAY]:    A NAT device MAY support modifying IP addresses in the source route
+    TEXT[!MAY]:    option so the IP addresses in the source route option are realm
+    TEXT[!MAY]:    relevant.
+    TEXT[!SHOULD]: If a NAT device does not support forwarding packets with
+    TEXT[!SHOULD]:    the source route option, the NAT device SHOULD NOT forward outbound
+    TEXT[!SHOULD]:    ICMP messages that contain the source route option in the outer or
+    TEXT[!SHOULD]:    inner IP header.
+
+  SECTION: [Address Mask Request/Reply Messages](#section-7.4)
+    TEXT[!MUST]:    Section 4.3.3.9 of [RFC1812] says an IP router MUST implement support
+    TEXT[!MUST]:    for receiving ICMP Address Mask Request messages and responding with
+    TEXT[!MUST]:    ICMP Address Mask Reply messages.
+    TEXT[!MAY]:    A NAT device MAY support address mask request/reply messages.
+
+  SECTION: [Parameter Problem Message](#section-7.5)
+    TEXT[!MUST]:    Section 4.3.3.5 of [RFC1812] says an IP router MUST generate a
+    TEXT[!MUST]:    Parameter Problem message for any error not specifically covered by
+    TEXT[!MUST]:    another ICMP message.
+    TEXT[!MAY]:    A NAT device MAY support parameter problem messages.
+
+  SECTION: [Router Advertisement and Solicitations](#section-7.6)
+    TEXT[!MUST]:    Section 4.3.3.10 of [RFC1812] says an IP router MUST support the
+    TEXT[!MUST]:    router part of the ICMP Router Discovery Protocol on all connected
+    TEXT[!MUST]:    networks on which the router supports either IP multicast or IP
+    TEXT[!MUST]:    broadcast addressing.
+    TEXT[!MAY]:    A NAT device MAY support Router Advertisement and Solicitations.
+
+  SECTION: [DS Field Usage](#section-7.7)
+    TEXT[!SHOULD]:    When generating an ICMP message, a NAT device SHOULD copy the
+    TEXT[!SHOULD]:    diffserv class of the message that causes the sending of the ICMP
+    TEXT[!SHOULD]:    error message.
+    TEXT[!MAY]: A NAT device MAY allow configuration of the diffserv
+    TEXT[!MAY]:    class to be used for the different types of ICMP messages.
+
+  SECTION: [Non-QueryError ICMP Messages](#section-8)
+    TEXT[!MAY]: A NAT MAY drop or appropriately handle Non-
+    TEXT[!MAY]:    QueryError ICMP messages.
+    TEXT[!MAY]:        REQ-11: A NAT MAY drop or appropriately handle Non-QueryError
+    TEXT[!MAY]:            ICMP messages.
+
+  SECTION: [Summary of Requirements](#section-9)
+    TEXT[!MUST]:    REQ-1: Unless explicitly overridden by local policy, a NAT device
+    TEXT[!MUST]:           MUST permit ICMP Queries and their associated responses, when
+    TEXT[!MUST]:           the Query is initiated from a private host to the external
+    TEXT[!MUST]:           hosts.
+    TEXT[!SHOULD]:           a) NAT mapping of ICMP Query Identifiers SHOULD be external
+    TEXT[!SHOULD]:              host independent.
+    TEXT[!MUST]:    REQ-2: An ICMP Query session timer MUST NOT expire in less than 60
+    TEXT[!MUST]:           seconds.
+    TEXT[!SHOULD]:           a) It is RECOMMENDED that the ICMP Query session timer be made
+    TEXT[!SHOULD]:              configurable.
+    TEXT[!SHOULD]:    REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+    TEXT[!SHOULD]:           fails to validate, the NAT SHOULD silently drop the ICMP Error
+    TEXT[!SHOULD]:           packet.
+    TEXT[!SHOULD]:           a) If the IP checksum of the embedded packet fails to
+    TEXT[!SHOULD]:              validate, the NAT SHOULD silently drop the Error packet;
+    TEXT[!SHOULD]:              and
+    TEXT[!MUST]:           b) If the embedded packet includes IP options, the NAT device
+    TEXT[!MUST]:              MUST traverse past the IP options to locate the start of
+    TEXT[!MUST]:              the transport header for the embedded packet; and
+    TEXT[!SHOULD]:           c) The NAT device SHOULD NOT validate the transport checksum
+    TEXT[!SHOULD]:              of the embedded packet within an ICMP Error message, even
+    TEXT[!SHOULD]:              when it is possible to do so; and
+    TEXT[!MUST]:           d) If the ICMP Error payload contains ICMP extensions
+    TEXT[!MUST]:              [ICMP-EXT], the NAT device MUST exclude the optional zero-
+    TEXT[!MUST]:              padding and the ICMP extensions when evaluating transport
+    TEXT[!MUST]:              checksum for the embedded packet.
+    TEXT[!SHOULD]:    REQ-4: If a NAT device receives an ICMP Error packet from an external
+    TEXT[!SHOULD]:           realm, and the NAT device does not have an active mapping for
+    TEXT[!SHOULD]:           the embedded payload, the NAT SHOULD silently drop the ICMP
+    TEXT[!SHOULD]:           Error packet.
+    TEXT[!MUST]: If the NAT has active mapping for the embedded
+    TEXT[!MUST]:           payload, then the NAT MUST do the following prior to
+    TEXT[!MUST]:           forwarding the packet, unless explicitly overridden by local
+    TEXT[!MUST]:           policy:
+    TEXT[!SHOULD]:    REQ-5: If a NAT device receives an ICMP Error packet from the private
+    TEXT[!SHOULD]:           realm, and the NAT does not have an active mapping for the
+    TEXT[!SHOULD]:           embedded payload, the NAT SHOULD silently drop the ICMP Error
+    TEXT[!SHOULD]:           packet.
+    TEXT[!MUST]: If the NAT has active mapping for the embedded
+    TEXT[!MUST]:           payload, then the NAT MUST do the following prior to
+    TEXT[!MUST]:           forwarding the packet, unless explicitly overridden by local
+    TEXT[!MUST]:           policy.
+    TEXT[!MUST]:    REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+    TEXT[!MUST]:           Query or Query response message, a NAT device MUST NOT refresh
+    TEXT[!MUST]:           or delete the NAT Session that pertains to the embedded
+    TEXT[!MUST]:           payload within the ICMP Error packet.
+    TEXT[!MUST]:    REQ-7: NAT devices enforcing Basic NAT ([NAT-TRAD]) MUST support the
+    TEXT[!MUST]:           traversal of hairpinned ICMP Query sessions.
+    TEXT[!MUST]: All NAT devices
+    TEXT[!MUST]:           (i.e., Basic NAT as well as NAPT devices) MUST support the
+    TEXT[!MUST]:           traversal of hairpinned ICMP Error messages.
+    TEXT[!MUST]:           a) When forwarding a hairpinned ICMP Error message, the NAT
+    TEXT[!MUST]:              device MUST translate the destination IP address of the
+    TEXT[!MUST]:              outer IP header to be same as the source IP address of the
+    TEXT[!MUST]:              embedded IP packet after the translation.
+    TEXT[!SHOULD]:    REQ-8: When a NAT device is unable to establish a NAT Session for a
+    TEXT[!SHOULD]:           new transport-layer (TCP, UDP, ICMP, etc.) flow due to
+    TEXT[!SHOULD]:           resource constraints or administrative restrictions, the NAT
+    TEXT[!SHOULD]:           device SHOULD send an ICMP destination unreachable message,
+    TEXT[!SHOULD]:           with a code of 13 (Communication administratively prohibited)
+    TEXT[!SHOULD]:           to the sender, and drop the original packet.
+    TEXT[!MAY]:    REQ-9: A NAT device MAY implement a policy control that prevents ICMP
+    TEXT[!MAY]:           messages being generated toward certain interface(s).
+    TEXT[!MUST]: MUST support:
+    TEXT[!MAY]: MAY support:
+    TEXT[!SHOULD]: SHOULD NOT support:
+    TEXT[!SHOULD]:           In addition, a NAT device is RECOMMENDED to conform to the
+    TEXT[!SHOULD]:           following implementation considerations:
+    TEXT[!MAY]:    REQ-11: A NAT MAY drop or appropriately handle Non-QueryError ICMP
+    TEXT[!MAY]:            messages.
+
+  SECTION: [Security Considerations](#section-10)
+    TEXT[!SHOULD]: Blocking such ICMP messages is
+    TEXT[!SHOULD]:    known to break some protocol features (most notably path MTU
+    TEXT[!SHOULD]:    Discovery) and some applications (e.g., ping, traceroute), and such
+    TEXT[!SHOULD]:    blocking is NOT RECOMMENDED.

@@ -1,0 +1,35 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7"
+
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-9: A NAT device MAY implement a policy control that prevents ICMP
+messages being generated toward certain interface(s).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+MUST support:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+MAY support:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+SHOULD NOT support:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+In addition, a NAT device is RECOMMENDED to conform to the
+following implementation considerations:
+'''
+

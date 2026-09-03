@@ -1,0 +1,12 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-10"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+Blocking such ICMP messages is
+known to break some protocol features (most notably path MTU
+Discovery) and some applications (e.g., ping, traceroute), and such
+blocking is NOT RECOMMENDED.
+'''
+

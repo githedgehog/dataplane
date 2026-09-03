@@ -1,0 +1,193 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-9"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-1: Unless explicitly overridden by local policy, a NAT device
+MUST permit ICMP Queries and their associated responses, when
+the Query is initiated from a private host to the external
+hosts.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) NAT mapping of ICMP Query Identifiers SHOULD be external
+host independent.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-2: An ICMP Query session timer MUST NOT expire in less than 60
+seconds.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) It is RECOMMENDED that the ICMP Query session timer be made
+configurable.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-3: When an ICMP Error packet is received, if the ICMP checksum
+fails to validate, the NAT SHOULD silently drop the ICMP Error
+packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+a) If the IP checksum of the embedded packet fails to
+validate, the NAT SHOULD silently drop the Error packet;
+and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+b) If the embedded packet includes IP options, the NAT device
+MUST traverse past the IP options to locate the start of
+the transport header for the embedded packet; and
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+c) The NAT device SHOULD NOT validate the transport checksum
+of the embedded packet within an ICMP Error message, even
+when it is possible to do so; and
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+d) If the ICMP Error payload contains ICMP extensions
+[ICMP-EXT], the NAT device MUST exclude the optional zero-
+padding and the ICMP extensions when evaluating transport
+checksum for the embedded packet.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-4: If a NAT device receives an ICMP Error packet from an external
+realm, and the NAT device does not have an active mapping for
+the embedded payload, the NAT SHOULD silently drop the ICMP
+Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the NAT has active mapping for the embedded
+payload, then the NAT MUST do the following prior to
+forwarding the packet, unless explicitly overridden by local
+policy:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-5: If a NAT device receives an ICMP Error packet from the private
+realm, and the NAT does not have an active mapping for the
+embedded payload, the NAT SHOULD silently drop the ICMP Error
+packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the NAT has active mapping for the embedded
+payload, then the NAT MUST do the following prior to
+forwarding the packet, unless explicitly overridden by local
+policy.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-6: While processing an ICMP Error packet pertaining to an ICMP
+Query or Query response message, a NAT device MUST NOT refresh
+or delete the NAT Session that pertains to the embedded
+payload within the ICMP Error packet.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7: NAT devices enforcing Basic NAT ([NAT-TRAD]) MUST support the
+traversal of hairpinned ICMP Query sessions.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+All NAT devices
+(i.e., Basic NAT as well as NAPT devices) MUST support the
+traversal of hairpinned ICMP Error messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) When forwarding a hairpinned ICMP Error message, the NAT
+device MUST translate the destination IP address of the
+outer IP header to be same as the source IP address of the
+embedded IP packet after the translation.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-8: When a NAT device is unable to establish a NAT Session for a
+new transport-layer (TCP, UDP, ICMP, etc.) flow due to
+resource constraints or administrative restrictions, the NAT
+device SHOULD send an ICMP destination unreachable message,
+with a code of 13 (Communication administratively prohibited)
+to the sender, and drop the original packet.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-9: A NAT device MAY implement a policy control that prevents ICMP
+messages being generated toward certain interface(s).
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+MUST support:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+MAY support:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+SHOULD NOT support:
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+In addition, a NAT device is RECOMMENDED to conform to the
+following implementation considerations:
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-11: A NAT MAY drop or appropriately handle Non-QueryError ICMP
+messages.
+'''
+

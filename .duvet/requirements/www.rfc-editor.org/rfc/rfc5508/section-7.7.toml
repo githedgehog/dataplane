@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc5508#section-7.7"
+
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+When generating an ICMP message, a NAT device SHOULD copy the
+diffserv class of the message that causes the sending of the ICMP
+error message.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT device MAY allow configuration of the diffserv
+class to be used for the different types of ICMP messages.
+'''
+

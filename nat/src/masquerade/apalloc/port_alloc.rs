@@ -975,6 +975,7 @@ mod tests {
     use super::*;
     use bolero::{Driver, TypeGenerator};
     use lpm::prefix::PortRange;
+    use std::collections::BTreeMap;
     use std::net::Ipv4Addr;
 
     // set_bitmap_value(), through the two operations built on it
@@ -1291,6 +1292,153 @@ mod tests {
         assert!(port_is_used(&bitmap, 0));
         assert!(port_is_used(&bitmap, 255));
         assert!(!port_is_used(&bitmap, 128));
+    }
+
+    fn assert_covers_exactly(
+        ranges: &BTreeSet<PortRange>,
+        covered: impl Fn(u16) -> bool,
+        span: u16,
+    ) {
+        let mut times = vec![0usize; usize::from(span)];
+        for range in ranges {
+            assert!(range.end() < span, "range past the space: {range:?}");
+            for port in range.start()..=range.end() {
+                times[usize::from(port)] += 1;
+            }
+        }
+        for port in 0..span {
+            let times = times[usize::from(port)];
+            assert_eq!(
+                times,
+                usize::from(covered(port)),
+                "port {port} is covered {times} times: {ranges:?}"
+            );
+        }
+    }
+
+    fn assert_maximal_and_ordered(ranges: &BTreeSet<PortRange>) {
+        let mut previous_end: Option<u16> = None;
+        for range in ranges {
+            assert!(range.start() <= range.end(), "inverted range: {range:?}");
+            if let Some(previous_end) = previous_end {
+                assert!(
+                    range.start() > previous_end + 1,
+                    "adjacent ranges were not merged: {ranges:?}"
+                );
+            }
+            previous_end = Some(range.end());
+        }
+    }
+
+    #[test]
+    fn a_bitmap_half_reports_exactly_the_ports_its_bits_mark() {
+        bolero::check!()
+            .with_type()
+            .for_each(|&(bitmap, second_half): &(u128, bool)| {
+                let base: u16 = if second_half { 128 } else { 0 };
+                let ranges = collect_ranges_from_u128_bitmap(bitmap, base);
+                assert_maximal_and_ordered(&ranges);
+                assert_covers_exactly(
+                    &ranges,
+                    |port| {
+                        port >= base && port < base + 128 && bitmap & (1u128 << (port - base)) != 0
+                    },
+                    256,
+                );
+            });
+    }
+
+    #[test]
+    fn a_block_reports_exactly_the_ports_its_bitmap_marks() {
+        bolero::check!()
+            .with_type()
+            .for_each(|&(first_half, second_half): &(u128, u128)| {
+                let bitmap = Bitmap256 {
+                    first_half,
+                    second_half,
+                };
+                let ranges = bitmap.allocated_port_ranges();
+                assert_maximal_and_ordered(&ranges);
+                assert_covers_exactly(
+                    &ranges,
+                    |port| match u8::try_from(port) {
+                        Ok(offset) => port_is_used(&bitmap, offset),
+                        Err(_) => false,
+                    },
+                    512,
+                );
+            });
+    }
+
+    #[test]
+    fn folding_blocks_in_any_order_describes_the_same_ports() {
+        bolero::check!()
+            .with_type()
+            .for_each(|blocks: &[(u8, u128, u128); 4]| {
+                let mut bitmaps = BTreeMap::new();
+                let mut order = Vec::new();
+                for &(index, first_half, second_half) in blocks {
+                    if bitmaps
+                        .insert(
+                            index,
+                            Bitmap256 {
+                                first_half,
+                                second_half,
+                            },
+                        )
+                        .is_none()
+                    {
+                        order.push(index);
+                    }
+                }
+
+                let mut folded = BTreeSet::new();
+                for index in &order {
+                    let base = u16::from(*index) * 256;
+                    let bitmap = &bitmaps[index];
+                    let shifted: BTreeSet<PortRange> = bitmap
+                        .allocated_port_ranges()
+                        .iter()
+                        .map(|range| {
+                            PortRange::new(range.start() + base, range.end() + base)
+                                .unwrap_or_else(|_| unreachable!())
+                        })
+                        .collect();
+                    merge_ranges(&mut folded, shifted);
+                }
+
+                assert_maximal_and_ordered(&folded);
+
+                for range in &folded {
+                    for block in (range.start() / 256)..=(range.end() / 256) {
+                        assert!(
+                            bitmaps.contains_key(
+                                &u8::try_from(block).unwrap_or_else(|_| unreachable!())
+                            ),
+                            "{range:?} covers block {block}, which was not supplied"
+                        );
+                    }
+                }
+
+                let mut times = BTreeMap::<u16, usize>::new();
+                for range in &folded {
+                    for port in range.start()..=range.end() {
+                        *times.entry(port).or_default() += 1;
+                    }
+                }
+                for (index, bitmap) in &bitmaps {
+                    let base = u16::from(*index) * 256;
+                    for offset in 0..=u8::MAX {
+                        let port = base + u16::from(offset);
+                        let seen = times.get(&port).copied().unwrap_or(0);
+                        assert_eq!(
+                            seen,
+                            usize::from(port_is_used(bitmap, offset)),
+                            "port {port} is covered {seen} times: {folded:?}"
+                        );
+                    }
+                }
+            });
     }
 
     #[test]
