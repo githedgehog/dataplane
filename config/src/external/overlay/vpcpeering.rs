@@ -1110,37 +1110,64 @@ pub mod contract {
         pub family: Family,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct MasqueradeExposes(pub u8);
+
+    impl Default for MasqueradeExposes {
+        fn default() -> Self {
+            Self(3)
+        }
+    }
+
+    const MASQUERADE_SLOT: u8 = 4;
+
+    impl ValueGenerator for MasqueradeExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.0.max(1)))?;
+            (0..count)
+                .map(|slot| masquerade_expose(driver, v4, slot.wrapping_mul(MASQUERADE_SLOT)))
+                .collect()
+        }
+    }
+
     impl ValueGenerator for MasqueradeExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = self.family.is_v4(driver)?;
-            let privates = driver.gen_u8(Included(&1), Included(&3))?;
-            let publics = driver.gen_u8(Included(&1), Included(&2))?;
             let base = driver.produce::<u8>()?;
-            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
-                0 => None,
-                1 => Some(Duration::from_secs(30)),
-                _ => Some(Duration::from_mins(2)),
-            };
-
-            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
-            for index in 0..privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(
-                    block(v4, Side::Private, base.wrapping_add(index))?,
-                    None,
-                ));
-            }
-            for index in 0..publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(
-                        block(v4, Side::Public, base.wrapping_add(index))?,
-                        None,
-                    ))
-                    .ok()?;
-            }
-            Some(expose)
+            masquerade_expose(driver, v4, base)
         }
+    }
+
+    fn masquerade_expose<D: Driver>(driver: &mut D, v4: bool, base: u8) -> Option<VpcExpose> {
+        let privates = driver.gen_u8(Included(&1), Included(&3))?;
+        let publics = driver.gen_u8(Included(&1), Included(&2))?;
+        let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+            0 => None,
+            1 => Some(Duration::from_secs(30)),
+            _ => Some(Duration::from_mins(2)),
+        };
+
+        let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+        for index in 0..privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(
+                block(v4, Side::Private, base.wrapping_add(index))?,
+                None,
+            ));
+        }
+        for index in 0..publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Public, base.wrapping_add(index))?,
+                    None,
+                ))
+                .ok()?;
+        }
+        Some(expose)
     }
 
     #[derive(Clone, Copy)]
@@ -1171,29 +1198,99 @@ pub mod contract {
         pub family: Family,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct StaticNatExposes {
+        pub max: u8,
+        pub ports: bool,
+    }
+
+    impl Default for StaticNatExposes {
+        fn default() -> Self {
+            Self::addresses_only(3)
+        }
+    }
+
+    impl StaticNatExposes {
+        #[must_use]
+        pub fn addresses_only(max: u8) -> Self {
+            Self { max, ports: false }
+        }
+
+        #[must_use]
+        pub fn with_ports(max: u8) -> Self {
+            Self { max, ports: true }
+        }
+    }
+
     const MAX_TOTAL_LOG: u8 = 6;
+
+    const BLOCK_STRIDE: u128 = 4 << MAX_TOTAL_LOG;
 
     impl ValueGenerator for StaticNatExpose {
         type Output = VpcExpose;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
             let v4 = self.family.is_v4(driver)?;
-            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
-
-            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
-            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
-
-            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
-            for prefix in privates {
-                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
-            }
-            for prefix in publics {
-                expose = expose
-                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
-                    .ok()?;
-            }
-            Some(expose)
+            static_nat_expose(driver, v4, 0)
         }
+    }
+
+    impl ValueGenerator for StaticNatExposes {
+        type Output = Vec<VpcExpose>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Vec<VpcExpose>> {
+            let v4 = driver.produce::<bool>()?;
+            let count = driver.gen_u8(Included(&1), Included(&self.max.max(1)))?;
+            (0..count)
+                .map(|block| {
+                    if self.ports {
+                        static_nat_pat_expose(driver, v4, block)
+                    } else {
+                        static_nat_expose(driver, v4, block)
+                    }
+                })
+                .collect()
+        }
+    }
+
+    fn static_nat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let privates = place(v4, Side::Private, block, &split(driver, total_log)?)?;
+        let publics = place(v4, Side::Public, block, &split(driver, total_log)?)?;
+
+        let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+        for prefix in privates {
+            expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+        }
+        for prefix in publics {
+            expose = expose
+                .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                .ok()?;
+        }
+        Some(expose)
+    }
+
+    fn static_nat_pat_expose<D: Driver>(driver: &mut D, v4: bool, block: u8) -> Option<VpcExpose> {
+        let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+        let mut side = |which| -> Option<PrefixWithOptionalPorts> {
+            let port_log = driver.gen_u8(Included(&0), Included(&total_log))?;
+            let addr_log = total_log - port_log;
+            let prefix = *place(v4, which, block, &[addr_log])?.first()?;
+            let ports = port_range(driver, 1u16 << port_log)?;
+            Some(PrefixWithOptionalPorts::new(prefix, Some(ports)))
+        };
+
+        let private = side(Side::Private)?;
+        let public = side(Side::Public)?;
+
+        VpcExpose::empty()
+            .make_static_nat()
+            .ok()?
+            .ip(private)
+            .as_range(public)
+            .ok()
     }
 
     fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
@@ -1220,19 +1317,21 @@ pub mod contract {
         Some(parts)
     }
 
-    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
-        let mut cursor = if v4 {
-            u128::from(match side {
-                Side::Private => 0x0A00_0000u32,
-                Side::Public => 0xAC10_0000,
-            })
-        } else {
-            let selector = match side {
-                Side::Private => 0u128,
-                Side::Public => 1,
+    fn place(v4: bool, side: Side, block: u8, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let offset = u128::from(block) * BLOCK_STRIDE;
+        let mut cursor = offset
+            + if v4 {
+                u128::from(match side {
+                    Side::Private => 0x0A00_0000u32,
+                    Side::Public => 0xAC10_0000,
+                })
+            } else {
+                let selector = match side {
+                    Side::Private => 0u128,
+                    Side::Public => 1,
+                };
+                (0x2001_0db8u128 << 96) | (selector << 80)
             };
-            (0x2001_0db8u128 << 96) | (selector << 80)
-        };
 
         let mut out = Vec::with_capacity(parts.len());
         for &log in parts {

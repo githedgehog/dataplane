@@ -3,8 +3,10 @@
 
 //! Static NAT implementation
 
+pub(crate) mod fuzz;
 pub mod natrw;
 pub mod nf;
+pub(crate) mod probe;
 pub mod setup;
 pub(crate) mod test;
 
