@@ -17,6 +17,17 @@ rules:
         - concurrency/src/quiescent.rs
         - concurrency/src/slot.rs
         - concurrency/tests/
+        # The in-VM test harness is workspace-independent by design: it
+        # depends on no dataplane crate, so that it can go back to
+        # `githedgehog/testn` without a decoupling project first. Taking the
+        # `concurrency` facade would be exactly that coupling, and would buy
+        # nothing -- none of this code is under loom or shuttle, and it is
+        # host-side test infrastructure rather than dataplane.
+        - n-vm/
+        - n-vm-macros/
+        - n-vm-protocol/
+        - n-it/
+        - n-preinit/
     pattern-either:
       - pattern: use std::sync::Arc;
       - pattern: use std::sync::Weak;
