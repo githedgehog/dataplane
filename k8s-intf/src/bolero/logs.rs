@@ -15,7 +15,7 @@ struct LogLevel(String);
 impl TypeGenerator for LogLevel {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
         Some(LogLevel(
-            LEVELS[d.gen_usize(Bound::Included(&0), Bound::Excluded(&LEVELS.len()))?].to_string(),
+            crate::bolero::support::choose(d, LEVELS)?.to_string(),
         ))
     }
 }

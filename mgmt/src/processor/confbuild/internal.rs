@@ -6,6 +6,14 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
+/// Whether a vpc's routing configuration imports routes from the vrfs it peers with.
+///
+/// Compile-time false, so `vpc_import_prefix_list_for_peer` and the two other sites
+/// guarded by it are unreachable today.
+///
+/// It does not gate how IPv6 is handled. `ExternalConfig::validate` refuses a peering that
+/// carries IPv6 whatever this is set to, so neither `reject_ipv6` call can fire through
+/// a validated configuration; flipping this on only adds a second backstop.
 const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
@@ -15,7 +23,7 @@ use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
 use config::external::overlay::vpcpeering::ValidatedManifest;
 use config::{ConfigError, ConfigResult};
 
-use lpm::prefix::Prefix;
+use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use std::net::Ipv4Addr;
@@ -46,22 +54,40 @@ fn vpc_import_prefix_list_for_peer(
         Some(vpc.import_plist_peer_desc(rmanifest.name())),
     );
     for expose in rmanifest.valexp() {
+        reject_ipv6(expose.ips().iter().map(PrefixWithOptionalPorts::prefix))?;
         // allow native prefixes, natted or not
-        let native_prefixes =
-            expose
-                .ips()
-                .iter()
-                .filter(|p| p.prefix().is_ipv4())
-                .map(|prefix_with_ports| {
-                    PrefixListEntry::new(
-                        PrefixListAction::Permit,
-                        PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
-                        Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
-                    )
-                });
+        let native_prefixes = expose.ips().iter().map(|prefix_with_ports| {
+            PrefixListEntry::new(
+                PrefixListAction::Permit,
+                PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
+                Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
+            )
+        });
         plist.add_entries(native_prefixes)?;
     }
     Ok(plist)
+}
+
+/// Backstop for the IPv4-only limitation that `ExternalConfig::validate` enforces.
+///
+/// This used to be where an IPv6 peering was refused, which made it a refusal at apply
+/// time: the configuration was accepted, reported good, and then rejected as a whole
+/// when the routing config was built, taking its IPv4 vpcs with it. Anything accepted
+/// at validation has to apply cleanly, so `check_peerings_are_ipv4` now turns such a peering
+/// away at submit time and nothing reaching here can carry IPv6.
+///
+/// It is kept because the alternative to refusing by name is what this replaced: the
+/// advertise list failed `is_version_compatible` and came back as an `InternalFailure`,
+/// and the import list dropped v6 prefixes in silence. Neither is a thing to fall back
+/// to if the validation ever loosens.
+fn reject_ipv6(prefixes: impl IntoIterator<Item = Prefix>) -> ConfigResult {
+    if prefixes.into_iter().any(|prefix| prefix.is_ipv6()) {
+        return Err(ConfigError::Unsupported(
+            "IPv6 prefixes in a vpc peering: the routing configuration built from a peering is \
+             IPv4-only, so such a peering cannot be rendered",
+        ));
+    }
+    Ok(())
 }
 
 /// Build AF l2vpn EVPN config for a VPC VRF
@@ -155,6 +181,8 @@ impl VpcRoutingConfigIpv4 {
         /* sort and remove duplicates */
         nets.sort_unstable();
         nets.dedup();
+
+        reject_ipv6(nets.iter().copied())?;
 
         /* list of advertised prefixes */
         self.adv_nets.extend(nets.clone());
@@ -311,7 +339,7 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
+pub(crate) const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
 
 /// Create a route-map that adds community "no-advertise" to all routes
 fn route_map_add_noadv_comm() -> RouteMap {
@@ -391,4 +419,300 @@ pub fn build_internal_config(
     }
     debug!("Successfully built internal config for genid {genid}");
     Ok(internal)
+}
+
+#[cfg(test)]
+mod chain_properties {
+    use super::*;
+    use config::{ExternalConfig, GenId};
+    use k8s_intf::bolero::AddressFamily;
+
+    /// How many cases a run needs before a health check may assert on a rate.
+    ///
+    /// Under miri and under qemu a property gets a handful of cases, so a fraction of
+    /// them says nothing and a threshold on it is pure flake.
+    const ENOUGH_CASES: usize = 200;
+    use k8s_intf::bolero::crd::{GatewayAgentBuilder, GatewayAgents};
+    use k8s_intf::gateway_agent_crd::GatewayAgent;
+    use routing::Render;
+    use std::collections::BTreeSet;
+
+    fn ipv4_agents() -> GatewayAgents {
+        GatewayAgentBuilder::new()
+            .families(vec![AddressFamily::V4])
+            .build()
+    }
+
+    fn chain(agent: &GatewayAgent) -> Option<(GenId, ValidatedGwConfig, InternalConfig)> {
+        let external = ExternalConfig::try_from(agent)
+            .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+        let validated = external.validate().ok()?;
+        let genid = validated.genid();
+        let internal = build(&validated);
+        Some((genid, validated, internal))
+    }
+
+    /// Build, without treating any failure as a skip.
+    ///
+    /// This used to fold `ConfigError::Unsupported` into a `None` that each caller
+    /// quietly returned on. It stood ready to turn a real "the validator accepted what
+    /// the builder refuses" defect into an invisible skip, and nothing counted how often
+    /// it was taken. There is no such defect to hide any more -- validation refuses an
+    /// IPv6 peering itself -- but that is a reason to state the invariant, not to keep
+    /// a skip that would swallow the next one.
+    fn build(validated: &ValidatedGwConfig) -> InternalConfig {
+        build_internal_config(validated, None).unwrap_or_else(|e| {
+            panic!("a validated configuration would not build: {e}\n{validated:#?}")
+        })
+    }
+
+    /// Assert every prefix a peering advertises survives into the rendered configuration,
+    /// and report how many there were.
+    ///
+    /// This is the only check here that depends on the per-peering half of the build
+    /// having run. Without it that half can return early and every other assertion in
+    /// this module still holds, because they all read the per-vpc and underlay half.
+    ///
+    /// Only peerings this gateway actually handles count. `build_routing_config` renders
+    /// a peer when the gateway is a member of the group the peering names and a community
+    /// exists for its rank in that group; a peering failing either is legitimately absent
+    /// from the output, and demanding its prefixes would be asserting a bug into place.
+    ///
+    /// The prefixes come from the validated configuration rather than the CRD, because
+    /// validation collapses and normalises them and the collapsed form is what renders.
+    fn advertised_prefixes_reach(validated: &ValidatedGwConfig, text: &str) -> usize {
+        let external = validated.external();
+        let (gwname, groups, communities) = (
+            external.gwname(),
+            external.gwgroups(),
+            external.communities(),
+        );
+        let mut count = 0;
+        for vpc in external.overlay().vpc_table().values() {
+            for peering in vpc.peerings().iter() {
+                let handled = groups
+                    .get_group_member_rank(peering.gwgroup(), gwname)
+                    .is_some_and(|rank| communities.get_community(rank).is_some());
+                if !handled {
+                    continue;
+                }
+                for expose in peering.remote().valexp() {
+                    for prefix in expose.adv_prefixes() {
+                        count += 1;
+                        assert!(
+                            text.contains(&prefix.to_string()),
+                            "{prefix} is advertised by a peering this gateway handles but never \
+                             reaches the rendered config"
+                        );
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn whatever_validates_builds_and_renders() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static ADVERTISED: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let Some((genid, validated, internal)) = chain(agent) else {
+                    return;
+                };
+                let text = internal.render(&genid).to_string();
+                assert!(
+                    text.contains(&format!("! config for gen {genid}")),
+                    "the rendered config does not say which generation it is for"
+                );
+                ADVERTISED.fetch_add(
+                    advertised_prefixes_reach(&validated, &text),
+                    Ordering::Relaxed,
+                );
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let advertised = ADVERTISED.load(Ordering::Relaxed);
+        println!("{advertised} advertised prefixes checked across {seen} configurations");
+        if seen > ENOUGH_CASES {
+            assert!(
+                advertised > 0,
+                "no configuration advertised anything, so the per-peering half of the build \
+                 was never checked"
+            );
+        }
+    }
+
+    #[test]
+    fn every_vpc_gets_a_vrf_and_no_more() {
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                let external = ExternalConfig::try_from(agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                let internal = build(&validated);
+
+                let wanted: BTreeSet<u32> = validated
+                    .external()
+                    .overlay()
+                    .vpc_table()
+                    .values()
+                    .map(|vpc| vpc.vni().as_u32())
+                    .collect();
+                let built: BTreeSet<u32> = internal
+                    .vrfs
+                    .iter_by_name()
+                    .filter_map(|vrf| vrf.vni.map(|vni| vni.as_u32()))
+                    .collect();
+                assert_eq!(built, wanted, "vrfs do not match the vpcs they come from");
+
+                // Matching the set of vnis leaves almost everything about a vrf unchecked:
+                // two vrfs sharing a vni collapse into one element, and name, description,
+                // vpc id and table id are never looked at. Pointing every vrf at the wrong
+                // kernel routing table passed this.
+                let mut table_ids = BTreeSet::new();
+                for vpc in validated.external().overlay().vpc_table().values() {
+                    let vrf = internal
+                        .vrfs
+                        .iter_by_name()
+                        .find(|vrf| vrf.vni == Some(vpc.vni()))
+                        .unwrap_or_else(|| panic!("no vrf carries the vni of {}", vpc.name()));
+
+                    assert_eq!(vrf.name, vpc.vrf_name(), "vrf name");
+                    assert_eq!(vrf.vpc_id.as_ref(), Some(vpc.id()), "vrf vpc id");
+                    assert_eq!(
+                        vrf.description.as_deref(),
+                        Some(vpc.name()),
+                        "vrf description"
+                    );
+
+                    // A vrf's route table is the vpc's vni, so that an operator can reach
+                    // it by the number they already know. The exception is a vni that
+                    // collides with a table id the kernel reserves, which is moved above
+                    // the vni space instead.
+                    let tableid = vrf
+                        .tableid
+                        .unwrap_or_else(|| panic!("the vrf for {} has no route table", vpc.name()));
+                    let vni = vpc.vni().as_u32();
+                    let expected = match vni {
+                        253..=255 => Vni::MAX + (vni - 252),
+                        _ => vni,
+                    };
+                    assert_eq!(
+                        u32::from(tableid),
+                        expected,
+                        "the vrf for {} points at the wrong route table",
+                        vpc.name()
+                    );
+                    assert!(
+                        !matches!(u32::from(tableid), 253..=255),
+                        "the vrf for {} claims a route table the kernel reserves",
+                        vpc.name()
+                    );
+                    assert!(
+                        table_ids.insert(tableid),
+                        "two vrfs share route table {tableid:?}, so one of them will not exist"
+                    );
+                }
+            });
+    }
+
+    #[test]
+    fn the_properties_are_not_vacuous() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static VALIDATED: AtomicUsize = AtomicUsize::new(0);
+        static VPCS: AtomicUsize = AtomicUsize::new(0);
+        static PEERINGS: AtomicUsize = AtomicUsize::new(0);
+        static ACLS: AtomicUsize = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                if let Ok(validated) = external.validate() {
+                    VALIDATED.fetch_add(1, Ordering::Relaxed);
+                    let table = validated.external().overlay().vpc_table();
+                    VPCS.fetch_add(table.len(), Ordering::Relaxed);
+                    PEERINGS.fetch_add(
+                        table
+                            .values()
+                            .map(|vpc| vpc.peerings().len())
+                            .sum::<usize>(),
+                        Ordering::Relaxed,
+                    );
+                    ACLS.fetch_add(
+                        table
+                            .values()
+                            .flat_map(|vpc| vpc.peerings())
+                            .filter(|peering| peering.acl().is_some())
+                            .count(),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let validated = VALIDATED.load(Ordering::Relaxed);
+        let vpcs = VPCS.load(Ordering::Relaxed);
+        let peerings = PEERINGS.load(Ordering::Relaxed);
+        let acls = ACLS.load(Ordering::Relaxed);
+        println!(
+            "{validated}/{seen} validated, carrying {vpcs} vpcs, {peerings} peerings, {acls} acls"
+        );
+        assert!(seen > 0, "no configurations were generated");
+        // Everything past this point is a rate, and a rate needs a sample behind it.
+        // Under miri and under qemu this property gets a handful of cases, where these
+        // thresholds measure nothing and are pure flake. The counts above still print, and
+        // coverage data is the thing to watch when the sample is this small.
+        if seen > ENOUGH_CASES {
+            assert!(
+                validated * 2 >= seen,
+                "only {validated} of {seen} configurations validated: the properties above are \
+                 checking much less than they look like they are"
+            );
+            assert!(vpcs > validated, "validated configurations carry no vpcs");
+            assert!(
+                peerings > 0,
+                "no validated configuration carries a peering, so nothing downstream of \
+                 validation has seen the exposes or the NAT"
+            );
+            // Measured near 51%. A gateway with no groups is a legal shape that carries no
+            // peering, and so no acl, so this cannot be held near half without narrowing
+            // the generator. A quarter is a tripwire for acls vanishing altogether.
+            assert!(
+                acls * 4 >= validated,
+                "only {acls} of {validated} validated configurations carry an ACL: most generated \
+                 ACLs are being refused for something other than what they say"
+            );
+        }
+    }
+
+    #[test]
+    fn the_chain_is_deterministic() {
+        bolero::check!()
+            .with_generator(ipv4_agents())
+            .for_each(|agent| {
+                let Some((genid, _, once)) = chain(agent) else {
+                    return;
+                };
+                let (_, _, twice) = chain(agent).unwrap_or_else(|| {
+                    panic!("the same CRD validated once and not the second time")
+                });
+                assert_eq!(
+                    once.render(&genid).to_string(),
+                    twice.render(&genid).to_string(),
+                    "the configuration chain is not deterministic"
+                );
+            });
+    }
 }

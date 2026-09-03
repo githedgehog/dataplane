@@ -6,127 +6,15 @@ use std::ops::Bound;
 
 use bolero::{Driver, ValueGenerator};
 
-fn v4cdir_from_bytes(addr_bytes: u32, mask: u8) -> String {
-    let and_mask = u32::MAX.unbounded_shl(32 - u32::from(mask));
-    let addr = Ipv4Addr::from(addr_bytes & and_mask);
-    format!("{addr}/{mask}")
-}
-
-fn v6cdir_from_bytes(addr_bytes: u128, mask: u8) -> String {
-    let and_mask = u128::MAX.unbounded_shl(128 - u32::from(mask));
-    let addr = Ipv6Addr::from(addr_bytes & and_mask);
-    format!("{addr}/{mask}")
-}
-
-pub struct UniqueV4CidrGenerator {
-    count: u16,
-    mask: u8,
-}
-
-impl UniqueV4CidrGenerator {
-    #[must_use]
-    pub fn new(count: u16, mask: u8) -> Self {
-        Self { count, mask }
-    }
-}
-
-impl ValueGenerator for UniqueV4CidrGenerator {
-    type Output = Vec<String>;
-
-    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        if self.mask == 0 && self.count > 0 {
-            d.produce::<u32>(); // generate a value to satisfy the bolero driver
-            return Some(vec!["0.0.0.0/0".to_string()]);
-        }
-
-        let available_addrs = 1_u32.unbounded_shl(u32::from(self.mask));
-        let max_to_generate = if available_addrs > 0 {
-            // Unwrap should never fail here because count is u16 and we take the min
-            // The - 1 is to discount the 0 address which we won't generate
-            #[allow(clippy::unwrap_used)]
-            u16::try_from((available_addrs - 1).min(u32::from(self.count))).unwrap()
-        } else {
-            self.count
-        };
-
-        let addr_bytes_seed = d.gen_u32(
-            Bound::Included(&0x1000_0000_u32),
-            Bound::Included(&u32::MAX),
-        )?;
-        let mut cidrs = Vec::with_capacity(usize::from(self.count));
-        let mut addrs_left = max_to_generate;
-        let mut addr_bytes = addr_bytes_seed.unbounded_shr(u32::from(32 - self.mask));
-        let addr_bytes_mask = u32::MAX.unbounded_shr(u32::from(32 - self.mask));
-        while addrs_left > 0 {
-            if addr_bytes & addr_bytes_mask == 0 {
-                // Smallest valid v4 address with given mask
-                addr_bytes = 1;
-            }
-            let cidr = v4cdir_from_bytes(
-                addr_bytes.unbounded_shl(u32::from(32 - self.mask)),
-                self.mask,
-            );
-            cidrs.push(cidr);
-            addrs_left -= 1;
-            addr_bytes = addr_bytes.wrapping_add(1);
-        }
-        Some(cidrs)
-    }
-}
-
-#[derive(Debug)]
-pub struct UniqueV6CidrGenerator {
-    pub count: u16,
-    pub mask: u8,
-}
-
-impl UniqueV6CidrGenerator {
-    #[must_use]
-    pub fn new(count: u16, mask: u8) -> Self {
-        Self { count, mask }
-    }
-}
-
-impl ValueGenerator for UniqueV6CidrGenerator {
-    type Output = Vec<String>;
-
-    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        if self.mask == 0 && self.count > 0 {
-            d.produce::<u32>(); // generate a value to satisfy the bolero driver
-            return Some(vec!["::/0".to_string()]);
-        }
-
-        let available_addrs = 1_u128.unbounded_shl(u32::from(self.mask));
-
-        let max_to_generate = if available_addrs > 0 {
-            // Unwrap should never fail here because count is u16 and we take the min
-            // The - 1 is to discount the 0 address which we won't generate
-            #[allow(clippy::unwrap_used)]
-            u16::try_from((available_addrs - 1).min(u128::from(self.count))).unwrap()
-        } else {
-            self.count
-        };
-
-        let addr_bytes_seed = d.gen_u128(Bound::Included(&1_u128), Bound::Included(&u128::MAX))?;
-        let mut cidrs = Vec::with_capacity(usize::from(self.count));
-        let mut addrs_left = max_to_generate;
-        let mut addr_bytes = addr_bytes_seed.unbounded_shr(u32::from(128 - self.mask));
-        let addr_bytes_mask = u128::MAX.unbounded_shr(u32::from(128 - self.mask));
-        while addrs_left > 0 {
-            if addr_bytes & addr_bytes_mask == 0 {
-                // Smallest valid v6 address with mask
-                addr_bytes = 1;
-            }
-            let cidr = v6cdir_from_bytes(
-                addr_bytes.unbounded_shl(u32::from(128 - self.mask)),
-                self.mask,
-            );
-            cidrs.push(cidr);
-            addrs_left -= 1;
-            addr_bytes = addr_bytes.wrapping_add(1);
-        }
-        Some(cidrs)
-    }
+/// How many high-order bits it takes to give each of `count` addresses a distinct
+/// prefix, plus one so the all-zero prefix is not the only choice.
+///
+/// This is a property of the counter, not of the address, so it is the same for v4
+/// and v6. Sizing it from the address width instead is what pinned every generated
+/// interface address into a short suffix of the space.
+fn distinguishing_bits(count: u16) -> u32 {
+    debug_assert!(count > 0, "a zero count has no addresses to distinguish");
+    count.next_power_of_two().ilog2() + 1
 }
 
 pub struct UniqueV4InterfaceAddressGenerator {
@@ -159,7 +47,7 @@ impl ValueGenerator for UniqueV4InterfaceAddressGenerator {
         }
         // Calculate a mask to get a unique prefix for each address
         // plus 1 because all 0s for the first octect is not a valid prefix
-        let num_prefix_bits = u32::BITS - self.count.next_power_of_two().leading_zeros();
+        let num_prefix_bits = distinguishing_bits(self.count);
         let largest_num_addr_bits = 32 - num_prefix_bits;
         let smallest_mask = num_prefix_bits;
 
@@ -208,7 +96,7 @@ impl ValueGenerator for UniqueV6InterfaceAddressGenerator {
             return Some(vec![]);
         }
         // Calculate a mask so that we get a unique prefix for each address
-        let num_prefix_bits = u128::BITS - self.count.next_power_of_two().leading_zeros();
+        let num_prefix_bits = distinguishing_bits(self.count);
         let largest_num_addr_bits = 128 - num_prefix_bits;
         let smallest_mask = num_prefix_bits;
 
@@ -249,101 +137,48 @@ impl ValueGenerator for UniqueV6InterfaceAddressGenerator {
     }
 }
 
+/// Draw one of `choices`.
+///
+/// `None` for an empty slice, rather than asking the driver for a value out of an empty
+/// range. This is the one place that decides how a choice is made, so moving to a
+/// generator that shrinks better happens here instead of at every call site.
 pub fn choose<T: Clone, D: Driver>(d: &mut D, choices: &[T]) -> Option<T> {
+    if choices.is_empty() {
+        return None;
+    }
     let index = d.gen_usize(Bound::Included(&0), Bound::Excluded(&choices.len()))?;
-    Some(choices[index].clone())
-}
-
-pub fn generate_v4_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr4_gen =
-        UniqueV4CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&32))?);
-    cidr4_gen.generate(d)
-}
-
-pub fn generate_v6_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr6_gen =
-        UniqueV6CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&128))?);
-    cidr6_gen.generate(d)
-}
-
-pub fn generate_prefixes<D: Driver>(
-    d: &mut D,
-    v4_count: u16,
-    v6_count: u16,
-) -> Option<Vec<String>> {
-    let mut prefixes = Vec::with_capacity(usize::from(v4_count) + usize::from(v6_count));
-    if v4_count > 0 {
-        let v4_prefixes = generate_v4_prefixes(d, v4_count)?;
-        prefixes.extend(v4_prefixes);
-    }
-    if v6_count > 0 {
-        let v6_prefixes = generate_v6_prefixes(d, v6_count)?;
-        prefixes.extend(v6_prefixes);
-    }
-    Some(prefixes)
+    choices.get(index).cloned()
 }
 
 #[cfg(test)]
 mod test {
+    /// The mask floor an interface generator imposes is a property of how many
+    /// addresses it must keep apart, nothing else. A single address needs one bit,
+    /// so it must still be free to be a /1, and ten addresses need five.
+    ///
+    /// Pinning these down deterministically rather than by sampling: the defect this
+    /// guards against silently raised the floor to 17 for v4 and 113 for v6, which a
+    /// property that only checks uniqueness cannot see.
+    #[test]
+    fn a_mask_floor_is_sized_by_the_count_not_the_address() {
+        use crate::bolero::support::distinguishing_bits;
+        assert_eq!(distinguishing_bits(1), 1);
+        assert_eq!(distinguishing_bits(2), 2);
+        assert_eq!(distinguishing_bits(3), 3);
+        assert_eq!(distinguishing_bits(4), 3);
+        assert_eq!(distinguishing_bits(10), 5);
+        assert_eq!(distinguishing_bits(100), 8);
+        // Every count leaves room for a v4 host part, and none of them is anywhere
+        // near the width of an address.
+        for count in [1u16, 2, 10, 100, 1000] {
+            assert!(distinguishing_bits(count) < 32);
+        }
+    }
+
     #[cfg(not(miri))]
     const UNIQUE_COUNTS: [u16; 5] = [0, 1, 10, 16, 100];
     #[cfg(miri)]
     const UNIQUE_COUNTS: [u16; 4] = [0, 1, 10, 16];
-    const ITERATIONS: usize = cfg_select! {
-        emulated => 3,
-        _ => 1000,
-    };
-
-    #[test]
-    fn test_unique_v4_cidr_generator() {
-        for mask in 0..=32 {
-            let generator = crate::bolero::support::UniqueV4CidrGenerator::new(10, mask);
-            bolero::check!()
-                .with_generator(generator)
-                .with_iterations(ITERATIONS) // Takes too long with auto-iterations
-                .for_each(|cidrs| {
-                    let mut seen = std::collections::HashSet::new();
-                    for cidr in cidrs {
-                        assert!(seen.insert(cidr), "Duplicate CIDR found: {cidr}");
-                    }
-                    assert!(
-                        !cidrs.is_empty(),
-                        "No CIDRs generated for mask={mask}, count=10"
-                    );
-                    assert!(cidrs.iter().all(|cidr| {
-                        let (ip, mask) = cidr.split_once('/').unwrap();
-                        assert!(mask.parse::<u8>().unwrap() <= 32);
-                        ip.parse::<std::net::Ipv4Addr>().is_ok()
-                    }));
-                });
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "just too slow on miri")]
-    fn test_unique_v6_cidr_generator() {
-        for mask in 0..=128 {
-            let generator = crate::bolero::support::UniqueV6CidrGenerator::new(10, mask);
-            bolero::check!()
-                .with_generator(generator)
-                .with_iterations(ITERATIONS) // Takes too long with auto-iterations
-                .for_each(|cidrs| {
-                    let mut seen = std::collections::HashSet::new();
-                    assert!(
-                        !cidrs.is_empty(),
-                        "No CIDRs generated for mask={mask}, count=10"
-                    );
-                    for cidr in cidrs {
-                        assert!(seen.insert(cidr), "Duplicate CIDR found: {cidr}");
-                    }
-                    assert!(cidrs.iter().all(|cidr| {
-                        let (ip, mask) = cidr.split_once('/').unwrap();
-                        assert!(mask.parse::<u8>().unwrap() <= 128);
-                        ip.parse::<std::net::Ipv6Addr>().is_ok()
-                    }));
-                });
-        }
-    }
 
     #[test]
     fn test_unique_v4_interface_address_generator() {
@@ -413,6 +248,277 @@ mod test {
                         }
                     }
                 });
+        }
+    }
+}
+
+pub mod blocks {
+    use crate::bolero::AddressFamily;
+    use bolero::Driver;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    pub const SLOT_V4_LEN: u8 = 20;
+    pub const SLOT_V6_LEN: u8 = 48;
+    pub const MIN_V4_LEN: u8 = SLOT_V4_LEN;
+    pub const MIN_V6_LEN: u8 = SLOT_V6_LEN;
+
+    pub const SUBNET_SLOTS: u8 = 16;
+
+    /// Panics if the caller's sizes cannot be separated.
+    ///
+    /// Unconditional rather than `debug_assert!`, and no saturating fallback. Disjoint
+    /// slots are what stops two exposes minting the same prefix, and a release build,
+    /// which is where a fuzzing engine runs, is precisely where a silent overlap would
+    /// go unnoticed. It would then present as the validator wrongly refusing a
+    /// configuration, which is a long way from the size the caller actually asked for.
+    #[must_use]
+    pub fn expose_slot(vpc: u8, slots_per_vpc: u8, expose: u8) -> u8 {
+        if vpc >= SUBNET_SLOTS {
+            unreachable!(
+                "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its \
+                 subnets would land on top of an expose's prefixes and the two would overlap"
+            );
+        }
+        let wanted = u32::from(vpc) * u32::from(slots_per_vpc) + u32::from(expose);
+        u8::try_from(wanted).unwrap_or_else(|_| {
+            unreachable!(
+                "vpc {vpc} expose {expose} needs slot {wanted} of 256, so it would be handed a \
+                 slot another expose already holds"
+            )
+        })
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct At {
+        pub slot: u8,
+        pub sub: u8,
+        pub subs: u8,
+    }
+
+    impl At {
+        #[must_use]
+        pub fn whole(slot: u8) -> Self {
+            Self {
+                slot,
+                sub: 0,
+                subs: 1,
+            }
+        }
+
+        #[must_use]
+        pub fn nth(slot: u8, sub: u8, subs: u8) -> Self {
+            Self {
+                slot,
+                sub,
+                subs: subs.max(sub.saturating_add(1)),
+            }
+        }
+
+        fn sub_bits(self) -> u8 {
+            u8::try_from(self.subs.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0)
+        }
+
+        fn level(self, family: AddressFamily) -> u8 {
+            min_len(family)
+                .saturating_add(self.sub_bits())
+                .min(max_len(family))
+        }
+
+        fn place(self, family: AddressFamily, block_base: u128, slot_index: u32) -> (u128, u8) {
+            let width = max_len(family);
+            let level = self.level(family);
+            let slot = u128::from(slot_index) << (width - min_len(family));
+            let sub_mask = (1u128 << self.sub_bits()) - 1;
+            let sub = (u128::from(self.sub) & sub_mask) << (width - level);
+            (block_base | slot | sub, level)
+        }
+    }
+
+    #[must_use]
+    pub fn min_len_at(family: AddressFamily, at: At) -> u8 {
+        at.level(family)
+    }
+
+    fn v4(base: u32, block_len: u8, host: u32, len: u8) -> String {
+        let block_host_bits = 32 - block_len;
+        let within = if block_host_bits >= 32 {
+            host
+        } else {
+            host & ((1u32 << block_host_bits) - 1)
+        };
+        let mask = u32::MAX.checked_shl(u32::from(32 - len)).unwrap_or(0);
+        let addr = (base | within) & mask;
+        format!("{}/{len}", Ipv4Addr::from(addr))
+    }
+
+    fn v6(base: u128, block_len: u8, host: u128, len: u8) -> String {
+        let block_host_bits = 128 - block_len;
+        let within = if block_host_bits >= 128 {
+            host
+        } else {
+            host & ((1u128 << block_host_bits) - 1)
+        };
+        let mask = u128::MAX.checked_shl(u32::from(128 - len)).unwrap_or(0);
+        let addr = (base | within) & mask;
+        format!("{}/{len}", Ipv6Addr::from(addr))
+    }
+
+    /// Keep the top `keep` bits of `base`, fill bits `keep..len` from `host`, zero the rest.
+    fn splice(base: u128, keep: u8, host: u128, len: u8, width: u8) -> u128 {
+        let mask = |bits: u8| -> u128 {
+            if bits == 0 {
+                0
+            } else {
+                u128::MAX << (width - bits.min(width))
+            }
+        };
+        let network = mask(keep);
+        (base & network) | (host & mask(len) & !network)
+    }
+
+    /// Draw a prefix of length `len` lying inside `parent`.
+    ///
+    /// An exclusion that does not fall inside the prefix it is written against excludes
+    /// nothing. The validator only warns about one, so such a prefix is legal input and
+    /// worth reaching, but it leaves `collapse_prefixes` and the post-exclusion
+    /// special-use check untouched. Drawing a fresh address anywhere in the parent's
+    /// block, which is what the caller used to do, lands inside the parent about once in
+    /// a dozen tries, so those two paths were reached about that often.
+    ///
+    /// Returns `None` if `parent` does not parse, or if `len` is shorter than the
+    /// parent's own length and so cannot name anything inside it.
+    pub fn within<D: Driver>(d: &mut D, parent: &str, len: u8) -> Option<String> {
+        let (address, parent_len) = parent.split_once('/')?;
+        let parent_len: u8 = parent_len.parse().ok()?;
+        if len < parent_len {
+            return None;
+        }
+        Some(if address.contains(':') {
+            let base = address.parse::<Ipv6Addr>().ok()?.to_bits();
+            let host = d.produce::<u128>()?;
+            format!(
+                "{}/{len}",
+                Ipv6Addr::from(splice(base, parent_len, host, len, 128))
+            )
+        } else {
+            let base = u128::from(address.parse::<Ipv4Addr>().ok()?.to_bits());
+            let host = u128::from(d.produce::<u32>()?);
+            let spliced = u32::try_from(splice(base, parent_len, host, len, 32)).ok()?;
+            format!("{}/{len}", Ipv4Addr::from(spliced))
+        })
+    }
+
+    pub fn private<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
+        let slot = u32::from(SUBNET_SLOTS) + u32::from(at.slot);
+        Some(if family.is_v4() {
+            let (base, level) = at.place(family, 0x0A00_0000, slot);
+            v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
+        } else {
+            let (base, level) = at.place(family, 0x2001_0db8_0000_0000_0000_0000_0000_0000, slot);
+            v6(base, level, d.produce::<u128>()?, len)
+        })
+    }
+
+    pub fn public<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
+        let slot = u32::from(at.slot);
+        Some(if family.is_v4() {
+            let (base, level) = at.place(family, 0xAC10_0000, slot);
+            v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
+        } else {
+            let (base, level) = at.place(family, 0x2001_0db8_8000_0000_0000_0000_0000_0000, slot);
+            v6(base, level, d.produce::<u128>()?, len)
+        })
+    }
+
+    #[must_use]
+    pub fn min_subnet_len(family: AddressFamily, count: u16) -> u8 {
+        let bits = u8::try_from(count.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0);
+        min_len(family).saturating_add(bits).min(max_len(family))
+    }
+
+    pub fn private_run<D: Driver>(
+        d: &mut D,
+        family: AddressFamily,
+        vpc: u8,
+        len: u8,
+        count: u16,
+    ) -> Option<Vec<String>> {
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        // Subnets are laid out by vpc index in the same space `expose_slot` carves up, so
+        // the same budget applies here. This had no check at all.
+        if vpc >= SUBNET_SLOTS {
+            unreachable!(
+                "vpc {vpc} has no subnet slot of its own: {SUBNET_SLOTS} are reserved, so its \
+                 subnets would overlap another vpc's exposes"
+            );
+        }
+        let slot_len = u32::from(min_len(family));
+        let mut out = Vec::with_capacity(usize::from(count));
+        if family.is_v4() {
+            let base = 0x0A00_0000 | (u32::from(vpc) << (32 - slot_len));
+            let slots = 1u32
+                .checked_shl(u32::from(len) - slot_len)
+                .unwrap_or(u32::MAX);
+            let first = d.produce::<u32>()? % slots;
+            let shift = u32::from(32 - len);
+            for i in 0..u32::from(count) {
+                let slot = (first + i) % slots;
+                let addr = base | slot.checked_shl(shift).unwrap_or(0);
+                out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
+            }
+        } else {
+            let base =
+                0x2001_0db8_0000_0000_0000_0000_0000_0000 | (u128::from(vpc) << (128 - slot_len));
+            let slots = 1u128
+                .checked_shl(u32::from(len) - slot_len)
+                .unwrap_or(u128::MAX);
+            let first = d.produce::<u128>()? % slots;
+            let shift = u32::from(128 - len);
+            for i in 0..u128::from(count) {
+                let slot = (first + i) % slots;
+                let addr = base | slot.checked_shl(shift).unwrap_or(0);
+                out.push(format!("{}/{len}", Ipv6Addr::from(addr)));
+            }
+        }
+        Some(out)
+    }
+
+    #[must_use]
+    pub fn min_len(family: AddressFamily) -> u8 {
+        if family.is_v4() {
+            MIN_V4_LEN
+        } else {
+            MIN_V6_LEN
+        }
+    }
+
+    #[must_use]
+    pub fn max_len(family: AddressFamily) -> u8 {
+        if family.is_v4() { 32 } else { 128 }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::splice;
+
+        /// `splice` is where "inside the parent" is actually decided, so pin it directly.
+        #[test]
+        fn a_spliced_address_keeps_the_parent_and_masks_the_rest() {
+            // Parent 10.0.0.0/8, host bits all ones, asked for a /12: the top octet is
+            // the parent's, bits 8..12 come from the host, and everything below is zero.
+            let spliced = splice(0x0A00_0000, 8, u128::from(u32::MAX), 12, 32);
+            assert_eq!(spliced, 0x0AF0_0000, "{spliced:#x}");
+
+            // A length equal to the parent's reproduces the parent exactly, whatever the
+            // host bits say.
+            let spliced = splice(0x0A00_0000, 8, u128::from(u32::MAX), 8, 32);
+            assert_eq!(spliced, 0x0A00_0000, "{spliced:#x}");
+
+            // A parent whose own low bits are set keeps them.
+            let spliced = splice(0x0A12_0000, 16, 0, 24, 32);
+            assert_eq!(spliced, 0x0A12_0000, "{spliced:#x}");
         }
     }
 }

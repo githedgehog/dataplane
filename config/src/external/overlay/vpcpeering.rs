@@ -432,8 +432,6 @@ impl VpcExpose {
         // - we have no exclusion prefixes (note: we could relax this constraint now that we
         //   collapse exclusion prefixes early)
         // - we have a single prefix on each side (private and public addresses)
-        // - we have the same number of addresses on each side
-        // - the list of associated port ranges also has the same size on each side
         if collapsed_expose.has_port_forwarding() {
             if !self.nots.is_empty() || !self.not_as_or_empty().is_empty() {
                 return Err(ConfigError::Forbidden(
@@ -446,12 +444,6 @@ impl VpcExpose {
                     "Port forwarding requires a single prefix on each side",
                 ));
             }
-            if ips_sizes != as_range_sizes {
-                return Err(ConfigError::MismatchedPrefixSizes(
-                    ips_sizes,
-                    as_range_sizes,
-                ));
-            }
             // For port forwarding, ensure that a port range is always present. Lack of port range would imply
             // all ports, which is not allowed since port 0 is forbidden in the implementation
             for prefixes in [collapsed_expose.ips(), collapsed_expose.as_range_or_empty()] {
@@ -460,6 +452,29 @@ impl VpcExpose {
                         "Port forwarding requires a port range on each prefix",
                     ));
                 }
+            }
+
+            let internal = collapsed_expose
+                .ips()
+                .first()
+                .unwrap_or_else(|| unreachable!());
+            let external = collapsed_expose
+                .as_range_or_empty()
+                .first()
+                .unwrap_or_else(|| unreachable!());
+            if internal.prefix().length() != external.prefix().length() {
+                return Err(ConfigError::MismatchedPrefixLengths {
+                    private: internal.prefix().length(),
+                    public: external.prefix().length(),
+                });
+            }
+            let internal_ports = internal.ports().unwrap_or_else(|| unreachable!());
+            let external_ports = external.ports().unwrap_or_else(|| unreachable!());
+            if internal_ports.len() != external_ports.len() {
+                return Err(ConfigError::MismatchedPortRangeSizes {
+                    private: internal_ports.len(),
+                    public: external_ports.len(),
+                });
             }
         }
 
@@ -1003,5 +1018,499 @@ impl VpcPeeringTable {
         self.0
             .values()
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+pub mod contract {
+
+    use super::{VpcExpose, VpcExposeNatConfig, VpcManifest, VpcPeering, VpcPeeringTable};
+    use crate::ConfigError;
+    use crate::external::overlay::vpc::{Vpc, VpcTable};
+    use crate::external::overlay::{Overlay, ValidatedOverlay};
+    use bolero::{Driver, ValueGenerator};
+    use lpm::prefix::{
+        IpPrefix, Ipv4Prefix, Ipv6Prefix, L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts,
+    };
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::ops::Bound::Included;
+    use std::time::Duration;
+
+    const MAX_HOST_BITS: u8 = 8;
+
+    const MAX_PORTS: u16 = 1024;
+
+    /// Which address family an expose should use.
+    ///
+    /// A manifest may not mix families, so a caller building several exposes for one
+    /// manifest has to fix this once rather than let each expose draw its own. Letting
+    /// them draw independently produced a manifest the validator refuses outright, which
+    /// showed up as a large and unexplained share of discarded cases.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Family {
+        /// Let the driver choose. The right default for a lone expose.
+        #[default]
+        Either,
+        V4,
+        V6,
+    }
+
+    impl Family {
+        fn is_v4<D: Driver>(self, driver: &mut D) -> Option<bool> {
+            match self {
+                Family::Either => driver.produce::<bool>(),
+                Family::V4 => Some(true),
+                Family::V6 => Some(false),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct PortForwardingExpose {
+        pub family: Family,
+    }
+
+    impl ValueGenerator for PortForwardingExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let host_bits = driver.gen_u8(Included(&0), Included(&MAX_HOST_BITS))?;
+            let (internal, external) = if self.family.is_v4(driver)? {
+                v4_pair(driver, host_bits)?
+            } else {
+                v6_pair(driver, host_bits)?
+            };
+
+            let count = driver.gen_u16(Included(&1), Included(&MAX_PORTS))?;
+            let internal_ports = port_range(driver, count)?;
+            let external_ports = port_range(driver, count)?;
+
+            let proto = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => L4Protocol::Tcp,
+                1 => L4Protocol::Udp,
+                _ => L4Protocol::Any,
+            };
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(5)),
+                _ => Some(Duration::from_mins(5)),
+            };
+
+            VpcExpose::empty()
+                .make_port_forwarding(idle_timeout, Some(proto))
+                .ok()?
+                .ip(PrefixWithOptionalPorts::new(internal, Some(internal_ports)))
+                .as_range(PrefixWithOptionalPorts::new(external, Some(external_ports)))
+                .ok()
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct MasqueradeExpose {
+        pub family: Family,
+    }
+
+    impl ValueGenerator for MasqueradeExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = self.family.is_v4(driver)?;
+            let privates = driver.gen_u8(Included(&1), Included(&3))?;
+            let publics = driver.gen_u8(Included(&1), Included(&2))?;
+            let base = driver.produce::<u8>()?;
+            let idle_timeout = match driver.gen_u8(Included(&0), Included(&2))? {
+                0 => None,
+                1 => Some(Duration::from_secs(30)),
+                _ => Some(Duration::from_mins(2)),
+            };
+
+            let mut expose = VpcExpose::empty().make_masquerade(idle_timeout).ok()?;
+            for index in 0..privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(
+                    block(v4, Side::Private, base.wrapping_add(index))?,
+                    None,
+                ));
+            }
+            for index in 0..publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(
+                        block(v4, Side::Public, base.wrapping_add(index))?,
+                        None,
+                    ))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Side {
+        Private,
+        Public,
+    }
+
+    fn block(v4: bool, side: Side, index: u8) -> Option<Prefix> {
+        if v4 {
+            let bits = match side {
+                Side::Private => 0x0A00_0000 | (u32::from(index) << 16),
+                Side::Public => 0xAC10_0000 | (u32::from(index) << 8),
+            };
+            prefix_v4(bits, 24)
+        } else {
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            let bits = (0x2001_0db8u128 << 96) | (selector << 80) | (u128::from(index) << 64);
+            prefix_v6(bits, 64)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct StaticNatExpose {
+        pub family: Family,
+    }
+
+    const MAX_TOTAL_LOG: u8 = 6;
+
+    impl ValueGenerator for StaticNatExpose {
+        type Output = VpcExpose;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<VpcExpose> {
+            let v4 = self.family.is_v4(driver)?;
+            let total_log = driver.gen_u8(Included(&0), Included(&MAX_TOTAL_LOG))?;
+
+            let privates = place(v4, Side::Private, &split(driver, total_log)?)?;
+            let publics = place(v4, Side::Public, &split(driver, total_log)?)?;
+
+            let mut expose = VpcExpose::empty().make_static_nat().ok()?;
+            for prefix in privates {
+                expose = expose.ip(PrefixWithOptionalPorts::new(prefix, None));
+            }
+            for prefix in publics {
+                expose = expose
+                    .as_range(PrefixWithOptionalPorts::new(prefix, None))
+                    .ok()?;
+            }
+            Some(expose)
+        }
+    }
+
+    fn split<D: Driver>(driver: &mut D, total_log: u8) -> Option<Vec<u8>> {
+        let mut parts = vec![total_log];
+        for _ in 0..driver.gen_u8(Included(&0), Included(&3))? {
+            let splittable: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, log)| **log > 0)
+                .map(|(index, _)| index)
+                .collect();
+            if splittable.is_empty() {
+                break;
+            }
+            let choice = usize::from(driver.gen_u8(
+                Included(&0),
+                Included(&u8::try_from(splittable.len() - 1).ok()?),
+            )?);
+            let log = parts.swap_remove(splittable[choice]);
+            parts.push(log - 1);
+            parts.push(log - 1);
+        }
+        parts.sort_unstable_by(|a, b| b.cmp(a));
+        Some(parts)
+    }
+
+    fn place(v4: bool, side: Side, parts: &[u8]) -> Option<Vec<Prefix>> {
+        let mut cursor = if v4 {
+            u128::from(match side {
+                Side::Private => 0x0A00_0000u32,
+                Side::Public => 0xAC10_0000,
+            })
+        } else {
+            let selector = match side {
+                Side::Private => 0u128,
+                Side::Public => 1,
+            };
+            (0x2001_0db8u128 << 96) | (selector << 80)
+        };
+
+        let mut out = Vec::with_capacity(parts.len());
+        for &log in parts {
+            let prefix = if v4 {
+                prefix_v4(u32::try_from(cursor).ok()?, 32 - log)?
+            } else {
+                prefix_v6(cursor, 128 - log)?
+            };
+            out.push(prefix);
+            cursor += 2u128 << log;
+        }
+        Some(out)
+    }
+
+    pub const LOCAL_VNI: u32 = 100;
+    pub const REMOTE_VNI: u32 = 200;
+
+    /// Build the fixed two-vpc overlay around `expose` and validate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the overlay cannot be assembled, as for
+    /// [`overlay_with_exposes`], or if the assembled overlay does not validate,
+    /// which is what a caller offering a deliberately illegal expose is testing for.
+    pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
+        overlay_with(expose)?.validate()
+    }
+
+    /// Build the fixed two-vpc overlay around a single `expose`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the overlay cannot be assembled, as for
+    /// [`overlay_with_exposes`].
+    pub fn overlay_with(expose: VpcExpose) -> Result<Overlay, ConfigError> {
+        overlay_with_exposes(vec![expose])
+    }
+
+    /// Build the fixed two-vpc overlay whose local manifest offers `exposes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vpc is rejected by the [`VpcTable`], or if the
+    /// peering between them is rejected by the [`VpcPeeringTable`].
+    pub fn overlay_with_exposes(exposes: Vec<VpcExpose>) -> Result<Overlay, ConfigError> {
+        overlay_with_exposes_in_group(exposes, "default")
+    }
+
+    /// Build the fixed two-vpc overlay, with the peering handed to a named gateway group.
+    ///
+    /// Which group owns a peering decides whether a given gateway renders it at all, so
+    /// a caller testing that distinction needs to say.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vpc is rejected by the [`VpcTable`], or if the
+    /// peering between them is rejected by the [`VpcPeeringTable`].
+    pub fn overlay_with_exposes_in_group(
+        exposes: Vec<VpcExpose>,
+        gwgroup: &str,
+    ) -> Result<Overlay, ConfigError> {
+        let remote_prefix = match exposes
+            .first()
+            .and_then(|expose| expose.ips.first().map(PrefixWithOptionalPorts::prefix))
+        {
+            Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
+            _ => "3.3.3.0/24",
+        };
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(Vpc::new("VPC-1", "AAAAA", LOCAL_VNI)?)?;
+        vpc_table.add(Vpc::new("VPC-2", "BBBBB", REMOTE_VNI)?)?;
+
+        let local = exposes
+            .into_iter()
+            .fold(VpcManifest::new("VPC-1"), VpcManifest::exposing);
+        let remote = VpcManifest::new("VPC-2").exposing(
+            VpcExpose::empty().ip(remote_prefix
+                .parse::<Prefix>()
+                .unwrap_or_else(|_| unreachable!())
+                .into()),
+        );
+        let mut peerings = VpcPeeringTable::new();
+        peerings.add(VpcPeering::new(
+            "VPC-1--VPC-2",
+            local,
+            remote,
+            gwgroup.to_string(),
+        ))?;
+
+        Ok(Overlay::new(vpc_table, peerings))
+    }
+
+    #[must_use]
+    pub fn nat_config(expose: &VpcExpose) -> Option<&VpcExposeNatConfig> {
+        expose.nat_config()
+    }
+
+    fn v4_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
+        let len = 32 - host_bits;
+        let mask = u32::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let internal = (0x0A00_0000 | (driver.produce::<u32>()? & 0x00FF_FFFF)) & mask;
+        let external = (0xAC10_0000 | (driver.produce::<u32>()? & 0x000F_FFFF)) & mask;
+        Some((prefix_v4(internal, len)?, prefix_v4(external, len)?))
+    }
+
+    const INTERNAL_BASE: u128 = 0x2001_0db8_0000_0000_0000_0000_0000_0000;
+    const EXTERNAL_BASE: u128 = 0x2001_0db8_0001_0000_0000_0000_0000_0000;
+
+    fn v6_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
+        let len = 128 - host_bits;
+        let mask = u128::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+        let internal = (INTERNAL_BASE | u128::from(driver.produce::<u64>()?)) & mask;
+        let external = (EXTERNAL_BASE | u128::from(driver.produce::<u64>()?)) & mask;
+        Some((prefix_v6(internal, len)?, prefix_v6(external, len)?))
+    }
+
+    fn prefix_v4(bits: u32, len: u8) -> Option<Prefix> {
+        Ipv4Prefix::new(Ipv4Addr::from_bits(bits), len)
+            .ok()
+            .map(Prefix::from)
+    }
+
+    fn prefix_v6(bits: u128, len: u8) -> Option<Prefix> {
+        Ipv6Prefix::new(Ipv6Addr::from_bits(bits), len)
+            .ok()
+            .map(Prefix::from)
+    }
+
+    fn port_range<D: Driver>(driver: &mut D, count: u16) -> Option<PortRange> {
+        let last_start = u16::MAX - (count - 1);
+        let start = driver.gen_u16(Included(&1), Included(&last_start))?;
+        PortRange::new(start, start + (count - 1)).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_generated_expose_validates() {
+            bolero::check!()
+                .with_generator(PortForwardingExpose::default())
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate();
+                    assert!(
+                        validated.is_ok(),
+                        "generated expose was rejected: {expose} -- {:?}",
+                        validated.err()
+                    );
+                });
+        }
+
+        fn forwarding(internal: (&str, u16, u16), external: (&str, u16, u16)) -> VpcExpose {
+            let side = |(prefix, first, last): (&str, u16, u16)| {
+                PrefixWithOptionalPorts::new(
+                    prefix.into(),
+                    Some(PortRange::new(first, last).unwrap_or_else(|_| unreachable!())),
+                )
+            };
+            VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!())
+                .ip(side(internal))
+                .as_range(side(external))
+                .unwrap_or_else(|_| unreachable!())
+        }
+
+        #[test]
+        fn compensating_sizes_do_not_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/32", 1000, 1099), ("172.16.0.0/30", 2000, 2024));
+            assert!(
+                matches!(
+                    expose.validate(),
+                    Err(ConfigError::MismatchedPrefixLengths {
+                        private: 32,
+                        public: 30
+                    })
+                ),
+                "a /32 with 100 ports opposite a /30 with 25 was accepted: {:?}",
+                expose.validate()
+            );
+        }
+
+        #[test]
+        fn port_ranges_of_different_sizes_do_not_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/32", 1000, 1099), ("172.16.0.0/32", 2000, 2049));
+            assert!(
+                matches!(
+                    expose.validate(),
+                    Err(ConfigError::MismatchedPortRangeSizes {
+                        private: 100,
+                        public: 50
+                    })
+                ),
+                "100 ports opposite 50 was accepted: {:?}",
+                expose.validate()
+            );
+        }
+
+        #[test]
+        fn matched_sides_still_make_a_valid_expose() {
+            let expose = forwarding(("10.0.0.0/30", 1000, 1099), ("172.16.0.0/30", 2000, 2099));
+            assert!(expose.validate().is_ok(), "{:?}", expose.validate());
+        }
+
+        #[test]
+        fn every_generated_masquerade_expose_validates() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose::default())
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_masquerade());
+                    assert!(!validated.ips().is_empty());
+                    assert!(!validated.as_range_or_empty().is_empty());
+                });
+        }
+
+        #[test]
+        fn a_generated_expose_can_be_offered_in_an_overlay() {
+            bolero::check!()
+                .with_generator(MasqueradeExpose::default())
+                .cloned()
+                .for_each(|expose: VpcExpose| {
+                    let shown = expose.to_string();
+                    assert!(
+                        overlay_offering(expose).is_ok(),
+                        "could not build an overlay around {shown}"
+                    );
+                });
+        }
+
+        /// Below this many cases a rate says nothing, so the health checks stay quiet.
+        ///
+        /// The point is a replay: `bolero` reruns a single recorded input to reproduce a
+        /// failure, and an aggregate assertion evaluated over one sample fails whenever
+        /// that sample happens not to be the interesting one. That turns every replay of
+        /// a valid input into a spurious failure and buries the real one.
+        const ENOUGH_CASES: usize = 200;
+
+        #[test]
+        fn every_generated_static_nat_expose_validates() {
+            let mut seen = 0usize;
+            let mut shapes_differed = 0usize;
+            bolero::check!()
+                .with_generator(StaticNatExpose::default())
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| {
+                        panic!("generated expose was rejected: {expose} -- {e:?}")
+                    });
+                    assert!(validated.has_static_nat());
+                    seen += 1;
+                    if validated.ips().len() != validated.as_range_or_empty().len() {
+                        shapes_differed += 1;
+                    }
+                });
+            println!("{shapes_differed} of {seen} exposes had a different shape on each side");
+            if seen > ENOUGH_CASES {
+                assert!(
+                    shapes_differed > 0,
+                    "none of {seen} generated exposes had a different number of prefixes on each \
+                     side, so the mapping was never asked to fragment"
+                );
+            }
+        }
+
+        #[test]
+        fn a_generated_expose_survives_validation_as_port_forwarding() {
+            bolero::check!()
+                .with_generator(PortForwardingExpose::default())
+                .for_each(|expose: &VpcExpose| {
+                    let validated = expose.validate().unwrap_or_else(|e| panic!("{e:?}"));
+                    assert!(validated.has_port_forwarding());
+                    assert_eq!(validated.ips().len(), 1);
+                    assert_eq!(validated.as_range_or_empty().len(), 1);
+                });
+        }
     }
 }
