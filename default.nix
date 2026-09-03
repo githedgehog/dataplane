@@ -779,8 +779,6 @@ let
         "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=";
       "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4" =
         "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=";
-      "git+https://github.com/githedgehog/testn.git?tag=v0.0.10#e49aba8400beb2cb117a3f542b114080cf572283" =
-        "sha256-XwEKLdc2Y7fteSKKOERgjKTdxELy7K/wOVuB/SSj3ng=";
     };
   };
   # Rename per-revision images so the CI push filter keeps them out of Cachix;
