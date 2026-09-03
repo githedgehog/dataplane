@@ -4,6 +4,7 @@
 use thiserror::Error;
 
 pub mod kernel;
+pub(crate) mod kif;
 pub mod status;
 pub mod watchdog;
 

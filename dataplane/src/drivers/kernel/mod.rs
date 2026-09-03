@@ -13,7 +13,6 @@
 )]
 
 mod fanout;
-mod kif;
 mod sockstats;
 mod worker;
 
@@ -38,7 +37,7 @@ use super::status::{
     WorkerStatus,
 };
 use super::watchdog::{Activity, Watchdog};
-use kif::{Kif, bring_kifs_up};
+use super::kif::{self, Kif};
 use worker::Worker;
 
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
@@ -197,20 +196,7 @@ impl DriverKernel {
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
         status_writer: DriverStatusWriter,
     ) -> Result<(), DriverError> {
-        // A current_thread runtime built inside another tokio runtime
-        // panics; catch nesting in debug.
-        debug_assert!(
-            tokio::runtime::Handle::try_current().is_err(),
-            "DriverKernel::start must not be invoked from within a tokio runtime context"
-        );
-
-        info!("Collecting interfaces from config");
-        let interfaces = kif::get_interfaces(args)?;
-
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(bring_kifs_up(interfaces.as_slice()))?;
+        let interfaces = kif::prepare(args)?;
 
         let mut worker_monitors = Self::spawn_workers_scoped(
             scope,

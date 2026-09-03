@@ -1231,6 +1231,7 @@ dependencies = [
  "dataplane-stats",
  "dataplane-tracectl",
  "dataplane-vpcmap",
+ "dataplane-xdp",
  "dyn-iter",
  "futures",
  "hyper",
