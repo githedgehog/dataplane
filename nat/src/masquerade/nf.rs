@@ -97,6 +97,22 @@ impl Masquerade {
     };
 
     // Internal flow timeouts for masquerading
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //= type=todo
+    //# REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+    //# connection are active, it MAY abandon the session if it has been
+    //# idle for some time.  In such cases, the value of the "established
+    //# connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+    //# The value of the "transitory connection idle-timeout" MUST NOT be
+    //# less than 4 minutes.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=todo
+    //# REQ-5:  A NAT UDP mapping timer MUST NOT expire in less than two
+    //# minutes, unless REQ-5a applies.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //= type=todo
+    //# c) A default value of five minutes or more for the NAT UDP mapping
+    //# timer is RECOMMENDED.
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3 * Self::TIMEOUT_SCALE);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2 * Self::TIMEOUT_SCALE);
@@ -160,6 +176,15 @@ impl Masquerade {
         packet.meta().dst_vpcd
     }
 
+    fn refreshes_while_unanswered<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        packet.try_ip().is_some_and(|ip| {
+            matches!(
+                ip.next_header(),
+                NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6
+            )
+        })
+    }
+
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
     /// communication and the protocol and extend the lifetime of the flow (or invalidate it) accordingly.
     fn refresh_masquerade_state<Buf: PacketBufferMut>(
@@ -186,11 +211,12 @@ impl Masquerade {
             | NatFlowStatus::CHalfClose
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
+            //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+            //= type=implementation
+            //# REQ-6:  The NAT mapping Refresh Direction MUST have a "NAT Outbound
+            //# refresh behavior" of "True".
             NatFlowStatus::OneWay => {
-                // this could happen if a burst of packets are sent before any state is there (snat),
-                // or if we got a TCP segment back without expected flags. This should never happen for
-                // a UDP packet in the reverse direction, though.
-                None
+                Self::refreshes_while_unanswered(packet).then_some(Self::MASQUERADE_ONEWAY_TIMEOUT)
             }
         };
 
@@ -578,6 +604,11 @@ impl Masquerade {
             return;
         }
 
+        //= https://www.rfc-editor.org/rfc/rfc4787#section-11
+        //= type=todo
+        //# REQ-14:  A NAT MUST support receiving in-order and out-of-order
+        //# fragments, so it MUST have "Received Fragment Out of Order"
+        //# behavior.
         // TODO: Check whether the packet is fragmented
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done((&error).into());

@@ -1,0 +1,51 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-3"
+
+
+[[spec]]
+level = "MAY"
+quote = '''
+An ICMP Extension Structure MAY be appended to ICMPv4 Destination
+Unreachable, Time Exceeded, and Parameter Problem messages.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+An ICMP Extension Structure MAY be appended to ICMPv6 Destination
+Unreachable, and Time Exceeded messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the ICMP Extension Structure is appended to an ICMP message
+and that ICMP message contains an "original datagram" field, the
+"original datagram" field MUST contain at least 128 octets.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the ICMP Extension Structure is appended to an ICMPv4 message
+and that ICMPv4 message contains an "original datagram" field, the
+"original datagram" field MUST be zero padded to the nearest
+32-bit boundary.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+When the ICMP Extension Structure is appended to an ICMPv6 message
+and that ICMPv6 message contains an "original datagram" field, the
+"original datagram" field MUST be zero padded to the nearest
+64-bit boundary.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+ICMP messages defined in the future SHOULD indicate whether or not
+they support the extension mechanism defined in this
+specification.
+'''
+

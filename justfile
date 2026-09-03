@@ -729,7 +729,8 @@ lint: \
     (nixfmt) \
     (check-lint-wiring) \
     (check-push-filter) \
-    (license-headers)
+    (license-headers) \
+    (duvet-check)
     {{ _just_debuggable_ }}
 
 # Cargo cannot archive doctests, so run them inside the Nix sandbox.

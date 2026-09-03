@@ -1,0 +1,19 @@
+'$schema' = "https://awslabs.github.io/duvet/config/v0.4.0.json"
+
+[[source]]
+pattern = "*/src/**/*.rs"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4884"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc5382"
+
+[report.html]
+enabled = true
+
+[report.snapshot]
+enabled = true
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4787"

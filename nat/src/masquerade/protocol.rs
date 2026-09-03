@@ -6,6 +6,8 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
+use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
 
@@ -14,6 +16,11 @@ use net::packet::Packet;
 use net::tcp::Tcp;
 
 impl NatFlowStatus {
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //# a) For specific destination ports in the well-known port range
+    //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+    //# are specific to the IANA-registered application running over
+    //# that specific destination port.
     fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
         match packet.headers().pat().eth().net().udp().done() {
             Some((_, _, udp)) => match udp.source().as_u16() {
@@ -50,9 +57,17 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
     }
 }
 
+//= https://www.rfc-editor.org/rfc/rfc5382#section-8
+//= type=implementation
+//# REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping or TCP connection for which the ICMP was generated.
+//= https://www.rfc-editor.org/rfc/rfc4787#section-9
+//= type=implementation
+//# REQ-12:  Receipt of any sort of ICMP message MUST NOT terminate the
+//# NAT mapping.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
+    let next = match action {
         NatAction::SrcNat => match status {
             _ => status,
         },
@@ -60,7 +75,17 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
+    };
+    if cfg!(debug_assertions)
+        && let Err(violation) = Req12::new(status, next).check()
+    {
+        unreachable!(
+            "{spec} {id}: {violation} ({action})",
+            spec = Req12::SPEC,
+            id = Req12::ID
+        );
     }
+    next
 }
 
 fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {

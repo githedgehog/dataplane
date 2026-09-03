@@ -1,0 +1,18 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-10"
+
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-13:  If the packet received on an internal IP address has DF=1,
+the NAT MUST send back an ICMP message "Fragmentation needed and
+DF set" to the host, as described in [RFC0792].
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) If the packet has DF=0, the NAT MUST fragment the packet and
+SHOULD send the fragments in order.
+'''
+

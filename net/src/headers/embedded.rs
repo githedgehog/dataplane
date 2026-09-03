@@ -48,6 +48,8 @@ pub struct EmbeddedHeaders {
     full_payload_length: Option<u16>,
 }
 
+const MIN_ORIGINAL_DATAGRAM_OCTETS: usize = 128;
+
 impl EmbeddedHeaders {
     #[cfg(any(test, feature = "bolero"))]
     #[must_use]
@@ -241,16 +243,22 @@ impl EmbeddedHeaders {
                         // The embedded message is shorter than the original packet
                         return;
                     }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(32) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 32? Something's wrong
+                    if icmp_length > buf.len() {
                         return;
                     }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv4: Padding is on 32-bit boundaries
-                    if padding_length < 32
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
+                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+                    //# When the ICMP Extension Structure is appended to an ICMP message
+                    //# and that ICMP message contains an "original datagram" field, the
+                    //# "original datagram" field MUST contain at least 128 octets.
+                    if icmp_length < MIN_ORIGINAL_DATAGRAM_OCTETS {
+                        return;
+                    }
+                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+                    //# When the ICMP Extension Structure is appended to an ICMPv4 message
+                    //# and that ICMPv4 message contains an "original datagram" field, the
+                    //# "original datagram" field MUST be zero padded to the nearest
+                    //# 32-bit boundary.
+                    if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
                         self.full_payload_length = Some(transport_payload_length as u16);
                     }
                     return;
@@ -260,16 +268,22 @@ impl EmbeddedHeaders {
                         // The embedded message is shorter than the original packet
                         return;
                     }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(64) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 64? Something's wrong
+                    if icmp_length > buf.len() {
                         return;
                     }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv6: Padding is on 64-bit boundaries
-                    if padding_length < 64
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
+                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+                    //# When the ICMP Extension Structure is appended to an ICMP message
+                    //# and that ICMP message contains an "original datagram" field, the
+                    //# "original datagram" field MUST contain at least 128 octets.
+                    if icmp_length < MIN_ORIGINAL_DATAGRAM_OCTETS {
+                        return;
+                    }
+                    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+                    //# When the ICMP Extension Structure is appended to an ICMPv6 message
+                    //# and that ICMPv6 message contains an "original datagram" field, the
+                    //# "original datagram" field MUST be zero padded to the nearest
+                    //# 64-bit boundary.
+                    if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
                         self.full_payload_length = Some(transport_payload_length as u16);
                     }
                     return;
@@ -954,6 +968,28 @@ mod tests {
         buf
     }
 
+    fn create_full_ipv6_tcp_packet_with_payload() -> Vec<u8> {
+        let ipv6_header = Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length: 80,
+            next_header: IpNumber::TCP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        ipv6_header.write(&mut buf).unwrap();
+
+        let tcp_header = etherparse::TcpHeader::new(80, 443, 1000, 0);
+        tcp_header.write(&mut buf).unwrap();
+
+        buf.extend_from_slice(&[1u8; 60]);
+
+        buf
+    }
+
     // Basic parsing, deparsing checks
 
     #[test]
@@ -1298,12 +1334,125 @@ mod tests {
         assert!(!headers.is_full_payload());
     }
 
+    fn v4_with_field_of(field_len: usize, padding_byte: u8) -> (EmbeddedHeaders, usize, Vec<u8>) {
+        let mut buf = create_full_ipv4_tcp_packet_with_payload();
+        assert_eq!(buf.len(), 120, "the embedded packet is 120 octets");
+        buf.extend(std::iter::repeat_n(padding_byte, field_len - buf.len()));
+        assert_eq!(buf.len(), field_len);
+        buf.extend_from_slice(&[0x55u8; 32]);
+        let (headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv4, &buf).unwrap();
+        (headers, consumed.get() as usize, buf)
+    }
+
+    fn v6_with_field_of(field_len: usize, padding_byte: u8) -> (EmbeddedHeaders, usize, Vec<u8>) {
+        let mut buf = create_full_ipv6_tcp_packet_with_payload();
+        assert_eq!(buf.len(), 120, "the embedded packet is 120 octets");
+        buf.extend(std::iter::repeat_n(padding_byte, field_len - buf.len()));
+        assert_eq!(buf.len(), field_len);
+        buf.extend_from_slice(&[0x55u8; 32]);
+        let (headers, consumed) =
+            EmbeddedHeaders::parse_with(EmbeddedIpVersion::Ipv6, &buf).unwrap();
+        (headers, consumed.get() as usize, buf)
+    }
+
+    #[test]
+    fn an_icmp_error_from_the_wire_reports_a_full_payload() {
+        use crate::headers::TryEmbeddedHeaders;
+        use crate::ip::NextHeader;
+        use crate::packet::test_utils::build_test_icmp4_destination_unreachable_packet;
+
+        let packet = build_test_icmp4_destination_unreachable_packet(
+            "10.0.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "10.0.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            "192.168.0.2".parse().unwrap_or_else(|_| unreachable!()),
+            NextHeader::UDP,
+            1234,
+            80,
+        )
+        .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let embedded = packet
+            .embedded_headers()
+            .unwrap_or_else(|| unreachable!("an icmp error carries embedded headers"));
+        assert!(
+            embedded.is_full_payload(),
+            "the quoted datagram is complete and nothing follows it, so the whole payload is \
+             present -- reading this as truncated means the window handed to check_full_payload \
+             does not start where the lengths it compares are measured from"
+        );
+        assert_eq!(
+            embedded.payload_length(),
+            Some(0),
+            "the quoted UDP datagram carries no payload beyond its header"
+        );
+    }
+
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+    //= type=test
+    //# When the ICMP Extension Structure is appended to an ICMPv4 message
+    //# and that ICMPv4 message contains an "original datagram" field, the
+    //# "original datagram" field MUST be zero padded to the nearest
+    //# 32-bit boundary.
+    #[test]
+    fn a_field_is_accepted_at_any_32_bit_aligned_length() {
+        for field_len in [128usize, 132, 136, 140, 144, 148, 152, 156] {
+            let (mut headers, consumed, buf) = v4_with_field_of(field_len, 0);
+            headers.check_full_payload(&buf, buf.len(), consumed, field_len);
+            assert!(
+                headers.is_full_payload(),
+                "a {field_len}-octet field is 32-bit aligned and at least 128 octets, so it must \
+                 be accepted"
+            );
+            assert_eq!(headers.payload_length(), Some(80));
+        }
+    }
+
+    //= https://www.rfc-editor.org/rfc/rfc4884#section-3
+    //= type=test
+    //# When the ICMP Extension Structure is appended to an ICMP message
+    //# and that ICMP message contains an "original datagram" field, the
+    //# "original datagram" field MUST contain at least 128 octets.
+    #[test]
+    fn the_128_octet_minimum_is_exact() {
+        type Fixture = fn(usize, u8) -> (EmbeddedHeaders, usize, Vec<u8>);
+        for (family, build) in [
+            ("ICMPv4", v4_with_field_of as Fixture),
+            ("ICMPv6", v6_with_field_of as Fixture),
+        ] {
+            for field_len in [120usize, 124] {
+                let (mut headers, consumed, buf) = build(field_len, 0);
+                headers.check_full_payload(&buf, buf.len(), consumed, field_len);
+                assert!(
+                    !headers.is_full_payload(),
+                    "{family}: a {field_len}-octet field is below the 128-octet minimum"
+                );
+            }
+
+            let (mut headers, consumed, buf) = build(128, 0);
+            headers.check_full_payload(&buf, buf.len(), consumed, 128);
+            assert!(
+                headers.is_full_payload(),
+                "{family}: 128 octets is the minimum, so a 128-octet field must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_padded_with_anything_but_zeroes_is_refused() {
+        let (mut headers, consumed, buf) = v4_with_field_of(136, 0xab);
+        headers.check_full_payload(&buf, buf.len(), consumed, 136);
+        assert!(
+            !headers.is_full_payload(),
+            "non-zero padding must not be accepted as padding"
+        );
+    }
+
     #[test]
     fn test_check_full_payload_with_icmp_extensions() {
         let mut buf = create_full_ipv4_tcp_packet_with_payload();
 
-        // We need to pad on a 32-bit word boundary. We have 120 bytes (20 for the IP header, 20 for
-        // the TCP header, 80 for the payload), add 8 to reach 128 bytes.
         buf.extend_from_slice(&[0u8; 8]);
         let icmp_payload_length = buf.len();
 

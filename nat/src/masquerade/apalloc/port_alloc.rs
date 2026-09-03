@@ -92,6 +92,10 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     exclude_wellknown_ports: bool,
 }
 
+//= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+//= type=exception
+//# a) If the host's source port was in the range 0-1023, it is
+//# RECOMMENDED the NAT's source port be in the same range.
 /// Ports 0..=1023 cover the IANA system/well-known range and should not be
 /// allocated by masquerade NAT for TCP or UDP.
 pub(super) const IANA_WELLKNOWN_PORT_LIMIT: u16 = 1024;
@@ -830,6 +834,12 @@ impl Bitmap256 {
     //
     // In the last example above, we have three trailing ones in the first half, telling us that
     // port at 1 << 3 (port number 3) is free.
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-8
+    //# REQ-7:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading" for TCP.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
+    //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
+    //# overloading".
     fn allocate_port_from_bitmap(&mut self) -> Result<u16, ()> {
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.first_half.trailing_ones() as u16;
