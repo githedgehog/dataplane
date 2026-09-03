@@ -7,6 +7,7 @@ use std::ops::Bound;
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 
 use lpm::prefix::Prefix;
+use net::vxlan::Vni;
 
 use crate::bolero::peering::LegalValuePeeringsGenerator;
 use crate::bolero::{AddressFamily, LegalValue, NatFlavour, SubnetMap, VpcSubnetMap};
@@ -149,10 +150,9 @@ impl ValueGenerator for GatewayAgentSpecs {
         };
 
         let mut vpcs = BTreeMap::new();
-        let vni_base = d.gen_u32(Bound::Included(&1), Bound::Included(&1000))?;
         let mut vpc_internal_ids = HashSet::new();
+        let mut vnis = HashSet::new();
         for i in 0..num_vpcs {
-            let vni_offset = u32::try_from(i).expect("too many vpcs");
             let mut vpc = crate::bolero::vpc::VpcGenerator::new(
                 u8::try_from(i).unwrap_or(u8::MAX),
                 knobs.max_subnets,
@@ -165,7 +165,17 @@ impl ValueGenerator for GatewayAgentSpecs {
                 // new one.
                 increment_string(vpc_id);
             }
-            vpc.vni = Some(vni_base + vni_offset);
+            // Keep the vni the vpc generator drew, which spans the whole 24-bit space.
+            // Two vpcs may not share one, so on a collision walk to the next free value
+            // instead of replacing the draw, the same way the internal id is settled
+            // just above.
+            let mut vni = vpc
+                .vni
+                .unwrap_or_else(|| unreachable!("the vpc generator sets a vni"));
+            while !vnis.insert(vni) {
+                vni = if vni >= Vni::MAX { Vni::MIN } else { vni + 1 };
+            }
+            vpc.vni = Some(vni);
             vpcs.insert(format!("vpc{i}"), vpc);
         }
 
@@ -173,13 +183,16 @@ impl ValueGenerator for GatewayAgentSpecs {
 
         let num_groups = d.gen_usize(Bound::Included(&0), Bound::Included(&6))?;
         let mut groups = BTreeMap::new();
-        for i in 0..=num_groups {
+        for i in 0..num_groups {
             groups.insert(format!("gwgroup-{i}"), d.produce::<GatewayAgentGroups>()?);
         }
         let group_names: Vec<String> = groups.keys().cloned().collect();
 
+        // A gateway with no groups is a legal configuration, so it has to be reachable.
+        // It cannot carry peerings, though: a peering names the group that handles it,
+        // and `LegalValuePeeringsGenerator` refuses to build one with nothing to name.
         let mut peerings = BTreeMap::new();
-        if num_peerings > 0 {
+        if num_peerings > 0 && !group_names.is_empty() {
             let peering_gen = LegalValuePeeringsGenerator::new(
                 &vpc_subnet_map,
                 &knobs.flavours,
@@ -197,11 +210,29 @@ impl ValueGenerator for GatewayAgentSpecs {
             }
         }
 
-        let num_communities = d.gen_usize(Bound::Included(&0), Bound::Included(&9))?;
+        // A member's rank is its position in its group, and `validate_gw_groups` refuses a
+        // configuration in which some rank has no community. So the largest group sets the
+        // floor: fewer communities than that is not a legal configuration, and more is fine.
+        let ranks_in_use = groups
+            .values()
+            .map(|group| group.members.as_ref().map_or(0, Vec::len))
+            .max()
+            .unwrap_or(0);
+        let spare = d.gen_usize(Bound::Included(&0), Bound::Included(&3))?;
+        let num_communities = ranks_in_use + spare;
         let mut communities = BTreeMap::new();
-        for i in 0..=num_communities {
-            let community = format!("65000:{}", 100 + i);
-            communities.insert(i.to_string(), community);
+        let mut seen_communities = HashSet::new();
+        for i in 0..num_communities {
+            // A standard BGP community is two 16-bit halves, and the value was fixed at
+            // `65000:100 + rank`, so no configuration ever named a different one.
+            // `PriorityCommunityTable::insert` refuses a duplicate, so settle a collision
+            // by walking the low half forward rather than dropping the draw.
+            let high = d.produce::<u16>()?;
+            let mut low = d.produce::<u16>()?;
+            while !seen_communities.insert((high, low)) {
+                low = low.wrapping_add(1);
+            }
+            communities.insert(i.to_string(), format!("{high}:{low}"));
         }
 
         Some(GatewayAgentSpec {
