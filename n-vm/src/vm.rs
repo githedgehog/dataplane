@@ -54,11 +54,21 @@ const VM_OVERHEAD_ALLOWANCE_TCG: Duration = Duration::from_secs(300);
 /// 96s -- reported not as "slow" but as "no parseable test verdict from
 /// guest", because the timeout shoots the VM and the verdict dies with it.
 fn vm_overhead_allowance(accel: config::Accel) -> Duration {
+    vm_overhead_allowance_with(accel, n_vm_protocol::overhead_scale())
+}
+
+/// [`vm_overhead_allowance`] with the scale given rather than read from the
+/// environment.
+///
+/// Split out for the same reason the host share was: the scale is
+/// process-wide state, and a test that asserts a duration cannot be right
+/// both with and without it. CI sets it for a whole job.
+fn vm_overhead_allowance_with(accel: config::Accel, scale: f64) -> Duration {
     let base = match accel {
         config::Accel::Kvm => VM_OVERHEAD_ALLOWANCE_KVM,
         config::Accel::Tcg => VM_OVERHEAD_ALLOWANCE_TCG,
     };
-    base.mul_f64(n_vm_protocol::overhead_scale())
+    base.mul_f64(scale)
 }
 
 /// How long the VM may run before it is shut down by force.
@@ -73,7 +83,13 @@ fn vm_overhead_allowance(accel: config::Accel) -> Duration {
 /// it.  `guest_budget` of zero -- nothing declared, which is nearly every
 /// test -- leaves this exactly where it has always been.
 fn vm_test_timeout(accel: config::Accel, guest_budget: Duration) -> Duration {
-    vm_overhead_allowance(accel).saturating_add(guest_budget)
+    vm_test_timeout_with(accel, guest_budget, n_vm_protocol::overhead_scale())
+}
+
+/// [`vm_test_timeout`] with the scale given rather than read from the
+/// environment.
+fn vm_test_timeout_with(accel: config::Accel, guest_budget: Duration, scale: f64) -> Duration {
+    vm_overhead_allowance_with(accel, scale).saturating_add(guest_budget)
 }
 
 /// The longest the guest's work was declared to take.
@@ -883,11 +899,11 @@ mod timeout_tests {
     #[test]
     fn an_ordinary_test_gets_what_it_always_got() {
         assert_eq!(
-            vm_test_timeout(config::Accel::Kvm, Duration::ZERO),
+            vm_test_timeout_with(config::Accel::Kvm, Duration::ZERO, 1.0),
             VM_OVERHEAD_ALLOWANCE_KVM,
         );
         assert_eq!(
-            vm_test_timeout(config::Accel::Tcg, Duration::ZERO),
+            vm_test_timeout_with(config::Accel::Tcg, Duration::ZERO, 1.0),
             VM_OVERHEAD_ALLOWANCE_TCG,
         );
     }
@@ -900,7 +916,7 @@ mod timeout_tests {
             let work = Duration::from_secs(secs);
             for accel in [config::Accel::Kvm, config::Accel::Tcg] {
                 assert!(
-                    vm_test_timeout(accel, work) > work,
+                    vm_test_timeout_with(accel, work, 1.0) > work,
                     "{accel:?}: {secs}s of work must not get a {secs}s VM",
                 );
             }
@@ -908,13 +924,19 @@ mod timeout_tests {
     }
 
     /// A scale of one is the identity, so an ordinary run is untouched by the
-    /// knob existing.
+    /// knob existing, and a larger scale buys strictly more room.
     #[test]
-    fn the_default_scale_leaves_the_allowance_alone() {
-        assert_eq!(
-            VM_OVERHEAD_ALLOWANCE_KVM.mul_f64(1.0),
-            VM_OVERHEAD_ALLOWANCE_KVM,
-        );
+    fn the_scale_multiplies_the_allowance_and_one_changes_nothing() {
+        for accel in [config::Accel::Kvm, config::Accel::Tcg] {
+            let plain = vm_overhead_allowance_with(accel, 1.0);
+            assert_eq!(
+                plain,
+                vm_test_timeout_with(accel, Duration::ZERO, 1.0),
+                "{accel:?}: an undeclared body is all allowance",
+            );
+            assert_eq!(vm_overhead_allowance_with(accel, 3.0), plain * 3);
+            assert!(vm_overhead_allowance_with(accel, 0.5) < plain);
+        }
         assert!(
             VM_OVERHEAD_ALLOWANCE_TCG > VM_OVERHEAD_ALLOWANCE_KVM,
             "emulating every instruction cannot be the cheaper mode",
@@ -924,7 +946,7 @@ mod timeout_tests {
     #[test]
     fn declared_work_is_added_to_the_allowance() {
         assert_eq!(
-            vm_test_timeout(config::Accel::Kvm, Duration::from_secs(600)),
+            vm_test_timeout_with(config::Accel::Kvm, Duration::from_secs(600), 1.0),
             VM_OVERHEAD_ALLOWANCE_KVM + Duration::from_secs(600),
         );
     }

@@ -439,6 +439,19 @@ impl ContainerParams {
                     engine_time_limit()
                         .map(|secs| format!("{}={secs}", n_vm_protocol::ENV_ENGINE_TIME_LIMIT)),
                 )
+                // The VM timeout multiplier, for the same reason as the line
+                // above: the tier that computes the timeout runs *inside* this
+                // container, and a container's environment is this list and
+                // nothing else. Set on the host and not carried here, it reads
+                // as having no effect at all -- which is what a coverage run
+                // saw, its unit tests seeing 180s while the guest it launched
+                // was still shot at 60s.
+                .chain(
+                    std::env::var(n_vm_protocol::ENV_OVERHEAD_SCALE)
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .map(|v| format!("{}={v}", n_vm_protocol::ENV_OVERHEAD_SCALE)),
+                )
                 // Where each writable window lands in the guest.  Only the
                 // host tier can know this: the guest path is a host path put
                 // through the workspace remap, and the container has never
@@ -2242,6 +2255,25 @@ mod tests {
         assert_eq!(mount.target.as_deref(), Some("/dst/dir"));
         assert_eq!(mount.read_only, Some(true));
         assert_eq!(mount.typ, Some(bollard::models::MountTypeEnum::BIND));
+    }
+
+    /// The container tier is where the VM timeout is computed, so a scale
+    /// that stays on the host is a scale that does nothing. Measured: a
+    /// coverage run whose unit tests saw 180s still had its guest shot at 60s.
+    #[test]
+    fn the_overhead_scale_is_carried_into_the_container() {
+        // SAFETY: single-threaded test process under nextest, and the value is
+        // removed before returning.
+        unsafe { std::env::set_var(n_vm_protocol::ENV_OVERHEAD_SCALE, "3") };
+        let params = sample_params();
+        let config = params.build_config(EffectiveBackend::Qemu, Accel::Tcg, None, &[], None);
+        unsafe { std::env::remove_var(n_vm_protocol::ENV_OVERHEAD_SCALE) };
+        let env = config.env.unwrap_or_default();
+        assert!(
+            env.iter()
+                .any(|e| e == &format!("{}=3", n_vm_protocol::ENV_OVERHEAD_SCALE)),
+            "the scale must reach the tier that uses it; got {env:?}",
+        );
     }
 
     #[test]
