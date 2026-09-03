@@ -313,6 +313,14 @@ in
     '';
   });
 
+  # bpf-linker is what turns the XDP program of the AF_XDP driver into a BPF
+  # object. It reads the bitcode rustc emits, so it has to be built against the
+  # same LLVM rustc uses -- which is what llvmPackages' is, derived from rustc
+  # itself. The nixpkgs default is the LLVM of the nixpkgs rustc, and ours comes
+  # from a rust overlay, so without this it rejects our bitcode as being from a
+  # newer LLVM than it can read.
+  fancy.bpf-linker = prev.bpf-linker.override { llvmPackagesForLinker = final.llvmPackages'; };
+
   # This isn't directly required by dataplane,
   fancy.perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }

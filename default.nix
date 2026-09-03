@@ -183,6 +183,7 @@ let
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
+      fancy.bpf-linker # links the XDP program of the AF_XDP driver
       m4 # libxdp's build preprocesses its dispatcher program with it
       markdownlint-cli2
       nixfmt
@@ -230,6 +231,10 @@ let
       # build at the compiler underneath the wrapper; everything else keeps
       # using `clang` from the PATH, wrapper and all.
       CLANG = "${pkgs.pkgsBuildBuild.llvmPackages'.clang.cc}/bin/clang";
+      # So that a build in the shell finds an XDP program without anyone having
+      # to build one first. Point this at your own to iterate on it; `just
+      # build-ebpf` says where it leaves the one it builds.
+      DATAPLANE_XDP_EBPF = "${xdp-ebpf}";
     };
   };
   # Nix escaping made the old regexes match unrelated .sh and .patch files.
@@ -350,6 +355,66 @@ let
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
+
+  # The XDP program of the AF_XDP driver, built for the BPF target.
+  #
+  # It cannot come from the workspace build: the target has no prebuilt std, so
+  # core is compiled from source, and the object is linked by bpf-linker rather
+  # than by the linker everything else uses. It is a derivation of its own, and
+  # the dataplane build is handed the result through DATAPLANE_XDP_EBPF.
+  xdp-ebpf-src = pkgs.lib.cleanSourceWith {
+    name = "xdp-ebpf-source";
+    src = lib.cleanSource ./xdp-ebpf;
+    # `target` is whatever a local `just build-ebpf` left behind, and
+    # including it would change the derivation every time someone built here.
+    filter = full-path: _type: baseNameOf full-path != "target";
+  };
+  xdp-ebpf-vendor = craneLib.vendorMultipleCargoDeps {
+    cargoLockList = [
+      ./xdp-ebpf/Cargo.lock
+      "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+    ];
+  };
+  xdp-ebpf = pkgs.stdenvNoCC.mkDerivation {
+    pname = "dataplane-xdp-ebpf";
+    inherit version;
+    src = xdp-ebpf-src;
+    nativeBuildInputs = [
+      pkgs.pkgsBuildHost.rust-toolchain
+      pkgs.pkgsBuildHost.fancy.bpf-linker
+    ];
+    configurePhase = ''
+      runHook preConfigure
+      export CARGO_HOME="$NIX_BUILD_TOP/cargo-home"
+      mkdir -p "$CARGO_HOME"
+      cp ${xdp-ebpf-vendor}/config.toml "$CARGO_HOME/config.toml"
+      runHook postConfigure
+    '';
+    buildPhase = ''
+      runHook preBuild
+      cargo build \
+        --offline \
+        --release \
+        --target bpfel-unknown-none \
+        -Zbuild-std=core
+      runHook postBuild
+    '';
+    installPhase = ''
+      runHook preInstall
+      install -Dm444 \
+        target/bpfel-unknown-none/release/dataplane-xdp-ebpf \
+        "$out"
+      runHook postInstall
+    '';
+    env = {
+      # -Zbuild-std is a nightly option, and the toolchain is stable.
+      RUSTC_BOOTSTRAP = "1";
+    };
+    # The output is a BPF object, and the fixup phase's tools only understand
+    # host ELF; left to try, they warn about every one of them.
+    dontPatchELF = true;
+    dontStrip = true;
+  };
   # The `loom` and `shuttle` features require `panic = "unwind"` (see
   # nix/profiles.nix), as do test builds.  The sysroot needs the matching
   # panic runtime and std feature, so we build two cargo command prefixes:
@@ -459,6 +524,9 @@ let
           # its atomics, while the link is clang and lld against a sysroot that
           # has no libgcc in it. Have it emit the instructions inline instead.
           LIBBPF_SYS_EXTRA_CFLAGS = lib.optionalString pkgs.stdenv'.hostPlatform.isAarch64 "-mno-outline-atomics";
+          # The XDP program of the AF_XDP driver, built for the BPF target by a
+          # derivation of its own.
+          DATAPLANE_XDP_EBPF = "${xdp-ebpf}";
           C_INCLUDE_PATH = "${sysroot}/include";
           LIBRARY_PATH = "${sysroot}/lib";
           PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
@@ -1254,6 +1322,7 @@ in
     sysroot
     tests
     workspace
+    xdp-ebpf
     ;
   profile = profile';
   platform = platform';

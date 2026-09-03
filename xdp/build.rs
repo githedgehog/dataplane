@@ -28,12 +28,13 @@ fn embed_ebpf() {
     );
     let workspace_root = manifest_dir.parent().unwrap_or(&manifest_dir).to_path_buf();
 
-    // `just build-ebpf` leaves the object in the workspace target
-    // directory, under the BPF target and the profile it was built with.
+    // `just build-ebpf` leaves the object in the xdp-ebpf crate's own
+    // target directory -- it is outside the workspace -- under the BPF target
+    // and the profile it was built with.
     let candidates = [
         std::env::var_os("DATAPLANE_XDP_EBPF").map(PathBuf::from),
-        Some(workspace_root.join("target/bpfel-unknown-none/release/dataplane-xdp-ebpf")),
-        Some(workspace_root.join("target/bpfel-unknown-none/debug/dataplane-xdp-ebpf")),
+        Some(workspace_root.join("xdp-ebpf/target/bpfel-unknown-none/release/dataplane-xdp-ebpf")),
+        Some(workspace_root.join("xdp-ebpf/target/bpfel-unknown-none/debug/dataplane-xdp-ebpf")),
     ];
 
     let destination = out_dir.join("dataplane-xdp-ebpf");
@@ -42,6 +43,18 @@ fn embed_ebpf() {
             continue;
         }
         println!("cargo::rerun-if-changed={}", candidate.display());
+        // The object usually comes from the nix store and is read only, and
+        // `copy` carries the mode across, so a second build would find a
+        // destination it cannot write. Take it out of the way first.
+        if let Err(e) = std::fs::remove_file(&destination)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            println!(
+                "cargo::error=could not replace {}: {e}",
+                destination.display()
+            );
+            return;
+        }
         if let Err(e) = std::fs::copy(candidate, &destination) {
             println!(
                 "cargo::error=could not copy the XDP program from {}: {e}",

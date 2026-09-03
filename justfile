@@ -1045,18 +1045,19 @@ bump_version version:
     sed -i "s/^version = \".*\"/version = \"${new_version}\"/" Cargo.toml
     cargo update --workspace
 
-# Build the XDP program of the AF_XDP driver (needs nightly + bpf-linker)
+# Build the XDP program of the AF_XDP driver
 #
-# Compiles xdp-ebpf/ for the BPF target, which has no prebuilt std, so core is
-# built from source. The object lands where the dataplane-xdp build script
-# looks for it.
+# Only needed to iterate on the program itself: the packaged build compiles it
+# in a derivation of its own, and the dev shell points DATAPLANE_XDP_EBPF at
+# the result. The BPF target has no prebuilt std, so core is built from source,
+# which RUSTC_BOOTSTRAP lets the stable toolchain do. bpf-linker links it.
 [script]
 build-ebpf *args:
     {{ _just_debuggable_ }}
     declare profile="debug"
     [[ "{{ args }}" == *--release* ]] && profile="release"
     cd xdp-ebpf
-    cargo +nightly build --target bpfel-unknown-none -Zbuild-std=core {{ args }}
+    RUSTC_BOOTSTRAP=1 cargo build --target bpfel-unknown-none -Zbuild-std=core {{ args }}
     declare -r object="$(pwd)/target/bpfel-unknown-none/${profile}/dataplane-xdp-ebpf"
     echo "Built ${object}"
     echo "Build the dataplane against it with DATAPLANE_XDP_EBPF=${object}"

@@ -2,7 +2,7 @@
 # Copyright Open Network Fabric Authors
 
 # Deliberately not a workspace member: this crate is built for the BPF target,
-# by `just build-ebpf`, with a toolchain and profile of its own.
+# by `just build-ebpf`, with a profile of its own.
 [workspace]
 
 [package]
@@ -19,11 +19,27 @@ aya-ebpf = "0.2.1"
 name = "dataplane-xdp-ebpf"
 path = "src/main.rs"
 
+# The verifier is stricter than a CPU, and several of the things rustc emits
+# for a debug build are things it rejects: the null and alignment checks behind
+# debug-assertions land after the program's exit, and it will not load a
+# program whose last instruction is a call. Nothing here is a preference; each
+# line is something the program will not load without.
 [profile.dev]
-opt-level = 2       # the verifier rejects what an unoptimised build emits
+opt-level = 3
+debug = false
+debug-assertions = false
 overflow-checks = false
-debug = 2           # BTF, which the loader needs
 lto = true
+panic = "abort"
+incremental = false
+codegen-units = 1
 
 [profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
 lto = true
+panic = "abort"
+incremental = false
+codegen-units = 1
