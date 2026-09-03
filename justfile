@@ -171,8 +171,10 @@ pre-flight: (check-dependencies) (fmt "--check") (test) (lint) (doctest)
 test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
-    # Export scratch-container roots when the symlinks exist so that
-    # #[in_vm] tests use the nix-built testroot/vmroot automatically.
+    # Export the scratch-container roots `setup-roots` just built, so that
+    # `#[n_vm::test]` tests find them. The guard is for a tree where
+    # `setup-roots` was skipped; the tests fail loudly rather than skip, so
+    # this is a clearer error, not a fallback.
     if [[ -e testroot && -e vmroot ]]; then
         export N_VM_TEST_ROOT="$(pwd)/testroot"
         export N_VM_VM_ROOT="$(pwd)/vmroot"
@@ -230,8 +232,14 @@ check-each *args: (build "check" args)
     {{ _just_debuggable_ }}
 
 [script]
-test-each *args: (build "tests.pkg" args)
+test-each *args: (setup-roots) (build "tests.pkg" args)
     {{ _just_debuggable_ }}
+    # The per-package archives include `dataplane-n-vm`'s guest-booting suite,
+    # so this recipe needs the roots exactly as `test` does.
+    if [[ -e testroot && -e vmroot ]]; then
+        export N_VM_TEST_ROOT="$(pwd)/testroot"
+        export N_VM_VM_ROOT="$(pwd)/vmroot"
+    fi
     declare -a fail=()
     for test_archive in results/tests.pkg*/*.tar.zst; do
         if ! cargo nextest run --archive-file "${test_archive}" --workspace-remap "$(pwd)" --no-tests pass; then
@@ -762,15 +770,19 @@ doctest package="" *args: (build (if package == "" { "doctests.all" } else { "do
 # Run instrumented tests and report coverage. Args are forwarded to nextest; for example,
 # `just coverage -p dataplane-nat` scopes the run to this crate.
 [script]
-coverage *args:
+coverage *args: (setup-roots)
     {{ _just_debuggable_ }}
     export BOLERO_RANDOM_TEST_TIME_MS="{{ bolero_coverage_test_time_ms }}"
-    # Export scratch-container roots when the symlinks exist so that
-    # #[in_vm] tests use the nix-built testroot/vmroot automatically.
+    # Export the scratch-container roots `setup-roots` just built, so that
+    # `#[n_vm::test]` tests find them. The guard is for a tree where
+    # `setup-roots` was skipped; the tests fail loudly rather than skip, so
+    # this is a clearer error, not a fallback.
     if [[ -e testroot && -e vmroot ]]; then
       export N_VM_TEST_ROOT="$(pwd)/testroot"
       export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
+    # See the `test` recipe: trybuild resolves its scratch project against the
+    # local registry cache.
     export LLVM_COV="$(pwd)/devroot/bin/llvm-cov"
     export LLVM_PROFDATA="$(pwd)/devroot/bin/llvm-profdata"
     declare -r out="./target/nextest/coverage"
@@ -820,7 +832,7 @@ duvet-summary *args:
 
 # Use Nix-built archives so local and CI coverage report the same binaries.
 [script]
-coverage-archive package="tests.all" *args:
+coverage-archive package="tests.all" *args: (setup-roots)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     just \
@@ -880,6 +892,16 @@ coverage-archive package="tests.all" *args:
 
     # Nextest changes cwd; `%m` also pools compatible profiles across tests.
     export LLVM_PROFILE_FILE="${profraw}/cov-%m.profraw"
+
+    # This recipe -- not `coverage` -- is what CI runs (`ci::coverage`), and it
+    # runs the tests on the runner rather than in the nix sandbox, so the
+    # guest-booting tests need the same two things `test` gives them.
+    if [[ -e testroot && -e vmroot ]]; then
+        export N_VM_TEST_ROOT="${root}/testroot"
+        export N_VM_VM_ROOT="${root}/vmroot"
+    fi
+    # See the `test` recipe: trybuild resolves its scratch project against the
+    # local registry cache, which a nix-only CI job never populates.
 
     # Report partial coverage before propagating a test failure.
     declare -i test_status=0
