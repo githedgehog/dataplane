@@ -31,9 +31,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::ExitCode;
 
-use bollard::query_parameters::{
-    ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
-};
+use bollard::query_parameters::{ListContainersOptionsBuilder, RemoveContainerOptionsBuilder};
 use n_vm_protocol::{LABEL_HOST_PID, LABEL_OWNER, LABEL_OWNER_VALUE, LABEL_TEST};
 
 /// What the caller asked for.
@@ -172,8 +170,7 @@ async fn run(args: &Args) -> ExitCode {
     // Partition rather than filter, so the skipped ones can be reported.
     // Silently ignoring them would read as "there were none", which is the
     // one message that would send someone looking in the wrong place.
-    let (live, orphaned): (Vec<_>, Vec<_>) =
-        found.into_iter().partition(|c| c.creator_alive());
+    let (live, orphaned): (Vec<_>, Vec<_>) = found.into_iter().partition(|c| c.creator_alive());
 
     let targets = if args.all {
         orphaned.into_iter().chain(live).collect::<Vec<_>>()
@@ -279,7 +276,14 @@ fn describe(c: &Orphan) -> String {
         .host_pid
         .map_or_else(|| "pid unknown".to_owned(), |p| format!("pid {p}"));
     let running = if c.running { ", RUNNING" } else { "" };
-    format!("{}  {}  [{}, {}{}]", short(&c.id), c.test, c.status, pid, running)
+    format!(
+        "{}  {}  [{}, {}{}]",
+        short(&c.id),
+        c.test,
+        c.status,
+        pid,
+        running
+    )
 }
 
 /// Docker's conventional short form of a container ID.

@@ -228,7 +228,10 @@ impl tokio_util::codec::Decoder for AsyncJsonStreamDecoder {
         }
         Err(AsyncJsonStreamError::Io(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
-            format!("event stream ended mid-object with {} bytes left", src.len()),
+            format!(
+                "event stream ended mid-object with {} bytes left",
+                src.len()
+            ),
         )))
     }
 }
@@ -356,7 +359,10 @@ mod tests {
     fn an_event_is_decoded_off_the_wire() {
         let mut decoder = AsyncJsonStreamDecoder::new();
         let mut buf = wire("vmm", "starting");
-        let got = decoder.decode(&mut buf).expect("decodes").expect("an event");
+        let got = decoder
+            .decode(&mut buf)
+            .expect("decodes")
+            .expect("an event");
         assert!(matches!(
             (got.source, got.event),
             (Source::Vmm, EventType::Starting)
@@ -379,10 +385,16 @@ mod tests {
     fn a_trailing_newline_at_end_of_stream_is_not_a_broken_event() {
         let mut decoder = AsyncJsonStreamDecoder::new();
         let mut buf = wire("vmm", "shutdown");
-        decoder.decode(&mut buf).expect("decodes").expect("an event");
+        decoder
+            .decode(&mut buf)
+            .expect("decodes")
+            .expect("an event");
         assert_eq!(&buf[..], b"\n", "the terminator should be what is left");
         assert!(
-            decoder.decode_eof(&mut buf).expect("a newline is not an error").is_none(),
+            decoder
+                .decode_eof(&mut buf)
+                .expect("a newline is not an error")
+                .is_none(),
             "a trailing newline should end the stream, not fail it"
         );
     }
