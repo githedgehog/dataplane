@@ -25,6 +25,10 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  iai-callgrind-runner = final.callPackage ../pkgs/iai-callgrind-runner {
+    inherit (override-packages) rustPlatform;
+    version = "0.16.1";
+  };
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };

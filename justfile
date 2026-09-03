@@ -41,6 +41,9 @@ kernel := if platform == "wasm32-wasip1" { "wasip1" } else { "linux" }
 # cargo build profile (debug/release/fuzz)
 profile := "debug"
 
+export callgrind_package := "dataplane-routing"
+export callgrind_bench := "fib_lookup_callgrind"
+
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
 
@@ -199,14 +202,66 @@ fuzz target time="60s" *args="":
         {{ if sanitize == "thread" { "--build-std" } else { "" } }} \
         {{ _cargo_feature_flags }} {{ args }}
 
-# Build and run the criterion benches. The rte_acl benches are gated behind the
-# `dpdk` feature, so run `just features=dpdk bench` to exercise them; a plain
-# `just bench` builds them as empty `main()` and only runs the reference benches.
+[private]
 [script]
-bench: (build "benches")
+_bench-release-only:
+    {{ _just_debuggable_ }}
+    if [ '{{ profile }}' != "release" ]; then
+      echo "error: benchmarks want profile=release, not '{{ profile }}'" >&2
+      echo "       run: just profile=release bench" >&2
+      exit 1
+    fi
+
+[doc("Wall-clock time, via criterion")]
+[script]
+bench *args: _bench-release-only (build "benches")
     {{ _just_debuggable_ }}
     shopt -s nullglob
-    for bench in ./results/benches/bin/*; do "$bench" --bench; done
+    for bench in ./results/benches/bin/*; do
+      case "${bench}" in
+        *_callgrind) continue ;;
+      esac
+      "${bench}" --bench {{ args }}
+    done
+    if [ -f target/criterion/report/index.html ]; then
+      echo
+      echo "html report: target/criterion/report/index.html"
+    fi
+
+[doc("Instructions and cache traffic, via iai-callgrind")]
+[script]
+bench-callgrind *args:
+    {{ _just_debuggable_ }}
+    cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" {{ args }}
+
+[doc("Compare against a baseline and print a markdown report")]
+[script]
+bench-compare baseline="base" *args:
+    {{ _just_debuggable_ }}
+    mkdir -p results/bench
+    if find target/iai -type f -name '*base@{{ baseline }}*' -print -quit 2>/dev/null | grep -q . \
+        && cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+        --baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl 2>/dev/null; then
+      ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
+    else
+      cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+        --save-baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
+      ./scripts/bench-report.ts results/bench/run.jsonl {{ args }}
+    fi
+
+[doc("Record a baseline for `bench-compare`, without reporting")]
+[script]
+bench-baseline name="base":
+    {{ _just_debuggable_ }}
+    cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
+      --save-baseline='{{ name }}' > /dev/null
+    echo "recorded baseline '{{ name }}'"
+
+[doc("Serve the criterion html report over http")]
+[script]
+bench-serve port="8080":
+    {{ _just_debuggable_ }}
+    just serve ./target/criterion '{{ port }}' report/index.html
 
 [script]
 build-each *args: (build "workspace" args)
@@ -754,6 +809,31 @@ coverage *args:
     cargo llvm-cov report --branch --lcov --output-path="${out}/lcov.info"
     cargo llvm-cov report --branch --codecov --output-path="${out}/codecov.json"
     cargo llvm-cov report --branch --summary-only
+    echo
+    echo "html report: ${out}/html/index.html  (\`just serve-coverage\` to browse it)"
+
+serve_host := "127.0.0.1"
+
+[doc("Serve a directory of generated html over http")]
+[script]
+serve dir port="8080" index="index.html":
+    {{ _just_debuggable_ }}
+    if [ ! -d '{{ dir }}' ]; then
+      echo "error: no such directory: {{ dir }}" >&2
+      exit 1
+    fi
+    server="$(command -v static-web-server || true)"
+    if [ -z "${server}" ] && [ -x ./devroot/bin/static-web-server ]; then
+      server="$(pwd)/devroot/bin/static-web-server"
+    fi
+    if [ -z "${server}" ]; then
+      echo "error: static-web-server not found; re-enter the dev shell, or \`just setup-roots\`" >&2
+      exit 1
+    fi
+    echo "serving {{ dir }} at http://{{ serve_host }}:{{ port }}/{{ index }} (ctrl-c to stop)"
+    "${server}" --root '{{ dir }}' --host '{{ serve_host }}' --port '{{ port }}' --log-level warn
+
+serve-coverage port="8080": (serve "./target/nextest/coverage/html" port)
 
 [script]
 duvet *args:
