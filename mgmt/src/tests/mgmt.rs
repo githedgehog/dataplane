@@ -528,7 +528,7 @@ mod peering_chain {
     use config::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::{
-        LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
+        Family, LOCAL_VNI, MasqueradeExpose, PortForwardingExpose, REMOTE_VNI, StaticNatExpose,
         overlay_with_exposes,
     };
     use routing::Render;
@@ -560,15 +560,29 @@ mod peering_chain {
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let count = driver.gen_u8(Included(&1), Included(&MAX_EXPOSES))?;
+            // One family for the whole list. These all land in a single manifest, and a
+            // manifest may not mix families, so letting each expose draw its own made
+            // most multi-expose offerings illegal by construction.
+            let family = if driver.produce::<bool>()? {
+                Family::V4
+            } else {
+                Family::V6
+            };
             let mut out = Vec::with_capacity(usize::from(count));
             for _ in 0..count {
                 out.push(match driver.gen_u8(Included(&0), Included(&2))? {
                     0 => (
                         Flavour::PortForwarding,
-                        PortForwardingExpose.generate(driver)?,
+                        PortForwardingExpose { family }.generate(driver)?,
                     ),
-                    1 => (Flavour::Masquerade, MasqueradeExpose.generate(driver)?),
-                    _ => (Flavour::Static, StaticNatExpose.generate(driver)?),
+                    1 => (
+                        Flavour::Masquerade,
+                        MasqueradeExpose { family }.generate(driver)?,
+                    ),
+                    _ => (
+                        Flavour::Static,
+                        StaticNatExpose { family }.generate(driver)?,
+                    ),
                 });
             }
             Some(out)
@@ -1012,6 +1026,9 @@ mod validator_completeness {
         let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
             panic!("{mutation:?}: validator accepted a config port forwarding rejects: {e}")
         });
+        // Cannot fire yet: `validate_ruleset` is a stub returning `Ok`, so `update_table`
+        // is infallible. The (04) PR in this stack gives it a real `PortFwTable::dry_run`,
+        // at which point this starts checking something. Left in place for that.
         PortFwTableWriter::new()
             .update_table(&ruleset)
             .unwrap_or_else(|e| {

@@ -252,7 +252,7 @@ mod config_driven {
     #[test]
     fn the_two_sides_of_an_expose_map_one_to_one() {
         bolero::check!()
-            .with_generator(StaticNatExpose)
+            .with_generator(StaticNatExpose::default())
             .cloned()
             .for_each(|expose: VpcExpose| {
                 let private = addresses(&expose.ips);
