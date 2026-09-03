@@ -42,6 +42,7 @@ members = [
     "tracectl",
     "validator",
     "vpcmap",
+    "xdp",
 ]
 
 resolver = "3"
@@ -107,9 +108,11 @@ test-utils = { path = "./test-utils", package = "dataplane-test-utils", features
 tracectl = { path = "./tracectl", package = "dataplane-tracectl", features = [] }
 validator = { path = "./validator", package = "dataplane-validator", features = [] }
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
+xdp = { path = "./xdp", package = "dataplane-xdp", default-features = false, features = [] }
 
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
+aya = { version = "0.14.0", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
 anyhow = { version = "1.0.104", default-features = false, features = [] }
 arc-swap = { version = "1.9.2", default-features = false, features = [] }
@@ -223,6 +226,7 @@ tracing-test = { version = "0.2.6", default-features = false, features = [] }
 ureq = { version = "3.4.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.26.0", default-features = false, features = [] }
+xsk-rs = { version = "0.11.0", default-features = false, features = [] }
 
 # NOTE: panic strategy is intentionally left unset here.
 #
@@ -435,3 +439,8 @@ wasm = false # hopeless + pointless
 package = "dataplane-vpcmap"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.xdp]
+package = "dataplane-xdp"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless

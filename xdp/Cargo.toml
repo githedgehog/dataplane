@@ -1,0 +1,26 @@
+[package]
+name = "dataplane-xdp"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+# Sockets, rings, and the XDP program that feeds them. Off by default because
+# it pulls in libxdp, which the build compiles from source and which needs
+# libelf, zlib and a clang that can target BPF, and the eBPF object built by
+# `just build-ebpf`.
+runtime = ["dep:aya", "dep:nix", "dep:xsk-rs"]
+
+[dependencies]
+# internal
+concurrency = { workspace = true }
+net = { workspace = true }
+
+# external
+aya = { workspace = true, optional = true }
+nix = { workspace = true, optional = true, features = ["poll"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+xsk-rs = { workspace = true, optional = true, features = ["use_cc_build"] }
