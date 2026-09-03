@@ -125,7 +125,7 @@ impl EmbeddedHeaders {
         self.full_payload_length
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn check_full_payload(
         &mut self,
         buf: &[u8],
@@ -175,7 +175,7 @@ impl EmbeddedHeaders {
         // Is size_headers_parsed - size_transport_header + size_ip_payload == size_icmp_payload?
 
         // Find the IP payload length
-        let ip_payload_length = match &self.net {
+        let (ip_payload_length, boundary) = match &self.net {
             None => {
                 return;
             }
@@ -183,7 +183,7 @@ impl EmbeddedHeaders {
                 let Ok(ipv4_payload_length) = ip.0.payload_len().map(usize::from) else {
                     return;
                 };
-                ipv4_payload_length
+                (ipv4_payload_length, 4)
             }
             Some(Net::Ipv6(ip)) => {
                 let ipv6_payload_length = ip.0.payload_length;
@@ -192,7 +192,7 @@ impl EmbeddedHeaders {
                     // unlikely it's all in the ICMP message payload anyway.
                     return;
                 }
-                ipv6_payload_length as usize
+                (ipv6_payload_length as usize, 8)
             }
         };
 
@@ -234,50 +234,27 @@ impl EmbeddedHeaders {
             // against this value.
             //
             // From RFC 4884: The length attribute represents the length of the padded "original
-            // datagram" field.
-            match self.net {
-                Some(Net::Ipv4(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(32) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 32? Something's wrong
-                        return;
-                    }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv4: Padding is on 32-bit boundaries
-                    if padding_length < 32
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                Some(Net::Ipv6(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(64) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 64? Something's wrong
-                        return;
-                    }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv6: Padding is on 64-bit boundaries
-                    if padding_length < 64
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                None => {
-                    unreachable!() // Checked earlier in the function
-                }
+            // datagram" field:
+            //
+            //     When the ICMP Extension Structure is appended to an ICMP message and that ICMP
+            //     message contains an "original datagram" field, the "original datagram" field MUST
+            //     contain at least 128 octets.
+            //
+            //     When the ICMP Extension Structure is appended to an ICMPv4 message [...] the
+            //     "original datagram" field MUST be zero padded to the nearest 32-bit boundary.
+            //
+            // ICMPv6 pads to the nearest 64-bit boundary instead. Either way, the length of the
+            // padded field is fully determined by the length of the original packet.
+            let padded_length = full_packet_length.max(128).next_multiple_of(boundary);
+
+            if icmp_length != padded_length || icmp_length > buf.len() {
+                // The message doesn't hold the original packet, padded as we expect
+                return;
             }
+            if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
+                self.full_payload_length = Some(transport_payload_length as u16);
+            }
+            return;
         }
 
         // Check that the full headers + payload are present

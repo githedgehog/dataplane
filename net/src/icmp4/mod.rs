@@ -1141,6 +1141,7 @@ mod test {
     use crate::headers::{
         EmbeddedHeadersBuilder, HeadersBuilder, Net, Transport, TryEmbeddedHeaders,
     };
+    use crate::icmp4::Icmp4ExtensionStructures;
     use crate::icmp4::{Icmp4, Icmp4DestUnreachable, Icmp4Type};
     use crate::ip::NextHeader;
     use crate::ipv4::Ipv4;
@@ -1313,15 +1314,15 @@ mod test {
     #[test]
     fn detects_full_embedded_payload_with_icmp_extensions() {
         const QUOTED_HEADERS_LEN: usize = IPV4_LEN + TCP_LEN as usize;
-        let min_payload_len = u16::try_from(128 - QUOTED_HEADERS_LEN).unwrap();
-        // RFC 4884: the "original datagram" field must hold at least 128 octets, and be zero-padded
-        // to the nearest 32-bit boundary. Keep the quoted packet large enough for the former, and
-        // small enough for the length attribute, in units of 32-bit words, to fit on a byte.
+        // Keep the quoted packet small enough for the length attribute of the ICMP header, in
+        // units of 32-bit words, to fit on a byte.
         bolero::check!()
-            .with_generator((min_payload_len..=900, 0u8..=8))
+            .with_generator((0u16..=900, 0u8..=8))
             .for_each(|(payload_len, extension_words)| {
                 let quoted_len = QUOTED_HEADERS_LEN + usize::from(*payload_len);
-                let padding_len = quoted_len.next_multiple_of(32) - quoted_len;
+                // Pad the "original datagram" field as RFC 4884 requires, the same way as the
+                // generator of ICMP Error messages does
+                let padding_len = Icmp4ExtensionStructures::padding_size(quoted_len);
                 let mut trailer = vec![0u8; padding_len];
                 trailer.resize(padding_len + usize::from(*extension_words) * 4, 0x55);
                 let length_attribute = u8::try_from((quoted_len + padding_len) / 4).unwrap();
