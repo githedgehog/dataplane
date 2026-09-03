@@ -88,11 +88,13 @@ pub trait HashMapSmoothing {
 /// f^{\prime}\!\left(x\right) \approx \frac{8 \left[f\!\left(x + h\right) - f\!\left(x - h\right)\right] - \left[f\!\left(x + 2h\right) - f\!\left(x - 2h\right)\right]}{12 h}
 /// }
 /// ```
+const WINDOW: usize = 5;
+
 #[derive(Debug)]
 pub struct SavitzkyGolayFilter<U> {
     step: Duration,
     idx: usize,
-    data: ArrayVec<U, 5>,
+    data: ArrayVec<U, WINDOW>,
 }
 
 impl<T> Default for SavitzkyGolayFilter<T> {
@@ -117,7 +119,19 @@ impl<U> SavitzkyGolayFilter<U> {
                 self.data[self.idx] = e.element();
             }
         }
-        self.idx = (self.idx + 1) % 5;
+        self.idx = (self.idx + 1) % WINDOW;
+    }
+
+    pub fn chronological(&self) -> impl Iterator<Item = &U> {
+        self.data
+            .iter()
+            .cycle()
+            .skip(self.idx)
+            .take(self.data.len())
+    }
+
+    pub fn each_sample_mut(&mut self, mut edit: impl FnMut(&mut U)) {
+        self.data.iter_mut().for_each(&mut edit);
     }
 }
 
@@ -125,19 +139,21 @@ impl<U> SavitzkyGolayFilter<U> {
 pub enum DerivativeError {
     #[error("Not enough samples to compute derivative: {0} available")]
     NotEnoughSamples(usize),
+    #[error("A zero time step has no derivative: a rate over it would divide by zero")]
+    ZeroStep,
 }
 
 impl Derivative for SavitzkyGolayFilter<u64> {
     type Error = DerivativeError;
     type Output = f64;
     fn derivative(&self) -> Result<f64, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         let data_len = self.data.len();
         if data_len < SAMPLES {
             return Err(DerivativeError::NotEnoughSamples(data_len));
         }
         debug_assert!(data_len == SAMPLES);
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [u64; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -148,6 +164,9 @@ impl Derivative for SavitzkyGolayFilter<u64> {
         let weighted_sum = 8u64
             .saturating_mul(data[3].saturating_sub(data[1]))
             .saturating_sub(data[4].saturating_sub(data[0]));
+        if self.step.as_micros() == 0 {
+            return Err(DerivativeError::ZeroStep);
+        }
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -162,12 +181,12 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
     type Error = DerivativeError;
     type Output = PacketAndByte<f64>;
     fn derivative(&self) -> Result<PacketAndByte<f64>, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         let data_len = self.data.len();
         if data_len < SAMPLES {
             return Err(DerivativeError::NotEnoughSamples(data_len));
         }
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [PacketAndByte<u64>; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -176,8 +195,11 @@ impl Derivative for SavitzkyGolayFilter<PacketAndByte<u64>> {
             itr.next().unwrap_or_else(|| unreachable!()),
         ];
         let weighted_sum_bytes = 8u64
-            .saturating_mul(data[3].bytes - data[1].bytes)
-            .saturating_sub(data[4].bytes - data[0].bytes);
+            .saturating_mul(data[3].bytes.saturating_sub(data[1].bytes))
+            .saturating_sub(data[4].bytes.saturating_sub(data[0].bytes));
+        if self.step.as_micros() == 0 {
+            return Err(DerivativeError::ZeroStep);
+        }
         let step: f64 = self.step.as_micros() as f64 / 1_000_000.;
         if weighted_sum_bytes == 0 {
             const NORMALIZATION: f64 = 2.;
@@ -203,46 +225,32 @@ impl TryFrom<&SavitzkyGolayFilter<TransmitSummary<u64>>>
     type Error = DerivativeError;
 
     fn try_from(value: &SavitzkyGolayFilter<TransmitSummary<u64>>) -> Result<Self, Self::Error> {
-        if value.data.len() != 5 {
+        if value.data.len() != WINDOW {
             return Err(DerivativeError::NotEnoughSamples(value.data.len()));
         }
-        let values: Vec<_> = value
-            .data
-            .iter()
-            .cycle()
-            .skip(value.idx)
-            .take(5)
-            .cloned()
-            .collect();
-        let all_keys: BTreeSet<_> = values
-            .iter()
+        let all_keys: BTreeSet<_> = value
+            .chronological()
             .flat_map(|x| x.dst.iter().map(|(&k, _)| k))
             .collect();
         let mut out = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
-        for (idx, summary) in values.iter().enumerate() {
-            all_keys
-                .iter()
-                .for_each(|&k| match (summary.dst.get(&k), out.dst.get_mut(&k)) {
-                    (Some(count), Some(out)) => {
-                        out.packets.push(count.packets);
-                        out.bytes.push(count.bytes);
-                    }
-                    (Some(count), None) => {
-                        let mut packets = SavitzkyGolayFilter::new(value.step);
-                        let mut bytes = SavitzkyGolayFilter::new(value.step);
-                        packets.push(count.packets);
-                        bytes.push(count.bytes);
-                        out.dst.insert(k, PacketAndByte { packets, bytes });
-                    }
-                    (None, Some(out)) => {
-                        debug_assert!(idx != 0);
-                        out.packets.push(out.packets.data[out.packets.idx - 1]);
-                        out.bytes.push(out.bytes.data[out.bytes.idx - 1]);
-                    }
-                    (None, None) => {
-                        // no data yet
-                    }
-                });
+        for &k in &all_keys {
+            out.dst.insert(
+                k,
+                PacketAndByte {
+                    packets: SavitzkyGolayFilter::new(value.step),
+                    bytes: SavitzkyGolayFilter::new(value.step),
+                },
+            );
+        }
+        for summary in value.chronological() {
+            for &k in &all_keys {
+                let Some(out) = out.dst.get_mut(&k) else {
+                    unreachable!("every key was inserted above")
+                };
+                let count = summary.dst.get(&k).copied().unwrap_or_default();
+                out.packets.push(count.packets);
+                out.bytes.push(count.bytes);
+            }
         }
         Ok(out)
     }
@@ -253,7 +261,7 @@ impl Derivative for SavitzkyGolayFilter<TransmitSummary<u64>> {
     type Output = TransmitSummary<f64>;
 
     fn derivative(&self) -> Result<Self::Output, Self::Error> {
-        if self.data.len() != 5 {
+        if self.data.len() != WINDOW {
             return Err(DerivativeError::NotEnoughSamples(self.data.len()));
         }
         let x = TransmitSummary::<SavitzkyGolayFilter<u64>>::try_from(self)?;
@@ -349,23 +357,11 @@ impl From<SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummar
                 }
             })
         });
-        value
-            .data
-            .iter()
-            .cycle()
-            .skip(value.idx)
-            .take(5)
-            .for_each(|map| {
-                map.iter()
-                    .for_each(|(from_key, from)| match out.get_mut(from_key) {
-                        None => {
-                            unreachable!(); // all keys in map should already be here
-                        }
-                        Some(filter) => {
-                            filter.push(from.clone());
-                        }
-                    })
+        value.chronological().for_each(|map| {
+            out.iter_mut().for_each(|(key, filter)| {
+                filter.push(map.get(key).cloned().unwrap_or_default());
             });
+        });
         out
     }
 }
@@ -378,47 +374,51 @@ impl From<&SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSumma
     ) -> Self {
         const CAPACITY_PAD: usize = 32;
         let capacity_guess = value.data.iter().map(|map| map.len()).max().unwrap_or(0);
-        let mut out = hashbrown::HashMap::with_capacity(capacity_guess + CAPACITY_PAD);
+        let mut pairs: hashbrown::HashMap<VpcDiscriminant, BTreeSet<VpcDiscriminant>> =
+            hashbrown::HashMap::with_capacity(capacity_guess + CAPACITY_PAD);
         value.data.iter().for_each(|map| {
-            map.iter().for_each(|(k, _)| {
-                if out.get(k).is_none() {
-                    out.insert(*k, TransmitSummary::<SavitzkyGolayFilter<u64>>::new());
-                }
+            map.iter().for_each(|(&src, summary)| {
+                let seen = pairs.entry(src).or_default();
+                summary.dst.iter().for_each(|(&dst, _)| {
+                    seen.insert(dst);
+                });
             })
         });
-        value.data.iter().enumerate().for_each(|(idx, map)| {
-            map.iter()
-                .for_each(|(from_key, from)| match out.get_mut(from_key) {
-                    None => {
-                        unreachable!(); // all keys in map should already be here
-                    }
-                    Some(summary) => {
-                        from.dst.iter().for_each(|(to_key, to)| {
-                            match summary.dst.get_mut(to_key) {
-                                None => {
-                                    let mut packets = SavitzkyGolayFilter::new(value.step);
-                                    let mut bytes = SavitzkyGolayFilter::new(value.step);
-                                    packets.push(to.packets);
-                                    bytes.push(to.bytes);
-
-                                    summary
-                                        .dst
-                                        .insert(*to_key, PacketAndByte { packets, bytes });
-                                }
-                                Some(x) => {
-                                    while x.packets.idx < idx {
-                                        x.packets.push(x.packets.data[x.packets.idx - 1]);
-                                    }
-                                    while x.bytes.idx < idx {
-                                        x.bytes.push(x.bytes.data[x.bytes.idx - 1]);
-                                    }
-                                    x.packets.push(to.packets);
-                                    x.bytes.push(to.bytes);
-                                }
-                            }
-                        });
-                    }
-                })
+        let mut out: hashbrown::HashMap<
+            VpcDiscriminant,
+            TransmitSummary<SavitzkyGolayFilter<u64>>,
+        > = hashbrown::HashMap::with_capacity(pairs.len() + CAPACITY_PAD);
+        for (&src, dsts) in &pairs {
+            let mut summary = TransmitSummary::<SavitzkyGolayFilter<u64>>::new();
+            for &dst in dsts {
+                summary.dst.insert(
+                    dst,
+                    PacketAndByte {
+                        packets: SavitzkyGolayFilter::new(value.step),
+                        bytes: SavitzkyGolayFilter::new(value.step),
+                    },
+                );
+            }
+            out.insert(src, summary);
+        }
+        value.chronological().for_each(|map| {
+            for (&src, dsts) in &pairs {
+                let Some(summary) = out.get_mut(&src) else {
+                    unreachable!("every source was inserted above")
+                };
+                let observed = map.get(&src);
+                for &dst in dsts {
+                    let Some(filter) = summary.dst.get_mut(&dst) else {
+                        unreachable!("every destination was inserted above")
+                    };
+                    let count = observed
+                        .and_then(|summary| summary.dst.get(&dst))
+                        .copied()
+                        .unwrap_or_default();
+                    filter.packets.push(count.packets);
+                    filter.bytes.push(count.bytes);
+                }
+            }
         });
         out
     }
@@ -483,7 +483,7 @@ impl Smooth for SavitzkyGolayFilter<u64> {
     type Output = f64;
 
     fn smooth(&self) -> Result<f64, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
         const DEN: f64 = 35.0;
 
@@ -493,7 +493,7 @@ impl Smooth for SavitzkyGolayFilter<u64> {
         }
         debug_assert!(len == SAMPLES);
 
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [u64; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -508,7 +508,7 @@ impl Smooth for SavitzkyGolayFilter<u64> {
             .zip(data.iter())
             .fold(0i128, |s, (&c, &v)| s + (c as i128) * (v as i128));
 
-        Ok((acc as f64) / DEN)
+        Ok(((acc as f64) / DEN).max(0.0))
     }
 }
 
@@ -517,7 +517,7 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
     type Output = PacketAndByte<f64>;
 
     fn smooth(&self) -> Result<Self::Output, DerivativeError> {
-        const SAMPLES: usize = 5;
+        const SAMPLES: usize = WINDOW;
         const COEFFS: [i64; SAMPLES] = [-3, 12, 17, 12, -3]; // / 35
         const DEN: f64 = 35.0;
 
@@ -526,7 +526,7 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
             return Err(DerivativeError::NotEnoughSamples(len));
         }
 
-        let mut itr = self.data.iter().cycle().skip(self.idx).copied();
+        let mut itr = self.chronological().copied();
         let data: [PacketAndByte<u64>; SAMPLES] = [
             itr.next().unwrap_or_else(|| unreachable!()),
             itr.next().unwrap_or_else(|| unreachable!()),
@@ -545,8 +545,8 @@ impl Smooth for SavitzkyGolayFilter<PacketAndByte<u64>> {
             .fold(0i128, |s, (&c, v)| s + (c as i128) * (v.bytes as i128));
 
         Ok(PacketAndByte {
-            packets: (acc_packets as f64) / DEN,
-            bytes: (acc_bytes as f64) / DEN,
+            packets: ((acc_packets as f64) / DEN).max(0.0),
+            bytes: ((acc_bytes as f64) / DEN).max(0.0),
         })
     }
 }
@@ -556,7 +556,7 @@ impl Smooth for SavitzkyGolayFilter<TransmitSummary<u64>> {
     type Output = TransmitSummary<f64>;
 
     fn smooth(&self) -> Result<Self::Output, DerivativeError> {
-        if self.data.len() != 5 {
+        if self.data.len() != WINDOW {
             return Err(DerivativeError::NotEnoughSamples(self.data.len()));
         }
         // Convert to per-destination SG filters first, then smooth those.
@@ -613,7 +613,7 @@ where
 mod contract {
     use crate::rate::{Derivative, SavitzkyGolayFilter};
     use crate::{PacketAndByte, TransmitSummary};
-    use bolero::{Driver, TypeGenerator};
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
     use std::fmt::Debug;
     use std::time::Duration;
 
@@ -680,10 +680,74 @@ mod contract {
         }
     }
 
+    pub struct PerIntervalCounts;
+
+    impl ValueGenerator for PerIntervalCounts {
+        type Output = SavitzkyGolayFilter<u64>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut step: Duration = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let ceiling = 1u64 << (driver.produce::<u8>()? % 63);
+            for _ in 0..entries {
+                filter.push(driver.produce::<u64>()? % ceiling);
+            }
+            Some(filter)
+        }
+    }
+
+    pub struct PerIntervalPacketAndByte;
+
+    impl ValueGenerator for PerIntervalPacketAndByte {
+        type Output = SavitzkyGolayFilter<PacketAndByte<u64>>;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let mut step: Duration = driver.produce()?;
+            if step == Duration::ZERO {
+                step += Duration::from_secs(1);
+            }
+            let mut filter = SavitzkyGolayFilter::new(step);
+            let entries: u8 = driver.produce::<u8>()? % 15;
+            let ceiling = 1u64 << (driver.produce::<u8>()? % 63);
+            for _ in 0..entries {
+                filter.push(PacketAndByte {
+                    packets: driver.produce::<u64>()? % ceiling,
+                    bytes: driver.produce::<u64>()? % ceiling,
+                });
+            }
+            Some(filter)
+        }
+    }
+
+    pub mod naive {
+        use std::time::Duration;
+
+        pub fn seconds(step: Duration) -> f64 {
+            step.as_micros() as f64 / 1_000_000.
+        }
+
+        pub fn two_point(window: &[u64; 5], step: Duration) -> f64 {
+            (window[4] as f64 - window[3] as f64) / seconds(step)
+        }
+
+        pub fn central(window: &[u64; 5], step: Duration) -> f64 {
+            (window[3] as f64 - window[1] as f64) / (2. * seconds(step))
+        }
+
+        pub fn mean(window: &[u64; 5]) -> f64 {
+            window.iter().map(|&v| v as f64).sum::<f64>() / 5.
+        }
+    }
+
     pub struct DerivativeComparer<F, D> {
         pub f: F,
         pub d: D,
         pub step: Duration,
+        pub carried: usize,
     }
 
     impl<F, D, Out> DerivativeComparer<F, D>
@@ -703,6 +767,9 @@ mod contract {
             x: Duration,
         ) -> DerivativeComparison<<SavitzkyGolayFilter<Out> as Derivative>::Output> {
             let mut out = SavitzkyGolayFilter::new(self.step);
+            for i in 0..self.carried {
+                out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
+            }
             for i in 0..5 {
                 out.push((self.f)(x + self.step * u32::try_from(i).unwrap()));
             }
@@ -739,6 +806,8 @@ mod contract {
 #[cfg(test)]
 mod test {
     use crate::rate::{Derivative, DerivativeComparer, DerivativeError, SavitzkyGolayFilter};
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{PacketAndByte, TransmitSummary};
 
@@ -749,10 +818,8 @@ mod test {
     macro_rules! arbitrary_polynomial {
         ($n:expr) => {{
             const NANOS_PER_SEC: u128 = 1_000_000_000;
-            bolero::check!()
-                .with_type()
-                .cloned()
-                .for_each(|(x, c): (Duration, [u64; $n])| {
+            bolero::check!().with_type().cloned().for_each(
+                |(x, c, carried): (Duration, [u64; $n], u8)| {
                     let x = if x < Duration::from_micros(1) {
                         Duration::from_micros(1)
                     } else if x > Duration::from_secs(10) {
@@ -783,6 +850,7 @@ mod test {
                         f: basic,
                         d: basic_prime,
                         step: Duration::from_secs(1),
+                        carried: usize::from(carried) % 5,
                     };
                     let comparison = comparer.compare(x);
                     if comparison.relative_error().is_nan() {
@@ -790,7 +858,8 @@ mod test {
                         return;
                     }
                     assert!(comparison.relative_error().abs() < 0.01);
-                })
+                },
+            )
         }};
     }
     #[test]
@@ -845,16 +914,80 @@ mod test {
     }
 
     #[test]
+    fn smoothing_a_counter_is_never_negative() {
+        static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_generator(crate::rate::contract::PerIntervalCounts)
+            .for_each(|x: &SavitzkyGolayFilter<u64>| {
+                let Ok(v) = x.smooth() else {
+                    return;
+                };
+                assert!(v >= 0.0, "smoothed a counter to {v}");
+                if unclamped(&x.chronological().copied().collect::<Vec<_>>()) < 0. {
+                    UNDERSHOT.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        assert!(
+            undershot > 0,
+            "no window in the whole run would have smoothed to a negative number, so this said \
+             nothing about the clamp it exists to guard"
+        );
+    }
+
+    #[test]
+    fn smoothing_a_packet_and_byte_counter_is_never_negative() {
+        static UNDERSHOT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_generator(crate::rate::contract::PerIntervalPacketAndByte)
+            .for_each(|x: &SavitzkyGolayFilter<PacketAndByte<u64>>| {
+                let Ok(v) = x.smooth() else {
+                    return;
+                };
+                assert!(v.packets >= 0.0, "smoothed a packet count to {}", v.packets);
+                assert!(v.bytes >= 0.0, "smoothed a byte count to {}", v.bytes);
+                let window: Vec<_> = x.chronological().copied().collect();
+                let packets: Vec<u64> = window.iter().map(|v| v.packets).collect();
+                let bytes: Vec<u64> = window.iter().map(|v| v.bytes).collect();
+                if unclamped(&packets) < 0. || unclamped(&bytes) < 0. {
+                    UNDERSHOT.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let undershot = UNDERSHOT.load(Ordering::Relaxed);
+        assert!(
+            undershot > 0,
+            "no window in the whole run would have smoothed to a negative number, so this said \
+             nothing about the clamp it exists to guard"
+        );
+    }
+
+    #[test]
     fn derivative_filter_basic() {
         bolero::check!()
             .with_type()
             .for_each(|x: &SavitzkyGolayFilter<u64>| match x.derivative() {
-                Ok(x) => {
-                    assert!(x >= 0.0);
+                Ok(d) => {
+                    assert!(
+                        d >= 0.0,
+                        "every operand is a saturating unsigned subtraction, so the only way to \
+                         fail this is NaN: got {d} at step {:?}",
+                        x.step
+                    );
                 }
                 Err(DerivativeError::NotEnoughSamples(s)) => {
                     assert_eq!(x.idx, s);
                     assert!(s < 5);
+                }
+                Err(DerivativeError::ZeroStep) => {
+                    assert_eq!(
+                        x.step.as_micros(),
+                        0,
+                        "a step is refused only when it rounds to zero microseconds"
+                    );
                 }
             })
     }
@@ -865,14 +998,15 @@ mod test {
             .with_type()
             .for_each(
                 |x: &SavitzkyGolayFilter<PacketAndByte<u64>>| match x.derivative() {
-                    Ok(x) => {
-                        if !x.packets.is_nan() {
-                            assert!(x.packets >= 0.0);
-                            assert!(x.bytes >= 0.0);
-                        }
+                    Ok(d) => {
+                        assert!(d.packets >= 0.0, "{:?} at step {:?}", d, x.step);
+                        assert!(d.bytes >= 0.0, "{:?} at step {:?}", d, x.step);
                     }
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert_eq!(x.idx, s);
+                    }
+                    Err(DerivativeError::ZeroStep) => {
+                        assert_eq!(x.step.as_micros(), 0);
                     }
                 },
             )
@@ -893,8 +1027,23 @@ mod test {
                     Err(DerivativeError::NotEnoughSamples(s)) => {
                         assert!(s < 5)
                     }
+                    Err(DerivativeError::ZeroStep) => {
+                        assert_eq!(x.step.as_micros(), 0);
+                    }
                 },
             )
+    }
+
+    fn unclamped(window: &[u64]) -> f64 {
+        const COEFFS: [i64; 5] = [-3, 12, 17, 12, -3];
+        if window.len() < 5 {
+            return 0.;
+        }
+        COEFFS
+            .iter()
+            .zip(window.iter())
+            .fold(0i128, |acc, (&c, &v)| acc + i128::from(c) * i128::from(v)) as f64
+            / 35.
     }
 
     use crate::rate::Smooth;
@@ -1041,5 +1190,323 @@ mod test {
         assert!((out.packets - (1700.0 / 35.0)).abs() < 1e-9);
         // bytes expected = (-3*10 + 12*10 + 17*10 + 12*20 - 3*20)/35 = 440/35 ≈ 12.5714
         assert!((out.bytes - (440.0 / 35.0)).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod second_opinion {
+    use crate::rate::contract::naive;
+    use crate::rate::{Derivative, SavitzkyGolayFilter, Smooth, WINDOW};
+    use std::time::Duration;
+
+    const CLOSE_ENOUGH: f64 = 1e-9;
+
+    fn wound(window: &[u64; WINDOW], rotation: usize, step: Duration) -> SavitzkyGolayFilter<u64> {
+        let mut filter = SavitzkyGolayFilter::new(step);
+        for i in 0..rotation {
+            filter.push(window[i % WINDOW]);
+        }
+        for value in window {
+            filter.push(*value);
+        }
+        filter
+    }
+
+    fn usable(step: Duration) -> Duration {
+        step.clamp(Duration::from_micros(1), Duration::from_secs(60))
+    }
+
+    #[test]
+    fn a_flat_line_derives_to_nothing_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(level, step, rotation): (u32, Duration, u8)| {
+                let step = usable(step);
+                let window = [u64::from(level); WINDOW];
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
+                assert!(got.abs() < CLOSE_ENOUGH, "a flat line derived to {got}");
+                assert!(naive::two_point(&window, step).abs() < CLOSE_ENOUGH);
+                assert!(naive::central(&window, step).abs() < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    #[test]
+    fn a_straight_line_derives_to_its_slope_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
+                let step = usable(step);
+                let (base, slope) = (u64::from(base), u64::from(slope));
+                let window: [u64; WINDOW] = std::array::from_fn(|i| base + slope * (i as u64));
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.derivative().unwrap_or_else(|e| unreachable!("{e}"));
+                let want = slope as f64 / naive::seconds(step);
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() / scale < CLOSE_ENOUGH,
+                    "a line rising {slope} per step derived to {got}, not {want}"
+                );
+                assert!((got - naive::two_point(&window, step)).abs() / scale < CLOSE_ENOUGH);
+                assert!((got - naive::central(&window, step)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    #[test]
+    fn a_flat_line_smooths_to_itself_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(level, step, rotation): (u32, Duration, u8)| {
+                let step = usable(step);
+                let window = [u64::from(level); WINDOW];
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
+                let want = f64::from(level);
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() / scale < CLOSE_ENOUGH,
+                    "a flat {level} smoothed to {got}"
+                );
+                assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+
+    #[test]
+    fn a_straight_line_smooths_to_its_middle_sample_however_the_ring_sits() {
+        bolero::check!().with_type().cloned().for_each(
+            |(base, slope, step, rotation): (u32, u16, Duration, u8)| {
+                let step = usable(step);
+                let (base, slope) = (u64::from(base), u64::from(slope));
+                let window: [u64; WINDOW] = std::array::from_fn(|i| base + slope * (i as u64));
+                let filter = wound(&window, usize::from(rotation) % WINDOW, step);
+                let got = filter.smooth().unwrap_or_else(|e| unreachable!("{e}"));
+                let middle = window[WINDOW / 2] as f64;
+                let scale = middle.abs().max(1.0);
+                assert!(
+                    (got - middle).abs() / scale < CLOSE_ENOUGH,
+                    "a line through {middle} smoothed to {got}"
+                );
+                assert!((got - naive::mean(&window)).abs() / scale < CLOSE_ENOUGH);
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod window_order {
+    use crate::rate::{DerivativeError, SavitzkyGolayFilter, Smooth, WINDOW};
+    use crate::{PacketAndByte, TransmitSummary};
+    use std::time::Duration;
+    use vpcmap::VpcDiscriminant;
+
+    fn vpc(n: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(n.try_into().unwrap_or_else(|_| unreachable!()))
+    }
+
+    fn rising_load(
+        count: usize,
+    ) -> SavitzkyGolayFilter<hashbrown::HashMap<VpcDiscriminant, TransmitSummary<u64>>> {
+        let mut window = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for tick in 0..count as u64 {
+            let mut summary = TransmitSummary::<u64>::new();
+            summary.dst.insert(
+                vpc(2),
+                PacketAndByte {
+                    packets: at_tick(tick),
+                    bytes: at_tick(tick) * 100,
+                },
+            );
+            let mut by_src = hashbrown::HashMap::new();
+            by_src.insert(vpc(1), summary);
+            window.push(by_src);
+        }
+        window
+    }
+
+    const BASE: u64 = 1_000;
+    const SLOPE: u64 = 100;
+
+    fn at_tick(tick: u64) -> u64 {
+        BASE + SLOPE * tick
+    }
+
+    fn expected_after(ticks: usize) -> f64 {
+        at_tick(ticks as u64 - 3) as f64
+    }
+
+    #[test]
+    fn a_rising_load_reads_the_same_at_every_ring_offset() {
+        for ticks in WINDOW..=(4 * WINDOW) {
+            let window = rising_load(ticks);
+            let by_src: hashbrown::HashMap<
+                VpcDiscriminant,
+                TransmitSummary<SavitzkyGolayFilter<u64>>,
+            > = (&window).into();
+            let smoothed = by_src
+                .get(&vpc(1))
+                .unwrap_or_else(|| unreachable!())
+                .smooth()
+                .unwrap_or_else(|_| unreachable!());
+            let rate = smoothed
+                .dst
+                .get(&vpc(2))
+                .unwrap_or_else(|| unreachable!())
+                .packets;
+            let expect = expected_after(ticks);
+            assert!(
+                (rate - expect).abs() < 1e-9,
+                "after {ticks} ticks the ramp smoothed to {rate} pkt/s, not {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rising_load_derives_the_same_at_every_ring_offset() {
+        for ticks in WINDOW..=(4 * WINDOW) {
+            let window = rising_load(ticks);
+            let by_src: hashbrown::HashMap<
+                VpcDiscriminant,
+                SavitzkyGolayFilter<TransmitSummary<u64>>,
+            > = window.into();
+            let smoothed = by_src
+                .get(&vpc(1))
+                .unwrap_or_else(|| unreachable!())
+                .smooth()
+                .unwrap_or_else(|_| unreachable!());
+            let rate = smoothed
+                .dst
+                .get(&vpc(2))
+                .unwrap_or_else(|| unreachable!())
+                .packets;
+            let expect = expected_after(ticks);
+            assert!(
+                (rate - expect).abs() < 1e-9,
+                "after {ticks} ticks the ramp smoothed to {rate} pkt/s, not {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_destination_that_appears_late_does_not_hide_the_others() {
+        for first_seen in 0..WINDOW {
+            let mut window = SavitzkyGolayFilter::new(Duration::from_secs(1));
+            for tick in 0..WINDOW {
+                let mut summary = TransmitSummary::<u64>::new();
+                summary.dst.insert(
+                    vpc(2),
+                    PacketAndByte {
+                        packets: 100,
+                        bytes: 10_000,
+                    },
+                );
+                if tick >= first_seen {
+                    summary.dst.insert(
+                        vpc(3),
+                        PacketAndByte {
+                            packets: 7,
+                            bytes: 700,
+                        },
+                    );
+                }
+                let mut by_src = hashbrown::HashMap::new();
+                by_src.insert(vpc(1), summary);
+                window.push(by_src);
+            }
+            let by_src: hashbrown::HashMap<
+                VpcDiscriminant,
+                TransmitSummary<SavitzkyGolayFilter<u64>>,
+            > = (&window).into();
+            let smoothed = by_src
+                .get(&vpc(1))
+                .unwrap_or_else(|| unreachable!())
+                .smooth()
+                .unwrap_or_else(|e| panic!("vpc 3 first seen at tick {first_seen}: {e}"));
+            let steady = smoothed
+                .dst
+                .get(&vpc(2))
+                .unwrap_or_else(|| unreachable!())
+                .packets;
+            assert!(
+                (steady - 100.0).abs() < 1e-9,
+                "a steady destination read {steady} pkt/s because another arrived at tick \
+                 {first_seen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_destination_that_stops_reads_as_idle() {
+        let mut window = SavitzkyGolayFilter::new(Duration::from_secs(1));
+        for tick in 0..WINDOW {
+            let mut summary = TransmitSummary::<u64>::new();
+            if tick == 0 {
+                summary.dst.insert(
+                    vpc(2),
+                    PacketAndByte {
+                        packets: 1_000,
+                        bytes: 100_000,
+                    },
+                );
+            }
+            let mut by_src = hashbrown::HashMap::new();
+            by_src.insert(vpc(1), summary);
+            window.push(by_src);
+        }
+        let by_src: hashbrown::HashMap<VpcDiscriminant, TransmitSummary<SavitzkyGolayFilter<u64>>> =
+            (&window).into();
+        let smoothed = by_src
+            .get(&vpc(1))
+            .unwrap_or_else(|| unreachable!())
+            .smooth()
+            .unwrap_or_else(|_| unreachable!());
+        let rate = smoothed
+            .dst
+            .get(&vpc(2))
+            .unwrap_or_else(|| unreachable!())
+            .packets;
+        assert!(
+            rate < 1.0,
+            "a destination silent for four of five ticks still read {rate} pkt/s"
+        );
+    }
+
+    #[test]
+    fn the_window_reads_back_in_push_order() {
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|pushes: Vec<u64>| {
+                let mut filter = SavitzkyGolayFilter::new(Duration::from_secs(1));
+                for value in &pushes {
+                    filter.push(*value);
+                }
+                let expect: Vec<_> = pushes.iter().rev().take(WINDOW).rev().copied().collect();
+                let read: Vec<_> = filter.chronological().copied().collect();
+                assert_eq!(read, expect);
+            });
+    }
+
+    #[test]
+    fn every_destination_holds_the_whole_window() {
+        bolero::check!().with_type().for_each(
+            |window: &SavitzkyGolayFilter<TransmitSummary<u64>>| match TransmitSummary::<
+                SavitzkyGolayFilter<u64>,
+            >::try_from(
+                window
+            ) {
+                Ok(converted) => {
+                    for (dst, filter) in converted.dst.iter() {
+                        assert_eq!(
+                            filter.packets.data.len(),
+                            WINDOW,
+                            "destination {dst} holds a partial window"
+                        );
+                        assert_eq!(filter.bytes.data.len(), WINDOW);
+                    }
+                }
+                Err(DerivativeError::NotEnoughSamples(seen)) => assert!(seen < WINDOW),
+                Err(e) => panic!("{e}"),
+            },
+        );
     }
 }
