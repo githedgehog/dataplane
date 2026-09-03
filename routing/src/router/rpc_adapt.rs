@@ -51,13 +51,6 @@ impl TryFrom<&VxlanEncap> for VxlanEncapsulation {
                 RouterError::VniInvalid(vxlan.vni)
             })?,
             remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            // Note: dmac is not set in nhops, because it may not be known when the
-            // next-hop is added and the encapsulation is part of the next-hop key
-            // which should be immutable for keying purposes.
-            // We ALWAYS set it to None when learning about next-hops via the CPI.
-            // This happens because we want to reuse the VxlanEncapsulation type for other
-            // purposes outside the Nhops. An alternative is to define yet another type.
-            dmac: None,
         })
     }
 }
@@ -129,7 +122,6 @@ impl RouteNhop {
             ifindex,
             encap,
             FwAction::from(nh.fwaction),
-            None,
         );
 
         // validate next hop from its key
@@ -224,7 +216,7 @@ impl Vrf {
 #[cfg(test)]
 mod rpc_properties {
     use super::*;
-    use crate::fib::fibtype::{FibKey, FibWriter};
+    use crate::fib::fibtype::FibWriter;
     use crate::rib::vrf::RouterVrfConfig;
     use bolero::{Driver, ValueGenerator};
     use dplane_rpc::proto::{Ifindex, MaskLen, VrfId};
@@ -405,7 +397,6 @@ mod rpc_properties {
             Some(vni) => Some(Encapsulation::Vxlan(VxlanEncapsulation {
                 vni: Vni::new_checked(vni).ok()?,
                 remote: address?,
-                dmac: None,
             })),
         };
 
@@ -424,15 +415,13 @@ mod rpc_properties {
             return None;
         }
 
-        Some(NhopKey::new(
-            origin, address, ifindex, encap, fwaction, None,
-        ))
+        Some(NhopKey::new(origin, address, ifindex, encap, fwaction))
     }
 
     fn test_vrf() -> Vrf {
         let config = RouterVrfConfig::new(1, "test");
         let mut vrf = Vrf::new(&config);
-        let (fibw, _fibr) = FibWriter::new(FibKey::from_vrfid(1));
+        let (fibw, _fibr) = FibWriter::new(1);
         vrf.set_fibw(fibw);
         vrf
     }

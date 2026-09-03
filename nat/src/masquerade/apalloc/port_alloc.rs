@@ -447,7 +447,9 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
                     )
                 })?,
             )
-            .map_err(|()| AllocatorError::InternalIssue("Failed to deallocate port".to_string()))
+            .map_err(|conflict| {
+                AllocatorError::InternalIssue(format!("Failed to deallocate port: {conflict}"))
+            })
     }
 
     fn allocate_port_from_block(
@@ -458,7 +460,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             .usage_bitmap
             .lock()
             .allocate_port_from_bitmap()
-            .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
+            .ok_or(AllocatorError::NoFreePort(self.base_port_idx))?;
 
         if allow_null {
             Ok(AllocatedPort::new(
@@ -492,7 +494,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
                     )
                 })?,
             )
-            .map_err(|()| AllocatorError::PortReservationFailed(port.as_u16()))?;
+            .map_err(|_| AllocatorError::PortReservationFailed(port.as_u16()))?;
 
         Ok(AllocatedPort::new(port, self.clone()))
     }
@@ -747,6 +749,13 @@ fn merge_ranges(ranges_left: &mut BTreeSet<PortRange>, mut ranges_right: BTreeSe
 // Bitmap256
 ///////////////////////////////////////////////////////////////////////////////
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum BitmapConflict {
+    #[error("port is already allocated")]
+    AlreadyAllocated,
+    #[error("port was not allocated")]
+    NotAllocated,
+}
 /// [`Bitmap256`] is a bitmap of 256 bits, stored as two `u128`. It is used to keep track of
 /// allocated ports in a [`AllocatedPortBlock`].
 #[derive(Debug, Clone)]
@@ -840,31 +849,30 @@ impl Bitmap256 {
     //= https://www.rfc-editor.org/rfc/rfc4787#section-4.2.1
     //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
     //# overloading".
-    fn allocate_port_from_bitmap(&mut self) -> Result<u16, ()> {
+    fn allocate_port_from_bitmap(&mut self) -> Option<u16> {
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.first_half.trailing_ones() as u16;
         if ones < 128 {
             self.first_half |= 1 << ones;
-            return Ok(ones);
+            return Some(ones);
         }
 
         #[allow(clippy::cast_possible_truncation)] // max value is 128
         let ones = self.second_half.trailing_ones() as u16;
         if ones < 128 {
             self.second_half |= 1 << ones;
-            return Ok(ones + 128);
+            return Some(ones + 128);
         }
 
         // Both halves are full
-        Err(())
+        None
     }
 
     /// Mark a port used or free, failing if it is already in that state.
     ///
     /// The error is load-bearing in both directions: it is how reserving a port that has already
     /// been handed out is refused, rather than the pair going to two flows at once, and how giving
-    /// back a port that was never taken is reported as the bookkeeping mistake it is.
-    fn set_bitmap_value(&mut self, port_in_block: u8, used: bool) -> Result<(), ()> {
+    fn set_bitmap_value(&mut self, port_in_block: u8, used: bool) -> Result<(), BitmapConflict> {
         let (half, bit) = if port_in_block < 128 {
             (&mut self.first_half, port_in_block)
         } else {
@@ -873,7 +881,11 @@ impl Bitmap256 {
         let mask = 1u128 << bit;
 
         if (*half & mask != 0) == used {
-            return Err(());
+            return Err(if used {
+                BitmapConflict::AlreadyAllocated
+            } else {
+                BitmapConflict::NotAllocated
+            });
         }
         if used {
             *half |= mask;
@@ -883,11 +895,11 @@ impl Bitmap256 {
         Ok(())
     }
 
-    fn deallocate_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
+    fn deallocate_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), BitmapConflict> {
         self.set_bitmap_value(port_in_block, false)
     }
 
-    fn reserve_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
+    fn reserve_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), BitmapConflict> {
         self.set_bitmap_value(port_in_block, true)
     }
 

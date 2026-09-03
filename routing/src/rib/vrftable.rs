@@ -440,7 +440,7 @@ mod tests {
     use crate::fib::fibobjects::{EgressObject, PktInstruction};
     use crate::fib::fibtype::FibKey;
     use crate::interfaces::tests::build_test_iftable_left_right;
-    use crate::rib::encapsulation::Encapsulation;
+    use crate::rib::encapsulation::ResolvedEncapsulation;
     use crate::rib::vrf::VrfStatus;
     use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::rib::vrf::tests::{
@@ -848,15 +848,22 @@ mod tests {
         assert_eq!(fibgroup.len(), 4);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
-            vxlan.resolve(&rstore);
-            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
-            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
+                .resolve(&rstore)
+                .expect("the rmac store knows this remote");
+            assert_eq!(
+                entry.instructions[0],
+                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+            );
+            assert_eq!(
+                entry.instructions[1],
+                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+            );
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9"))))),
                 _ => unreachable!(),
             }
         }
@@ -875,13 +882,20 @@ mod tests {
         assert_eq!(fibgroup.len(), 2);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
-            vxlan.resolve(&rstore);
-            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
-            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
+                .resolve(&rstore)
+                .expect("the rmac store knows this remote");
+            assert_eq!(
+                entry.instructions[0],
+                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+            );
+            assert_eq!(
+                entry.instructions[1],
+                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+            );
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9"))))),
                 _ => unreachable!(),
             }
         }
@@ -899,12 +913,19 @@ mod tests {
         assert_eq!(fibgroup.len(), 1);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
-            vxlan.resolve(&rstore);
-            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
-            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
+                .resolve(&rstore)
+                .expect("the rmac store knows this remote");
+            assert_eq!(
+                entry.instructions[0],
+                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+            );
+            assert_eq!(
+                entry.instructions[1],
+                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+            );
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
                 _ => unreachable!(),
             }
         }
@@ -919,15 +940,22 @@ mod tests {
         assert_eq!(fibgroup.len(), 4);
         for (num, entry) in fibgroup.iter().enumerate() {
             assert_eq!(entry.len(), 4);
-            let mut vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"));
-            vxlan.resolve(&rstore);
-            assert_eq!(entry.instructions[0], PktInstruction::Encap(Encapsulation::Vxlan(vxlan)));
-            assert_eq!(entry.instructions[1], PktInstruction::Encap(Encapsulation::Mpls(7000)));
+            let vxlan = VxlanEncapsulation::new(mk_vni(3000), mk_addr("7.0.0.1"))
+                .resolve(&rstore)
+                .expect("the rmac store knows this remote");
+            assert_eq!(
+                entry.instructions[0],
+                PktInstruction::Encap(ResolvedEncapsulation::Vxlan(vxlan))
+            );
+            assert_eq!(
+                entry.instructions[1],
+                PktInstruction::Encap(ResolvedEncapsulation::Mpls(7000))
+            );
             match num {
-                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1")), None))),
-                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5")), None))),
-                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9")), None))),
+                0 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(1).ok(), Some(mk_addr("10.0.0.1"))))),
+                1 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                2 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(2).ok(), Some(mk_addr("10.0.0.5"))))),
+                3 => assert_eq!(entry.instructions[3], PktInstruction::Egress(EgressObject::new(InterfaceIndex::try_new(3).ok(), Some(mk_addr("10.0.0.9"))))),
                 _ => unreachable!(),
             }
         }
@@ -1385,7 +1413,6 @@ mod crossvrf_properties {
                 FibEntry::with_inst(PktInstruction::Egress(EgressObject::new(
                     InterfaceIndex::try_new(ifindex).ok(),
                     Some(address),
-                    None,
                 )))
             }
             None => FibEntry::drop_fibentry(),

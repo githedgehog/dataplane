@@ -8,7 +8,6 @@ use crate::flows::FlowInfoFlags;
 use crate::flows::flow_info::{FlowInfo, FlowInfoError, FlowStatus};
 use bolero::TypeGenerator;
 use clock::Duration;
-use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy, TypeGenerator)]
 struct Millis(u16);
@@ -52,12 +51,13 @@ enum Op {
 fn key(port: u16) -> FlowKey {
     FlowKey::new(
         None,
-        "10.0.0.1"
-            .parse::<IpAddr>()
+        crate::flows::flow_key::FlowAddrs::V4 {
+            src: crate::ipv4::UnicastIpv4Addr::new(
+                "10.0.0.1".parse().unwrap_or_else(|_| unreachable!()),
+            )
             .unwrap_or_else(|_| unreachable!()),
-        "10.0.0.2"
-            .parse::<IpAddr>()
-            .unwrap_or_else(|_| unreachable!()),
+            dst: "10.0.0.2".parse().unwrap_or_else(|_| unreachable!()),
+        },
         crate::IpProtoKey::Udp(crate::UdpProtoKey {
             src_port: crate::udp::UdpPort::new_checked(port.max(1))
                 .unwrap_or_else(|_| unreachable!()),

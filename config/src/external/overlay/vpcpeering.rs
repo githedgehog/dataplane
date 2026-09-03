@@ -9,7 +9,9 @@ use crate::utils::{
     normalize,
 };
 use concurrency::sync::LazyLock;
-use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
+use lpm::prefix::{
+    IpRangeWithPorts, L4Protocol, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::Duration;
@@ -454,22 +456,26 @@ impl VpcExpose {
                 }
             }
 
-            let internal = collapsed_expose
-                .ips()
-                .first()
-                .unwrap_or_else(|| unreachable!());
-            let external = collapsed_expose
-                .as_range_or_empty()
-                .first()
-                .unwrap_or_else(|| unreachable!());
+            let (Some(internal), Some(external)) = (
+                collapsed_expose.ips().first(),
+                collapsed_expose.as_range_or_empty().first(),
+            ) else {
+                return Err(ConfigError::Forbidden(
+                    "Port forwarding requires a single prefix on each side",
+                ));
+            };
             if internal.prefix().length() != external.prefix().length() {
                 return Err(ConfigError::MismatchedPrefixLengths {
                     private: internal.prefix().length(),
                     public: external.prefix().length(),
                 });
             }
-            let internal_ports = internal.ports().unwrap_or_else(|| unreachable!());
-            let external_ports = external.ports().unwrap_or_else(|| unreachable!());
+            let (Some(internal_ports), Some(external_ports)) = (internal.ports(), external.ports())
+            else {
+                return Err(ConfigError::Forbidden(
+                    "Port forwarding requires a port range on each prefix",
+                ));
+            };
             if internal_ports.len() != external_ports.len() {
                 return Err(ConfigError::MismatchedPortRangeSizes {
                     private: internal_ports.len(),
@@ -492,6 +498,54 @@ impl VpcExpose {
         }
 
         Ok(collapsed_expose)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortForwardExpose {
+    internal: PrefixWithPortRange,
+    external: PrefixWithPortRange,
+    proto: L4Protocol,
+    idle_timeout: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrefixWithPortRange {
+    prefix: Prefix,
+    ports: PortRange,
+}
+
+impl PrefixWithPortRange {
+    #[must_use]
+    pub fn prefix(&self) -> Prefix {
+        self.prefix
+    }
+
+    #[must_use]
+    pub fn ports(&self) -> PortRange {
+        self.ports
+    }
+}
+
+impl PortForwardExpose {
+    #[must_use]
+    pub fn internal(&self) -> PrefixWithPortRange {
+        self.internal
+    }
+
+    #[must_use]
+    pub fn external(&self) -> PrefixWithPortRange {
+        self.external
+    }
+
+    #[must_use]
+    pub fn proto(&self) -> L4Protocol {
+        self.proto
+    }
+
+    #[must_use]
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        self.idle_timeout
     }
 }
 
@@ -634,6 +688,26 @@ impl ValidatedExpose {
     #[must_use]
     pub fn nat_proto(&self) -> Option<L4Protocol> {
         self.nat.as_ref().map(|nat| nat.proto)
+    }
+
+    #[must_use]
+    pub fn as_port_forward(&self) -> Option<PortForwardExpose> {
+        let nat = self.nat.as_ref()?;
+        let VpcExposeNatConfig::PortForwarding(options) = &nat.config else {
+            return None;
+        };
+        let side = |p: &PrefixWithOptionalPorts| {
+            Some(PrefixWithPortRange {
+                prefix: p.prefix(),
+                ports: p.ports()?,
+            })
+        };
+        Some(PortForwardExpose {
+            internal: side(self.ips.first()?)?,
+            external: side(nat.as_range.first()?)?,
+            proto: nat.proto,
+            idle_timeout: options.idle_timeout,
+        })
     }
 
     #[must_use]
