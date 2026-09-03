@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use bolero::{Driver, ValueGenerator};
@@ -11,27 +10,34 @@ use crate::gateway_agent_crd::{
     GatewayAgent, GatewayAgentPeerings, GatewayAgentPeeringsPeeringExpose,
 };
 
-fn reorder<D: Driver, T>(d: &mut D, items: &mut [T]) -> Option<()> {
+/// Rotate and swap `items`, reporting whether that was actually a reordering.
+///
+/// The caller counts these to tell a run where the permutation did nothing from a
+/// run where it did something and the configuration was unmoved by it. Reporting the
+/// operation rather than diffing the value is both cheaper and truer: a list of equal
+/// elements is genuinely reordered even though it does not look any different.
+fn reorder<D: Driver, T>(d: &mut D, items: &mut [T]) -> Option<bool> {
     if items.len() < 2 {
-        return Some(());
+        return Some(false);
     }
     let by = d.gen_usize(Bound::Included(&0), Bound::Excluded(&items.len()))?;
     items.rotate_left(by);
     let first = d.gen_usize(Bound::Included(&0), Bound::Excluded(&items.len()))?;
     let second = d.gen_usize(Bound::Included(&0), Bound::Excluded(&items.len()))?;
     items.swap(first, second);
-    Some(())
+    Some(by != 0 || first != second)
 }
 
 fn reorder_expose<D: Driver>(
     d: &mut D,
     expose: &mut GatewayAgentPeeringsPeeringExpose,
-) -> Option<()> {
+) -> Option<bool> {
+    let mut moved = false;
     if let Some(ips) = expose.ips.as_mut() {
-        reorder(d, ips)?;
+        moved |= reorder(d, ips)?;
     }
     if let Some(translations) = expose.r#as.as_mut() {
-        reorder(d, translations)?;
+        moved |= reorder(d, translations)?;
     }
     if let Some(ports) = expose
         .nat
@@ -39,17 +45,18 @@ fn reorder_expose<D: Driver>(
         .and_then(|nat| nat.port_forward.as_mut())
         .and_then(|forward| forward.ports.as_mut())
     {
-        reorder(d, ports)?;
+        moved |= reorder(d, ports)?;
     }
-    Some(())
+    Some(moved)
 }
 
-fn reorder_peering<D: Driver>(d: &mut D, peering: &mut GatewayAgentPeerings) -> Option<()> {
+fn reorder_peering<D: Driver>(d: &mut D, peering: &mut GatewayAgentPeerings) -> Option<bool> {
+    let mut moved = false;
     for manifest in peering.peering.iter_mut().flatten().map(|(_, m)| m) {
         if let Some(exposes) = manifest.expose.as_mut() {
-            reorder(d, exposes)?;
+            moved |= reorder(d, exposes)?;
             for expose in exposes.iter_mut() {
-                reorder_expose(d, expose)?;
+                moved |= reorder_expose(d, expose)?;
             }
         }
     }
@@ -64,30 +71,29 @@ fn reorder_peering<D: Driver>(d: &mut D, peering: &mut GatewayAgentPeerings) -> 
             continue;
         };
         if let Some(src) = pattern.src.as_mut() {
-            reorder(d, src)?;
+            moved |= reorder(d, src)?;
         }
         if let Some(dst) = pattern.dst.as_mut() {
-            reorder(d, dst)?;
+            moved |= reorder(d, dst)?;
         }
     }
-    Some(())
+    Some(moved)
 }
 
+/// Reorder every list inside every peering, leaving the peering map itself alone.
+///
+/// Peerings live in a `BTreeMap`, so there is no order there to permute. What the
+/// earlier version did instead was shuffle the peering bodies and zip them back onto
+/// the sorted names, handing each name a different peering's body. That is a different
+/// configuration, not a reordering of this one. It happened to be invisible downstream
+/// only because a peering's name never reaches the built artifacts, so the property was
+/// resting on a coincidence that any future use of the name would silently break.
 fn reorder_agent<D: Driver>(d: &mut D, agent: &mut GatewayAgent) -> Option<bool> {
-    let before = format!("{:?}", agent.spec.peerings);
-
-    if let Some(peerings) = agent.spec.peerings.as_mut() {
-        let names: Vec<String> = peerings.keys().cloned().collect();
-        let mut bodies: Vec<GatewayAgentPeerings> = peerings.values().cloned().collect();
-        reorder(d, &mut bodies)?;
-        *peerings = names.into_iter().zip(bodies).collect::<BTreeMap<_, _>>();
-
-        for peering in peerings.values_mut() {
-            reorder_peering(d, peering)?;
-        }
+    let mut moved = false;
+    for peering in agent.spec.peerings.iter_mut().flatten().map(|(_, p)| p) {
+        moved |= reorder_peering(d, peering)?;
     }
-
-    Some(before != format!("{:?}", agent.spec.peerings))
+    Some(moved)
 }
 
 #[derive(Debug, Default, Clone)]
