@@ -2,14 +2,19 @@
 // Copyright Open Network Fabric Authors
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Bound::Included;
+use std::time::Duration;
 
 use bolero::{Driver, ValueGenerator};
-use lpm::prefix::{IpPrefix, Ipv4Prefix, Prefix};
+use lpm::prefix::with_ports::L4Protocol;
+use lpm::prefix::{
+    IpPrefix, Ipv4Prefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+};
 
 use crate::ConfigError;
 use crate::external::overlay::Overlay;
+use crate::external::overlay::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use crate::external::overlay::vpc::{Vpc, VpcTable};
 use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 
@@ -46,6 +51,131 @@ impl Side {
 pub enum Flavour {
     Forward,
     Masquerade,
+    StaticNat,
+    PortForward,
+    Everything,
+}
+
+impl Flavour {
+    #[must_use]
+    pub const fn is_directional(self) -> bool {
+        matches!(self, Self::Masquerade | Self::PortForward)
+    }
+
+    const fn has_prefixes(self) -> bool {
+        !matches!(self, Self::Everything)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default)]
+pub enum Guard {
+    #[default]
+    Open,
+    Permit,
+    PermitFlow,
+    PermitExcept,
+    PermitByProtocol,
+    Deny,
+}
+
+impl Guard {
+    fn acl(self, peering: PeeringHandle, spec: &PeeringSpec) -> Option<Acl> {
+        let (default, action, scope) = match self {
+            Guard::Open => return None,
+            Guard::Permit | Guard::PermitExcept | Guard::PermitByProtocol => {
+                (AclAction::Deny, AclAction::Allow, AclScope::Packet)
+            }
+            Guard::PermitFlow => (AclAction::Deny, AclAction::Allow, AclScope::Flow),
+            Guard::Deny => (AclAction::Allow, AclAction::Deny, AclScope::Packet),
+        };
+        let (proto, any_ports) = if self == Guard::PermitByProtocol {
+            (AclProtoMatch::Udp, vec![port_range(EVERY_PORT)])
+        } else {
+            (AclProtoMatch::Any, Vec::new())
+        };
+        let rule = |side: Side| {
+            let (from, to) = (spec.vpc(side).name(), spec.vpc(side.other()).name());
+            AclRule {
+                name: format!("{from}-to-{to}"),
+                from,
+                to,
+                action,
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: any_ports.clone(),
+                    dst_any_ports: any_ports.clone(),
+                    proto,
+                },
+                scope,
+                log: action == AclAction::Deny,
+            }
+        };
+        let rules = match self {
+            Guard::PermitFlow => {
+                vec![rule(self.opening_side(spec).unwrap_or_else(|| {
+                    unreachable!("`legal_on` refused a guard with no side")
+                }))]
+            }
+            Guard::PermitExcept | Guard::PermitByProtocol => {
+                let (side, which, prefix) = spec
+                    .exception(peering)
+                    .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no expose"));
+                let denied_from = match which {
+                    Narrowing::Source => side,
+                    Narrowing::Destination => side.other(),
+                };
+                let mut denial = rule(denied_from);
+                denial.name = format!("{}-except", denial.name);
+                denial.action = AclAction::Deny;
+                let named = PrefixPortsSet::from([PrefixWithOptionalPorts::from(prefix)]);
+                match which {
+                    Narrowing::Source => denial.pattern.src = named,
+                    Narrowing::Destination => denial.pattern.dst = named,
+                }
+                if self == Guard::PermitByProtocol {
+                    denial.pattern.proto = AclProtoMatch::Tcp;
+                }
+                vec![denial, rule(denied_from), rule(denied_from.other())]
+            }
+            Guard::Open | Guard::Permit | Guard::Deny => {
+                vec![rule(Side::Left), rule(Side::Right)]
+            }
+        };
+        Some(Acl::new(default, rules))
+    }
+
+    fn opening_side(self, spec: &PeeringSpec) -> Option<Side> {
+        match self {
+            Guard::PermitFlow => Some(
+                spec.sole_opener()
+                    .unwrap_or_else(|| unreachable!("`legal_on` refused a guard with no side")),
+            ),
+            Guard::Open
+            | Guard::Permit
+            | Guard::PermitExcept
+            | Guard::PermitByProtocol
+            | Guard::Deny => None,
+        }
+    }
+
+    fn legal_on(self, spec: &PeeringSpec) -> bool {
+        match self {
+            Guard::Open | Guard::Permit | Guard::Deny => true,
+            Guard::PermitFlow => spec.sole_opener().is_some(),
+            Guard::PermitExcept | Guard::PermitByProtocol => spec.exception_slot().is_some(),
+        }
+    }
+
+    fn silences(self, spec: &PeeringSpec, side: Side, nth: usize) -> bool {
+        match self {
+            Guard::Open | Guard::Permit | Guard::PermitFlow | Guard::PermitByProtocol => false,
+            Guard::Deny => true,
+            Guard::PermitExcept => spec
+                .exception_slot()
+                .is_some_and(|(at, which, _)| (at, which) == (side, nth)),
+        }
+    }
 }
 
 pub const MAX_EXPOSES: u8 = 4;
@@ -68,9 +198,15 @@ impl VpcHandle {
     }
 }
 
+const LONG_IDLE_TIMEOUT: Duration = Duration::from_hours(1);
+
 impl PeeringHandle {
     fn name(self) -> String {
         format!("PEERING-{:03}", self.0)
+    }
+
+    fn group(self) -> String {
+        format!("group-{}", self.0 % 3)
     }
 
     fn block(self, side: Side, slot: u8) -> u32 {
@@ -81,12 +217,30 @@ impl PeeringHandle {
     }
 }
 
+pub(crate) const FORWARDED_PRIVATE_PORTS: (u16, u16) = (1000, 1004);
+
+pub(crate) const FORWARDED_PUBLIC_PORTS: (u16, u16) = (2000, 2004);
+
+const EVERY_PORT: (u16, u16) = (1, u16::MAX);
+
+fn port_range((start, end): (u16, u16)) -> PortRange {
+    PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
+}
+
+const PRIVATE_BASE: u32 = 0x0A00_0000;
+
+const PUBLIC_BASE: u32 = 0xAC10_0000;
+
 fn private_prefix(index: u32) -> Prefix {
-    prefix_v4(0x0A00_0000 | (index << 8), 24)
+    prefix_v4(PRIVATE_BASE | (index << 8), 24)
 }
 
 fn public_prefix(index: u32) -> Prefix {
-    prefix_v4(0xAC10_0000 | (index << 8), 24)
+    prefix_v4(PUBLIC_BASE | (index << 8), 24)
+}
+
+fn excluded_slice(index: u32, base: u32) -> Prefix {
+    prefix_v4(base | (index << 8) | 0x40, 26)
 }
 
 fn prefix_v4(bits: u32, len: u8) -> Prefix {
@@ -108,6 +262,31 @@ impl ExposeSpec {
         self.flavour
     }
 
+    fn idle_timeout(self) -> Option<Duration> {
+        (self.slot % 2 == 1).then_some(LONG_IDLE_TIMEOUT)
+    }
+
+    fn nat_proto(self) -> Option<L4Protocol> {
+        match self.flavour {
+            Flavour::PortForward => Some(match self.slot % 3 {
+                0 => L4Protocol::Any,
+                1 => L4Protocol::Udp,
+                _ => L4Protocol::Tcp,
+            }),
+            Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat | Flavour::Everything => {
+                None
+            }
+        }
+    }
+
+    fn excludes(self) -> bool {
+        self.slot < 2
+            && matches!(
+                self.flavour,
+                Flavour::Forward | Flavour::Masquerade | Flavour::StaticNat
+            )
+    }
+
     #[must_use]
     pub fn private(self, peering: PeeringHandle, side: Side) -> Prefix {
         private_prefix(peering.block(side, self.slot))
@@ -116,21 +295,82 @@ impl ExposeSpec {
     #[must_use]
     pub fn public(self, peering: PeeringHandle, side: Side) -> Prefix {
         match self.flavour {
-            Flavour::Forward => self.private(peering, side),
-            Flavour::Masquerade => public_prefix(peering.block(side, self.slot)),
+            Flavour::Forward | Flavour::Everything => self.private(peering, side),
+            Flavour::Masquerade | Flavour::StaticNat | Flavour::PortForward => {
+                public_prefix(peering.block(side, self.slot))
+            }
         }
+    }
+
+    fn carve(self, expose: VpcExpose, peering: PeeringHandle, side: Side) -> VpcExpose {
+        if !self.excludes() {
+            return expose;
+        }
+        let block = peering.block(side, self.slot);
+        let expose = expose.not(excluded_slice(block, PRIVATE_BASE).into());
+        if expose.nat.is_none() {
+            return expose;
+        }
+        expose
+            .not_as(excluded_slice(block, PUBLIC_BASE).into())
+            .unwrap_or_else(|_| unreachable!("a translating expose accepts an excluded range"))
     }
 
     fn expose(self, peering: PeeringHandle, side: Side) -> VpcExpose {
         let private = self.private(peering, side);
         match self.flavour {
-            Flavour::Forward => VpcExpose::empty().ip(private.into()),
-            Flavour::Masquerade => VpcExpose::empty()
-                .make_masquerade(None)
-                .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
-                .ip(private.into())
-                .as_range(self.public(peering, side).into())
-                .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
+            Flavour::Everything => VpcExpose::empty().set_default(),
+            Flavour::Forward => self.carve(VpcExpose::empty().ip(private.into()), peering, side),
+            Flavour::Masquerade => self.carve(
+                VpcExpose::empty()
+                    .make_masquerade(self.idle_timeout())
+                    .unwrap_or_else(|_| unreachable!("an empty expose accepts masquerade"))
+                    .ip(private.into())
+                    .as_range(self.public(peering, side).into())
+                    .unwrap_or_else(|_| unreachable!("a masquerade expose accepts a public range")),
+                peering,
+                side,
+            ),
+            Flavour::StaticNat => self.carve(
+                VpcExpose::empty()
+                    .make_static_nat()
+                    .unwrap_or_else(|_| unreachable!("an empty expose accepts static nat"))
+                    .ip(private.into())
+                    .as_range(self.public(peering, side).into())
+                    .unwrap_or_else(|_| unreachable!("a static nat expose accepts a public range")),
+                peering,
+                side,
+            ),
+            Flavour::PortForward => VpcExpose::empty()
+                .make_port_forwarding(self.idle_timeout(), self.nat_proto())
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
+                .ip(PrefixWithOptionalPorts::new(
+                    private,
+                    Some(port_range(FORWARDED_PRIVATE_PORTS)),
+                ))
+                .as_range(PrefixWithOptionalPorts::new(
+                    self.public(peering, side),
+                    Some(port_range(FORWARDED_PUBLIC_PORTS)),
+                ))
+                .unwrap_or_else(|_| {
+                    unreachable!("a port forwarding expose accepts a public range")
+                }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Narrowing {
+    Source,
+    Destination,
+}
+
+impl Narrowing {
+    fn of(flavour: Flavour) -> Option<Self> {
+        match flavour {
+            Flavour::Masquerade => Some(Self::Source),
+            Flavour::PortForward => Some(Self::Destination),
+            Flavour::Forward | Flavour::StaticNat | Flavour::Everything => None,
         }
     }
 }
@@ -140,6 +380,7 @@ pub struct PeeringSpec {
     left: VpcHandle,
     right: VpcHandle,
     exposes: [Vec<ExposeSpec>; 2],
+    guard: Guard,
 }
 
 impl PeeringSpec {
@@ -149,6 +390,11 @@ impl PeeringSpec {
             Side::Left => self.left,
             Side::Right => self.right,
         }
+    }
+
+    #[must_use]
+    pub fn guard(&self) -> Guard {
+        self.guard
     }
 
     #[must_use]
@@ -174,10 +420,52 @@ impl PeeringSpec {
         }
     }
 
-    fn has_stateful(&self, side: Side) -> bool {
+    fn sole_opener(&self) -> Option<Side> {
+        [Side::Left, Side::Right].into_iter().find_map(|side| {
+            let exposes = self.exposes(side);
+            if exposes.is_empty() {
+                return None;
+            }
+            let all = |flavour| exposes.iter().all(|expose| expose.flavour == flavour);
+            if all(Flavour::Masquerade) {
+                Some(side)
+            } else if all(Flavour::PortForward) {
+                Some(side.other())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn exception_slot(&self) -> Option<(Side, usize, Narrowing)> {
+        [Side::Left, Side::Right].into_iter().find_map(|side| {
+            self.exposes(side)
+                .iter()
+                .enumerate()
+                .find_map(|(nth, expose)| Some((side, nth, Narrowing::of(expose.flavour)?)))
+        })
+    }
+
+    fn exception(&self, peering: PeeringHandle) -> Option<(Side, Narrowing, Prefix)> {
+        let (side, nth, which) = self.exception_slot()?;
+        let expose = self.exposes(side)[nth];
+        let prefix = match which {
+            Narrowing::Source => expose.private(peering, side),
+            Narrowing::Destination => expose.public(peering, side),
+        };
+        Some((side, which, prefix))
+    }
+
+    fn has_everything(&self, side: Side) -> bool {
         self.exposes(side)
             .iter()
-            .any(|expose| expose.flavour == Flavour::Masquerade)
+            .any(|expose| expose.flavour == Flavour::Everything)
+    }
+
+    fn has_directional(&self, side: Side) -> bool {
+        self.exposes(side)
+            .iter()
+            .any(|expose| expose.flavour.is_directional())
     }
 
     fn manifest(&self, peering: PeeringHandle, side: Side) -> VpcManifest {
@@ -219,6 +507,72 @@ impl Draft {
     }
 
     #[must_use]
+    pub fn carries(&self, peering: &str, local: &str, nth: usize) -> bool {
+        let Some((_, spec)) = self
+            .peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == peering)
+        else {
+            return true;
+        };
+        let Some(side) = [Side::Left, Side::Right]
+            .into_iter()
+            .find(|side| spec.vpc(*side).name() == local)
+        else {
+            return true;
+        };
+        !spec.guard.silences(spec, side, nth)
+    }
+
+    #[must_use]
+    pub fn unexposed_address(&self, peering: &str, local: &str, nth: usize) -> Option<IpAddr> {
+        let (handle, spec) = self
+            .peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == peering)?;
+        let side = [Side::Left, Side::Right]
+            .into_iter()
+            .find(|side| spec.vpc(*side).name() == local)?;
+        let expose = *spec.exposes(side).get(nth)?;
+        if !expose.excludes() || expose.flavour == Flavour::Masquerade {
+            return None;
+        }
+        if spec.has_everything(side) {
+            return None;
+        }
+        let base = match expose.flavour {
+            Flavour::Forward => PRIVATE_BASE,
+            Flavour::StaticNat => PUBLIC_BASE,
+            Flavour::Masquerade | Flavour::PortForward | Flavour::Everything => return None,
+        };
+        Some(excluded_slice(handle.block(side, expose.slot), base).as_address())
+    }
+
+    #[must_use]
+    pub fn guard_named(&self, name: &str) -> Option<Guard> {
+        self.peerings
+            .iter()
+            .find(|(handle, _)| handle.name() == name)
+            .map(|(_, spec)| spec.guard)
+    }
+
+    fn peerings_of(&self, vpc: VpcHandle) -> usize {
+        self.peerings
+            .values()
+            .filter(|spec| spec.touches(vpc))
+            .count()
+    }
+
+    fn beside_everything(&self, vpc: VpcHandle) -> bool {
+        self.peerings.values().any(|spec| {
+            spec.touches(vpc)
+                && [Side::Left, Side::Right]
+                    .into_iter()
+                    .any(|side| spec.has_everything(side))
+        })
+    }
+
+    #[must_use]
     pub fn components(&self) -> Vec<Vec<VpcHandle>> {
         let mut unvisited: BTreeSet<VpcHandle> = self.vpcs.clone();
         let mut components = Vec::new();
@@ -253,11 +607,14 @@ impl Draft {
 
         let mut peerings = VpcPeeringTable::new();
         for (handle, spec) in self.peerings() {
-            peerings.add(VpcPeering::with_default_group(
+            let mut peering = VpcPeering::new(
                 &handle.name(),
                 spec.manifest(handle, Side::Left),
                 spec.manifest(handle, Side::Right),
-            ))?;
+                handle.group(),
+            );
+            peering.acl = spec.guard.acl(handle, spec);
+            peerings.add(peering)?;
         }
 
         Ok(Overlay::new(vpc_table, peerings))
@@ -330,6 +687,10 @@ pub enum Op {
         slot: u8,
         flavour: Flavour,
     },
+    SetGuard {
+        peering: PeeringHandle,
+        guard: Guard,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -358,17 +719,42 @@ pub enum Undo {
         slot: u8,
         flavour: Flavour,
     },
+    SetGuard {
+        peering: PeeringHandle,
+        guard: Guard,
+    },
 }
 
 impl Op {
     #[must_use]
-    pub fn reads(&self) -> Footprint {
+    pub fn reads(&self, draft: &Draft) -> Footprint {
         match self {
             Op::AddVpc(_) | Op::RemoveVpc(_) | Op::RemovePeering(_) => Footprint::default(),
-            Op::AddPeering { left, right, .. } => Footprint::of([*left, *right], []),
-            Op::AddExpose { peering, .. }
-            | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. } => Footprint::of([], [*peering]),
+            Op::AddPeering { left, right, .. } => Footprint::of(
+                [*left, *right],
+                draft
+                    .peerings()
+                    .filter(|(_, spec)| spec.touches(*left) || spec.touches(*right))
+                    .map(|(handle, _)| handle),
+            ),
+            Op::RemoveExpose { peering, .. } | Op::SetGuard { peering, .. } => {
+                Footprint::of([], [*peering])
+            }
+            Op::AddExpose {
+                peering, flavour, ..
+            }
+            | Op::SetFlavour {
+                peering, flavour, ..
+            } => {
+                let mut footprint = Footprint::of([], [*peering]);
+                if *flavour == Flavour::Everything
+                    && let Some(spec) = draft.peerings.get(peering)
+                {
+                    footprint.vpcs.insert(spec.left);
+                    footprint.vpcs.insert(spec.right);
+                }
+                footprint
+            }
         }
     }
 
@@ -406,7 +792,8 @@ impl Op {
             }
             Op::AddExpose { peering, .. }
             | Op::RemoveExpose { peering, .. }
-            | Op::SetFlavour { peering, .. } => Footprint::of([], [*peering]),
+            | Op::SetFlavour { peering, .. }
+            | Op::SetGuard { peering, .. } => Footprint::of([], [*peering]),
         }
     }
 
@@ -437,6 +824,8 @@ impl Op {
                     || !draft.vpcs.contains(&left)
                     || !draft.vpcs.contains(&right)
                     || draft.peering_between(left, right).is_some()
+                    || draft.beside_everything(left)
+                    || draft.beside_everything(right)
                 {
                     return None;
                 }
@@ -450,6 +839,7 @@ impl Op {
                         left,
                         right,
                         exposes: [vec![first(0)], vec![first(0)]],
+                        guard: Guard::Open,
                     },
                 );
                 Some(Undo::RemovePeering(handle))
@@ -478,12 +868,16 @@ impl Op {
                 }
                 let index = spec.exposes(side).iter().position(|e| e.slot == slot)?;
                 let removed = spec.exposes_mut(side).remove(index);
-                Some(Undo::RestoreExpose {
+                respecting_guard(
+                    draft,
                     peering,
-                    side,
-                    index,
-                    spec: removed,
-                })
+                    Undo::RestoreExpose {
+                        peering,
+                        side,
+                        index,
+                        spec: removed,
+                    },
+                )
             }
 
             Op::SetFlavour {
@@ -492,6 +886,18 @@ impl Op {
                 slot,
                 flavour,
             } => set_flavour(draft, peering, side, slot, flavour),
+
+            Op::SetGuard { peering, guard } => {
+                let spec = draft.peerings.get_mut(&peering)?;
+                if !guard.legal_on(spec) {
+                    return None;
+                }
+                let previous = std::mem::replace(&mut spec.guard, guard);
+                Some(Undo::SetGuard {
+                    peering,
+                    guard: previous,
+                })
+            }
         }
     }
 }
@@ -533,7 +939,10 @@ fn add_expose(
     if spec.exposes(side).iter().any(|e| e.slot == slot) {
         return None;
     }
-    if flavour == Flavour::Masquerade && spec.has_stateful(side.other()) {
+    if flavour.is_directional() && spec.has_directional(side.other()) {
+        return None;
+    }
+    if flavour == Flavour::Everything && !may_expose_everything(draft, peering, side) {
         return None;
     }
     draft
@@ -542,11 +951,35 @@ fn add_expose(
         .unwrap_or_else(|| unreachable!("just found it"))
         .exposes_mut(side)
         .push(ExposeSpec { slot, flavour });
-    Some(Undo::RemoveExpose {
+    respecting_guard(
+        draft,
         peering,
-        side,
-        slot,
-    })
+        Undo::RemoveExpose {
+            peering,
+            side,
+            slot,
+        },
+    )
+}
+
+fn respecting_guard(draft: &mut Draft, peering: PeeringHandle, undo: Undo) -> Option<Undo> {
+    let spec = draft.peerings.get(&peering)?;
+    if spec.guard.legal_on(spec) {
+        return Some(undo);
+    }
+    undo.apply(draft);
+    None
+}
+
+fn may_expose_everything(draft: &Draft, peering: PeeringHandle, side: Side) -> bool {
+    let Some(spec) = draft.peerings.get(&peering) else {
+        return false;
+    };
+    !spec.has_everything(side)
+        && !spec.has_everything(side.other())
+        && [Side::Left, Side::Right]
+            .into_iter()
+            .all(|which| draft.peerings_of(spec.vpc(which)) == 1)
 }
 
 fn set_flavour(
@@ -557,10 +990,16 @@ fn set_flavour(
     flavour: Flavour,
 ) -> Option<Undo> {
     let spec = draft.peerings.get(&peering)?;
-    if flavour == Flavour::Masquerade && spec.has_stateful(side.other()) {
+    if flavour.is_directional() && spec.has_directional(side.other()) {
         return None;
     }
     let index = spec.exposes(side).iter().position(|e| e.slot == slot)?;
+    if flavour == Flavour::Everything
+        && spec.exposes(side)[index].flavour != Flavour::Everything
+        && !may_expose_everything(draft, peering, side)
+    {
+        return None;
+    }
     let exposes = draft
         .peerings
         .get_mut(&peering)
@@ -568,12 +1007,16 @@ fn set_flavour(
         .exposes_mut(side);
     let previous = exposes[index].flavour;
     exposes[index].flavour = flavour;
-    Some(Undo::SetFlavour {
+    respecting_guard(
+        draft,
         peering,
-        side,
-        slot,
-        flavour: previous,
-    })
+        Undo::SetFlavour {
+            peering,
+            side,
+            slot,
+            flavour: previous,
+        },
+    )
 }
 
 impl Undo {
@@ -649,6 +1092,13 @@ impl Undo {
                     .unwrap_or_else(|| unreachable!("no expose in slot {slot}"));
                 spec.exposes_mut(*side)[index].flavour = *flavour;
             }
+            Undo::SetGuard { peering, guard } => {
+                draft
+                    .peerings
+                    .get_mut(peering)
+                    .unwrap_or_else(|| unreachable!("no peering {peering:?}"))
+                    .guard = *guard;
+            }
         }
     }
 }
@@ -710,7 +1160,7 @@ impl ValueGenerator for Sequence {
     }
 }
 
-const MENU: [(Kind, u8); 7] = [
+const MENU: [(Kind, u8); 8] = [
     (Kind::AddVpc, 4),
     (Kind::RemoveVpc, 1),
     (Kind::AddPeering, 4),
@@ -718,6 +1168,7 @@ const MENU: [(Kind, u8); 7] = [
     (Kind::AddExpose, 2),
     (Kind::RemoveExpose, 1),
     (Kind::SetFlavour, 2),
+    (Kind::SetGuard, 2),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -729,6 +1180,7 @@ enum Kind {
     AddExpose,
     RemoveExpose,
     SetFlavour,
+    SetGuard,
 }
 
 impl Kind {
@@ -745,7 +1197,7 @@ impl Kind {
                 let vpcs = draft.vpcs.len();
                 next_peering < u8::MAX && vpcs >= 2 && draft.peerings.len() < vpcs * (vpcs - 1) / 2
             }
-            Kind::RemovePeering | Kind::SetFlavour => !draft.peerings.is_empty(),
+            Kind::RemovePeering | Kind::SetFlavour | Kind::SetGuard => !draft.peerings.is_empty(),
             Kind::AddExpose => sides().any(|exposes| exposes.len() < usize::from(MAX_EXPOSES)),
             Kind::RemoveExpose => sides().any(|exposes| exposes.len() > 1),
         }
@@ -775,9 +1227,10 @@ fn draw<D: Driver>(
             Kind::AddExpose => draw_add_expose(driver, draft),
             Kind::RemoveExpose => draw_remove_expose(driver, draft),
             Kind::SetFlavour => draw_set_flavour(driver, draft),
+            Kind::SetGuard => draw_set_guard(driver, draft),
         };
 
-        let Some(op) = built else {
+        let Some(op) = built.filter(|op| op.applicable(draft)) else {
             menu.retain(|other| *other != kind);
             continue;
         };
@@ -882,7 +1335,12 @@ fn draw_add_expose<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
         peering,
         side,
         slot,
-        flavour: draw_flavour(driver, spec, side)?,
+        flavour: draw_flavour(
+            driver,
+            spec,
+            side,
+            may_expose_everything(draft, peering, side),
+        )?,
     })
 }
 
@@ -923,20 +1381,66 @@ fn draw_set_flavour<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
     let (peering, side, slot) = pick(driver, &exposes)?;
     let spec = draft.peerings.get(&peering)?;
 
+    let already = spec
+        .exposes(side)
+        .iter()
+        .any(|expose| expose.slot == slot && expose.flavour == Flavour::Everything);
     Some(Op::SetFlavour {
         peering,
         side,
         slot,
-        flavour: draw_flavour(driver, spec, side)?,
+        flavour: draw_flavour(
+            driver,
+            spec,
+            side,
+            already || may_expose_everything(draft, peering, side),
+        )?,
     })
 }
 
-fn draw_flavour<D: Driver>(driver: &mut D, spec: &PeeringSpec, side: Side) -> Option<Flavour> {
-    if driver.produce::<bool>()? && !spec.has_stateful(side.other()) {
-        Some(Flavour::Masquerade)
+fn draw_set_guard<D: Driver>(driver: &mut D, draft: &Draft) -> Option<Op> {
+    const ORDERED: [Guard; 6] = [
+        Guard::Open,
+        Guard::Permit,
+        Guard::PermitExcept,
+        Guard::PermitByProtocol,
+        Guard::PermitFlow,
+        Guard::Deny,
+    ];
+
+    let guard = pick(driver, &ORDERED)?;
+    let willing: Vec<PeeringHandle> = draft
+        .peerings()
+        .filter(|(_, spec)| guard.legal_on(spec))
+        .map(|(handle, _)| handle)
+        .collect();
+
+    Some(Op::SetGuard {
+        peering: pick(driver, &willing)?,
+        guard,
+    })
+}
+
+fn draw_flavour<D: Driver>(
+    driver: &mut D,
+    spec: &PeeringSpec,
+    side: Side,
+    everything: bool,
+) -> Option<Flavour> {
+    const ORDERED: [Flavour; 5] = [
+        Flavour::Forward,
+        Flavour::StaticNat,
+        Flavour::PortForward,
+        Flavour::Masquerade,
+        Flavour::Everything,
+    ];
+    let end = if everything { 5 } else { 4 };
+    let legal = if spec.has_directional(side.other()) {
+        &ORDERED[..2]
     } else {
-        Some(Flavour::Forward)
-    }
+        &ORDERED[..end]
+    };
+    pick(driver, legal)
 }
 
 fn pick<T: Copy, D: Driver>(driver: &mut D, items: &[T]) -> Option<T> {
@@ -1010,7 +1514,8 @@ mod tests {
         );
     }
 
-    static DRAWN: [AtomicUsize; 7] = [
+    static DRAWN: [AtomicUsize; 8] = [
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
@@ -1020,7 +1525,7 @@ mod tests {
         AtomicUsize::new(0),
     ];
 
-    const KINDS: [&str; 7] = [
+    const KINDS: [&str; 8] = [
         "AddVpc",
         "RemoveVpc",
         "AddPeering",
@@ -1028,6 +1533,7 @@ mod tests {
         "AddExpose",
         "RemoveExpose",
         "SetFlavour",
+        "SetGuard",
     ];
 
     fn record(op: Op) {
@@ -1039,6 +1545,7 @@ mod tests {
             Op::AddExpose { .. } => 4,
             Op::RemoveExpose { .. } => 5,
             Op::SetFlavour { .. } => 6,
+            Op::SetGuard { .. } => 7,
         };
         DRAWN[index].fetch_add(1, Relaxed);
     }
@@ -1054,8 +1561,8 @@ mod tests {
 
     #[test]
     fn every_sequence_builds_a_valid_configuration() {
-        let masquerading = AtomicUsize::new(0);
-        let forwarding = AtomicUsize::new(0);
+        let flavours = [const { AtomicUsize::new(0) }; 5];
+        let guards = [const { AtomicUsize::new(0) }; 6];
 
         check!()
             .with_generator(Sequence::default())
@@ -1076,10 +1583,13 @@ mod tests {
                 for (_, spec) in draft.peerings() {
                     for side in [Side::Left, Side::Right] {
                         for expose in spec.exposes(side) {
-                            match expose.flavour() {
-                                Flavour::Masquerade => &masquerading,
-                                Flavour::Forward => &forwarding,
-                            }
+                            flavours[match expose.flavour() {
+                                Flavour::Forward => 0,
+                                Flavour::Masquerade => 1,
+                                Flavour::StaticNat => 2,
+                                Flavour::PortForward => 3,
+                                Flavour::Everything => 4,
+                            }]
                             .fetch_add(1, Relaxed);
                         }
                     }
@@ -1088,19 +1598,94 @@ mod tests {
                 let overlay = draft
                     .overlay()
                     .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+
+                for (handle, spec) in draft.peerings() {
+                    let acl = overlay
+                        .peering_table
+                        .values()
+                        .find(|peering| peering.name == handle.name())
+                        .and_then(|peering| peering.acl.as_ref());
+                    let observed = acl.map_or(Guard::Open, |acl| {
+                        let inert = acl
+                            .rules()
+                            .first()
+                            .is_some_and(|rule| rule.pattern.proto == AclProtoMatch::Tcp);
+                        match (acl.default_action(), acl.rules().len()) {
+                            (AclAction::Deny, 1) => Guard::PermitFlow,
+                            (AclAction::Deny, 3) if inert => Guard::PermitByProtocol,
+                            (AclAction::Deny, 3) => Guard::PermitExcept,
+                            (AclAction::Deny, _) => Guard::Permit,
+                            (AclAction::Allow, _) => Guard::Deny,
+                        }
+                    });
+                    assert_eq!(
+                        observed,
+                        spec.guard(),
+                        "{:?} is guarded {:?} and assembled an acl reading {observed:?}",
+                        handle,
+                        spec.guard()
+                    );
+                    guards[match observed {
+                        Guard::Open => 0,
+                        Guard::Permit => 1,
+                        Guard::PermitExcept => 2,
+                        Guard::PermitByProtocol => 3,
+                        Guard::PermitFlow => 4,
+                        Guard::Deny => 5,
+                    }]
+                    .fetch_add(1, Relaxed);
+                }
+
                 if let Err(e) = overlay.validate() {
                     panic!("{ops:?} builds a configuration the validator refuses: {e}");
                 }
             });
 
         assert_every_kind_drawn();
-        assert!(
-            masquerading.load(Relaxed) > 0 && forwarding.load(Relaxed) > 0,
-            "only one flavour of expose was ever built (masquerade {}, forward {}), so the \
-             combination rules were not exercised",
-            masquerading.load(Relaxed),
-            forwarding.load(Relaxed)
-        );
+        assert_every_shape_built(&flavours, &guards);
+    }
+
+    const FLAVOURS: [&str; 5] = [
+        "forward",
+        "masquerade",
+        "static-nat",
+        "port-forward",
+        "everything",
+    ];
+    const GUARDS: [&str; 6] = [
+        "open",
+        "permit",
+        "permit-except-one",
+        "permit-by-protocol",
+        "permit-by-flow",
+        "deny",
+    ];
+
+    fn assert_every_shape_built(flavours: &[AtomicUsize; 5], guards: &[AtomicUsize; 6]) {
+        let show = |names: &[&str], counts: &[AtomicUsize]| {
+            names
+                .iter()
+                .zip(counts)
+                .map(|(name, count)| format!("{name}={}", count.load(Relaxed)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let (built, set) = (show(&FLAVOURS, flavours), show(&GUARDS, guards));
+        eprintln!("exposes: {built}\nguards:  {set}");
+
+        for (name, count) in FLAVOURS.iter().zip(flavours) {
+            assert!(
+                count.load(Relaxed) > 0,
+                "no expose was ever {name} ({built}), so the nat combination rules were not \
+                 exercised"
+            );
+        }
+        for (name, count) in GUARDS.iter().zip(guards) {
+            assert!(
+                count.load(Relaxed) > 0,
+                "no peering was ever left {name} ({set}), so the acl vocabulary was not exercised"
+            );
+        }
     }
 
     #[test]
@@ -1201,8 +1786,8 @@ mod tests {
     }
 
     fn conflict(draft: &Draft, first: Op, second: Op) -> bool {
-        let (rw1, ww1) = (first.reads(), first.writes(draft));
-        let (rw2, ww2) = (second.reads(), second.writes(draft));
+        let (rw1, ww1) = (first.reads(draft), first.writes(draft));
+        let (rw2, ww2) = (second.reads(draft), second.writes(draft));
         ww1.intersects(&ww2) || ww1.intersects(&rw2) || rw1.intersects(&ww2)
     }
 

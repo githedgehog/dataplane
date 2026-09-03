@@ -400,6 +400,10 @@ impl Fabric {
         &mut self.worker
     }
 
+    pub(crate) fn fleet(&self) -> &Fleet {
+        &self.fleet
+    }
+
     pub(crate) fn flows(&self) -> Option<usize> {
         self.fleet.blueprint().flow_table.len()
     }
@@ -687,8 +691,10 @@ pub(crate) mod derive {
     use super::routed::{Blast, Conversation, Inbound};
     use super::*;
     use config::external::overlay::ValidatedOverlay;
+    use config::external::overlay::algebra::{Draft, Guard};
     use config::external::overlay::vpcpeering::ValidatedExpose;
-    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use lpm::prefix::with_ports::L4Protocol;
+    use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
     #[derive(Debug, Clone, Copy)]
     pub(crate) struct Vary {
@@ -737,12 +743,29 @@ pub(crate) mod derive {
         n: u8,
         usable: fn(&ValidatedExpose) -> bool,
     ) -> Option<IpAddr> {
+        peer_address(peering, n, usable, ValidatedExpose::public_ips)
+    }
+
+    fn peer_source_of(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+    ) -> Option<IpAddr> {
+        peer_address(peering, n, usable, ValidatedExpose::ips)
+    }
+
+    fn peer_address(
+        peering: &config::external::overlay::vpc::ValidatedPeering,
+        n: u8,
+        usable: fn(&ValidatedExpose) -> bool,
+        which: for<'a> fn(&'a ValidatedExpose) -> &'a PrefixPortsSet,
+    ) -> Option<IpAddr> {
         peering
             .remote()
             .valexp()
             .iter()
             .filter(|expose| usable(expose))
-            .flat_map(|expose| expose.public_ips().into_iter())
+            .flat_map(|expose| which(expose).into_iter())
             .find_map(|entry| host_in(entry.prefix(), n))
     }
 
@@ -750,11 +773,79 @@ pub(crate) mod derive {
         loads_where(overlay, vary, &|_| true)
     }
 
+    pub(crate) fn carried_by(draft: &Draft) -> impl Fn(Named<'_>) -> bool + '_ {
+        move |named| draft.carries(named.peering, named.local, named.nth)
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct Probe {
+        path: super::routed::Path,
+        from: IpAddr,
+        at: IpAddr,
+        sport: u16,
+        dport: u16,
+    }
+
+    impl Probe {
+        pub(crate) fn packet(&self) -> Option<Packet<TestBuffer>> {
+            let inner = super::round_trip::udp(self.from, self.at, self.sport, self.dport)?;
+            Some(super::routed::tunnelled_from(self.path.from(), &inner))
+        }
+    }
+
+    pub(crate) fn probes_for(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        draft: &Draft,
+    ) -> Vec<Probe> {
+        let mut probes = Vec::new();
+        let mut nth = 0usize;
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
+                for (which, _) in peering.local().valexp().iter().enumerate() {
+                    let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
+                        continue;
+                    };
+                    nth += 1;
+                    let Some(at) = draft.unexposed_address(peering.name(), vpc.name(), which)
+                    else {
+                        continue;
+                    };
+                    let Some(from) =
+                        peer_source_of(peering, v.host, ValidatedExpose::can_init_connection)
+                    else {
+                        continue;
+                    };
+                    if from.is_ipv4() != at.is_ipv4() {
+                        continue;
+                    }
+                    probes.push(Probe {
+                        path: super::routed::Path::new(peering.remote_vni(), vpc.vni()),
+                        from,
+                        at,
+                        sport: v.sport,
+                        dport: v.dport,
+                    });
+                }
+            }
+        }
+        probes
+    }
+
+    pub(crate) fn loads_carried(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        draft: &Draft,
+    ) -> Vec<Box<dyn Load>> {
+        loads_where(overlay, vary, &carried_by(draft))
+    }
+
     #[derive(Debug, Clone, Copy)]
     pub(crate) struct Named<'a> {
         pub(crate) local: &'a str,
         pub(crate) remote: &'a str,
         pub(crate) peering: &'a str,
+        pub(crate) nth: usize,
     }
 
     pub(crate) fn loads_where(
@@ -766,23 +857,32 @@ pub(crate) mod derive {
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
-                if !keep(Named {
-                    local: vpc.name(),
-                    remote: peering.remote().name(),
-                    peering: peering.name(),
-                }) {
-                    continue;
-                }
                 let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
-                for expose in peering.local().valexp() {
+                for (which, expose) in peering.local().valexp().iter().enumerate() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
                         continue;
                     };
                     nth += 1;
+                    if !keep(Named {
+                        local: vpc.name(),
+                        remote: peering.remote().name(),
+                        peering: peering.name(),
+                        nth: which,
+                    }) {
+                        continue;
+                    }
                     let outward = peer_of(peering, v.host, |expose| {
                         expose.can_receive_connection() && !expose.has_port_forwarding()
                     });
-                    let inward = peer_of(peering, v.host, ValidatedExpose::can_init_connection);
+                    let inward =
+                        peer_source_of(peering, v.host, ValidatedExpose::can_init_connection);
+
+                    if expose
+                        .nat_proto()
+                        .is_some_and(|proto| proto == L4Protocol::Tcp)
+                    {
+                        continue;
+                    }
 
                     if expose.has_port_forwarding() {
                         let (Some(outside), Some(inside_entry)) = (
@@ -1605,9 +1705,11 @@ mod acl {
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU64, Ordering};
-    use config::external::overlay::acl::{AclAction, AclProtoMatch};
+    use config::external::overlay::acl::{
+        Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
+    };
     use config::external::overlay::vpcpeering::contract::{MasqueradeExposes, peering_acl};
-    use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
+    use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
     use net::headers::builder::ChainBase;
     use net::headers::{Headers, TryIpv4Mut, TryIpv6Mut};
     use net::ip::NextHeader;
@@ -1893,6 +1995,111 @@ mod acl {
         super::assert_covered(
             behind > 0,
             "no packet was ever sent behind an extension header, which is the shape this exists for",
+        );
+    }
+
+    fn prefix(text: &str) -> Prefix {
+        text.parse()
+            .unwrap_or_else(|_| unreachable!("a well-formed prefix"))
+    }
+
+    fn ports(start: u16, end: u16) -> PortRange {
+        PortRange::new(start, end).unwrap_or_else(|_| unreachable!("a well-formed port range"))
+    }
+
+    fn forwarding() -> Vec<VpcExpose> {
+        vec![
+            VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap_or_else(|_| unreachable!("an empty expose accepts port forwarding"))
+                .ip(PrefixWithOptionalPorts::new(
+                    prefix("10.0.0.0/24"),
+                    Some(ports(1000, 1004)),
+                ))
+                .as_range(PrefixWithOptionalPorts::new(
+                    prefix("172.16.0.0/24"),
+                    Some(ports(2000, 2004)),
+                ))
+                .unwrap_or_else(|_| unreachable!("a port forwarding expose accepts a range")),
+        ]
+    }
+
+    fn flow_scoped_permit() -> Acl {
+        Acl::new(
+            AclAction::Deny,
+            vec![AclRule {
+                name: "opened-from-outside".to_owned(),
+                from: "VPC-2".to_owned(),
+                to: "VPC-1".to_owned(),
+                action: AclAction::Allow,
+                pattern: AclPattern {
+                    src: PrefixPortsSet::new(),
+                    dst: PrefixPortsSet::new(),
+                    src_any_ports: Vec::new(),
+                    dst_any_ports: Vec::new(),
+                    proto: AclProtoMatch::Any,
+                },
+                scope: AclScope::Flow,
+                log: false,
+            }],
+        )
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_port_forwarded_flow_loses_its_acl_permission_on_any_configuration_change() {
+        let acl = flow_scoped_permit();
+        let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
+            .expect("the fixture assembles")
+            .validate()
+            .expect("a port-forwarding side accepts a flow-scoped rule");
+        let mut fabric = Fabric::over(&overlay, None, Arc::new(FlowTable::default()));
+
+        let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
+        let outside = peer(advertised);
+
+        let mut request = super::round_trip::udp(outside, advertised, 40000, 2003)
+            .expect("a well-formed request");
+        arrive(&mut request, remote());
+        let arrived = fabric.send(request);
+        let Verdict::Forwarded {
+            dst: Some(inside), ..
+        } = verdict(&arrived)
+        else {
+            panic!(
+                "the request never reached the service: {:?}",
+                verdict(&arrived)
+            );
+        };
+        let inside_port = arrived
+            .transport_dst_port()
+            .expect("a forwarded request has a destination port");
+
+        let answer = |fabric: &mut Fabric| {
+            let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
+                .expect("a well-formed answer");
+            arrive(&mut answer, local());
+            verdict(&fabric.send(answer))
+        };
+
+        let before = answer(&mut fabric);
+        assert!(
+            matches!(before, Verdict::Forwarded { .. }),
+            "the flow did not authorise the answer even before anything changed: {before:?}. \
+             Either the reverse lookup in `AclFilter::lookup` has stopped working or this fixture \
+             no longer opens a flow"
+        );
+
+        fabric.fleet().enact(&overlay, Enact::Everything);
+
+        let after = answer(&mut fabric);
+        assert_eq!(
+            after,
+            Verdict::Dropped(DoneReason::AclDropped),
+            "a port-forwarded flow kept its acl permission across a configuration change. If \
+             `update_nat_allocator`'s generation upgrade now covers port-forwarded flows, this \
+             test has served its purpose -- delete it, and stop excluding flow-scoped peerings \
+             from `a_configuration_change_leaves_traffic_outside_its_footprint_alone`"
         );
     }
 }
@@ -2440,16 +2647,86 @@ mod offers {
 
 #[cfg(test)]
 mod generated {
-    use super::derive::{Vary, loads_for};
+    use super::derive::{Named, Vary, loads_where};
     use super::*;
     use bolero::ValueGenerator;
     use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU64, Ordering};
-    use config::external::overlay::algebra::{Op, Sequence};
+    use config::external::overlay::algebra::{Draft, Guard, Op, Sequence};
+    use std::cell::Cell;
     use std::ops::Bound::Included;
 
     const SENDERS: usize = 6;
     const POLLS: usize = 8;
+
+    static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static INBOUND: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static PERMITTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static BY_FLOW: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+    static EXCEPTING: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    fn report_and_assert_coverage() {
+        let (checked, derived, mixed) = (
+            CHECKED.load(Ordering::Relaxed),
+            DERIVED.load(Ordering::Relaxed),
+            MIXED.load(Ordering::Relaxed),
+        );
+        let (peered, multi) = (
+            PEERED.load(Ordering::Relaxed),
+            MULTI.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "checked={checked} derived={derived} inbound={} \
+             permitted-loads={} (by flow {}, past an exception {}) peered-configs={peered} \
+             configs-past-two-vpcs={multi} mixed-bursts={mixed}",
+            INBOUND.load(Ordering::Relaxed),
+            PERMITTING.load(Ordering::Relaxed),
+            BY_FLOW.load(Ordering::Relaxed),
+            EXCEPTING.load(Ordering::Relaxed)
+        );
+        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
+        super::assert_covered(
+            multi > 0,
+            "no generated configuration ever had more than two vpcs, so this reached nothing the \
+             two-vpc fixtures do not",
+        );
+        super::assert_covered(
+            derived > 0,
+            "no generated configuration ever implied any traffic",
+        );
+        super::assert_covered(checked > 0, "no derived sender ever completed its business");
+        super::assert_covered(
+            INBOUND.load(Ordering::Relaxed) > 0,
+            "no generated configuration ever produced an inbound load, so a port-forwarding \
+             expose was drawn into configurations and then carried no traffic at all",
+        );
+        super::assert_covered(
+            PERMITTING.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering whose acl permits it, so every load here \
+             ran with no acl in the way and a rule set that lowered to nothing would have gone \
+             unnoticed",
+        );
+        super::assert_covered(
+            EXCEPTING.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering whose acl excepts one expose from an \
+             otherwise permitting rule, so nothing here depended on a lookup returning the \
+             *first* rule that matches",
+        );
+        super::assert_covered(
+            BY_FLOW.load(Ordering::Relaxed) > 0,
+            "no traffic was ever derived across a peering permitting only one direction, so no \
+             reply here was authorised by the flow it belongs to and the reverse lookup in \
+             `AclFilter::lookup` was never entered",
+        );
+        super::assert_covered(
+            mixed > 0,
+            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+        );
+    }
 
     pub(super) struct Generated;
 
@@ -2495,15 +2772,31 @@ mod generated {
         super::assert_within_budget("generated::Generated", &Generated);
     }
 
+    fn carried_counting<'a>(
+        draft: &'a Draft,
+        permitting: &'a Cell<u64>,
+        by_flow: &'a Cell<u64>,
+        excepting: &'a Cell<u64>,
+    ) -> impl Fn(Named<'_>) -> bool + 'a {
+        let carried = super::derive::carried_by(draft);
+        move |named| {
+            let counter = match draft.guard_named(named.peering) {
+                Some(Guard::Permit) => permitting,
+                Some(Guard::PermitFlow) => by_flow,
+                Some(Guard::PermitExcept | Guard::PermitByProtocol) => excepting,
+                Some(Guard::Open | Guard::Deny) | None => return carried(named),
+            };
+            let kept = carried(named);
+            if kept {
+                counter.set(counter.get() + 1);
+            }
+            kept
+        }
+    }
+
     #[tokio::test]
     #[dpdk::with_eal]
     async fn a_generated_configuration_carries_its_own_traffic() {
-        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static DERIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MIXED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static PEERED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-        static MULTI: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
-
         bolero::check!()
             .with_max_len(MAX_INPUT_LEN)
             .with_generator(Generated)
@@ -2533,8 +2826,21 @@ mod generated {
 
                 let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
 
-                let mut loads = loads_for(&validated, vary);
+                let (permitting, by_flow, excepting) = (Cell::new(0), Cell::new(0), Cell::new(0));
+                let mut loads = loads_where(
+                    &validated,
+                    vary,
+                    &carried_counting(&draft, &permitting, &by_flow, &excepting),
+                );
+                PERMITTING.fetch_add(permitting.get(), Ordering::Relaxed);
+                BY_FLOW.fetch_add(by_flow.get(), Ordering::Relaxed);
+                EXCEPTING.fetch_add(excepting.get(), Ordering::Relaxed);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
+                for load in &loads {
+                    if load.describe().starts_with("[inbound") {
+                        INBOUND.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
 
                 for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
@@ -2555,33 +2861,159 @@ mod generated {
                 }
             });
 
-        let (checked, derived, mixed) = (
-            CHECKED.load(Ordering::Relaxed),
-            DERIVED.load(Ordering::Relaxed),
-            MIXED.load(Ordering::Relaxed),
-        );
-        let (peered, multi) = (
-            PEERED.load(Ordering::Relaxed),
-            MULTI.load(Ordering::Relaxed),
+        report_and_assert_coverage();
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_configuration_carries_nothing_it_denies() {
+        static SENT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static BY_ACL: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NARROWED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static CONFIGS: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, _schedule)| {
+                let draft = Sequence::fold(ops);
+                let validated = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                let carried = super::derive::carried_by(&draft);
+                let narrowed = Cell::new(0);
+                let mut loads = loads_where(&validated, vary, &|named| {
+                    if carried(named) {
+                        return false;
+                    }
+                    if draft.guard_named(named.peering) != Some(Guard::Deny) {
+                        narrowed.set(narrowed.get() + 1);
+                    }
+                    true
+                });
+                if loads.is_empty() {
+                    return;
+                }
+                NARROWED.fetch_add(narrowed.get(), Ordering::Relaxed);
+                CONFIGS.fetch_add(1, Ordering::Relaxed);
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                for load in &mut loads {
+                    let Some(packet) = load.next() else {
+                        continue;
+                    };
+                    let seen = verdict(&fabric.worker().send(packet));
+                    SENT.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        matches!(seen, Verdict::Dropped(_)),
+                        "an acl that refuses this traffic produced {seen:?} for {}",
+                        load.describe()
+                    );
+                    if seen == Verdict::Dropped(DoneReason::AclDropped) {
+                        BY_ACL.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (configs, sent, by_acl) = (
+            CONFIGS.load(Ordering::Relaxed),
+            SENT.load(Ordering::Relaxed),
+            BY_ACL.load(Ordering::Relaxed),
         );
         eprintln!(
-            "checked={checked} derived={derived} peered-configs={peered} \
-             configs-past-two-vpcs={multi} mixed-bursts={mixed}"
-        );
-        super::assert_covered(peered > 0, "no generated configuration ever had a peering");
-        super::assert_covered(
-            multi > 0,
-            "no generated configuration ever had more than two vpcs, so this reached nothing the \
-             two-vpc fixtures do not",
+            "refusing-configs={configs} sent={sent} (dropped by the acl {by_acl}, \
+             refused by a narrowed rule {})",
+            NARROWED.load(Ordering::Relaxed)
         );
         super::assert_covered(
-            derived > 0,
-            "no generated configuration ever implied any traffic",
+            sent > 0,
+            "no refused traffic was ever derived, so this asserted nothing about any packet",
         );
-        super::assert_covered(checked > 0, "no derived sender ever completed its business");
         super::assert_covered(
-            mixed > 0,
-            "no burst ever carried more than one sender's traffic, so nothing was interleaved",
+            NARROWED.load(Ordering::Relaxed) > 0,
+            "every refusal came from a peering denied outright, so nothing here was refused by a \
+             rule naming part of a peering and the first-match order was not under test",
+        );
+        super::assert_covered(
+            by_acl > 0,
+            "no packet was ever dropped by the acl: the claim is being satisfied by stages ahead \
+             of it and would hold with the acl removed",
+        );
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn an_excluded_address_is_not_reachable() {
+        static AIMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Generated)
+            .for_each(|(ops, vary, _schedule)| {
+                let draft = Sequence::fold(ops);
+                let validated = draft
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    return;
+                }
+                let probes = super::derive::probes_for(&validated, vary, &draft);
+                if probes.is_empty() {
+                    return;
+                }
+
+                let mut fabric = Fabric::routed_over_validated(&validated, topology(&vnis));
+                for probe in probes {
+                    let Some(packet) = probe.packet() else {
+                        continue;
+                    };
+                    let seen = verdict(&fabric.worker().send(packet));
+                    AIMED.fetch_add(1, Ordering::Relaxed);
+                    assert!(
+                        matches!(seen, Verdict::Dropped(_)),
+                        "an address the configuration excludes was reached: {seen:?} for {probe:?}"
+                    );
+                    if seen == Verdict::Dropped(DoneReason::Filtered) {
+                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+
+        let (aimed, refused) = (
+            AIMED.load(Ordering::Relaxed),
+            REFUSED.load(Ordering::Relaxed),
+        );
+        eprintln!("excluded-addresses-aimed-at={aimed} (refused as unplaceable {refused})");
+        super::assert_covered(
+            aimed > 0,
+            "no packet was ever aimed at an excluded address, so this asserted nothing -- either \
+             no generated expose carves a slice out of its advertised range, or none of those was \
+             reachable from a peer",
+        );
+        super::assert_covered(
+            refused > 0,
+            "every excluded address was refused for some reason other than being unplaceable, so \
+             the exclusion may not be what refused any of them",
         );
     }
 }
@@ -2711,6 +3143,108 @@ mod burst {
         let checked = CHECKED.load(Ordering::Relaxed);
         eprintln!("single-flow-bursts={checked}");
         super::assert_covered(checked > 0, "no burst of a single flow was ever delivered");
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_burst_of_one_translated_flow_allocates_once() {
+        static CHECKED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        fn two_sided() -> Option<config::external::overlay::Overlay> {
+            let local = VpcExpose::empty()
+                .make_masquerade(None)
+                .ok()?
+                .ip("1.1.0.0/16".parse::<Prefix>().ok()?.into())
+                .as_range("2.2.0.0/16".parse::<Prefix>().ok()?.into())
+                .ok()?;
+            let remote = VpcExpose::empty()
+                .make_static_nat()
+                .ok()?
+                .ip("3.3.0.0/16".parse::<Prefix>().ok()?.into())
+                .as_range("4.4.0.0/16".parse::<Prefix>().ok()?.into())
+                .ok()?;
+            config::external::overlay::vpcpeering::contract::overlay_between(
+                vec![local],
+                vec![remote],
+                "default",
+            )
+            .ok()
+        }
+
+        let overlay = two_sided().expect("a valid two-sided configuration");
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Burst)
+            .for_each(|members| {
+                let m = members[0];
+                let src: IpAddr = format!("1.1.0.{}", m.host)
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!());
+                let dst: IpAddr = "4.4.0.1".parse().unwrap_or_else(|_| unreachable!());
+                let packet = || udp(src, dst, 4000, m.dport).map(|p| tunnelled(&p));
+
+                let tables = || topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let (Some(mut alone), Some(mut burst)) = (
+                    Fabric::routed_over(&overlay, tables()),
+                    Fabric::routed_over(&overlay, tables()),
+                ) else {
+                    return;
+                };
+                let Some(one) = packet() else { return };
+                let single = treatment(&alone.send(one));
+                if !matches!(single.verdict, Verdict::Delivered { .. }) {
+                    return;
+                }
+                let cost_of_one = alone.flows();
+
+                assert_eq!(
+                    single.inner_dst,
+                    Some("3.3.0.1".parse().unwrap_or_else(|_| unreachable!())),
+                    "the far side's static nat did not translate the destination, so this \
+                     configuration does not reach the case this test is for"
+                );
+
+                let Some(together) = (0..BURST).map(|_| packet()).collect::<Option<Vec<_>>>()
+                else {
+                    return;
+                };
+                let out = burst.send_batch(together);
+
+                for (i, packet) in out.iter().enumerate() {
+                    let t = treatment(packet);
+                    assert_eq!(
+                        t.inner_sport, single.inner_sport,
+                        "packet {i} of a burst of one masqueraded-and-translated flow was given \
+                         a different public port from the same packet sent alone: the burst \
+                         allocated more than once"
+                    );
+                    assert_eq!(
+                        t.inner_src, single.inner_src,
+                        "packet {i} of a burst of one masqueraded-and-translated flow left under \
+                         a different public address"
+                    );
+                    assert_eq!(
+                        t.verdict, single.verdict,
+                        "packet {i} of a burst of one masqueraded-and-translated flow reached a \
+                         different verdict"
+                    );
+                }
+                assert_eq!(
+                    burst.flows(),
+                    cost_of_one,
+                    "a burst of {BURST} packets of one masqueraded-and-translated flow cost more \
+                     flow-table entries than one packet of it did"
+                );
+                CHECKED.fetch_add(1, Ordering::Relaxed);
+            });
+
+        let checked = CHECKED.load(Ordering::Relaxed);
+        eprintln!("translated-single-flow-bursts={checked}");
+        super::assert_covered(
+            checked > 0,
+            "no burst of a single masqueraded-and-translated flow was ever delivered",
+        );
     }
 
     #[tokio::test]
@@ -2997,6 +3531,10 @@ mod routed {
             Self::new(vni(LOCAL_VNI), vni(REMOTE_VNI))
         }
 
+        pub(crate) fn from(self) -> Vni {
+            self.from
+        }
+
         fn reversed(self) -> Self {
             Self::new(self.to, self.from)
         }
@@ -3234,7 +3772,10 @@ mod routed {
     enum State {
         Opening,
         AwaitingRequest,
-        Replying { public: (IpAddr, u16) },
+        Replying {
+            public: (IpAddr, u16),
+            landed: (IpAddr, u16),
+        },
         AwaitingReply,
         Closed,
         Abandoned,
@@ -3294,10 +3835,24 @@ mod routed {
                 self.state = State::Abandoned;
                 return;
             };
+            let (Some(landed_dst), Some(landed_port)) =
+                (carried.ip_destination(), carried.transport_dst_port())
+            else {
+                self.note("the delivered request had no destination tuple to answer from");
+                self.state = State::Abandoned;
+                return;
+            };
             self.note(&format!("request left as {public_src}:{}", port.get()));
+            if landed_dst != self.dst {
+                self.note(&format!(
+                    "request landed on {landed_dst}:{}",
+                    landed_port.get()
+                ));
+            }
             self.public = Some((public_src, port.get()));
             self.state = State::Replying {
                 public: (public_src, port.get()),
+                landed: (landed_dst, landed_port.get()),
             };
         }
 
@@ -3352,8 +3907,11 @@ mod routed {
                     self.state = State::AwaitingRequest;
                     Some(tunnelled_from(self.path.from, &request))
                 }
-                State::Replying { public: (ip, port) } => {
-                    let reply = udp(self.dst, ip, self.dport, port)?;
+                State::Replying {
+                    public: (ip, port),
+                    landed: (from_ip, from_port),
+                } => {
+                    let reply = udp(from_ip, ip, from_port, port)?;
                     self.state = State::AwaitingReply;
                     Some(tunnelled_from(self.path.reversed().from, &reply))
                 }
@@ -3527,7 +4085,7 @@ mod routed {
     enum InboundState {
         Reaching,
         AwaitingArrival,
-        Answering,
+        Answering { reply_to: (IpAddr, u16) },
         AwaitingAnswer,
         Closed,
         Abandoned,
@@ -3575,8 +4133,17 @@ mod routed {
                 "reached the right host on the wrong port. {}",
                 self.describe()
             );
+            let (Some(src), Some(sport)) = (arrived.ip_source(), arrived.transport_src_port())
+            else {
+                self.log
+                    .push("the arrived request had no source tuple to answer".to_owned());
+                self.state = InboundState::Abandoned;
+                return;
+            };
             self.log.push("arrived inside".to_owned());
-            self.state = InboundState::Answering;
+            self.state = InboundState::Answering {
+                reply_to: (src, sport.get()),
+            };
         }
 
         fn judge_answer(&mut self, got: &Packet<TestBuffer>) {
@@ -3619,8 +4186,10 @@ mod routed {
                     self.state = InboundState::AwaitingArrival;
                     Some(tunnelled_from(self.path.to, &request))
                 }
-                InboundState::Answering => {
-                    let answer = udp(self.internal, self.from, self.internal_port, self.sport)?;
+                InboundState::Answering {
+                    reply_to: (to_ip, to_port),
+                } => {
+                    let answer = udp(self.internal, to_ip, self.internal_port, to_port)?;
                     self.state = InboundState::AwaitingAnswer;
                     Some(tunnelled_from(self.path.from, &answer))
                 }
@@ -3690,7 +4259,7 @@ mod routed {
 
 #[cfg(test)]
 mod model {
-    use super::derive::loads_for;
+    use super::derive::loads_carried;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
     use concurrency::sync::Mutex;
@@ -3699,7 +4268,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Footprint, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Guard, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
 
     type Tuple = (Option<IpAddr>, Option<u16>);
@@ -3928,7 +4497,8 @@ mod model {
             .with_generator(generated::Generated)
             .with_iterations(CASES)
             .for_each(|(ops, vary, schedule)| {
-                let validated = Sequence::fold(ops)
+                let draft = Sequence::fold(ops);
+                let validated = draft
                     .overlay()
                     .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
                     .validate()
@@ -3939,18 +4509,23 @@ mod model {
                     .values()
                     .map(config::external::overlay::vpc::ValidatedVpc::vni)
                     .collect();
-                if vnis.is_empty() || loads_for(&validated, vary).len() < 2 {
+                if vnis.is_empty() || loads_carried(&validated, vary, &draft).len() < 2 {
                     THIN.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
                 SPLIT.fetch_add(1, Ordering::Relaxed);
 
-                let drawn =
-                    concurrency::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let drawn = concurrency::sync::Arc::new((
+                    validated,
+                    vnis,
+                    vary.clone(),
+                    schedule.clone(),
+                    draft,
+                ));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
-                    let (validated, vnis, vary, schedule) = &*drawn;
+                    let (validated, vnis, vary, schedule, draft) = &*drawn;
                     let tables = topology(vnis);
                     let fleet =
                         Fleet::lowering(validated, Some(&tables), Arc::new(FlowTable::default()));
@@ -3969,7 +4544,7 @@ mod model {
                                             tracectl::evidence::capture(format!("worker-{which}"));
                                         let mut worker = blueprint.worker();
                                         let mut mine: Vec<Box<dyn Load>> =
-                                            loads_for(validated, vary)
+                                            loads_carried(validated, vary, draft)
                                                 .into_iter()
                                                 .enumerate()
                                                 .filter(|(nth, _)| nth % 2 == which)
@@ -4790,9 +5365,15 @@ mod model {
             within + u16::try_from(which).unwrap_or_else(|_| unreachable!()) * 32_768
         }
 
-        fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
+        fn outside<'a>(
+            footprint: &'a Footprint,
+            draft: &'a Draft,
+        ) -> impl Fn(derive::Named<'_>) -> bool + 'a {
+            let carried = derive::carried_by(draft);
             move |named| {
-                !footprint.touches_peering_named(named.peering)
+                carried(named)
+                    && draft.guard_named(named.peering) != Some(Guard::PermitFlow)
+                    && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)
             }
@@ -4833,8 +5414,9 @@ mod model {
                 let running = assemble(&before);
                 let enacted = assemble(&Sequence::fold(ops));
 
-                let framed = derive::loads_where(&running, vary, &outside(&footprint)).len();
-                let total = derive::loads_for(&running, vary).len();
+                let framed =
+                    derive::loads_where(&running, vary, &outside(&footprint, &before)).len();
+                let total = derive::loads_carried(&running, vary, &before).len();
                 FRAMED_OUT.fetch_add(
                     u64::try_from(total - framed).unwrap_or_else(|_| unreachable!()),
                     Ordering::Relaxed,
@@ -4862,11 +5444,12 @@ mod model {
                     vary.clone(),
                     footprint,
                     *change,
+                    before,
                 ));
                 let entering = handle.clone();
 
                 concurrency::stress(move || {
-                    let (running, enacted, vnis, vary, footprint, change) = &*drawn;
+                    let (running, enacted, vnis, vary, footprint, change, before) = &*drawn;
                     let tables = topology(vnis);
                     let fleet =
                         Fleet::lowering(running, Some(&tables), Arc::new(FlowTable::default()));
@@ -4887,7 +5470,7 @@ mod model {
                                         let _evidence =
                                             tracectl::evidence::capture(format!("framed-{which}"));
                                         let mut worker = blueprint.worker();
-                                        let outside = outside(footprint);
+                                        let outside = outside(footprint, before);
                                         gate.wait();
                                         let mut seen = Vec::new();
                                         for round in 1..=ROUNDS {

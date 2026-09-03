@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lpm::prefix::with_ports::{L4Protocol, PrefixPortsSet};
 
 use super::Overlay;
+use super::acl::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
 use super::algebra::Sequence;
 use super::vpc::Vpc;
 use super::vpcpeering::{
@@ -37,8 +38,15 @@ const REACH: &[(&str, Reach)] = &[
     (
         "Vpc.interfaces",
         Reach::Fixed(
-            "empty. No operation attaches an interface to a vpc, so no generated configuration \
-             has one. Reaching the interface-bearing paths at all needs a new operation.",
+            "empty, and left that way on purpose. An operation attaching one is easy and would be \
+             the wrong thing: nothing reads the field. `Vpc::validate` clones it into \
+             `ValidatedVpc` without checking anything about it, `ValidatedVpc::interfaces` has no \
+             callers, and the interfaces that reach the kernel and FRR come from the *internal* \
+             config's vrf tables instead -- see `mgmt::vpc_manager` and \
+             `converters::k8s::config::underlay`. Filling this in would move the row and cover \
+             nothing, which is the one failure mode this whole record exists to prevent. The thing \
+             worth doing is upstream of here: either the field has a consumer and this record \
+             should follow it there, or it does not and it should go.",
         ),
     ),
     (
@@ -61,19 +69,41 @@ const REACH: &[(&str, Reach)] = &[
     ),
     (
         "VpcPeering.gwgroup",
-        Reach::Fixed(
-            "the default group. `with_default_group` is the only constructor the algebra calls, \
-             so nothing generated ever splits vpcs across gateway groups.",
+        Reach::Determined("the peering handle, over three groups"),
+    ),
+    ("VpcPeering.acl", Reach::Spans(&["absent", "present"])),
+    ("Acl.default", Reach::Spans(&["allow", "deny"])),
+    ("Acl.rules", Reach::Spans(&["1", "2", "3"])),
+    (
+        "AclRule.name",
+        Reach::Determined("the two vpc handles, as `<from>-to-<to>`, and `-except` for a denial"),
+    ),
+    (
+        "AclRule.from",
+        Reach::Determined("the vpc handle on the rule's side"),
+    ),
+    (
+        "AclRule.to",
+        Reach::Determined("the vpc handle on the other side"),
+    ),
+    ("AclRule.action", Reach::Spans(&["allow", "deny"])),
+    ("AclRule.scope", Reach::Spans(&["flow", "packet"])),
+    ("AclRule.log", Reach::Spans(&["false", "true"])),
+    (
+        "AclPattern.src",
+        Reach::Determined(
+            "empty, or the excepted expose's private prefix from its peering, side and slot",
         ),
     ),
     (
-        "VpcPeering.acl",
-        Reach::Fixed(
-            "absent. Peering-scoped ACLs are not in the vocabulary, so no generated configuration \
-             carries one -- and an ACL is precisely a thing that changes a verdict, which is what \
-             every property here asserts over.",
+        "AclPattern.dst",
+        Reach::Determined(
+            "empty, or the excepted expose's public prefix from its peering, side and slot",
         ),
     ),
+    ("AclPattern.src_any_ports", Reach::Spans(&["0", "1"])),
+    ("AclPattern.dst_any_ports", Reach::Spans(&["0", "1"])),
+    ("AclPattern.proto", Reach::Spans(&["any", "tcp", "udp"])),
     (
         "VpcManifest.name",
         Reach::Determined("the side's vpc handle"),
@@ -82,69 +112,42 @@ const REACH: &[(&str, Reach)] = &[
         "VpcManifest.exposes",
         Reach::Determined("one per `AddExpose`, in slot order"),
     ),
-    (
-        "VpcExpose.default",
-        Reach::Fixed("false. `VpcExpose::empty` never sets it and no operation does either."),
-    ),
+    ("VpcExpose.default", Reach::Spans(&["false", "true"])),
     (
         "VpcExpose.ips",
         Reach::Determined("one prefix, from the expose's peering, side and slot"),
     ),
-    (
-        "VpcExpose.ips.ports",
-        Reach::Fixed(
-            "unset. The algebra exposes whole prefixes, so a port-restricted expose is \
-             unreachable, and with it every question about how ports partition an address.",
-        ),
-    ),
+    ("VpcExpose.ips.ports", Reach::Spans(&["set", "unset"])),
     (
         "VpcExpose.nots",
-        Reach::Fixed(
-            "empty -- the survey renders it as no prefixes at all. An expose that carves holes out of its own range is unreachable, which is a \
-             real hole rather than a canonicalisation: an exclusion is what makes a prefix set \
-             non-contiguous, and non-contiguous is where a matcher goes wrong.",
-        ),
+        Reach::Determined("a `/26` in the middle of the expose's block, on the low slots"),
     ),
     ("VpcExpose.nat", Reach::Spans(&["absent", "present"])),
     (
         "VpcExposeNat.as_range",
-        Reach::Determined("one prefix in the masquerade pool, from peering, side and slot"),
+        Reach::Determined("one prefix in the translated pool, from peering, side and slot"),
     ),
     (
         "VpcExposeNat.as_range.ports",
-        Reach::Fixed("unset, for the same reason as `VpcExpose.ips.ports`."),
+        Reach::Spans(&["set", "unset"]),
     ),
     (
         "VpcExposeNat.not_as",
-        Reach::Fixed("empty, for the same reason as `VpcExpose.nots`."),
+        Reach::Determined("a `/26` in the middle of the expose's translated block"),
     ),
     (
         "VpcExposeNat.config",
-        Reach::Fixed(
-            "masquerade. `Flavour` has two members and only one of them makes a nat, so static \
-             nat and port forwarding are both unreachable -- which the design note already names \
-             as missing vocabulary.",
-        ),
+        Reach::Spans(&["masquerade", "port-forwarding", "static"]),
     ),
-    (
-        "VpcExposeNat.proto",
-        Reach::Fixed("`Any`. No operation narrows an expose to tcp or udp."),
-    ),
+    ("VpcExposeNat.proto", Reach::Spans(&["any", "tcp", "udp"])),
     (
         "VpcExposeMasquerade.idle_timeout",
-        Reach::Fixed(
-            "absent. `make_masquerade(None)` is the only call, so the timeout paths -- and every \
-             question about a flow ageing out under a configuration that set one -- are never \
-             entered.",
-        ),
+        Reach::Spans(&["absent", "present"]),
     ),
-    (
-        "VpcExposeStaticNat",
-        Reach::Fixed("never constructed; see `VpcExposeNat.config`."),
-    ),
+    ("VpcExposeStaticNat", Reach::Spans(&["constructed"])),
     (
         "VpcExposePortForwarding.idle_timeout",
-        Reach::Fixed("never constructed; see `VpcExposeNat.config`."),
+        Reach::Spans(&["absent", "present"]),
     ),
 ];
 
@@ -217,10 +220,70 @@ fn survey(overlay: &Overlay, seen: &mut Observed) {
             "VpcPeering.acl",
             if acl.is_some() { "present" } else { "absent" },
         );
+        if let Some(acl) = acl {
+            survey_acl(acl, seen);
+        }
         for (side, manifest) in [("VpcPeering.left", left), ("VpcPeering.right", right)] {
             seen.note(side, manifest.name.clone());
             survey_manifest(manifest, seen);
         }
+    }
+}
+
+fn survey_acl(acl: &Acl, seen: &mut Observed) {
+    let Acl { default, rules } = acl;
+    seen.note("Acl.default", action(*default));
+    seen.count("Acl.rules", rules.len());
+    for rule in rules {
+        let AclRule {
+            name,
+            from,
+            to,
+            action: verdict,
+            pattern,
+            scope,
+            log,
+        } = rule;
+        seen.note("AclRule.name", name.clone());
+        seen.note("AclRule.from", from.clone());
+        seen.note("AclRule.to", to.clone());
+        seen.note("AclRule.action", action(*verdict));
+        seen.note(
+            "AclRule.scope",
+            match scope {
+                AclScope::Flow => "flow",
+                AclScope::Packet => "packet",
+            },
+        );
+        seen.note("AclRule.log", log.to_string());
+
+        let AclPattern {
+            src,
+            dst,
+            src_any_ports,
+            dst_any_ports,
+            proto,
+        } = pattern;
+        seen.prefixes("AclPattern.src", src);
+        seen.prefixes("AclPattern.dst", dst);
+        seen.count("AclPattern.src_any_ports", src_any_ports.len());
+        seen.count("AclPattern.dst_any_ports", dst_any_ports.len());
+        seen.note(
+            "AclPattern.proto",
+            match proto {
+                AclProtoMatch::Tcp => "tcp".to_owned(),
+                AclProtoMatch::Udp => "udp".to_owned(),
+                AclProtoMatch::Other(number) => format!("other({number})"),
+                AclProtoMatch::Any => "any".to_owned(),
+            },
+        );
+    }
+}
+
+fn action(action: AclAction) -> &'static str {
+    match action {
+        AclAction::Allow => "allow",
+        AclAction::Deny => "deny",
     }
 }
 
