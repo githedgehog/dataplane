@@ -28,6 +28,7 @@ use std::num::NonZero;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedIpVersion {
     Ipv4,
     Ipv6,
@@ -125,7 +126,7 @@ impl EmbeddedHeaders {
         self.full_payload_length
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn check_full_payload(
         &mut self,
         buf: &[u8],
@@ -175,7 +176,7 @@ impl EmbeddedHeaders {
         // Is size_headers_parsed - size_transport_header + size_ip_payload == size_icmp_payload?
 
         // Find the IP payload length
-        let ip_payload_length = match &self.net {
+        let (ip_payload_length, boundary) = match &self.net {
             None => {
                 return;
             }
@@ -183,7 +184,7 @@ impl EmbeddedHeaders {
                 let Ok(ipv4_payload_length) = ip.0.payload_len().map(usize::from) else {
                     return;
                 };
-                ipv4_payload_length
+                (ipv4_payload_length, 4)
             }
             Some(Net::Ipv6(ip)) => {
                 let ipv6_payload_length = ip.0.payload_length;
@@ -192,7 +193,7 @@ impl EmbeddedHeaders {
                     // unlikely it's all in the ICMP message payload anyway.
                     return;
                 }
-                ipv6_payload_length as usize
+                (ipv6_payload_length as usize, 8)
             }
         };
 
@@ -234,50 +235,27 @@ impl EmbeddedHeaders {
             // against this value.
             //
             // From RFC 4884: The length attribute represents the length of the padded "original
-            // datagram" field.
-            match self.net {
-                Some(Net::Ipv4(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(32) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 32? Something's wrong
-                        return;
-                    }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv4: Padding is on 32-bit boundaries
-                    if padding_length < 32
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                Some(Net::Ipv6(_)) => {
-                    if icmp_length < full_packet_length {
-                        // The embedded message is shorter than the original packet
-                        return;
-                    }
-                    if icmp_length > buf.len() || !icmp_length.is_multiple_of(64) {
-                        // Embedded payload is larger than our buffer? Or the size is not a multiple
-                        // of 64? Something's wrong
-                        return;
-                    }
-                    let padding_length = icmp_length - full_packet_length;
-                    // ICMPv6: Padding is on 64-bit boundaries
-                    if padding_length < 64
-                        && buf[full_packet_length..icmp_length].iter().all(|b| *b == 0)
-                    {
-                        self.full_payload_length = Some(transport_payload_length as u16);
-                    }
-                    return;
-                }
-                None => {
-                    unreachable!() // Checked earlier in the function
-                }
+            // datagram" field:
+            //
+            //     When the ICMP Extension Structure is appended to an ICMP message and that ICMP
+            //     message contains an "original datagram" field, the "original datagram" field MUST
+            //     contain at least 128 octets.
+            //
+            //     When the ICMP Extension Structure is appended to an ICMPv4 message [...] the
+            //     "original datagram" field MUST be zero padded to the nearest 32-bit boundary.
+            //
+            // ICMPv6 pads to the nearest 64-bit boundary instead. Either way, the length of the
+            // padded field is fully determined by the length of the original packet.
+            let padded_length = full_packet_length.max(128).next_multiple_of(boundary);
+
+            if icmp_length != padded_length || icmp_length > buf.len() {
+                // The message doesn't hold the original packet, padded as we expect
+                return;
             }
+            if buf[full_packet_length..icmp_length].iter().all(|b| *b == 0) {
+                self.full_payload_length = Some(transport_payload_length as u16);
+            }
+            return;
         }
 
         // Check that the full headers + payload are present
@@ -610,43 +588,78 @@ impl EmbeddedTransport {
         }
     }
 
-    pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
+    /// Set the checksum of the embedded transport header, but discard the error if the header is
+    /// truncated.
+    pub fn set_checksum_if_possible(&mut self, checksum: u16) {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
-                let updated = tcp.increment_update_checksum(
-                    TcpChecksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = tcp.set_checksum(updated);
+                let _ = tcp.set_checksum(TcpChecksum::new(checksum));
             }
             EmbeddedTransport::Udp(udp) => {
-                let updated = udp.increment_update_checksum(
-                    UdpChecksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = udp.set_checksum(updated);
+                let _ = udp.set_checksum(UdpChecksum::new(checksum));
             }
             EmbeddedTransport::Icmp4(icmp) => {
-                let updated = icmp.increment_update_checksum(
-                    Icmp4Checksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = icmp.set_checksum(updated);
+                let _ = icmp.set_checksum(Icmp4Checksum::new(checksum));
             }
             EmbeddedTransport::Icmp6(icmp) => {
-                let updated = icmp.increment_update_checksum(
-                    Icmp6Checksum::new(current_checksum),
-                    old_value,
-                    new_value,
-                );
-                let _ = icmp.set_checksum(updated);
+                let _ = icmp.set_checksum(Icmp6Checksum::new(checksum));
             }
         }
     }
 
+    /// Tell whether the header is a UDP header carrying no checksum, which RFC 768 allows over
+    /// IPv4 only: there is no sum to fold an update into, in that case.
+    fn udp_checksum_disabled(&self, quoted: EmbeddedIpVersion, current_checksum: u16) -> bool {
+        matches!(self, EmbeddedTransport::Udp(_))
+            && quoted == EmbeddedIpVersion::Ipv4
+            && current_checksum == 0
+    }
+
+    /// Incrementally update the checksum of the embedded transport header, but discard the error if
+    /// the header is truncated and too short.
+    ///
+    /// "quoted" is the IP version of the packet that the header comes from, which the UDP rules on
+    /// a zero checksum depend on.
+    pub fn update_checksum(
+        &mut self,
+        quoted: EmbeddedIpVersion,
+        current_checksum: u16,
+        old_value: u16,
+        new_value: u16,
+    ) {
+        let (raw, old, new) = (current_checksum, old_value, new_value);
+        if old == new {
+            return;
+        }
+        if self.udp_checksum_disabled(quoted, raw) {
+            // The sender computed no checksum, leave the marker alone
+            return;
+        }
+        match self {
+            EmbeddedTransport::Tcp(tcp) => {
+                let _ = tcp.increment_update_checksum(TcpChecksum::new(raw), old, new);
+            }
+            EmbeddedTransport::Udp(udp) => {
+                // RFC 768: a computed checksum of zero travels as all ones, so that it is not
+                // mistaken for the marker for "no checksum". IPv6 forbids the marker altogether.
+                let updated =
+                    match TruncatedUdp::incremental_checksum(UdpChecksum::new(raw), old, new) {
+                        zero if u16::from(zero) == 0 => UdpChecksum::new(u16::MAX),
+                        updated => updated,
+                    };
+                let _ = udp.set_checksum(updated);
+            }
+            EmbeddedTransport::Icmp4(icmp) => {
+                let _ = icmp.increment_update_checksum(Icmp4Checksum::new(raw), old, new);
+            }
+            EmbeddedTransport::Icmp6(icmp) => {
+                let _ = icmp.increment_update_checksum(Icmp6Checksum::new(raw), old, new);
+            }
+        }
+    }
+
+    /// Incrementally update the checksum of the embedded transport header for a change in the
+    /// source or destination address, but discard the error if the header is truncated and too short
     pub fn update_checksum_for_address(&mut self, old: IpAddr, new: IpAddr) {
         if matches!(self, EmbeddedTransport::Icmp4(_)) {
             return;
@@ -654,11 +667,16 @@ impl EmbeddedTransport {
         if old.is_ipv4() != new.is_ipv4() {
             return;
         }
+        let quoted = if old.is_ipv4() {
+            EmbeddedIpVersion::Ipv4
+        } else {
+            EmbeddedIpVersion::Ipv6
+        };
         for (old_word, new_word) in address_words(old).into_iter().zip(address_words(new)) {
             let Some(current) = self.checksum() else {
                 return;
             };
-            self.update_checksum(current, old_word, new_word);
+            self.update_checksum(quoted, current, old_word, new_word);
         }
     }
 }
@@ -1403,6 +1421,77 @@ mod tests {
 
         // Before calling check_full_payload, should be false
         assert!(!headers.is_full_payload());
+    }
+
+    // A zero UDP checksum means "the sender computed none" over IPv4, and nothing at all over
+    // IPv6, where RFC 8200 makes the checksum mandatory
+    mod udp_zero_checksum {
+        use super::*;
+        use crate::udp::{Udp, UdpChecksum};
+
+        const OLD_PORT: u16 = 1234;
+        const NEW_PORT: u16 = 4321;
+
+        fn udp_quote(checksum: u16) -> EmbeddedTransport {
+            let mut udp = Udp::new(OLD_PORT.try_into().unwrap(), 5678.try_into().unwrap());
+            udp.set_checksum(UdpChecksum::new(checksum))
+                .unwrap_or_else(|()| unreachable!());
+            EmbeddedTransport::from(udp)
+        }
+
+        #[test]
+        fn a_disabled_ipv4_udp_checksum_is_left_alone() {
+            let mut quote = udp_quote(0);
+            quote.update_checksum(EmbeddedIpVersion::Ipv4, 0, OLD_PORT, NEW_PORT);
+            assert_eq!(
+                quote.checksum(),
+                Some(0),
+                "a quote that carried no checksum came out carrying one"
+            );
+        }
+
+        #[test]
+        fn a_zero_ipv6_udp_checksum_is_folded_into() {
+            let mut quote = udp_quote(0);
+            quote.update_checksum(EmbeddedIpVersion::Ipv6, 0, OLD_PORT, NEW_PORT);
+            assert_ne!(
+                quote.checksum(),
+                Some(0),
+                "an IPv6 quote kept a checksum that IPv6 forbids"
+            );
+        }
+
+        #[test]
+        fn a_udp_checksum_folding_onto_zero_travels_as_all_ones() {
+            // The update below folds this checksum onto zero, as the inverse update from zero
+            let folding_onto_zero = u16::from(TruncatedUdp::incremental_checksum(
+                UdpChecksum::new(0),
+                NEW_PORT,
+                OLD_PORT,
+            ));
+            assert_eq!(
+                u16::from(TruncatedUdp::incremental_checksum(
+                    UdpChecksum::new(folding_onto_zero),
+                    OLD_PORT,
+                    NEW_PORT,
+                )),
+                0,
+                "this test no longer exercises a fold onto zero"
+            );
+
+            let mut quote = udp_quote(folding_onto_zero);
+            quote.update_checksum(
+                EmbeddedIpVersion::Ipv6,
+                folding_onto_zero,
+                OLD_PORT,
+                NEW_PORT,
+            );
+            assert_eq!(
+                quote.checksum(),
+                Some(u16::MAX),
+                "a UDP checksum that folded onto zero was left spelled as the \"no checksum\" marker"
+            );
+        }
     }
 
     mod address_folding {
