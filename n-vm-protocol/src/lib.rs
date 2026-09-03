@@ -16,6 +16,38 @@ pub const ENV_TEST_ROOT: &str = "N_VM_TEST_ROOT";
 /// Environment variable pointing to the resolved `vmroot` directory.
 pub const ENV_VM_ROOT: &str = "N_VM_VM_ROOT";
 
+/// Multiplies the VM's overhead allowance -- how long a guest may run before
+/// it is shut down by force.
+///
+/// A run-time knob rather than a build-time constant, for the reason
+/// [`ENV_VIRTIOFS_CACHE`] gives: rebuilding `n-vm` to change a timeout also
+/// changes the binary under test. It is also the only form that stays honest
+/// outside the consuming workspace -- a `cfg` would have to name *that*
+/// workspace's build vocabulary.
+///
+/// Unset, or unparseable, or not finite, or not positive, means 1.0: the
+/// allowance is exactly what it has always been. A bad value is deliberately
+/// not an error -- a mistyped timeout multiplier should not be the reason a
+/// test suite fails to run.
+pub const ENV_OVERHEAD_SCALE: &str = "N_VM_OVERHEAD_SCALE";
+
+/// The configured [`ENV_OVERHEAD_SCALE`], or 1.0.
+#[must_use]
+pub fn overhead_scale() -> f64 {
+    std::env::var(ENV_OVERHEAD_SCALE)
+        .ok()
+        .and_then(|raw| parse_overhead_scale(&raw))
+        .unwrap_or(1.0)
+}
+
+/// [`overhead_scale`] with the value given rather than read from the
+/// environment.
+#[must_use]
+pub fn parse_overhead_scale(raw: &str) -> Option<f64> {
+    let scale: f64 = raw.trim().parse().ok()?;
+    (scale.is_finite() && scale > 0.0).then_some(scale)
+}
+
 /// Environment variable naming a directory that both this process and the
 /// Docker daemon can see, under which the daemon-visible copies live.
 ///
@@ -1947,5 +1979,33 @@ mod host_share_tests {
             host_visible_path_in(Some("/w/.share"), "/nix/storage/thing"),
             "/nix/storage/thing",
         );
+    }
+}
+
+#[cfg(test)]
+mod overhead_scale_tests {
+    use super::parse_overhead_scale;
+
+    #[test]
+    fn a_plain_number_is_taken_as_written() {
+        assert_eq!(parse_overhead_scale("3"), Some(3.0));
+        assert_eq!(parse_overhead_scale("1.5"), Some(1.5));
+        assert_eq!(parse_overhead_scale("  2  "), Some(2.0));
+    }
+
+    #[test]
+    fn nonsense_falls_back_rather_than_failing() {
+        // A mistyped multiplier must not be the reason a suite cannot run, so
+        // every one of these means "no scaling" rather than an error.
+        for raw in ["", "  ", "three", "1,5", "nan", "inf", "-2", "0"] {
+            assert_eq!(parse_overhead_scale(raw), None, "{raw:?} should not scale");
+        }
+    }
+
+    #[test]
+    fn a_scale_below_one_is_allowed() {
+        // Shortening the allowance is a legitimate thing to want from a run
+        // that is checking how a guest behaves when it is killed.
+        assert_eq!(parse_overhead_scale("0.5"), Some(0.5));
     }
 }
