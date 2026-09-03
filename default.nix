@@ -265,7 +265,12 @@ let
   # second pin, not new mechanism.
   // lib.optionalAttrs (kernel-manifest-arch == "x86_64") {
     ${flatcar-kernel-dir} = {
-      inherit (flatcar-kernel-adapted) image configfile modules modDirVersion;
+      inherit (flatcar-kernel-adapted)
+        image
+        configfile
+        modules
+        modDirVersion
+        ;
       boot = "initramfs";
       initramfs = initramfs-flatcar;
     };
@@ -276,7 +281,12 @@ let
     # a second set of pins, not new mechanism, but the arm64 `vmlinuz` is a
     # compressed `Image` and wants checking against QEMU's `-kernel` first.
     ${ubuntu-kernel-dir} = {
-      inherit (ubuntu-kernel-adapted) image configfile modules modDirVersion;
+      inherit (ubuntu-kernel-adapted)
+        image
+        configfile
+        modules
+        modDirVersion
+        ;
       boot = "initramfs";
       initramfs = initramfs-ubuntu;
     };
@@ -538,7 +548,8 @@ let
       # with the archives sitting right there in the store.  `-Clink-arg`
       # reaches the linker either way, which is why the sysroot is already
       # passed that way in nix/profiles.nix.
-      RUSTFLAGS = "${orig.env.RUSTFLAGS} -Ctarget-feature=+crt-static "
+      RUSTFLAGS =
+        "${orig.env.RUSTFLAGS} -Ctarget-feature=+crt-static "
         + "-Clink-arg=-L${pkgs.pkgsHostHost.glibc.static}/lib";
     };
   });
@@ -1166,7 +1177,6 @@ let
     # Must match VM_WORKSPACE_DIR in n-vm-protocol.
     mkdir -p $out/workspace
   '';
-
 
   workspace-check =
     {
