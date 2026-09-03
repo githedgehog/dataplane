@@ -219,6 +219,7 @@ impl Worker {
                 let mut to_tx: u64 = 0; // number of packets to send
                 let mut tx_pkts: u64 = 0; // number of packets successfully sent
                 let mut tx_drops: u64 = 0; // number of packets dropped on tx
+                let mut local: u64 = 0; // number of packets left to the kernel
                 let rx_pkts = packets_vec.len() as u64; // number of packets received
                 counters.rx = rx_pkts;
                 if rx_pkts == 0 {
@@ -247,6 +248,11 @@ impl Worker {
                         } else {
                             tx_drops += 1;
                         }
+                    } else if done == Some(DoneReason::Local) {
+                        // Nothing to do: the kernel has its own copy of every
+                        // frame this driver reads. Counted so that the number
+                        // means the same thing for every driver.
+                        local += 1;
                     }
                 }
 
@@ -258,6 +264,7 @@ impl Worker {
 
                 // update rx task stats
                 counters.ppline_drops = rx_pkts.saturating_sub(num_out_pkts);
+                counters.local = local;
                 counters.tx = tx_pkts;
                 counters.tx_drops = tx_drops;
                 intf.watchdog.record(&counters);

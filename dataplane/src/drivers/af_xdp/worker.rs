@@ -237,6 +237,7 @@ fn run(
                         port.counters.rx += counters.rx;
                         port.counters.tx += counters.tx;
                         port.counters.ppline_drops += counters.ppline_drops;
+                        port.counters.local += counters.local;
                         port.counters.tx_drops += counters.tx_drops;
                         port.counters.parse_errors += counters.parse_errors;
                     }
@@ -305,15 +306,22 @@ fn forward_from(
     counters.ppline_drops = parsed.saturating_sub(processed.len() as u64);
 
     for packet in processed.drain(..) {
-        // Anything else the pipeline is done with -- a packet for us, or one
-        // it decided against -- goes no further.
-        if packet.get_done() != Some(DoneReason::Delivered) {
-            continue;
-        }
-        if transmit(id, umem, ports, packet) {
-            counters.tx += 1;
-        } else {
-            counters.tx_drops += 1;
+        match packet.get_done() {
+            Some(DoneReason::Delivered) => {
+                if transmit(id, umem, ports, packet) {
+                    counters.tx += 1;
+                } else {
+                    counters.tx_drops += 1;
+                }
+            }
+            // The pipeline wants the host stack to have this one, and we
+            // cannot give it: nothing in userspace can inject into an
+            // interface's receive path. It has to be the XDP program that
+            // passes such traffic to the kernel rather than redirecting it
+            // here, so counting these counts what the host is missing.
+            Some(DoneReason::Local) => counters.local += 1,
+            // Anything else the pipeline is done with goes no further.
+            _ => {}
         }
     }
 
