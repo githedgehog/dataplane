@@ -1220,7 +1220,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
-    #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
+    #[arg(long, value_name = "packet driver to use: dpdk, kernel or af-xdp")]
     driver: Option<String>,
     #[arg(
         long,
@@ -1453,7 +1453,8 @@ impl CmdArgs {
     ///
     /// # Note
     ///
-    /// This is only used with the kernel driver.
+    /// This is used by the drivers that name interfaces the way the kernel
+    /// does: the kernel driver and the `AF_XDP` one.
     #[must_use]
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface

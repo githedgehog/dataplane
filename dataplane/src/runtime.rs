@@ -5,6 +5,8 @@ use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
+#[cfg(feature = "af-xdp")]
+use crate::drivers::af_xdp::DriverAfXdp;
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::driver_status_access;
 use lifecycle::{
@@ -341,6 +343,18 @@ pub fn main() {
                             &shutdown.workers,
                             args.kernel_interfaces(),
                             args.kernel_num_workers(),
+                            &factory,
+                            driver_status_writer,
+                        ))
+                    }
+                    #[cfg(feature = "af-xdp")]
+                    "af-xdp" => {
+                        info!("Using driver AF_XDP...");
+                        let factory = pipeline.builder::<xdp::buffer::XdpBuffer>();
+                        Some(DriverAfXdp::start(
+                            scope,
+                            &shutdown.workers,
+                            args.kernel_interfaces(),
                             &factory,
                             driver_status_writer,
                         ))
