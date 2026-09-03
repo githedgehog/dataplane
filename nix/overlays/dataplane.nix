@@ -278,6 +278,41 @@ in
         '';
       });
 
+  # libelf, from elfutils, is what libbpf reads BPF object files with. libxdp
+  # bundles libbpf and the `dataplane-xdp` build compiles both from source, so
+  # we need the headers as well as the library. debuginfod would drag in curl
+  # and is of no use to us here.
+  fancy.elfutils = (dataplane-dep prev.elfutils).overrideAttrs (orig: {
+    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-static"
+      "--disable-debuginfod"
+      # Compressed ELF sections are elfutils' business, not libbpf's, and
+      # supporting them drags three more libraries into a static link.
+      "--without-bzlib"
+      "--without-lzmalib"
+      "--without-zstd"
+    ];
+    # elfutils' own test suite does not survive our stdenv and flags, and none
+    # of what it covers is on the path we use.
+    doCheck = false;
+    doInstallCheck = false;
+    # Keep the archives out of the default output, so that a sysroot holding
+    # only this one leaves the linker nothing but the static library to pick.
+    #
+    # elfutils carries a CRC-32 of its own, under the name zlib gives its own,
+    # and a link that statically takes both is refused for defining `crc32`
+    # twice. elfutils' copy is reached only through the GNU debuglink helpers
+    # in libdw, which we do not link, so drop it and leave zlib's standing.
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p "$static/lib"
+      mv $out/lib/*.a $static/lib/
+      # $AR rather than ar: a cross build has only the prefixed one, and it is
+      # the one that reads the archive we have just built anyway.
+      "''${AR:-ar}" d "$static/lib/libelf.a" crc32.o
+    '';
+  });
+
   # This isn't directly required by dataplane,
   fancy.perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }

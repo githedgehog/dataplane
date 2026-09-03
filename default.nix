@@ -111,6 +111,14 @@ let
           fancy.numactl.static
           fancy.rdma-core.dev
           fancy.rdma-core.static
+          # libelf and zlib are what libbpf, which libxdp bundles, links
+          # against; the AF_XDP driver needs both. Only the static libraries
+          # go in, as for everything else here: the dataplane ships in an
+          # image with no shared libraries of its own to find.
+          fancy.elfutils.dev
+          fancy.elfutils.static
+          pkgs.zlib.dev
+          pkgs.zlib.static
         ];
       }
     else
@@ -175,6 +183,7 @@ let
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
+      m4 # libxdp's build preprocesses its dispatcher program with it
       markdownlint-cli2
       nixfmt
       npins
@@ -216,6 +225,11 @@ let
       # Rust's pkg-config crate refuses cross-target builds by default; opt in
       # since our PKG_CONFIG_PATH already points at the matching cross sysroot.
       PKG_CONFIG_ALLOW_CROSS = "1";
+      # libxdp compiles BPF programs of its own, and the wrapped compiler adds
+      # hardening flags that clang rejects for the bpf target. Point that one
+      # build at the compiler underneath the wrapper; everything else keeps
+      # using `clang` from the PATH, wrapper and all.
+      CLANG = "${pkgs.pkgsBuildBuild.llvmPackages'.clang.cc}/bin/clang";
     };
   };
   # Nix escaping made the old regexes match unrelated .sh and .patch files.
@@ -309,6 +323,7 @@ let
       pkgs.stdenv'.targetPlatform.rust.rustcTarget;
   is-cross-compile = pkgs.stdenv'.buildPlatform.rust.rustcTarget != ctarget;
   cxx = if is-cross-compile then "${ctarget}-clang++" else "clang++";
+  bintools = pkgs.pkgsBuildHost.binutils;
   strip = if is-cross-compile then "${ctarget}-strip" else "strip";
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
@@ -367,6 +382,16 @@ let
       else
         [ ]
     );
+  # libxdp wraps each of the BPF programs it compiles in an object of the host
+  # architecture, with `ld -r -b binary`, and reads LD and OBJCOPY to know which
+  # tools to do it with. A cross build leaves both naming the build host's,
+  # which produce an object that the final link, for the target, then refuses.
+  # Exported here rather than set in `env` because the toolchain's setup hooks
+  # overwrite both before any of the build's own phases run.
+  target-binutils = ''
+    export LD=${bintools}/bin/${bintools.targetPrefix}ld
+    export OBJCOPY=${bintools}/bin/${bintools.targetPrefix}objcopy
+  '';
   cargo-cmd-prefix = mk-cargo-cmd-prefix needs-unwind;
   cargo-cmd-prefix-tests = mk-cargo-cmd-prefix needs-unwind-tests;
   invoke =
@@ -406,7 +431,13 @@ let
           cargo-nextest
           llvmPackages'.clang
           llvmPackages'.lld
+          pkgs.pkgsBuildHost.m4 # libxdp's build preprocesses its dispatcher program with it
           pkg-config
+          # As for the dev shell above: under a cross pkgs the one callPackage
+          # hands us is named for the target, and libbpf's build looks for it
+          # unprefixed. PKG_CONFIG_PATH below already points at the sysroot of
+          # the target, so the unprefixed one answers for it.
+          pkgs.pkgsBuildBuild.pkg-config
         ];
 
         buildInputs = [
@@ -420,6 +451,14 @@ let
           CARGO_PROFILE = cargo-profile;
           DATAPLANE_SYSROOT = "${sysroot}";
           LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
+          # libxdp compiles BPF programs of its own, and the wrapped compiler
+          # adds hardening flags that clang rejects for the bpf target. Point
+          # that one build at the compiler underneath the wrapper.
+          CLANG = "${pkgs.pkgsBuildHost.llvmPackages'.clang.cc}/bin/clang";
+          # libbpf is compiled by gcc, which on aarch64 calls out to libgcc for
+          # its atomics, while the link is clang and lld against a sysroot that
+          # has no libgcc in it. Have it emit the instructions inline instead.
+          LIBBPF_SYS_EXTRA_CFLAGS = lib.optionalString pkgs.stdenv'.hostPlatform.isAarch64 "-mno-outline-atomics";
           C_INCLUDE_PATH = "${sysroot}/include";
           LIBRARY_PATH = "${sysroot}/lib";
           PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
@@ -450,6 +489,7 @@ let
           {
             # Only dependency builds should retain crane's target archive.
             doInstallCargoArtifacts = for-deps;
+            preBuild = target-binutils + (orig.preBuild or "");
             postBuild = (orig.postBuild or "") + ''
               unset RUSTFLAGS;
             '';
@@ -457,6 +497,7 @@ let
         else
           {
             separateDebugInfo = true;
+            preBuild = target-binutils + (orig.preBuild or "");
 
             # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
             # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
