@@ -38,6 +38,17 @@ const VM_OVERHEAD_ALLOWANCE_KVM: Duration = Duration::from_secs(60);
 /// a guest kernel boot alone can take tens of seconds.
 const VM_OVERHEAD_ALLOWANCE_TCG: Duration = Duration::from_secs(300);
 
+/// How long each vsock channel gets to finish delivering after the guest has
+/// been shut down.
+const DRAIN_TIMEOUT_BASE: Duration = Duration::from_secs(5);
+
+/// [`DRAIN_TIMEOUT_BASE`] scaled, so that a slower guest gets a
+/// proportionally longer drain. See the call site for why cutting this short
+/// turns a passing test into a failure rather than into missing output.
+fn drain_timeout(scale: f64) -> Duration {
+    DRAIN_TIMEOUT_BASE.mul_f64(scale)
+}
+
 /// The VM's overhead allowance for the given acceleration mode, scaled by
 /// [`ENV_OVERHEAD_SCALE`](n_vm_protocol::ENV_OVERHEAD_SCALE).
 ///
@@ -693,16 +704,25 @@ impl<B: HypervisorBackend> TestVm<B> {
 
         B::shutdown(&controller).await;
 
-        const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+        // Scaled with the VM allowance, for the same reason and by the same
+        // knob. This one is not about how long the guest runs but about how
+        // long its four vsock channels take to drain *after* shutdown, and an
+        // instrumented guest writes its coverage profile on the way out. A
+        // drain that gives up early does not merely lose console output: the
+        // verdict arrives on one of these channels, so the run reports "no
+        // parseable test verdict from guest" and a passing test is recorded as
+        // a failure. Measured on the coverage job, where 5s was not enough and
+        // all four channels timed out together.
+        let drain_timeout = drain_timeout(n_vm_protocol::overhead_scale());
 
-        let init_trace = drain_or_fallback(init_trace, "init system trace", DRAIN_TIMEOUT).await;
-        let test_stdout = drain_or_fallback(test_stdout, "test stdout", DRAIN_TIMEOUT).await;
-        let test_stderr = drain_or_fallback(test_stderr, "test stderr", DRAIN_TIMEOUT).await;
-        let test_result = drain_or_fallback(test_result, "test result", DRAIN_TIMEOUT).await;
+        let init_trace = drain_or_fallback(init_trace, "init system trace", drain_timeout).await;
+        let test_stdout = drain_or_fallback(test_stdout, "test stdout", drain_timeout).await;
+        let test_stderr = drain_or_fallback(test_stderr, "test stderr", drain_timeout).await;
+        let test_result = drain_or_fallback(test_result, "test result", drain_timeout).await;
 
         let hypervisor_output = ProcessOutput::from_child(hypervisor, B::NAME).await;
 
-        let kernel_log = drain_or_fallback(kernel_log, "kernel log", DRAIN_TIMEOUT).await;
+        let kernel_log = drain_or_fallback(kernel_log, "kernel log", drain_timeout).await;
 
         let virtiofsd_output = ProcessOutput::from_child(virtiofsd, "virtiofsd").await;
 
@@ -941,6 +961,17 @@ mod timeout_tests {
             VM_OVERHEAD_ALLOWANCE_TCG > VM_OVERHEAD_ALLOWANCE_KVM,
             "emulating every instruction cannot be the cheaper mode",
         );
+    }
+
+    /// The drain scales with the same knob as the allowance. It is a separate
+    /// deadline from the VM's, and raising only the VM's is what left a
+    /// coverage run reporting "no parseable test verdict from guest" from a
+    /// guest that had in fact passed.
+    #[test]
+    fn the_drain_scales_with_the_allowance() {
+        assert_eq!(drain_timeout(1.0), DRAIN_TIMEOUT_BASE);
+        assert_eq!(drain_timeout(3.0), DRAIN_TIMEOUT_BASE * 3);
+        assert!(drain_timeout(3.0) > drain_timeout(1.0));
     }
 
     #[test]
