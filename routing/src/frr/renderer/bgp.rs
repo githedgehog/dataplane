@@ -16,11 +16,21 @@ use config::internal::routing::bmp::{BmpOptions, BmpSource};
 
 /* impl Display */
 impl Rendered for BgpNeighType {
+    /// The name FRR keys this neighbor by: an address for a numbered peer, the
+    /// group name for a peer group, and the interface name for an unnumbered
+    /// peer. Every per-neighbor line uses it, both under `router bgp` and in the
+    /// `neighbor <name> activate` lines of each address family.
+    ///
+    /// # Panics
+    ///
+    /// Panics on [`BgpNeighType::Unset`], which is a neighbor that was never
+    /// given a type and so cannot be rendered at all.
     fn rendered(&self) -> String {
         match self {
             BgpNeighType::Unset => panic!("Bgp neighbor without type"),
             BgpNeighType::Host(address) => format!("{address}"),
             BgpNeighType::PeerGroup(group) => group.clone(),
+            BgpNeighType::Interface(ifname) => ifname.clone(),
         }
     }
 }
@@ -117,19 +127,42 @@ impl Render for BmpOptions {
 }
 
 /* utils to render BGP neighbor configs */
+
+/// Render the line that defines a neighbor, which every other `neighbor <name>
+/// ...` line then refines. One of:
+///
+/// ```text
+///  neighbor SPINES peer-group
+///  neighbor 172.30.128.22 remote-as 65100
+///  neighbor 172.30.128.22 peer-group SPINES
+///  neighbor enp2s1np0 interface remote-as 65100
+/// ```
+///
+/// The `interface` keyword marks an unnumbered peer and must sit between the
+/// name and the `remote-as`/`peer-group` clause, which is why this cannot be
+/// built from the same string as the other per-neighbor lines.
+///
+/// # Panics
+///
+/// Panics if a neighbor that is not a peer group has neither a peer group nor a
+/// remote ASN, leaving nothing to peer with.
 fn bgp_neigh_minimal(neigh: &BgpNeighbor, name: &str) -> String {
-    let mut out;
     if neigh.is_peer_group() {
-        out = format!(" neighbor {name} peer-group");
+        return format!(" neighbor {name} peer-group");
+    }
+    let mut out = format!(" neighbor {name}");
+    /* unnumbered peers: FRR's grammar puts `interface` between the peer name
+    (an interface name here) and the peer-group / remote-as clause:
+    `neighbor <ifname> interface remote-as <asn>` */
+    if neigh.is_interface() {
+        out += " interface";
+    }
+    if let Some(peer_group) = &neigh.peer_group {
+        out += format!(" peer-group {peer_group}").as_str();
+    } else if let Some(remote_as) = neigh.remote_as {
+        out += format!(" remote-as {remote_as}").as_str();
     } else {
-        out = format!(" neighbor {name}");
-        if let Some(peer_group) = &neigh.peer_group {
-            out += format!(" peer-group {peer_group}").as_str();
-        } else if let Some(remote_as) = neigh.remote_as {
-            out += format!(" remote-as {remote_as}").as_str();
-        } else {
-            panic!("Missing peer-group or ASN");
-        }
+        panic!("Missing peer-group or ASN");
     }
     out
 }
@@ -606,6 +639,71 @@ pub mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
     use std::time::Duration;
+
+    /// An unnumbered neighbor must render as `neighbor <ifname> interface
+    /// remote-as <asn>`: the `interface` keyword is what tells FRR to peer over
+    /// the interface's IPv6 link-local rather than treating the name as an
+    /// address. Every other per-neighbor line keys on the bare interface name,
+    /// exactly as it keys on the address for a numbered peer.
+    #[test]
+    fn test_bgp_render_unnumbered_neighbor() {
+        let mut bgp = BgpConfig::new(65000);
+
+        let mut neigh = BgpNeighbor::new_interface("eth0")
+            .set_remote_as(65100)
+            .set_description("Unnumbered fabric peer")
+            .set_bfd(true);
+        neigh.ipv4_unicast_activate(BgpNeighAF::default());
+        neigh.l2vpn_evpn_activate(BgpNeighAF::with_rmap_in("RM-EVPN-IN"));
+        bgp.add_neighbor(neigh);
+        bgp.set_af_ipv4unicast(AfIpv4Ucast::new());
+        bgp.set_af_l2vpn_evpn(AfL2vpnEvpn::new());
+
+        let rendered = bgp.render(&()).to_string();
+        let lines: Vec<&str> = rendered.lines().collect();
+
+        assert!(
+            lines.contains(&" neighbor eth0 interface remote-as 65100"),
+            "missing unnumbered neighbor line in:\n{rendered}"
+        );
+        assert!(lines.contains(&" neighbor eth0 description Unnumbered fabric peer"));
+        assert!(lines.contains(&" neighbor eth0 bfd"));
+        assert!(lines.contains(&" neighbor eth0 activate"));
+        assert!(lines.contains(&" neighbor eth0 route-map RM-EVPN-IN in"));
+        /* the `interface` keyword belongs on the defining line only */
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains(" interface"))
+                .collect::<Vec<_>>(),
+            vec![&" neighbor eth0 interface remote-as 65100"],
+            "`interface` leaked onto a non-defining line in:\n{rendered}"
+        );
+        /* unnumbered peers get no update-source: `interface` already binds it */
+        assert!(!rendered.contains("update-source"));
+    }
+
+    /// A numbered neighbor must keep rendering exactly as before, with no
+    /// `interface` keyword.
+    #[test]
+    fn test_bgp_render_numbered_neighbor_unchanged() {
+        let mut bgp = BgpConfig::new(65000);
+        bgp.add_neighbor(
+            BgpNeighbor::new_host(IpAddr::from_str("172.30.128.1").expect("Bad address"))
+                .set_remote_as(65100)
+                .set_update_source_interface("eth0"),
+        );
+
+        let rendered = bgp.render(&()).to_string();
+        let lines: Vec<&str> = rendered.lines().collect();
+
+        assert!(lines.contains(&" neighbor 172.30.128.1 remote-as 65100"));
+        assert!(lines.contains(&" neighbor 172.30.128.1 update-source eth0"));
+        assert!(
+            !rendered.contains("interface remote-as"),
+            "numbered peer must not be rendered as unnumbered:\n{rendered}"
+        );
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
