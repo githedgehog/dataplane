@@ -512,6 +512,9 @@ impl From<TxOffload> for TxOffloadConfig {
 }
 
 impl TxOffload {
+    /// Disable TX offloads. `DevConfig::tx_offloads = None` enables all supported offloads.
+    pub const NONE: TxOffload = TxOffload(0);
+
     /// GENEVE tunnel segmentation offload.
     pub const GENEVE_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
@@ -562,6 +565,11 @@ impl TxOffload {
                 | TX_OFFLOAD_VXLAN_TNL_TSO,
         )
     };
+}
+
+impl RxOffload {
+    /// Disable RX offloads. `DevConfig::rx_offloads = None` enables all supported offloads.
+    pub const NONE: RxOffload = RxOffload(0);
 }
 
 impl BitOr for TxOffload {
