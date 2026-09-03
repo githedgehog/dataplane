@@ -238,14 +238,47 @@ fn is_tokio_test_attr(attr: &syn::Attribute) -> bool {
 /// Everything else is treated as decorating the *body* -- see the routing
 /// comment in [`test`] for why that default matters.
 ///
-/// `cfg_attr` is deliberately body-level: it most often expands to a body
-/// wrapper (`#[cfg_attr(not(emulated), traced_test)]`), and we cannot know
-/// what it expands to from here.  A conditional `ignore` therefore has to be
-/// written as a plain `#[ignore]`.
+/// A bare `cfg_attr` is body-level: it most often expands to a body wrapper
+/// (`#[cfg_attr(not(emulated), traced_test)]`), and we cannot know what an
+/// arbitrary one expands to from here.  But when *every* attribute it would
+/// expand to is itself harness-level -- `#[cfg_attr(not(x), ignore)]` -- the
+/// answer is knowable by reading it, and that is the only way to write a
+/// conditional `ignore`, which libtest must see on the dispatch function.
+/// See [`is_harness_attr`].
 const HARNESS_ATTRS: &[&str] = &["cfg", "ignore", "doc"];
 
+/// Whether libtest (or rustdoc) must see this attribute on the generated
+/// dispatch function rather than on the inner guest body.
 fn is_harness_attr(attr: &syn::Attribute) -> bool {
-    HARNESS_ATTRS.iter().any(|name| attr.path().is_ident(name))
+    if HARNESS_ATTRS.iter().any(|name| attr.path().is_ident(name)) {
+        return true;
+    }
+    if attr.path().is_ident("cfg_attr") {
+        return cfg_attr_is_all_harness(attr);
+    }
+    false
+}
+
+/// Whether a `#[cfg_attr(pred, ...)]` expands only to harness attributes.
+///
+/// Conservative in both directions: one that cannot be parsed, or that names
+/// anything not on [`HARNESS_ATTRS`], stays body-level, which is where every
+/// `cfg_attr` used to go. Mixing the two in one `cfg_attr` therefore keeps the
+/// old behaviour rather than half-applying -- an attribute cannot be emitted
+/// in two places, and silently dropping the body half would be worse than not
+/// hoisting the harness half.
+fn cfg_attr_is_all_harness(attr: &syn::Attribute) -> bool {
+    let Ok(args) = attr.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+    ) else {
+        return false;
+    };
+    // The first entry is the predicate, not an attribute to emit.
+    let mut expanded = args.iter().skip(1).peekable();
+    if expanded.peek().is_none() {
+        return false;
+    }
+    expanded.all(|meta| HARNESS_ATTRS.iter().any(|name| meta.path().is_ident(name)))
 }
 
 const KNOWN_ATTR_PREFIXES: &[&str] = &["n_vm", "n_vm_macros"];
@@ -800,4 +833,54 @@ pub fn corpus(_attr: TokenStream, input: TokenStream) -> TokenStream {
         #input2
     }
     .into()
+}
+
+#[cfg(test)]
+mod harness_attr_tests {
+    use super::is_harness_attr;
+
+    /// The newline matters: a `///` comment would otherwise swallow the item.
+    fn attr(src: &str) -> syn::Attribute {
+        let f: syn::ItemFn = syn::parse_str(&format!("{src}\nfn f() {{}}")).expect("parses");
+        f.attrs.into_iter().next().expect("one attribute")
+    }
+
+    #[test]
+    fn the_plain_harness_attributes_stay_on_the_dispatch_function() {
+        for src in [
+            "#[ignore]",
+            r#"#[ignore = "why"]"#,
+            "#[cfg(unix)]",
+            "/// doc",
+        ] {
+            assert!(is_harness_attr(&attr(src)), "{src} is for libtest to see");
+        }
+    }
+
+    #[test]
+    fn a_conditional_ignore_is_hoisted_too() {
+        // The only way to write one: libtest reads `ignore` off the generated
+        // dispatch function, so a `cfg_attr` that expands to it has to land
+        // there rather than on the inner guest body.
+        for src in [
+            "#[cfg_attr(not(host_hugepage_tests), ignore)]",
+            r#"#[cfg_attr(not(host_hugepage_tests), ignore = "needs pages")]"#,
+            "#[cfg_attr(miri, ignore, doc = \"x\")]",
+        ] {
+            assert!(is_harness_attr(&attr(src)), "{src} should be hoisted");
+        }
+    }
+
+    #[test]
+    fn a_cfg_attr_naming_anything_else_stays_on_the_body() {
+        // The motivating case for the old blanket rule, and it must keep
+        // working: this expands to a wrapper the guest body needs.
+        for src in [
+            "#[cfg_attr(not(emulated), traced_test)]",
+            "#[cfg_attr(unix, ignore, traced_test)]",
+            "#[cfg_attr(unix)]",
+        ] {
+            assert!(!is_harness_attr(&attr(src)), "{src} must not be hoisted");
+        }
+    }
 }
