@@ -4,6 +4,7 @@
 pub(crate) mod allocation;
 mod allocator_writer;
 pub mod apalloc;
+mod expiry;
 pub(crate) mod flows;
 mod fuzz;
 pub(crate) mod icmp_handling;
@@ -13,6 +14,7 @@ mod packet;
 mod probe;
 mod protocol;
 mod state;
+mod state_machine;
 mod test;
 
 // re exports

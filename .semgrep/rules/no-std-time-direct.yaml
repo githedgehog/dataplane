@@ -1,0 +1,25 @@
+rules:
+  - id: rust-no-direct-clock-read
+    languages: [rust]
+    severity: ERROR
+    message: |
+      Read the clock via `clock::now()` (or `clock::system_now()` for wall
+      time), not `Instant::now()` / `SystemTime::now()`. The workspace's
+      `clock` facade reads `std` in production and tokio's pausable clock
+      under the `virtual` feature; reading `std` directly pins the deadline
+      to the wall clock while the timer waiting on it follows tokio's, so a
+      test that advances time sees the two diverge.
+
+      `Duration` needs no facade -- it is a plain value with no clock in it,
+      and `clock` re-exports it only for convenience.
+    paths:
+      exclude:
+        - .codeql/tests/
+        - clock/src/
+        - concurrency/tests/
+    pattern-either:
+      - pattern: Instant::now()
+      - pattern: std::time::Instant::now()
+      - pattern: SystemTime::now()
+      - pattern: std::time::SystemTime::now()
+      - pattern: tokio::time::Instant::now()

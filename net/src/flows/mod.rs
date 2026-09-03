@@ -7,6 +7,7 @@
 
 pub mod atomic_instant;
 pub mod flow_info;
+pub mod flow_info_fuzz;
 pub mod flow_info_item;
 
 pub mod display;
