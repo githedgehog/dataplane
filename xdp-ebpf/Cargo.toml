@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+# Deliberately not a workspace member: this crate is built for the BPF target,
+# by `just build-ebpf`, with a toolchain and profile of its own.
+[workspace]
+
+[package]
+name = "dataplane-xdp-ebpf"
+version = "0.27.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.2.1"
+
+[[bin]]
+name = "dataplane-xdp-ebpf"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 2       # the verifier rejects what an unoptimised build emits
+overflow-checks = false
+debug = 2           # BTF, which the loader needs
+lto = true
+
+[profile.release]
+lto = true

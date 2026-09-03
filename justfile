@@ -1045,6 +1045,22 @@ bump_version version:
     sed -i "s/^version = \".*\"/version = \"${new_version}\"/" Cargo.toml
     cargo update --workspace
 
+# Build the XDP program of the AF_XDP driver (needs nightly + bpf-linker)
+#
+# Compiles xdp-ebpf/ for the BPF target, which has no prebuilt std, so core is
+# built from source. The object lands where the dataplane-xdp build script
+# looks for it.
+[script]
+build-ebpf *args:
+    {{ _just_debuggable_ }}
+    declare profile="debug"
+    [[ "{{ args }}" == *--release* ]] && profile="release"
+    cd xdp-ebpf
+    cargo +nightly build --target bpfel-unknown-none -Zbuild-std=core {{ args }}
+    declare -r object="$(pwd)/target/bpfel-unknown-none/${profile}/dataplane-xdp-ebpf"
+    echo "Built ${object}"
+    echo "Build the dataplane against it with DATAPLANE_XDP_EBPF=${object}"
+
 # Enter nix-shell
 [script]
 shell:

@@ -52,6 +52,7 @@ use xsk_rs::umem::frame::FrameDesc;
 use xsk_rs::{CompQueue, FillQueue, RxQueue, Umem};
 
 use crate::buffer::XdpBuffer;
+use crate::program::Redirect;
 use crate::umem::{FRAME_SIZE, MAX_PACKET_LEN, UmemRegion};
 
 /// Frames handled in one ring operation.
@@ -145,9 +146,6 @@ pub struct XskConfig {
     pub tx_ring_size: u32,
     /// Bind in copy mode without trying zero-copy first.
     pub force_copy: bool,
-    /// Do not let libxdp load its own redirect program, because we loaded one
-    /// of our own and registered the sockets in its map ourselves.
-    pub inhibit_prog_load: bool,
 }
 
 impl Default for XskConfig {
@@ -159,7 +157,6 @@ impl Default for XskConfig {
             rx_ring_size: DEFAULT_RING_SIZE,
             tx_ring_size: DEFAULT_RING_SIZE,
             force_copy: false,
-            inhibit_prog_load: false,
         }
     }
 }
@@ -218,9 +215,8 @@ impl XskConfig {
                 } | BindFlags::XDP_USE_NEED_WAKEUP,
             );
 
-        if self.inhibit_prog_load {
-            builder.libxdp_flags(LibxdpFlags::XSK_LIBXDP_FLAGS_INHIBIT_PROG_LOAD);
-        }
+        // We bring our own program, so libxdp must not load one of its own.
+        builder.libxdp_flags(LibxdpFlags::XSK_LIBXDP_FLAGS_INHIBIT_PROG_LOAD);
 
         Ok(builder.build())
     }
@@ -309,7 +305,11 @@ impl XskUmem {
         })
     }
 
-    /// Bind a socket to `if_name`, queue `queue_id`, and fill its RX ring.
+    /// Bind a socket to `if_name`, queue `queue_id`, fill its RX ring, and
+    /// tell `redirect` where the packets of that queue should go.
+    ///
+    /// The two belong together: a socket bound without telling the redirect
+    /// about it is a socket that receives nothing.
     ///
     /// Zero-copy is tried first unless [`XskConfig::force_copy`] is set. A
     /// driver that cannot do zero-copy fails the bind, and we fall back to
@@ -317,8 +317,14 @@ impl XskUmem {
     ///
     /// # Errors
     ///
-    /// Returns [`XskError::Bind`] if neither mode binds.
-    pub fn bind(&mut self, if_name: &str, queue_id: u32) -> Result<XskSocket, XskError> {
+    /// Returns [`XskError::Bind`] if neither mode binds, or an I/O error if
+    /// the socket cannot be registered with the redirect.
+    pub fn bind(
+        &mut self,
+        if_name: &str,
+        queue_id: u32,
+        redirect: &Redirect,
+    ) -> Result<XskSocket, XskError> {
         let interface: Interface = if_name.parse().map_err(|e| XskError::Bind {
             if_name: if_name.to_owned(),
             queue_id,
@@ -387,6 +393,11 @@ impl XskUmem {
         if posted == 0 {
             warn!("No frames left to fill the RX ring of {if_name}:q{queue_id}");
         }
+
+        // Last, because a socket has to be bound before the redirect will take
+        // it, and first in the sense that matters: until this happens the
+        // socket is bound and deaf, and the packets go to the kernel instead.
+        redirect.register(if_name, queue_id, &socket)?;
 
         Ok(socket)
     }
