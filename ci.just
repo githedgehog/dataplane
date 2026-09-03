@@ -61,30 +61,35 @@ test-each profile="debug":
 coverage profile="debug":
     just {{ _lab }} profile={{ profile }} instrument=coverage coverage-archive
 
-# Reserve 1 GiB hugepages on the runner's *host* for the guest-booting tests.
+# Reserve host hugepages on the runner's *host* for the guest-booting tests.
 #
-# `vm_boots_with_host_hugepages` asks for a 1 GiB host page, because that is
-# the only thing that makes the guest's memory physically contiguous, which is
-# the only thing DPDK-through-an-IOMMU can tell apart. Nothing else asks: see
-# the `HostPageSize` docs for why the default deliberately leaves this pool
-# alone.
+# 2 MiB pages, and the count is a VM's worth twice over: a 1024 MiB guest
+# backed by 2 MiB pages needs 512 of them, and the `check` and `coverage` jobs
+# can be on one machine at once.
+#
+# Not 1 GiB, though that is the page size that matters most -- it is the only
+# thing that makes a guest's memory physically contiguous, which is the only
+# thing DPDK-through-an-IOMMU can tell apart. A gigabyte page has to come from
+# a physically contiguous gigabyte, and these runners cannot produce one:
+# measured, the kernel answers 0 both before and after compaction. That wants
+# `default_hugepagesz=1G hugepagesz=1G hugepages=4` on the host command line
+# and a reboot. Until then `vm_boots_with_host_hugepages` is `#[ignore]`d and
+# its 2 MiB counterpart covers the same code.
 #
 # The runner is a container with no capabilities at all (measured: `CapEff` is
 # zero), so it cannot write `/sys/kernel/mm/hugepages` itself. It can ask the
 # host's daemon for a privileged container that can. The pool is not
-# namespaced, so this reserves for the machine, and every job on it sees the
+# namespaced, so this reserves for the machine and every job on it sees the
 # result -- which is also why it only ever raises the count, never lowers it.
 #
-# Never fails the job. A 1 GiB reservation is a request, not a guarantee: the
-# kernel needs that many physically contiguous gigabytes, and on a long-lived
-# machine it may not find them. If it comes up short the test that needs a page
-# says so precisely, and that is a better place to read it than here.
+# Never fails the job: a reservation is a request, and a test that does not get
+# its page says so far more precisely than a setup step could.
 [script]
-reserve-hugepages count="4":
+reserve-hugepages count="1024" size_kb="2048":
     # The lab's daemon socket, overridable so this recipe can be exercised
     # against an ordinary local daemon.
     export DOCKER_HOST="${DOCKER_HOST:-unix:///run/docker/docker.sock}"
-    declare -r pool="/sys/kernel/mm/hugepages/hugepages-1048576kB"
+    declare -r pool="/sys/kernel/mm/hugepages/hugepages-{{ size_kb }}kB"
     # Already pulled on these runners; a tag rather than latest so a silent
     # upstream change cannot alter what runs privileged here.
     declare -r img="busybox:1.37.0-uclibc"
@@ -94,11 +99,11 @@ reserve-hugepages count="4":
     declare have
     have="$(priv "cat ${pool}/nr_hugepages" || true)"
     if [ -z "${have}" ]; then
-      echo "::warning::no 1 GiB hugepage pool at ${pool}; tests that need one will say so"
+      echo "::warning::no {{ size_kb }}kB hugepage pool at ${pool}; tests that need one will say so"
       exit 0
     fi
     if [ "${have}" -ge "{{ count }}" ]; then
-      echo "1 GiB hugepages: ${have} already reserved, leaving alone"
+      echo "{{ size_kb }}kB hugepages: ${have} already reserved, leaving alone"
       exit 0
     fi
 
@@ -106,13 +111,9 @@ reserve-hugepages count="4":
     declare got
     got="$(priv "cat ${pool}/nr_hugepages" || echo 0)"
 
-    # A gigabyte page needs a physically contiguous gigabyte, and a machine
-    # that has been up a while rarely has one to hand -- which is why the
-    # kernel documentation reserves 1 GiB pages at boot. Compaction is the one
-    # thing worth trying first: it migrates movable pages to free contiguous
-    # runs, costs a few seconds, and disturbs nothing else on the host (unlike
-    # dropping caches, which would take the page cache away from every other
-    # job on this machine).
+    # Compaction migrates movable pages to free contiguous runs. It costs a few
+    # seconds and disturbs nothing else on the host, unlike dropping caches,
+    # which would take the page cache from every other job on this machine.
     if [ "${got}" -lt "{{ count }}" ]; then
       priv "echo 1 > /proc/sys/vm/compact_memory" || true
       priv "echo {{ count }} > ${pool}/nr_hugepages" || true
@@ -120,10 +121,9 @@ reserve-hugepages count="4":
     fi
 
     if [ "${got}" -lt "{{ count }}" ]; then
-      echo "::warning::asked for {{ count }} 1 GiB hugepages, got ${got} (was ${have}), even after compaction."
-      echo "::warning::runtime allocation of 1 GiB pages needs a contiguous gigabyte. The durable fix is a boot parameter on this host: \`default_hugepagesz=1G hugepagesz=1G hugepages={{ count }}\`."
+      echo "::warning::asked for {{ count }} {{ size_kb }}kB hugepages, got ${got} (was ${have}), even after compaction"
     else
-      echo "1 GiB hugepages: ${have} -> ${got}"
+      echo "{{ size_kb }}kB hugepages: ${have} -> ${got}"
     fi
 
 # Optimized fuzz builds let schedule explorers cover more interleavings.
