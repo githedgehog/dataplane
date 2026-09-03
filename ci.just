@@ -94,7 +94,18 @@ reserve-hugepages count="1024" size_kb="2048":
     # upstream change cannot alter what runs privileged here.
     declare -r img="busybox:1.37.0-uclibc"
 
-    priv() { docker run --rm --privileged -v /sys:/sys "${img}" sh -c "$1" 2>/dev/null; }
+    # stdout only; stderr is kept for the diagnostic below rather than thrown
+    # away, because "got 0" with no explanation is not something anyone can act
+    # on -- which is exactly where the first attempt at this left us.
+    # `--privileged` alone: it already gives the container a read-write sysfs,
+    # and sysfs is not namespaced, so that *is* the host's. An explicit
+    # `-v /sys:/sys` on top adds a bind whose mode depends on how the daemon is
+    # configured, which is a variable this does not need.
+    declare priv_err=""
+    priv() {
+      priv_err="$(docker run --rm --privileged "${img}" sh -c "$1" 2>&1 >/dev/null)"
+      docker run --rm --privileged "${img}" sh -c "$1" 2>/dev/null
+    }
 
     declare have
     have="$(priv "cat ${pool}/nr_hugepages" || true)"
@@ -122,6 +133,16 @@ reserve-hugepages count="1024" size_kb="2048":
 
     if [ "${got}" -lt "{{ count }}" ]; then
       echo "::warning::asked for {{ count }} {{ size_kb }}kB hugepages, got ${got} (was ${have}), even after compaction"
+      # What the kernel said, and what it had to work with. A reservation can
+      # come up short for two quite different reasons -- the write was refused,
+      # or the memory was not there -- and the count alone cannot tell them
+      # apart.
+      if [ -n "${priv_err}" ]; then
+        echo "::warning::the write reported: ${priv_err}"
+      fi
+      priv "grep -E '^(MemFree|MemAvailable|HugePages_|Hugepagesize)' /proc/meminfo" \
+        | sed 's/^/  /' || true
+      priv "ls /sys/kernel/mm/hugepages" | sed 's/^/  pools: /' || true
     else
       echo "{{ size_kb }}kB hugepages: ${have} -> ${got}"
     fi
