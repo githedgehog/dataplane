@@ -28,6 +28,7 @@ use std::num::NonZero;
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedIpVersion {
     Ipv4,
     Ipv6,
@@ -606,11 +607,32 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Tell whether the header is a UDP header carrying no checksum, which RFC 768 allows over
+    /// IPv4 only: there is no sum to fold an update into, in that case.
+    fn udp_checksum_disabled(&self, quoted: EmbeddedIpVersion, current_checksum: u16) -> bool {
+        matches!(self, EmbeddedTransport::Udp(_))
+            && quoted == EmbeddedIpVersion::Ipv4
+            && current_checksum == 0
+    }
+
     /// Incrementally update the checksum of the embedded transport header, but discard the error if
     /// the header is truncated and too short.
-    pub fn update_checksum(&mut self, current_checksum: u16, old_value: u16, new_value: u16) {
+    ///
+    /// "quoted" is the IP version of the packet that the header comes from, which the UDP rules on
+    /// a zero checksum depend on.
+    pub fn update_checksum(
+        &mut self,
+        quoted: EmbeddedIpVersion,
+        current_checksum: u16,
+        old_value: u16,
+        new_value: u16,
+    ) {
         let (raw, old, new) = (current_checksum, old_value, new_value);
         if old == new {
+            return;
+        }
+        if self.udp_checksum_disabled(quoted, raw) {
+            // The sender computed no checksum, leave the marker alone
             return;
         }
         match self {
@@ -618,7 +640,14 @@ impl EmbeddedTransport {
                 let _ = tcp.increment_update_checksum(TcpChecksum::new(raw), old, new);
             }
             EmbeddedTransport::Udp(udp) => {
-                let _ = udp.increment_update_checksum(UdpChecksum::new(raw), old, new);
+                // RFC 768: a computed checksum of zero travels as all ones, so that it is not
+                // mistaken for the marker for "no checksum". IPv6 forbids the marker altogether.
+                let updated =
+                    match TruncatedUdp::incremental_checksum(UdpChecksum::new(raw), old, new) {
+                        zero if u16::from(zero) == 0 => UdpChecksum::new(u16::MAX),
+                        updated => updated,
+                    };
+                let _ = udp.set_checksum(updated);
             }
             EmbeddedTransport::Icmp4(icmp) => {
                 let _ = icmp.increment_update_checksum(Icmp4Checksum::new(raw), old, new);
@@ -638,11 +667,16 @@ impl EmbeddedTransport {
         if old.is_ipv4() != new.is_ipv4() {
             return;
         }
+        let quoted = if old.is_ipv4() {
+            EmbeddedIpVersion::Ipv4
+        } else {
+            EmbeddedIpVersion::Ipv6
+        };
         for (old_word, new_word) in address_words(old).into_iter().zip(address_words(new)) {
             let Some(current) = self.checksum() else {
                 return;
             };
-            self.update_checksum(current, old_word, new_word);
+            self.update_checksum(quoted, current, old_word, new_word);
         }
     }
 }
@@ -1387,6 +1421,77 @@ mod tests {
 
         // Before calling check_full_payload, should be false
         assert!(!headers.is_full_payload());
+    }
+
+    // A zero UDP checksum means "the sender computed none" over IPv4, and nothing at all over
+    // IPv6, where RFC 8200 makes the checksum mandatory
+    mod udp_zero_checksum {
+        use super::*;
+        use crate::udp::{Udp, UdpChecksum};
+
+        const OLD_PORT: u16 = 1234;
+        const NEW_PORT: u16 = 4321;
+
+        fn udp_quote(checksum: u16) -> EmbeddedTransport {
+            let mut udp = Udp::new(OLD_PORT.try_into().unwrap(), 5678.try_into().unwrap());
+            udp.set_checksum(UdpChecksum::new(checksum))
+                .unwrap_or_else(|()| unreachable!());
+            EmbeddedTransport::from(udp)
+        }
+
+        #[test]
+        fn a_disabled_ipv4_udp_checksum_is_left_alone() {
+            let mut quote = udp_quote(0);
+            quote.update_checksum(EmbeddedIpVersion::Ipv4, 0, OLD_PORT, NEW_PORT);
+            assert_eq!(
+                quote.checksum(),
+                Some(0),
+                "a quote that carried no checksum came out carrying one"
+            );
+        }
+
+        #[test]
+        fn a_zero_ipv6_udp_checksum_is_folded_into() {
+            let mut quote = udp_quote(0);
+            quote.update_checksum(EmbeddedIpVersion::Ipv6, 0, OLD_PORT, NEW_PORT);
+            assert_ne!(
+                quote.checksum(),
+                Some(0),
+                "an IPv6 quote kept a checksum that IPv6 forbids"
+            );
+        }
+
+        #[test]
+        fn a_udp_checksum_folding_onto_zero_travels_as_all_ones() {
+            // The update below folds this checksum onto zero, as the inverse update from zero
+            let folding_onto_zero = u16::from(TruncatedUdp::incremental_checksum(
+                UdpChecksum::new(0),
+                NEW_PORT,
+                OLD_PORT,
+            ));
+            assert_eq!(
+                u16::from(TruncatedUdp::incremental_checksum(
+                    UdpChecksum::new(folding_onto_zero),
+                    OLD_PORT,
+                    NEW_PORT,
+                )),
+                0,
+                "this test no longer exercises a fold onto zero"
+            );
+
+            let mut quote = udp_quote(folding_onto_zero);
+            quote.update_checksum(
+                EmbeddedIpVersion::Ipv6,
+                folding_onto_zero,
+                OLD_PORT,
+                NEW_PORT,
+            );
+            assert_eq!(
+                quote.checksum(),
+                Some(u16::MAX),
+                "a UDP checksum that folded onto zero was left spelled as the \"no checksum\" marker"
+            );
+        }
     }
 
     mod address_folding {
