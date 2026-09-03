@@ -13,12 +13,36 @@ use crate::gateway_agent_crd::{
 };
 
 const MAX_RULES: u8 = 3;
+const MAX_MATCH_ENTRIES: u8 = 3;
+
+/// One entry on one side of a rule's match, before it is split into a `Src` or a `Dst`.
+///
+/// The two generated types carry identical fields but are distinct, so the draw happens
+/// once here and is mapped into whichever the caller needs.
+struct Entry {
+    cidr: Option<String>,
+    vpc_subnet: Option<String>,
+    ports: Option<Vec<String>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SideFacts {
     pub vpc: String,
     pub native: Vec<String>,
     pub advertised: Vec<String>,
+    /// Subnet names a rule may write in place of a `native` cidr.
+    ///
+    /// A match entry resolves `vpcSubnet` against the subnets of the vpc on its own
+    /// side of the rule, so the two sides cannot share one list. Only subnets an
+    /// expose actually names belong here: the validator refuses a rule whose match
+    /// covers no traffic the manifest carries, so a subnet this peering does not
+    /// expose is not a legal thing to name.
+    pub native_subnets: Vec<String>,
+    /// The same, for the side of a rule that matches on advertised addresses.
+    ///
+    /// An expose that translates advertises its `as` prefixes rather than its own, and
+    /// there is no subnet name for those, so a translating expose contributes nothing.
+    pub advertised_subnets: Vec<String>,
     pub restricts_ports: bool,
     pub all_stateful: bool,
 }
@@ -29,6 +53,8 @@ impl SideFacts {
         let exposes = manifest.expose.as_deref().unwrap_or(&[]);
         let mut native = Vec::new();
         let mut advertised = Vec::new();
+        let mut native_subnets = Vec::new();
+        let mut advertised_subnets = Vec::new();
         let mut restricts_ports = false;
         let mut all_stateful = !exposes.is_empty();
 
@@ -39,6 +65,12 @@ impl SideFacts {
                 .flatten()
                 .filter_map(|ip| ip.cidr.clone())
                 .collect();
+            let subnets: Vec<String> = expose
+                .ips
+                .iter()
+                .flatten()
+                .filter_map(|ip| ip.vpc_subnet.clone())
+                .collect();
             let translations: Vec<String> = expose
                 .r#as
                 .iter()
@@ -47,8 +79,10 @@ impl SideFacts {
                 .collect();
 
             native.extend(ips.iter().cloned());
+            native_subnets.extend(subnets.iter().cloned());
             if translations.is_empty() {
                 advertised.extend(ips);
+                advertised_subnets.extend(subnets);
             } else {
                 advertised.extend(translations);
             }
@@ -66,6 +100,8 @@ impl SideFacts {
             vpc: vpc.to_string(),
             native,
             advertised,
+            native_subnets,
+            advertised_subnets,
             restricts_ports,
             all_stateful,
         }
@@ -103,6 +139,62 @@ impl AclGenerator {
         crate::bolero::support::choose(d, choices)
     }
 
+    /// Draw one side's address match: nothing, a cidr, or the name of one of its subnets.
+    ///
+    /// At most one of the two is ever `Some`. A side naming either is a branch of the
+    /// converter's `resolve_prefix`, and nothing used to draw the subnet name, so that
+    /// branch and the unknown-subnet refusal behind it were unreachable from here.
+    fn address<D: Driver>(
+        d: &mut D,
+        cidrs: &[String],
+        subnets: &[String],
+    ) -> Option<(Option<String>, Option<String>)> {
+        if !d.produce::<bool>()? {
+            return Some((None, None));
+        }
+        if !subnets.is_empty() && d.produce::<bool>()? {
+            return Some((None, crate::bolero::support::choose(d, subnets)));
+        }
+        Some((Self::prefix(d, cidrs), None))
+    }
+
+    /// Draw the entries on one side of a rule's match.
+    ///
+    /// A side is a list, and until now this drew exactly one entry for it. A list of one
+    /// has no order, so the permutation that reorders these lists could never change
+    /// anything, and the property comparing a configuration against its own reordering
+    /// was being handed an identical input every time.
+    ///
+    /// An entry naming neither an address nor a port means "everything", and the
+    /// converter answers one by discarding the whole side, so an entry that would come
+    /// out empty is dropped rather than written.
+    fn entries<D: Driver>(
+        d: &mut D,
+        cidrs: &[String],
+        subnets: &[String],
+        may_use_ports: bool,
+    ) -> Option<Vec<Entry>> {
+        let count = d.gen_u8(Bound::Included(&1), Bound::Included(&MAX_MATCH_ENTRIES))?;
+        let mut out = Vec::with_capacity(usize::from(count));
+        for _ in 0..count {
+            let (cidr, vpc_subnet) = Self::address(d, cidrs, subnets)?;
+            let ports = if may_use_ports && d.produce::<bool>()? {
+                Some(Self::ports(d)?)
+            } else {
+                None
+            };
+            if cidr.is_none() && vpc_subnet.is_none() && ports.is_none() {
+                continue;
+            }
+            out.push(Entry {
+                cidr,
+                vpc_subnet,
+                ports,
+            });
+        }
+        Some(out)
+    }
+
     fn rule<D: Driver>(&self, d: &mut D, index: u8) -> Option<GatewayAgentPeeringsAclRules> {
         let (from, to) = if d.produce::<bool>()? {
             (&self.left, &self.right)
@@ -129,46 +221,41 @@ impl AclGenerator {
             ),
         };
 
-        let src_ports = may_use_ports && !from.restricts_ports && d.produce::<bool>()?;
-        let dst_ports = may_use_ports && !to.restricts_ports && d.produce::<bool>()?;
+        let src_entries = Self::entries(
+            d,
+            &from.native,
+            &from.native_subnets,
+            may_use_ports && !from.restricts_ports,
+        )?;
+        let dst_entries = Self::entries(
+            d,
+            &to.advertised,
+            &to.advertised_subnets,
+            may_use_ports && !to.restricts_ports,
+        )?;
 
-        let src_prefix = if d.produce::<bool>()? {
-            Self::prefix(d, &from.native)
-        } else {
-            None
-        };
-        let dst_prefix = if d.produce::<bool>()? {
-            Self::prefix(d, &to.advertised)
-        } else {
-            None
-        };
-
-        let src = if src_prefix.is_some() || src_ports {
-            Some(vec![GatewayAgentPeeringsAclRulesMatchSrc {
-                cidr: src_prefix,
-                ports: if src_ports {
-                    Self::ports(d)?.into()
-                } else {
-                    None
-                },
-                vpc_subnet: None,
-            }])
-        } else {
-            None
-        };
-        let dst = if dst_prefix.is_some() || dst_ports {
-            Some(vec![GatewayAgentPeeringsAclRulesMatchDst {
-                cidr: dst_prefix,
-                ports: if dst_ports {
-                    Self::ports(d)?.into()
-                } else {
-                    None
-                },
-                vpc_subnet: None,
-            }])
-        } else {
-            None
-        };
+        let src = Some(
+            src_entries
+                .into_iter()
+                .map(|entry| GatewayAgentPeeringsAclRulesMatchSrc {
+                    cidr: entry.cidr,
+                    ports: entry.ports,
+                    vpc_subnet: entry.vpc_subnet,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .filter(|entries| !entries.is_empty());
+        let dst = Some(
+            dst_entries
+                .into_iter()
+                .map(|entry| GatewayAgentPeeringsAclRulesMatchDst {
+                    cidr: entry.cidr,
+                    ports: entry.ports,
+                    vpc_subnet: entry.vpc_subnet,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .filter(|entries| !entries.is_empty());
 
         let r#match = if src.is_some() || dst.is_some() || proto.is_some() {
             Some(GatewayAgentPeeringsAclRulesMatch { dst, proto, src })
