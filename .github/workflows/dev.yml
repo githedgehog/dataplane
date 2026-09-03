@@ -241,12 +241,6 @@ jobs:
           recipe: "ci::check-clippy"
           recipe_args: "${{ matrix.profile }}"
 
-      - &reserve-hugepages
-        name: "reserve hugepages"
-        uses: *just
-        with:
-          recipe: "ci::reserve-hugepages"
-
       - name: "test"
         uses: *just
         with:
@@ -544,18 +538,15 @@ jobs:
       - *checkout
       - *nix-setup
 
-      - *reserve-hugepages
-
       - name: "coverage-archive"
         uses: *just
         env:
-          # Coverage is not a small tax on a guest: the whole n-vm suite went
-          # from 76s to 155s on these runners, and one test overran the 60s
-          # VM allowance at 96s -- which surfaces as "no parseable test
-          # verdict from guest", because the timeout shoots the VM and takes
-          # the verdict with it. Three rather than the observed two, because
-          # what has to fit is the worst case under whatever else shares the
-          # machine, and a larger allowance costs nothing when nothing hangs.
+          # Headroom on the VM kill deadline for an instrumented guest, which
+          # is slower than a plain one and writes its coverage profile on the
+          # way out. Cheap insurance rather than a measured requirement: this
+          # is when a hung guest is shot, not a delay anything waits out, and
+          # overrunning it surfaces as "no parseable test verdict from guest"
+          # -- a passing test reported as a broken harness.
           N_VM_OVERHEAD_SCALE: "3"
         with:
           recipe: "ci::coverage"
