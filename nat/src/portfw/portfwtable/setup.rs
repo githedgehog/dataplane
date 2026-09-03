@@ -141,22 +141,48 @@ mod tests {
                 for rule in &rules {
                     assert_eq!(rule.ext_prefix, external.prefix(), "external prefix");
                     assert_eq!(rule.int_prefix, internal.prefix(), "internal prefix");
+                    // Both ends of both ranges. Checking only the first port let a rule
+                    // that had collapsed a range of up to a thousand ports down to a
+                    // single one pass, silently dropping every other port's traffic.
+                    let (want_ext, want_int) = (
+                        external.ports().expect("ports"),
+                        internal.ports().expect("ports"),
+                    );
                     assert_eq!(
                         rule.ext_ports.first().get(),
-                        external.ports().expect("ports").start(),
-                        "external ports"
+                        want_ext.start(),
+                        "external first"
                     );
+                    assert_eq!(rule.ext_ports.last().get(), want_ext.end(), "external last");
                     assert_eq!(
                         rule.int_ports.first().get(),
-                        internal.ports().expect("ports").start(),
-                        "internal ports"
+                        want_int.start(),
+                        "internal first"
                     );
+                    assert_eq!(rule.int_ports.last().get(), want_int.end(), "internal last");
                     assert_eq!(rule.dst_vpcd, VpcDiscriminant::from_vni(vni(LOCAL_VNI)));
                     assert_eq!(
                         rule.key.src_vpcd(),
                         VpcDiscriminant::from_vni(vni(REMOTE_VNI))
                     );
                 }
+
+                // The rules have to name the protocols the expose asked for. Counting them
+                // does not say that: installing TCP twice for an `any` expose gives two
+                // rules and no UDP forwarding at all, and nothing here read the protocol.
+                let mut protocols: Vec<NextHeader> =
+                    rules.iter().map(|rule| rule.key.proto()).collect();
+                protocols.sort_unstable();
+                let wanted = match proto {
+                    L4Protocol::Tcp => vec![NextHeader::TCP],
+                    L4Protocol::Udp => vec![NextHeader::UDP],
+                    L4Protocol::Any => {
+                        let mut both = vec![NextHeader::TCP, NextHeader::UDP];
+                        both.sort_unstable();
+                        both
+                    }
+                };
+                assert_eq!(protocols, wanted, "protocols installed for {expose}");
             });
     }
 
