@@ -290,10 +290,8 @@ impl ValueGenerator for AnyExposeGenerator<'_> {
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
         let flavours = NatFlavour::all();
         let families = AddressFamily::all();
-        let flavour =
-            flavours[d.gen_usize(Bound::Included(&0), Bound::Excluded(&flavours.len()))?];
-        let family =
-            families[d.gen_usize(Bound::Included(&0), Bound::Excluded(&families.len()))?];
+        let flavour = crate::bolero::support::choose(d, &flavours)?;
+        let family = crate::bolero::support::choose(d, &families)?;
         ExposeGenerator::new(flavour, family, self.which, self.subnets).generate(d)
     }
 }
