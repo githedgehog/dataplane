@@ -241,6 +241,12 @@ jobs:
           recipe: "ci::check-clippy"
           recipe_args: "${{ matrix.profile }}"
 
+      - &reserve-hugepages
+        name: "reserve hugepages"
+        uses: *just
+        with:
+          recipe: "ci::reserve-hugepages"
+
       - name: "test"
         uses: *just
         with:
@@ -537,6 +543,8 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
+
+      - *reserve-hugepages
 
       - name: "coverage-archive"
         uses: *just
