@@ -1219,14 +1219,33 @@ pub mod contract {
     pub const LOCAL_VNI: u32 = 100;
     pub const REMOTE_VNI: u32 = 200;
 
+    /// Build the fixed two-vpc overlay around `expose` and validate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the overlay cannot be assembled, as for
+    /// [`overlay_with_exposes`], or if the assembled overlay does not validate,
+    /// which is what a caller offering a deliberately illegal expose is testing for.
     pub fn overlay_offering(expose: VpcExpose) -> Result<ValidatedOverlay, ConfigError> {
         overlay_with(expose)?.validate()
     }
 
+    /// Build the fixed two-vpc overlay around a single `expose`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the overlay cannot be assembled, as for
+    /// [`overlay_with_exposes`].
     pub fn overlay_with(expose: VpcExpose) -> Result<Overlay, ConfigError> {
         overlay_with_exposes(vec![expose])
     }
 
+    /// Build the fixed two-vpc overlay whose local manifest offers `exposes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either vpc is rejected by the [`VpcTable`], or if the
+    /// peering between them is rejected by the [`VpcPeeringTable`].
     pub fn overlay_with_exposes(exposes: Vec<VpcExpose>) -> Result<Overlay, ConfigError> {
         let remote_prefix = match exposes
             .first()
