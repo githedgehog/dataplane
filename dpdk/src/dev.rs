@@ -18,7 +18,7 @@ use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
-use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
@@ -258,6 +258,8 @@ pub enum DevConfigError {
         /// The device's maximum supported MTU.
         max: u16,
     },
+    /// RSS hashing was requested but the device advertises no RSS hash functions.
+    RssUnsupported,
 }
 
 impl DevConfig {
@@ -292,6 +294,13 @@ impl DevConfig {
         // Resolve and validate the MTU against what the device actually supports before building
         // the configuration.
         let mtu = self.resolve_mtu(&dev)?;
+        // Reject an RSS request the device cannot honor rather than silently dropping it, for the
+        // same reason `resolve_mtu` rejects an out-of-range MTU: a misconfiguration that only
+        // shows up as traffic landing on the wrong queue is far harder to diagnose than an error
+        // at configure time.
+        if self.rss.is_some() && !dev.supports_rss() {
+            return Err(DevConfigError::RssUnsupported);
+        }
         // The RSS key must outlive the `rte_eth_dev_configure` call below (the PMD copies it).
         // Left uninitialized: it is written and used only on the `self.rss.is_some()` path, so a
         // dummy initializer would be a dead store.
@@ -310,7 +319,18 @@ impl DevConfig {
             },
             rxmode: rte_eth_rxmode {
                 mtu: u32::from(mtu),
-                mq_mode: RTE_ETH_MQ_RX_RSS,
+                // Only ask for RSS distribution on a device that advertises RSS hash functions.
+                // Emulated NICs (e1000, e1000e, and virtio without a multi-queue feature
+                // negotiation) report `flow_type_rss_offloads == 0` and fail
+                // `rte_eth_dev_configure` outright when handed `RTE_ETH_MQ_RX_RSS`.  Devices that
+                // do support RSS keep the previous behavior unconditionally, whether or not
+                // `rss` requests a hash: `rss_hf = 0` under `RTE_ETH_MQ_RX_RSS` is how this
+                // crate has always configured mlx5.
+                mq_mode: if dev.supports_rss() {
+                    RTE_ETH_MQ_RX_RSS
+                } else {
+                    RTE_ETH_MQ_RX_NONE
+                },
                 // The device's advertised maximum LRO size.  DPDK ignores this unless the TCP LRO
                 // offload is enabled, and `0` (no LRO support) requests the driver's default.
                 max_lro_pkt_size: dev.inner.max_lro_pkt_size,
@@ -558,6 +578,12 @@ impl From<TxOffload> for TxOffloadConfig {
 }
 
 impl TxOffload {
+    /// The empty set: no transmit offloads requested.
+    ///
+    /// Distinct from a `None` [`DevConfig::tx_offloads`], which asks for *every* offload the
+    /// device supports.
+    pub const NONE: TxOffload = TxOffload(0);
+
     /// GENEVE tunnel segmentation offload.
     pub const GENEVE_TNL_TSO: TxOffload = TxOffload(rte_eth_tx_offload::TX_OFFLOAD_GENEVE_TNL_TSO);
     /// GRE tunnel segmentation offload.
@@ -608,6 +634,15 @@ impl TxOffload {
                 | TX_OFFLOAD_VXLAN_TNL_TSO,
         )
     };
+}
+
+impl RxOffload {
+    /// The empty set: no receive offloads requested.
+    ///
+    /// Distinct from a `None` [`DevConfig::rx_offloads`], which asks for *every* offload the
+    /// device supports -- including LRO, which drags DPDK's `max_lro_pkt_size` validation into
+    /// configurations that have no use for it.
+    pub const NONE: RxOffload = RxOffload(0);
 }
 
 impl BitOr for TxOffload {
@@ -805,6 +840,47 @@ impl DevInfo {
     pub fn rx_offload_caps(&self) -> RxOffload {
         self.inner.rx_offload_capa.into()
     }
+
+    #[tracing::instrument(level = "trace")]
+    /// Get the set of rx offloads that can be enabled on a *per-queue* basis.
+    ///
+    /// This is a subset of [`DevInfo::rx_offload_caps`], which also counts offloads that can only
+    /// be set port-wide at configure time.  Requesting a port-only offload in a queue's setup
+    /// configuration is rejected by DPDK, so queue setup must be given this mask rather than the
+    /// port mask.
+    pub fn rx_queue_offload_caps(&self) -> RxOffload {
+        self.inner.rx_queue_offload_capa.into()
+    }
+
+    #[tracing::instrument(level = "trace")]
+    /// Get the set of tx offloads that can be enabled on a *per-queue* basis.
+    ///
+    /// See [`DevInfo::rx_queue_offload_caps`] for why this differs from
+    /// [`DevInfo::tx_offload_caps`].
+    pub fn tx_queue_offload_caps(&self) -> TxOffload {
+        self.inner.tx_queue_offload_capa.into()
+    }
+
+    /// The largest MTU the device advertises support for, or `0` if it advertises no range.
+    #[must_use]
+    pub fn max_mtu(&self) -> u16 {
+        self.inner.max_mtu
+    }
+
+    /// The smallest MTU the device advertises support for.
+    #[must_use]
+    pub fn min_mtu(&self) -> u16 {
+        self.inner.min_mtu
+    }
+
+    /// Whether the device advertises any RSS hash function.
+    ///
+    /// Emulated NICs report none, and handing such a device `RTE_ETH_MQ_RX_RSS` makes
+    /// `rte_eth_dev_configure` fail.
+    #[must_use]
+    pub fn supports_rss(&self) -> bool {
+        self.inner.flow_type_rss_offloads != 0
+    }
 }
 
 /// Sealed marker trait for the valid [`Dev`] lifecycle typestates: [`Stopped`] and [`Started`].
@@ -881,6 +957,33 @@ impl<S: DevState> Dev<S> {
                 hairpin_queues: core::ptr::read(&this.hairpin_queues),
                 state: PhantomData,
             }
+        }
+    }
+}
+
+impl<S: DevState> Dev<S> {
+    /// Enable or disable promiscuous mode on the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the request failed.  Not every PMD implements
+    /// promiscuous mode; those that do not report `ENOTSUP`.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub fn set_promiscuous(&mut self, enable: bool) -> Result<(), ErrorCode> {
+        let port = self.info.index().as_u16();
+        let ret = if enable {
+            unsafe { rte_eth_promiscuous_enable(port) }
+        } else {
+            unsafe { rte_eth_promiscuous_disable(port) }
+        };
+        if ret == 0 {
+            debug!(
+                "Promiscuous mode {state} on port {port}",
+                state = if enable { "enabled" } else { "disabled" }
+            );
+            Ok(())
+        } else {
+            Err(ErrorCode::parse_i32(ret))
         }
     }
 }
