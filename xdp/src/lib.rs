@@ -8,6 +8,7 @@
 //!
 //! - [`umem`]: frame geometry and the mapped region frames are carved from
 //! - [`buffer`]: [`buffer::XdpBuffer`], a `PacketBufferMut` over one frame
+//! - [`socket`]: `AF_XDP` sockets and their rings (feature `runtime`)
 
 #![deny(
     clippy::all,
@@ -20,4 +21,6 @@
 #![allow(rustdoc::missing_crate_level_docs)]
 
 pub mod buffer;
+#[cfg(feature = "runtime")]
+pub mod socket;
 pub mod umem;
