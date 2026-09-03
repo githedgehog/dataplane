@@ -56,3 +56,10 @@ tokio-util = { workspace = true, default-features = false, features = ["codec"] 
 tokio-vsock = { workspace = true, default-features = false, features = [] }
 tracing = { workspace = true, default-features = false, features = [] }
 tracing-subscriber = { workspace = true, default-features = false, features = ["fmt"] }
+
+# Declared here rather than in the workspace's RUSTFLAGS so that it travels
+# with the crate: `n-vm` opts into no workspace lints, which is what keeps
+# returning it to `githedgehog/testn` a code move rather than a decoupling
+# project. See the host-hugepage tests in `tests/integration.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(host_hugepage_tests)'] }
