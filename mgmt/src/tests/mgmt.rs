@@ -933,6 +933,7 @@ mod enacted {
         pub static_nat: Vec<String>,
         pub port_forwarding: Vec<String>,
         pub masquerade: Vec<String>,
+        pub acl: Vec<String>,
     }
 
     fn lines(text: &str) -> Vec<String> {
@@ -945,23 +946,66 @@ mod enacted {
         out
     }
 
+    /// A canonical rendering of every acl rule a configuration installs.
+    ///
+    /// The permutation reorders the `src` and `dst` lists inside a rule's match, and
+    /// none of the other artifacts here carry an acl, so that half of the permutation
+    /// was being compared against nothing at all: an order-dependent acl conversion
+    /// could not have shown up. Rules are numbered, so a change in rule order is a
+    /// difference too, even though the caller sorts the lines afterwards.
+    fn acl_lines(validated: &ValidatedGwConfig) -> Vec<String> {
+        let mut out = Vec::new();
+        for vpc in validated.external().overlay().vpc_table().values() {
+            for peering in vpc.peerings() {
+                let Some(acl) = peering.acl() else {
+                    continue;
+                };
+                let (vpc, peering) = (vpc.name(), peering.name());
+                out.push(format!(
+                    "acl {vpc} {peering} default {:?}",
+                    acl.default_action()
+                ));
+                for (index, rule) in acl.rules().iter().enumerate() {
+                    out.push(format!("acl {vpc} {peering} rule {index} {rule:?}"));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
     impl Artifacts {
-        pub(super) fn of(validated: &ValidatedGwConfig) -> Option<Self> {
+        /// Build every artifact the configuration implies, treating no failure as a skip.
+        ///
+        /// This used to hand back `None` on any of the four build steps, and both callers
+        /// quietly returned on it. A configuration the validator accepts and one of these
+        /// builders refuses is the defect those properties exist to find, so the skip was
+        /// hiding the answer. Nothing counted how often it was taken, either, so a run in
+        /// which every case skipped looked exactly like a run in which every case passed.
+        pub(super) fn of(validated: &ValidatedGwConfig) -> Self {
             let genid = validated.genid();
-            let internal = build_internal_config(validated, None).ok()?;
+            let internal = build_internal_config(validated, None).unwrap_or_else(|e| {
+                panic!("a validated configuration would not build a routing config: {e}")
+            });
             let vpc_table = validated.external().overlay().vpc_table();
 
-            let nat_tables = build_nat_configuration(vpc_table).ok()?;
-            let ruleset = build_port_forwarding_configuration(vpc_table).ok()?;
+            let nat_tables = build_nat_configuration(vpc_table).unwrap_or_else(|e| {
+                panic!("a validated configuration would not build its static nat tables: {e:?}")
+            });
+            let ruleset = build_port_forwarding_configuration(vpc_table).unwrap_or_else(|e| {
+                panic!("a validated configuration would not build its port forwarding rules: {e:?}")
+            });
             let mut portfw = PortFwTableWriter::new();
-            portfw.update_table(&ruleset).ok()?;
+            portfw.update_table(&ruleset).unwrap_or_else(|e| {
+                panic!("a validated configuration's port forwarding rules would not install: {e:?}")
+            });
 
             let masquerade = MasqueradeConfig::new(vpc_table).set_randomize(false);
             let mut writer = NatAllocatorWriter::new();
             writer.update_nat_allocator(masquerade, genid, &FlowTable::new(16));
             let allocator = writer.get_reader().get();
 
-            Some(Self {
+            Self {
                 frr: lines(&internal.render(&genid).to_string()),
                 static_nat: lines(&nat_tables.to_string()),
                 port_forwarding: lines(
@@ -974,7 +1018,8 @@ mod enacted {
                 masquerade: allocator
                     .map(|allocator| lines(&allocator.to_string()))
                     .unwrap_or_default(),
-            })
+                acl: acl_lines(validated),
+            }
         }
 
         pub(super) fn all(&self) -> Vec<String> {
@@ -982,6 +1027,7 @@ mod enacted {
             out.extend(self.static_nat.iter().cloned());
             out.extend(self.port_forwarding.iter().cloned());
             out.extend(self.masquerade.iter().cloned());
+            out.extend(self.acl.iter().cloned());
             out.sort();
             out
         }
@@ -1188,11 +1234,7 @@ mod ambiguity {
                     )
                 });
 
-                let (Some(before), Some(after)) = (Artifacts::of(&first), Artifacts::of(&second))
-                else {
-                    return;
-                };
-                let (before, after) = (before.all(), after.all());
+                let (before, after) = (Artifacts::of(&first).all(), Artifacts::of(&second).all());
 
                 if moved {
                     MOVED.fetch_add(1, Ordering::Relaxed);
@@ -1327,10 +1369,7 @@ mod relevance {
                         REFUSED_WITHOUT.fetch_add(1, Ordering::Relaxed);
                         return;
                     };
-                    let (Some(with), Some(without)) = (Artifacts::of(&whole), Artifacts::of(&less))
-                    else {
-                        return;
-                    };
+                    let (with, without) = (Artifacts::of(&whole), Artifacts::of(&less));
 
                     if !handled_here(&agent, &dropped.peering) {
                         NOT_OURS.fetch_add(1, Ordering::Relaxed);
@@ -1421,6 +1460,7 @@ mod filters {
         let seen = AtomicUsize::new(0);
         let validated_count = AtomicUsize::new(0);
         let with_acl = AtomicUsize::new(0);
+        let named_a_subnet = AtomicUsize::new(0);
 
         bolero::check!()
             .with_generator(
@@ -1431,6 +1471,33 @@ mod filters {
             .cloned()
             .for_each(|agent| {
                 seen.fetch_add(1, Ordering::Relaxed);
+                // A rule may name one of its vpc's subnets instead of writing a cidr, and
+                // that name is resolved by a branch of the converter no other property
+                // reaches. Counted from the CRD rather than the validated form because by
+                // then the name has already become a prefix.
+                if agent
+                    .spec
+                    .peerings
+                    .iter()
+                    .flatten()
+                    .filter_map(|(_, peerings)| peerings.acl.as_ref())
+                    .flat_map(|acl| acl.rules.iter().flatten())
+                    .filter_map(|rule| rule.r#match.as_ref())
+                    .any(|pattern| {
+                        pattern
+                            .src
+                            .iter()
+                            .flatten()
+                            .any(|src| src.vpc_subnet.is_some())
+                            || pattern
+                                .dst
+                                .iter()
+                                .flatten()
+                                .any(|dst| dst.vpc_subnet.is_some())
+                    })
+                {
+                    named_a_subnet.fetch_add(1, Ordering::Relaxed);
+                }
                 let external = ExternalConfig::try_from(&agent)
                     .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
                 let Ok(validated) = external.validate() else {
@@ -1459,13 +1526,20 @@ mod filters {
         let seen = seen.load(Ordering::Relaxed);
         let validated_count = validated_count.load(Ordering::Relaxed);
         let with_acl = with_acl.load(Ordering::Relaxed);
+        let named_a_subnet = named_a_subnet.load(Ordering::Relaxed);
         println!(
-            "{validated_count}/{seen} validated and built their filters, {with_acl} carrying an acl"
+            "{validated_count}/{seen} validated and built their filters, {with_acl} carrying an \
+             acl, {named_a_subnet} of those naming a vpc subnet"
         );
         if seen > super::ENOUGH_CASES {
             assert!(
                 with_acl > 0,
                 "no configuration carried an acl, so the rte_acl build was never exercised"
+            );
+            assert!(
+                named_a_subnet > 0,
+                "no acl rule named a vpc subnet, so the converter's subnet arm and the \
+                 unknown-subnet refusal behind it went unexercised"
             );
         }
     }
