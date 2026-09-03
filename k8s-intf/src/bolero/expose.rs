@@ -107,10 +107,16 @@ impl<'a> ExposeGenerator<'a> {
             return None;
         }
         let longer = d.gen_u8(Bound::Excluded(&len), Bound::Included(&max))?;
-        if private {
-            blocks::private(d, self.family, at, longer)
+        // Carve the exclusion out of the parent.  This is better than
+        // drawing a random block that will amost never overlap the actual parent.
+        if d.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
+            if private {
+                blocks::private(d, self.family, at, longer)
+            } else {
+                blocks::public(d, self.family, at, longer)
+            }
         } else {
-            blocks::public(d, self.family, at, longer)
+            blocks::within(d, parent, longer)
         }
     }
 
