@@ -423,28 +423,85 @@ mod chain_properties {
             .build()
     }
 
-    fn chain(agent: &GatewayAgent) -> Option<(GenId, InternalConfig)> {
+    fn chain(agent: &GatewayAgent) -> Option<(GenId, ValidatedGwConfig, InternalConfig)> {
         let external = ExternalConfig::try_from(agent)
             .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
         let validated = external.validate().ok()?;
         let genid = validated.genid();
-        Some((genid, build_or_skip(&validated)?))
+        let internal = build(&validated);
+        Some((genid, validated, internal))
     }
 
-    fn build_or_skip(validated: &ValidatedGwConfig) -> Option<InternalConfig> {
-        match build_internal_config(validated, None) {
-            Ok(internal) => Some(internal),
-            Err(ConfigError::Unsupported(_)) => None,
-            Err(e) => panic!("a validated configuration would not build: {e}\n{validated:#?}"),
+    /// Build, without treating any failure as a skip.
+    ///
+    /// This used to fold `ConfigError::Unsupported` into a `None` that each caller
+    /// quietly returned on. That error has exactly one producer, `reject_ipv6`, and
+    /// these properties generate IPv4 only, so the arm never fired. It stood ready to
+    /// turn a real "the validator accepted what the builder refuses" defect into an
+    /// invisible skip the moment the generator learned IPv6, and nothing counted how
+    /// often it was taken.
+    fn build(validated: &ValidatedGwConfig) -> InternalConfig {
+        build_internal_config(validated, None).unwrap_or_else(|e| {
+            panic!("a validated configuration would not build: {e}\n{validated:#?}")
+        })
+    }
+
+    /// Assert every prefix a peering advertises survives into the rendered configuration,
+    /// and report how many there were.
+    ///
+    /// This is the only check here that depends on the per-peering half of the build
+    /// having run. Without it that half can return early and every other assertion in
+    /// this module still holds, because they all read the per-vpc and underlay half.
+    ///
+    /// Only peerings this gateway actually handles count. `build_routing_config` renders
+    /// a peer when the gateway is a member of the group the peering names and a community
+    /// exists for its rank in that group; a peering failing either is legitimately absent
+    /// from the output, and demanding its prefixes would be asserting a bug into place.
+    ///
+    /// The prefixes come from the validated configuration rather than the CRD, because
+    /// validation collapses and normalises them and the collapsed form is what renders.
+    fn advertised_prefixes_reach(validated: &ValidatedGwConfig, text: &str) -> usize {
+        let external = validated.external();
+        let (gwname, groups, communities) = (
+            external.gwname(),
+            external.gwgroups(),
+            external.communities(),
+        );
+        let mut count = 0;
+        for vpc in external.overlay().vpc_table().values() {
+            for peering in vpc.peerings().iter() {
+                let handled = groups
+                    .get_group_member_rank(peering.gwgroup(), gwname)
+                    .is_some_and(|rank| communities.get_community(rank).is_some());
+                if !handled {
+                    continue;
+                }
+                for expose in peering.remote().valexp() {
+                    for prefix in expose.adv_prefixes() {
+                        count += 1;
+                        assert!(
+                            text.contains(&prefix.to_string()),
+                            "{prefix} is advertised by a peering this gateway handles but never \
+                             reaches the rendered config"
+                        );
+                    }
+                }
+            }
         }
+        count
     }
 
     #[test]
     fn whatever_validates_builds_and_renders() {
+        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static ADVERTISED: AtomicUsize = AtomicUsize::new(0);
+
         bolero::check!()
             .with_generator(ipv4_agents())
             .for_each(|agent| {
-                let Some((genid, internal)) = chain(agent) else {
+                SEEN.fetch_add(1, Ordering::Relaxed);
+                let Some((genid, validated, internal)) = chain(agent) else {
                     return;
                 };
                 let text = internal.render(&genid).to_string();
@@ -452,7 +509,22 @@ mod chain_properties {
                     text.contains(&format!("! config for gen {genid}")),
                     "the rendered config does not say which generation it is for"
                 );
+                ADVERTISED.fetch_add(
+                    advertised_prefixes_reach(&validated, &text),
+                    Ordering::Relaxed,
+                );
             });
+
+        let seen = SEEN.load(Ordering::Relaxed);
+        let advertised = ADVERTISED.load(Ordering::Relaxed);
+        println!("{advertised} advertised prefixes checked across {seen} configurations");
+        if seen > ENOUGH_CASES {
+            assert!(
+                advertised > 0,
+                "no configuration advertised anything, so the per-peering half of the build \
+                 was never checked"
+            );
+        }
     }
 
     #[test]
@@ -465,9 +537,7 @@ mod chain_properties {
                 let Ok(validated) = external.validate() else {
                     return;
                 };
-                let Some(internal) = build_or_skip(&validated) else {
-                    return;
-                };
+                let internal = build(&validated);
 
                 let wanted: BTreeSet<u32> = validated
                     .external()
@@ -563,10 +633,10 @@ mod chain_properties {
         bolero::check!()
             .with_generator(ipv4_agents())
             .for_each(|agent| {
-                let Some((genid, once)) = chain(agent) else {
+                let Some((genid, _, once)) = chain(agent) else {
                     return;
                 };
-                let (_, twice) = chain(agent).unwrap_or_else(|| {
+                let (_, _, twice) = chain(agent).unwrap_or_else(|| {
                     panic!("the same CRD validated once and not the second time")
                 });
                 assert_eq!(
