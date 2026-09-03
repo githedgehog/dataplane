@@ -21,7 +21,14 @@ client = [
     "kube/runtime",
     "kube/rustls-tls",
 ]
-bolero = ["dep:bolero", "dep:net", "dep:lpm", "net/test_buffer", "net/bolero"]
+bolero = [
+    "dep:bolero",
+    "dep:net",
+    "dep:lpm",
+    "dep:strum",
+    "net/test_buffer",
+    "net/bolero",
+]
 
 [dependencies]
 # internal
@@ -43,6 +50,7 @@ schemars = { workspace = true, features = ["derive", "std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+strum = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 

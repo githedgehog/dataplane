@@ -1220,6 +1220,7 @@ mod ambiguity {
 mod relevance {
     use super::enacted::{Artifacts, validator};
     use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use k8s_intf::bolero::NatFlavour;
     use k8s_intf::bolero::mutate::Mutation;
     use k8s_intf::bolero::reduce::{Dropped, ReducedAgents};
     use k8s_intf::gateway_agent_crd::GatewayAgent;
@@ -1319,14 +1320,15 @@ mod relevance {
                          configuration, so the dataplane was never routing it"
                     );
 
+                    // Exhaustive over `NatFlavour`, so adding a translation mode is a
+                    // build error here rather than an `unreachable!` during a fuzz run.
                     let (table, name) = match dropped.nat {
-                        None => return,
-                        Some("static") => (&with.static_nat, &without.static_nat),
-                        Some("port forwarding") => {
+                        None | Some(NatFlavour::None) => return,
+                        Some(NatFlavour::Static) => (&with.static_nat, &without.static_nat),
+                        Some(NatFlavour::PortForward) => {
                             (&with.port_forwarding, &without.port_forwarding)
                         }
-                        Some("masquerade") => (&with.masquerade, &without.masquerade),
-                        Some(other) => unreachable!("unknown nat mode {other}"),
+                        Some(NatFlavour::Masquerade) => (&with.masquerade, &without.masquerade),
                     };
                     TRANSLATING.fetch_add(1, Ordering::Relaxed);
                     assert!(

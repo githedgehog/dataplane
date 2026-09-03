@@ -12,7 +12,7 @@ use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNatMasquerade,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::VariantArray)]
 pub enum Mutation {
     None,
     MismatchPortForwardPrefixes,
@@ -32,35 +32,29 @@ pub enum Mutation {
 }
 
 impl Mutation {
-    pub const COUNT: usize = 15;
+    /// Every mutation, derived from the enum rather than restated.
+    ///
+    /// This used to be a hand-written `vec!` alongside a hand-written `COUNT = 15`, so
+    /// the enum, the list and the count were three copies of one fact that nothing tied
+    /// together. `check_generator_health` sizes `[AtomicUsize; COUNT]` and indexes it by
+    /// position in the list: a variant added to the list but not the count indexed out of
+    /// bounds during a fuzz run, and a variant added to the enum but not the list was
+    /// simply never drawn, which is the exact vacuity that health check exists to catch.
+    pub const ALL: &'static [Self] = <Self as strum::VariantArray>::VARIANTS;
+
+    pub const COUNT: usize = Self::ALL.len();
 
     #[must_use]
     pub fn index(self) -> usize {
-        Self::all()
+        Self::ALL
             .iter()
             .position(|other| *other == self)
-            .unwrap_or_else(|| unreachable!())
+            .unwrap_or_else(|| unreachable!("every mutation is in ALL"))
     }
 
     #[must_use]
     pub fn all() -> Vec<Self> {
-        vec![
-            Self::None,
-            Self::MismatchPortForwardPrefixes,
-            Self::MismatchStaticNatPrefixes,
-            Self::ExcludeFromPortForwarding,
-            Self::MixAddressFamilies,
-            Self::UseReservedPrefix,
-            Self::EmptyPrivatePrefixes,
-            Self::DropTranslationRange,
-            Self::MakeBothSidesStateful,
-            Self::NameAMissingGroup,
-            Self::NameAStrangerInARule,
-            Self::DemandFlowScope,
-            Self::UsePortZero,
-            Self::DuplicateAStaticExpose,
-            Self::OverlapWithAnotherPeer,
-        ]
+        Self::ALL.to_vec()
     }
 }
 

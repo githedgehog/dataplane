@@ -5,6 +5,7 @@ use std::ops::Bound;
 
 use bolero::{Driver, ValueGenerator};
 
+use crate::bolero::NatFlavour;
 use crate::bolero::mutate::{MutatedAgents, Mutation};
 use crate::gateway_agent_crd::GatewayAgent;
 
@@ -13,7 +14,14 @@ pub struct Dropped {
     pub peering: String,
     pub vpc: String,
     pub index: usize,
-    pub nat: Option<&'static str>,
+    /// Which kind of translation the dropped expose asked for, if any.
+    ///
+    /// A `NatFlavour` rather than a string. `development/code/error-handling.md` calls
+    /// arbitrary string values actively hostile and matching on their contents extremely
+    /// fragile, and the consumer of this field does exactly that kind of match: a typo in
+    /// either the producer or the consumer compiled cleanly and surfaced as an
+    /// `unreachable!` during a fuzz run rather than as a build error.
+    pub nat: Option<NatFlavour>,
 }
 
 impl std::fmt::Display for Dropped {
@@ -24,7 +32,8 @@ impl std::fmt::Display for Dropped {
             self.peering,
             self.vpc,
             self.index,
-            self.nat.unwrap_or("no nat")
+            self.nat
+                .map_or_else(|| "no nat".to_string(), |nat| format!("{nat:?}"))
         )
     }
 }
@@ -69,11 +78,11 @@ fn drop_an_expose<D: Driver>(
     let removed = exposes.remove(index);
     let nat = removed.nat.as_ref().and_then(|nat| {
         if nat.r#static.is_some() {
-            Some("static")
+            Some(NatFlavour::Static)
         } else if nat.masquerade.is_some() {
-            Some("masquerade")
+            Some(NatFlavour::Masquerade)
         } else if nat.port_forward.is_some() {
-            Some("port forwarding")
+            Some(NatFlavour::PortForward)
         } else {
             None
         }
