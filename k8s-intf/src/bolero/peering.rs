@@ -21,7 +21,7 @@ pub struct LegalValuePeeringsPeeringGenerator<'a> {
     flavours: &'a [NatFlavour],
     family: AddressFamily,
     max_exposes: u8,
-    slot_base: u8,
+    vpc: u8,
 }
 
 impl<'a> LegalValuePeeringsPeeringGenerator<'a> {
@@ -38,7 +38,7 @@ impl<'a> LegalValuePeeringsPeeringGenerator<'a> {
             flavours,
             family,
             max_exposes,
-            slot_base: blocks::expose_slot(vpc, max_exposes, 0),
+            vpc,
         }
     }
 }
@@ -52,7 +52,16 @@ impl ValueGenerator for LegalValuePeeringsPeeringGenerator<'_> {
         for index in 0..num_expose {
             let flavour = self.flavours
                 [d.gen_usize(Bound::Included(&0), Bound::Excluded(&self.flavours.len()))?];
-            let which = Which::nth(self.slot_base.saturating_add(index), index, num_expose);
+            // Every expose asks `expose_slot` for its own slot rather than adding to
+            // the vpc's base. The addition had to saturate, and a saturated slot is a
+            // slot some other expose already holds: the two would be handed overlapping
+            // prefixes and the generator would call the result legal. Asking each time
+            // puts the whole range back under the check that only the first slot had.
+            let which = Which::nth(
+                blocks::expose_slot(self.vpc, self.max_exposes, index),
+                index,
+                num_expose,
+            );
             expose
                 .push(ExposeGenerator::new(flavour, self.family, which, self.subnets).generate(d)?);
         }
