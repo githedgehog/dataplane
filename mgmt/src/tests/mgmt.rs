@@ -828,60 +828,70 @@ mod dataplane_tables {
         });
     }
 
-    fn drive(flavour: NatFlavour) {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
-        let seen = AtomicUsize::new(0);
-        let built = AtomicUsize::new(0);
+    /// Drive one NAT flavour through validation and every dataplane table it implies.
+    ///
+    /// A macro rather than a function because `bolero::check!()` registers a fuzz target
+    /// named for the item that encloses it. Four tests sharing one helper therefore
+    /// registered one target under the helper's name, and no test could be selected by
+    /// it: `cargo bolero list` reported a target that could not be run. Expanding at each
+    /// call site gives each test its own.
+    macro_rules! drive {
+        ($flavour:expr) => {{
+            use concurrency::sync::atomic::{AtomicUsize, Ordering};
+            let flavour: NatFlavour = $flavour;
+            let seen = AtomicUsize::new(0);
+            let built = AtomicUsize::new(0);
 
-        let generator = GatewayAgentBuilder::new().flavours(vec![flavour]).build();
+            let generator = GatewayAgentBuilder::new().flavours(vec![flavour]).build();
 
-        bolero::check!()
-            .with_generator(generator)
-            .cloned()
-            .for_each(|agent| {
-                seen.fetch_add(1, Ordering::Relaxed);
-                let external = ExternalConfig::try_from(&agent)
-                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
-                let Ok(validated) = external.validate() else {
-                    return;
-                };
-                built.fetch_add(1, Ordering::Relaxed);
-                build_tables(&validated, flavour);
-            });
+            bolero::check!()
+                .with_generator(generator)
+                .cloned()
+                .for_each(|agent| {
+                    seen.fetch_add(1, Ordering::Relaxed);
+                    let external = ExternalConfig::try_from(&agent)
+                        .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                    let Ok(validated) = external.validate() else {
+                        return;
+                    };
+                    built.fetch_add(1, Ordering::Relaxed);
+                    build_tables(&validated, flavour);
+                });
 
-        let seen = seen.load(Ordering::Relaxed);
-        let built = built.load(Ordering::Relaxed);
-        println!("{flavour:?}: {built}/{seen} configurations validated and built their tables");
-        // Masquerade already gets two orders of magnitude fewer cases than its siblings in
-        // the same budget, and every flavour drops to a handful under miri and qemu, so
-        // this rate only means something once there is a sample behind it.
-        if seen > super::ENOUGH_CASES {
-            assert!(
-                built * 2 >= seen,
-                "only {built} of {seen} {flavour:?} configurations validated, so this checked much \
-                 less than it looks like it did"
-            );
-        }
+            let seen = seen.load(Ordering::Relaxed);
+            let built = built.load(Ordering::Relaxed);
+            println!("{flavour:?}: {built}/{seen} configurations validated and built their tables");
+            // Masquerade already gets two orders of magnitude fewer cases than its
+            // siblings in the same budget, and every flavour drops to a handful under miri
+            // and qemu, so this rate only means something once there is a sample behind it.
+            if seen > super::ENOUGH_CASES {
+                assert!(
+                    built * 2 >= seen,
+                    "only {built} of {seen} {flavour:?} configurations validated, so this checked \
+                     much less than it looks like it did"
+                );
+            }
+        }};
     }
 
     #[test]
     fn a_static_nat_configuration_builds_its_tables() {
-        drive(NatFlavour::Static);
+        drive!(NatFlavour::Static);
     }
 
     #[test]
     fn a_masquerade_configuration_builds_its_tables() {
-        drive(NatFlavour::Masquerade);
+        drive!(NatFlavour::Masquerade);
     }
 
     #[test]
     fn a_port_forwarding_configuration_builds_its_tables() {
-        drive(NatFlavour::PortForward);
+        drive!(NatFlavour::PortForward);
     }
 
     #[test]
     fn a_configuration_with_no_nat_builds_its_tables() {
-        drive(NatFlavour::None);
+        drive!(NatFlavour::None);
     }
 }
 
@@ -1351,6 +1361,84 @@ mod relevance {
                 checked * 100 > seen,
                 "only {checked} of {seen} cases got as far as comparing artifacts: this property has \
                  become mostly skips"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod filters {
+    //! The rte_acl-backed ACL filter and the flow filter.
+    //!
+    //! These are the two steps of `apply_gw_config` that nothing else here touches.
+    //! `the_properties_are_not_vacuous` reports that around half of validated
+    //! configurations carry an ACL, and mgmt depends on dpdk precisely so this table can
+    //! be built in a test, but no property was building it. A generated ACL that the
+    //! validator accepts and rte_acl refuses would have gone unnoticed.
+    //!
+    //! They live in their own property rather than being folded into the other enactment
+    //! helpers because building an rte_acl table is expensive, and the sibling properties
+    //! are worth more cases than they are worth ACL coverage.
+    use acl_filter::AclFilterContext;
+    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use config::ExternalConfig;
+    use flow_filter::FlowFilterContext;
+    use k8s_intf::bolero::AddressFamily;
+    use k8s_intf::bolero::crd::GatewayAgentBuilder;
+
+    #[test]
+    fn whatever_validates_builds_its_filters() {
+        // Idempotent: `start_eal` initialises a static once per process.
+        let _eal = dpdk::test_support::start_eal();
+
+        let seen = AtomicUsize::new(0);
+        let validated_count = AtomicUsize::new(0);
+        let with_acl = AtomicUsize::new(0);
+
+        bolero::check!()
+            .with_generator(
+                GatewayAgentBuilder::new()
+                    .families(vec![AddressFamily::V4])
+                    .build(),
+            )
+            .cloned()
+            .for_each(|agent| {
+                seen.fetch_add(1, Ordering::Relaxed);
+                let external = ExternalConfig::try_from(&agent)
+                    .unwrap_or_else(|e| panic!("a schema-legal CRD did not convert: {e}"));
+                let Ok(validated) = external.validate() else {
+                    return;
+                };
+                validated_count.fetch_add(1, Ordering::Relaxed);
+
+                let overlay = validated.external().overlay();
+                if overlay
+                    .vpc_table()
+                    .values()
+                    .flat_map(config::external::overlay::vpc::ValidatedVpc::peerings)
+                    .any(|peering| peering.acl().is_some())
+                {
+                    with_acl.fetch_add(1, Ordering::Relaxed);
+                }
+
+                AclFilterContext::try_from(overlay).unwrap_or_else(|e| {
+                    panic!("the validator accepted an acl the filter cannot build: {e}")
+                });
+                FlowFilterContext::try_from(overlay).unwrap_or_else(|e| {
+                    panic!("the validator accepted a config the flow filter cannot build: {e}")
+                });
+            });
+
+        let seen = seen.load(Ordering::Relaxed);
+        let validated_count = validated_count.load(Ordering::Relaxed);
+        let with_acl = with_acl.load(Ordering::Relaxed);
+        println!(
+            "{validated_count}/{seen} validated and built their filters, {with_acl} carrying an acl"
+        );
+        if seen > super::ENOUGH_CASES {
+            assert!(
+                with_acl > 0,
+                "no configuration carried an acl, so the rte_acl build was never exercised"
             );
         }
     }
