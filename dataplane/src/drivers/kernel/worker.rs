@@ -26,9 +26,9 @@ use pipeline::{DynPipeline, NetworkFunction};
 
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
-use crate::drivers::kif::Kif;
 use crate::drivers::kernel::sockstats;
 use crate::drivers::kernel::{WorkerIfaceMonitor, WorkerMonitor};
+use crate::drivers::kif::Kif;
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 

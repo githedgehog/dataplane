@@ -32,12 +32,12 @@ use tracectl::trace_target;
 use tracing::{debug, error, info, trace, warn};
 
 use super::DriverError;
+use super::kif::{self, Kif};
 use super::status::{
     DriverStatus, DriverStatusWriter, RxTaskStatus, WorkerEndResult, WorkerId, WorkerState,
     WorkerStatus,
 };
 use super::watchdog::{Activity, Watchdog};
-use super::kif::{self, Kif};
 use worker::Worker;
 
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);

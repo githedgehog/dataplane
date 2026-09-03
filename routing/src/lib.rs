@@ -27,17 +27,17 @@ mod router;
 mod routingdb;
 
 // re-exports
-pub use atable::atablerw::AtableReader;
+pub use atable::atablerw::{AtableReader, AtableReaderFactory};
 pub use config::RouterConfig;
 pub use errors::RouterError;
 pub use evpn::Vtep;
 pub use fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
-pub use fib::fibtable::FibTableReader;
+pub use fib::fibtable::{FibTableReader, FibTableReaderFactory};
 pub use fib::fibtype::FibKey;
 pub use frr::frrmi::FrrAppliedConfig;
 pub use frr::renderer::builder::Render;
 pub use interfaces::iftable::IfTable;
-pub use interfaces::iftablerw::IfTableReader;
+pub use interfaces::iftablerw::{IfTableReader, IfTableReaderFactory};
 pub use interfaces::interface::{AttachConfig, Attachment, RouterInterfaceConfig};
 pub use interfaces::interface::{IfDataEthernet, IfState, IfType, Interface};
 pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};

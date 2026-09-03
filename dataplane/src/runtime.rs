@@ -11,6 +11,7 @@ use lifecycle::{
     CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
+use net::buffer::test_buffer::TestBuffer;
 
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
@@ -296,7 +297,7 @@ pub fn main() {
         setup.stats,
     );
 
-    let pipeline_factory = setup.pipeline;
+    let pipeline = setup.pipeline.clone();
 
     concurrency::thread::scope(|scope| {
         let mgmt_result = run_mgmt(
@@ -308,7 +309,7 @@ pub fn main() {
                 interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
-                    pipeline_data: pipeline_factory().get_data(),
+                    pipeline_data: pipeline.data(),
                     flow_table: setup.flow_table,
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
@@ -334,12 +335,13 @@ pub fn main() {
                     }
                     "kernel" => {
                         info!("Using driver kernel...");
+                        let factory = pipeline.builder::<TestBuffer>();
                         Some(DriverKernel::start(
                             scope,
                             &shutdown.workers,
                             args.kernel_interfaces(),
                             args.kernel_num_workers(),
-                            &pipeline_factory,
+                            &factory,
                             driver_status_writer,
                         ))
                     }

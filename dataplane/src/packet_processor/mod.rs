@@ -13,13 +13,14 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
-use acl_filter::{AclFilter, AclFilterContextWriter};
+use acl_filter::{AclFilter, AclFilterContextReaderFactory, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterContextWriter};
+use flow_filter::{FlowFilter, FlowFilterContextReaderFactory, FlowFilterContextWriter};
 
-use nat::masquerade::NatAllocatorWriter;
-use nat::portfw::{PortForwarder, PortFwTableWriter};
+use nat::masquerade::{NatAllocatorReaderFactory, NatAllocatorWriter};
+use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::NatTablesWriter;
+use nat::static_nat::natrw::NatTablesReaderFactory;
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use net::packet::PacketStats;
 
@@ -27,18 +28,18 @@ use net::buffer::PacketBufferMut;
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
-use routing::{CliSources, Router, RouterError, RouterParams};
+use routing::{
+    AtableReaderFactory, CliSources, FibTableReaderFactory, IfTableReaderFactory, Router,
+    RouterError, RouterParams,
+};
 
 use vpcmap::map::VpcMapWriter;
 
-use stats::{Stats, StatsCollector, VpcMapName, VpcStatsStore};
+use stats::{PacketStatsWriter, Stats, StatsCollector, VpcMapName, VpcStatsStore};
 
-pub(crate) struct InternalSetup<Buf>
-where
-    Buf: PacketBufferMut,
-{
+pub(crate) struct InternalSetup {
     pub router: Router,
-    pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    pub pipeline: Arc<PipelineFactory>,
     pub flow_table: Arc<FlowTable>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablesw: NatTablesWriter,
@@ -50,12 +51,103 @@ where
     pub portfw_w: PortFwTableWriter,
 }
 
+/// Everything a pipeline is built from, held so that one can be built again.
+///
+/// Each worker runs a pipeline of its own, and the buffer type is the driver's
+/// to choose: the kernel driver reads into `TestBuffer`, the `AF_XDP` driver
+/// into a buffer over a UMEM frame. None of what a stage is built from depends
+/// on that choice, so the factory is not generic and [`build`](Self::build) is.
+pub(crate) struct PipelineFactory {
+    pdata: Arc<PipelineData>,
+    pkt_stats: Arc<PacketStats>,
+    stats_w: PacketStatsWriter,
+    flow_table: Arc<FlowTable>,
+    iftr_factory: IfTableReaderFactory,
+    fibtr_factory: FibTableReaderFactory,
+    atabler_factory: AtableReaderFactory,
+    nattabler_factory: NatTablesReaderFactory,
+    natallocator_factory: NatAllocatorReaderFactory,
+    portfw_factory: PortFwTableReaderFactory,
+    flow_filter_reader_factory: FlowFilterContextReaderFactory,
+    aclfiltertablesr_factory: AclFilterContextReaderFactory,
+}
+
+impl PipelineFactory {
+    /// The pipeline data shared by every pipeline built here, which management
+    /// reads to report on and control the stages.
+    pub(crate) fn data(&self) -> Arc<PipelineData> {
+        self.pdata.clone()
+    }
+
+    /// A factory for pipelines over `Buf`, in the shape the drivers take.
+    ///
+    /// Each worker calls it to get a pipeline of its own, so it hands out a
+    /// handle to this factory rather than a pipeline.
+    pub(crate) fn builder<Buf: PacketBufferMut>(
+        self: &Arc<Self>,
+    ) -> Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>> {
+        let factory = self.clone();
+        Arc::new(move || factory.build())
+    }
+
+    /// Build a pipeline over `Buf`.
+    ///
+    /// The composition of the pipeline is hard-coded. Flow expiration is
+    /// handled by per-flow tokio timers; no `ExpirationsNF` is needed.
+    pub(crate) fn build<Buf: PacketBufferMut>(&self) -> DynPipeline<Buf> {
+        // Build network functions
+        let stage_ingress = Ingress::new("Ingress", self.iftr_factory.handle());
+        let stage_egress = Egress::new(
+            "Egress",
+            self.iftr_factory.handle(),
+            self.atabler_factory.handle(),
+        );
+        let iprouter1 = IpForwarder::new("IP-Forward-1", self.fibtr_factory.handle());
+        let iprouter2 = IpForwarder::new("IP-Forward-2", self.fibtr_factory.handle());
+        let static_nat = StaticNat::with_reader("static-NAT-1", self.nattabler_factory.handle());
+        let masquerade = Masquerade::new(
+            "masquerade",
+            self.flow_table.clone(),
+            self.natallocator_factory.handle(),
+        );
+        let pktdump = PacketDumper::new("pipeline-end", true, None);
+        let stats_stage = Stats::new("stats", self.stats_w.clone());
+        let flow_filter = FlowFilter::new("flow-filter", self.flow_filter_reader_factory.handle());
+        let acl_filter = AclFilter::new("acl-filter", self.aclfiltertablesr_factory.handle());
+        let icmp_error_handler = IcmpErrorHandler::new(self.flow_table.clone());
+        let flow_lookup = FlowLookup::new("flow-lookup", self.flow_table.clone());
+        let portfw = PortForwarder::new(
+            "port-forwarder",
+            self.portfw_factory.handle(),
+            self.flow_table.clone(),
+        );
+        let pkt_stats_nf = PacketStatsNF::new(self.pkt_stats.clone());
+
+        DynPipeline::new()
+            .set_data(self.data())
+            .add_stage(stage_ingress)
+            .add_stage(iprouter1)
+            .add_stage(icmp_error_handler)
+            .add_stage(flow_lookup)
+            .add_stage(flow_filter)
+            .add_stage(acl_filter)
+            .add_stage(static_nat)
+            .add_stage(portfw)
+            .add_stage(masquerade)
+            .add_stage(iprouter2)
+            .add_stage(stage_egress)
+            .add_stage(pktdump)
+            .add_stage(pkt_stats_nf)
+            .add_stage(stats_stage)
+    }
+}
+
 /// Start a router and provide the associated pipeline
-pub(crate) fn start_router<Buf: PacketBufferMut>(
+pub(crate) fn start_router(
     router: &lifecycle::Subsystem,
     params: RouterParams,
     driver_status: DriverStatusReader,
-) -> Result<InternalSetup<Buf>, RouterError> {
+) -> Result<InternalSetup, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
 
@@ -96,58 +188,25 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let fibtr_factory = router.get_fibtr_factory();
     let atabler_factory = router.get_atabler_factory();
 
-    // create pipeline builder
-    let flow_table_clone = flow_table.clone();
-    let pipeline_builder = move || {
-        let pdata_clone = pdata.clone();
-
-        // Build network functions
-        let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
-        let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
-        let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
-        let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
-        let static_nat = StaticNat::with_reader("static-NAT-1", nattabler_factory.handle());
-        let masquerade = Masquerade::new(
-            "masquerade",
-            flow_table_clone.clone(),
-            natallocator_factory.handle(),
-        );
-        let pktdump = PacketDumper::new("pipeline-end", true, None);
-        let stats_stage = Stats::new("stats", stats_w.clone());
-        let flow_filter = FlowFilter::new("flow-filter", flow_filter_reader_factory.handle());
-        let acl_filter = AclFilter::new("acl-filter", aclfiltertablesr_factory.handle());
-        let icmp_error_handler = IcmpErrorHandler::new(flow_table_clone.clone());
-        let flow_lookup = FlowLookup::new("flow-lookup", flow_table_clone.clone());
-        let portfw = PortForwarder::new(
-            "port-forwarder",
-            portfw_factory.handle(),
-            flow_table_clone.clone(),
-        );
-        let pkt_stats_nf = PacketStatsNF::new(pkt_stats.clone());
-
-        // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
-        // hard-coded. Flow expiration is handled by per-flow tokio timers; no ExpirationsNF needed.
-        DynPipeline::new()
-            .set_data(pdata_clone)
-            .add_stage(stage_ingress)
-            .add_stage(iprouter1)
-            .add_stage(icmp_error_handler)
-            .add_stage(flow_lookup)
-            .add_stage(flow_filter)
-            .add_stage(acl_filter)
-            .add_stage(static_nat)
-            .add_stage(portfw)
-            .add_stage(masquerade)
-            .add_stage(iprouter2)
-            .add_stage(stage_egress)
-            .add_stage(pktdump)
-            .add_stage(pkt_stats_nf)
-            .add_stage(stats_stage)
+    // create the pipeline factory
+    let pipeline = PipelineFactory {
+        pdata,
+        pkt_stats,
+        stats_w,
+        flow_table: flow_table.clone(),
+        iftr_factory,
+        fibtr_factory,
+        atabler_factory,
+        nattabler_factory,
+        natallocator_factory,
+        portfw_factory,
+        flow_filter_reader_factory,
+        aclfiltertablesr_factory,
     };
 
     Ok(InternalSetup {
         router,
-        pipeline: Arc::new(pipeline_builder),
+        pipeline: Arc::new(pipeline),
         flow_table,
         vpcmapw,
         nattablesw,
