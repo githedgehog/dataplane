@@ -4,8 +4,11 @@
 #![cfg(test)]
 #![cfg(not(miri))]
 
-use acl_filter::{AclFilter, AclFilterContext, AclFilterContextWriter};
+use acl_filter::{
+    AclFilter, AclFilterContext, AclFilterContextReaderFactory, AclFilterContextWriter,
+};
 use concurrency::sync::{Arc, Mutex};
+use config::external::GenId;
 use config::external::overlay::acl::Acl;
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::external::overlay::vpcpeering::contract::{
@@ -13,135 +16,241 @@ use config::external::overlay::vpcpeering::contract::{
 };
 use config::external::overlay::{Overlay, ValidatedOverlay};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
+use flow_filter::{
+    FlowFilter, FlowFilterContext, FlowFilterContextReaderFactory, FlowFilterContextWriter,
+};
 use lpm::prefix::Prefix;
-use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
-use nat::portfw::{PortForwarder, PortFwTableWriter};
-use nat::static_nat::NatTablesWriter;
+use nat::masquerade::{MasqueradeConfig, NatAllocatorReaderFactory, NatAllocatorWriter};
+use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::setup::build_nat_configuration;
+use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
-use pipeline::{DynPipeline, NetworkFunction};
+use pipeline::{DynPipeline, NetworkFunction, PipelineData};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
+use routing::{AtableReaderFactory, FibTableReaderFactory, IfTableReaderFactory};
 use routing::{EgressObject, FibEntry, PktInstruction, ResolvedEncapsulation, ResolvedVxlan, Vtep};
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::time::Duration;
+
+const FIRST_GENID: GenId = 1;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Enact {
+    FlowFilter,
+    Acl,
+    StaticNat,
+    Masquerade,
+    PortForward,
+    Generation,
+    Everything,
+}
 
 use super::egress::Egress;
 use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
 
-pub(crate) struct Fabric {
-    pipeline: DynPipeline<TestBuffer>,
+pub(crate) struct Fleet {
+    flow_filter: FlowFilterContextWriter,
+    acl: AclFilterContextWriter,
+    static_nat: RefCell<NatTablesWriter>,
+    portfw: RefCell<PortFwTableWriter>,
+    masquerade: RefCell<NatAllocatorWriter>,
+    genid: Cell<GenId>,
+    randomize: Cell<bool>,
+    blueprint: Blueprint,
+}
+
+pub(crate) struct Blueprint {
+    flow_filter: FlowFilterContextReaderFactory,
+    acl: AclFilterContextReaderFactory,
+    static_nat: NatTablesReaderFactory,
+    portfw: PortFwTableReaderFactory,
+    masquerade: NatAllocatorReaderFactory,
+    pipeline: Arc<PipelineData>,
+    underlay: Option<Underlay>,
     flow_table: Arc<FlowTable>,
-    _flow_filter: FlowFilterContextWriter,
-    _acl: AclFilterContextWriter,
-    _static_nat: NatTablesWriter,
-    _portfw: PortFwTableWriter,
-    _masquerade: NatAllocatorWriter,
-    _tables: Option<RouterTables>,
+    declared: Arc<[Prefix]>,
+}
+
+struct Underlay {
+    interfaces: IfTableReaderFactory,
+    fibs: FibTableReaderFactory,
+    adjacencies: AtableReaderFactory,
+}
+
+pub(crate) struct Worker {
+    pipeline: DynPipeline<TestBuffer>,
     translations: Arc<Mutex<Translations>>,
     next_id: u64,
 }
 
-impl Fabric {
-    pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
-        Self::build_with_acl(exposes, None)
-    }
+pub(crate) struct Fabric {
+    _tables: Option<RouterTables>,
+    fleet: Fleet,
+    worker: Worker,
+}
 
-    pub(crate) fn build_with_acl(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
-        Self::assemble(exposes, acl, None)
-    }
-
-    pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
-        Self::assemble(
-            exposes,
-            acl,
-            Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
-        )
-    }
-
-    pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
-        Some(Self::with_overlay(
-            &overlay.clone().validate().ok()?,
-            Some(tables),
-        ))
-    }
-
-    pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: RouterTables) -> Self {
-        Self::with_overlay(overlay, Some(tables))
-    }
-
-    fn assemble(
-        exposes: &[VpcExpose],
-        acl: Option<&Acl>,
-        tables: Option<RouterTables>,
-    ) -> Option<Self> {
-        let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
-            .ok()?
-            .validate()
-            .ok()?;
-        Some(Self::with_overlay(&overlay, tables))
-    }
-
-    fn with_overlay(overlay: &ValidatedOverlay, tables: Option<RouterTables>) -> Self {
-        let translations = Arc::new(Mutex::new(Translations::declaring(overlay)));
-        let flow_table = Arc::new(FlowTable::default());
-        let mut pipeline = DynPipeline::new();
-
-        if let Some(tables) = &tables {
-            pipeline = pipeline.add_stage(Ingress::new("ingress", tables.interfaces()));
-            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", tables.fibs()));
-            pipeline = pipeline.add_stage(Checkpoint::new(
-                "after ip-forward-1",
-                contract::decapsulated,
-            ));
-        }
-
-        pipeline = pipeline.add_stage(IcmpErrorHandler::new(flow_table.clone()));
-        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
-
+impl Fleet {
+    pub(crate) fn lowering(
+        overlay: &ValidatedOverlay,
+        tables: Option<&RouterTables>,
+        flow_table: Arc<FlowTable>,
+    ) -> Self {
         let flow_filter = FlowFilterContextWriter::new();
         flow_filter.store(
             FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
         );
-        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", flow_filter.get_reader()));
-        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
 
         let acl = AclFilterContextWriter::new();
         acl.store(AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"));
-        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", acl.get_reader()));
 
         let mut static_nat = NatTablesWriter::new();
         static_nat.update_nat_tables(
             build_nat_configuration(overlay.vpc_table())
                 .expect("a validated overlay lowers to nat"),
         );
-        pipeline = pipeline.add_stage(StaticNat::with_reader(
-            "static-nat",
-            static_nat.get_reader(),
-        ));
 
         let mut portfw = PortFwTableWriter::new();
         portfw
             .update_from_vpc_table(overlay.vpc_table())
             .expect("a validated overlay lowers to port forwarding");
-        pipeline = pipeline.add_stage(PortForwarder::new(
-            "port-forwarder",
-            portfw.reader(),
-            flow_table.clone(),
-        ));
 
         let mut masquerade = NatAllocatorWriter::new();
         masquerade.update_nat_allocator(
             MasqueradeConfig::new(overlay.vpc_table()).set_randomize(false),
-            1,
+            FIRST_GENID,
             &flow_table,
         );
+
+        let blueprint = Blueprint {
+            flow_filter: flow_filter.get_reader_factory(),
+            acl: acl.get_reader_factory(),
+            static_nat: static_nat.get_reader_factory(),
+            portfw: portfw.reader().factory(),
+            masquerade: masquerade.get_reader_factory(),
+            pipeline: Arc::new(PipelineData::new(FIRST_GENID)),
+            underlay: tables.map(|tables| Underlay {
+                interfaces: tables.interface_factory(),
+                fibs: tables.fib_factory(),
+                adjacencies: tables.adjacency_factory(),
+            }),
+            flow_table,
+            declared: declared_public_ranges(overlay),
+        };
+
+        Self {
+            flow_filter,
+            acl,
+            static_nat: RefCell::new(static_nat),
+            portfw: RefCell::new(portfw),
+            masquerade: RefCell::new(masquerade),
+            genid: Cell::new(FIRST_GENID),
+            randomize: Cell::new(false),
+            blueprint,
+        }
+    }
+
+    pub(crate) fn reconfigure(&self, overlay: &ValidatedOverlay) {
+        self.enact(overlay, Enact::Everything);
+    }
+
+    pub(crate) fn enact_with_router_gap(&self, overlay: &ValidatedOverlay, gap: Duration) {
+        for step in [
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+        ] {
+            self.enact(overlay, step);
+        }
+        std::thread::sleep(gap);
+        self.enact(overlay, Enact::Generation);
+    }
+
+    pub(crate) fn randomizing(&self, on: bool) -> &Self {
+        self.randomize.set(on);
+        self
+    }
+
+    pub(crate) fn enact(&self, overlay: &ValidatedOverlay, which: Enact) {
+        let doing = |step: Enact| which == Enact::Everything || which == step;
+        if doing(Enact::FlowFilter) {
+            self.flow_filter.store(
+                FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+            );
+        }
+        if doing(Enact::Acl) {
+            self.acl.store(
+                AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
+            );
+        }
+        if doing(Enact::StaticNat) {
+            self.static_nat.borrow_mut().update_nat_tables(
+                build_nat_configuration(overlay.vpc_table())
+                    .expect("a validated overlay lowers to nat"),
+            );
+        }
+        if doing(Enact::Masquerade) {
+            self.genid.set(self.genid.get() + 1);
+            self.masquerade.borrow_mut().update_nat_allocator(
+                MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
+                self.genid.get(),
+                &self.blueprint.flow_table,
+            );
+        }
+        if doing(Enact::PortForward) {
+            self.portfw
+                .borrow_mut()
+                .update_from_vpc_table(overlay.vpc_table())
+                .expect("a validated overlay lowers to port forwarding");
+        }
+        if doing(Enact::Generation) {
+            self.blueprint.pipeline.set_genid(self.genid.get());
+        }
+    }
+
+    pub(crate) fn blueprint(&self) -> &Blueprint {
+        &self.blueprint
+    }
+}
+
+impl Blueprint {
+    pub(crate) fn worker(&self) -> Worker {
+        let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
+        let mut pipeline = DynPipeline::new().set_data(self.pipeline.clone());
+
+        if let Some(underlay) = &self.underlay {
+            pipeline = pipeline.add_stage(Ingress::new("ingress", underlay.interfaces.handle()));
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-1", underlay.fibs.handle()));
+            pipeline = pipeline.add_stage(Checkpoint::new(
+                "after ip-forward-1",
+                contract::decapsulated,
+            ));
+        }
+
+        pipeline = pipeline.add_stage(IcmpErrorHandler::new(self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", self.flow_table.clone()));
+        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", self.flow_filter.handle()));
+        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
+        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", self.acl.handle()));
+        pipeline = pipeline.add_stage(StaticNat::with_reader(
+            "static-nat",
+            self.static_nat.handle(),
+        ));
+        pipeline = pipeline.add_stage(PortForwarder::new(
+            "port-forwarder",
+            self.portfw.handle(),
+            self.flow_table.clone(),
+        ));
+
         pipeline = pipeline.add_stage(Checkpoint::new(
             "before masquerade",
             contract::ready_to_translate,
@@ -155,8 +264,8 @@ impl Fabric {
         ));
         pipeline = pipeline.add_stage(Masquerade::new(
             "masquerade",
-            flow_table.clone(),
-            masquerade.get_reader(),
+            self.flow_table.clone(),
+            self.masquerade.handle(),
         ));
 
         let checking = translations.clone();
@@ -167,38 +276,29 @@ impl Fabric {
             },
         ));
 
-        if let Some(tables) = &tables {
-            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", tables.fibs()));
+        if let Some(underlay) = &self.underlay {
+            pipeline = pipeline.add_stage(IpForwarder::new("ip-forward-2", underlay.fibs.handle()));
             pipeline = pipeline.add_stage(Egress::new(
                 "egress",
-                tables.interfaces(),
-                tables.adjacencies(),
+                underlay.interfaces.handle(),
+                underlay.adjacencies.handle(),
             ));
             pipeline = pipeline.add_stage(Checkpoint::new("after egress", contract::finished));
         }
 
-        Self {
+        Worker {
             pipeline,
-            flow_table,
-            _flow_filter: flow_filter,
-            _acl: acl,
-            _static_nat: static_nat,
-            _portfw: portfw,
-            _masquerade: masquerade,
-            _tables: tables,
             translations,
             next_id: 0,
         }
     }
+}
 
+impl Worker {
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
         let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
-    }
-
-    pub(crate) fn flows(&self) -> Option<usize> {
-        self.flow_table.len()
     }
 
     pub(crate) fn send_batch(
@@ -215,6 +315,93 @@ impl Fabric {
         let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
         assert_eq!(out.len(), sent, "the pipeline did not return every packet");
         out
+    }
+}
+
+impl Fabric {
+    pub(crate) fn build(exposes: &[VpcExpose]) -> Option<Self> {
+        Self::build_with_acl(exposes, None)
+    }
+
+    pub(crate) fn build_with_acl(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        Self::assemble(exposes, acl, None)
+    }
+
+    pub(crate) fn routed(exposes: &[VpcExpose], acl: Option<&Acl>) -> Option<Self> {
+        Self::routed_sharing(exposes, acl, Arc::new(FlowTable::default()))
+    }
+
+    pub(crate) fn routed_sharing(
+        exposes: &[VpcExpose],
+        acl: Option<&Acl>,
+        flow_table: Arc<FlowTable>,
+    ) -> Option<Self> {
+        let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
+            .ok()?
+            .validate()
+            .ok()?;
+        Some(Self::over(
+            &overlay,
+            Some(topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)])),
+            flow_table,
+        ))
+    }
+
+    pub(crate) fn routed_over(overlay: &Overlay, tables: RouterTables) -> Option<Self> {
+        Some(Self::over(
+            &overlay.clone().validate().ok()?,
+            Some(tables),
+            Arc::new(FlowTable::default()),
+        ))
+    }
+
+    pub(crate) fn routed_over_validated(overlay: &ValidatedOverlay, tables: RouterTables) -> Self {
+        Self::over(overlay, Some(tables), Arc::new(FlowTable::default()))
+    }
+
+    fn assemble(
+        exposes: &[VpcExpose],
+        acl: Option<&Acl>,
+        tables: Option<RouterTables>,
+    ) -> Option<Self> {
+        let overlay = overlay_with_exposes_and_acl(exposes.to_vec(), acl)
+            .ok()?
+            .validate()
+            .ok()?;
+        Some(Self::over(&overlay, tables, Arc::new(FlowTable::default())))
+    }
+
+    fn over(
+        overlay: &ValidatedOverlay,
+        tables: Option<RouterTables>,
+        flow_table: Arc<FlowTable>,
+    ) -> Self {
+        let fleet = Fleet::lowering(overlay, tables.as_ref(), flow_table);
+        let worker = fleet.blueprint().worker();
+        Self {
+            _tables: tables,
+            fleet,
+            worker,
+        }
+    }
+
+    pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
+        self.worker.send(packet)
+    }
+
+    pub(crate) fn send_batch(
+        &mut self,
+        packets: Vec<Packet<TestBuffer>>,
+    ) -> Vec<Packet<TestBuffer>> {
+        self.worker.send_batch(packets)
+    }
+
+    pub(crate) fn worker(&mut self) -> &mut Worker {
+        &mut self.worker
+    }
+
+    pub(crate) fn flows(&self) -> Option<usize> {
+        self.fleet.blueprint().flow_table.len()
     }
 }
 
@@ -324,7 +511,7 @@ pub(crate) struct Translations {
     was: std::collections::HashMap<u64, net::FlowKey>,
     from: std::collections::HashMap<u64, IpAddr>,
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
-    declared: Vec<Prefix>,
+    declared: Arc<[Prefix]>,
 }
 
 #[cfg(test)]
@@ -384,27 +571,32 @@ impl Translations {
         self.given.clear();
     }
 
-    fn declaring(overlay: &ValidatedOverlay) -> Self {
-        let mut declared = Vec::new();
-        for vpc in overlay.vpc_table().values() {
-            for peering in vpc.peerings() {
-                for manifest in [peering.local(), peering.remote()] {
-                    for expose in manifest.valexp() {
-                        declared.extend(
-                            expose
-                                .public_ips()
-                                .into_iter()
-                                .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
-                        );
-                    }
-                }
-            }
-        }
+    fn declaring(declared: &Arc<[Prefix]>) -> Self {
         Self {
-            declared,
+            declared: declared.clone(),
             ..Self::default()
         }
     }
+}
+
+#[cfg(test)]
+fn declared_public_ranges(overlay: &ValidatedOverlay) -> Arc<[Prefix]> {
+    let mut declared = Vec::new();
+    for vpc in overlay.vpc_table().values() {
+        for peering in vpc.peerings() {
+            for manifest in [peering.local(), peering.remote()] {
+                for expose in manifest.valexp() {
+                    declared.extend(
+                        expose
+                            .public_ips()
+                            .into_iter()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
+                    );
+                }
+            }
+        }
+    }
+    declared.into()
 }
 
 #[cfg(test)]
@@ -418,10 +610,14 @@ pub(crate) trait Load {
     fn checked(&self) -> bool;
 
     fn describe(&self) -> String;
+
+    fn public(&self) -> Option<(IpAddr, u16)> {
+        None
+    }
 }
 
 #[cfg(test)]
-pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
+pub(crate) fn drive(worker: &mut Worker, load: &mut dyn Load) {
     for _ in 0..64 {
         if load.finished() {
             return;
@@ -432,7 +628,7 @@ pub(crate) fn drive(fabric: &mut Fabric, load: &mut dyn Load) {
                 load.describe()
             );
         };
-        let out = fabric.send(packet);
+        let out = worker.send(packet);
         load.observe(&out);
     }
     panic!("a load did not finish in 64 steps: {}", load.describe());
@@ -450,7 +646,7 @@ pub(crate) type Poll = Vec<Pick>;
 
 #[cfg(test)]
 pub(crate) fn run_schedule(
-    fabric: &mut Fabric,
+    worker: &mut Worker,
     loads: &mut [Box<dyn Load>],
     schedule: &[Poll],
 ) -> Vec<Vec<usize>> {
@@ -474,14 +670,14 @@ pub(crate) fn run_schedule(
         if burst.is_empty() {
             continue;
         }
-        for (answer, which) in fabric.send_batch(burst).iter().zip(&origin) {
+        for (answer, which) in worker.send_batch(burst).iter().zip(&origin) {
             loads[*which].observe(answer);
         }
         bursts.push(origin);
     }
 
     for load in loads {
-        drive(fabric, load.as_mut());
+        drive(worker, load.as_mut());
     }
     bursts
 }
@@ -551,10 +747,32 @@ pub(crate) mod derive {
     }
 
     pub(crate) fn loads_for(overlay: &ValidatedOverlay, vary: &[Vary]) -> Vec<Box<dyn Load>> {
+        loads_where(overlay, vary, &|_| true)
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Named<'a> {
+        pub(crate) local: &'a str,
+        pub(crate) remote: &'a str,
+        pub(crate) peering: &'a str,
+    }
+
+    pub(crate) fn loads_where(
+        overlay: &ValidatedOverlay,
+        vary: &[Vary],
+        keep: &dyn Fn(Named<'_>) -> bool,
+    ) -> Vec<Box<dyn Load>> {
         let mut loads: Vec<Box<dyn Load>> = Vec::new();
         let mut nth = 0usize;
         for vpc in overlay.vpc_table().values() {
             for peering in vpc.peerings() {
+                if !keep(Named {
+                    local: vpc.name(),
+                    remote: peering.remote().name(),
+                    peering: peering.name(),
+                }) {
+                    continue;
+                }
                 let path = super::routed::Path::new(vpc.vni(), peering.remote_vni());
                 for expose in peering.local().valexp() {
                     let Some(v) = vary.get(nth % vary.len().max(1)).copied() else {
@@ -1998,7 +2216,7 @@ mod interleaved {
                     });
                 }
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut loads_in: Vec<usize> = burst.clone();
                     loads_in.sort_unstable();
                     loads_in.dedup();
@@ -2170,7 +2388,7 @@ mod offers {
                     }
                 }
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
                     seen.sort_unstable();
                     seen.dedup();
@@ -2233,7 +2451,7 @@ mod generated {
     const SENDERS: usize = 6;
     const POLLS: usize = 8;
 
-    struct Generated;
+    pub(super) struct Generated;
 
     impl ValueGenerator for Generated {
         type Output = (Vec<Op>, Vec<Vary>, Vec<Poll>);
@@ -2318,7 +2536,7 @@ mod generated {
                 let mut loads = loads_for(&validated, vary);
                 DERIVED.fetch_add(loads.len() as u64, Ordering::Relaxed);
 
-                for burst in run_schedule(&mut fabric, &mut loads, schedule) {
+                for burst in run_schedule(fabric.worker(), &mut loads, schedule) {
                     let mut seen = burst.clone();
                     seen.sort_unstable();
                     seen.dedup();
@@ -2813,7 +3031,7 @@ mod routed {
         matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
     }
 
-    fn inner() -> Packet<TestBuffer> {
+    pub(super) fn inner() -> Packet<TestBuffer> {
         build_test_udp_ipv4_packet("1.1.0.1", "3.3.3.1", 1234, 80)
     }
 
@@ -2979,7 +3197,7 @@ mod routed {
                     let mut load =
                         Conversation::new(Path::fixture(), src, dst, flow.sport, flow.dport);
 
-                    drive(&mut fabric, &mut load);
+                    drive(fabric.worker(), &mut load);
 
                     if load.checked() {
                         ROUND_TRIPPED.fetch_add(1, Ordering::Relaxed);
@@ -3008,6 +3226,7 @@ mod routed {
         dport: u16,
         sent: Option<Packet<TestBuffer>>,
         state: State,
+        public: Option<(IpAddr, u16)>,
         log: Vec<String>,
     }
 
@@ -3031,6 +3250,7 @@ mod routed {
                 dport,
                 sent: None,
                 state: State::Opening,
+                public: None,
                 log: Vec::new(),
             }
         }
@@ -3075,6 +3295,7 @@ mod routed {
                 return;
             };
             self.note(&format!("request left as {public_src}:{}", port.get()));
+            self.public = Some((public_src, port.get()));
             self.state = State::Replying {
                 public: (public_src, port.get()),
             };
@@ -3119,6 +3340,10 @@ mod routed {
     }
 
     impl Load for Conversation {
+        fn public(&self) -> Option<(IpAddr, u16)> {
+            self.public
+        }
+
         fn next(&mut self) -> Option<Packet<TestBuffer>> {
             match self.state {
                 State::Opening => {
@@ -3460,5 +3685,1693 @@ mod routed {
         let mut out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
         out.pop().unwrap_or_else(|| unreachable!())
+    }
+}
+
+#[cfg(test)]
+mod model {
+    use super::derive::loads_for;
+    use super::routed::{Conversation, exposes, inner, inside, tunnelled};
+    use super::*;
+    use concurrency::sync::Mutex;
+    use concurrency::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use concurrency::sync::{LazyLock, OnceLock};
+    use concurrency::thread;
+    #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
+    use concurrency::thread::BuilderExt;
+    use config::external::overlay::algebra::{Footprint, Sequence};
+    use net::packet::test_utils::build_test_udp_ipv4_packet;
+
+    type Tuple = (Option<IpAddr>, Option<u16>);
+
+    type Reported = (Vec<Tuple>, tracectl::evidence::Evidence);
+
+    fn on_two_threads(body: &(impl Fn() + Sync)) {
+        thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    thread::Builder::new()
+                        .spawn_scoped(scope, body)
+                        .expect("spawn")
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("join");
+            }
+        });
+    }
+
+    #[concurrency::model_test]
+    fn a_lock_that_outlives_its_execution_is_not_model_checkable() {
+        static LOCK: OnceLock<Mutex<u32>> = OnceLock::new();
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+
+        concurrency::stress(|| {
+            let lock = concurrency::sync::Arc::new(Mutex::new(0u32));
+            let inner = lock.clone();
+            let bump = move || *inner.lock() += 1;
+            on_two_threads(&bump);
+            assert_eq!(*lock.lock(), 2);
+        });
+
+        concurrency::stress(|| {
+            let first = RUNS.fetch_add(1, Ordering::Relaxed) == 0;
+            let bump = move || {
+                if first {
+                    *LOCK.get_or_init(|| Mutex::new(0)).lock() += 1;
+                }
+            };
+            on_two_threads(&bump);
+        });
+    }
+
+    #[concurrency::model_test]
+    fn a_pipeline_can_be_driven_inside_a_stress_run() {
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let table = Arc::new(FlowTable::default());
+            let sending = table.clone();
+            let entering = handle.clone();
+
+            thread::scope(|scope| {
+                let sender = thread::Builder::new()
+                    .name("sender".to_owned())
+                    .spawn_scoped(scope, move || {
+                        let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                        let mut fabric = Fabric::routed_sharing(&exposes(), None, sending)
+                            .unwrap_or_else(|| unreachable!("the fixture exposes do not validate"));
+                        let out = fabric.send(tunnelled(&inner()));
+                        assert!(
+                            matches!(verdict(&out), Verdict::Delivered { .. }),
+                            "a packet that is delivered single-threaded was not: {:?}",
+                            verdict(&out)
+                        );
+                    })
+                    .expect("spawn sender");
+
+                let reader = thread::Builder::new()
+                    .name("reader".to_owned())
+                    .spawn_scoped(scope, move || {
+                        for _ in 0..3 {
+                            let seen = table.len();
+                            assert!(seen.is_some(), "the flow table refused a concurrent read");
+                            table.for_each_flow(|_, flow| {
+                                let _ = flow.status();
+                            });
+                            thread::yield_now();
+                        }
+                    })
+                    .expect("spawn reader");
+
+                sender.join().expect("sender panicked");
+                reader.join().expect("reader panicked");
+            });
+        });
+    }
+    fn _a_blueprint_crosses_a_thread_boundary(blueprint: &Blueprint) {
+        fn shareable<T: Sync>(_: &T) {}
+        shareable(blueprint);
+    }
+
+    #[concurrency::model_test]
+    fn two_workers_are_not_given_the_same_public_tuple() {
+        const FLOWS: u16 = 3;
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+
+            let workers = [("1.1.0.1", 1000u16), ("1.1.0.2", 2000u16)];
+            let given: Vec<Reported> = thread::scope(|scope| {
+                let running: Vec<_> = workers
+                    .iter()
+                    .map(|(host, first)| {
+                        let entering = handle.clone();
+                        thread::Builder::new()
+                            .name(format!("worker-{host}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let recording =
+                                    tracectl::evidence::capture(format!("worker-{host}"));
+                                let mut worker = blueprint.worker();
+                                let burst = (0..FLOWS)
+                                    .map(|n| {
+                                        tunnelled(&build_test_udp_ipv4_packet(
+                                            host,
+                                            "3.3.3.1",
+                                            first + n,
+                                            80,
+                                        ))
+                                    })
+                                    .collect();
+                                let tuples = worker
+                                    .send_batch(burst)
+                                    .iter()
+                                    .map(|out| {
+                                        assert!(
+                                            matches!(verdict(out), Verdict::Delivered { .. }),
+                                            "a packet that is delivered single-threaded was not: \
+                                             {:?}",
+                                            verdict(out)
+                                        );
+                                        let tenant = inside(out).expect(
+                                            "a delivered frame leaves this gateway tunnelled",
+                                        );
+                                        (
+                                            tenant.ip_source(),
+                                            tenant.transport_src_port().map(std::num::NonZero::get),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                (tuples, recording.evidence())
+                            })
+                            .expect("spawn worker")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|worker| worker.join().expect("worker panicked"))
+                    .collect()
+            });
+
+            let (given, evidence): (Vec<Vec<Tuple>>, Vec<_>) = given.into_iter().unzip();
+            let given: Vec<_> = given.into_iter().flatten().collect();
+            let _explain = tracectl::evidence::dump_on_panic(evidence);
+
+            let mut seen = std::collections::BTreeMap::new();
+            for tuple in &given {
+                let count: &mut usize = seen.entry(format!("{tuple:?}")).or_default();
+                *count += 1;
+                assert_eq!(
+                    *count,
+                    1,
+                    "{} distinct flows were translated and {tuple:?} was handed out twice, so a \
+                     reply to it cannot be attributed to either of them: {given:?}",
+                    given.len()
+                );
+            }
+        });
+    }
+
+    #[concurrency::model_test]
+    fn generated_traffic_survives_being_split_across_two_workers() {
+        const CASES: usize = 64;
+
+        static SPLIT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static THIN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(generated::Generated)
+            .with_iterations(CASES)
+            .for_each(|(ops, vary, schedule)| {
+                let validated = Sequence::fold(ops)
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                    .validate()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"));
+
+                let vnis: Vec<Vni> = validated
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() || loads_for(&validated, vary).len() < 2 {
+                    THIN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                SPLIT.fetch_add(1, Ordering::Relaxed);
+
+                let drawn =
+                    concurrency::sync::Arc::new((validated, vnis, vary.clone(), schedule.clone()));
+                let entering = handle.clone();
+
+                concurrency::stress(move || {
+                    let (validated, vnis, vary, schedule) = &*drawn;
+                    let tables = topology(vnis);
+                    let fleet =
+                        Fleet::lowering(validated, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
+
+                    thread::scope(|scope| {
+                        let running: Vec<_> = (0..2)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                thread::Builder::new()
+                                    .name(format!("worker-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("worker-{which}"));
+                                        let mut worker = blueprint.worker();
+                                        let mut mine: Vec<Box<dyn Load>> =
+                                            loads_for(validated, vary)
+                                                .into_iter()
+                                                .enumerate()
+                                                .filter(|(nth, _)| nth % 2 == which)
+                                                .map(|(_, load)| load)
+                                                .collect();
+                                        run_schedule(&mut worker, &mut mine, schedule);
+                                    })
+                                    .expect("spawn worker")
+                            })
+                            .collect();
+                        for worker in running {
+                            worker.join().expect("worker panicked");
+                        }
+                    });
+                });
+            });
+
+        let (split, thin) = (SPLIT.load(Ordering::Relaxed), THIN.load(Ordering::Relaxed));
+        eprintln!("split={split} thin={thin}");
+        super::assert_covered(
+            split > 0,
+            "no drawn configuration ever implied enough traffic to load two workers, so this ran \
+             nothing concurrently",
+        );
+    }
+
+    fn without_unwinding<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+        cfg_select! {
+            feature = "shuttle" => Ok(body()),
+            feature = "loom" => Ok(body()),
+            _ => std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|payload| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic carrying no message".to_owned())
+            }),
+        }
+    }
+
+    fn step(worker: &mut Worker, load: &mut dyn Load) {
+        let Some(packet) = load.next() else {
+            panic!(
+                "a load was asked for a packet it would not give: {}",
+                load.describe()
+            );
+        };
+        let out = worker.send(packet);
+        load.observe(&out);
+    }
+
+    #[concurrency::model_test]
+    fn a_reply_is_translated_by_a_worker_that_never_saw_the_request() {
+        const FLOWS: u8 = 2;
+
+        static CLOSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ABANDONED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+
+            let mut opened: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        thread::Builder::new()
+                            .name(format!("open-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("open-{which}"));
+                                let mut worker = blueprint.worker();
+                                (0..FLOWS)
+                                    .map(|nth| {
+                                        let src = format!("1.1.{which}.{}", nth + 1);
+                                        let mut convo = Conversation::new(
+                                            super::routed::Path::fixture(),
+                                            src.parse().unwrap_or_else(|e| {
+                                                unreachable!("{src} is an address: {e}")
+                                            }),
+                                            "3.3.3.1"
+                                                .parse()
+                                                .unwrap_or_else(|e| unreachable!("{e}")),
+                                            u16::from(nth) + 1000,
+                                            80,
+                                        );
+                                        step(&mut worker, &mut convo);
+                                        convo
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .expect("spawn opener")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|opener| opener.join().expect("opener panicked"))
+                    .collect()
+            });
+
+            let second = opened
+                .pop()
+                .unwrap_or_else(|| unreachable!("two openers ran"));
+            let first = opened
+                .pop()
+                .unwrap_or_else(|| unreachable!("two openers ran"));
+
+            let answered: Vec<Vec<Conversation>> = thread::scope(|scope| {
+                let running: Vec<_> = [(0u8, second), (1u8, first)]
+                    .into_iter()
+                    .map(|(which, mut theirs)| {
+                        let entering = entering.clone();
+                        thread::Builder::new()
+                            .name(format!("answer-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("answer-{which}"));
+                                let mut worker = blueprint.worker();
+                                for convo in &mut theirs {
+                                    if !convo.finished() {
+                                        step(&mut worker, convo);
+                                    }
+                                }
+                                theirs
+                            })
+                            .expect("spawn answerer")
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|answerer| answerer.join().expect("answerer panicked"))
+                    .collect()
+            });
+
+            for convo in answered.into_iter().flatten() {
+                if convo.checked() {
+                    CLOSED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    ABANDONED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let (closed, abandoned) = (
+            CLOSED.load(Ordering::Relaxed),
+            ABANDONED.load(Ordering::Relaxed),
+        );
+        eprintln!("closed={closed} abandoned={abandoned}");
+        super::assert_covered(
+            closed > 0,
+            "no conversation was ever answered by the other worker, so nothing crossed",
+        );
+    }
+
+    fn unreachable(
+        code: net::icmp4::Icmp4DestUnreachable,
+        public: (IpAddr, u16),
+        target: IpAddr,
+    ) -> Packet<TestBuffer> {
+        let (IpAddr::V4(public_v4), IpAddr::V4(target_v4)) = (public.0, target) else {
+            unreachable!("the fixture is v4 throughout")
+        };
+        let inner =
+            net::packet::test_utils::build_test_icmp4_destination_unreachable_packet_with_code(
+                code,
+                net::packet::test_utils::IcmpErrorAddrs {
+                    outer_src: target_v4,
+                    outer_dst: public_v4,
+                    inner_src: public_v4,
+                    inner_dst: target_v4,
+                },
+                net::ip::NextHeader::UDP,
+                public.1,
+                80,
+            )
+            .unwrap_or_else(|e| unreachable!("the icmp error builds: {e:?}"));
+        super::routed::tunnelled_from(vni(REMOTE_VNI), &inner)
+    }
+
+    #[concurrency::model_test]
+    fn an_icmp_teardown_leaves_another_workers_flow_alone() {
+        static REPORTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static SURVIVED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let target: IpAddr = "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}"));
+
+            for (code, tears_down) in [
+                (net::icmp4::Icmp4DestUnreachable::Network, true),
+                (
+                    net::icmp4::Icmp4DestUnreachable::FragmentationNeeded {
+                        next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
+                    },
+                    false,
+                ),
+            ] {
+                let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                    .expect("the fixture exposes form an overlay")
+                    .validate()
+                    .expect("the fixture overlay validates");
+                let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+                let fleet =
+                    Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let entering = handle.clone();
+
+                let opening = entering.clone();
+                let answering = entering.clone();
+                let (doomed, mut spared): ((IpAddr, u16), Conversation) = thread::scope(|scope| {
+                    let doomed = thread::Builder::new()
+                        .name("open-doomed".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = opening.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("open-doomed");
+                            let mut worker = blueprint.worker();
+                            let request = super::round_trip::udp(
+                                "1.1.0.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                target,
+                                1000,
+                                80,
+                            )
+                            .unwrap_or_else(|| unreachable!("the fixture request builds"));
+                            let out = worker.send(tunnelled(&request));
+                            let carried = inside(&out).unwrap_or_else(|| {
+                                unreachable!(
+                                    "the request was not delivered tunnelled: {:?}",
+                                    verdict(&out)
+                                )
+                            });
+                            let (Some(public), Some(port)) =
+                                (carried.ip_source(), carried.transport_src_port())
+                            else {
+                                unreachable!("a delivered request had no public tuple")
+                            };
+                            (public, port.get())
+                        })
+                        .expect("spawn opener");
+
+                    let spared = thread::Builder::new()
+                        .name("open-spared".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = answering.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("open-spared");
+                            let mut worker = blueprint.worker();
+                            let mut convo = Conversation::new(
+                                super::routed::Path::fixture(),
+                                "1.1.0.2".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                target,
+                                2000,
+                                80,
+                            );
+                            step(&mut worker, &mut convo);
+                            convo
+                        })
+                        .expect("spawn opener");
+
+                    (
+                        doomed.join().expect("opener panicked"),
+                        spared.join().expect("opener panicked"),
+                    )
+                });
+
+                let tearing = entering.clone();
+                let keeping = entering.clone();
+                let named = format!("{code:?}");
+                let spared = thread::scope(|scope| {
+                    let teardown = thread::Builder::new()
+                        .name("teardown".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = tearing.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("teardown");
+                            let mut worker = blueprint.worker();
+                            let out = worker.send(unreachable(code, doomed, target));
+                            matches!(verdict(&out), Verdict::Delivered { .. })
+                        })
+                        .expect("spawn teardown");
+
+                    let answer = thread::Builder::new()
+                        .name("answer".to_owned())
+                        .spawn_scoped(scope, move || {
+                            let _guard = keeping.as_ref().map(tokio::runtime::Handle::enter);
+                            let _evidence = tracectl::evidence::capture("answer");
+                            let mut worker = blueprint.worker();
+                            step(&mut worker, &mut spared);
+                            spared
+                        })
+                        .expect("spawn answer");
+
+                    assert!(
+                        teardown.join().expect("teardown panicked"),
+                        "the icmp error never reached the flow it named, so this raced against \
+                         nothing"
+                    );
+                    REPORTED.fetch_add(1, Ordering::Relaxed);
+                    answer.join().expect("answer panicked")
+                });
+
+                assert!(
+                    spared.checked(),
+                    "a flow was disturbed by an icmp teardown of a different flow on another \
+                     worker. {}",
+                    spared.describe()
+                );
+                SURVIVED.fetch_add(1, Ordering::Relaxed);
+
+                let mut worker = blueprint.worker();
+                let reply = super::round_trip::udp(target, doomed.0, 80, doomed.1)
+                    .unwrap_or_else(|| unreachable!("the reply builds"));
+                let out = worker.send(super::routed::tunnelled_from(vni(REMOTE_VNI), &reply));
+                let delivered = matches!(verdict(&out), Verdict::Delivered { .. });
+                assert_eq!(
+                    delivered,
+                    !tears_down,
+                    "an icmp error with code {named} left the flow it named {}: {:?}",
+                    if delivered { "alive" } else { "torn down" },
+                    verdict(&out)
+                );
+            }
+        });
+
+        let (reported, survived) = (
+            REPORTED.load(Ordering::Relaxed),
+            SURVIVED.load(Ordering::Relaxed),
+        );
+        eprintln!("reported={reported} survived={survived}");
+        super::assert_covered(reported > 0, "no icmp error ever reached the flow it named");
+    }
+
+    #[concurrency::model_test]
+    fn forwarding_survives_a_route_being_republished_underneath_it() {
+        const FLOWS: u8 = 2;
+        const CHURN: u8 = 6;
+
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static PUBLISHED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            let start = Arc::new(concurrency::sync::Barrier::new(3));
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let start = start.clone();
+                        thread::Builder::new()
+                            .name(format!("forward-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("forward-{which}"));
+                                let mut worker = blueprint.worker();
+                                start.wait();
+                                let mut done = 0u64;
+                                for nth in 0..FLOWS {
+                                    let src = format!("1.1.{which}.{}", nth + 1);
+                                    let mut convo = Conversation::new(
+                                        super::routed::Path::fixture(),
+                                        src.parse().unwrap_or_else(|e| unreachable!("{src}: {e}")),
+                                        "3.3.3.1".parse().unwrap_or_else(|e| unreachable!("{e}")),
+                                        u16::from(nth) + 1000,
+                                        80,
+                                    );
+                                    drive(&mut worker, &mut convo);
+                                    assert!(
+                                        convo.checked(),
+                                        "a conversation did not complete while routes were being \
+                                         republished. {}",
+                                        convo.describe()
+                                    );
+                                    done += 1;
+                                }
+                                done
+                            })
+                            .expect("spawn forwarder")
+                    })
+                    .collect();
+
+                let peer: IpAddr = PEER_VTEP.parse().unwrap_or_else(|_| unreachable!());
+                let landing =
+                    FibGroup::with_entry(FibEntry::with_inst(PktInstruction::Local(uplink())));
+                start.wait();
+                for nth in 0..CHURN {
+                    let prefix = format!("9.9.{nth}.0");
+                    tables.route_via(
+                        UNDERLAY_VRF,
+                        Prefix::expect_from((
+                            prefix
+                                .parse::<IpAddr>()
+                                .unwrap_or_else(|e| unreachable!("{e}")),
+                            24,
+                        )),
+                        nhop(&peer),
+                        &landing,
+                    );
+                    PUBLISHED.fetch_add(1, Ordering::Relaxed);
+                }
+
+                for worker in running {
+                    COMPLETED.fetch_add(
+                        worker.join().expect("forwarder panicked"),
+                        Ordering::Relaxed,
+                    );
+                }
+            });
+        });
+
+        let (completed, published) = (
+            COMPLETED.load(Ordering::Relaxed),
+            PUBLISHED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} published={published}");
+        super::assert_covered(
+            completed > 0 && published > 0,
+            "either no conversation completed or no route was published, so nothing was raced",
+        );
+    }
+
+    #[concurrency::model_test]
+    fn a_next_hop_that_moves_is_never_seen_half_moved() {
+        const CHURN: u8 = 3;
+        const PER_ROUND: u8 = 2;
+
+        static FRESH: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static STALE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        type Seen = Result<u8, String>;
+
+        fn waypoint(nth: u8) -> (IpAddr, InterfaceIndex) {
+            if nth == 0 {
+                (
+                    PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()),
+                    uplink(),
+                )
+            } else {
+                (
+                    IpAddr::from([10, 0, 0, nth]),
+                    InterfaceIndex::try_new(UPLINK + u32::from(nth))
+                        .unwrap_or_else(|_| unreachable!()),
+                )
+            }
+        }
+
+        fn framing(nth: u8) -> Mac {
+            Mac([0x02, 0, 0, 0, 0x11, nth])
+        }
+
+        fn towards(nth: u8) -> FibGroup {
+            let (remote, oif) = waypoint(nth);
+            let mut out = FibEntry::with_inst(PktInstruction::Encap(ResolvedEncapsulation::Vxlan(
+                ResolvedVxlan {
+                    vni: vni(REMOTE_VNI),
+                    remote,
+                    dmac: framing(nth),
+                },
+            )));
+            out.add(PktInstruction::Egress(EgressObject::new(
+                Some(oif),
+                Some(remote),
+            )));
+            FibGroup::with_entry(out)
+        }
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let mut tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            for nth in 1..=CHURN {
+                let (_, oif) = waypoint(nth);
+                tables.interface(
+                    oif,
+                    &format!("uplink-{nth}"),
+                    SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
+                );
+                tables.attach(oif, UNDERLAY_VRF);
+            }
+            for to in 0..=CHURN {
+                for over in 0..=CHURN {
+                    tables.adjacency(waypoint(to).0, waypoint(over).1, framing(to));
+                }
+            }
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+            let mut reports = Vec::new();
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name(format!("probe-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("probe-{which}"));
+                                let mut worker = blueprint.worker();
+
+                                let mut port = u16::from(which) * 1000 + 1000;
+                                let send = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                    *port += 1;
+                                    let src = format!("1.1.{which}.1");
+                                    let out = worker.send(tunnelled(&build_test_udp_ipv4_packet(
+                                        &src, "3.3.3.1", *port, 80,
+                                    )));
+                                    let Verdict::Delivered {
+                                        oif: Some(oif),
+                                        dst: Some(dst),
+                                        ..
+                                    } = verdict(&out)
+                                    else {
+                                        return Err(format!(
+                                            "it did not leave the gateway: {:?}",
+                                            verdict(&out)
+                                        ));
+                                    };
+                                    (0..=CHURN)
+                                        .find(|nth| waypoint(*nth) == (dst, oif))
+                                        .ok_or_else(|| {
+                                            format!(
+                                                "it left over interface {oif} towards {dst}, which \
+                                                 is no published next hop: either the \
+                                                 encapsulation and the egress came from different \
+                                                 versions, or the group was read while it was \
+                                                 being written"
+                                            )
+                                        })
+                                };
+
+                                let probe = |worker: &mut Worker, port: &mut u16| -> Seen {
+                                    without_unwinding(|| send(worker, port)).unwrap_or_else(|why| {
+                                        Err(format!("sending it panicked: {why}"))
+                                    })
+                                };
+
+                                gate.wait();
+                                let mut seen = Vec::with_capacity(
+                                    usize::from(CHURN) * usize::from(PER_ROUND) + 1,
+                                );
+                                for _ in 1..=CHURN {
+                                    for _ in 0..PER_ROUND {
+                                        seen.push(probe(&mut worker, &mut port));
+                                    }
+                                    gate.wait();
+                                }
+                                seen.push(probe(&mut worker, &mut port));
+                                seen
+                            })
+                            .expect("spawn prober")
+                    })
+                    .collect();
+
+                let key = nhop(&PEER_VTEP.parse().unwrap_or_else(|_| unreachable!()));
+                gate.wait();
+                for round in 1..=CHURN {
+                    tables.nexthop(REMOTE_VNI, &key, &towards(round));
+                    gate.wait();
+                }
+
+                for prober in running {
+                    reports.push(prober.join().expect("prober panicked"));
+                }
+            });
+
+            for seen in reports {
+                for (nth, observed) in seen.iter().enumerate() {
+                    let last = nth == seen.len() - 1;
+                    let round = if last {
+                        CHURN
+                    } else {
+                        u8::try_from(nth).unwrap_or_else(|_| unreachable!()) / PER_ROUND + 1
+                    };
+                    let version = match observed {
+                        Ok(version) => *version,
+                        Err(why) => panic!(
+                            "a probe sent in round {round}, while the next hop was moving, is not \
+                             attributable to any version: {why}"
+                        ),
+                    };
+                    if last {
+                        assert_eq!(
+                            version, CHURN,
+                            "a probe sent after the churn had finished was forwarded by version \
+                             {version}, not by version {CHURN}, the last one published. Every \
+                             publish returned before the barrier that released this probe, so a \
+                             reader still serving an earlier version is serving a next hop that \
+                             no longer exists"
+                        );
+                        continue;
+                    }
+                    assert!(
+                        version == round || version + 1 == round,
+                        "a probe sent in round {round} was forwarded by version {version}. \
+                         Version {} was published before this round opened, so no reader may \
+                         still be serving anything older, and version {round} is the newest that \
+                         exists",
+                        round - 1
+                    );
+                    if version == round {
+                        FRESH.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        STALE.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        let (fresh, stale) = (FRESH.load(Ordering::Relaxed), STALE.load(Ordering::Relaxed));
+        eprintln!("fresh={fresh} stale={stale}");
+        super::assert_covered(
+            fresh > 0,
+            "no probe was ever forwarded by the version published in its own round, so the publish \
+             never once landed inside the window it was racing",
+        );
+    }
+
+    #[concurrency::model_test]
+    fn re_enacting_a_configuration_under_load_disturbs_nothing() {
+        const FLOWS: u8 = 2;
+        const APPLIES: u8 = 4;
+
+        static COMPLETED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ENACTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        concurrency::stress(move || {
+            let overlay = overlay_with_exposes_and_acl(exposes(), None)
+                .expect("the fixture exposes form an overlay")
+                .validate()
+                .expect("the fixture overlay validates");
+            let tables = topology(&[vni(LOCAL_VNI), vni(REMOTE_VNI)]);
+            let fleet = Fleet::lowering(&overlay, Some(&tables), Arc::new(FlowTable::default()));
+            let blueprint = fleet.blueprint();
+            let entering = handle.clone();
+            let gate = Arc::new(concurrency::sync::Barrier::new(3));
+            let mut reports = Vec::new();
+
+            thread::scope(|scope| {
+                let running: Vec<_> = (0..2u8)
+                    .map(|which| {
+                        let entering = entering.clone();
+                        let gate = gate.clone();
+                        thread::Builder::new()
+                            .name(format!("tenant-{which}"))
+                            .spawn_scoped(scope, move || {
+                                let _guard = entering.as_ref().map(tokio::runtime::Handle::enter);
+                                let _evidence =
+                                    tracectl::evidence::capture(format!("tenant-{which}"));
+                                let mut worker = blueprint.worker();
+                                gate.wait();
+                                let mut seen = Vec::new();
+                                for round in 1..=APPLIES {
+                                    for nth in 0..FLOWS {
+                                        seen.push((
+                                            round,
+                                            without_unwinding(|| {
+                                                let src = format!("1.1.{which}.{}", nth + 1);
+                                                let mut convo = Conversation::new(
+                                                    super::routed::Path::fixture(),
+                                                    src.parse().unwrap_or_else(|e| {
+                                                        unreachable!("{src}: {e}")
+                                                    }),
+                                                    "3.3.3.1"
+                                                        .parse()
+                                                        .unwrap_or_else(|e| unreachable!("{e}")),
+                                                    u16::from(round) * 100 + u16::from(nth) + 1000,
+                                                    80,
+                                                );
+                                                drive(&mut worker, &mut convo);
+                                                (convo.checked(), convo.describe())
+                                            }),
+                                        ));
+                                    }
+                                    gate.wait();
+                                }
+                                seen
+                            })
+                            .expect("spawn tenant")
+                    })
+                    .collect();
+
+                gate.wait();
+                for _ in 0..APPLIES {
+                    fleet.reconfigure(&overlay);
+                    ENACTED.fetch_add(1, Ordering::Relaxed);
+                    gate.wait();
+                }
+
+                for worker in running {
+                    reports.push(worker.join().expect("tenant panicked"));
+                }
+            });
+
+            for seen in reports {
+                for (round, ran) in seen {
+                    let (checked, described) = ran.unwrap_or_else(|why| {
+                        panic!("a conversation in round {round} panicked mid-enactment: {why}")
+                    });
+                    assert!(
+                        checked,
+                        "a conversation in round {round} did not survive the configuration it was \
+                         already running being enacted again. Every enactment before this round \
+                         had returned, and the one racing it changes nothing. {described}"
+                    );
+                    COMPLETED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let (completed, enacted) = (
+            COMPLETED.load(Ordering::Relaxed),
+            ENACTED.load(Ordering::Relaxed),
+        );
+        eprintln!("completed={completed} enacted={enacted}");
+        super::assert_covered(
+            completed > 0 && enacted > 0,
+            "either no conversation completed or no configuration was enacted, so nothing was raced",
+        );
+    }
+
+    #[concurrency::model_test]
+    fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
+        const CASES: usize = 64;
+        const ROUNDS: u8 = 3;
+
+        static FRAMED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static BARREN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static ENGULFED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static FRAMED_OUT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static RACED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static DISTURBED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        fn separate(drawn: u16, round: u8, which: usize) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(round).wrapping_mul(997)) % 32_000 + 1;
+            within + u16::try_from(which).unwrap_or_else(|_| unreachable!()) * 32_768
+        }
+
+        fn outside(footprint: &Footprint) -> impl Fn(derive::Named<'_>) -> bool + '_ {
+            move |named| {
+                !footprint.touches_peering_named(named.peering)
+                    && !footprint.touches_vpc_named(named.local)
+                    && !footprint.touches_vpc_named(named.remote)
+            }
+        }
+
+        let _eal = dpdk::test_support::start_eal();
+
+        let rt = cfg_select! {
+            feature = "shuttle" => None::<tokio::runtime::Runtime>,
+            _ => Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime")
+            )
+        };
+        let handle = rt.as_ref().map(tokio::runtime::Runtime::handle).cloned();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(generated::Generated)
+            .with_iterations(CASES)
+            .for_each(|(ops, vary, _schedule)| {
+                let Some((change, built)) = ops.split_last() else {
+                    BARREN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                let before = Sequence::fold(built);
+                let footprint = change.writes(&before);
+
+                let assemble = |draft: &config::external::overlay::algebra::Draft| {
+                    draft
+                        .overlay()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"))
+                        .validate()
+                        .unwrap_or_else(|e| panic!("{ops:?} does not validate: {e}"))
+                };
+                let running = assemble(&before);
+                let enacted = assemble(&Sequence::fold(ops));
+
+                let framed = derive::loads_where(&running, vary, &outside(&footprint)).len();
+                let total = derive::loads_for(&running, vary).len();
+                FRAMED_OUT.fetch_add(
+                    u64::try_from(total - framed).unwrap_or_else(|_| unreachable!()),
+                    Ordering::Relaxed,
+                );
+                if framed == 0 {
+                    if total == 0 { &BARREN } else { &ENGULFED }.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                FRAMED.fetch_add(1, Ordering::Relaxed);
+
+                let vnis: Vec<Vni> = enacted
+                    .vpc_table()
+                    .values()
+                    .map(config::external::overlay::vpc::ValidatedVpc::vni)
+                    .collect();
+                if vnis.is_empty() {
+                    BARREN.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+
+                let drawn = concurrency::sync::Arc::new((
+                    running,
+                    enacted,
+                    vnis,
+                    vary.clone(),
+                    footprint,
+                    *change,
+                ));
+                let entering = handle.clone();
+
+                concurrency::stress(move || {
+                    let (running, enacted, vnis, vary, footprint, change) = &*drawn;
+                    let tables = topology(vnis);
+                    let fleet =
+                        Fleet::lowering(running, Some(&tables), Arc::new(FlowTable::default()));
+                    let blueprint = fleet.blueprint();
+                    let gate = Arc::new(concurrency::sync::Barrier::new(3));
+                    let mut reports = Vec::new();
+
+                    thread::scope(|scope| {
+                        let handles: Vec<_> = (0..2usize)
+                            .map(|which| {
+                                let entering = entering.clone();
+                                let gate = gate.clone();
+                                thread::Builder::new()
+                                    .name(format!("framed-{which}"))
+                                    .spawn_scoped(scope, move || {
+                                        let _guard =
+                                            entering.as_ref().map(tokio::runtime::Handle::enter);
+                                        let _evidence =
+                                            tracectl::evidence::capture(format!("framed-{which}"));
+                                        let mut worker = blueprint.worker();
+                                        let outside = outside(footprint);
+                                        gate.wait();
+                                        let mut seen = Vec::new();
+                                        for round in 1..=ROUNDS {
+                                            let varied: Vec<derive::Vary> = vary
+                                                .iter()
+                                                .map(|v| derive::Vary {
+                                                    sport: separate(v.sport, round, which),
+                                                    ..*v
+                                                })
+                                                .collect();
+                                            let mine =
+                                                derive::loads_where(running, &varied, &outside);
+                                            seen.push((
+                                                round,
+                                                without_unwinding(|| {
+                                                    let mut ran = Vec::new();
+                                                    for mut load in mine {
+                                                        for _ in 0..8 {
+                                                            let Some(packet) = load.next() else {
+                                                                break;
+                                                            };
+                                                            let out = worker.send(packet);
+                                                            load.observe(&out);
+                                                        }
+                                                        ran.push((load.checked(), load.describe()));
+                                                    }
+                                                    ran
+                                                }),
+                                            ));
+                                            gate.wait();
+                                        }
+                                        seen
+                                    })
+                                    .expect("spawn framed worker")
+                            })
+                            .collect();
+
+                        gate.wait();
+                        for _ in 0..ROUNDS {
+                            fleet.reconfigure(enacted);
+                            gate.wait();
+                        }
+
+                        for worker in handles {
+                            reports.push(worker.join().expect("framed worker panicked"));
+                        }
+                    });
+
+                    for seen in reports {
+                        for (round, ran) in seen {
+                            let ran = ran.unwrap_or_else(|why| {
+                                panic!(
+                                    "carrying traffic in round {round} panicked while {change:?} \
+                                     was being enacted: {why}"
+                                )
+                            });
+                            for (checked, described) in ran {
+                                if round == 1 {
+                                    if checked { &RACED } else { &DISTURBED }
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    continue;
+                                }
+                                assert!(
+                                    checked,
+                                    "traffic outside the footprint of a configuration change did \
+                                     not survive it, in round {round}. The change was {change:?}, \
+                                     whose write set this load is outside of, so the configuration \
+                                     it ran against and the one enacted agree about it entirely. \
+                                     {}. {described}",
+                                    if round == 1 {
+                                        "This round races the enactment that carries the difference"
+                                    } else {
+                                        "That enactment returned before this round opened, and \
+                                         this round races only a re-enactment of what is already \
+                                         running"
+                                    }
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+
+        let (framed, barren, engulfed, framed_out, raced) = (
+            FRAMED.load(Ordering::Relaxed),
+            BARREN.load(Ordering::Relaxed),
+            ENGULFED.load(Ordering::Relaxed),
+            FRAMED_OUT.load(Ordering::Relaxed),
+            RACED.load(Ordering::Relaxed),
+        );
+        eprintln!("framed={framed} barren={barren} engulfed={engulfed} framed_out={framed_out}");
+        eprintln!(
+            "carried while the change was being enacted: {raced}, of which disturbed: {}",
+            DISTURBED.load(Ordering::Relaxed)
+        );
+        super::assert_covered(
+            framed > 0,
+            "no draw left two loads outside the footprint of its last operation, so no \
+             configuration change was ever carried under traffic",
+        );
+        super::assert_covered(
+            raced > 0,
+            "no load was ever carried by the round that races the change itself, so every \
+             assertion here was about a re-enactment of a configuration already running -- which \
+             `re_enacting_a_configuration_under_load_disturbs_nothing` already covers",
+        );
+        super::assert_covered(
+            framed_out > 0,
+            "no load was ever filtered out for being inside a footprint, so the frame was always \
+             the whole configuration and this property is the re-enactment one with extra steps",
+        );
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    #[ignore = "an instrument, not a property: reports a rate and asserts nothing"]
+    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    async fn report_which_enactment_step_disturbs_traffic() {
+        use config::external::overlay::algebra::{
+            Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
+        };
+
+        fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
+            within + which * 32_768
+        }
+
+        const ROUNDS: usize = 60;
+        const REPS: u8 = 24;
+
+        let vpc = VpcHandle;
+        let peering = PeeringHandle;
+        let built = vec![
+            Op::AddVpc(vpc(0)),
+            Op::AddVpc(vpc(1)),
+            Op::AddPeering {
+                handle: peering(0),
+                left: vpc(0),
+                right: vpc(1),
+            },
+            Op::SetFlavour {
+                peering: peering(0),
+                side: Side::Left,
+                slot: 0,
+                flavour: Flavour::Masquerade,
+            },
+            Op::AddVpc(vpc(2)),
+            Op::AddVpc(vpc(3)),
+            Op::AddPeering {
+                handle: peering(1),
+                left: vpc(2),
+                right: vpc(3),
+            },
+        ];
+        let change = Op::SetFlavour {
+            peering: peering(1),
+            side: Side::Left,
+            slot: 0,
+            flavour: Flavour::Masquerade,
+        };
+        let assemble = |draft: &Draft| {
+            draft
+                .overlay()
+                .expect("assembles")
+                .validate()
+                .expect("validates")
+        };
+        let before = Sequence::fold(&built);
+        let running = assemble(&before);
+        let mut after_draft = before.clone();
+        change.apply(&mut after_draft).expect("the change applies");
+        let enacted = assemble(&after_draft);
+        let footprint = change.writes(&before);
+
+        let vnis: Vec<Vni> = enacted
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect();
+        let vary: Vec<derive::Vary> = (0..2)
+            .map(|n| derive::Vary {
+                host: n,
+                port: 0,
+                sport: 30000,
+                dport: 80,
+                burst: 2,
+                blast: false,
+            })
+            .collect();
+        let outside = |named: derive::Named<'_>| {
+            !footprint.touches_peering_named(named.peering)
+                && !footprint.touches_vpc_named(named.local)
+                && !footprint.touches_vpc_named(named.remote)
+        };
+        eprintln!(
+            "loads: total={} framed={}",
+            derive::loads_for(&running, &vary).len(),
+            derive::loads_where(&running, &vary, &outside).len()
+        );
+
+        let handle = tokio::runtime::Handle::current();
+        let steps = [
+            Enact::Everything,
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+            Enact::Generation,
+            Enact::Everything,
+        ];
+        for (nth, part) in steps.into_iter().enumerate() {
+            let gapped = nth == steps.len() - 1;
+            let disturbed = concurrency::sync::atomic::AtomicU64::new(0);
+            let carried = concurrency::sync::atomic::AtomicU64::new(0);
+
+            for round in 0..ROUNDS {
+                let tables = topology(&vnis);
+                let fleet =
+                    Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
+                let blueprint = fleet.blueprint();
+                let gate = concurrency::sync::Barrier::new(3);
+                std::thread::scope(|scope| {
+                    for which in 0..2u16 {
+                        let handle = handle.clone();
+                        let (gate, disturbed, carried) = (&gate, &disturbed, &carried);
+                        let (running, vary, outside) = (&running, &vary, &outside);
+                        scope.spawn(move || {
+                            let _guard = handle.enter();
+                            let mut worker = blueprint.worker();
+                            gate.wait();
+                            for rep in 0..REPS {
+                                let mine = derive::loads_where(
+                                    running,
+                                    &vary
+                                        .iter()
+                                        .map(|v| derive::Vary {
+                                            sport: separate(v.sport, rep, which),
+                                            ..*v
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    outside,
+                                );
+                                for mut load in mine {
+                                    carried.fetch_add(1, Ordering::Relaxed);
+                                    let ran = without_unwinding(|| {
+                                        for _ in 0..8 {
+                                            let Some(packet) = load.next() else { break };
+                                            let out = worker.send(packet);
+                                            load.observe(&out);
+                                        }
+                                        (load.checked(), load.describe())
+                                    });
+                                    let (ok, how) = ran.unwrap_or_else(|why| (false, why));
+                                    if !ok && disturbed.fetch_add(1, Ordering::Relaxed) == 0 {
+                                        eprintln!("  {part:?} first, round {round}: {how}");
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    gate.wait();
+                    if gapped {
+                        fleet.enact_with_router_gap(&enacted, Duration::from_micros(500));
+                    } else {
+                        fleet.enact(&enacted, part);
+                    }
+                });
+            }
+            eprintln!(
+                "{part:?}{}: carried={} disturbed={}",
+                if gapped { " (with the router gap)" } else { "" },
+                carried.load(Ordering::Relaxed),
+                disturbed.load(Ordering::Relaxed)
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[dpdk::with_eal]
+    #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
+    #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
+    async fn report_why_the_masquerade_swap_disturbs_traffic() {
+        use concurrency::sync::atomic::AtomicBool;
+        use config::external::overlay::algebra::{
+            Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
+        };
+
+        fn separate(drawn: u16, rep: u8, which: u16) -> u16 {
+            let within = (drawn / 2).wrapping_add(u16::from(rep).wrapping_mul(997)) % 32_000 + 1;
+            within + which * 32_768
+        }
+
+        const ROUNDS: [usize; 2] = [200, 6000];
+        const REPS: u8 = 24;
+
+        fn reason(how: &str) -> String {
+            how.lines()
+                .next()
+                .unwrap_or(how)
+                .rsplit('|')
+                .next()
+                .unwrap_or(how)
+                .trim()
+                .to_owned()
+        }
+
+        let vpc = VpcHandle;
+        let peering = PeeringHandle;
+        let built = vec![
+            Op::AddVpc(vpc(0)),
+            Op::AddVpc(vpc(1)),
+            Op::AddPeering {
+                handle: peering(0),
+                left: vpc(0),
+                right: vpc(1),
+            },
+            Op::SetFlavour {
+                peering: peering(0),
+                side: Side::Left,
+                slot: 0,
+                flavour: Flavour::Masquerade,
+            },
+            Op::AddVpc(vpc(2)),
+            Op::AddVpc(vpc(3)),
+            Op::AddPeering {
+                handle: peering(1),
+                left: vpc(2),
+                right: vpc(3),
+            },
+        ];
+        let change = Op::SetFlavour {
+            peering: peering(1),
+            side: Side::Left,
+            slot: 0,
+            flavour: Flavour::Masquerade,
+        };
+        let assemble = |draft: &Draft| {
+            draft
+                .overlay()
+                .expect("assembles")
+                .validate()
+                .expect("validates")
+        };
+        let before = Sequence::fold(&built);
+        let running = assemble(&before);
+        let mut after_draft = before.clone();
+        change.apply(&mut after_draft).expect("the change applies");
+        let enacted = assemble(&after_draft);
+        let footprint = change.writes(&before);
+
+        let vnis: Vec<Vni> = enacted
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect();
+        let vary: Vec<derive::Vary> = (0..2)
+            .map(|n| derive::Vary {
+                host: n,
+                port: 0,
+                sport: 30000,
+                dport: 80,
+                burst: 2,
+                blast: false,
+            })
+            .collect();
+        let outside = |named: derive::Named<'_>| {
+            !footprint.touches_peering_named(named.peering)
+                && !footprint.touches_vpc_named(named.local)
+                && !footprint.touches_vpc_named(named.remote)
+        };
+
+        let handle = tokio::runtime::Handle::current();
+        for (nth, randomize) in [false, true].into_iter().enumerate() {
+            eprintln!("\n== randomize={randomize} ==");
+            let explained = AtomicBool::new(false);
+            let carried = AtomicU64::new(0);
+            let disturbed = AtomicU64::new(0);
+            let why: Mutex<std::collections::BTreeMap<String, u64>> =
+                Mutex::new(std::collections::BTreeMap::new());
+            let mut duplicated = 0u64;
+
+            for round in 0..ROUNDS[nth] {
+                let tables = topology(&vnis);
+                let fleet =
+                    Fleet::lowering(&running, Some(&tables), Arc::new(FlowTable::default()));
+                fleet.randomizing(randomize);
+                if randomize {
+                    fleet.enact(&running, Enact::Masquerade);
+                }
+                let blueprint = fleet.blueprint();
+                let gate = concurrency::sync::Barrier::new(3);
+                let handed: Mutex<Vec<(IpAddr, u16)>> = Mutex::new(Vec::new());
+                let writing = tracectl::evidence::Capture::new("config-apply")
+                    .depth(8192)
+                    .keeping(|target| target.starts_with("dataplane_nat"))
+                    .start();
+                let written = writing.evidence();
+                let traces: Mutex<Vec<tracectl::evidence::Evidence>> = Mutex::new(vec![written]);
+                std::thread::scope(|scope| {
+                    for which in 0..2u16 {
+                        let handle = handle.clone();
+                        let (gate, explained, carried, disturbed) =
+                            (&gate, &explained, &carried, &disturbed);
+                        let (running, vary, outside) = (&running, &vary, &outside);
+                        let (traces, why, handed) = (&traces, &why, &handed);
+                        scope.spawn(move || {
+                            let _guard = handle.enter();
+                            let recording =
+                                tracectl::evidence::Capture::new(format!("masq-{which}"))
+                                    .depth(8192)
+                                    .keeping(|target| target.starts_with("dataplane_nat"))
+                                    .start();
+                            traces.lock().push(recording.evidence());
+                            let mut worker = blueprint.worker();
+                            gate.wait();
+                            let mut given = Vec::new();
+                            for rep in 0..REPS {
+                                let mine = derive::loads_where(
+                                    running,
+                                    &vary
+                                        .iter()
+                                        .map(|v| derive::Vary {
+                                            sport: separate(v.sport, rep, which),
+                                            ..*v
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    outside,
+                                );
+                                for mut load in mine {
+                                    carried.fetch_add(1, Ordering::Relaxed);
+                                    let ran = without_unwinding(|| {
+                                        for _ in 0..8 {
+                                            let Some(packet) = load.next() else { break };
+                                            let out = worker.send(packet);
+                                            load.observe(&out);
+                                        }
+                                        load.checked()
+                                    });
+                                    given.extend(load.public());
+                                    let (ok, how) = match ran {
+                                        Ok(ok) => (ok, load.describe()),
+                                        Err(why) => (false, format!("{why}. {}", load.describe())),
+                                    };
+                                    if ok {
+                                        continue;
+                                    }
+                                    disturbed.fetch_add(1, Ordering::Relaxed);
+                                    *why.lock().entry(reason(&how)).or_default() += 1;
+                                    if !explained.swap(true, Ordering::Relaxed) {
+                                        eprintln!(
+                                            "\ndisturbed in round {round}, rep {rep}, worker \
+                                         {which}: {how}\n"
+                                        );
+                                        for trace in traces.lock().iter() {
+                                            trace.dump();
+                                        }
+                                    }
+                                }
+                            }
+                            handed.lock().extend(given);
+                        });
+                    }
+                    gate.wait();
+                    fleet.enact(&enacted, Enact::Masquerade);
+                });
+
+                let mut seen = std::collections::BTreeSet::new();
+                for tuple in handed.lock().iter() {
+                    if !seen.insert(*tuple) {
+                        duplicated += 1;
+                        eprintln!("  round {round}: {tuple:?} was handed to two live flows");
+                    }
+                }
+            }
+
+            eprintln!(
+                "carried={} disturbed={} duplicated={duplicated}",
+                carried.load(Ordering::Relaxed),
+                disturbed.load(Ordering::Relaxed),
+            );
+            for (reason, count) in why.lock().iter() {
+                eprintln!("  {count:>4}  {reason}");
+            }
+        }
     }
 }

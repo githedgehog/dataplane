@@ -15,11 +15,11 @@ use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 
 use crate::atable::adjacency::Adjacency;
-use crate::atable::atablerw::{AtableReader, AtableWriter};
+use crate::atable::atablerw::{AtableReader, AtableReaderFactory, AtableWriter};
 use crate::evpn::Vtep;
-use crate::fib::fibtable::{FibTableReader, FibTableWriter};
+use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
 use crate::fib::fibtype::FibKey;
-use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
+use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
 use crate::interfaces::interface::{IfDataEthernet, IfState, IfType, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 
@@ -141,6 +141,21 @@ impl RouterTables {
     #[must_use]
     pub fn adjacencies(&self) -> AtableReader {
         self.adj_reader.clone()
+    }
+
+    #[must_use]
+    pub fn interface_factory(&self) -> IfTableReaderFactory {
+        self.if_reader.factory()
+    }
+
+    #[must_use]
+    pub fn fib_factory(&self) -> FibTableReaderFactory {
+        self.fib_reader.factory()
+    }
+
+    #[must_use]
+    pub fn adjacency_factory(&self) -> AtableReaderFactory {
+        self.adj_reader.factory()
     }
 
     fn fib_mut(&mut self, vrfid: VrfId) -> &mut FibWriter {
