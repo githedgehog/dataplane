@@ -25,6 +25,7 @@
 )]
 
 mod bpffs;
+mod local_addrs;
 mod worker;
 
 use concurrency::sync::Arc;
@@ -163,6 +164,10 @@ impl DriverAfXdp {
         let redirect = Arc::new(Redirect::attach(
             interfaces.iter().map(|kif| kif.name.as_str()),
         )?);
+
+        // Before any socket is bound, so that no packet is redirected away
+        // from the host while the program still knows of no local address.
+        local_addrs::track(scope, workers_subsystem, &redirect)?;
 
         let queues = Self::queues_to_serve(interfaces.as_slice());
         let mut worker_monitors = Self::spawn_workers_scoped(

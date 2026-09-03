@@ -173,28 +173,41 @@ dataplane --interface eth0=kernel@eth0 --interface eth1=kernel@eth1
 ```
 
 The process needs `CAP_NET_RAW` to open the sockets and `CAP_BPF` to load the
-XDP program that redirects packets to them, and `/sys/fs/bpf` should be mounted
-so libxdp can pin what it loads. Where a process cannot be given those, pass
+XDP program that decides where packets go. Where it cannot be given those, pass
 `--driver kernel` instead.
 
 The driver runs one worker per RX queue, each with a socket on every interface.
 Zero-copy is tried first on every one of them and copy mode used where the NIC
 driver will not do it, which the log says at startup.
 
-Building it links libxdp, which the build compiles from source along with the
-libbpf it bundles. `--no-default-features` leaves it out, for a build without
-that toolchain; such a build has only the kernel driver and has to be told to
-use it.
+### What the host still receives
 
-By default the redirect is done by the program libxdp loads for us. To use
-ours, in `xdp-ebpf/`, build it first and enable the feature that compiles it
-into the binary:
+Redirecting a packet to an `AF_XDP` socket is final: the network stack never
+sees it. If everything on an interface were redirected, anything running on the
+host -- routing sessions, neighbour discovery -- would stop receiving, and
+nothing in userspace can put a packet back on an interface's receive path.
 
-```bash
-cargo +nightly install bpf-linker   # once
-just build-ebpf
-cargo build -p dataplane --features xdp/embedded-ebpf
-```
+So the XDP program in `xdp-ebpf/` decides. It passes to the kernel what is not
+IP, what is addressed to one of the host's own addresses -- which the driver
+keeps it told about as they are configured and removed -- and link-local
+multicast, which is how neighbours address each other: `ND`, router
+advertisements, OSPF, VRRP. VXLAN is the exception: it arrives addressed to the
+gateway too, and it is what the dataplane is for. Everything else goes to the
+dataplane.
+
+Packets the pipeline asks to be delivered locally are counted as `to-kernel` in
+`show driver status`. That number should stay at zero; anything else is traffic
+the XDP program redirected to us that the host was expecting.
+
+### Building
+
+The build compiles libxdp from source, along with the libbpf it bundles, and
+builds the XDP program for the BPF target with bpf-linker. The nix shell and
+the packaged build provide both; `just build-ebpf` rebuilds the program alone
+when iterating on it.
+
+`--no-default-features` leaves the driver out altogether, for a build without
+the toolchain, and such a build has to be told to use the kernel driver.
 
 ## Common build arguments
 
