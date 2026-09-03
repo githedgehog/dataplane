@@ -16,6 +16,96 @@ pub const ENV_TEST_ROOT: &str = "N_VM_TEST_ROOT";
 /// Environment variable pointing to the resolved `vmroot` directory.
 pub const ENV_VM_ROOT: &str = "N_VM_VM_ROOT";
 
+/// Environment variable naming a directory that both this process and the
+/// Docker daemon can see, under which the daemon-visible copies live.
+///
+/// Every path in a bind mount's `source` is resolved by the *daemon*, in the
+/// daemon's mount namespace -- not by this process. The two agree when the
+/// daemon runs on the same host. They do not when the tests run inside a
+/// container that talks to a daemon outside it, which is how the dataplane's
+/// CI runners are built: `/nix` there belongs to the runner's own image, and
+/// the bare metal has nothing at those paths.
+///
+/// That failure is silent by construction. Every mount sets
+/// `create_mountpoint`, so a source the daemon cannot find is *created* as an
+/// empty directory rather than reported -- the guest root mounts empty, and
+/// the first mount beneath it fails on a read-only filesystem, naming a
+/// directory that does exist in the real `vmroot`.
+///
+/// When this is set, mount sources are rewritten to point inside it:
+/// `/nix/store/...` becomes `<share>/nix/store/...`, and the forwarded
+/// environment is written under `<share>/tmp` rather than [`std::env::temp_dir`].
+/// The mount *targets* are unchanged, so `/nix/store` rpaths still resolve in
+/// the guest. Unset -- the ordinary case, a daemon on this host -- nothing is
+/// rewritten.
+///
+/// Populating the directory is the caller's job; see the `setup-roots` recipe.
+pub const ENV_HOST_SHARE: &str = "N_VM_HOST_SHARE_DIR";
+
+/// The store subdirectory of [`ENV_HOST_SHARE`], mirroring `/nix/store`.
+pub const HOST_SHARE_STORE_SUBDIR: &str = "nix/store";
+
+/// The scratch subdirectory of [`ENV_HOST_SHARE`], standing in for `/tmp`.
+pub const HOST_SHARE_TMP_SUBDIR: &str = "tmp";
+
+/// The store prefix that [`ENV_HOST_SHARE`] redirects.
+pub const NIX_STORE_DIR: &str = "/nix/store";
+
+/// Rewrites a path the Docker daemon must resolve so that it lands inside
+/// [`ENV_HOST_SHARE`], when one is configured.
+///
+/// Only a `/nix/store` path is rewritten. Anything else is returned unchanged:
+/// the workspace and the nextest archive already live on a filesystem both
+/// namespaces share, which is the whole reason the share directory is placed
+/// under the workspace.
+#[must_use]
+pub fn host_visible_path(path: &str) -> String {
+    host_visible_path_in(host_share_dir().as_deref(), path)
+}
+
+/// [`host_visible_path`] with the share directory given rather than read from
+/// the environment, so that it can be tested without touching global state.
+#[must_use]
+pub fn host_visible_path_in(share: Option<&str>, path: &str) -> String {
+    let Some(share) = share else {
+        return path.to_owned();
+    };
+    // A prefix match on the string alone would rewrite `/nix/storage`, which
+    // is not a store path. Only the directory itself and its children.
+    let rest = if path == NIX_STORE_DIR {
+        ""
+    } else if let Some(rest) = path.strip_prefix(&format!("{NIX_STORE_DIR}/")) {
+        rest
+    } else {
+        return path.to_owned();
+    };
+    if rest.is_empty() {
+        format!("{share}/{HOST_SHARE_STORE_SUBDIR}")
+    } else {
+        format!("{share}/{HOST_SHARE_STORE_SUBDIR}/{rest}")
+    }
+}
+
+/// The configured [`ENV_HOST_SHARE`], with a trailing slash removed and the
+/// empty value treated as unset.
+#[must_use]
+pub fn host_share_dir() -> Option<String> {
+    let raw = std::env::var(ENV_HOST_SHARE).ok()?;
+    let trimmed = raw.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Canonicalised because the result becomes a bind mount `source`, and the
+    // Docker API takes that as an opaque absolute path rather than resolving
+    // it: a `..` or a symlink that this process reads without noticing would
+    // reach the daemon unresolved. Best effort -- a directory that does not
+    // exist yet is passed through, and the mount then fails on its own terms.
+    match std::fs::canonicalize(trimmed) {
+        Ok(path) => path.to_str().map(str::to_owned),
+        Err(_) => Some(trimmed.to_owned()),
+    }
+}
+
 /// Resolved root directories for the test container infrastructure.
 #[derive(Debug, Clone)]
 pub struct ScratchRoots {
@@ -1791,6 +1881,71 @@ mod tests {
         assert_eq!(
             parsed,
             TestResult::parse(&parsed.to_wire()).expect("idempotent")
+        );
+    }
+}
+
+#[cfg(test)]
+mod host_share_tests {
+    use super::{HOST_SHARE_STORE_SUBDIR, NIX_STORE_DIR, host_visible_path_in};
+
+    #[test]
+    fn without_a_share_every_path_is_left_alone() {
+        for path in [
+            NIX_STORE_DIR,
+            "/nix/store/abc-vm-root",
+            "/home/runner/_work/dataplane/dataplane",
+            "/dev/hugepages",
+        ] {
+            assert_eq!(
+                host_visible_path_in(None, path),
+                path,
+                "a daemon on this host resolves these itself",
+            );
+        }
+    }
+
+    #[test]
+    fn the_store_directory_itself_is_redirected() {
+        assert_eq!(
+            host_visible_path_in(Some("/w/.share"), NIX_STORE_DIR),
+            format!("/w/.share/{HOST_SHARE_STORE_SUBDIR}"),
+        );
+    }
+
+    #[test]
+    fn a_store_entry_keeps_its_name_below_the_share() {
+        assert_eq!(
+            host_visible_path_in(Some("/w/.share"), "/nix/store/abc-vm-root"),
+            format!("/w/.share/{HOST_SHARE_STORE_SUBDIR}/abc-vm-root"),
+        );
+        assert_eq!(
+            host_visible_path_in(Some("/w/.share"), "/nix/store/abc-testroot/bin/qemu"),
+            format!("/w/.share/{HOST_SHARE_STORE_SUBDIR}/abc-testroot/bin/qemu"),
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_store_is_left_alone() {
+        // The workspace and the nextest archive are already on a filesystem
+        // both namespaces share; rewriting them would break the mount.
+        for path in [
+            "/home/runner/_work/dataplane/dataplane",
+            "/home/runner/_work/_temp/nextest-archive-x/target/debug/deps",
+            "/dev/hugepages",
+        ] {
+            assert_eq!(host_visible_path_in(Some("/w/.share"), path), path);
+        }
+    }
+
+    #[test]
+    fn a_sibling_of_the_store_is_not_a_store_path() {
+        // `/nix/storage` shares a textual prefix with `/nix/store` and is not
+        // below it. A plain `strip_prefix` on the bare directory would rewrite
+        // it, and the mount would then name a path that exists nowhere.
+        assert_eq!(
+            host_visible_path_in(Some("/w/.share"), "/nix/storage/thing"),
+            "/nix/storage/thing",
         );
     }
 }
