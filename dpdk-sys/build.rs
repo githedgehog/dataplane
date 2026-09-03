@@ -73,6 +73,11 @@ fn main() {
 
     let depends = [
         "dpdk_wrapper",
+        // The `em`/`igb` PMD, which drives the emulated 82540EM and 82574L that QEMU offers.
+        // DPDK builds it (`net/intel/e1000` is in `enabledDrivers`), but under static linkage a
+        // PMD that nothing names is never pulled in, so its PCI-driver constructor never runs and
+        // `rte_eth_dev_count_avail` reports zero even with the device bound to vfio-pci.
+        "rte_net_e1000",
         "rte_net_virtio",
         "rte_net_vhost",
         "rte_net_i40e",
