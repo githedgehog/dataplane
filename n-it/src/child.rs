@@ -44,7 +44,7 @@ fn vsock_stream_to_stdio(stream: vsock::VsockStream) -> Stdio {
 /// Applies the environment the host tier forwarded, if any.
 ///
 /// The guest builds its child's environment from nothing, so anything the
-/// test needs has to arrive explicitly.  [`GUEST_ENV_FILE`] is that channel:
+/// test needs has to arrive explicitly.  [`n_vm_protocol::GUEST_ENV_FILE`] is that channel:
 /// a NUL-separated `KEY=VALUE` file on the read-only root share, written by
 /// the host tier before the container was created.
 ///
@@ -106,8 +106,8 @@ fn apply_forwarded_env(command: &mut Command) -> Result<(), SpawnError> {
 /// Reads the binary path and test name from the kernel command line
 /// arguments (passed via `init=`), sets `IN_VM=YES` so the `#[n_vm::test]`
 /// macro executes the test body directly, and redirects stdout/stderr to
-/// dedicated vsock streams ([`VsockChannel::TEST_STDOUT`] and
-/// [`VsockChannel::TEST_STDERR`]).
+/// dedicated vsock streams ([`n_vm_protocol::VsockChannel::TEST_STDOUT`] and
+/// [`n_vm_protocol::VsockChannel::TEST_STDERR`]).
 ///
 /// The container tier must have already bound Unix listeners at the
 /// corresponding vsock listener paths before the VM booted, so these
@@ -194,7 +194,7 @@ pub async fn spawn_main_process() -> Result<Child, SpawnError> {
 }
 
 /// Reports the structured test verdict to the host over the result vsock
-/// channel ([`VsockChannel::TEST_RESULT`]).
+/// channel ([`n_vm_protocol::VsockChannel::TEST_RESULT`]).
 ///
 /// The container tier bound a listener on the result port before the VM
 /// booted, so this connect succeeds immediately.  Dropping the stream after

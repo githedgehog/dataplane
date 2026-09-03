@@ -211,7 +211,7 @@ pub enum VmError {
     /// the container, QEMU/cloud-hypervisor will crash immediately with
     /// an opaque error.
     ///
-    /// This pre-flight check runs alongside [`KvmNotAccessible`] to
+    /// This pre-flight check runs alongside [`Self::KvmNotAccessible`] to
     /// surface the problem early with a clear message.
     #[error("hugepage pool unavailable")]
     #[diagnostic(
@@ -246,7 +246,7 @@ pub enum VmError {
     ///
     /// Several sockets (API socket, virtiofsd socket, etc.) are created
     /// asynchronously by child processes.  This error means the polling
-    /// loop in [`wait_for_socket`](crate::vm::wait_for_socket) exhausted
+    /// loop in `wait_for_socket` exhausted
     /// its retry budget without finding the socket.
     #[error("timed out waiting for socket {path:?} after {timeout:?}")]
     #[diagnostic(

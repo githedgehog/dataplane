@@ -13,14 +13,14 @@
 //!   an `--event-monitor` pipe and `--api-socket`.
 //! - **Lifecycle control** -- creating and booting the VM via the REST API,
 //!   and performing best-effort shutdown.
-//! - **Event monitoring** -- delegating to [`events::watch`] to consume
-//!   the event stream and produce a [`HypervisorVerdict`].
+//! - **Event monitoring** -- delegating to `events::watch` to consume
+//!   the event stream and produce a [`crate::HypervisorVerdict`].
 //!
 //! Nothing in this module is used by the generic [`TestVm`](crate::vm::TestVm)
 //! machinery except through the [`HypervisorBackend`] trait.
 //!
-//! The [`events`] submodule contains the cloud-hypervisor event monitor
-//! JSON stream decoder and the [`events::watch`] function that consumes
+//! The `events` submodule contains the cloud-hypervisor event monitor
+//! JSON stream decoder and the `events::watch` function that consumes
 //! the event stream.
 
 pub mod error;

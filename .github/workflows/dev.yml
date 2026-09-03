@@ -548,6 +548,15 @@ jobs:
 
       - name: "coverage-archive"
         uses: *just
+        env:
+          # Coverage is not a small tax on a guest: the whole n-vm suite went
+          # from 76s to 155s on these runners, and one test overran the 60s
+          # VM allowance at 96s -- which surfaces as "no parseable test
+          # verdict from guest", because the timeout shoots the VM and takes
+          # the verdict with it. Three rather than the observed two, because
+          # what has to fit is the worst case under whatever else shares the
+          # machine, and a larger allowance costs nothing when nothing hangs.
+          N_VM_OVERHEAD_SCALE: "3"
         with:
           recipe: "ci::coverage"
           recipe_args: "${{ matrix.profile }}"
