@@ -1450,9 +1450,18 @@ pub mod contract {
                 });
         }
 
+        /// Below this many cases a rate says nothing, so the health checks stay quiet.
+        ///
+        /// The point is a replay: `bolero` reruns a single recorded input to reproduce a
+        /// failure, and an aggregate assertion evaluated over one sample fails whenever
+        /// that sample happens not to be the interesting one. That turns every replay of
+        /// a valid input into a spurious failure and buries the real one.
+        const ENOUGH_CASES: usize = 200;
+
         #[test]
         fn every_generated_static_nat_expose_validates() {
-            let mut shapes_differed = false;
+            let mut seen = 0usize;
+            let mut shapes_differed = 0usize;
             bolero::check!()
                 .with_generator(StaticNatExpose::default())
                 .for_each(|expose: &VpcExpose| {
@@ -1460,15 +1469,19 @@ pub mod contract {
                         panic!("generated expose was rejected: {expose} -- {e:?}")
                     });
                     assert!(validated.has_static_nat());
+                    seen += 1;
                     if validated.ips().len() != validated.as_range_or_empty().len() {
-                        shapes_differed = true;
+                        shapes_differed += 1;
                     }
                 });
-            assert!(
-                shapes_differed,
-                "no generated expose had a different number of prefixes on each side, so the \
-                 mapping was never asked to fragment"
-            );
+            println!("{shapes_differed} of {seen} exposes had a different shape on each side");
+            if seen > ENOUGH_CASES {
+                assert!(
+                    shapes_differed > 0,
+                    "none of {seen} generated exposes had a different number of prefixes on each \
+                     side, so the mapping was never asked to fragment"
+                );
+            }
         }
 
         #[test]
