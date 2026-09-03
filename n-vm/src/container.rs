@@ -571,6 +571,17 @@ impl ContainerParams {
     /// "I was given no environment", and a bolero test that loses
     /// `BOLERO_LIBFUZZER_ARGS` does not fail -- it quietly stops fuzzing and
     /// still passes.  This is the only place the loss is visible.
+    /// The directory to write a forwarded-environment directory into.
+    ///
+    /// `<share>/tmp` when a host share is configured, else the ordinary
+    /// temporary directory.
+    fn env_parent_dir() -> PathBuf {
+        match n_vm_protocol::host_share_dir() {
+            Some(share) => PathBuf::from(share).join(n_vm_protocol::HOST_SHARE_TMP_SUBDIR),
+            None => std::env::temp_dir(),
+        }
+    }
+
     fn write_forwarded_env(
         &self,
         rss_limit_mib: Option<u32>,
@@ -619,7 +630,14 @@ impl ContainerParams {
         // Keyed by pid and test name: nextest runs each test in its own
         // process and several containers are created in parallel, so a
         // shared path would race.
-        let dir = std::env::temp_dir().join(format!(
+        // Under the share directory when there is one: this path is a bind
+        // mount source, so the daemon has to be able to resolve it, and a
+        // container-local /tmp is exactly what it cannot. Getting this wrong
+        // is silent in the worst way -- the daemon would create an empty
+        // directory and the guest would come up with no environment at all,
+        // which is the loss the doc comment above says nothing else can
+        // report.
+        let dir = Self::env_parent_dir().join(format!(
             "n-vm-env-{}-{}",
             std::process::id(),
             self.test_name.replace("::", "_"),
@@ -665,9 +683,12 @@ impl ContainerParams {
 
         let mut mounts = Vec::new();
 
+        // The *source* of every mount below is resolved by the daemon, which
+        // may be outside this container; the target is not. So sources go
+        // through `host_visible_path` and targets stay as the guest expects.
         mounts.push(Self::read_only_bind_mount(
-            "/nix/store",
-            "/nix/store".to_owned(),
+            &n_vm_protocol::host_visible_path(n_vm_protocol::NIX_STORE_DIR),
+            n_vm_protocol::NIX_STORE_DIR.to_owned(),
         ));
 
         // Mount each first-level testroot entry at the container root.
@@ -680,7 +701,7 @@ impl ContainerParams {
                 let path = entry.path();
                 if path.is_dir() || path.is_file() {
                     mounts.push(Self::read_only_bind_mount(
-                        &format!("{test_root}/{name}"),
+                        &n_vm_protocol::host_visible_path(&format!("{test_root}/{name}")),
                         format!("/{name}"),
                     ));
                 }
@@ -688,13 +709,13 @@ impl ContainerParams {
         }
 
         mounts.push(Self::read_only_bind_mount(
-            vm_root,
+            &n_vm_protocol::host_visible_path(vm_root),
             VM_ROOT_SHARE_PATH.to_owned(),
         ));
 
         // Guest binaries keep /nix/store rpaths; expose the real store via virtiofs.
         mounts.push(Self::read_only_bind_mount(
-            "/nix/store",
+            &n_vm_protocol::host_visible_path(n_vm_protocol::NIX_STORE_DIR),
             format!("{VM_ROOT_SHARE_PATH}/nix/store"),
         ));
 
