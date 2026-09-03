@@ -10,7 +10,7 @@ use tracing_subscriber::fmt::MakeWriter;
 ///
 /// This is used by the init system to stream structured tracing data back to
 /// the host (container tier) over a vsock connection, where it is collected as
-/// part of [`VmTestOutput::init_trace`](n_vm::VmTestOutput).
+/// part of `VmTestOutput::init_trace`.
 ///
 /// The inner stream is protected by a [`Mutex`] so that the type is
 /// naturally `Send + Sync` without requiring `unsafe`.
