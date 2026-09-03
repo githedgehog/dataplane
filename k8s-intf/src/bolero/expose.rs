@@ -17,7 +17,7 @@ use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeNatStatic,
 };
 
-///
+/// The most prefixes an expose will offer on either side.
 const MAX_PREFIXES: u8 = 3;
 
 const MAX_PORTS: u16 = 1024;
