@@ -713,6 +713,35 @@ mod peering_chain {
                 );
 
                 let text = internal.render(&validated.genid()).to_string();
+
+                // What a peering advertises has to survive into the rendered config. This
+                // is the only assertion here that depends on the per-peering half of the
+                // build having run at all; without it that whole half could return early
+                // and everything else above would still hold.
+                //
+                // The prefixes are read back out of the validated config rather than off
+                // the offered exposes, because validation collapses and normalises them
+                // and it is the collapsed form that gets rendered.
+                let mut advertised = 0usize;
+                for vpc in validated.external().overlay().vpc_table().values() {
+                    for peering in vpc.peerings().iter() {
+                        for expose in peering.remote().valexp() {
+                            for prefix in expose.adv_prefixes() {
+                                advertised += 1;
+                                assert!(
+                                    text.contains(&prefix.to_string()),
+                                    "{prefix} is advertised by a peering but never reaches the \
+                                     rendered config\n{exposes:#?}"
+                                );
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    advertised > 0,
+                    "the peering advertises nothing, so this checked no routing at all\n{exposes:#?}"
+                );
+
                 assert!(
                     text.contains("! config for gen 1"),
                     "the rendered config does not say which generation it is for"
