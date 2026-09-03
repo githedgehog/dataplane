@@ -25,6 +25,15 @@ ignore = [
     "RUSTSEC-2024-0436",
     # proc-macro-error2 is unmaintained but is needed by multi_index_map_derive, and our own fixin; ignore until both dependencies have migrated away from it.
     "RUSTSEC-2026-0173",
+    # safemem is unmaintained (archived 2019).  It reaches us only through
+    # base64 0.7 <- cloud-hypervisor-client 0.3, which is a dev-dependency of
+    # the n-vm test harness: it never ships in the dataplane.  The advisory is
+    # "unmaintained", not a vulnerability, and cargo-deny reports no safe
+    # upgrade.  cloud-hypervisor-client 0.6 does drop it, but it also drops
+    # `PlatformConfig::iommu_address_width`, which n-vm uses to size the guest
+    # vIOMMU -- so that bump is a port, not a version bump.  Ignore until it is
+    # done.
+    "RUSTSEC-2023-0081",
 ]
 
 [licenses]
