@@ -363,6 +363,51 @@ pub mod blocks {
         format!("{}/{len}", Ipv6Addr::from(addr))
     }
 
+    /// Keep the top `keep` bits of `base`, fill bits `keep..len` from `host`, zero the rest.
+    fn splice(base: u128, keep: u8, host: u128, len: u8, width: u8) -> u128 {
+        let mask = |bits: u8| -> u128 {
+            if bits == 0 {
+                0
+            } else {
+                u128::MAX << (width - bits.min(width))
+            }
+        };
+        let network = mask(keep);
+        (base & network) | (host & mask(len) & !network)
+    }
+
+    /// Draw a prefix of length `len` lying inside `parent`.
+    ///
+    /// An exclusion that does not fall inside the prefix it is written against excludes
+    /// nothing. The validator only warns about one, so such a prefix is legal input and
+    /// worth reaching, but it leaves `collapse_prefixes` and the post-exclusion
+    /// special-use check untouched. Drawing a fresh address anywhere in the parent's
+    /// block, which is what the caller used to do, lands inside the parent about once in
+    /// a dozen tries, so those two paths were reached about that often.
+    ///
+    /// Returns `None` if `parent` does not parse, or if `len` is shorter than the
+    /// parent's own length and so cannot name anything inside it.
+    pub fn within<D: Driver>(d: &mut D, parent: &str, len: u8) -> Option<String> {
+        let (address, parent_len) = parent.split_once('/')?;
+        let parent_len: u8 = parent_len.parse().ok()?;
+        if len < parent_len {
+            return None;
+        }
+        Some(if address.contains(':') {
+            let base = address.parse::<Ipv6Addr>().ok()?.to_bits();
+            let host = d.produce::<u128>()?;
+            format!(
+                "{}/{len}",
+                Ipv6Addr::from(splice(base, parent_len, host, len, 128))
+            )
+        } else {
+            let base = u128::from(address.parse::<Ipv4Addr>().ok()?.to_bits());
+            let host = u128::from(d.produce::<u32>()?);
+            let spliced = u32::try_from(splice(base, parent_len, host, len, 32)).ok()?;
+            format!("{}/{len}", Ipv4Addr::from(spliced))
+        })
+    }
+
     pub fn private<D: Driver>(d: &mut D, family: AddressFamily, at: At, len: u8) -> Option<String> {
         let slot = u32::from(SUBNET_SLOTS) + u32::from(at.slot);
         Some(if family.is_v4() {
@@ -452,5 +497,28 @@ pub mod blocks {
     #[must_use]
     pub fn max_len(family: AddressFamily) -> u8 {
         if family.is_v4() { 32 } else { 128 }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::splice;
+
+        /// `splice` is where "inside the parent" is actually decided, so pin it directly.
+        #[test]
+        fn a_spliced_address_keeps_the_parent_and_masks_the_rest() {
+            // Parent 10.0.0.0/8, host bits all ones, asked for a /12: the top octet is
+            // the parent's, bits 8..12 come from the host, and everything below is zero.
+            let spliced = splice(0x0A00_0000, 8, u128::from(u32::MAX), 12, 32);
+            assert_eq!(spliced, 0x0AF0_0000, "{spliced:#x}");
+
+            // A length equal to the parent's reproduces the parent exactly, whatever the
+            // host bits say.
+            let spliced = splice(0x0A00_0000, 8, u128::from(u32::MAX), 8, 32);
+            assert_eq!(spliced, 0x0A00_0000, "{spliced:#x}");
+
+            // A parent whose own low bits are set keeps them.
+            let spliced = splice(0x0A12_0000, 16, 0, 24, 32);
+            assert_eq!(spliced, 0x0A12_0000, "{spliced:#x}");
+        }
     }
 }

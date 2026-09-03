@@ -107,10 +107,21 @@ impl<'a> ExposeGenerator<'a> {
             return None;
         }
         let longer = d.gen_u8(Bound::Excluded(&len), Bound::Included(&max))?;
-        if private {
-            blocks::private(d, self.family, at, longer)
+        // Carve the exclusion out of the parent. Redrawing it anywhere in the parent's
+        // block, which is what this did, put it inside the parent about one time in a
+        // dozen, and only an exclusion inside its parent removes anything.
+        //
+        // The other case is kept, rarely, because it is legal input the validator only
+        // warns about, and a warning path nothing reaches is a warning path nothing
+        // checks.
+        if d.gen_u8(Bound::Included(&0), Bound::Included(&7))? == 0 {
+            if private {
+                blocks::private(d, self.family, at, longer)
+            } else {
+                blocks::public(d, self.family, at, longer)
+            }
         } else {
-            blocks::public(d, self.family, at, longer)
+            blocks::within(d, parent, longer)
         }
     }
 
