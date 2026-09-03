@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::ops::Bound;
-
 use bolero::{Driver, ValueGenerator};
 
 use crate::bolero::crd::GatewayAgents;
@@ -430,8 +428,7 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
         | Mutation::MixAddressFamilies => mutate_expose_shape(agent, mutation),
         Mutation::UseReservedPrefix => {
             let reserved = ["127.0.0.0/8", "224.0.0.0/4", "0.0.0.0/8", "ff00::/8"];
-            let choice =
-                reserved[d.gen_usize(Bound::Included(&0), Bound::Excluded(&reserved.len()))?];
+            let choice = crate::bolero::support::choose(d, &reserved)?;
             let mut done = false;
             for expose in exposes_mut(agent) {
                 if let Some(entry) = expose.ips.iter_mut().flatten().next()
@@ -513,8 +510,7 @@ impl ValueGenerator for MutatedAgents {
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
         let mut agent = self.0.generate(d)?;
-        let all = Mutation::all();
-        let mutation = all[d.gen_usize(Bound::Included(&0), Bound::Excluded(&all.len()))?];
+        let mutation = crate::bolero::support::choose(d, Mutation::ALL)?;
         let bit = apply(d, &mut agent, mutation)?;
         Some((mutation, bit, agent))
     }
