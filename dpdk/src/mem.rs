@@ -7,7 +7,7 @@ use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use arrayvec::ArrayVec;
-use concurrency::sync::{Mutex, OnceLock};
+use concurrency::sync::{Arc, Mutex, OnceLock};
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
@@ -50,44 +50,61 @@ impl Drop for Manager {
     }
 }
 
-/// A handle to a DPDK memory pool.
+/// A reference-counted handle to a DPDK memory pool.
 ///
-/// # Lifetime
+/// # Ownership
 ///
-/// A `Pool` is a `Copy` handle, not an owning RAII wrapper, and dropping one frees nothing.
-/// Every pool created through [`Pool::new_pkt_pool`] is registered with the crate and released
-/// during [`Eal`](crate::eal::Eal) teardown, *after* every device has been closed.
+/// `Pool` is `Clone` over an `Arc`, so every holder keeps the mempool alive: a device that was
+/// configured with it (through [`RxQueueConfig::pool`](crate::queue::rx::RxQueueConfig)), and a
+/// batch of mbufs in transit between threads (see [`Consigned`]). The mempool is freed when the
+/// last handle drops -- which, because the crate registers one handle per pool and releases the
+/// registry only during [`Eal`](crate::eal::Eal) teardown, cannot happen before every device is
+/// closed.
 ///
-/// This is deliberate. A mempool is not safe to free on the owner's schedule: the PMD keeps
-/// mbufs drawn from it until the device is stopped *and* closed
-/// ([`rte_eth_dev_close`](dpdk_sys::rte_eth_dev_close) is what "frees all port resources"), and
-/// mbufs in flight through the pipeline are plain pointers with no back-reference to their pool.
-/// An owning `Pool` whose `Drop` called `rte_mempool_free` therefore made the wrong teardown
-/// order the *natural* one -- Rust drops locals in reverse declaration order, so the pool went
-/// first -- and the failure was a SIGSEGV inside `rte_pktmbuf_free` during teardown, after every
-/// assertion in the test had already passed.
+/// That ordering is the whole point. A mempool is not safe to free on any single owner's
+/// schedule: the PMD keeps mbufs drawn from it until the device is stopped *and* closed
+/// ([`rte_eth_dev_close`](dpdk_sys::rte_eth_dev_close) is what "frees all port resources"). An
+/// earlier version of this type owned its mempool outright and freed it on drop, which made the
+/// wrong teardown order the *natural* one -- Rust drops locals in reverse declaration order, so
+/// the pool went first -- and presented as a SIGSEGV inside `rte_pktmbuf_free` during teardown,
+/// after every assertion in the test had already passed.
 ///
-/// Making the handle `Copy` and the release EAL-scoped removes the whole class of error: there is
-/// no early free to write. The cost is that a pool cannot be reclaimed mid-run; DPDK applications
-/// conventionally create their mempools at startup and keep them for the life of the process.
-#[derive(Debug, Copy, Clone)]
-pub struct Pool {
+/// # What this does *not* cover
+///
+/// An [`Mbuf`] holds no reference to its pool: it is a bare pointer, and adding a refcount to it
+/// would put an atomic on the per-packet path. So an mbuf is `!Send`, and the only way to move a
+/// batch across a thread boundary is [`Pool::consign`], which pairs the batch with a handle. That
+/// keeps the cost at one refcount operation per *handoff*, not per packet, and leaves the
+/// ordinary receive-process-transmit path free of atomics entirely.
+#[derive(Debug, Clone)]
+pub struct Pool(Arc<PoolInner>);
+
+/// The owned mempool behind every [`Pool`] handle.
+#[derive(Debug)]
+pub(crate) struct PoolInner {
+    config: PoolConfig,
     pool: NonNull<dpdk_sys::rte_mempool>,
-    /// The config, held for the life of the process by the pool registry, so that [`Pool::name`]
-    /// and [`Pool::config`] stay available from a `Copy` handle.
-    config: &'static PoolConfig,
 }
 
-// SAFETY: a `Pool` is an immutable handle to a DPDK mempool.  `rte_mempool` is internally
+// SAFETY: `PoolInner` is an immutable handle to a DPDK mempool, and `rte_mempool` is internally
 // synchronized for the allocate/free operations this crate performs on it: the per-lcore cache is
 // keyed by `rte_lcore_id()`, and non-EAL threads (`LCORE_ID_ANY`) bypass the cache for the
 // multi-producer/multi-consumer ring underneath.
-unsafe impl Send for Pool {}
-unsafe impl Sync for Pool {}
+unsafe impl Send for PoolInner {}
+unsafe impl Sync for PoolInner {}
+
+impl Drop for PoolInner {
+    fn drop(&mut self) {
+        info!("Freeing memory pool {name}", name = self.config.name());
+        // SAFETY: the pointer came from a successful `rte_pktmbuf_pool_create`, and this runs only
+        // when the last handle to it is gone, so it is freed exactly once.
+        unsafe { dpdk_sys::rte_mempool_free(self.pool.as_ptr()) };
+    }
+}
 
 impl PartialEq for Pool {
     fn eq(&self, other: &Self) -> bool {
-        self.pool == other.pool
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -99,44 +116,45 @@ impl Display for Pool {
     }
 }
 
-/// The set of mempools created through [`Pool::new_pkt_pool`], in creation order.
+/// One handle per pool created through [`Pool::new_pkt_pool`], in creation order.
 ///
-/// Released by [`release_all`] during EAL teardown.  A `OnceLock` around the `Mutex` rather than a
-/// `Mutex` in the static directly: `loom::sync::Mutex::new` is not `const fn`, so a static
-/// initializer does not typecheck under the loom backend of `concurrency`.
-static POOLS: OnceLock<Mutex<Vec<Registered>>> = OnceLock::new();
+/// This is what keeps a mempool alive for the life of the process. Released by [`release_all`]
+/// during EAL teardown; until then its handle is a floor on every pool's reference count, so no
+/// other holder dropping its clone can free anything.
+///
+/// A `OnceLock` around the `Mutex` rather than a `Mutex` in the static directly:
+/// `loom::sync::Mutex::new` is not `const fn`, so a static initializer does not typecheck under
+/// the loom backend of `concurrency`.
+static POOLS: OnceLock<Mutex<Vec<Pool>>> = OnceLock::new();
 
-/// A registered mempool awaiting release at EAL teardown.
-#[derive(Debug)]
-struct Registered {
-    pool: NonNull<dpdk_sys::rte_mempool>,
-    name: &'static str,
-}
-
-// SAFETY: the registry is only ever touched under `POOLS`'s mutex, and the pointer is used solely
-// to call `rte_mempool_free` once, during teardown.
-unsafe impl Send for Registered {}
-
-fn registry() -> &'static Mutex<Vec<Registered>> {
+fn registry() -> &'static Mutex<Vec<Pool>> {
     POOLS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Free every mempool created through [`Pool::new_pkt_pool`].
+/// Drop the crate's handle to every pool, freeing those with no other holder.
 ///
 /// # Safety
 ///
-/// Every ethernet device must already be closed, and no [`Mbuf`] may still be alive: this frees
-/// the backing memory that both refer to.  Called from [`Eal`](crate::eal::Eal)'s `Drop`, before
+/// Every ethernet device must already be closed and no [`Mbuf`] may still be alive, since this is
+/// the point at which the backing memory both refer to can go away. Called from
+/// [`Eal`](crate::eal::Eal)'s `Drop`, before
 /// [`rte_eal_cleanup`](dpdk_sys::rte_eal_cleanup).
+///
+/// A pool still held elsewhere is *not* freed here -- it leaks rather than being freed while in
+/// use, which is the right way round. Each such pool is logged.
 #[cold]
 pub(crate) unsafe fn release_all() {
     let mut pools = registry().lock();
     // Reverse creation order, so a pool that some later pool was built to feed outlives it.
-    for entry in pools.drain(..).rev() {
-        info!("Freeing memory pool {name}", name = entry.name);
-        // SAFETY: the pointer came from a successful `rte_pktmbuf_pool_create` and is freed
-        // exactly once -- it is removed from the registry by the `drain` above.
-        unsafe { dpdk_sys::rte_mempool_free(entry.pool.as_ptr()) };
+    for pool in pools.drain(..).rev() {
+        let outstanding = Arc::strong_count(&pool.0) - 1;
+        if outstanding > 0 {
+            warn!(
+                "memory pool {name} still has {outstanding} other holder(s) at EAL teardown;                  leaking it rather than freeing memory that is still referenced",
+                name = pool.name(),
+            );
+        }
+        drop(pool);
     }
 }
 
@@ -176,31 +194,26 @@ impl Pool {
             Some(pool) => pool,
         };
 
-        // The pool now outlives every handle to it, so its config can too.  Leaking it is what
-        // lets `Pool` be `Copy` while still answering `name()` and `config()`: there is exactly
-        // one config per pool, and the pool itself is only released at EAL teardown.
-        let config: &'static PoolConfig = alloc::boxed::Box::leak(alloc::boxed::Box::new(config));
+        let handle = Pool(Arc::new(PoolInner { config, pool }));
 
         // Register before handing out a handle, so teardown cannot miss a pool that a caller is
-        // already using.
-        registry().lock().push(Registered {
-            pool,
-            name: config.name(),
-        });
+        // already using -- and so the registry's clone is a floor on the reference count from the
+        // moment the pool exists.
+        registry().lock().push(handle.clone());
 
-        Ok(Pool { pool, config })
+        Ok(handle)
     }
 
     /// Get the name of the memory pool.
     #[must_use]
     pub fn name(&self) -> &str {
-        self.config.name()
+        self.0.config.name()
     }
 
     /// Get the configuration of the memory pool.
     #[must_use]
-    pub fn config(&self) -> &'static PoolConfig {
-        self.config
+    pub fn config(&self) -> &PoolConfig {
+        &self.0.config
     }
 
     /// A mutable pointer to the raw DPDK [`rte_mempool`](dpdk_sys::rte_mempool).
@@ -209,7 +222,37 @@ impl Pool {
     /// `Pool` owned the mempool: the pool is released only at EAL teardown, so a retained copy
     /// cannot be invalidated by a `Pool` handle going out of scope.
     pub(crate) fn as_mut_ptr(&self) -> *mut dpdk_sys::rte_mempool {
-        self.pool.as_ptr()
+        self.0.pool.as_ptr()
+    }
+
+    /// Clear a batch of mbufs to cross a thread boundary, pairing it with a handle to this pool.
+    ///
+    /// This is the only way to move mbufs between threads: [`Mbuf`] is `!Send`, and the resulting
+    /// [`Consigned`] is `Send` precisely because it carries the guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WrongPool`] if any mbuf in the batch came from a different mempool, in which case
+    /// the batch is handed back untouched. Guarding the wrong pool would keep the wrong memory
+    /// alive and prove nothing about the memory actually referenced, so this is checked rather
+    /// than assumed -- an O(n) scan on a path that runs once per handoff, not once per packet.
+    // The error intentionally carries the batch back so a rejected handoff does not leak it. The
+    // `Ok` variant is the same batch plus a handle, so the `Result` is large either way and boxing
+    // the error would buy nothing; see the same note on `Dev::start`.
+    #[allow(clippy::result_large_err)]
+    pub fn consign(&self, batch: MbufArray) -> Result<Consigned, (WrongPool, MbufArray)> {
+        let expected = self.as_mut_ptr();
+        for (index, mbuf) in batch.iter().enumerate() {
+            // SAFETY: `mbuf` is live for the duration of this loop; `pool` is a plain field read.
+            let actual = unsafe { mbuf.raw.as_ref().pool };
+            if !core::ptr::eq(actual, expected) {
+                return Err((WrongPool { index }, batch));
+            }
+        }
+        Ok(Consigned {
+            batch,
+            guard: self.clone(),
+        })
     }
 
     /// Allocate `num` mbufs from this pool as a single [`MbufArray`].
@@ -966,6 +1009,118 @@ impl<const N: usize> Drop for MbufArray<N> {
     }
 }
 
+/// A batch of mbufs cleared to cross a thread boundary, together with the [`Pool`] handle that
+/// makes it safe to do so.
+///
+/// # Why this type exists
+///
+/// [`Mbuf`] is `!Send`, because an mbuf is a bare pointer into a pool with no reference back to it:
+/// once one has escaped to another thread there is nothing left keeping its pool alive. Putting a
+/// refcount on the mbuf itself would mean an atomic per packet on the receive and transmit paths,
+/// which is the one place that cost is unaffordable.
+///
+/// Consigning a batch instead pairs it with one `Pool` clone, so the cost is a single refcount
+/// operation per *handoff* -- and handoffs are the exception path (trapping control-plane packets
+/// to a tap writer, routing a new connection to the core that owns the state for it), not the
+/// steady state. Ordinary receive-process-transmit never touches an atomic.
+///
+/// Because the batch cannot be separated from its guard, the type system now enforces what was
+/// previously a convention: an ad-hoc `Vec<Mbuf>` behind a mutex does not compile, and this does.
+///
+/// # No unwrapping
+///
+/// There is deliberately no way to take the [`MbufArray`] back out. Doing so on the receiving
+/// thread would yield an unguarded batch whose pool could then be freed underneath it -- exactly
+/// the hazard this type exists to close. Read the batch through [`AsRef`], modify it through
+/// [`AsMut`], and transmit it with [`transmit_on`](Self::transmit_on).
+///
+/// A consigned batch is `Send`, which a bare [`MbufArray`] is not:
+///
+/// ```
+/// # use dataplane_dpdk::mem::Consigned;
+/// fn assert_send<T: Send>() {}
+/// assert_send::<Consigned>();
+/// ```
+///
+/// but it is still `!Sync`, so two threads cannot work on one batch at once:
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::mem::Consigned;
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<Consigned>();
+/// ```
+#[derive(Debug)]
+pub struct Consigned {
+    /// Declared before the guard so the mbufs are returned to the pool before the handle that
+    /// keeps the pool alive is released.
+    batch: MbufArray,
+    guard: Pool,
+}
+
+// SAFETY: what makes an `Mbuf` unsafe to send is that its pool might be freed while it is in
+// flight; `guard` is a strong reference to that pool, so it cannot be.  Nothing else about an mbuf
+// is thread-affine: the data buffer is plain memory, and `rte_pktmbuf_free`/`rte_pktmbuf_free_bulk`
+// on a different lcore than the one that allocated is a supported mempool operation (a non-EAL
+// thread bypasses the per-lcore cache for the MP/MC ring underneath).
+//
+// `Consigned` is deliberately *not* `Sync`: it holds `Mbuf`s, which are `!Sync`, so two threads
+// touching one batch at the same time remains unrepresentable.
+unsafe impl Send for Consigned {}
+
+impl Consigned {
+    /// The number of mbufs in the batch.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.batch.len()
+    }
+
+    /// Returns `true` if the batch is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.batch.is_empty()
+    }
+
+    /// The pool these mbufs came from.
+    #[must_use]
+    pub fn pool(&self) -> &Pool {
+        &self.guard
+    }
+
+    /// Transmit as much of the batch as the queue accepts, keeping the unsent remainder.
+    ///
+    /// Returns the number transmitted. The guard never leaves the batch, so this is safe to call
+    /// on whichever thread the batch was consigned to.
+    pub fn transmit_on(&mut self, tx: &mut crate::queue::tx::TxQueue<'_>) -> usize {
+        let offered = self.batch.len();
+        // Move the batch out and put the unsent remainder back; `transmit` takes ownership, and
+        // `MbufArray::default()` is empty, so nothing is lost if this unwinds.
+        let batch = core::mem::take(&mut self.batch);
+        self.batch = tx.transmit(batch);
+        offered - self.batch.len()
+    }
+}
+
+impl AsRef<[Mbuf]> for Consigned {
+    fn as_ref(&self) -> &[Mbuf] {
+        &self.batch
+    }
+}
+
+impl AsMut<[Mbuf]> for Consigned {
+    fn as_mut(&mut self) -> &mut [Mbuf] {
+        &mut self.batch
+    }
+}
+
+/// Returned when a batch offered to [`Pool::consign`] contains an mbuf from a different pool.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+#[error("mbuf at index {index} belongs to a different mempool than the consigning pool")]
+pub struct WrongPool {
+    /// The index within the batch of the first mbuf that did not match.
+    pub index: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1018,22 +1173,39 @@ mod tests {
         drop(mbufs);
     }
 
-    /// A `Pool` is a handle: copying one yields another name for the same mempool, and neither
-    /// copy owns it.
+    /// A `Pool` is a reference-counted handle: cloning one yields another name for the same
+    /// mempool, and the mempool outlives any individual clone.
     #[test]
     #[with_eal]
-    fn pool_handles_are_copies_of_one_mempool() {
-        let first = pool("copy_pool", 511);
-        let second = first;
+    fn pool_handles_are_clones_of_one_mempool() {
+        let first = pool("clone_pool", 511);
+        let second = first.clone();
         assert_eq!(first, second);
         assert_eq!(first.as_mut_ptr(), second.as_mut_ptr());
-        assert_eq!(first.name(), "copy_pool");
+        assert_eq!(first.name(), "clone_pool");
 
-        // Allocating through one copy draws from the same pool the other sees.
+        // Allocating through one clone draws from the same pool the other sees.
         let a = first.alloc_bulk(2).expect("alloc from first");
         let b = second.alloc_bulk(2).expect("alloc from second");
         assert_eq!(a.len(), 2);
         assert_eq!(b.len(), 2);
+    }
+
+    /// The registry's handle is a floor on the reference count, so dropping every caller-held
+    /// clone cannot free the mempool. This is what makes the `Drop` on `PoolInner` safe to have
+    /// at all.
+    #[test]
+    #[with_eal]
+    fn the_registry_holds_the_pool_alive() {
+        let handle = pool("floor_pool", 511);
+        // Two: the registry's clone and this one.
+        assert_eq!(Arc::strong_count(&handle.0), 2);
+
+        let mbufs = handle.alloc_bulk(4).expect("alloc_bulk failed");
+        drop(handle);
+
+        // Only the registry's clone remains, so nothing was freed and the mbufs are still live.
+        drop(mbufs);
     }
 
     /// Distinct pools are distinct handles.
@@ -1056,14 +1228,79 @@ mod tests {
         let registered = registry().lock();
         let matching: Vec<_> = registered
             .iter()
-            .filter(|entry| entry.pool == created.pool)
+            .filter(|entry| **entry == created)
             .collect();
         assert_eq!(
             matching.len(),
             1,
             "a created pool must appear in the teardown registry exactly once"
         );
-        assert_eq!(matching[0].name, "registered_pool");
+        assert_eq!(matching[0].name(), "registered_pool");
+    }
+
+    /// The point of the whole design: a consigned batch really can cross a thread boundary, be
+    /// used there, and be freed there -- with the pool kept alive by the guard it carries.
+    #[test]
+    #[with_eal]
+    fn a_consigned_batch_crosses_a_thread_and_is_freed_there() {
+        let pool = pool("consign_pool", 511);
+        let mut batch = pool.alloc_bulk(8).expect("alloc_bulk failed");
+        for mbuf in &mut batch {
+            mbuf.append(32).expect("append failed");
+        }
+
+        let consigned = pool.consign(batch).map_err(|(e, _)| e).expect("consign");
+        assert_eq!(consigned.len(), 8);
+
+        // Drop every handle on this side. Only the registry's clone and the batch's guard remain,
+        // so the mempool survives the move.
+        drop(pool);
+
+        let observed = std::thread::spawn(move || {
+            let mut consigned = consigned;
+            // Read and mutate on the far thread.
+            let seen = consigned.as_ref().len();
+            for mbuf in consigned.as_mut() {
+                let _ = mbuf.append(8);
+            }
+            // ...and free them there, which is the operation that would fault on a freed mempool.
+            drop(consigned);
+            seen
+        })
+        .join()
+        .expect("far thread panicked");
+        assert_eq!(observed, 8);
+    }
+
+    /// Guarding the wrong pool would keep the wrong memory alive, so it is rejected -- and the
+    /// batch comes back so the caller does not lose it.
+    #[test]
+    #[with_eal]
+    fn consign_rejects_a_batch_from_another_pool() {
+        let a = pool("consign_from_a", 511);
+        let b = pool("consign_to_b", 511);
+        let batch = a.alloc_bulk(3).expect("alloc from a");
+
+        match b.consign(batch) {
+            Err((err, returned)) => {
+                assert_eq!(err.index, 0);
+                assert_eq!(returned.len(), 3, "the batch must be handed back intact");
+            }
+            Ok(_) => panic!("consigning a batch from pool a under pool b must fail"),
+        }
+    }
+
+    /// An empty batch is consignable, and consigning does not disturb the count.
+    #[test]
+    #[with_eal]
+    fn consign_accepts_an_empty_batch() {
+        let pool = pool("consign_empty", 511);
+        let consigned = pool
+            .consign(MbufArray::new_empty())
+            .map_err(|(e, _)| e)
+            .expect("consign empty");
+        assert!(consigned.is_empty());
+        assert_eq!(consigned.pool(), &pool);
     }
 
     /// A bulk allocation larger than an `MbufArray` is rejected without touching DPDK, and one
