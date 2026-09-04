@@ -145,7 +145,7 @@ mod test {
         let flow_table = Arc::new(FlowTable::default());
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
         let flowinfo_creator = FlowInfoCreator::new(flow_table.clone(), Duration::from_secs(1));
-        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+        let mut pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
             .add_stage(lookup_nf)
             .add_stage(flowinfo_creator);
 
@@ -183,7 +183,8 @@ mod test {
     async fn test_lookups_with_related_flows() {
         let flow_table = Arc::new(FlowTable::default());
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
-        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new().add_stage(lookup_nf);
+        let mut pipeline: DynPipeline<'static, TestBuffer> =
+            DynPipeline::new().add_stage(lookup_nf);
 
         {
             let mut packet_1 = build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, 500);

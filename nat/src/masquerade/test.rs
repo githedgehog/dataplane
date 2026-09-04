@@ -94,7 +94,11 @@ impl NetworkFunction<TestBuffer> for TestFlowFilter {
 // build pipeline: icmp-error-handler|flow-lookup|masquerade
 fn setup_pipeline_masquerade(
     flow_filter: TestFlowFilter,
-) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
+) -> (
+    Arc<FlowTable>,
+    DynPipeline<'static, TestBuffer>,
+    NatAllocatorWriter,
+) {
     let alloc_writer = NatAllocatorWriter::new();
     let alloc_reader = alloc_writer.get_reader_factory().handle();
 
@@ -102,7 +106,7 @@ fn setup_pipeline_masquerade(
     let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
     let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
     let nat = Masquerade::new("masq", flow_table.clone(), alloc_reader);
-    let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+    let pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
         .add_stage(icmp_error_handler)
         .add_stage(flow_lookup)
         .add_stage(flow_filter)
@@ -114,7 +118,11 @@ fn setup_pipeline_masquerade(
 fn test_setup(
     genid: GenId,
     overlay: &Overlay,
-) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
+) -> (
+    Arc<FlowTable>,
+    DynPipeline<'static, TestBuffer>,
+    NatAllocatorWriter,
+) {
     let overlay = overlay.validate().unwrap();
 
     // build the configuration for the nat allocator
@@ -793,7 +801,7 @@ fn check_packet_icmp_echo(
 }
 
 fn check_packet_icmp_echo_new(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     src_vni: Vni,
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
@@ -918,7 +926,7 @@ async fn test_icmp_echo_nat() {
 
 #[allow(clippy::too_many_arguments)]
 fn check_packet_icmp_error(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     src_vni: Vni,
     dst_vni: Vni,
     outer_src_ip: Ipv4Addr,
@@ -1672,7 +1680,7 @@ fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
 }
 
 fn process_packet(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     packet: Packet<TestBuffer>,
 ) -> Packet<TestBuffer> {
     println!("INPUT:{packet}");
@@ -1682,7 +1690,7 @@ fn process_packet(
     output.deep_copy().unwrap()
 }
 
-fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
+fn establish_tcp_connection(pipeline: &mut DynPipeline<'static, TestBuffer>) {
     // process TCP SYN packet: flow state should be created in both directions
     let mut packet = tcp_packet_to_masquerade();
     packet.try_tcp_mut().unwrap().set_syn(true);
@@ -1808,7 +1816,7 @@ async fn test_masquerade_tcp_reset() {
 }
 
 fn one_way_tcp_flow(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
 ) -> (Arc<FlowInfo>, Ipv4Addr, u16, Ipv4Addr) {
     let mut syn = tcp_packet_to_masquerade();
     syn.try_tcp_mut().unwrap().set_syn(true);
@@ -1828,7 +1836,7 @@ fn one_way_tcp_flow(
 }
 
 fn icmp_unreachable_about_tcp(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     unreachable: Icmp4DestUnreachable,
     public: Ipv4Addr,
     public_port: u16,
@@ -2401,7 +2409,7 @@ async fn test_recheck_flow_when_allocator_is_kept() {
 }
 
 fn icmp_echo_through(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     src_vni: Vni,
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
@@ -2596,7 +2604,7 @@ async fn masquerade_translates_ipv6() {
 }
 
 fn icmp6_echo_through(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     src_vni: Vni,
     src_ip: Ipv6Addr,
     dst_ip: Ipv6Addr,
@@ -2614,7 +2622,7 @@ fn icmp6_echo_through(
 }
 
 fn icmp6_error_through(
-    pipeline: &mut DynPipeline<TestBuffer>,
+    pipeline: &mut DynPipeline<'static, TestBuffer>,
     src_vni: Vni,
     icmp_type: Icmp6Type,
     addrs: Icmp6ErrorAddrs,

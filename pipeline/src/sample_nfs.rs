@@ -237,7 +237,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketStatsNF {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a
+    where
+        Buf: 'a,
+    {
         PacketStatsIter {
             inner: input,
             counts: [0u64; DoneReason::COUNT],

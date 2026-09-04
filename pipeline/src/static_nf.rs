@@ -25,7 +25,9 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a;
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a
+    where
+        Buf: 'a;
 
     /// Let NFs access some `PipelineData` if they wish on their creation
     fn set_data(&mut self, _data: Arc<PipelineData>) {}
