@@ -65,7 +65,7 @@
 //! use dataplane_pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::TestBuffer;
 //!
-//! let mut pipeline = DynPipeline::<TestBuffer>::new();
+//! let mut pipeline = DynPipeline::<'static, TestBuffer>::new();
 //! pipeline = pipeline.add_stage(InspectHeaders);
 //! pipeline = pipeline.add_stage(BroadcastMacs);
 //! pipeline = pipeline.add_stage(DecrementTtl);
@@ -86,7 +86,7 @@
 //! use dataplane_pipeline::sample_nfs::{BroadcastMacs, DecrementTtl, InspectHeaders};
 //! use net::buffer::TestBuffer;
 //!
-//! let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new();
+//! let mut pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new();
 //! // Add a dynamic stage that is the static chain of `InspectHeaders` and `BroadcastMacs`
 //! pipeline = pipeline.add_stage(InspectHeaders.chain(BroadcastMacs));
 //! pipeline = pipeline.add_stage(DecrementTtl);

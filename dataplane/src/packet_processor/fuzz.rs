@@ -87,7 +87,7 @@ struct Underlay {
 }
 
 pub(crate) struct Worker {
-    pipeline: DynPipeline<TestBuffer>,
+    pipeline: DynPipeline<'static, TestBuffer>,
     translations: Arc<Mutex<Translations>>,
     next_id: u64,
 }
@@ -4495,7 +4495,7 @@ mod routed {
     }
 
     fn one(
-        pipeline: &mut DynPipeline<TestBuffer>,
+        pipeline: &mut DynPipeline<'static, TestBuffer>,
         packet: Packet<TestBuffer>,
     ) -> Packet<TestBuffer> {
         let mut out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
