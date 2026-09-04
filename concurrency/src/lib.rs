@@ -98,4 +98,5 @@ compile_error!("silence_clippy manually enabled, should only be enabled by --all
 pub use macros::*;
 
 pub mod quiescent;
+pub mod reclaim;
 pub mod slot;
