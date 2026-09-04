@@ -10,11 +10,13 @@ use errno::ErrorCode;
 use tracing::debug;
 
 /// A stopped DPDK hairpin queue.
+///
+/// Owns the rx and tx halves of the pairing, and carries the same device brand they do.
 #[allow(unused)]
 #[derive(Debug)]
-pub struct HairpinQueue {
-    pub(crate) rx: RxQueue,
-    pub(crate) tx: TxQueue,
+pub struct HairpinQueue<'dev> {
+    pub(crate) rx: RxQueue<'dev>,
+    pub(crate) tx: TxQueue<'dev>,
     pub(crate) peering: HairpinPeering,
 }
 
@@ -39,6 +41,17 @@ impl HairpinPeering {
     }
 }
 
+/// A hairpin queue could not be started.
+#[derive(Debug, thiserror::Error)]
+pub enum HairpinStartFailure {
+    /// The receive half could not be started.
+    #[error("could not start the receive half of the hairpin queue: {0}")]
+    Rx(#[source] rx::RxQueueStartError),
+    /// The transmit half could not be started.
+    #[error("could not start the transmit half of the hairpin queue: {0}")]
+    Tx(#[source] tx::TxQueueStartError),
+}
+
 /// An error occurred while configuring a hairpin queue.
 #[derive(Debug)]
 pub enum HairpinConfigFailure {
@@ -50,7 +63,7 @@ pub enum HairpinConfigFailure {
     CreationFailed(ErrorCode),
 }
 
-impl HairpinQueue {
+impl<'dev> HairpinQueue<'dev> {
     /// Create and configure a new hairpin queue.
     ///
     /// This method is crate internal.
@@ -60,7 +73,11 @@ impl HairpinQueue {
     /// This design ensures that the hairpin queue is correctly tracked in the list of queues
     /// associated with the device.
     #[tracing::instrument(level = "info", ret)]
-    pub(crate) fn new(dev: &Dev, rx: RxQueue, tx: TxQueue) -> Result<Self, HairpinConfigFailure> {
+    pub(crate) fn new(
+        dev: &Dev,
+        rx: RxQueue<'dev>,
+        tx: TxQueue<'dev>,
+    ) -> Result<Self, HairpinConfigFailure> {
         let peering = HairpinPeering::define(&dev.info, &rx, &tx);
         // configure the rx queue
 
@@ -99,11 +116,19 @@ impl HairpinQueue {
         Ok(HairpinQueue { rx, tx, peering })
     }
 
-    /// Stop the hairpin queue.
-    #[allow(clippy::expect_used)]
-    pub fn start(&mut self) {
-        // TODO: proper error reporting
-        self.tx.start().expect("todo");
-        self.rx.start().expect("todo");
+    /// Start both halves of the hairpin pairing.
+    ///
+    /// The transmit half is started first: the receive half peers with it, and starting a receive
+    /// queue whose peer is not yet running is rejected by some PMDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HairpinStartFailure`] identifying which half failed and why. If the transmit half
+    /// starts and the receive half then fails, the transmit half is left running -- stopping the
+    /// device is the way to unwind that.
+    pub fn start(&mut self) -> Result<(), HairpinStartFailure> {
+        self.tx.start().map_err(HairpinStartFailure::Tx)?;
+        self.rx.start().map_err(HairpinStartFailure::Rx)?;
+        Ok(())
     }
 }

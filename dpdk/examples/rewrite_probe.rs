@@ -244,7 +244,10 @@ fn main() -> Result<(), Err> {
         )?;
     }
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject IPv4/UDP now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut dst_ok, mut port_ok, mut ipck_ok, mut udpck_ok) =

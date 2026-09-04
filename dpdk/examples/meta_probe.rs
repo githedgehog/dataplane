@@ -360,7 +360,10 @@ fn main() -> Result<(), Err> {
     println!("rule installed: eth -> SET_META({META_VALUE:#010x}) + QUEUE0");
 
     // ---- inject; read META off each frame ----
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject IPv4 from the peer now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut with_meta) = (0u64, 0u64);

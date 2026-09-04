@@ -145,7 +145,10 @@ fn main() -> Result<(), Err> {
         "rule: ipv4(dst={ORIG_DST})/udp(dst={ORIG_DPORT}) -> set dst={NEW_DST}:{NEW_DPORT} installed"
     );
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject IPv4/UDP to {ORIG_DST}:{ORIG_DPORT} now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut rewritten, mut ip_ok, mut udp_ok) = (0u64, 0u64, 0u64, 0u64);

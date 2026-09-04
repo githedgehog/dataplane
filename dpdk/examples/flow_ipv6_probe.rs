@@ -102,7 +102,10 @@ fn main() -> Result<(), Err> {
         .create()?;
     println!("rule: eth / ipv6(proto={ICMP6}) -> queue 0 / mark({MARK_ID:#x}) installed");
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- have the load gen send IPv6 (e.g. ping6 ff02::1) now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut ipv6, mut marked) = (0u64, 0u64);

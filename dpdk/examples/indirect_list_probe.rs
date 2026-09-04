@@ -412,7 +412,10 @@ fn main() -> Result<(), Err> {
     println!("installed {created} group-1 rules, all referencing the ONE indirect-LIST handle");
 
     // ---- inject across many srcs; many distinct rules fire, all via the one list handle ----
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject `... <count> 0800 vary` (src 10.0.0.1..250) now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut rx = 0u64;

@@ -122,7 +122,10 @@ fn main() -> Result<(), Err> {
         "rule: eth / ipv{outer} / udp(dst={VXLAN_PORT}) / vxlan(vni={vni_raw}) -> queue 0 / mark({MARK_ID:#x}) installed"
     );
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- send VXLAN traffic on vni {vni_raw} from the load gen now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut marked) = (0u64, 0u64);

@@ -308,9 +308,23 @@ fn bring_up(info: dpdk::dev::DevInfo, tag: &str) -> Port {
 /// Send `PROBE_COUNT` probes from `from` to `to` and count how many arrive intact.
 ///
 /// Returns `(sent, received, out_of_order_or_duplicate)`.
+/// One direction of the probe: the tx queue frames leave by, the rx queue they should arrive on,
+/// and what building a frame needs.
+///
+/// The queues are passed in rather than looked up from the `Port`s because a queue handle is now
+/// exclusively owned -- `take_queues` hands the set out once -- so they are taken up front in the
+/// test body and lent to each direction in turn. That is also what makes the aliasing this
+/// function used to rely on (two lookups of the same queue per round, four rounds) impossible.
+struct Direction<'a, 'dev> {
+    tx: &'a mut dpdk::queue::tx::TxQueue<'dev>,
+    rx: &'a mut dpdk::queue::rx::RxQueue<'dev>,
+    tx_pool: &'a Pool,
+    src_mac: Mac,
+    dst_mac: Mac,
+}
+
 fn run_direction(
-    from: &Port,
-    to: &Port,
+    dir: Direction<'_, '_>,
     nonce_base: u32,
     timeout: Duration,
     label: &str,
@@ -321,14 +335,13 @@ fn run_direction(
         ^ (label
             .bytes()
             .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))));
-    let tx_queue = from
-        .dev
-        .tx_queue(TxQueueIndex(0))
-        .expect("tx queue 0 missing after start");
-    let rx_queue = to
-        .dev
-        .rx_queue(RxQueueIndex(0))
-        .expect("rx queue 0 missing after start");
+    let Direction {
+        tx: tx_queue,
+        rx: rx_queue,
+        tx_pool,
+        src_mac,
+        dst_mac,
+    } = dir;
 
     // Drain anything already sitting in the rx ring (background multicast, or a straggler from the
     // other direction) so it cannot be mistaken for a probe or occupy descriptors.
@@ -338,11 +351,10 @@ fn run_direction(
     for chunk_start in (0..PROBE_COUNT).step_by(64) {
         let chunk_end = (chunk_start + 64).min(PROBE_COUNT);
         let frames: Vec<Vec<u8>> = (chunk_start..chunk_end)
-            .map(|seq| build_probe(to.mac, from.mac, nonce, seq))
+            .map(|seq| build_probe(dst_mac, src_mac, nonce, seq))
             .collect();
 
-        let mbufs = from
-            .tx_pool
+        let mbufs = tx_pool
             .alloc_bulk(frames.len())
             .expect("failed to allocate probe mbufs");
         let mut batch = MbufArray::new_empty();
@@ -452,6 +464,30 @@ fn tx_and_rx_across_a_cabled_nic_pair() {
         "both ports report the same MAC; they are not distinct ports"
     );
 
+    // Take each port's queues once, up front. `take_queues` hands the set out exactly once per
+    // device, and each queue leaves the set by value, so these handles are the only way to drive
+    // those queues for the rest of the test.
+    let mut queues_a = port_a
+        .dev
+        .take_queues()
+        .expect("port A queues already taken");
+    let mut queues_b = port_b
+        .dev
+        .take_queues()
+        .expect("port B queues already taken");
+    let mut tx_a = queues_a
+        .take_tx(TxQueueIndex(0))
+        .expect("port A tx queue 0 missing after start");
+    let mut rx_a = queues_a
+        .take_rx(RxQueueIndex(0))
+        .expect("port A rx queue 0 missing after start");
+    let mut tx_b = queues_b
+        .take_tx(TxQueueIndex(0))
+        .expect("port B tx queue 0 missing after start");
+    let mut rx_b = queues_b
+        .take_rx(RxQueueIndex(0))
+        .expect("port B rx queue 0 missing after start");
+
     // A per-run nonce so a probe stranded in a queue from an earlier run cannot be counted here.
     let nonce = std::process::id();
 
@@ -464,10 +500,30 @@ fn tx_and_rx_across_a_cabled_nic_pair() {
     let mut converged = false;
     for round in 0..WARMUP_MAX_ROUNDS {
         let nonce = nonce.wrapping_add(round as u32 * 0x0100_0000);
-        let (sent_ab, recv_ab, _) =
-            run_direction(&port_a, &port_b, nonce, WARMUP_RX_TIMEOUT, "warmup a->b");
-        let (sent_ba, recv_ba, _) =
-            run_direction(&port_b, &port_a, nonce, WARMUP_RX_TIMEOUT, "warmup b->a");
+        let (sent_ab, recv_ab, _) = run_direction(
+            Direction {
+                tx: &mut tx_a,
+                rx: &mut rx_b,
+                tx_pool: &port_a.tx_pool,
+                src_mac: port_a.mac,
+                dst_mac: port_b.mac,
+            },
+            nonce,
+            WARMUP_RX_TIMEOUT,
+            "warmup a->b",
+        );
+        let (sent_ba, recv_ba, _) = run_direction(
+            Direction {
+                tx: &mut tx_b,
+                rx: &mut rx_a,
+                tx_pool: &port_b.tx_pool,
+                src_mac: port_b.mac,
+                dst_mac: port_a.mac,
+            },
+            nonce,
+            WARMUP_RX_TIMEOUT,
+            "warmup b->a",
+        );
         if recv_ab == sent_ab && recv_ba == sent_ba {
             eprintln!("[warmup] path converged after {} round(s)", round + 1);
             converged = true;
@@ -479,8 +535,30 @@ fn tx_and_rx_across_a_cabled_nic_pair() {
         "the path never became lossless across {WARMUP_MAX_ROUNDS} warm-up rounds --          this is not start-up settling, it is persistent loss on a direct cable"
     );
 
-    let (sent_ab, recv_ab, anom_ab) = run_direction(&port_a, &port_b, nonce, RX_TIMEOUT, "a->b");
-    let (sent_ba, recv_ba, anom_ba) = run_direction(&port_b, &port_a, nonce, RX_TIMEOUT, "b->a");
+    let (sent_ab, recv_ab, anom_ab) = run_direction(
+        Direction {
+            tx: &mut tx_a,
+            rx: &mut rx_b,
+            tx_pool: &port_a.tx_pool,
+            src_mac: port_a.mac,
+            dst_mac: port_b.mac,
+        },
+        nonce,
+        RX_TIMEOUT,
+        "a->b",
+    );
+    let (sent_ba, recv_ba, anom_ba) = run_direction(
+        Direction {
+            tx: &mut tx_b,
+            rx: &mut rx_a,
+            tx_pool: &port_b.tx_pool,
+            src_mac: port_b.mac,
+            dst_mac: port_a.mac,
+        },
+        nonce,
+        RX_TIMEOUT,
+        "b->a",
+    );
 
     port_a.shutdown();
     port_b.shutdown();
