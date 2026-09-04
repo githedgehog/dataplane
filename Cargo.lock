@@ -1462,6 +1462,7 @@ dependencies = [
  "dataplane-id",
  "dataplane-n-vm",
  "dataplane-net",
+ "dataplane-pipeline",
  "dataplane-sysfs",
  "dataplane-test-utils",
  "fixin",
