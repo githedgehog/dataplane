@@ -428,6 +428,9 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
     /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
     pub num_workers: u16,
+    /// Have init move bifurcated devices into a separate namespace for the datapath.
+    /// Management remains in the host namespace; vfio-pci devices need no namespace move.
+    pub netns: bool,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -725,19 +728,54 @@ impl DriverConfigSection {
     }
 }
 
+/// Probe a raw descriptor without constructing a borrow of a possibly closed file.
+#[allow(unsafe_code)]
+fn descriptor_is_open(fd: RawFd) -> std::io::Result<bool> {
+    // SAFETY: F_GETFD takes no pointer argument and reports EBADF for a closed descriptor.
+    if unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) } != -1 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(nix::libc::EBADF) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+/// The caller must exclusively own the raw descriptor and prevent concurrent close or replacement.
+#[allow(unsafe_code)]
+unsafe fn take_inherited_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
+    if !descriptor_is_open(fd)? {
+        return Err(std::io::Error::from_raw_os_error(nix::libc::EBADF));
+    }
+    // SAFETY: the descriptor is open, and the caller guarantees exclusive ownership.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    nix::fcntl::fcntl(
+        &owned,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+    )?;
+    Ok(owned)
+}
+
 impl LaunchConfiguration {
-    /// Whether both standard configuration descriptors are open.
-    #[must_use]
-    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
-    pub fn was_inherited() -> bool {
-        // SAFETY: `BorrowedFd` is only used for the duration of the `fcntl` call and never closed;
-        // borrowing a descriptor that turns out not to be open is exactly what is being tested, and
-        // `fcntl` reports that as `EBADF` rather than misbehaving.
-        let present = |fd: RawFd| {
-            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
-            nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
-        };
-        present(Self::STANDARD_INTEGRITY_CHECK_FD) && present(Self::STANDARD_CONFIG_FD)
+    /// Whether init supplied both configuration descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an incomplete handoff or a failed descriptor lookup.
+    pub fn was_inherited() -> std::io::Result<bool> {
+        match (
+            descriptor_is_open(Self::STANDARD_INTEGRITY_CHECK_FD)?,
+            descriptor_is_open(Self::STANDARD_CONFIG_FD)?,
+        ) {
+            (true, true) => Ok(true),
+            (false, false) => Ok(false),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "incomplete launch configuration handoff: expected descriptors 30 and 40",
+            )),
+        }
     }
 
     /// Standard file descriptor number for the integrity check memfd.
@@ -752,12 +790,42 @@ impl LaunchConfiguration {
     /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
 
+    /// Optional network namespace descriptor passed by init to keep the namespace alive.
+    pub const STANDARD_NETNS_FD: RawFd = 50;
+
+    /// Claim the namespace descriptor if the inherited configuration requests isolation.
+    /// The caller must validate its namespace type before using it.
+    ///
+    /// # Safety
+    ///
+    /// Call only once with a configuration received from init. If isolation is requested,
+    /// FD 50 must belong exclusively to this handoff, have no other owner, and not be closed or
+    /// replaced concurrently. Claim it at startup before other components can reuse that number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a requested descriptor is missing or cannot be marked close-on-exec.
+    #[allow(unsafe_code)]
+    pub unsafe fn inherit_netns(&self) -> std::io::Result<Option<OwnedFd>> {
+        if !matches!(&self.driver, DriverConfigSection::Dpdk(driver) if driver.netns) {
+            return Ok(None);
+        }
+        // SAFETY: the caller guarantees exclusive ownership of the inherited descriptor.
+        unsafe { take_inherited_fd(Self::STANDARD_NETNS_FD) }.map(Some)
+    }
+
     /// Inherit the launch configuration from the parent process.
     ///
     /// This method is called by the dataplane worker process to receive its configuration
     /// from the init process. It expects two sealed memory file descriptors at the standard
     /// FD numbers ([`STANDARD_INTEGRITY_CHECK_FD`](Self::STANDARD_INTEGRITY_CHECK_FD) and
     /// [`STANDARD_CONFIG_FD`](Self::STANDARD_CONFIG_FD)).
+    ///
+    /// # Safety
+    ///
+    /// Call only once for descriptors supplied by init. Both standard descriptors must belong
+    /// exclusively to this handoff, have no other owner, and not be closed or replaced concurrently.
+    /// The method consumes them; claim them at startup before other components can reuse them.
     ///
     /// # Process
     ///
@@ -780,9 +848,12 @@ impl LaunchConfiguration {
     /// These panics are intentional as the dataplane cannot start without valid configuration.
     #[must_use]
     #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
-    pub fn inherit() -> LaunchConfiguration {
-        let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
-        let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
+    pub unsafe fn inherit() -> LaunchConfiguration {
+        // SAFETY: the caller guarantees exclusive ownership of both inherited descriptors.
+        let integrity_check_fd = unsafe { take_inherited_fd(Self::STANDARD_INTEGRITY_CHECK_FD) }
+            .expect("missing integrity check descriptor");
+        let launch_configuration_fd = unsafe { take_inherited_fd(Self::STANDARD_CONFIG_FD) }
+            .expect("missing launch configuration descriptor");
         let integrity_check_file = unsafe { FinalizedMemFile::from_fd(integrity_check_fd) };
         let mut launch_configuration_file =
             unsafe { FinalizedMemFile::from_fd(launch_configuration_fd) };
@@ -1212,6 +1283,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         interfaces: value.interfaces().collect(),
                         eal_args,
                         num_workers: value.num_workers,
+                        netns: value.datapath_netns,
                     })
                 }
                 Some(driver) if driver == "kernel" => {
@@ -1296,6 +1368,14 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         help = "Number of packet-processing worker threads in [1..64]"
     )]
     num_workers: u16,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run the packet path in its own network namespace, created by dataplane-init and \
+                handed to the dataplane as a descriptor. Only meaningful with --driver dpdk."
+    )]
+    datapath_netns: bool,
 
     #[arg(
         long,
