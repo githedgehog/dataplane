@@ -296,7 +296,8 @@ pub fn main() {
         setup.stats,
     );
 
-    let pipeline_factory = setup.pipeline;
+    let ingredients = setup.pipeline;
+    let pipeline_data = ingredients.data();
 
     concurrency::thread::scope(|scope| {
         let mgmt_result = run_mgmt(
@@ -308,7 +309,7 @@ pub fn main() {
                 interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
-                    pipeline_data: pipeline_factory().get_data(),
+                    pipeline_data,
                     flow_table: setup.flow_table,
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
@@ -338,8 +339,8 @@ pub fn main() {
                             scope,
                             &shutdown.workers,
                             args.kernel_interfaces(),
-                            args.kernel_num_workers(),
-                            &pipeline_factory,
+                            args.num_workers(),
+                            &ingredients.factory(),
                             driver_status_writer,
                         ))
                     }
