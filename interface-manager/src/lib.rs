@@ -15,6 +15,7 @@
 #![allow(missing_docs)] // multi-index-map generates undocumented structures
 #![allow(clippy::unsafe_derive_deserialize)] // generated code uses unsafe
 
+use crate::interface::TapRegistry;
 use concurrency::sync::Arc;
 use std::marker::PhantomData;
 
@@ -32,15 +33,23 @@ use rtnetlink::Handle;
 #[derive(Clone, Debug)]
 pub struct Manager<R: ?Sized> {
     handle: Arc<Handle>,
+    taps: Arc<TapRegistry>,
     _marker: PhantomData<R>,
 }
 
 impl<R> Manager<R> {
-    /// Crate a new `Manager` from an [`Arc<Handle>`].
+    /// Create a new `Manager` from an [`Arc<Handle>`] and the registry of tap devices this
+    /// process holds open.
+    ///
+    /// The registry is shared rather than owned.  A tap device lives exactly as long as somebody
+    /// holds its descriptor, so every manager derived from this one has to reach the same
+    /// registry; were each to have its own, a tap created through one manager would be destroyed
+    /// by the drop of another.
     #[must_use]
-    pub fn new(handle: Arc<Handle>) -> Self {
+    pub fn new(handle: Arc<Handle>, taps: Arc<TapRegistry>) -> Self {
         Manager {
             handle,
+            taps,
             _marker: PhantomData,
         }
     }
@@ -52,7 +61,7 @@ pub fn manager_of<T>(other: impl Into<Manager<T>>) -> Manager<T> {
 }
 
 impl<T, U> From<&Manager<T>> for Manager<U> {
-    fn from(handle: &Manager<T>) -> Self {
-        Self::new(handle.handle.clone())
+    fn from(other: &Manager<T>) -> Self {
+        Self::new(other.handle.clone(), other.taps.clone())
     }
 }
