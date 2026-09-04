@@ -87,6 +87,18 @@ pub struct ServiceThread<'scope> {
 // TODO: take stack size as an EAL argument instead of hard coding it
 const STACK_SIZE: usize = 8 << 20;
 
+/// Unregisters the creating thread on return or unwind.
+/// Keep this guard on the thread that registered.
+#[allow(missing_debug_implementations)]
+struct LcoreRegistration;
+
+impl Drop for LcoreRegistration {
+    fn drop(&mut self) {
+        // SAFETY: constructed after registration and dropped once on the same thread.
+        unsafe { dpdk_sys::rte_thread_unregister() };
+    }
+}
+
 impl ServiceThread<'_> {
     #[cold]
     #[allow(clippy::expect_used)]
@@ -108,10 +120,10 @@ impl ServiceThread<'_> {
                     let msg = format!("rte thread exited with code {ret}, errno: {errno}");
                     Eal::fatal_error(msg)
                 }
+                let _registration = LcoreRegistration;
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { dpdk_sys::rte_thread_unregister() };
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
