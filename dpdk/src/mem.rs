@@ -17,6 +17,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
+use core::sync::atomic::{AtomicBool, Ordering};
 use errno::Errno;
 use tracing::{error, info, warn};
 
@@ -189,11 +190,42 @@ pub(crate) struct PoolInner {
 unsafe impl Send for PoolInner {}
 unsafe impl Sync for PoolInner {}
 
+/// Set once the EAL has been torn down, after which freeing an individual mempool is both
+/// pointless and unsafe.
+///
+/// The reference-counted [`Pool`] fixed pools being freed *too early* -- while a device or a batch
+/// of mbufs still referenced them -- and introduced the mirror image: a handle that outlives the
+/// [`Eal`](crate::eal::Eal) becomes the last one, and its `Drop` then calls `rte_mempool_free`
+/// against an EAL that `rte_eal_cleanup` has already dismantled. That is a segfault, and it is
+/// easy to reach by accident, because a `Pool` is an ordinary value with no lifetime tying it to
+/// the EAL. Making it one would mean `Pool<'eal>` and a lifetime parameter spreading through every
+/// holder, which is the cost this design exists to avoid.
+///
+/// So the guard is a runtime one, and it converts the segfault into a deliberate, logged leak --
+/// the same trade [`Manager::shutdown`] makes for a pool a worker still holds.
+static EAL_TORN_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Record that the EAL has been torn down; see [`EAL_TORN_DOWN`].
+///
+/// Called from [`Eal`](crate::eal::Eal)'s `Drop` after the pools have been drained and before
+/// `rte_eal_cleanup`, so the drain itself still frees normally.
+pub(crate) fn mark_eal_torn_down() {
+    EAL_TORN_DOWN.store(true, Ordering::Release);
+}
+
 impl Drop for PoolInner {
     fn drop(&mut self) {
+        if EAL_TORN_DOWN.load(Ordering::Acquire) {
+            warn!(
+                "memory pool {name} outlived the EAL; leaking it rather than calling \
+                 rte_mempool_free against an EAL that has already been cleaned up",
+                name = self.config.name()
+            );
+            return;
+        }
         info!("Freeing memory pool {name}", name = self.config.name());
-        // SAFETY: the pointer came from a successful `rte_pktmbuf_pool_create`, and this runs only
-        // when the last handle to it is gone, so it is freed exactly once.
+        // SAFETY: the pointer came from a successful `rte_pktmbuf_pool_create`; this runs only when
+        // the last handle is gone, so exactly once, and only while the EAL is still up.
         unsafe { dpdk_sys::rte_mempool_free(self.pool.as_ptr()) };
     }
 }
