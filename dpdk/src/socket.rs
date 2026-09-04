@@ -338,9 +338,9 @@ mod tests {
 
     /// The set of lcores the EAL actually enabled, from DPDK's own predicate.
     ///
-    /// Deliberately not `LCoreId::iter()`: that passes `skip_main = 1` to `rte_get_next_lcore`,
-    /// so it enumerates *worker* lcores and is empty under the test EAL, which enables only the
-    /// main lcore. Scanning the predicate is the ground truth this needs.
+    /// Scanning the predicate rather than using [`LCoreId::all`], so this stays ground truth even
+    /// if the iterator's notion of "enabled" ever drifts -- the two are cross-checked in
+    /// `lcore`'s own tests.
     fn enabled_lcores() -> Vec<u32> {
         (0..LCoreId::MAX)
             .filter(|id| unsafe { dpdk_sys::rte_lcore_is_enabled(*id) } != 0)
