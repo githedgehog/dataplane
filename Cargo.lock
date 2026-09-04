@@ -1596,7 +1596,6 @@ dependencies = [
  "inotify",
  "tokio",
  "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -1666,7 +1665,6 @@ version = "0.27.0"
 dependencies = [
  "bolero",
  "bytes",
- "caps",
  "chrono",
  "dataplane-acl-filter",
  "dataplane-args",
@@ -1706,7 +1704,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "tracing-test",
 ]
 
 [[package]]

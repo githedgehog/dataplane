@@ -12,4 +12,3 @@ k8s-intf = { workspace = true, features = ["client"] }
 tokio = { workspace = true, features = ["macros", "rt", "fs"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
-tracing-test = { workspace = true }
