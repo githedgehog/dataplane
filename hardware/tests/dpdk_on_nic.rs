@@ -288,9 +288,20 @@ fn bring_up<'eal>(eal: &'eal eal::Eal, info: dpdk::dev::DevInfo<'eal>, tag: &str
         queue_index: RxQueueIndex(0),
         num_descriptors: 1024,
         socket_preference: socket::Preference::CurrentThread,
-        // The per-queue mask, not the port's: DPDK keeps them separate and rejects a queue asking
-        // for anything outside the per-queue one.
-        offloads: dev.info.rx_queue_offload_caps(),
+        // Explicitly empty, for the same reason `rx_offloads` above is. Asking for the device's
+        // whole per-queue capability mask is not "sensible defaults": on a BlueField-3 that mask
+        // is 0x18601f, and the `TCP_LRO` bit in it costs a factor of 32 in receive buffering.
+        //
+        // LRO has to be able to hand back a coalesced segment of up to 64 KiB, and these pools have
+        // a 2048-byte data room, so the PMD reserves ceil(65536 / 2048) = 32 descriptors for every
+        // packet it might have to coalesce into. A ring asked for 1024 descriptors then buffers 32
+        // frames, not 1024 -- measured exactly: with the full mask a 64-frame burst arrives as 32
+        // received and 32 `imissed`, and with this `NONE` it arrives as 64 and 0.
+        //
+        // That is invisible to a test that polls in a tight loop, because frames are consumed as
+        // fast as they land. It appears the moment anything real happens between polls, which is
+        // the situation every actual dataplane is in.
+        offloads: RxOffload::NONE,
         pool: rx_pool,
     })
     .unwrap_or_else(|e| panic!("[{tag}] failed to set up rx queue: {e:?}"));
