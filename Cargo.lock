@@ -1495,6 +1495,7 @@ dependencies = [
  "dataplane-test-utils",
  "fixin",
  "hwlocality",
+ "nix 0.31.3",
  "num-derive 0.5.1",
  "num-traits",
  "pci-ids",
