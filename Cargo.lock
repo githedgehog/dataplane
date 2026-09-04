@@ -1495,6 +1495,8 @@ dependencies = [
 name = "dataplane-init"
 version = "0.27.0"
 dependencies = [
+ "command-fds",
+ "dataplane-args",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-hardware",
  "dataplane-id",

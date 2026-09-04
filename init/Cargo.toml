@@ -11,11 +11,13 @@ sysroot = ["dep:dpdk-sysroot-helper"]
 
 [dependencies]
 # internal
+args = { workspace = true }
 hardware = { workspace = true, features = ["serde", "scan"] }
 id = { workspace = true }
 sysfs = { workspace = true }
 
 # external
+command-fds = { workspace = true }
 nix = { workspace = true, features = ["mount", "fs"] }
 procfs = { workspace = true, features = [] }
 strum = { workspace = true, features = ["derive"] }
