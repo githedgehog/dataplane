@@ -127,6 +127,13 @@ impl<T> Ring<T> {
     }
 }
 
+impl<T> Drop for Ring<T> {
+    fn drop(&mut self) {
+        // SAFETY: this Ring uniquely owns the allocation from rte_ring_create.
+        unsafe { dpdk_sys::rte_ring_free(self.inner.as_ptr()) };
+    }
+}
+
 pub mod err {
     use crate::ring::Params;
     use errno::ErrorCode;
@@ -159,5 +166,62 @@ pub mod err {
         UnableToAllocateMemZone(Params),
         #[error("unexpected error code: {code:?}")]
         UnexpectedErrno { code: ErrorCode, params: Params },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::with_eal;
+
+    fn params(name: &str) -> Params {
+        Params {
+            name: name.to_string(),
+            size: 64,
+            socket_preference: socket::Preference::CurrentThread,
+        }
+    }
+
+    #[test]
+    #[with_eal]
+    fn dropping_a_ring_releases_its_name() {
+        let first = Ring::<u8>::new(params("reuse_ring")).expect("first create should succeed");
+        // A live ring must reserve its name.
+        match Ring::<u8>::new(params("reuse_ring")) {
+            Err(err::RingCreateErr::MemZoneExists(_)) => {}
+            Err(other) => panic!("expected MemZoneExists, got {other:?}"),
+            Ok(_) => panic!("two live rings must not share a name"),
+        }
+
+        drop(first);
+
+        Ring::<u8>::new(params("reuse_ring"))
+            .expect("the name should be free again once the first ring is dropped");
+    }
+
+    #[test]
+    #[with_eal]
+    fn rings_are_released_independently() {
+        let a = Ring::<u8>::new(params("indep_ring_a")).expect("create a");
+        let b = Ring::<u8>::new(params("indep_ring_b")).expect("create b");
+        drop(a);
+        // `b` is still live, so its name is still taken.
+        match Ring::<u8>::new(params("indep_ring_b")) {
+            Err(err::RingCreateErr::MemZoneExists(_)) => {}
+            other => panic!("expected b's name to still be taken, got {other:?}"),
+        }
+        Ring::<u8>::new(params("indep_ring_a")).expect("a's name should be free");
+        drop(b);
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_non_power_of_two_size_is_rejected() {
+        let mut p = params("bad_size_ring");
+        p.size = 63;
+        match Ring::<u8>::new(p) {
+            Err(err::RingCreateErr::InvalidArgument(_)) => {}
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
     }
 }
