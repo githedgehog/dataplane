@@ -8,7 +8,7 @@ version.workspace = true
 [features]
 default = []
 serde = ["id/serde"]
-netdevsim = []
+netdevsim = ["dep:id"]
 
 bolero = ["dep:bolero", "id/bolero"]
 test_buffer = []
@@ -28,7 +28,7 @@ derive_builder = { workspace = true, features = ["alloc"] }
 downcast-rs = { workspace = true, features = ["sync"] }
 etherparse = { workspace = true, features = ["std"] }
 fixed-size = { workspace = true, features = [] }
-id = { workspace = true }
+id = { workspace = true, optional = true, features = [] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 rapidhash = { workspace = true }
 rkyv = { workspace = true, features = ["alloc", "bytecheck"]}
