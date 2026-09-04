@@ -14,6 +14,7 @@ use args::{
 };
 use command_fds::{CommandFdExt, FdMapping};
 use devlink::{DevlinkHandle, Netns, ReloadAction};
+use futures::TryStreamExt;
 use hardware::NodeAttributes;
 use hardware::netns::NetworkNamespace;
 use hardware::nic::{BindToVfioPci, PciNic};
@@ -311,6 +312,125 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
     Ok(netns)
 }
 
+/// Put this process into the network namespace the control plane will run in.
+///
+/// # Why the control plane needs one at all
+///
+/// The dataplane's control path to the wire is a **tap** per configured interface, named exactly
+/// the configured name -- that is the name FRR's configuration, the routing tables and the ACLs all
+/// use. The physical device wants that name too. In the host's namespace those two collide: a tap
+/// sitting on `dp0` makes udev's rename of the returning physical device fail, which strands the
+/// real device under a name nothing is looking for.
+///
+/// A private namespace removes the collision entirely, because the physical device is never in it.
+/// It also gives FRR somewhere to live where the only interfaces it can see are the ones the
+/// dataplane means it to see.
+///
+/// # Why this happens after the devlink reload and not before
+///
+/// The devices are moved with a devlink reload, and a PCI device's devlink instance belongs to the
+/// namespace the device is in -- which, at that point, is the host's. Entering the control
+/// namespace first would put this process somewhere the devlink instance is not.
+///
+/// # Why `lo` has to come up
+///
+/// FRR binds its vty to `127.0.0.1` and the dataplane's `frr-agent` connects to it there. A fresh
+/// namespace's loopback is down, so without this the two cannot talk at all -- and the failure
+/// looks like an agent that will not connect rather than an interface that is down.
+///
+/// # Why nothing has to hold the namespace afterwards
+///
+/// `setns` on the main thread is inherited across `exec`, and this process has no other threads by
+/// then, so the dataplane *is* in the namespace. A namespace with a process in it does not go away,
+/// so there is no descriptor to keep and nothing to clean up. A namespace opened by path (the
+/// `--control-netns` case) was somebody else's to begin with and stays theirs.
+fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
+    let netns = if let Some(path) = path {
+        info!("entering the control network namespace at {path}");
+        NetworkNamespace::open(path)
+            .map_err(|e| format!("could not open the control network namespace {path}: {e}"))?
+    } else {
+        info!("creating a network namespace for the control plane");
+        NetworkNamespace::create()
+            .map_err(|e| format!("could not create a control network namespace: {e}"))?
+    };
+
+    // `enter_with_sysfs`, not `enter`. The second half is the one that is easy to miss and it is
+    // not optional here: **sysfs is tagged with the network namespace it was mounted in**, and
+    // `setns` does not retag an existing mount, so a thread which merely joined the namespace still
+    // reads the *old* one's `/sys`.
+    //
+    // The control plane depends on that in a way that is invisible until it fails. `netdev`
+    // reads an interface's type from `/sys/class/net/<name>/type` and reports `Unknown` when it
+    // cannot -- and `mgmt::processor::confbuild::router` rejects an interface whose type is not
+    // Ethernet or Loopback. So with an inherited `/sys` every configured interface is `Unknown`,
+    // every config apply fails with "Unsupported type of interface", the routing table never
+    // learns the interface, and the datapath then drops every frame that arrives on it as
+    // `InterfaceUnknown`. Measured: a tap reads `type = 1` under a fresh sysfs and does not exist
+    // at all under an inherited one.
+    //
+    // The mount namespace is unshared here, on the main thread, so the dataplane inherits it across
+    // `exec` and every one of its threads gets the right view. The datapath thread unshares again
+    // for its own namespace, which is unaffected by this.
+    netns
+        .enter_with_sysfs()
+        .map_err(|e| format!("could not enter the control network namespace: {e}"))?;
+    info!(
+        "control plane is in network namespace {}",
+        hardware::netns::current()
+    );
+
+    // A current-thread runtime, so the netlink socket below is opened on *this* thread -- the one
+    // that just entered the namespace. A multi-threaded runtime would open it on a worker thread
+    // which is still in the namespace this process started in.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| {
+            format!("could not build a runtime to configure the control namespace: {e}")
+        })?;
+    runtime.block_on(bring_up_loopback())?;
+
+    // Dropped rather than kept: this process is in the namespace, which is what holds it open.
+    drop(netns);
+    Ok(())
+}
+
+/// Bring `lo` up in the calling thread's network namespace.
+async fn bring_up_loopback() -> Result<(), String> {
+    let (connection, handle, _) = rtnetlink::new_connection()
+        .map_err(|e| format!("could not open a netlink socket in the control namespace: {e}"))?;
+    let connection = tokio::spawn(connection);
+
+    let result = async {
+        let link = handle
+            .link()
+            .get()
+            .match_name("lo".to_string())
+            .execute()
+            .try_next()
+            .await
+            .map_err(|e| format!("could not look up lo: {e}"))?
+            .ok_or_else(|| "the control namespace has no loopback interface".to_string())?;
+        handle
+            .link()
+            .set(
+                rtnetlink::LinkUnspec::new_with_index(link.header.index)
+                    .up()
+                    .build(),
+            )
+            .execute()
+            .await
+            .map_err(|e| format!("could not bring lo up: {e}"))
+    }
+    .await;
+
+    connection.abort();
+    result?;
+    debug!("lo is up in the control namespace");
+    Ok(())
+}
+
 /// Hand the configuration to the dataplane and become it.
 ///
 /// The configuration travels as a sealed memfd rather than as arguments: it is passed once,
@@ -377,10 +497,29 @@ fn main() {
     let main = span!(Level::INFO, "init");
     let _main = main.enter();
 
-    let config = match LaunchConfiguration::try_from(CmdArgs::parse()) {
+    // The arguments are kept, not just converted. `--control-netns` is this program's alone: it
+    // says where to put the control plane before `exec`, and the dataplane has no opinion to form
+    // about it afterwards, so it is deliberately absent from the sealed configuration.
+    let args = CmdArgs::parse();
+    let control_netns = args.control_netns().cloned();
+    let wants_datapath_netns = args.datapath_netns();
+
+    let config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
+
+    // Rejected rather than ignored. A control namespace without a datapath namespace puts the
+    // dataplane's taps somewhere the physical devices still are, under the very names those
+    // devices carry -- which is the name collision the split exists to avoid. Silently doing it
+    // anyway would produce a dataplane that comes up and cannot see its own hardware.
+    if control_netns.is_some() && !wants_datapath_netns {
+        fail(
+            "--control-netns requires --datapath-netns",
+            "the control plane's taps are named after the configured interfaces, so they can only \
+             exist in a namespace the physical devices are not in",
+        );
+    }
 
     let netns = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
@@ -403,20 +542,58 @@ fn main() {
             // Binding first, then isolation: a device is moved in the state it will be driven in,
             // and a vfio-pci device has no namespace to be moved between at all.
             if dpdk.netns {
-                match isolate_devices(&devices) {
+                let netns = match isolate_devices(&devices) {
                     Ok(netns) => {
                         info!("datapath network namespace ready");
-                        Some(netns)
+                        netns
                     }
                     Err(e) => fail("failed to isolate the network devices", &e),
+                };
+
+                // Last, because it is one-way: after this the process is somewhere the devlink
+                // instances above are not, and there is no going back.
+                if let Err(e) = enter_control_netns(control_netns.as_ref()) {
+                    fail("failed to enter the control network namespace", &e);
                 }
+
+                // Named rather than left to be discovered. The k8s client and the metrics endpoint
+                // reach *out* of this process, and a fresh control namespace has no route to
+                // anywhere; they have not been split onto a runtime that stays in the host's
+                // namespace yet. Without `--config-dir` the dataplane will retry k8s init ten times
+                // and give up, which says nothing about why.
+                //
+                // A warning rather than an error, because `--control-netns` names a namespace the
+                // operator built, and they may well have given it a path out.
+                if config
+                    .config_server
+                    .as_ref()
+                    .and_then(|c| c.config_dir.as_ref())
+                    .is_none()
+                {
+                    warn!(
+                        "the control plane is in a network namespace of its own and no \
+                         --config-dir was given, so the dataplane will try to reach Kubernetes \
+                         from in there. Until the host-namespace split lands, this configuration \
+                         is --config-dir only."
+                    );
+                }
+
+                Some(netns)
             } else {
+                // Without a datapath namespace the physical devices are still here, so there is
+                // nowhere for the taps to go that is not on top of them. The dataplane runs where
+                // it always did.
+                info!(
+                    "the packet path was not asked for a namespace of its own; the control plane \
+                     stays where this process started"
+                );
                 None
             }
         }
         DriverConfigSection::Kernel(_) => {
             // The kernel driver uses interfaces exactly as the kernel presents them, so there is no
-            // hardware to prepare and nothing here to do but hand over.
+            // hardware to prepare and nothing here to do but hand over. It must *not* get a control
+            // namespace: its `AF_PACKET` sockets are opened on the real interfaces, which are here.
             info!("kernel driver selected; no device preparation required");
             None
         }

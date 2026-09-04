@@ -43,6 +43,7 @@ nix = { workspace = true, features = ["sched", "mount"] }
 # what comes back off the wire; neither is needed by the library itself.
 dpdk = { workspace = true, features = [] }
 net = { workspace = true, features = [] }
+caps = { workspace = true, default-features = false, features = [] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
 n-vm = { workspace = true }

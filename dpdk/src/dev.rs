@@ -1200,6 +1200,29 @@ impl<'eal, S: Open> Dev<'eal, S> {
         }
     }
 
+    /// The device's current MTU, as the PMD reports it.
+    ///
+    /// This is the number the port is actually running with, not the one that was requested:
+    /// [`DevConfig::apply`] clamps a configured MTU into the device's advertised
+    /// `[min_mtu, max_mtu]` range, so asking the device is the only way to learn what it settled
+    /// on. That matters to anything which has to agree with the port about frame size -- notably
+    /// the control-plane tap that stands in for this port in the kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the MTU could not be read.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn mtu(&self) -> Result<u16, ErrorCode> {
+        let mut mtu: u16 = 0;
+        let ret =
+            unsafe { dpdk_sys::rte_eth_dev_get_mtu(self.info.index().as_u16(), &raw mut mtu) };
+        if ret == 0 {
+            Ok(mtu)
+        } else {
+            Err(ErrorCode::parse_i32(ret))
+        }
+    }
+
     /// Enable or disable promiscuous mode.
     ///
     /// # Errors
