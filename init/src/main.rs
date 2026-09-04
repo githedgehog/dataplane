@@ -5,6 +5,7 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 use std::collections::BTreeMap;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 
 use args::{
@@ -12,7 +13,9 @@ use args::{
     Parser, PortArg,
 };
 use command_fds::{CommandFdExt, FdMapping};
+use devlink::{DevlinkHandle, Netns, ReloadAction};
 use hardware::NodeAttributes;
+use hardware::netns::NetworkNamespace;
 use hardware::nic::{BindToVfioPci, PciNic};
 use hardware::pci::address::PciAddress;
 use hardware::support::{DpdkDriverType, SupportedDevice};
@@ -161,25 +164,124 @@ fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
     Ok(())
 }
 
+/// Move bifurcated devices with devlink driver reinitialization; vfio-pci devices need no move.
+///
+/// Unlike moving only the netdev, devlink reload also moves the RDMA device when the host uses
+/// exclusive RDMA namespace mode (`ib_core.netns_mode=0`). Reload retrains links and changes
+/// ifindices. The descriptor names the destination without a `/run/netns` mount.
+async fn move_devices_to_netns(
+    devices: &[ResolvedDevice],
+    netns: &NetworkNamespace,
+) -> Result<(), String> {
+    let bifurcated: Vec<&ResolvedDevice> = devices
+        .iter()
+        .filter(|d| {
+            matches!(
+                DpdkDriverType::from(d.supported),
+                DpdkDriverType::Bifurcated
+            )
+        })
+        .collect();
+
+    for device in devices {
+        if matches!(
+            DpdkDriverType::from(device.supported),
+            DpdkDriverType::VfioPci
+        ) {
+            debug!(
+                "{} is bound to vfio-pci and has no network namespace to move between",
+                device.address
+            );
+        }
+    }
+
+    if bifurcated.is_empty() {
+        return Ok(());
+    }
+
+    let (connection, handle) =
+        devlink::new_connection().map_err(|e| format!("could not open a devlink socket: {e}"))?;
+    // Poll the connection to service requests made through the handle.
+    let connection = tokio::spawn(connection);
+
+    let mut problems = Vec::new();
+    for device in bifurcated {
+        let target = DevlinkHandle::new("pci", device.address.to_string());
+        info!(
+            "moving {} into the datapath network namespace",
+            device.address
+        );
+
+        let as_fd = u32::try_from(netns.as_raw().as_raw_fd()).unwrap_or(u32::MAX);
+        match handle
+            .reload_into(
+                &target,
+                ReloadAction::DriverReinit,
+                None,
+                Some(Netns::Fd(as_fd)),
+            )
+            .await
+        {
+            Ok(_) => info!("{} is now in the datapath network namespace", device.address),
+            Err(e) => problems.push(format!(
+                "could not move {} into the namespace: {e}. If the devlink instance moved but DPDK                  later finds no device, the RDMA subsystem is in shared mode and the host needs to                  boot with ib_core.netns_mode=0.",
+                device.address
+            )),
+        }
+    }
+
+    connection.abort();
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n  "))
+    }
+}
+
+/// Create a descriptor-owned namespace and move the datapath devices into it.
+fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, String> {
+    let netns = NetworkNamespace::create()
+        .map_err(|e| format!("could not create a network namespace for the datapath: {e}"))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("could not build a runtime to talk to devlink: {e}"))?;
+
+    runtime.block_on(move_devices_to_netns(devices, &netns))?;
+    Ok(netns)
+}
+
 /// Exec the dataplane with sealed configuration, its checksum, and an optional namespace FD.
-fn exec_dataplane(config: LaunchConfiguration) -> ! {
+fn exec_dataplane(config: LaunchConfiguration, netns: Option<NetworkNamespace>) -> ! {
     let mut config_file = config.finalize();
     let integrity_check = config_file.integrity_check().finalize().to_owned_fd();
     let config_fd = config_file.to_owned_fd();
 
     info!("handing configuration to {DATAPLANE_BINARY} and exec'ing it");
 
+    let mut mappings = vec![
+        FdMapping {
+            parent_fd: integrity_check,
+            child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
+        },
+        FdMapping {
+            parent_fd: config_fd,
+            child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
+        },
+    ];
+
+    // The inherited descriptor keeps the namespace alive across exec.
+    if let Some(netns) = netns {
+        mappings.push(FdMapping {
+            parent_fd: netns.into_fd(),
+            child_fd: LaunchConfiguration::STANDARD_NETNS_FD,
+        });
+    }
+
     let error = std::process::Command::new(DATAPLANE_BINARY)
-        .fd_mappings(vec![
-            FdMapping {
-                parent_fd: integrity_check,
-                child_fd: LaunchConfiguration::STANDARD_INTEGRITY_CHECK_FD,
-            },
-            FdMapping {
-                parent_fd: config_fd,
-                child_fd: LaunchConfiguration::STANDARD_CONFIG_FD,
-            },
-        ])
+        .fd_mappings(mappings)
         .unwrap_or_else(|e| {
             error!("failed to map configuration descriptors for the dataplane: {e}");
             std::process::exit(1);
@@ -210,7 +312,7 @@ fn main() {
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
 
-    match &config.driver {
+    let netns = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
             let devices = match resolve_devices(dpdk) {
@@ -227,11 +329,24 @@ fn main() {
                 fail("failed to prepare a network device for DPDK", &e);
             }
             info!("{} network device(s) ready for DPDK", devices.len());
+
+            if dpdk.netns {
+                match isolate_devices(&devices) {
+                    Ok(netns) => {
+                        info!("datapath network namespace ready");
+                        Some(netns)
+                    }
+                    Err(e) => fail("failed to isolate the network devices", &e),
+                }
+            } else {
+                None
+            }
         }
         DriverConfigSection::Kernel(_) => {
             info!("kernel driver selected; no device preparation required");
+            None
         }
-    }
+    };
 
-    exec_dataplane(config);
+    exec_dataplane(config, netns);
 }
