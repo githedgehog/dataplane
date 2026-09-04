@@ -18,7 +18,6 @@ pub mod test {
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
-    use tracing_test::traced_test;
 
     use config::external::ExternalConfigBuilder;
     use config::external::overlay::Overlay;
@@ -388,7 +387,6 @@ pub mod test {
             .expect("Should succeed")
     }
 
-    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
