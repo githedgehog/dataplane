@@ -1436,10 +1436,19 @@ impl CmdArgs {
     ///
     /// # Note
     ///
-    /// This value is only relevant when using the kernel driver. The DPDK driver
-    /// uses its own threading model configured via EAL arguments.
+    /// Deprecated in favour of [`num_workers`](Self::num_workers): the count is driver-neutral.
     #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
+        self.num_workers()
+    }
+
+    /// Get the number of packet-processing worker threads to run.
+    ///
+    /// Driver-neutral. The kernel driver spawns this many workers, each with a fanout socket per
+    /// interface; the DPDK driver spawns this many, each owning one receive and one transmit queue
+    /// on every port.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
         self.num_workers.into()
     }
 
