@@ -1140,7 +1140,7 @@ pub enum InvalidCmdArguments {
     /// (e.g., `eth0`, `ens3`)
     #[error(transparent)]
     InvalidInterfaceName(#[from] IllegalInterfaceName),
-    #[error("\"{0}\" is not a valid driver.  Must be af-xdp, dpdk or kernel")]
+    #[error("\"{0}\" is not a valid driver.  Must be af-xdp, af-packet or dpdk")]
     InvalidDriver(String),
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
@@ -1197,7 +1197,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         eal_args,
                     })
                 }
-                Some(driver) if driver == "kernel" => {
+                Some(driver) if driver == "af-packet" || driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
                         interfaces: value.interfaces().collect(),
                     })
@@ -1262,7 +1262,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
-    #[arg(long, value_name = "packet driver to use: dpdk, kernel or af-xdp")]
+    #[arg(long, value_name = "packet driver to use: af-xdp, af-packet or dpdk")]
     driver: Option<String>,
     #[arg(
         long,
@@ -1404,7 +1404,11 @@ impl CmdArgs {
     /// Get the configured driver name.
     ///
     /// Returns [`DEFAULT_DRIVER`] if no driver was explicitly specified,
-    /// otherwise the name that was (`"dpdk"`, `"kernel"` or `"af-xdp"`).
+    /// otherwise the name that was (`"af-xdp"`, `"af-packet"` or `"dpdk"`).
+    ///
+    /// `"kernel"` is the old name for the `AF_PACKET` driver and is still
+    /// accepted, though the dataplane currently serves it with `AF_XDP`; see
+    /// the note in `runtime.rs`.
     #[must_use]
     pub fn driver_name(&self) -> &str {
         match &self.driver {

@@ -157,11 +157,18 @@ just oci_repo=my-registry.example.com:5000 push-container dataplane
 
 The dataplane can move packets in more than one way, selected with `--driver`:
 
-| Driver   | Notes                                                                 |
-| -------- | --------------------------------------------------------------------- |
-| `af-xdp` | The default. `AF_XDP` sockets; no copy where the NIC driver allows it |
-| `kernel` | `AF_PACKET` sockets; works anywhere, copies every frame               |
-| `dpdk`   | Not wired up yet                                                      |
+| Driver      | Notes                                                                 |
+| ----------- | --------------------------------------------------------------------- |
+| `af-xdp`    | The default. `AF_XDP` sockets; no copy where the NIC driver allows it |
+| `af-packet` | `AF_PACKET` sockets; works anywhere, copies every frame               |
+| `dpdk`      | Not wired up yet                                                      |
+
+`--driver kernel` is the old name for `af-packet`, and is **temporarily served
+by the `AF_XDP` driver instead**: the gateway controller in the fabric repo
+passes it unconditionally for interfaces named the way the kernel names them,
+so it is the only name the VLAB and CI ever ask for. Pass `af-packet` to get
+the `AF_PACKET` driver. This goes away once fabric can ask for a driver by
+name.
 
 ### AF_XDP
 

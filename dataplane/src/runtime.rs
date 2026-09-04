@@ -23,7 +23,7 @@ use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
 
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{error, info, level_filters::LevelFilter, warn};
 
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
@@ -330,13 +330,36 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                let driver_result = match args.driver_name() {
+                // TEMPORARY: the gateway controller in the fabric repo works out
+                // the driver from whether the interfaces are named by PCI
+                // address or by kernel name, and passes --driver kernel for the
+                // latter whatever else is true (pkg/ctrl/gateway_ctrl.go). That
+                // is the only name the VLAB and CI ever ask for, so asking for
+                // AF_XDP there means changing two other repositories first.
+                // Serve that name from the AF_XDP driver until they can ask for
+                // what they want; --driver af-packet still selects the
+                // AF_PACKET one, and this goes away once fabric stops deciding
+                // for us.
+                let requested = args.driver_name();
+                let driver = if requested == "kernel" && cfg!(feature = "af-xdp") {
+                    warn!(
+                        "Serving --driver kernel with the AF_XDP driver. Pass --driver \
+                         af-packet for the AF_PACKET one."
+                    );
+                    "af-xdp"
+                } else {
+                    requested
+                };
+
+                let driver_result = match driver {
                     "dpdk" => {
                         info!("Using driver DPDK...");
                         todo!();
                     }
-                    "kernel" => {
-                        info!("Using driver kernel...");
+                    // "kernel" only reaches here in a build without the AF_XDP
+                    // driver, where it is the only thing it can mean.
+                    "af-packet" | "kernel" => {
+                        info!("Using driver AF_PACKET...");
                         let factory = pipeline.builder::<TestBuffer>();
                         Some(DriverKernel::start(
                             scope,
