@@ -1236,13 +1236,13 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     interface: Vec<InterfaceArg>,
 
-    /// Number of worker threads for the kernel driver.
+    /// Number of packet-processing worker threads.
     #[arg(
         long,
         value_name = "N",
         default_value_t = 1,
         value_parser = clap::value_parser!(u16).range(1..=64),
-        help = "Number of worker threads for the kernel driver in [1..64]"
+        help = "Number of packet-processing worker threads in [1..64]"
     )]
     num_workers: u16,
 
@@ -1436,10 +1436,15 @@ impl CmdArgs {
     ///
     /// # Note
     ///
-    /// This value is only relevant when using the kernel driver. The DPDK driver
-    /// uses its own threading model configured via EAL arguments.
+    /// Deprecated in favour of [`num_workers`](Self::num_workers): the count is driver-neutral.
     #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
+        self.num_workers()
+    }
+
+    /// Get the number of packet-processing workers for either driver.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
         self.num_workers.into()
     }
 
