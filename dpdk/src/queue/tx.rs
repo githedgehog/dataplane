@@ -67,7 +67,7 @@ pub enum ConfigFailure {
     InvalidSocket(ErrorCode),
 }
 
-impl TxQueue<'_> {
+impl<'dev> TxQueue<'dev> {
     /// Configure a new [`TxQueueStopped`].
     ///
     /// This method is crate internal.
@@ -173,7 +173,7 @@ impl TxQueue<'_> {
     /// than spinning forever.
     #[must_use = "the returned MbufArray holds packets that were NOT transmitted; retry or drop it"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&mut self, packets: MbufArray) -> MbufArray {
+    pub fn transmit(&mut self, packets: MbufArray<'dev>) -> MbufArray<'dev> {
         let len = packets.len();
         if len == 0 {
             return MbufArray::new_empty();
