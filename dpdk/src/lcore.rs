@@ -36,13 +36,19 @@ pub enum LCorePriority {
 ///
 /// This iterator deliberately skips the main LCore.
 #[derive(Debug)]
-#[repr(transparent)]
 struct LCoreIdIterator {
     current: LCoreId,
+    /// Whether to omit the main lcore.
+    ///
+    /// Previously hard-coded to "yes" while this type's constructor documentation said it looped
+    /// over *all* lcores. The two disagreed and the behaviour won: under a configuration whose
+    /// only lcore is the main one -- which the unit-test EAL is, since `--lcores 0@(0,1,...)`
+    /// maps a single lcore across every CPU -- the iterator yielded nothing at all.
+    skip_main: bool,
 }
 
 impl LCoreIdIterator {
-    /// Start an iterator which loops over all available [`LCoreId`]
+    /// Iterate every enabled [`LCoreId`], main included.
     ///
     /// This is internal and should not be directly exposed to the end user of this crate.
     ///
@@ -51,11 +57,22 @@ impl LCoreIdIterator {
     /// We start the [`LCoreId`] in an invalid condition as a signal to DPDK to
     /// return the first actual [`LCoreId`] on the first call to `.next()`.
     /// This value is never supposed to be exposed to the user as `u32::MAX` is
-    /// an invalid [`LCoreId`].
+    /// an invalid [`LCoreId`].  It works because `rte_get_next_lcore` increments before testing
+    /// and unsigned overflow takes `u32::MAX` to zero.
     #[tracing::instrument(level = "trace")]
-    fn new() -> Self {
+    fn all() -> Self {
         Self {
             current: LCoreId::INVALID,
+            skip_main: false,
+        }
+    }
+
+    /// Iterate every enabled [`LCoreId`] except the main one.
+    #[tracing::instrument(level = "trace")]
+    fn workers() -> Self {
+        Self {
+            current: LCoreId::INVALID,
+            skip_main: true,
         }
     }
 }
@@ -65,7 +82,9 @@ impl Iterator for LCoreIdIterator {
 
     #[tracing::instrument(level = "trace")]
     fn next(&mut self) -> Option<Self::Item> {
-        let next = unsafe { dpdk_sys::rte_get_next_lcore(self.current.0 as c_uint, 1, 0) };
+        let next = unsafe {
+            dpdk_sys::rte_get_next_lcore(self.current.0 as c_uint, c_int::from(self.skip_main), 0)
+        };
         if next >= dpdk_sys::RTE_MAX_LCORE {
             return None;
         }
@@ -244,9 +263,25 @@ pub mod err {
 impl LCoreId {
     pub const MAX: u32 = dpdk_sys::RTE_MAX_LCORE;
 
+    /// Every lcore the EAL enabled, including the main one.
+    ///
+    /// This replaces a former `iter()` whose name and documentation promised all lcores while it
+    /// actually skipped the main one -- so it returned an empty iterator under any configuration
+    /// whose only lcore is main. Use [`workers`](Self::workers) when the main lcore should be
+    /// excluded, and say which you mean.
     #[tracing::instrument(level = "trace")]
-    pub fn iter() -> impl Iterator<Item = LCoreId> {
-        LCoreIdIterator::new()
+    pub fn all() -> impl Iterator<Item = LCoreId> {
+        LCoreIdIterator::all()
+    }
+
+    /// Every lcore the EAL enabled except the main one.
+    ///
+    /// The set to dispatch work across: the main lcore runs the control plane, and DPDK's own
+    /// dispatch helpers (`rte_eal_remote_launch`, `RTE_LCORE_FOREACH_WORKER`) exclude it for the
+    /// same reason. Empty when the EAL was given only one lcore.
+    #[tracing::instrument(level = "trace")]
+    pub fn workers() -> impl Iterator<Item = LCoreId> {
+        LCoreIdIterator::workers()
     }
 
     pub(crate) fn as_u32(&self) -> u32 {
@@ -333,7 +368,8 @@ impl LCoreIndexIterator {
     #[tracing::instrument(level = "trace")]
     pub fn new() -> Self {
         Self {
-            inner: LCoreIdIterator::new(),
+            // Workers only, which this constructor's documentation has always stated.
+            inner: LCoreIdIterator::workers(),
         }
     }
 }
@@ -355,6 +391,50 @@ impl Iterator for LCoreIndexIterator {
 mod tests {
     use super::*;
     use crate::with_eal;
+
+    /// `all()` includes the main lcore and `workers()` does not.
+    ///
+    /// This is the test the former `iter()` needed and did not have. Under the unit-test EAL the
+    /// only enabled lcore *is* the main one, so `workers()` is legitimately empty while `all()`
+    /// must not be -- which is exactly the case where a single iterator claiming to cover "all"
+    /// lcores while skipping main returns nothing and looks like a broken EAL.
+    #[test]
+    #[with_eal]
+    fn all_includes_the_main_lcore_and_workers_excludes_it() {
+        let main = LCoreId::main();
+        let all: Vec<_> = LCoreId::all().collect();
+        let workers: Vec<_> = LCoreId::workers().collect();
+
+        assert!(
+            all.contains(&main),
+            "all() must include the main lcore {main:?}, got {all:?}"
+        );
+        assert!(
+            !workers.contains(&main),
+            "workers() must exclude the main lcore {main:?}, got {workers:?}"
+        );
+        assert_eq!(
+            all.len(),
+            workers.len() + 1,
+            "the two sets should differ by exactly the main lcore"
+        );
+    }
+
+    /// Everything `all()` yields is an lcore DPDK considers enabled, and in range.
+    #[test]
+    #[with_eal]
+    fn all_yields_only_valid_enabled_lcores() {
+        let all: Vec<_> = LCoreId::all().collect();
+        assert!(!all.is_empty(), "a running EAL has at least one lcore");
+        for lcore in all {
+            assert!(lcore.as_u32() < LCoreId::MAX, "{lcore:?} out of range");
+            assert_ne!(
+                unsafe { dpdk_sys::rte_lcore_is_enabled(lcore.as_u32()) },
+                0,
+                "{lcore:?} was yielded but DPDK does not consider it enabled"
+            );
+        }
+    }
 
     /// The fact that motivated dropping `LCoreId` from `concurrency::local::Local` in favour of a
     /// `ThreadId`: DPDK reports `LCORE_ID_ANY` (`u32::MAX`) for a thread that is neither an EAL
