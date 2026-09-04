@@ -127,6 +127,20 @@ impl<T> Ring<T> {
     }
 }
 
+impl<T> Drop for Ring<T> {
+    /// Free the ring, releasing its memzone.
+    ///
+    /// Without this the ring leaked unconditionally: `rte_ring_create` reserves a named memzone
+    /// and nothing in this crate ever called `rte_ring_free`, so the name stayed taken for the
+    /// life of the process and a second ring with the same name failed with
+    /// [`MemZoneExists`](err::RingCreateErr::MemZoneExists).
+    fn drop(&mut self) {
+        // SAFETY: `self.inner` came from a successful `rte_ring_create` and is freed exactly once,
+        // since `Ring` is neither `Copy` nor `Clone`.
+        unsafe { dpdk_sys::rte_ring_free(self.inner.as_ptr()) };
+    }
+}
+
 pub mod err {
     use crate::ring::Params;
     use errno::ErrorCode;
@@ -159,5 +173,72 @@ pub mod err {
         UnableToAllocateMemZone(Params),
         #[error("unexpected error code: {code:?}")]
         UnexpectedErrno { code: ErrorCode, params: Params },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::with_eal;
+
+    fn params(name: &str) -> Params {
+        Params {
+            name: name.to_string(),
+            size: 64,
+            socket_preference: socket::Preference::CurrentThread,
+        }
+    }
+
+    /// The oracle for `Drop`: a ring's name is a process-global memzone name, so it can only be
+    /// reused if the first ring's memzone was actually released. Without `rte_ring_free` the
+    /// second create fails with `MemZoneExists`.
+    #[test]
+    #[with_eal]
+    fn dropping_a_ring_releases_its_name() {
+        let first = Ring::<u8>::new(params("reuse_ring")).expect("first create should succeed");
+        // Same name while the first is alive: refused, which is what makes this a real test of
+        // release rather than of nothing.
+        match Ring::<u8>::new(params("reuse_ring")) {
+            Err(err::RingCreateErr::MemZoneExists(_)) => {}
+            Err(other) => panic!("expected MemZoneExists, got {other:?}"),
+            Ok(_) => panic!("two live rings must not share a name"),
+        }
+
+        drop(first);
+
+        Ring::<u8>::new(params("reuse_ring"))
+            .expect("the name should be free again once the first ring is dropped");
+    }
+
+    /// Rings are independent: dropping one does not disturb another.
+    #[test]
+    #[with_eal]
+    fn rings_are_released_independently() {
+        let a = Ring::<u8>::new(params("indep_ring_a")).expect("create a");
+        let b = Ring::<u8>::new(params("indep_ring_b")).expect("create b");
+        drop(a);
+        // `b` is still live, so its name is still taken.
+        match Ring::<u8>::new(params("indep_ring_b")) {
+            Err(err::RingCreateErr::MemZoneExists(_)) => {}
+            other => panic!("expected b's name to still be taken, got {other:?}"),
+        }
+        // ...and a's is free.
+        Ring::<u8>::new(params("indep_ring_a")).expect("a's name should be free");
+        drop(b);
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_non_power_of_two_size_is_rejected() {
+        let mut p = params("bad_size_ring");
+        p.size = 63;
+        match Ring::<u8>::new(p) {
+            Err(err::RingCreateErr::InvalidArgument(_)) => {}
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
     }
 }
