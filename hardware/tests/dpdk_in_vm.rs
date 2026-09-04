@@ -574,10 +574,18 @@ fn build_eal_args(pci_allow_list: &[PciAddress]) -> Vec<String> {
 /// When `with_tx_pool` is `true` a second mempool is created that the
 /// caller can use to allocate mbufs for transmission.
 ///
+/// # Why the EAL is a separate step
+///
+/// A [`Pool`] and a [`Dev`] both carry the EAL's lifetime, so a function cannot create the `Eal`
+/// *and* return resources borrowed from it -- that would be returning a reference to a local. The
+/// EAL is therefore built by [`init_dpdk_eal`] in the caller's scope and lent to this. That is a
+/// real constraint the branding imposes, and a mild one: it says the EAL is created once at the
+/// top of the scope that uses it, which is where it belonged anyway.
+///
 /// # Panics
 ///
 /// Panics on any setup failure — this is test code, not library code.
-fn setup_dpdk_device(with_tx_pool: bool) -> (Eal, Dev<Started>, Option<Pool>) {
+fn init_dpdk_eal() -> Eal {
     // -- vfio-pci ----------------------------------------------------------
     assert_vfio_pci_available();
 
@@ -612,7 +620,20 @@ fn setup_dpdk_device(with_tx_pool: bool) -> (Eal, Dev<Started>, Option<Pool>) {
     eprintln!("[eal] args: {eal_args:?}");
     let eal = eal::init(eal_args);
     eprintln!("[eal] initialised (has_pci={})", eal.has_pci());
+    eal
+}
 
+/// Configure, queue up and start the first probed device, borrowing the EAL from the caller.
+///
+/// See [`init_dpdk_eal`] for why the EAL is not created here.
+///
+/// # Panics
+///
+/// Panics on any setup failure — this is test code, not library code.
+fn setup_dpdk_device<'eal>(
+    eal: &'eal Eal,
+    with_tx_pool: bool,
+) -> (Dev<'eal, Started>, Option<Pool<'eal>>) {
     // -- device enumeration ------------------------------------------------
     let num_ports = eal.dev.num_devices();
     eprintln!("[eal] DPDK reports {num_ports} ethernet port(s)");
@@ -672,32 +693,36 @@ fn setup_dpdk_device(with_tx_pool: bool) -> (Eal, Dev<Started>, Option<Pool>) {
     eprintln!("[dev] device configured");
 
     // -- mempools ----------------------------------------------------------
-    let rx_pool = Pool::new_pkt_pool(
-        PoolConfig::new(
-            "rx_pool".to_string(),
-            PoolParams {
-                size: 1024,
-                ..Default::default()
-            },
-        )
-        .expect("invalid rx PoolConfig"),
-    )
-    .expect("failed to create rx mempool");
-    eprintln!("[mem] rx mempool '{}' created", rx_pool.name());
-
-    let tx_pool = if with_tx_pool {
-        let pool = Pool::new_pkt_pool(
+    let rx_pool = eal
+        .mem
+        .new_pkt_pool(
             PoolConfig::new(
-                "tx_pool".to_string(),
+                "rx_pool".to_string(),
                 PoolParams {
-                    size: 256,
-                    cache_size: 128,
+                    size: 1024,
                     ..Default::default()
                 },
             )
-            .expect("invalid tx PoolConfig"),
+            .expect("invalid rx PoolConfig"),
         )
-        .expect("failed to create tx mempool");
+        .expect("failed to create rx mempool");
+    eprintln!("[mem] rx mempool '{}' created", rx_pool.name());
+
+    let tx_pool = if with_tx_pool {
+        let pool = eal
+            .mem
+            .new_pkt_pool(
+                PoolConfig::new(
+                    "tx_pool".to_string(),
+                    PoolParams {
+                        size: 256,
+                        cache_size: 128,
+                        ..Default::default()
+                    },
+                )
+                .expect("invalid tx PoolConfig"),
+            )
+            .expect("failed to create tx mempool");
         eprintln!("[mem] tx mempool '{}' created", pool.name());
         Some(pool)
     } else {
@@ -733,7 +758,7 @@ fn setup_dpdk_device(with_tx_pool: bool) -> (Eal, Dev<Started>, Option<Pool>) {
     let dev = dev.start().expect("failed to start DPDK device");
     eprintln!("[dev] device started successfully");
 
-    (eal, dev, tx_pool)
+    (dev, tx_pool)
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,7 +1080,8 @@ fn run_rx_test(label: &str, expect_rx: bool) {
 
     // ── setup (same as Phase 0 but with a tx pool) ──────────────────────
 
-    let (eal, mut started, tx_pool) = setup_dpdk_device(true);
+    let eal = init_dpdk_eal();
+    let (mut started, tx_pool) = setup_dpdk_device(&eal, true);
 
     let tx_pool = tx_pool.expect("setup_dpdk_device should return a tx pool");
 
@@ -1272,50 +1298,39 @@ fn run_rx_test(label: &str, expect_rx: bool) {
 /// the budget is three orders of magnitude of headroom rather than a tight bound.
 const TEARDOWN_BUDGET: Duration = Duration::from_secs(5);
 
-/// Drop the device and then the EAL, asserting both complete promptly.
+/// Stop and close the device, returning how long it took.
 ///
-/// # Why this is an assertion and not just a `drop`
+/// # Why this no longer takes the `Eal` too
 ///
-/// Every test in this file used to call `std::mem::forget(eal)`, on the stated grounds that
-/// `Eal::drop` "calls `rte_eal_mp_wait_lcore()` which blocks indefinitely waiting for worker
-/// lcores to finish". That attribution is measurably wrong: `rte_eal_mp_wait_lcore` returns in
-/// under a microsecond even with 64 lcores enabled and none launched (see
+/// It used to, and could not once [`Pool`] and [`Dev`] gained the EAL's lifetime: a `Dev` borrows
+/// the `Eal`, so a function taking both by value does not compile. That is the branding working --
+/// the teardown ordering this file previously got wrong by convention (and documented with a
+/// comment explaining why the natural order was unsafe) is now a compile error to get wrong.
+///
+/// # Why teardown is timed at all
+///
+/// Every test here used to call `std::mem::forget(eal)`, on the stated grounds that `Eal::drop`
+/// "calls `rte_eal_mp_wait_lcore()` which blocks indefinitely waiting for worker lcores to
+/// finish". That attribution is measurably wrong: `rte_eal_mp_wait_lcore` returns in under a
+/// microsecond even with 64 lcores enabled and none launched (see
 /// `dpdk/examples/eal_teardown_probe.rs`, which times each phase). Telemetry and log volume were
-/// ruled out the same way, and dropping the EAL with the device still open completes in under a
-/// millisecond too -- it segfaults *afterwards*, when the device is closed against a torn-down
-/// EAL, which is a different bug entirely.
+/// ruled out the same way.
 ///
-/// Whatever the original cause was, it does not reproduce here, so the leak is gone and teardown
-/// is exercised for real. What is *not* established is why. The two candidates are the DPDK
-/// 26.03 -> 26.07 bump and the device now being closed explicitly (nothing ever called
-/// `rte_eth_dev_close` before), and distinguishing them would mean running this test against the
-/// old pin. Rather than guess, this asserts the property we actually care about: teardown
-/// finishes promptly. If it ever hangs again the test fails on a budget instead of wedging the
-/// VM, which is what made the original so unpleasant to diagnose.
+/// Whatever the original cause was it does not reproduce, so the leak is gone and teardown runs
+/// for real. What is *not* established is why -- the candidates are the DPDK 26.03 -> 26.07 bump
+/// and the device now being closed explicitly. Rather than guess, this asserts the property we
+/// care about: teardown finishes promptly. If it ever hangs again the test fails on a budget
+/// instead of wedging the VM, which is what made the original unpleasant to diagnose.
 ///
 /// # Panics
 ///
-/// Panics if either phase exceeds [`TEARDOWN_BUDGET`], or if stop or close reports an error.
-fn assert_teardown_is_prompt(eal: Eal, started: Dev<Started>) {
+/// Panics if stop or close reports an error.
+fn time_device_teardown(started: Dev<'_, Started>) -> Duration {
     let t = Instant::now();
     let stopped = started.stop().expect("failed to stop device");
     let closed = stopped.close().expect("failed to close device");
     drop(closed);
-    let device = t.elapsed();
-
-    let t = Instant::now();
-    drop(eal);
-    let eal_drop = t.elapsed();
-
-    eprintln!("[teardown] device closed in {device:?}, EAL dropped in {eal_drop:?}");
-    assert!(
-        device < TEARDOWN_BUDGET,
-        "closing the device took {device:?}, over the {TEARDOWN_BUDGET:?} budget"
-    );
-    assert!(
-        eal_drop < TEARDOWN_BUDGET,
-        "dropping the EAL took {eal_drop:?}, over the {TEARDOWN_BUDGET:?} budget"
-    );
+    t.elapsed()
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,11 +1427,27 @@ const E1000E_QEMU_IOMMU_1G: VmConfig = E1000E_QEMU_IOMMU
 fn dpdk_eal_init_virtio_cloud_hypervisor() {
     eprintln!("=== Phase 0 spike: DPDK EAL init in cloud-hypervisor VM ===");
 
-    let (eal, started, _) = setup_dpdk_device(false);
+    let eal = init_dpdk_eal();
+    let (started, _) = setup_dpdk_device(&eal, false);
 
     eprintln!("=== Phase 0 spike complete — DPDK init works in the VM! ===");
 
-    assert_teardown_is_prompt(eal, started);
+    // Split in two, because the borrow checker now insists on it: `started` borrows `eal`, so the
+    // `Eal` cannot be moved until the device is consumed. The ordering this test used to assert by
+    // convention is a compile error to get wrong.
+    let device = time_device_teardown(started);
+    let t = Instant::now();
+    drop(eal);
+    let eal_drop = t.elapsed();
+    eprintln!("[teardown] device closed in {device:?}, EAL dropped in {eal_drop:?}");
+    assert!(
+        device < TEARDOWN_BUDGET,
+        "closing the device took {device:?}, over the {TEARDOWN_BUDGET:?} budget"
+    );
+    assert!(
+        eal_drop < TEARDOWN_BUDGET,
+        "dropping the EAL took {eal_drop:?}, over the {TEARDOWN_BUDGET:?} budget"
+    );
 }
 
 /// Rx spike: cloud-hypervisor + virtio-net, VFIO no-IOMMU (PA mode).

@@ -81,8 +81,15 @@ impl DevIndex {
     /// # Safety
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
+    /// Crate-private, and returns an unbranded `DevInfo<'static>`.
+    ///
+    /// A `DevIndex` is a bare `u16` with nothing to derive an EAL brand from, so this cannot
+    /// produce one honestly. The public routes ([`Manager::info`], [`Manager::iter`]) take
+    /// `&'eal self` and shorten the result, which is a safe covariant coercion -- and being
+    /// crate-private is what stops external code reaching the unbranded form and manufacturing a
+    /// `Dev<'static, _>`.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self) -> Result<DevInfo, DevInfoError> {
+    pub(crate) fn info(&self) -> Result<DevInfo<'static>, DevInfoError> {
         let mut dev_info = rte_eth_dev_info::default();
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
@@ -135,6 +142,7 @@ impl DevIndex {
         Ok(DevInfo {
             index: DevIndex(self.0),
             inner: dev_info,
+            eal: PhantomData,
         })
     }
 
@@ -289,7 +297,14 @@ impl DevConfig {
     }
 
     /// Apply the configuration to the device.
-    pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
+    /// # Note on the lifetime
+    ///
+    /// `'eal` is derived from `dev`, never chosen by the caller. An unconstrained
+    /// `apply<'eal>(&self, dev: DevInfo)` would let a caller name `'static` and manufacture a
+    /// `Dev<'static, _>` out of nothing, which would make the brand -- and every guarantee resting
+    /// on it -- vacuous. [`DevInfo`] carries the brand because it can only be obtained from the
+    /// EAL's device manager.
+    pub fn apply<'eal>(&self, dev: DevInfo<'eal>) -> Result<Dev<'eal, Stopped>, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         // Resolve and validate the MTU against what the device actually supports before building
         // the configuration.
@@ -693,26 +708,26 @@ impl BitXorAssign for TxOffload {
 ///
 /// This struct is a wrapper around the `rte_eth_dev_info` struct from DPDK.
 #[derive(Debug)]
-pub struct DevInfo {
+pub struct DevInfo<'eal> {
     pub(crate) index: DevIndex,
     pub(crate) inner: rte_eth_dev_info,
+    pub(crate) eal: PhantomData<&'eal ()>,
 }
 
-unsafe impl Send for DevInfo {}
-unsafe impl Sync for DevInfo {}
+unsafe impl Send for DevInfo<'_> {}
+unsafe impl Sync for DevInfo<'_> {}
 
-#[repr(transparent)]
 #[derive(Debug)]
-struct DevIterator {
+struct DevIterator<'eal> {
     cursor: DevIndex,
+    /// Carries the brand so the yielded [`DevInfo`]s have one; see [`DevIndex::info`].
+    eal: PhantomData<&'eal ()>,
 }
 
-impl DevIterator {}
+impl<'eal> Iterator for DevIterator<'eal> {
+    type Item = DevInfo<'eal>;
 
-impl Iterator for DevIterator {
-    type Item = DevInfo;
-
-    fn next(&mut self) -> Option<DevInfo> {
+    fn next(&mut self) -> Option<DevInfo<'eal>> {
         let cursor = self.cursor;
 
         debug!("Checking port {cursor}");
@@ -769,9 +784,10 @@ impl Manager {
 
     /// Iterate over all available DPDK ethernet devices and return information about each one.
     #[tracing::instrument(level = "trace")]
-    pub fn iter(&self) -> impl Iterator<Item = DevInfo> {
+    pub fn iter(&self) -> impl Iterator<Item = DevInfo<'_>> {
         DevIterator {
             cursor: DevIndex(0),
+            eal: PhantomData,
         }
     }
 
@@ -790,7 +806,7 @@ impl Manager {
     ///
     /// This function should never panic assuming DPDK is correctly implemented.
     #[tracing::instrument(level = "trace", ret)]
-    pub fn info(&self, index: DevIndex) -> Result<DevInfo, DevInfoError> {
+    pub fn info(&self, index: DevIndex) -> Result<DevInfo<'_>, DevInfoError> {
         index.info()
     }
 
@@ -803,7 +819,7 @@ impl Manager {
     }
 }
 
-impl DevInfo {
+impl DevInfo<'_> {
     /// Get the port index of the device.
     #[must_use]
     pub fn index(&self) -> DevIndex {
@@ -1032,7 +1048,7 @@ impl Drop for PortLifecycle {
 /// A freshly [`applied`][DevConfig::apply] device is [`Stopped`] (the default); call
 /// [`start`][Dev::<Stopped>::start] to transition it to [`Started`] and back with
 /// [`stop`][Dev::<Started>::stop].
-pub struct Dev<S: DevState = Stopped> {
+pub struct Dev<'eal, S: DevState = Stopped> {
     /// Owns the port's stop/close obligation -- the only field here with a `Drop` that does
     /// anything to the device.
     ///
@@ -1051,7 +1067,7 @@ pub struct Dev<S: DevState = Stopped> {
     /// than a `Drop` bolted on.
     lifecycle: PortLifecycle,
     /// The device info
-    pub info: DevInfo,
+    pub info: DevInfo<'eal>,
     /// The configuration of the device.
     pub config: DevConfig,
     /// The device's queues, until they are taken for distribution to workers.
@@ -1064,18 +1080,18 @@ pub struct Dev<S: DevState = Stopped> {
     /// with `&Dev`, so making the device `!Sync` would make every handle `!Send` and no worker
     /// thread could be given one.  The lock is taken at queue setup and once at hand-off, never on
     /// the datapath.
-    queues: Mutex<Option<QueueStore>>,
+    queues: Mutex<Option<QueueStore<'eal>>>,
     state: PhantomData<S>,
 }
 
-impl<S: DevState> Dev<S> {
+impl<'eal, S: DevState> Dev<'eal, S> {
     /// Move all owned device state into a `Dev` of a different typestate.
     ///
     /// `Dev` deliberately implements no `Drop` of its own -- the teardown lives in the
     /// [`PortLifecycle`] field -- so this is an ordinary move of every field, with no `unsafe`.
     /// Updating `lifecycle.stage` is what keeps the guard's view of the port in step with the
     /// typestate.
-    fn transition<T: DevState>(mut self) -> Dev<T> {
+    fn transition<T: DevState>(mut self) -> Dev<'eal, T> {
         self.lifecycle.stage = T::STAGE;
         Dev {
             lifecycle: self.lifecycle,
@@ -1087,7 +1103,7 @@ impl<S: DevState> Dev<S> {
     }
 }
 
-impl<S: Open> Dev<S> {
+impl<'eal, S: Open> Dev<'eal, S> {
     /// The device's primary MAC address, as the PMD reports it.
     ///
     /// # Errors
@@ -1130,7 +1146,7 @@ impl<S: Open> Dev<S> {
     }
 }
 
-impl Dev<Stopped> {
+impl<'eal> Dev<'eal, Stopped> {
     /// Run `f` against the queue store.
     ///
     /// Deliberately closure-based rather than returning a mapped guard: `MutexGuard::map` exists
@@ -1144,7 +1160,7 @@ impl Dev<Stopped> {
     /// [`Dev<Started>`], and this is only callable on a [`Dev<Stopped>`], which cannot have been
     /// started yet.
     #[allow(clippy::expect_used)]
-    fn with_store<R>(&mut self, f: impl FnOnce(&mut QueueStore) -> R) -> R {
+    fn with_store<R>(&mut self, f: impl FnOnce(&mut QueueStore<'eal>) -> R) -> R {
         let mut guard = self.queues.lock();
         let store = guard
             .as_mut()
@@ -1154,7 +1170,7 @@ impl Dev<Stopped> {
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
-    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
+    pub fn new_rx_queue(&mut self, config: RxQueueConfig<'eal>) -> Result<(), rx::ConfigFailure> {
         let rx_queue = RxQueue::setup(self, config)?;
         self.with_store(|store| store.rx.push(rx_queue));
         Ok(())
@@ -1172,7 +1188,7 @@ impl Dev<Stopped> {
     /// Configure a new [`HairpinQueue`]
     pub fn new_hairpin_queue(
         &mut self,
-        rx: RxQueueConfig,
+        rx: RxQueueConfig<'eal>,
         tx: TxQueueConfig,
     ) -> Result<(), HairpinConfigFailure> {
         let rx = RxQueue::setup(self, rx).map_err(HairpinConfigFailure::RxQueueCreationFailed)?;
@@ -1192,7 +1208,7 @@ impl Dev<Stopped> {
     // (large) device anyway, so the `Result` is large by design, and this is a cold, once-per-device
     // path.
     #[allow(clippy::result_large_err)]
-    pub fn start(self) -> Result<Dev<Started>, DevStartFailure> {
+    pub fn start(self) -> Result<Dev<'eal, Started>, DevStartFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1233,7 +1249,7 @@ impl Dev<Stopped> {
     /// device could not be closed.
     // See the note on `start`: the `Result` is large by design and this is a cold path.
     #[allow(clippy::result_large_err)]
-    pub fn close(self) -> Result<Dev<Closed>, DevCloseFailure> {
+    pub fn close(self) -> Result<Dev<'eal, Closed>, DevCloseFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_close(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1250,7 +1266,7 @@ impl Dev<Stopped> {
     }
 }
 
-impl Dev<Started> {
+impl<'eal> Dev<'eal, Started> {
     /// Stop the device, transitioning it back to the [`Stopped`] state.
     ///
     /// # Errors
@@ -1259,7 +1275,7 @@ impl Dev<Started> {
     /// device could not be stopped.
     // See the note on `start`: the `Result` is large by design and this is a cold path.
     #[allow(clippy::result_large_err)]
-    pub fn stop(self) -> Result<Dev<Stopped>, DevStopFailure> {
+    pub fn stop(self) -> Result<Dev<'eal, Stopped>, DevStopFailure<'eal>> {
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
         if ret != 0 {
             error!(
@@ -1319,12 +1335,12 @@ impl Dev<Started> {
 /// drop it.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to start device {}: {error}", self.dev.info.index())]
-pub struct DevStartFailure {
+pub struct DevStartFailure<'eal> {
     /// The error that caused the start to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Stopped`] state.
-    pub dev: Dev<Stopped>,
+    pub dev: Dev<'eal, Stopped>,
 }
 
 /// Returned when [`Dev::<Started>::stop`] fails.
@@ -1333,12 +1349,12 @@ pub struct DevStartFailure {
 /// drop it.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to stop device {}: {error}", self.dev.info.index())]
-pub struct DevStopFailure {
+pub struct DevStopFailure<'eal> {
     /// The error that caused the stop to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Started`] state.
-    pub dev: Dev<Started>,
+    pub dev: Dev<'eal, Started>,
 }
 
 /// Returned when [`Dev::<Stopped>::close`] fails.
@@ -1347,12 +1363,12 @@ pub struct DevStopFailure {
 /// drop it.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to close device {}: {error}", self.dev.info.index())]
-pub struct DevCloseFailure {
+pub struct DevCloseFailure<'eal> {
     /// The error that caused the close to fail.
     #[source]
     pub error: ErrorCode,
     /// The device, still in its [`Stopped`] state.
-    pub dev: Dev<Stopped>,
+    pub dev: Dev<'eal, Stopped>,
 }
 
 #[derive(Debug, thiserror::Error)]
