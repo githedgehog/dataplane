@@ -213,6 +213,22 @@ impl<T: Clone + Send + Sync + 'static> Reclaimer<T> {
     }
 }
 
+impl<T: Clone + Send + Sync + 'static> core::fmt::Debug for Reclaimer<T> {
+    /// Reports the live count only.
+    ///
+    /// Deliberately does not report `pending`: reading it borrows the publisher's retired list,
+    /// and a `Debug` impl that can panic when something else holds that borrow is a bad thing to
+    /// reach for while diagnosing a problem. `live` is read with `try_borrow` for the same reason.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut out = f.debug_struct("Reclaimer");
+        match self.live.try_borrow() {
+            Ok(live) => out.field("live", &live.len()),
+            Err(_) => out.field("live", &"<borrowed>"),
+        }
+        .finish_non_exhaustive()
+    }
+}
+
 impl<T: Clone + Send + Sync + 'static> Default for Reclaimer<T> {
     fn default() -> Reclaimer<T> {
         Reclaimer::new()
