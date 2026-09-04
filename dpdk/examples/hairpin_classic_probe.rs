@@ -161,8 +161,9 @@ fn main() -> Result<(), Err> {
     let mut sbefore: rte_eth_stats = unsafe { core::mem::zeroed() };
     // SAFETY: started port; out-param.
     unsafe { rte_eth_stats_get(port, &mut sbefore) };
-    let rxq = dev
-        .rx_queue(RxQueueIndex(0))
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
         .ok_or("host rx queue 0 missing")?;
     println!("polling {secs}s -- inject from the peer now (watch peer rx_packets)...");
     let deadline = Instant::now() + Duration::from_secs(secs);

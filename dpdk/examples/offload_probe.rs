@@ -206,8 +206,9 @@ fn main() -> Result<(), Err> {
         )?;
     }
 
-    let rxq = dev
-        .rx_queue(RxQueueIndex(0))
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
         .ok_or("rx queue 0 not found after start")?;
 
     println!("polling rx queue 0 for {secs}s -- inject IPv4 from the peer port now...");

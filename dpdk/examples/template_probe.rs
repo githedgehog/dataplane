@@ -350,7 +350,10 @@ fn main() -> Result<(), Err> {
     );
 
     // ---- confirm one templated rule steers: inject IPv4 to 10.0.0.2 (rule i=2) ----
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject IPv4 to 10.0.0.2 from the peer now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut steered = 0u64;

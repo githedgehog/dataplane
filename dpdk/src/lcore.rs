@@ -325,3 +325,56 @@ impl Iterator for LCoreIndexIterator {
         self.inner.next()?.to_index()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::with_eal;
+
+    /// The fact that motivated dropping `LCoreId` from `concurrency::local::Local` in favour of a
+    /// `ThreadId`: DPDK reports `LCORE_ID_ANY` (`u32::MAX`) for a thread that is neither an EAL
+    /// thread nor registered, so an lcore id is simply unavailable on an ordinary thread.
+    ///
+    /// Kept as a regression test because the choice is easy to second-guess later.
+    #[test]
+    #[with_eal]
+    fn an_unregistered_thread_has_no_lcore_identity() {
+        let id = std::thread::spawn(|| LCoreId::current().as_u32())
+            .join()
+            .expect("thread panicked");
+        assert_eq!(
+            id,
+            u32::MAX,
+            "expected LCORE_ID_ANY on an unregistered thread"
+        );
+    }
+
+    /// ...whereas a registered thread does get one, and it is not the main lcore.
+    #[test]
+    #[with_eal]
+    fn a_registered_thread_gets_a_non_main_lcore() {
+        // SAFETY: registers the calling thread with the EAL; paired with `rte_thread_unregister`
+        // below.  Per-thread state, so it does not disturb other tests.
+        let ret = unsafe { dpdk_sys::rte_thread_register() };
+        assert_eq!(ret, 0, "could not register the test thread with the EAL");
+
+        let here = LCoreId::current();
+        assert_ne!(
+            here.as_u32(),
+            u32::MAX,
+            "a registered thread should have an lcore"
+        );
+        assert_ne!(
+            here,
+            LCoreId::main(),
+            "a registered non-EAL thread is not the main lcore"
+        );
+
+        // SAFETY: pairs with the `rte_thread_register` above.
+        unsafe { dpdk_sys::rte_thread_unregister() };
+    }
+}

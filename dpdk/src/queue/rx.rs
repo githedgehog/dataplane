@@ -7,6 +7,7 @@ use crate::dev::{DevIndex, RxOffload};
 use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, mem, socket};
+use core::marker::PhantomData;
 use errno::Errno;
 use std::ffi::c_int;
 use std::ptr::null_mut;
@@ -86,14 +87,31 @@ impl ConfigFailure {
     }
 }
 
-/// DPDK rx queue
+/// An exclusively-owned handle to one of a device's receive queues.
+///
+/// # Exclusivity
+///
+/// DPDK's contract is that `rte_eth_rx_burst` must not be called concurrently for the same queue:
+/// one queue, one thread. [`receive`](Self::receive) therefore takes `&mut self`, and a handle is
+/// handed out exactly once by [`Queues::take_rx`](crate::queue::Queues::take_rx) -- so two workers
+/// polling the same queue is a borrow error rather than a data race.
+///
+/// # Lifetime
+///
+/// The handle is branded with the lifetime of the [`Dev<Started>`](crate::dev::Dev) it came from.
+/// Since [`stop`](crate::dev::Dev::stop) consumes the device by value, using a queue after the
+/// device has stopped does not compile. There is deliberately no [`Drop`] impl: a queue handle is
+/// pure bookkeeping (the rings are released by `rte_eth_dev_close`), so NLL's precise answer --
+/// reject a *use* after stop, permit a stop while an unused handle is still in scope -- is the one
+/// we want.
 #[derive(Debug)]
-pub struct RxQueue {
+pub struct RxQueue<'dev> {
     pub(crate) config: RxQueueConfig,
     pub(crate) dev: DevIndex,
+    pub(crate) _dev: PhantomData<&'dev ()>,
 }
 
-impl RxQueue {
+impl RxQueue<'_> {
     /// Create and configure a new receive queue.
     ///
     /// This method is crate internal.
@@ -136,12 +154,13 @@ impl RxQueue {
                 nb_rx_desc,
                 socket_id.as_c_uint(),
                 &rx_conf,
-                config.pool.inner().as_mut_ptr(),
+                config.pool.as_mut_ptr(),
             )
         }) {
             None => Ok(RxQueue {
                 dev: dev.info.index(),
                 config,
+                _dev: PhantomData,
             }),
             Some(err) => Err(err),
         }
@@ -194,7 +213,7 @@ impl RxQueue {
     /// it is dropped, so a partially-processed or ignored burst can never leak.  At most
     /// [`MBUF_BURST`] packets are returned per call.
     #[tracing::instrument(level = "trace")]
-    pub fn receive(&self) -> MbufArray {
+    pub fn receive(&mut self) -> MbufArray {
         let mut pkts = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",

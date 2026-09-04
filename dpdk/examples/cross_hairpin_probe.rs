@@ -284,8 +284,11 @@ fn main() -> Result<(), Err> {
          Workstation host rx queue 0 on A should stay ~0 (traffic went into the hairpin, not the host)."
     );
 
-    let rxq = started_a
-        .rx_queue(RxQueueIndex(0))
+    let mut queues_a = started_a
+        .take_queues()
+        .ok_or("A device queues already taken")?;
+    let mut rxq = queues_a
+        .take_rx(RxQueueIndex(0))
         .ok_or("A host rx queue 0 missing")?;
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut host_rx = 0u64;

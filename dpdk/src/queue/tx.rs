@@ -7,6 +7,7 @@ use crate::dev::DevIndex;
 use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, socket};
+use core::marker::PhantomData;
 use core::ptr::null_mut;
 use errno::ErrorCode;
 use std::cmp::min;
@@ -66,7 +67,7 @@ pub enum ConfigFailure {
     InvalidSocket(ErrorCode),
 }
 
-impl TxQueue {
+impl TxQueue<'_> {
     /// Configure a new [`TxQueueStopped`].
     ///
     /// This method is crate internal.
@@ -119,6 +120,7 @@ impl TxQueue {
             errno::SUCCESS => Ok(TxQueue {
                 dev: dev.info.index(),
                 config,
+                _dev: PhantomData,
             }),
             errno::NEG_ENOMEM => Err(ConfigFailure::NoMemory(ErrorCode::parse(ret))),
             _ => Err(ConfigFailure::Unexpected(ErrorCode::parse(ret))),
@@ -171,7 +173,7 @@ impl TxQueue {
     /// than spinning forever.
     #[must_use = "the returned MbufArray holds packets that were NOT transmitted; retry or drop it"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&self, packets: MbufArray) -> MbufArray {
+    pub fn transmit(&mut self, packets: MbufArray) -> MbufArray {
         let len = packets.len();
         if len == 0 {
             return MbufArray::new_empty();
@@ -220,11 +222,24 @@ impl TxQueue {
     }
 }
 
-/// TODO
+/// An exclusively-owned handle to one of a device's transmit queues.
+///
+/// # Exclusivity
+///
+/// DPDK's contract is that `rte_eth_tx_burst` must not be called concurrently for the same queue:
+/// one queue, one thread. [`transmit`](Self::transmit) therefore takes `&mut self`, and a handle
+/// is handed out exactly once by [`Queues::take_tx`](crate::queue::Queues::take_tx) -- so two
+/// workers transmitting on the same queue is a borrow error rather than a data race.
+///
+/// # Lifetime
+///
+/// See [`RxQueue`](crate::queue::rx::RxQueue); the same branding and the same reason for having
+/// no [`Drop`] impl apply here.
 #[derive(Debug)]
-pub struct TxQueue {
+pub struct TxQueue<'dev> {
     pub(crate) config: TxQueueConfig,
     pub(crate) dev: DevIndex,
+    pub(crate) _dev: PhantomData<&'dev ()>,
 }
 
 /// TODO
