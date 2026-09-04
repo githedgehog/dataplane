@@ -26,6 +26,9 @@ dyn-iter = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }
+# Shares the PCI address type with `dataplane-init`, which is what binds these
+# devices for DPDK in the first place: one parser, one notion of equality.
+hardware = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }
