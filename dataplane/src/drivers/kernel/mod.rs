@@ -72,7 +72,7 @@ impl DriverKernel {
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
         num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         interfaces: &[Kif],
     ) -> Result<Vec<WorkerMonitor<'scope>>, std::io::Error> {
         let mut monitors: Vec<WorkerMonitor> = Vec::with_capacity(num_workers);
@@ -194,7 +194,7 @@ impl DriverKernel {
         workers_subsystem: &Subsystem,
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
         num_workers: usize,
-        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+        setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         status_writer: DriverStatusWriter,
     ) -> Result<(), DriverError> {
         // A current_thread runtime built inside another tokio runtime
