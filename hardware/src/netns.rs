@@ -13,7 +13,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use nix::mount::MsFlags;
@@ -36,6 +36,15 @@ pub enum NetnsError {
         #[source]
         source: io::Error,
     },
+    /// The descriptor could not be inspected as a namespace.
+    #[error("failed to identify namespace descriptor: {0}")]
+    Inspect(#[source] io::Error),
+    /// The descriptor refers to another kind of namespace.
+    #[error("expected a network namespace, found namespace type {0:#x}")]
+    WrongType(i32),
+    /// The descriptor could not be marked close-on-exec.
+    #[error("failed to mark namespace descriptor close-on-exec: {0}")]
+    CloseOnExec(#[source] io::Error),
     /// `setns` failed.
     #[error("failed to enter the network namespace: {0} (CAP_SYS_ADMIN is required)")]
     Enter(#[source] io::Error),
@@ -86,26 +95,40 @@ impl NetworkNamespace {
         })
     }
 
-    /// Take ownership of a descriptor that already refers to a network namespace.
-    #[must_use]
-    pub const fn from_fd(fd: OwnedFd) -> Self {
-        Self { fd }
+    /// Validate and own a network namespace descriptor, marking it close-on-exec.
+    ///
+    /// # Errors
+    ///
+    /// Rejects ordinary files and other namespace types, or reports a descriptor operation error.
+    pub fn from_fd(fd: OwnedFd) -> Result<Self, NetnsError> {
+        // SAFETY: NS_GET_NSTYPE takes no pointer argument, and `fd` stays open during the call.
+        let kind = unsafe { nix::libc::ioctl(fd.as_raw_fd(), nix::libc::NS_GET_NSTYPE) };
+        if kind == -1 {
+            return Err(NetnsError::Inspect(io::Error::last_os_error()));
+        }
+        if kind != nix::libc::CLONE_NEWNET {
+            return Err(NetnsError::WrongType(kind));
+        }
+        nix::fcntl::fcntl(
+            &fd,
+            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+        )
+        .map_err(|e| NetnsError::CloseOnExec(e.into()))?;
+        Ok(Self { fd })
     }
 
     /// Open a namespace by path, such as `/proc/<pid>/ns/net` or `/run/netns/<name>`.
     ///
     /// # Errors
     ///
-    /// Returns [`NetnsError::Open`] if the path cannot be opened.
+    /// Returns [`NetnsError::Open`] if opening fails, or a validation error from [`Self::from_fd`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self, NetnsError> {
         let path = path.as_ref();
         let file = File::open(path).map_err(|source| NetnsError::Open {
             path: path.display().to_string(),
             source,
         })?;
-        Ok(Self {
-            fd: OwnedFd::from(file),
-        })
+        Self::from_fd(OwnedFd::from(file))
     }
 
     /// Borrow the descriptor, for handing to `exec` or to `DEVLINK_ATTR_NETNS_FD`.
@@ -179,5 +202,46 @@ pub fn current() -> String {
     match std::fs::read_link(NetworkNamespace::THREAD_NETNS) {
         Ok(path) => path.display().to_string(),
         Err(e) => format!("unknown ({e})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+
+    #[test]
+    fn accepts_network_namespace_and_sets_cloexec() {
+        let fd = OwnedFd::from(File::open("/proc/thread-self/ns/net").expect("network namespace"));
+        fcntl(&fd, FcntlArg::F_SETFD(FdFlag::empty())).expect("simulate inherited FD");
+        let netns = NetworkNamespace::from_fd(fd).expect("valid network namespace");
+        let flags = fcntl(netns.as_raw(), FcntlArg::F_GETFD).expect("descriptor flags");
+        assert_ne!(flags & FdFlag::FD_CLOEXEC.bits(), 0);
+    }
+
+    #[test]
+    fn rejects_other_namespace_types() {
+        for (name, kind) in [
+            ("mnt", nix::libc::CLONE_NEWNS),
+            ("user", nix::libc::CLONE_NEWUSER),
+        ] {
+            let result = NetworkNamespace::open(format!("/proc/thread-self/ns/{name}"));
+            assert!(matches!(result, Err(NetnsError::WrongType(actual)) if actual == kind));
+        }
+    }
+
+    #[test]
+    fn rejects_non_namespace_descriptors() {
+        for path in ["/dev/null", "/proc/self/status"] {
+            assert!(matches!(
+                NetworkNamespace::open(path),
+                Err(NetnsError::Inspect(_))
+            ));
+        }
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        assert!(matches!(
+            NetworkNamespace::from_fd(socket.into()),
+            Err(NetnsError::Inspect(_))
+        ));
     }
 }
