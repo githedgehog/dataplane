@@ -18,6 +18,8 @@ use crate::pci::bridge::BridgeAttributes;
 pub mod group;
 pub mod mem;
 #[cfg(unix)]
+pub mod netns;
+#[cfg(unix)]
 pub mod nic;
 pub mod os;
 pub mod pci;
