@@ -3,7 +3,9 @@
 
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
-use args::{CmdArgs, Parser, PortArg};
+use args::{
+    CmdArgs, DriverConfigSection, LaunchConfiguration, Parser, PortArg, TracingDisplayOption,
+};
 
 use crate::drivers::DriverError;
 use crate::drivers::dpdk::{DriverDpdk, Port};
@@ -42,8 +44,8 @@ custom_target!("tower", LevelFilter::WARN, &["third-party"]);
 
 const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
 
-fn init_name(args: &CmdArgs) -> Result<String, String> {
-    if let Some(name) = args.get_name() {
+fn init_name(config: &LaunchConfiguration) -> Result<String, String> {
+    if let Some(name) = &config.general.name {
         Ok(name.clone())
     } else {
         let hostname =
@@ -54,17 +56,16 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
         Ok(name.to_string())
     }
 }
-fn init_logging(args: &CmdArgs, gwname: &str) {
+fn init_logging(config: &LaunchConfiguration, gwname: &str) {
     // Log throttling is on by default; a missing --tracing-rate-limit uses the
     // default. It can be disabled at runtime via the dataplane CLI.
-    let rate_limit =
-        args.tracing_rate_limit()
-            .map_or_else(TracingRateLimitConfig::default, |rate_limit| {
-                TracingRateLimitConfig {
-                    burst: rate_limit.burst,
-                    replenish_per_second: rate_limit.replenish_per_second,
-                }
-            });
+    let rate_limit = config.tracing.rate_limit.as_ref().map_or_else(
+        TracingRateLimitConfig::default,
+        |rate_limit| TracingRateLimitConfig {
+            burst: rate_limit.burst,
+            replenish_per_second: rate_limit.replenish_per_second,
+        },
+    );
     TracingControl::init_with_rate_limit(Some(rate_limit));
 
     let tctl = get_trace_ctl();
@@ -73,34 +74,39 @@ fn init_logging(args: &CmdArgs, gwname: &str) {
         option_env!("VERSION").unwrap_or("dev").to_string()
     );
 
-    if args.tracing().is_none() {
+    if config.tracing.config.is_none() {
         tctl.set_default_level(LevelFilter::DEBUG)
             .expect("Setting default loglevel failed");
     }
 }
 
-fn process_tracing_cmds(args: &CmdArgs) {
-    if let Some(tracing) = args.tracing()
+fn process_tracing_cmds(config: &LaunchConfiguration) {
+    if let Some(tracing) = &config.tracing.config
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
         error!("Invalid tracing configuration: {e}");
         panic!("Invalid tracing configuration: {e}");
     }
-    if args.show_tracing_tags() {
+    if config.tracing.show.tags == TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string_by_tag()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
-    if args.show_tracing_targets() {
+    if config.tracing.show.targets == TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
+}
+
+/// Handle tracing configuration generation before converting CLI arguments to launch config.
+fn process_tracing_cmdline_only(args: &CmdArgs) {
     if args.tracing_config_generate() {
+        TracingControl::init_with_rate_limit(None);
         let out = get_trace_ctl()
             .as_config_string()
             .unwrap_or_else(|e| e.to_string());
@@ -109,10 +115,10 @@ fn process_tracing_cmds(args: &CmdArgs) {
     }
 }
 
-fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
-    if args.bmp_enabled() {
-        let bind_addr = args.bmp_address();
-        let interval: Duration = args.bmp_interval();
+fn parse_bmp_params(config: &LaunchConfiguration) -> (Option<BmpServerParams>, Option<BmpOptions>) {
+    if let Some(bmp) = &config.bmp {
+        let bind_addr = bmp.address;
+        let interval: Duration = bmp.interval;
 
         info!("BMP: required. Bind-address: {bind_addr}, interval={interval:?}");
 
@@ -171,7 +177,7 @@ fn spawn_signal_handler(
 }
 
 /// Keep EAL initialization separate from explicit device attachment.
-fn eal_arguments(args: &CmdArgs) -> Vec<String> {
+fn eal_arguments(config: &LaunchConfiguration) -> Vec<String> {
     let main_lcore_arg = dpdk::eal::main_lcore_arg();
 
     let mut eal_args: Vec<String> = vec![
@@ -184,7 +190,7 @@ fn eal_arguments(args: &CmdArgs) -> Vec<String> {
         main_lcore_arg,
     ];
 
-    if args.driver_name() != "dpdk" {
+    if !matches!(config.driver, DriverConfigSection::Dpdk(_)) {
         // Classifier-only: rte_acl needs the memory subsystem and nothing else.
         eal_args.push("--no-huge".to_string());
         eal_args.push("--no-pci".to_string());
@@ -193,17 +199,19 @@ fn eal_arguments(args: &CmdArgs) -> Vec<String> {
     eal_args
 }
 
-fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
-    let eal_args = eal_arguments(args);
+fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
+    let eal_args = eal_arguments(config);
     info!("Initializing DPDK EAL with: {}", eal_args.join(" "));
     dpdk::eal::init(eal_args)
 }
 
 /// Validate every interface before probing any device.
-fn configured_pci_ports(args: &CmdArgs) -> Result<Vec<(String, PciAddress)>, DriverError> {
+fn configured_pci_ports(
+    config: &LaunchConfiguration,
+) -> Result<Vec<(String, PciAddress)>, DriverError> {
     let mut selected = Vec::new();
     let mut addresses = std::collections::BTreeSet::new();
-    for interface in args.interfaces() {
+    for interface in config.driver.interfaces() {
         let name = interface.interface.to_string();
         let Some(PortArg::PCI(ebdf)) = &interface.port else {
             return Err(DriverError::PortSetup(format!(
@@ -233,12 +241,15 @@ fn configured_pci_ports(args: &CmdArgs) -> Result<Vec<(String, PciAddress)>, Dri
 /// Probe, configure and start the selected devices. Init must prepare their kernel bindings first.
 fn bring_up_ports<'eal>(
     eal: &'eal mut Eal,
-    args: &CmdArgs,
+    config: &LaunchConfiguration,
 ) -> Result<Vec<Port<'eal>>, DriverError> {
-    let num_workers = u16::try_from(args.num_workers()).map_err(|_| {
-        DriverError::PortSetup(format!("{} workers is too many", args.num_workers()))
+    let num_workers = u16::try_from(config.driver.num_workers()).map_err(|_| {
+        DriverError::PortSetup(format!(
+            "{} workers is too many",
+            config.driver.num_workers()
+        ))
     })?;
-    let selected = configured_pci_ports(args)?;
+    let selected = configured_pci_ports(config)?;
     for (name, address) in &selected {
         eal.probe_pci(*address)
             .map_err(|e| DriverError::PortSetup(format!("interface '{name}': {e}")))?;
@@ -302,25 +313,39 @@ fn bring_up_ports<'eal>(
 
 #[allow(clippy::too_many_lines)]
 pub fn main() {
-    let args = CmdArgs::parse();
-    let gwname = match init_name(&args) {
+    // Accept init's sealed configuration or build one from CLI arguments.
+    let config = if LaunchConfiguration::was_inherited() {
+        LaunchConfiguration::inherit()
+    } else {
+        let args = CmdArgs::parse();
+        process_tracing_cmdline_only(&args);
+        match LaunchConfiguration::try_from(args) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Invalid command line arguments: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let gwname = match init_name(&config) {
         Ok(name) => name,
         Err(e) => {
             eprintln!("Failed to set gateway name: {e}");
             std::process::exit(1);
         }
     };
-    init_logging(&args, &gwname);
+    init_logging(&config, &gwname);
 
     // ACL classifiers and the DPDK driver share one EAL. Initialize it before either starts.
     // main_lcore_arg preserves the CPU affinity inherited by subsequently spawned threads.
-    let mut eal = init_eal(&args);
+    let mut eal = init_eal(&config);
 
-    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
+    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&config);
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
-    let agent_running = args.pyroscope_url().and_then(|url| {
+    let agent_running = config.profiling.pyroscope_url.as_ref().and_then(|url| {
         let pyroscope_config = PyroscopeConfig::default();
         let sample_rate = pyroscope_config.sample_rate;
 
@@ -354,7 +379,7 @@ pub fn main() {
         }
     });
 
-    process_tracing_cmds(&args);
+    process_tracing_cmds(&config);
 
     let (driver_status_writer, driver_status_reader) = driver_status_access();
 
@@ -378,9 +403,9 @@ pub fn main() {
     // assemble router parameters
     let mut binding = RouterParamsBuilder::default();
     let rp_builder = binding
-        .cli_sock_path(args.cli_sock_path())
-        .cpi_sock_path(args.cpi_sock_path())
-        .frr_agent_path(args.frr_agent_path());
+        .cli_sock_path(config.cli.cli_sock_path.clone())
+        .cpi_sock_path(config.routing.control_plane_socket.clone())
+        .frr_agent_path(config.routing.frr_agent_socket.clone());
 
     let Ok(router_params) = rp_builder.build() else {
         error!("Bad router configuration");
@@ -408,7 +433,7 @@ pub fn main() {
     spawn_metrics(
         &shutdown.metrics,
         &mgmt_handle,
-        args.metrics_address(),
+        config.metrics.address,
         setup.stats,
     );
 
@@ -416,8 +441,8 @@ pub fn main() {
     let pipeline_data = ingredients.data();
 
     // Ports must outlive the worker scope because queue handles borrow them.
-    let ports = if args.driver_name() == "dpdk" {
-        match bring_up_ports(&mut eal, &args) {
+    let ports = if matches!(config.driver, DriverConfigSection::Dpdk(_)) {
+        match bring_up_ports(&mut eal, &config) {
             Ok(ports) => ports,
             Err(e) => {
                 error!("Failed to bring up DPDK ports: {e}");
@@ -434,9 +459,16 @@ pub fn main() {
             &mgmt_handle,
             &shutdown.mgmt,
             MgmtParams {
-                config_dir: args.config_dir().cloned(),
+                config_dir: config
+                    .config_server
+                    .as_ref()
+                    .and_then(|c| c.config_dir.clone()),
                 hostname: gwname.clone(),
-                interfaces: args.interfaces().map(|i| i.interface).collect(),
+                interfaces: config
+                    .driver
+                    .interfaces()
+                    .map(|i| i.interface.clone())
+                    .collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
                     pipeline_data,
@@ -458,7 +490,7 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                let driver_result = match args.driver_name() {
+                let driver_result = match config.driver.name() {
                     "dpdk" => {
                         info!("Using driver DPDK...");
                         Some(DriverDpdk::start(
@@ -466,7 +498,7 @@ pub fn main() {
                             &shutdown.workers,
                             &mgmt_handle,
                             &ports,
-                            args.num_workers(),
+                            config.driver.num_workers(),
                             &ingredients.factory(),
                             driver_status_writer,
                         ))
@@ -476,8 +508,12 @@ pub fn main() {
                         Some(DriverKernel::start(
                             scope,
                             &shutdown.workers,
-                            args.kernel_interfaces(),
-                            args.num_workers(),
+                            config
+                                .driver
+                                .interfaces()
+                                .map(|i| i.interface.to_string())
+                                .collect::<Vec<_>>(),
+                            config.driver.num_workers(),
                             &ingredients.factory(),
                             driver_status_writer,
                         ))
@@ -535,6 +571,19 @@ pub fn main() {
 mod probe_tests {
     use super::*;
 
+    // Inherited configurations may contain interface lists rejected by CLI conversion.
+    fn launch_config(args: &CmdArgs) -> LaunchConfiguration {
+        let mut config = LaunchConfiguration::try_from(
+            CmdArgs::try_parse_from(["dataplane", "--driver", args.driver_name()]).unwrap(),
+        )
+        .unwrap();
+        match &mut config.driver {
+            DriverConfigSection::Dpdk(driver) => driver.interfaces = args.interfaces().collect(),
+            DriverConfigSection::Kernel(driver) => driver.interfaces = args.interfaces().collect(),
+        }
+        config
+    }
+
     #[test]
     fn eal_never_probes_configured_interfaces_implicitly() {
         for command_line in [
@@ -555,7 +604,8 @@ mod probe_tests {
             ],
         ] {
             let args = CmdArgs::try_parse_from(command_line).unwrap();
-            let flags = eal_arguments(&args);
+            let config = launch_config(&args);
+            let flags = eal_arguments(&config);
             assert!(flags.iter().any(|flag| flag == "--no-auto-probing"));
             assert!(!flags.iter().any(|flag| matches!(
                 flag.as_str(),
@@ -588,7 +638,7 @@ mod probe_tests {
             }
             let args = CmdArgs::try_parse_from(command_line).unwrap();
             assert!(
-                configured_pci_ports(&args)
+                configured_pci_ports(&launch_config(&args))
                     .unwrap_err()
                     .to_string()
                     .contains(message)
@@ -603,7 +653,7 @@ mod probe_tests {
         ])
         .unwrap();
         assert_eq!(
-            configured_pci_ports(&args).unwrap(),
+            configured_pci_ports(&launch_config(&args)).unwrap(),
             vec![
                 (
                     "eth1".to_string(),
