@@ -12,7 +12,7 @@
 use crate::dev::DevIndex;
 use crate::lcore::LCoreId;
 use core::ffi::c_uint;
-use errno::ErrorCode;
+use errno::{ErrorCode, StandardErrno};
 use tracing::{debug, info};
 
 /// DPDK socket manager.
@@ -211,12 +211,17 @@ impl SocketId {
         unsafe { dpdk_sys::rte_socket_count() }
     }
 
-    /// Look up a [`SocketId`] by the lcore it is associated with.
+    /// Look up the socket associated with an lcore.
     ///
-    /// Returns `None` if the lcore is not valid.
+    /// Returns `None` for out-of-range IDs, including an unregistered thread's ID.
     #[must_use]
-    pub fn get_by_lcore_id(id: LCoreId) -> SocketId {
-        SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(id.as_u32()) })
+    pub fn get_by_lcore_id(id: LCoreId) -> Option<SocketId> {
+        if id.as_u32() >= LCoreId::MAX {
+            return None;
+        }
+        Some(SocketId(unsafe {
+            dpdk_sys::rte_lcore_to_socket_id(id.as_u32())
+        }))
     }
 
     /// Look up a [`SocketId`] by the device it is associated with.
@@ -235,7 +240,7 @@ pub enum Preference {
     CurrentThread,
     /// Use a specific socket.
     Id(SocketId),
-    /// Use the socket of a specific lcore index.
+    /// Use the socket of a specific lcore ID.
     LCore(LCoreId),
     /// Use the socket of the device.
     Dev(DevIndex),
@@ -247,10 +252,71 @@ impl TryFrom<Preference> for SocketId {
 
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
-            Preference::CurrentThread => Ok(SocketId::get_by_lcore_id(LCoreId::current())),
+            // TLS lookup also works on unregistered threads.
+            Preference::CurrentThread => Ok(SocketId::current()),
             Preference::Id(id) => Ok(id),
-            Preference::LCore(lcore_id) => Ok(SocketId::get_by_lcore_id(lcore_id)),
+            Preference::LCore(lcore_id) => SocketId::get_by_lcore_id(lcore_id)
+                .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument)),
             Preference::Dev(dev) => dev.socket_id(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::with_eal;
+
+    #[test]
+    #[with_eal]
+    fn resolving_the_current_thread_preference_off_an_lcore_does_not_fault() {
+        // A plain std thread is not an EAL thread and has not registered.
+        let (lcore, resolved, by_lcore) = std::thread::spawn(|| {
+            let lcore = LCoreId::current();
+            (
+                lcore.as_u32(),
+                SocketId::try_from(Preference::CurrentThread),
+                SocketId::get_by_lcore_id(lcore),
+            )
+        })
+        .join()
+        .expect("unregistered thread panicked");
+
+        assert_eq!(
+            lcore,
+            u32::MAX,
+            "an unregistered thread reports LCORE_ID_ANY"
+        );
+        assert!(
+            resolved.is_ok(),
+            "the default preference must resolve on any thread"
+        );
+        assert!(
+            by_lcore.is_none(),
+            "an out-of-range lcore id must be rejected, not indexed"
+        );
+    }
+
+    #[test]
+    #[with_eal]
+    fn a_valid_lcore_still_resolves() {
+        let main = crate::lcore::LCoreId::main();
+        assert!(main.as_u32() < LCoreId::MAX);
+        assert!(
+            SocketId::get_by_lcore_id(main).is_some(),
+            "the main lcore must have a socket"
+        );
+        assert!(SocketId::try_from(Preference::LCore(main)).is_ok());
+    }
+
+    #[test]
+    #[with_eal]
+    fn out_of_range_lcore_ids_are_all_rejected() {
+        for id in [LCoreId::MAX, LCoreId::MAX + 1, u32::MAX / 2, u32::MAX] {
+            assert!(
+                SocketId::get_by_lcore_id(LCoreId(id)).is_none(),
+                "lcore id {id} is out of range and must be rejected"
+            );
         }
     }
 }

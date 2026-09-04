@@ -30,11 +30,7 @@ pub enum LCorePriority {
     RealTime = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
 }
 
-/// An iterator over the available [`LCoreId`] values.
-///
-/// # Note
-///
-/// This iterator deliberately skips the main LCore.
+/// Iterates enabled EAL lcores except the main lcore.
 #[derive(Debug)]
 #[repr(transparent)]
 struct LCoreIdIterator {
@@ -202,9 +198,7 @@ impl LCoreParameters for LCore {
 pub struct LCoreId(pub u32); // TODO: remove pub from inner value
 
 impl LCoreId {
-    /// [`LCoreId`] in an invalid condition is used as a signal to DPDK to
-    /// return the first actual [`LCoreId`] in the [`LCoreIdIterator`].
-    /// This value is also used to indicate that iteration over `LCoreId`s is complete.
+    /// DPDK increments this sentinel to start iteration at lcore 0.
     const INVALID: LCoreId = LCoreId(u32::MAX);
 }
 
