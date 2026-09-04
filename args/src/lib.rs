@@ -428,6 +428,16 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
     /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
     pub num_workers: u16,
+    /// Whether to isolate the packet path in its own network namespace.
+    ///
+    /// When set, `dataplane-init` creates a network namespace, moves the configured devices into
+    /// it, and hands it to the dataplane as a descriptor. The dataplane keeps its control plane in
+    /// the host's namespace and runs only the datapath thread in the isolated one.
+    ///
+    /// This is meaningful for bifurcated drivers such as mlx5, where the device is still a kernel
+    /// netdev and can therefore belong to a namespace. A device bound to `vfio-pci` has no
+    /// namespace association at all, so isolating it buys nothing.
+    pub netns: bool,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -760,6 +770,50 @@ impl LaunchConfiguration {
     /// The parent process must pass the serialized configuration file at this
     /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
+
+    /// Standard file descriptor number for the datapath's network namespace.
+    ///
+    /// Optional, unlike the two above: a dataplane driving devices the kernel still owns needs no
+    /// namespace, and one running without `dataplane-init` has nobody to make it one.
+    ///
+    /// The namespace travels as a descriptor rather than as a path because that is what keeps it
+    /// alive. There is no bind mount under `/run/netns` to outlive the process and no name for
+    /// anything to collide with; the namespace exists exactly as long as some descriptor refers to
+    /// it, and the kernel closes this one however the process dies. See
+    /// [`hardware::netns`](../dataplane_hardware/netns/index.html).
+    pub const STANDARD_NETNS_FD: RawFd = 50;
+
+    /// Whether the parent handed us a network namespace for the datapath.
+    ///
+    /// Tested the same way as [`was_inherited`](Self::was_inherited), and for the same reason: an
+    /// open descriptor at the agreed number is the whole protocol.
+    #[must_use]
+    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
+    pub fn netns_was_inherited() -> bool {
+        // SAFETY: as in `was_inherited` -- the borrow does not outlive the `fcntl` call, is never
+        // closed, and a descriptor that is not open is reported as `EBADF` rather than misbehaving.
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(Self::STANDARD_NETNS_FD) };
+        nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+    }
+
+    /// Take ownership of the inherited network namespace descriptor, if there is one.
+    ///
+    /// Returns `None` when no namespace was passed, which is the ordinary case for a dataplane
+    /// started without `dataplane-init`.
+    ///
+    /// # Panics
+    ///
+    /// Never: the descriptor is only claimed once its presence has been established.
+    #[must_use]
+    #[allow(unsafe_code)] // claiming an inherited descriptor is inherently a raw operation
+    pub fn inherit_netns() -> Option<OwnedFd> {
+        if !Self::netns_was_inherited() {
+            return None;
+        }
+        // SAFETY: the descriptor is open, was placed there by the parent for this purpose, and is
+        // claimed exactly once -- this is the only caller, and it consumes the number.
+        Some(unsafe { OwnedFd::from_raw_fd(Self::STANDARD_NETNS_FD) })
+    }
 
     /// Inherit the launch configuration from the parent process.
     ///
@@ -1218,6 +1272,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         interfaces: value.interfaces().collect(),
                         eal_args,
                         num_workers: value.num_workers,
+                        netns: value.datapath_netns,
                     })
                 }
                 Some(driver) if driver == "kernel" => {
@@ -1302,6 +1357,14 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         help = "Number of worker threads for the kernel driver in [1..64]"
     )]
     num_workers: u16,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run the packet path in its own network namespace, created by dataplane-init and \
+                handed to the dataplane as a descriptor. Only meaningful with --driver dpdk."
+    )]
+    datapath_netns: bool,
 
     #[arg(
         long,
