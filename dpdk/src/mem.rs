@@ -7,6 +7,7 @@ use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
 use arrayvec::ArrayVec;
+use concurrency::reclaim::{Attendants, Reclaimer};
 use concurrency::sync::{Arc, Mutex, OnceLock};
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
@@ -29,24 +30,119 @@ use net::buffer::{
 };
 use std::ffi::CString;
 
-/// DPDK memory manager
-#[repr(transparent)]
+/// How long [`Manager::shutdown`] waits for workers to release the pools they may be using.
+///
+/// Generous, because the alternative to waiting is leaking: a worker that has not reached a safe
+/// point may still hold mbufs, and freeing their pool underneath it is the exact failure the
+/// quiescence protocol exists to prevent.
+const SHUTDOWN_GRACE: core::time::Duration = core::time::Duration::from_secs(5);
+
+/// DPDK memory manager: owns the authority over mempool lifetime.
+///
+/// # Ownership model
+///
+/// Releasing a mempool is not safe on any single holder's schedule -- a worker may hold mbufs
+/// drawn from it with nothing the owner can see, and a PMD holds them until its device is closed.
+/// So release is deferred to quiescence, through
+/// [`concurrency::reclaim`](concurrency::reclaim): the manager holds the live set, and a retired
+/// pool is freed only once every worker has passed a safe point since its retirement. That also
+/// buys drop affinity -- `rte_mempool_free` runs on the thread that owns the [`Eal`](crate::eal::Eal),
+/// never on whichever worker happened to drop the last handle.
+///
+/// This is why `mem` is absent from [`EalShared`](crate::eal::EalShared): a
+/// [`Reclaimer`] is `!Sync` by design, so the manager is too, and it is
+/// reachable only through the owning `Eal`.
+///
+/// # Why creation does not go through here
+///
+/// [`Pool::new_pkt_pool`] is a free function that registers into a `Sync` inbox, and the manager
+/// *adopts* from that inbox. Requiring the manager for creation would mean pool creation could
+/// only happen on the owner's thread, which is more than DPDK asks (`rte_pktmbuf_pool_create` is
+/// internally locked) and would make a pool unobtainable from a test that does not happen to be
+/// running on whichever thread initialised the EAL. Between creation and adoption the inbox holds
+/// the handle, so a pool is never unowned.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Manager {
-    // what if we use quiescent here instead?
-    pool: Vec<concurrency::sync::Arc<Pool>>,
+    /// `Option` so [`shutdown`](Self::shutdown) can deliberately leak whatever it could not
+    /// release: dropping the reclaimer after `rte_eal_cleanup` has run would free mempools too
+    /// late, so on a failed drain the whole thing is forgotten instead.
+    reclaimer: Option<Reclaimer<Pool>>,
 }
 
 impl Manager {
     pub(crate) fn init() -> Manager {
-        Manager { pool: Vec::new() }
+        Manager {
+            // Built here, on the thread calling `rte_eal_init`, which is the main lcore and
+            // therefore the thread every destructor should run on.
+            reclaimer: Some(Reclaimer::new()),
+        }
     }
-}
 
-impl Drop for Manager {
-    fn drop(&mut self) {
-        info!("Closing DPDK memory manager");
+    /// Move any newly-created pools from the inbox into the live set.
+    fn adopt(&self) {
+        let Some(reclaimer) = self.reclaimer.as_ref() else {
+            return;
+        };
+        for pool in pending().lock().drain(..) {
+            reclaimer.register(pool);
+        }
+    }
+
+    /// Enrol workers in the quiescence protocol.
+    ///
+    /// A worker must call [`at_safe_point`](concurrency::reclaim::Attendant::at_safe_point)
+    /// between units of work, at a point where it holds no mbuf. That declaration is what permits
+    /// a retired pool to be freed; see [`concurrency::reclaim`] for the discipline in full.
+    ///
+    /// Returns `None` only after [`shutdown`](Self::shutdown).
+    #[must_use]
+    pub fn attendants(&self) -> Option<Attendants<'_, Pool>> {
+        self.adopt();
+        Some(self.reclaimer.as_ref()?.attendants())
+    }
+
+    /// Retire `pool`, so it is freed once no worker can still be using it.
+    ///
+    /// Returns `true` if it was live. Nothing is freed synchronously.
+    pub fn retire(&self, pool: &Pool) -> bool {
+        self.adopt();
+        let Some(reclaimer) = self.reclaimer.as_ref() else {
+            return false;
+        };
+        reclaimer.retire_unless(|entry| entry != pool) > 0
+    }
+
+    /// Free anything retired that no worker can still be using.
+    pub fn reclaim(&self) {
+        self.adopt();
+        if let Some(reclaimer) = self.reclaimer.as_ref() {
+            reclaimer.reclaim();
+        }
+    }
+
+    /// Retire every pool and wait for it to be freed, then give up ownership.
+    ///
+    /// Called from [`Eal`](crate::eal::Eal)'s `Drop`, before `rte_eal_cleanup`.
+    ///
+    /// Whatever could not be released within [`SHUTDOWN_GRACE`] is leaked on purpose, and loudly:
+    /// a worker still holding mbufs is exactly the case where freeing is worse than leaking. The
+    /// reclaimer is forgotten either way, so drop glue cannot free a mempool after
+    /// `rte_eal_cleanup` has already torn the EAL down.
+    #[cold]
+    pub(crate) fn shutdown(&mut self) {
+        self.adopt();
+        let Some(reclaimer) = self.reclaimer.take() else {
+            return;
+        };
+        match reclaimer.drain_until(std::time::Instant::now() + SHUTDOWN_GRACE) {
+            Ok(()) => info!("all memory pools released"),
+            Err(still_held) => error!(
+                "{still_held}; a worker did not reach a safe point within {SHUTDOWN_GRACE:?}, so                  these pools are leaked rather than freed while it may still be reading them"
+            ),
+        }
+        // Never dropped: see the note on the field.
+        core::mem::forget(reclaimer);
     }
 }
 
@@ -57,9 +153,9 @@ impl Drop for Manager {
 /// `Pool` is `Clone` over an `Arc`, so every holder keeps the mempool alive: a device that was
 /// configured with it (through [`RxQueueConfig::pool`](crate::queue::rx::RxQueueConfig)), and a
 /// batch of mbufs in transit between threads (see [`Consigned`]). The mempool is freed when the
-/// last handle drops -- which, because the crate registers one handle per pool and releases the
-/// registry only during [`Eal`](crate::eal::Eal) teardown, cannot happen before every device is
-/// closed.
+/// last handle drops -- which, because [`Manager`] tracks a handle to every pool and releases it
+/// only once no worker can still be using it, cannot happen before every device is closed and
+/// every worker has reached a safe point.
 ///
 /// That ordering is the whole point. A mempool is not safe to free on any single owner's
 /// schedule: the PMD keeps mbufs drawn from it until the device is stopped *and* closed
@@ -116,46 +212,24 @@ impl Display for Pool {
     }
 }
 
-/// One handle per pool created through [`Pool::new_pkt_pool`], in creation order.
+/// Pools created but not yet adopted by the [`Manager`].
 ///
-/// This is what keeps a mempool alive for the life of the process. Released by [`release_all`]
-/// during EAL teardown; until then its handle is a floor on every pool's reference count, so no
-/// other holder dropping its clone can free anything.
+/// A `Sync` staging area, not the authority: authority over mempool lifetime belongs to
+/// [`Manager`]'s [`Reclaimer`], which is `!Sync` and lives in the owning
+/// [`Eal`](crate::eal::Eal). Creation can happen on any thread, so it stages here and the manager
+/// adopts on its next operation.
+///
+/// The inbox holds a handle, so a pool is never without an owner between creation and adoption --
+/// and a pool created when no `Eal` exists, or after shutdown, simply stays here. That leaks it,
+/// which is the correct outcome for memory nothing is tracking.
 ///
 /// A `OnceLock` around the `Mutex` rather than a `Mutex` in the static directly:
 /// `loom::sync::Mutex::new` is not `const fn`, so a static initializer does not typecheck under
 /// the loom backend of `concurrency`.
-static POOLS: OnceLock<Mutex<Vec<Pool>>> = OnceLock::new();
+static PENDING: OnceLock<Mutex<Vec<Pool>>> = OnceLock::new();
 
-fn registry() -> &'static Mutex<Vec<Pool>> {
-    POOLS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-/// Drop the crate's handle to every pool, freeing those with no other holder.
-///
-/// # Safety
-///
-/// Every ethernet device must already be closed and no [`Mbuf`] may still be alive, since this is
-/// the point at which the backing memory both refer to can go away. Called from
-/// [`Eal`](crate::eal::Eal)'s `Drop`, before
-/// [`rte_eal_cleanup`](dpdk_sys::rte_eal_cleanup).
-///
-/// A pool still held elsewhere is *not* freed here -- it leaks rather than being freed while in
-/// use, which is the right way round. Each such pool is logged.
-#[cold]
-pub(crate) unsafe fn release_all() {
-    let mut pools = registry().lock();
-    // Reverse creation order, so a pool that some later pool was built to feed outlives it.
-    for pool in pools.drain(..).rev() {
-        let outstanding = Arc::strong_count(&pool.0) - 1;
-        if outstanding > 0 {
-            warn!(
-                "memory pool {name} still has {outstanding} other holder(s) at EAL teardown;                  leaking it rather than freeing memory that is still referenced",
-                name = pool.name(),
-            );
-        }
-        drop(pool);
-    }
+fn pending() -> &'static Mutex<Vec<Pool>> {
+    PENDING.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 impl Pool {
@@ -196,10 +270,10 @@ impl Pool {
 
         let handle = Pool(Arc::new(PoolInner { config, pool }));
 
-        // Register before handing out a handle, so teardown cannot miss a pool that a caller is
-        // already using -- and so the registry's clone is a floor on the reference count from the
-        // moment the pool exists.
-        registry().lock().push(handle.clone());
+        // Stage before handing out a handle, so a manager adopting concurrently cannot miss it --
+        // and so a clone is a floor on the reference count from the moment the pool exists,
+        // whether or not an `Eal` has adopted it yet.
+        pending().lock().push(handle.clone());
 
         Ok(handle)
     }
@@ -1225,20 +1299,19 @@ mod tests {
         assert_eq!(b.len(), 2);
     }
 
-    /// The registry's handle is a floor on the reference count, so dropping every caller-held
-    /// clone cannot free the mempool. This is what makes the `Drop` on `PoolInner` safe to have
-    /// at all.
+    /// A tracked handle is a floor on the reference count, so dropping every caller-held clone
+    /// cannot free the mempool. This is what makes the `Drop` on `PoolInner` safe to have at all.
     #[test]
     #[with_eal]
-    fn the_registry_holds_the_pool_alive() {
+    fn a_tracked_pool_is_held_alive() {
         let handle = pool("floor_pool", 511);
-        // Two: the registry's clone and this one.
+        // Two: the inbox's clone and this one.
         assert_eq!(Arc::strong_count(&handle.0), 2);
 
         let mbufs = handle.alloc_bulk(4).expect("alloc_bulk failed");
         drop(handle);
 
-        // Only the registry's clone remains, so nothing was freed and the mbufs are still live.
+        // Only the tracked clone remains, so nothing was freed and the mbufs are still live.
         drop(mbufs);
     }
 
@@ -1251,25 +1324,90 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// Every created pool lands in the registry, which is what releases it at EAL teardown.
-    /// A pool that never registered would be leaked outright.
+    /// Every created pool lands in the adoption inbox. One that never staged would be invisible
+    /// to the manager and leaked outright.
     #[test]
     #[with_eal]
-    fn created_pools_are_registered_for_teardown() {
-        let created = pool("registered_pool", 511);
-        // Membership, not a count: the whole test binary shares one registry and sibling tests
+    fn created_pools_are_staged_for_adoption() {
+        let created = pool("staged_pool", 511);
+        // Membership, not a count: the whole test binary shares one inbox and sibling tests
         // create pools concurrently, so any count taken here is immediately stale.
-        let registered = registry().lock();
-        let matching: Vec<_> = registered
-            .iter()
-            .filter(|entry| **entry == created)
-            .collect();
+        let staged = pending().lock();
+        let matching: Vec<_> = staged.iter().filter(|entry| **entry == created).collect();
         assert_eq!(
             matching.len(),
             1,
-            "a created pool must appear in the teardown registry exactly once"
+            "a created pool must appear in the adoption inbox exactly once"
         );
-        assert_eq!(matching[0].name(), "registered_pool");
+        assert_eq!(matching[0].name(), "staged_pool");
+    }
+
+    /// The manager's side of the contract: it adopts from the inbox, and a retired pool loses its
+    /// tracked handle only through the reclaimer.
+    ///
+    /// Builds its own [`Manager`] rather than reaching through an [`Eal`](crate::eal::Eal), which
+    /// a unit test cannot do: the test EAL is exposed only as an
+    /// [`EalShared`](crate::eal::EalShared), and `mem` is deliberately absent from that
+    /// projection because a [`Reclaimer`] is `!Sync`. Sound here only because nothing else in the
+    /// test binary drains the inbox -- in production there is exactly one `Eal` and therefore one
+    /// manager, since DPDK permits one `rte_eal_init` per process.
+    #[test]
+    #[with_eal]
+    fn the_manager_adopts_then_releases_on_retirement() {
+        let manager = Manager::init();
+        let handle = pool("adopt_pool", 511);
+        assert!(
+            !pending().lock().is_empty(),
+            "the new pool should be staged"
+        );
+
+        // Adopting moves it from the inbox into the reclaimer.
+        manager.reclaim();
+        assert!(
+            !pending().lock().contains(&handle),
+            "adoption should have taken this pool out of the inbox"
+        );
+        // A floor, not an exact count: the reclaimer holds a clone in its live set *and* one in
+        // the published snapshot, and how many copies it keeps is its business. What matters here
+        // is that something other than this test still holds the pool.
+        assert!(
+            Arc::strong_count(&handle.0) > 1,
+            "the manager should be tracking the pool"
+        );
+
+        // With no attendants there is nothing to wait for, so retiring and reclaiming drops the
+        // tracked clone at once.
+        assert!(manager.retire(&handle), "the pool should have been live");
+        manager.reclaim();
+        assert_eq!(
+            Arc::strong_count(&handle.0),
+            1,
+            "after retirement this should be the only handle left"
+        );
+
+        // The mempool itself survives while this handle lives, which is what keeps outstanding
+        // mbufs valid.
+        let mbufs = handle.alloc_bulk(2).expect("pool must still be usable");
+        drop(mbufs);
+    }
+
+    /// Shutdown gives up ownership, so a pool created afterwards stays staged -- leaked rather
+    /// than freed by something no longer tracking it.
+    #[test]
+    #[with_eal]
+    fn shutdown_stops_adopting() {
+        let mut manager = Manager::init();
+        manager.shutdown();
+        assert!(
+            manager.attendants().is_none(),
+            "a shut-down manager must not enrol new workers"
+        );
+        let handle = pool("post_shutdown_pool", 511);
+        manager.reclaim();
+        assert!(
+            pending().lock().contains(&handle),
+            "with no manager to adopt it, the pool stays staged"
+        );
     }
 
     /// The point of the whole design: a consigned batch really can cross a thread boundary, be
