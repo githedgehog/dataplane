@@ -601,7 +601,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "serde_urlencoded",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tower-service",
@@ -848,7 +848,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
- "thiserror",
+ "thiserror 2.0.20",
  "url",
  "uuid",
 ]
@@ -921,7 +921,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
 dependencies = [
  "nix 0.31.3",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
 ]
 
@@ -1223,7 +1223,7 @@ dependencies = [
  "pyroscope",
  "rtnetlink",
  "serde",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1244,7 +1244,7 @@ dependencies = [
  "dataplane-lookup",
  "dataplane-match-action",
  "dataplane-net",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1289,7 +1289,7 @@ dependencies = [
  "serde",
  "serde_yaml_ng",
  "sha2",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1310,7 +1310,7 @@ dependencies = [
  "regex",
  "rkyv",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1376,7 +1376,7 @@ dependencies = [
  "multi_index_map",
  "ordermap",
  "pretty_assertions",
- "thiserror",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -1396,7 +1396,7 @@ dependencies = [
  "dataplane-net",
  "nix 0.31.3",
  "serde",
- "thiserror",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -1427,7 +1427,7 @@ dependencies = [
 name = "dataplane-errno"
 version = "0.27.0"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1450,7 +1450,7 @@ dependencies = [
  "etherparse",
  "linkme",
  "shuttle",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-test",
@@ -1503,7 +1503,7 @@ dependencies = [
  "serde",
  "serde_yaml_ng",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1529,11 +1529,14 @@ dependencies = [
  "dataplane-hardware",
  "dataplane-id",
  "dataplane-sysfs",
+ "devlink",
+ "futures",
  "nix 0.31.3",
  "procfs",
  "strum",
  "strum_macros",
- "thiserror",
+ "thiserror 2.0.20",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1558,7 +1561,7 @@ dependencies = [
  "rtnetlink",
  "serde",
  "static_assertions",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1587,7 +1590,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
 ]
@@ -1611,7 +1614,7 @@ dependencies = [
  "dataplane-concurrency",
  "left-right 0.11.7",
  "serial_test",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1640,7 +1643,7 @@ dependencies = [
  "prefix-trie",
  "serde",
  "serde_yaml_ng",
- "thiserror",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -1706,7 +1709,7 @@ dependencies = [
  "pretty_assertions",
  "rtnetlink",
  "serde",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1719,7 +1722,7 @@ dependencies = [
  "dataplane-n-vm-protocol",
  "nix 0.31.3",
  "parking_lot",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-vsock",
  "tracing",
@@ -1754,7 +1757,7 @@ dependencies = [
  "rtnetlink",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1807,7 +1810,7 @@ dependencies = [
  "roaring",
  "shuttle",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-test",
@@ -1838,7 +1841,7 @@ dependencies = [
  "static_assertions",
  "strum",
  "strum_macros",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1856,7 +1859,7 @@ dependencies = [
  "linkme",
  "ordermap",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -1906,7 +1909,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1934,7 +1937,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "small-map",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
 ]
@@ -1947,7 +1950,7 @@ dependencies = [
  "dataplane-n-vm",
  "nix 0.31.3",
  "procfs",
- "thiserror",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -1973,7 +1976,7 @@ dependencies = [
  "linkme",
  "ordermap",
  "serial_test",
- "thiserror",
+ "thiserror 2.0.20",
  "tracing",
  "tracing-error",
  "tracing-subscriber",
@@ -1999,7 +2002,7 @@ dependencies = [
  "dataplane-net",
  "left-right 0.11.7",
  "serde",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2039,7 +2042,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2100,6 +2103,20 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
  "unicode-xid",
+]
+
+[[package]]
+name = "devlink"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "genetlink",
+ "netlink-packet-core 0.8.2",
+ "netlink-packet-devlink",
+ "netlink-packet-generic",
+ "netlink-proto",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -2600,6 +2617,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "genetlink"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5630187517b443491246f00107e75065873a436f366532d554a45b44c979ccb8"
+dependencies = [
+ "futures",
+ "log",
+ "netlink-packet-core 0.8.2",
+ "netlink-packet-generic",
+ "netlink-proto",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2842,7 +2874,7 @@ dependencies = [
  "hwlocality-sys",
  "libc",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "windows-sys 0.61.2",
 ]
 
@@ -3289,7 +3321,7 @@ dependencies = [
  "jni-sys",
  "log",
  "simd_cesu8",
- "thiserror",
+ "thiserror 2.0.20",
  "walkdir",
  "windows-link",
 ]
@@ -3356,7 +3388,7 @@ dependencies = [
  "jsonptr",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3369,7 +3401,7 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3446,7 +3478,7 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tower",
@@ -3470,7 +3502,7 @@ dependencies = [
  "serde",
  "serde-value",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3508,7 +3540,7 @@ dependencies = [
  "pin-project",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3669,7 +3701,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb4bdc8b0ce69932332cf76d24af69c3a155242af95c226b2ab6c2e371ed1149"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.20",
  "zerocopy",
  "zerocopy-derive",
 ]
@@ -3735,7 +3767,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "quanta",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3904,7 +3936,7 @@ dependencies = [
  "netgauze-parse-utils",
  "serde",
  "strum_macros",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3923,7 +3955,7 @@ dependencies = [
  "netgauze-parse-utils",
  "serde",
  "strum_macros",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio-util",
 ]
 
@@ -3945,7 +3977,7 @@ checksum = "a4bf8cf641ca45eef8e65ec23bd48e8ed28eeee5a558f41066d66cca06c8e3ee"
 dependencies = [
  "ipnet",
  "serde",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3962,6 +3994,24 @@ name = "netlink-packet-core"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d6e2daf9a8c2e21302714706860a0e6be02e03d17294ecc66b354ea7d4059dd"
+
+[[package]]
+name = "netlink-packet-devlink"
+version = "0.1.0"
+source = "git+https://github.com/githedgehog/netlink-packet-devlink.git?branch=main#4c920fa98461432a7386dc98463e846f8902ba1a"
+dependencies = [
+ "netlink-packet-core 0.8.2",
+ "netlink-packet-generic",
+]
+
+[[package]]
+name = "netlink-packet-generic"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f891b2e0054cac5a684a06628f59568f841c93da4e551239da6e518f539e775"
+dependencies = [
+ "netlink-packet-core 0.8.2",
+]
 
 [[package]]
 name = "netlink-packet-route"
@@ -3996,7 +4046,7 @@ checksum = "3176f18d11a1ae46053e59ec89d46ba318ae1343615bd3f8c908bfc84edae35c"
 dependencies = [
  "byteorder",
  "pastey",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4011,7 +4061,7 @@ dependencies = [
  "log",
  "netlink-packet-core 0.8.2",
  "netlink-sys 0.8.8",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4312,7 +4362,7 @@ checksum = "97f6fccfd2d9d2df765ca23ff85fe5cc437fb0e6d3e164e4d3cbe09d14780c93"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.1",
- "thiserror",
+ "thiserror 2.0.20",
  "zerocopy",
  "zerocopy-derive",
 ]
@@ -4691,7 +4741,7 @@ dependencies = [
  "spin",
  "symbolic-demangle",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.20",
  "url",
  "uuid",
 ]
@@ -4932,7 +4982,7 @@ dependencies = [
  "serde",
  "strip-ansi-escapes",
  "strum",
- "thiserror",
+ "thiserror 2.0.20",
  "unicase",
  "unicode-segmentation",
  "unicode-width 0.2.2",
@@ -5099,7 +5149,7 @@ dependencies = [
  "netlink-proto",
  "netlink-sys 0.8.8",
  "nix 0.31.3",
- "thiserror",
+ "thiserror 2.0.20",
  "tokio",
 ]
 
@@ -5903,11 +5953,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.20",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

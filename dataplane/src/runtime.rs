@@ -10,7 +10,12 @@ use args::{
 use crate::drivers::DriverError;
 use crate::drivers::dpdk::{DriverDpdk, Port};
 use crate::drivers::kernel::DriverKernel;
-use crate::drivers::status::driver_status_access;
+use crate::drivers::status::{DriverStatusWriter, driver_status_access};
+use crate::packet_processor::PipelineIngredients;
+use concurrency::thread;
+#[allow(unused_imports)] // used under the loom/shuttle backends
+use concurrency::thread::BuilderExt;
+use hardware::netns::NetworkNamespace;
 use lifecycle::{
     CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
 };
@@ -313,6 +318,111 @@ fn bring_up_ports<'eal>(
     Ok(ports)
 }
 
+/// Everything that has to happen on the datapath's own thread, in the order it has to happen in.
+///
+/// # Why this is a thread and not just more of `main`
+///
+/// The dataplane spans two network namespaces: the control plane stays in the host's, talking to
+/// Kubernetes and FRR, while the packet path runs in one that owns the NICs. A thread moves between
+/// them with `setns`, which affects the calling thread alone -- so the jump has to happen somewhere
+/// that is not `main`, or the control plane would go with it.
+///
+/// The DPDK objects then pin themselves to this side. `rte_eal_init` only finds devices belonging
+/// to the namespace it runs in, so it must run *after* the jump; [`Eal`] is `!Send`; ports borrow
+/// the EAL and queues borrow the ports. Once the EAL is created here, everything descended from it
+/// has to stay here, which is why this function owns the whole sequence rather than handing pieces
+/// back.
+///
+/// Threads created after the jump inherit the namespace, so the workers spawned below land in it
+/// without doing anything themselves.
+///
+/// # Why it stops twice
+///
+/// Startup is interleaved with `main`, because the EAL and the packet path are wanted at different
+/// moments:
+///
+/// 1. Enter the namespace and create the EAL, then report through `eal_ready`. `main` waits for
+///    that before letting the management plane serve, because applying a configuration builds
+///    `rte_acl` classifiers and those need the EAL -- a configuration arriving first would meet a
+///    process that cannot compile it.
+/// 2. Wait on `go` before touching the hardware, so ports come up and workers start only once
+///    management is running. This is where the driver has always started; moving the EAL earlier
+///    should not drag the packet path along with it.
+fn run_dpdk_datapath(
+    config: &LaunchConfiguration,
+    netns: Option<&NetworkNamespace>,
+    workers: &lifecycle::Subsystem,
+    ingredients: PipelineIngredients,
+    status_writer: DriverStatusWriter,
+    eal_ready: &std::sync::mpsc::Sender<Result<(), String>>,
+    go: &std::sync::mpsc::Receiver<()>,
+) {
+    if let Some(netns) = netns {
+        // Both halves matter, and the second is the one that is easy to miss: `setns` gets access
+        // to the devices, and the fresh sysfs is what lets them be *enumerated*. Without it the EAL
+        // below probes nothing and reports only that no device matched.
+        if let Err(e) = netns.enter_with_sysfs() {
+            let detail = format!("failed to enter the datapath network namespace: {e}");
+            error!("{detail}");
+            // Only fails if `main` has already given up, in which case there is nobody to tell.
+            drop(eal_ready.send(Err(detail)));
+            return;
+        }
+        info!(
+            "Datapath thread is in network namespace {}",
+            hardware::netns::current()
+        );
+    }
+
+    let eal = init_eal(config);
+
+    if eal_ready.send(Ok(())).is_err() {
+        info!("The EAL is up but nothing is waiting for it; stopping");
+        return;
+    }
+
+    // `main` sends nothing and drops this when management fails to start, so a disconnect is the
+    // ordinary way to be told to stand down rather than an error.
+    if go.recv().is_err() {
+        info!("Datapath was told to stand down before starting");
+        return;
+    }
+
+    let ports = match bring_up_ports(&eal, config) {
+        Ok(ports) => ports,
+        Err(e) => {
+            error!("Failed to bring up DPDK ports: {e}");
+            workers.report_fatal("DPDK ports could not be brought up");
+            return;
+        }
+    };
+
+    // An inner scope, because the queue handles the workers own borrow these ports: the ports have
+    // to outlive every thread that touches one, and the scope is what proves they do. It returns
+    // when the supervisor has joined every worker, which happens once `workers` is cancelled.
+    concurrency::thread::scope(|scope| {
+        info!("Using driver DPDK...");
+        if let Err(e) = DriverDpdk::start(
+            scope,
+            workers,
+            &ports,
+            config.driver.num_workers(),
+            &ingredients.factory(),
+            status_writer,
+        ) {
+            error!("Failed to start driver: {e}");
+            workers.report_fatal("the DPDK driver could not be started");
+        }
+    });
+
+    // Every worker has been joined, so the queue handles that borrowed these ports are gone and the
+    // ports can be stopped. Explicitly, rather than leaving it to `PortLifecycle`'s `Drop`
+    // backstop, so a device that refuses to stop is reported.
+    for port in ports {
+        port.shutdown();
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     // Either `dataplane-init` handed us a sealed configuration over the standard descriptors, or we
@@ -354,7 +464,17 @@ pub fn main() {
     // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
     // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
     // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
-    let eal = init_eal(&config);
+    //
+    // Which *thread* initializes it is not a free choice. With the DPDK driver the EAL is created
+    // on the datapath thread instead of here, because that thread may first have moved into
+    // another network namespace and `rte_eal_init` only finds devices belonging to the namespace
+    // it runs in. Everything the EAL hands out is branded with its lifetime and `Eal` is `!Send`,
+    // so the EAL, the ports and the workers all have to live on that side together. See
+    // `run_dpdk_datapath`.
+    let _eal = match config.driver {
+        DriverConfigSection::Dpdk(_) => None,
+        DriverConfigSection::Kernel(_) => Some(init_eal(&config)),
+    };
 
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&config);
 
@@ -455,23 +575,72 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
-    // Ports are brought up before the worker scope opens, because the queue handles workers own are
-    // branded with the borrow of the port they came from: the ports have to outlive every thread
-    // that touches one. An empty vector for any other driver.
-    let ports = if matches!(config.driver, DriverConfigSection::Dpdk(_)) {
-        match bring_up_ports(&eal, &config) {
-            Ok(ports) => ports,
-            Err(e) => {
-                error!("Failed to bring up DPDK ports: {e}");
-                shutdown.fail();
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
+    // The namespace `dataplane-init` made for the datapath, if it made one. It arrives as a
+    // descriptor rather than a name, which is what keeps it alive: there is no bind mount to
+    // outlive this process and nothing to clean up, and when the last descriptor closes the kernel
+    // destroys the namespace and returns the devices to the host.
+    let datapath_netns = LaunchConfiguration::inherit_netns().map(NetworkNamespace::from_fd);
+    if datapath_netns.is_some() {
+        info!("Inherited a network namespace for the datapath");
+    }
 
     concurrency::thread::scope(|scope| {
+        // Two handshakes with the datapath thread. `eal_ready` is how it reports that the EAL
+        // exists, which management must not serve without; `go` is how it is told management is
+        // running and the hardware can come up. See `run_dpdk_datapath`.
+        let (eal_ready_tx, eal_ready_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+
+        // Only one driver ever runs, but the compiler cannot see that this arm and the kernel arm
+        // further down are exclusive, so ownership of the pipeline factory and the status writer
+        // goes to whichever one claims it here.
+        let kernel_driver = match config.driver {
+            DriverConfigSection::Dpdk(_) => {
+                let spawned = thread::Builder::new()
+                    .name("dpdk-datapath".to_string())
+                    .spawn_scoped(scope, {
+                        let config = &config;
+                        let netns = datapath_netns.as_ref();
+                        let workers = &shutdown.workers;
+                        move || {
+                            run_dpdk_datapath(
+                                config,
+                                netns,
+                                workers,
+                                ingredients,
+                                driver_status_writer,
+                                &eal_ready_tx,
+                                &go_rx,
+                            );
+                        }
+                    });
+                // A failure here is fatal but not a reason to leave by a different door: tripping
+                // the root token makes `run_mgmt` below report `Cancelled`, and the shutdown then
+                // drains in the usual order. Returning early instead would skip that drain.
+                if let Err(e) = spawned {
+                    error!("Failed to spawn the datapath thread: {e}");
+                    shutdown.fail();
+                } else {
+                    // Nothing below may serve a configuration until the EAL exists.
+                    match eal_ready_rx.recv() {
+                        Ok(Ok(())) => info!("The EAL is up; starting management"),
+                        Ok(Err(e)) => {
+                            error!("The datapath failed to start: {e}");
+                            shutdown.fail();
+                        }
+                        Err(_) => {
+                            error!("The datapath thread stopped without reporting why");
+                            shutdown.fail();
+                        }
+                    }
+                }
+                None
+            }
+            // The kernel driver has no namespace to enter and its EAL is already up, so it starts
+            // below in this scope exactly as it always has.
+            DriverConfigSection::Kernel(_) => Some((ingredients, driver_status_writer)),
+        };
+
         let mgmt_result = run_mgmt(
             &mgmt_handle,
             &shutdown.mgmt,
@@ -507,21 +676,10 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                let driver_result = match config.driver.name() {
-                    "dpdk" => {
-                        info!("Using driver DPDK...");
-                        Some(DriverDpdk::start(
-                            scope,
-                            &shutdown.workers,
-                            &ports,
-                            config.driver.num_workers(),
-                            &ingredients.factory(),
-                            driver_status_writer,
-                        ))
-                    }
-                    "kernel" => {
+                match kernel_driver {
+                    Some((ingredients, driver_status_writer)) => {
                         info!("Using driver kernel...");
-                        Some(DriverKernel::start(
+                        if let Err(e) = DriverKernel::start(
                             scope,
                             &shutdown.workers,
                             config
@@ -532,18 +690,19 @@ pub fn main() {
                             config.driver.num_workers(),
                             &ingredients.factory(),
                             driver_status_writer,
-                        ))
+                        ) {
+                            error!("Failed to start driver: {e}");
+                            shutdown.fail();
+                        }
                     }
-                    other => {
-                        error!("Unknown driver '{other}'. Stopping dataplane...");
-                        shutdown.fail();
-                        None
+                    // The DPDK datapath is already waiting on its own thread with the EAL up. This
+                    // releases it to bring the ports up and start polling.
+                    None => {
+                        if go_tx.send(()).is_err() {
+                            error!("The datapath thread is gone; cannot start the packet path");
+                            shutdown.fail();
+                        }
                     }
-                };
-
-                if let Some(Err(e)) = driver_result {
-                    error!("Failed to start driver: {e}");
-                    shutdown.fail();
                 }
             }
             Err(LaunchError::Cancelled) => {
@@ -564,13 +723,6 @@ pub fn main() {
     });
 
     let exit_code = i32::from(shutdown.is_fatal());
-
-    // Every worker has been joined by the scope above, so the queue handles that borrowed these
-    // ports are gone and the ports can be stopped. Explicitly, rather than leaving it to
-    // `PortLifecycle`'s `Drop` backstop, so a device that refuses to stop is reported.
-    for port in ports {
-        port.shutdown();
-    }
 
     setup.router.stop();
     mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
