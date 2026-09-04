@@ -372,7 +372,7 @@ impl From<MemFile> for FinalizedMemFile {
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct GeneralConfigSection {
     /// Name to give to this dataplane/gateway
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Configuration for the packet processing driver used by the dataplane.
@@ -426,6 +426,8 @@ pub struct DpdkDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
+    /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
+    pub num_workers: u16,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -447,6 +449,8 @@ pub struct DpdkDriverConfigSection {
 pub struct KernelDriverConfigSection {
     /// Kernel network interfaces to manage
     pub interfaces: Vec<InterfaceArg>,
+    /// Packet-processing worker threads to run
+    pub num_workers: u16,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -693,7 +697,58 @@ impl Default for ProfilingConfigSection {
     }
 }
 
+impl DriverConfigSection {
+    /// The driver's name, as the `--driver` flag spells it.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            DriverConfigSection::Dpdk(_) => "dpdk",
+            DriverConfigSection::Kernel(_) => "kernel",
+        }
+    }
+
+    /// The interfaces this driver was configured with.
+    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.interfaces.iter(),
+            DriverConfigSection::Kernel(kernel) => kernel.interfaces.iter(),
+        }
+    }
+
+    /// The number of packet-processing workers to run.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.num_workers.into(),
+            DriverConfigSection::Kernel(kernel) => kernel.num_workers.into(),
+        }
+    }
+}
+
 impl LaunchConfiguration {
+    /// Whether this process was handed a configuration by `dataplane-init`.
+    ///
+    /// [`inherit`](Self::inherit) panics when the descriptors are absent, which is right for a
+    /// process that is *supposed* to have them and wrong as a way to find out. This probes both
+    /// standard descriptors with `F_GETFD` instead, so the dataplane can be run directly from a
+    /// command line as well as launched by init.
+    ///
+    /// Both descriptors must be present. One without the other means something has gone wrong with
+    /// the handoff rather than that there was no handoff, and `inherit` should be left to fail
+    /// loudly about it.
+    #[must_use]
+    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
+    pub fn was_inherited() -> bool {
+        // SAFETY: `BorrowedFd` is only used for the duration of the `fcntl` call and never closed;
+        // borrowing a descriptor that turns out not to be open is exactly what is being tested, and
+        // `fcntl` reports that as `EBADF` rather than misbehaving.
+        let present = |fd: RawFd| {
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+        };
+        present(Self::STANDARD_INTEGRITY_CHECK_FD) && present(Self::STANDARD_CONFIG_FD)
+    }
+
     /// Standard file descriptor number for the integrity check memfd.
     ///
     /// The parent process must pass the integrity check (SHA-384 hash) file at this
@@ -1162,11 +1217,13 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     DriverConfigSection::Dpdk(DpdkDriverConfigSection {
                         interfaces: value.interfaces().collect(),
                         eal_args,
+                        num_workers: value.num_workers,
                     })
                 }
                 Some(driver) if driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
                         interfaces: value.interfaces().collect(),
+                        num_workers: value.num_workers,
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,

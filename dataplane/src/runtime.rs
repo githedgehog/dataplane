@@ -3,7 +3,9 @@
 
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
-use args::{CmdArgs, Parser, PortArg};
+use args::{
+    CmdArgs, DriverConfigSection, LaunchConfiguration, Parser, PortArg, TracingDisplayOption,
+};
 
 use crate::drivers::DriverError;
 use crate::drivers::dpdk::{DriverDpdk, Port};
@@ -42,8 +44,8 @@ custom_target!("tower", LevelFilter::WARN, &["third-party"]);
 
 const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
 
-fn init_name(args: &CmdArgs) -> Result<String, String> {
-    if let Some(name) = args.get_name() {
+fn init_name(config: &LaunchConfiguration) -> Result<String, String> {
+    if let Some(name) = &config.general.name {
         Ok(name.clone())
     } else {
         let hostname =
@@ -54,17 +56,16 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
         Ok(name.to_string())
     }
 }
-fn init_logging(args: &CmdArgs, gwname: &str) {
+fn init_logging(config: &LaunchConfiguration, gwname: &str) {
     // Log throttling is on by default; a missing --tracing-rate-limit uses the
     // default. It can be disabled at runtime via the dataplane CLI.
-    let rate_limit =
-        args.tracing_rate_limit()
-            .map_or_else(TracingRateLimitConfig::default, |rate_limit| {
-                TracingRateLimitConfig {
-                    burst: rate_limit.burst,
-                    replenish_per_second: rate_limit.replenish_per_second,
-                }
-            });
+    let rate_limit = config.tracing.rate_limit.as_ref().map_or_else(
+        TracingRateLimitConfig::default,
+        |rate_limit| TracingRateLimitConfig {
+            burst: rate_limit.burst,
+            replenish_per_second: rate_limit.replenish_per_second,
+        },
+    );
     TracingControl::init_with_rate_limit(Some(rate_limit));
 
     let tctl = get_trace_ctl();
@@ -73,34 +74,42 @@ fn init_logging(args: &CmdArgs, gwname: &str) {
         option_env!("VERSION").unwrap_or("dev").to_string()
     );
 
-    if args.tracing().is_none() {
+    if config.tracing.config.is_none() {
         tctl.set_default_level(LevelFilter::DEBUG)
             .expect("Setting default loglevel failed");
     }
 }
 
-fn process_tracing_cmds(args: &CmdArgs) {
-    if let Some(tracing) = args.tracing()
+fn process_tracing_cmds(config: &LaunchConfiguration) {
+    if let Some(tracing) = &config.tracing.config
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
         error!("Invalid tracing configuration: {e}");
         panic!("Invalid tracing configuration: {e}");
     }
-    if args.show_tracing_tags() {
+    if config.tracing.show.tags == TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string_by_tag()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
-    if args.show_tracing_targets() {
+    if config.tracing.show.targets == TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
+}
+
+/// Emit the generated tracing configuration and exit, if asked for.
+///
+/// Only reachable from a command line: it is a developer convenience, not something a launch
+/// configuration can express, so it is handled before the arguments become one.
+fn process_tracing_cmdline_only(args: &CmdArgs) {
     if args.tracing_config_generate() {
+        TracingControl::init_with_rate_limit(None);
         let out = get_trace_ctl()
             .as_config_string()
             .unwrap_or_else(|e| e.to_string());
@@ -109,10 +118,10 @@ fn process_tracing_cmds(args: &CmdArgs) {
     }
 }
 
-fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
-    if args.bmp_enabled() {
-        let bind_addr = args.bmp_address();
-        let interval: Duration = args.bmp_interval();
+fn parse_bmp_params(config: &LaunchConfiguration) -> (Option<BmpServerParams>, Option<BmpOptions>) {
+    if let Some(bmp) = &config.bmp {
+        let bind_addr = bmp.address;
+        let interval: Duration = bmp.interval;
 
         info!("BMP: required. Bind-address: {bind_addr}, interval={interval:?}");
 
@@ -173,7 +182,7 @@ fn spawn_signal_handler(
 /// Bring up the EAL with arguments appropriate to the configured driver.
 ///
 /// Only ever called once: `rte_eal_init` is process-global and a second call fails.
-fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
+fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
     let main_lcore_arg = dpdk::eal::main_lcore_arg();
 
     let mut eal_args: Vec<String> = vec![
@@ -186,11 +195,11 @@ fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
         main_lcore_arg.clone(),
     ];
 
-    if args.driver_name() == "dpdk" {
-        // Allow exactly the devices named on the command line. Without an allowlist the EAL probes
+    if let DriverConfigSection::Dpdk(dpdk) = &config.driver {
+        // Allow exactly the devices named in the configuration. Without an allowlist the EAL probes
         // every PCI device it recognises, which on a host with more than one NIC means attaching to
         // one the operator did not offer us -- including, potentially, the management uplink.
-        for interface in args.interfaces() {
+        for interface in &dpdk.interfaces {
             if let Some(PortArg::PCI(addr)) = &interface.port {
                 eal_args.push("-a".to_string());
                 eal_args.push(addr.to_string());
@@ -217,10 +226,13 @@ fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
 /// Ports are matched to configuration by **PCI address**, using the same
 /// [`PciAddress`] type `dataplane-init` binds them with, so the two agree on what
 /// `0000:02:00.1` means rather than each parsing the string their own way.
-fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>>, DriverError> {
-    let num_workers = u16::try_from(args.num_workers()).map_err(|_| {
-        DriverError::PortSetup(format!("{} workers is too many", args.num_workers()))
-    })?;
+fn bring_up_ports<'eal>(
+    eal: &'eal Eal,
+    config: &LaunchConfiguration,
+) -> Result<Vec<Port<'eal>>, DriverError> {
+    let workers = config.driver.num_workers();
+    let num_workers = u16::try_from(workers)
+        .map_err(|_| DriverError::PortSetup(format!("{workers} workers is too many")))?;
 
     // What the EAL actually probed, keyed by PCI address. `DevInfo::name` is the device's bus-level
     // name, which for a PCI device is its extended BDF whatever driver it is bound to -- unlike
@@ -250,7 +262,7 @@ fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>
     );
 
     let mut ports = Vec::new();
-    for interface in args.interfaces() {
+    for interface in config.driver.interfaces() {
         let Some(PortArg::PCI(ebdf)) = &interface.port else {
             return Err(DriverError::PortSetup(format!(
                 "interface '{}' has no PCI address; the DPDK driver needs one \
@@ -303,15 +315,31 @@ fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>
 
 #[allow(clippy::too_many_lines)]
 pub fn main() {
-    let args = CmdArgs::parse();
-    let gwname = match init_name(&args) {
+    // Either `dataplane-init` handed us a sealed configuration over the standard descriptors, or we
+    // were run directly and have to build one from the command line ourselves. Everything below
+    // sees only the configuration, so the two paths differ in exactly one place.
+    let config = if LaunchConfiguration::was_inherited() {
+        LaunchConfiguration::inherit()
+    } else {
+        let args = CmdArgs::parse();
+        process_tracing_cmdline_only(&args);
+        match LaunchConfiguration::try_from(args) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Invalid command line arguments: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let gwname = match init_name(&config) {
         Ok(name) => name,
         Err(e) => {
             eprintln!("Failed to set gateway name: {e}");
             std::process::exit(1);
         }
     };
-    init_logging(&args, &gwname);
+    init_logging(&config, &gwname);
 
     // Initialize the EAL as early as possible, and exactly once.
     //
@@ -326,13 +354,13 @@ pub fn main() {
     // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
     // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
     // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
-    let eal = init_eal(&args);
+    let eal = init_eal(&config);
 
-    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
+    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&config);
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
-    let agent_running = args.pyroscope_url().and_then(|url| {
+    let agent_running = config.profiling.pyroscope_url.as_ref().and_then(|url| {
         let pyroscope_config = PyroscopeConfig::default();
         let sample_rate = pyroscope_config.sample_rate;
 
@@ -366,7 +394,7 @@ pub fn main() {
         }
     });
 
-    process_tracing_cmds(&args);
+    process_tracing_cmds(&config);
 
     let (driver_status_writer, driver_status_reader) = driver_status_access();
 
@@ -390,9 +418,9 @@ pub fn main() {
     // assemble router parameters
     let mut binding = RouterParamsBuilder::default();
     let rp_builder = binding
-        .cli_sock_path(args.cli_sock_path())
-        .cpi_sock_path(args.cpi_sock_path())
-        .frr_agent_path(args.frr_agent_path());
+        .cli_sock_path(config.cli.cli_sock_path.clone())
+        .cpi_sock_path(config.routing.control_plane_socket.clone())
+        .frr_agent_path(config.routing.frr_agent_socket.clone());
 
     let Ok(router_params) = rp_builder.build() else {
         error!("Bad router configuration");
@@ -420,7 +448,7 @@ pub fn main() {
     spawn_metrics(
         &shutdown.metrics,
         &mgmt_handle,
-        args.metrics_address(),
+        config.metrics.address,
         setup.stats,
     );
 
@@ -430,8 +458,8 @@ pub fn main() {
     // Ports are brought up before the worker scope opens, because the queue handles workers own are
     // branded with the borrow of the port they came from: the ports have to outlive every thread
     // that touches one. An empty vector for any other driver.
-    let ports = if args.driver_name() == "dpdk" {
-        match bring_up_ports(&eal, &args) {
+    let ports = if matches!(config.driver, DriverConfigSection::Dpdk(_)) {
+        match bring_up_ports(&eal, &config) {
             Ok(ports) => ports,
             Err(e) => {
                 error!("Failed to bring up DPDK ports: {e}");
@@ -448,9 +476,16 @@ pub fn main() {
             &mgmt_handle,
             &shutdown.mgmt,
             MgmtParams {
-                config_dir: args.config_dir().cloned(),
+                config_dir: config
+                    .config_server
+                    .as_ref()
+                    .and_then(|c| c.config_dir.clone()),
                 hostname: gwname.clone(),
-                interfaces: args.interfaces().map(|i| i.interface).collect(),
+                interfaces: config
+                    .driver
+                    .interfaces()
+                    .map(|i| i.interface.clone())
+                    .collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
                     pipeline_data,
@@ -472,14 +507,14 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                let driver_result = match args.driver_name() {
+                let driver_result = match config.driver.name() {
                     "dpdk" => {
                         info!("Using driver DPDK...");
                         Some(DriverDpdk::start(
                             scope,
                             &shutdown.workers,
                             &ports,
-                            args.num_workers(),
+                            config.driver.num_workers(),
                             &ingredients.factory(),
                             driver_status_writer,
                         ))
@@ -489,8 +524,12 @@ pub fn main() {
                         Some(DriverKernel::start(
                             scope,
                             &shutdown.workers,
-                            args.kernel_interfaces(),
-                            args.num_workers(),
+                            config
+                                .driver
+                                .interfaces()
+                                .map(|i| i.interface.to_string())
+                                .collect::<Vec<_>>(),
+                            config.driver.num_workers(),
                             &ingredients.factory(),
                             driver_status_writer,
                         ))
