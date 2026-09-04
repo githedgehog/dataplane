@@ -70,14 +70,14 @@ fn build_packet(
 fn setup_masq_pipeline(
     overlay: &ValidatedOverlay,
 ) -> (
-    DynPipeline<TestBuffer>,
+    DynPipeline<'static, TestBuffer>,
     Arc<FlowTable>,
     FlowFilterContextWriter,
     NatTablesWriter,
     PortFwTableWriter,
     NatAllocatorWriter,
 ) {
-    let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new();
+    let mut pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new();
 
     // Flow table
     let flow_table = Arc::new(FlowTable::default());

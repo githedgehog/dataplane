@@ -353,7 +353,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a
+    where
+        Buf: 'a,
+    {
         // The driver hands us one bounded rx burst per poll and collects our whole output, so
         // materializing the burst here is safe (not an unbounded stream) and lets us pool the ACL
         // lookups into batched rte_acl calls (see `process_burst`).

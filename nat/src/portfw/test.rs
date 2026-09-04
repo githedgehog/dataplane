@@ -168,7 +168,7 @@ mod nf_test {
 
     // packet-dumping wrapper
     fn process_packet(
-        pipeline: &mut DynPipeline<TestBuffer>,
+        pipeline: &mut DynPipeline<'static, TestBuffer>,
         packet: Packet<TestBuffer>,
     ) -> Packet<TestBuffer> {
         println!("INPUT:{packet}");
@@ -199,13 +199,17 @@ mod nf_test {
     /// sets up a port-forwarding pipeline
     fn setup_pipeline(
         ruleset: &[PortFwEntry],
-    ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, PortFwTableWriter) {
+    ) -> (
+        Arc<FlowTable>,
+        DynPipeline<'static, TestBuffer>,
+        PortFwTableWriter,
+    ) {
         // build a pipeline with flow lookup + port forwarder
         let mut writer = PortFwTableWriter::new();
         let flow_table = Arc::new(FlowTable::default());
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
         let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
-        let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+        let pipeline: DynPipeline<'static, TestBuffer> = DynPipeline::new()
             .add_stage(flow_lookup_nf)
             .add_stage(TestFlowFilter)
             .add_stage(nf);
@@ -291,7 +295,7 @@ mod nf_test {
         assert!(output.meta().flow_info.is_none());
     }
 
-    fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
+    fn establish_tcp_connection(pipeline: &mut DynPipeline<'static, TestBuffer>) {
         // process TCP SYN packet: entries should be created in both directions
         let mut packet = tcp_packet_to_port_forward();
         packet.try_tcp_mut().unwrap().set_syn(true);

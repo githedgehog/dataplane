@@ -33,12 +33,12 @@ use vpcmap::map::VpcMapWriter;
 
 use stats::{Stats, StatsCollector, VpcMapName, VpcStatsStore};
 
-pub(crate) struct InternalSetup<Buf>
+pub(crate) struct InternalSetup<'nf, Buf>
 where
-    Buf: PacketBufferMut,
+    Buf: PacketBufferMut + 'nf,
 {
     pub router: Router,
-    pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<'nf, Buf> + 'nf>,
     pub flow_table: Arc<FlowTable>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablesw: NatTablesWriter,
@@ -51,11 +51,11 @@ where
 }
 
 /// Start a router and provide the associated pipeline
-pub(crate) fn start_router<Buf: PacketBufferMut>(
+pub(crate) fn start_router<'nf, Buf: PacketBufferMut + 'nf>(
     router: &lifecycle::Subsystem,
     params: RouterParams,
     driver_status: DriverStatusReader,
-) -> Result<InternalSetup<Buf>, RouterError> {
+) -> Result<InternalSetup<'nf, Buf>, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
 

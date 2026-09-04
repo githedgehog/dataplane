@@ -3,7 +3,6 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use crate::dyn_nf::DynNetworkFunctionImpl;
 use crate::{DynNetworkFunction, NetworkFunction, nf_dyn};
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
@@ -12,10 +11,9 @@ use id::Id;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use ordermap::OrderMap;
-use std::any::Any;
 
 /// A type that represents an Id for a stage or NF
-pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
+pub type StageId<'nf, Buf> = Id<Box<dyn DynNetworkFunction<Buf> + 'nf>>;
 
 /// Data associated to a `Pipeline`
 #[derive(Default, Debug)]
@@ -45,12 +43,25 @@ impl PipelineData {
 ///
 /// This struct is used to create a dynamic pipeline that can be updated at runtime.
 ///
+/// # The `'nf` lifetime
+///
+/// `'nf` bounds the boxed stages, and through them the buffer type: a `dyn Trait<Buf> + 'nf` is
+/// only well formed when `Buf: 'nf`. Pipelines over an owned buffer are `DynPipeline<'static, Buf>`
+/// and nothing changes for them, but the parameter is what lets a pipeline run over a *borrowed*
+/// buffer -- specifically a DPDK `Mbuf<'eal>`, which carries the lifetime of the EAL that owns the
+/// mempool its bytes live in and so is not `'static`.
+///
+/// It cannot be elided away. Rust has no way to say "this trait object lives exactly as long as
+/// that type parameter", and a bare `Box<dyn DynNetworkFunction<Buf>>` in a field takes the default
+/// object lifetime bound of `'static`, which reintroduces the `Buf: 'static` requirement that made
+/// an mbuf-backed pipeline impossible to write.
+///
 /// # See Also
 ///
 /// [`DynNetworkFunction`]
 #[derive(Default)]
-pub struct DynPipeline<Buf: PacketBufferMut> {
-    nfs: OrderMap<StageId<Buf>, Box<dyn DynNetworkFunction<Buf>>>,
+pub struct DynPipeline<'nf, Buf: PacketBufferMut> {
+    nfs: OrderMap<StageId<'nf, Buf>, Box<dyn DynNetworkFunction<Buf> + 'nf>>,
     data: Arc<PipelineData>,
 }
 
@@ -60,7 +71,7 @@ pub enum PipelineError {
     DuplicateStageId(String),
 }
 
-impl<Buf: PacketBufferMut> DynPipeline<Buf> {
+impl<'nf, Buf: PacketBufferMut + 'nf> DynPipeline<'nf, Buf> {
     /// Create a [`DynPipeline`].
     #[must_use]
     pub fn new() -> Self {
@@ -88,7 +99,7 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
     #[must_use]
-    pub fn add_stage<NF: NetworkFunction<Buf> + 'static>(self, mut nf: NF) -> Self {
+    pub fn add_stage<NF: NetworkFunction<Buf> + 'nf>(self, mut nf: NF) -> Self {
         nf.set_data(self.data.clone());
         self.add_stage_dyn(nf_dyn(nf))
     }
@@ -98,9 +109,9 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
     #[allow(unused)]
-    pub fn add_stage_with_id<NF: NetworkFunction<Buf> + 'static>(
+    pub fn add_stage_with_id<NF: NetworkFunction<Buf> + 'nf>(
         &mut self,
-        id: StageId<Buf>,
+        id: StageId<'nf, Buf>,
         nf: NF,
     ) -> Result<&mut Self, PipelineError> {
         self.add_stage_dyn_with_id(id, nf_dyn(nf))
@@ -116,8 +127,8 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// [`nf_dyn`]
     #[allow(unused)]
     #[must_use]
-    pub fn add_stage_dyn(mut self, nf: Box<dyn DynNetworkFunction<Buf>>) -> Self {
-        self.internal_add_stage_dyn_with_id(StageId::<Buf>::new(), nf);
+    pub fn add_stage_dyn(mut self, nf: Box<dyn DynNetworkFunction<Buf> + 'nf>) -> Self {
+        self.internal_add_stage_dyn_with_id(StageId::<'nf, Buf>::new(), nf);
         self
     }
 
@@ -147,16 +158,16 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// [`nf_dyn`]
     pub fn add_stage_dyn_with_id(
         &mut self,
-        id: StageId<Buf>,
-        nf: Box<dyn DynNetworkFunction<Buf>>,
+        id: StageId<'nf, Buf>,
+        nf: Box<dyn DynNetworkFunction<Buf> + 'nf>,
     ) -> Result<&mut Self, PipelineError> {
         self.internal_add_stage_dyn_with_id(id, nf)
     }
 
     fn internal_add_stage_dyn_with_id(
         &mut self,
-        id: StageId<Buf>,
-        nf: Box<dyn DynNetworkFunction<Buf>>,
+        id: StageId<'nf, Buf>,
+        nf: Box<dyn DynNetworkFunction<Buf> + 'nf>,
     ) -> Result<&mut Self, PipelineError> {
         // FIXME(mvachhar): There seems to be no method to insert and error if the key already exists.
         // As a result, this does a double hash and lookup.  Probably fine here, but may need to submit
@@ -171,42 +182,9 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
             Ok(self)
         }
     }
-
-    /// Get a static network function from the pipeline by stage id.
-    /// Get a dynamic network function from the pipeline by stage id.
-    ///
-    /// This method takes a stage id and returns the [`DynNetworkFunction`] associated with that stage.
-    ///
-    /// # See Also
-    ///
-    ///
-    /// This method takes a stage id and returns the [`NetworkFunction`] associated with that stage.
-    ///
-    /// # See Also
-    ///
-    pub fn get_stage_by_id<T: NetworkFunction<Buf> + 'static>(
-        &self,
-        id: &StageId<Buf>,
-    ) -> Option<&T> {
-        self.get_stage_dyn_by_id::<DynNetworkFunctionImpl<Buf, T>>(id)
-            .map(DynNetworkFunctionImpl::get_nf)
-    }
-
-    /// Get a dynamic network function from the pipeline by stage id.
-    ///
-    /// This method takes a stage id and returns the [`DynNetworkFunction`] associated with that stage.
-    ///
-    /// # See Also
-    ///
-    #[must_use]
-    pub fn get_stage_dyn_by_id<T: DynNetworkFunction<Buf>>(&self, id: &StageId<Buf>) -> Option<&T> {
-        self.nfs
-            .get(id)
-            .and_then(|nf| (&**nf as &dyn Any).downcast_ref::<T>())
-    }
 }
 
-impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
+impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<'_, Buf> {
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
         self.nfs
             .values_mut()
@@ -215,7 +193,7 @@ impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
     }
 }
 
-impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<'_, Buf> {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
@@ -231,13 +209,13 @@ mod test {
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
-    use crate::dyn_nf::DynNetworkFunctionImpl;
+    use crate::pipeline::PipelineError;
     use crate::sample_nfs::DecrementTtl;
     use crate::test_utils::DynStageGenerator;
     use crate::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
     use net::packet::test_utils::build_test_ipv4_packet;
 
-    type TestStageId = StageId<TestBuffer>;
+    type TestStageId = StageId<'static, TestBuffer>;
 
     #[test]
     fn long_dyn_pipeline() {
@@ -321,48 +299,22 @@ mod test {
         }
     }
 
+    /// The id-keyed insertion path: a stage added under an explicit id is accepted once, and a
+    /// second stage offered the same id is rejected rather than silently replacing it.
     #[test]
-    fn get_stage_by_id() {
-        let mut pipeline = DynPipeline::new();
-        let mut stages = DynStageGenerator::new();
-        let num_stages = 10u16;
-        let test_stage_id = TestStageId::new();
+    fn add_stage_with_id_rejects_a_duplicate_id() {
+        let mut pipeline = DynPipeline::<TestBuffer>::new();
+        let id = TestStageId::new();
 
-        for i in 0..num_stages {
-            if i == 5 {
-                pipeline
-                    .add_stage_with_id(test_stage_id, DecrementTtl)
-                    .unwrap();
-            } else {
-                pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
-            }
+        pipeline
+            .add_stage_with_id(id, DecrementTtl)
+            .expect("first insertion under a fresh id should be accepted");
+
+        // `add_stage_with_id` returns `&mut Self` on success, which is not `Debug`, so match
+        // rather than `expect_err`.
+        match pipeline.add_stage_with_id(id, DecrementTtl) {
+            Err(PipelineError::DuplicateStageId(reported)) => assert_eq!(reported, id.to_string()),
+            Ok(_) => panic!("second insertion under the same id must be rejected"),
         }
-
-        let stage = pipeline.get_stage_by_id::<DecrementTtl>(&test_stage_id);
-        assert!(stage.is_some());
-    }
-
-    #[test]
-    fn get_stage_dyn_by_id() {
-        let mut pipeline = DynPipeline::new();
-        let mut stages = DynStageGenerator::new();
-        let num_stages = 10u16;
-        let test_stage_id = TestStageId::new();
-
-        for i in 0..num_stages {
-            if i == 5 {
-                pipeline
-                    .add_stage_with_id(test_stage_id, DecrementTtl)
-                    .unwrap();
-            } else {
-                pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
-            }
-        }
-
-        let stage = pipeline
-            .get_stage_dyn_by_id::<DynNetworkFunctionImpl<TestBuffer, DecrementTtl>>(
-                &test_stage_id,
-            );
-        assert!(stage.is_some());
     }
 }

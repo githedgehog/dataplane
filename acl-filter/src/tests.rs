@@ -908,7 +908,11 @@ mod end_to_end {
 
     fn setup_pipeline(
         overlay: &ValidatedOverlay,
-    ) -> (DynPipeline<TestBuffer>, Arc<FlowTable>, PipelineHandles) {
+    ) -> (
+        DynPipeline<'static, TestBuffer>,
+        Arc<FlowTable>,
+        PipelineHandles,
+    ) {
         let flow_table = Arc::new(FlowTable::default());
 
         let mut pipeline = DynPipeline::new();

@@ -5,7 +5,6 @@ use crate::NetworkFunction;
 use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
-use std::any::Any;
 use std::marker::PhantomData;
 
 /// Trait for an object that processes a stream of packets.
@@ -17,7 +16,7 @@ use std::marker::PhantomData;
 ///
 /// * [`nf_dyn`]
 /// * [`crate::pipeline::DynPipeline`]
-pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
+pub trait DynNetworkFunction<Buf: PacketBufferMut> {
     /// The `process_dyn` method takes an iterator of [`Packet`] objects,
     /// However, unlike [`NetworkFunction::process`], this method does not require concrete
     /// iterator types.
@@ -31,7 +30,7 @@ pub trait DynNetworkFunction<Buf: PacketBufferMut>: Any {
     fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
 }
 
-pub(crate) struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf> + 'static> {
+pub(crate) struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> {
     nf: NF,
     _marker: PhantomData<Buf>,
 }
@@ -43,10 +42,6 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf,
             _marker: PhantomData,
         }
     }
-
-    pub fn get_nf(&self) -> &NF {
-        &self.nf
-    }
 }
 
 /// Creates a boxed, dynamic network function.
@@ -57,9 +52,9 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf,
 ///
 /// * [`DynNetworkFunction`]
 /// * [`crate::pipeline::DynPipeline`]
-pub fn nf_dyn<Buf: PacketBufferMut + 'static, NF: NetworkFunction<Buf> + 'static>(
+pub fn nf_dyn<'nf, Buf: PacketBufferMut + 'nf, NF: NetworkFunction<Buf> + 'nf>(
     nf: NF,
-) -> Box<dyn DynNetworkFunction<Buf>> {
+) -> Box<dyn DynNetworkFunction<Buf> + 'nf> {
     Box::new(DynNetworkFunctionImpl::new(nf))
 }
 
