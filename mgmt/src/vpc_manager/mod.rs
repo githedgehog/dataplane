@@ -14,7 +14,7 @@ use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     ManagedInterfaceKind, ManagedInterfaceName, MultiIndexInterfaceAssociationSpecMap,
     MultiIndexInterfaceSpecMap, MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap,
-    TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
+    TapRegistry, TryFromLinkMessage, VrfPropertiesSpec, VtepPropertiesSpec,
 };
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
@@ -35,21 +35,43 @@ use tracing::{debug, error, trace, warn};
 #[derive(Clone, Debug)]
 pub struct VpcManager<R> {
     handle: Arc<Handle>,
+    taps: Arc<TapRegistry>,
     _marker: PhantomData<R>,
 }
 
 impl<R> VpcManager<R> {
+    /// Create a manager which reconciles the linux networking stack against a VPC configuration.
+    ///
+    /// The manager owns the tap devices it creates: they exist for as long as it holds their
+    /// descriptors, and dropping it removes every one of them.  There is one such manager per
+    /// dataplane, and it lives as long as the dataplane's configuration does.
     pub fn new(handle: Arc<Handle>) -> Self {
         VpcManager {
             handle,
+            taps: Arc::new(TapRegistry::default()),
             _marker: PhantomData,
         }
+    }
+
+    /// The tap devices this manager is holding open.
+    ///
+    /// Every tap the manager created and has not yet removed is in here, because holding the
+    /// descriptor is the only thing keeping the device alive.  A tap which the reconciler removed
+    /// but which is still held would be an invisible leak: the device is gone from the kernel, and
+    /// the descriptor stays until the process exits.
+    #[must_use]
+    pub fn taps(&self) -> &TapRegistry {
+        &self.taps
     }
 }
 
 impl<T, U> From<&VpcManager<T>> for VpcManager<U> {
-    fn from(handle: &VpcManager<T>) -> Self {
-        Self::new(handle.handle.clone())
+    fn from(other: &VpcManager<T>) -> Self {
+        VpcManager {
+            handle: other.handle.clone(),
+            taps: other.taps.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -229,7 +251,7 @@ impl Reconcile for VpcManager<RequiredInformationBase> {
         }
 
         // reconciling the extant interfaces as much as possible
-        let iface_handle = Manager::<Interface>::new(self.handle.clone());
+        let iface_handle = Manager::<Interface>::new(self.handle.clone(), self.taps.clone());
         for (_, interface) in observation.interfaces.iter() {
             match requirement.interfaces.get_by_name(&interface.name) {
                 None if !is_ours(&interface.name) => {

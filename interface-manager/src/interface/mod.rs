@@ -171,7 +171,11 @@ impl Create for Manager<Interface> {
                 return Err(rtnetlink::Error::RequestFailed);
             }
             InterfacePropertiesSpec::Tap => {
-                return TapDevice::open(&requirement.name)
+                // A tap is not a netlink object we create; it is a descriptor we open, and the
+                // device exists only while we hold it.  The registry is the holder.
+                return self
+                    .taps
+                    .open(&requirement.name)
                     .map_err(|err| {
                         warn!("failed to create tap device: {err:?}");
                         rtnetlink::Error::RequestFailed
@@ -203,6 +207,15 @@ impl Remove for Manager<Interface> {
     where
         Self: 'a,
     {
+        if matches!(observation.properties, InterfaceProperties::Tap)
+            && self.taps.close(&observation.name)
+        {
+            // Our descriptor was the only thing keeping that device alive, so closing it is the
+            // removal; there is no netdev left for netlink to unlink.  A tap we do not hold falls
+            // through to the ordinary path, which is what collects one left behind by an older
+            // build that persisted its taps.
+            return Ok(());
+        }
         self.handle
             .link()
             .del(observation.index.to_u32())
