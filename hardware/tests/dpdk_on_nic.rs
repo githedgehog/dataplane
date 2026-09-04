@@ -210,27 +210,33 @@ fn select_ports() -> Result<(String, String), String> {
 }
 
 /// A configured, started port with its queues and the pool backing them.
-struct Port {
-    dev: dpdk::dev::Dev<dpdk::dev::Started>,
+struct Port<'eal> {
+    dev: dpdk::dev::Dev<'eal, dpdk::dev::Started>,
     mac: Mac,
-    /// Kept alive alongside `dev`: the PMD owns transmitted mbufs until the device stops, so this
-    /// must outlive it. Dropped explicitly, after the device, in `shutdown`.
-    tx_pool: Pool,
+    /// The pool transmitted mbufs are drawn from. A `Pool` is a `Copy` handle branded with the
+    /// EAL's lifetime; the mempool itself belongs to `mem::Manager` and is freed during `Eal`
+    /// teardown, after every device has been closed. So the ordering this field used to need an
+    /// explicit `drop` to get right is now structural, and unexpressible to get wrong.
+    tx_pool: Pool<'eal>,
 }
 
-impl Port {
-    fn shutdown(self) {
-        // Order matters and the natural one is wrong: the PMD holds transmitted mbufs until the
-        // device is stopped and its tx ring reclaimed, and those mbufs live in `tx_pool`. Reverse
-        // declaration order would free the pool first and leave the stop path walking freed memory.
-        let Port { dev, tx_pool, .. } = self;
-        drop(dev);
-        drop(tx_pool);
+impl Port<'_> {
+    /// Stop and close the port explicitly.
+    ///
+    /// `PortLifecycle`'s `Drop` would do this as a backstop, but only the explicit path can report
+    /// the driver's error rather than logging it, and a port that fails to close leaks its queue
+    /// rings for the rest of the process.
+    fn shutdown(self, tag: &str) {
+        self.dev
+            .stop()
+            .unwrap_or_else(|e| panic!("[{tag}] failed to stop device: {e}"))
+            .close()
+            .unwrap_or_else(|e| panic!("[{tag}] failed to close device: {e}"));
     }
 }
 
 /// Configure, queue up and start one port.
-fn bring_up(info: dpdk::dev::DevInfo, tag: &str) -> Port {
+fn bring_up<'eal>(eal: &'eal eal::Eal, info: dpdk::dev::DevInfo<'eal>, tag: &str) -> Port<'eal> {
     let config = DevConfig {
         num_rx_queues: 1,
         num_tx_queues: 1,
@@ -248,30 +254,34 @@ fn bring_up(info: dpdk::dev::DevInfo, tag: &str) -> Port {
         .apply(info)
         .unwrap_or_else(|e| panic!("[{tag}] failed to configure device: {e:?}"));
 
-    let rx_pool = Pool::new_pkt_pool(
-        PoolConfig::new(
-            format!("rx_pool_{tag}"),
-            PoolParams {
-                size: 2048,
-                ..Default::default()
-            },
+    let rx_pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new(
+                format!("rx_pool_{tag}"),
+                PoolParams {
+                    size: 2048,
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("[{tag}] invalid rx PoolConfig: {e:?}")),
         )
-        .unwrap_or_else(|e| panic!("[{tag}] invalid rx PoolConfig: {e:?}")),
-    )
-    .unwrap_or_else(|e| panic!("[{tag}] failed to create rx mempool: {e:?}"));
+        .unwrap_or_else(|e| panic!("[{tag}] failed to create rx mempool: {e:?}"));
 
-    let tx_pool = Pool::new_pkt_pool(
-        PoolConfig::new(
-            format!("tx_pool_{tag}"),
-            PoolParams {
-                size: 1024,
-                cache_size: 128,
-                ..Default::default()
-            },
+    let tx_pool = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new(
+                format!("tx_pool_{tag}"),
+                PoolParams {
+                    size: 1024,
+                    cache_size: 128,
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("[{tag}] invalid tx PoolConfig: {e:?}")),
         )
-        .unwrap_or_else(|e| panic!("[{tag}] invalid tx PoolConfig: {e:?}")),
-    )
-    .unwrap_or_else(|e| panic!("[{tag}] failed to create tx mempool: {e:?}"));
+        .unwrap_or_else(|e| panic!("[{tag}] failed to create tx mempool: {e:?}"));
 
     dev.new_rx_queue(RxQueueConfig {
         dev: dev.info.index(),
@@ -318,7 +328,7 @@ fn bring_up(info: dpdk::dev::DevInfo, tag: &str) -> Port {
 struct Direction<'a, 'dev> {
     tx: &'a mut dpdk::queue::tx::TxQueue<'dev>,
     rx: &'a mut dpdk::queue::rx::RxQueue<'dev>,
-    tx_pool: &'a Pool,
+    tx_pool: &'a Pool<'dev>,
     src_mac: Mac,
     dst_mac: Mac,
 }
@@ -456,8 +466,8 @@ fn tx_and_rx_across_a_cabled_nic_pair() {
     );
 
     let mut infos = infos.into_iter();
-    let port_a = bring_up(infos.next().expect("port A"), "a");
-    let port_b = bring_up(infos.next().expect("port B"), "b");
+    let port_a = bring_up(&eal, infos.next().expect("port A"), "a");
+    let port_b = bring_up(&eal, infos.next().expect("port B"), "b");
 
     assert_ne!(
         port_a.mac, port_b.mac,
@@ -560,8 +570,8 @@ fn tx_and_rx_across_a_cabled_nic_pair() {
         "b->a",
     );
 
-    port_a.shutdown();
-    port_b.shutdown();
+    port_a.shutdown("a");
+    port_b.shutdown("b");
     drop(eal);
 
     // Every probe must arrive. This is a direct cable with no contention, a 64-frame burst against
