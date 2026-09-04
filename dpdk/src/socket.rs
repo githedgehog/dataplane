@@ -73,10 +73,13 @@ impl Manager {
     /// Returns `None` if the lcore is not valid.
     #[must_use]
     pub fn id_for_lcore(&self, lcore: u32) -> Option<SocketId> {
-        if lcore >= unsafe { dpdk_sys::rte_lcore_count() } {
-            return None;
-        }
-        Some(SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore) }))
+        // Delegated rather than checked here, because the check this used to do was wrong:
+        // `rte_lcore_count()` is the number of *enabled* lcores, not the highest valid id, and
+        // lcore ids are not required to be dense. `--lcores 0@(0),7@(7)` enables ids 0 and 7 with
+        // a count of 2, so comparing an id against the count rejected lcore 7 -- a perfectly
+        // valid, enabled lcore -- while accepting id 1, which is not enabled at all. Both
+        // directions wrong from one comparison.
+        SocketId::get_by_lcore_id(LCoreId(lcore))
     }
 }
 
@@ -213,18 +216,29 @@ impl SocketId {
 
     /// Look up a [`SocketId`] by the lcore it is associated with.
     ///
-    /// Returns `None` if `id` is not a valid lcore id.
+    /// Returns `None` unless `id` is both in range and an lcore the EAL actually enabled.
     ///
-    /// The bounds check is load-bearing, not defensive.
+    /// Two distinct checks, for two distinct reasons.
+    ///
+    /// The range check is a memory-safety requirement.
     /// [`rte_lcore_to_socket_id`](dpdk_sys::rte_lcore_to_socket_id) indexes a fixed array with no
     /// checking of its own -- its contract says the argument "MUST be between 0 and
     /// RTE_MAX_LCORE-1" -- and the value most likely to be passed here is
     /// [`LCoreId::current`](crate::lcore::LCoreId::current), which is `LCORE_ID_ANY`
     /// (`u32::MAX`) on any thread that is neither an EAL thread nor registered. Handing that
     /// through read wildly out of bounds and segfaulted, from entirely safe code.
+    ///
+    /// The enabled check is a correctness one: an in-range id the EAL did not enable has whatever
+    /// socket the array happened to be initialised with, which is a plausible-looking answer to a
+    /// question that has none.
     #[must_use]
     pub fn get_by_lcore_id(id: LCoreId) -> Option<SocketId> {
         if id.as_u32() >= LCoreId::MAX {
+            return None;
+        }
+        // Checked before the lookup rather than relying on `rte_lcore_is_enabled` to range-check
+        // for us, so the ordering here does not depend on a DPDK internal.
+        if unsafe { dpdk_sys::rte_lcore_is_enabled(id.as_u32()) } == 0 {
             return None;
         }
         Some(SocketId(unsafe {
@@ -320,6 +334,72 @@ mod tests {
             by_lcore.is_none(),
             "an out-of-range lcore id must be rejected, not indexed"
         );
+    }
+
+    /// The set of lcores the EAL actually enabled, from DPDK's own predicate.
+    ///
+    /// Deliberately not `LCoreId::iter()`: that passes `skip_main = 1` to `rte_get_next_lcore`,
+    /// so it enumerates *worker* lcores and is empty under the test EAL, which enables only the
+    /// main lcore. Scanning the predicate is the ground truth this needs.
+    fn enabled_lcores() -> Vec<u32> {
+        (0..LCoreId::MAX)
+            .filter(|id| unsafe { dpdk_sys::rte_lcore_is_enabled(*id) } != 0)
+            .collect()
+    }
+
+    /// The invariant the old `id_for_lcore` violated: every lcore the EAL enabled must resolve to
+    /// a socket.
+    ///
+    /// Honest about its own strength -- this does not currently *catch* the bug it describes. The
+    /// old check compared an lcore id against `rte_lcore_count()`, which only goes wrong when ids
+    /// are sparse, and the test EAL passes `--lcores 0@(0,1,...)`, which enables exactly one
+    /// lcore (id 0) and so is dense. The road tests pass no `--lcores` at all, enabling every
+    /// detected lcore, which is also dense. A sparse `--lcores 0@(0),7@(7)` is what distinguishes
+    /// them, and there is no way to get one here: DPDK permits a single `rte_eal_init` per
+    /// process, and the shared test EAL's arguments exist for an unrelated reason (thread
+    /// affinity -- see `eal::main_lcore_arg`). Kept because it is the right assertion and would
+    /// hold a regression under any configuration that does exercise it.
+    #[test]
+    #[with_eal]
+    fn every_enabled_lcore_resolves_to_a_socket() {
+        let enabled = enabled_lcores();
+        assert!(!enabled.is_empty(), "a running EAL has at least one lcore");
+        let manager = Manager::init();
+        for lcore in enabled {
+            assert!(
+                manager.id_for_lcore(lcore).is_some(),
+                "lcore {lcore} is enabled but did not resolve"
+            );
+        }
+    }
+
+    /// An id that is in range but not enabled is rejected, rather than answered with whatever the
+    /// array happened to hold.
+    #[test]
+    #[with_eal]
+    fn an_in_range_but_disabled_lcore_is_rejected() {
+        let enabled = enabled_lcores();
+        let Some(disabled) = (0..LCoreId::MAX).find(|id| !enabled.contains(id)) else {
+            return; // every lcore enabled; nothing to assert
+        };
+        let manager = Manager::init();
+        assert!(
+            manager.id_for_lcore(disabled).is_none(),
+            "lcore {disabled} is not enabled and must not resolve"
+        );
+    }
+
+    /// And an out-of-range id is rejected without indexing on it.
+    #[test]
+    #[with_eal]
+    fn id_for_lcore_rejects_out_of_range_ids() {
+        let manager = Manager::init();
+        for id in [LCoreId::MAX, LCoreId::MAX + 1, u32::MAX] {
+            assert!(
+                manager.id_for_lcore(id).is_none(),
+                "lcore id {id} is out of range and must be rejected"
+            );
+        }
     }
 
     /// An in-range lcore still resolves, so the bounds check did not break the useful case.
