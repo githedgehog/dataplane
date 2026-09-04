@@ -253,7 +253,10 @@ impl<'eal> Pool<'eal> {
     // `Ok` variant is the same batch plus a handle, so the `Result` is large either way and boxing
     // the error would buy nothing; see the same note on `Dev::start`.
     #[allow(clippy::result_large_err)]
-    pub fn consign(&self, batch: MbufArray) -> Result<Consigned<'eal>, (WrongPool, MbufArray)> {
+    pub fn consign(
+        &self,
+        batch: MbufArray<'eal>,
+    ) -> Result<Consigned<'eal>, (WrongPool, MbufArray<'eal>)> {
         let expected = self.as_mut_ptr();
         for (index, mbuf) in batch.iter().enumerate() {
             // SAFETY: `mbuf` is live for the duration of this loop; `pool` is a plain field read.
@@ -275,7 +278,7 @@ impl<'eal> Pool<'eal> {
     /// Returns [`MbufAllocError::TooMany`] if `num` exceeds the [`MbufArray`] capacity
     /// ([`MBUF_BURST`]), or [`MbufAllocError::Exhausted`] if the pool does not currently have `num`
     /// free mbufs.  The DPDK bulk allocator is all-or-nothing: on failure no mbufs are allocated.
-    pub fn alloc_bulk(&self, num: usize) -> Result<MbufArray, MbufAllocError> {
+    pub fn alloc_bulk(&self, num: usize) -> Result<MbufArray<'eal>, MbufAllocError> {
         if num > MBUF_BURST {
             return Err(MbufAllocError::TooMany {
                 requested: num,
@@ -513,11 +516,52 @@ impl PoolConfig {
 /// fn assert_send<T: Send>(_: T) {}
 /// fn hand_off(batch: MbufArray) { assert_send(batch); }
 /// ```
+///
+/// # Outliving the EAL
+///
+/// An mbuf is a bare pointer into a [`Pool`]'s memory, and that memory is released during EAL
+/// teardown. Before these were branded, both of the following compiled -- and both were a
+/// `rte_pktmbuf_free` into a released mempool.
+///
+/// A whole batch:
+///
+/// ```compile_fail,E0505
+/// # use dataplane_dpdk::eal::Eal;
+/// # use dataplane_dpdk::mem::{PoolConfig, PoolParams};
+/// fn batch_outlives_eal(eal: Eal) {
+///     let config = PoolConfig::new("p", PoolParams::default()).expect("config");
+///     let pool = eal.mem.new_pkt_pool(config).expect("pool");
+///     let mbufs = pool.alloc_bulk(4).expect("alloc");
+///     drop(eal);
+///     drop(mbufs);
+/// }
+/// ```
+///
+/// and a single mbuf moved out of one:
+///
+/// ```compile_fail,E0505
+/// # use dataplane_dpdk::eal::Eal;
+/// # use dataplane_dpdk::mem::{PoolConfig, PoolParams};
+/// fn one_mbuf_outlives_eal(eal: Eal) {
+///     let config = PoolConfig::new("p", PoolParams::default()).expect("config");
+///     let pool = eal.mem.new_pkt_pool(config).expect("pool");
+///     let mbufs = pool.alloc_bulk(1).expect("alloc");
+///     let single = mbufs.into_iter().next().expect("one");
+///     drop(eal);
+///     drop(single);
+/// }
+/// ```
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct Mbuf {
+pub struct Mbuf<'eal> {
     pub(crate) raw: NonNull<dpdk_sys::rte_mbuf>,
-    marker: PhantomData<dpdk_sys::rte_mbuf>,
+    /// The EAL brand, replacing what was a `PhantomData<rte_mbuf>` ownership marker.
+    ///
+    /// An mbuf is a bare pointer into a [`Pool`]'s memory. Without this, an `MbufArray` could
+    /// outlive the `Eal` whose teardown freed that memory, and its `Drop` would then call
+    /// `rte_pktmbuf_free` into a released mempool. Both forms of that were reachable from safe
+    /// code before the brand: the array directly, and a single `Mbuf` moved out of one.
+    eal: PhantomData<&'eal ()>,
 }
 
 // `Mbuf` is deliberately neither `Send` nor `Sync`.
@@ -545,14 +589,14 @@ pub struct Mbuf {
 #[error("failed to deep-copy mbuf: source pool exhausted")]
 pub struct MbufCopyError;
 
-impl DeepCopy for Mbuf {
+impl<'eal> DeepCopy for Mbuf<'eal> {
     type Error = MbufCopyError;
 
     /// Produce an independent deep copy of this mbuf (and its whole segment chain), allocated from
     /// the same pool the original came from.
     ///
     /// Unlike a shared/indirect clone, the copy aliases none of the original's data.
-    fn deep_copy(&self) -> Result<Mbuf, MbufCopyError> {
+    fn deep_copy(&self) -> Result<Mbuf<'eal>, MbufCopyError> {
         // SAFETY: `self.raw` is a live mbuf; reading its originating `pool` pointer is sound.
         let pool = unsafe { self.raw.as_ref().pool };
         // A length of `u32::MAX` copies from offset 0 through the end of the packet.
@@ -568,7 +612,7 @@ impl DeepCopy for Mbuf {
 /// TODO: this is possibly poor optimization, we should try bulk dealloc if this slows us down
 /// TODO: we need to ensure that we don't call drop on Mbuf when they have been transmitted.
 ///       The transmit function automatically drops such mbufs and we don't want to double free.
-impl Drop for Mbuf {
+impl Drop for Mbuf<'_> {
     fn drop(&mut self) {
         unsafe {
             dpdk_sys::rte_pktmbuf_free(self.raw.as_ptr());
@@ -576,13 +620,13 @@ impl Drop for Mbuf {
     }
 }
 
-impl AsRef<[u8]> for Mbuf {
+impl AsRef<[u8]> for Mbuf<'_> {
     fn as_ref(&self) -> &[u8] {
         self.raw_data()
     }
 }
 
-impl PacketLength for Mbuf {
+impl PacketLength for Mbuf<'_> {
     fn packet_len(&self) -> usize {
         // `pkt_len` is the total across all segments; `data_len` (what `as_ref` exposes) is only the
         // head segment.  For a single-segment mbuf the two are equal.
@@ -592,7 +636,7 @@ impl PacketLength for Mbuf {
     }
 }
 
-impl TryAsMut for Mbuf {
+impl TryAsMut for Mbuf<'_> {
     fn try_as_mut(&mut self) -> Result<&mut [u8], NotWritable> {
         if self.is_writable() {
             Ok(self.raw_data_mut())
@@ -602,7 +646,7 @@ impl TryAsMut for Mbuf {
     }
 }
 
-impl Mbuf {
+impl<'eal> Mbuf<'eal> {
     /// Returns `true` if this mbuf may be mutated in place: it must be directly owned (neither an
     /// indirect nor an external-buffer mbuf) and have a reference count of exactly one.  A shared
     /// mbuf's data is aliased by other holders, so writing through it would corrupt them.
@@ -616,7 +660,7 @@ impl Mbuf {
     }
 }
 
-impl Mbuf {
+impl<'eal> Mbuf<'eal> {
     /// The mbuf's receive offload flags (`ol_flags`): the bitset of `RTE_MBUF_F_RX_*` markers the
     /// PMD set on this packet (RSS-hash-valid, FDIR-id-valid, checksum status, VLAN-stripped, ...).
     #[must_use]
@@ -686,19 +730,19 @@ impl Mbuf {
     }
 }
 
-impl Headroom for Mbuf {
+impl Headroom for Mbuf<'_> {
     fn headroom(&self) -> u16 {
         unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
     }
 }
 
-impl Tailroom for Mbuf {
+impl Tailroom for Mbuf<'_> {
     fn tailroom(&self) -> u16 {
         unsafe { rte_pktmbuf_tailroom(self.raw.as_ptr()) }
     }
 }
 
-impl Prepend for Mbuf {
+impl Prepend for Mbuf<'_> {
     type Error = NotEnoughHeadRoom;
 
     fn prepend(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
@@ -706,7 +750,7 @@ impl Prepend for Mbuf {
     }
 }
 
-impl Append for Mbuf {
+impl Append for Mbuf<'_> {
     type Error = NotEnoughTailRoom;
 
     fn append(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
@@ -714,7 +758,7 @@ impl Append for Mbuf {
     }
 }
 
-impl TrimFromStart for Mbuf {
+impl TrimFromStart for Mbuf<'_> {
     type Error = MemoryBufferNotLongEnough;
 
     fn trim_from_start(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
@@ -725,7 +769,7 @@ impl TrimFromStart for Mbuf {
     }
 }
 
-impl TrimFromEnd for Mbuf {
+impl TrimFromEnd for Mbuf<'_> {
     type Error = MbufManipulationError;
 
     fn trim_from_end(&mut self, len: u16) -> Result<&mut [u8], Self::Error> {
@@ -742,7 +786,7 @@ impl TrimFromEnd for Mbuf {
     }
 }
 
-impl Mbuf {
+impl<'eal> Mbuf<'eal> {
     /// Create a new mbuf from an existing rte_mbuf pointer.
     ///
     /// # Note
@@ -754,11 +798,11 @@ impl Mbuf {
     /// This function is unsound if passed an invalid pointer.
     #[must_use]
     #[tracing::instrument(level = "trace", ret)]
-    pub(crate) unsafe fn new_from_raw_unchecked(raw: *mut dpdk_sys::rte_mbuf) -> Mbuf {
+    pub(crate) unsafe fn new_from_raw_unchecked(raw: *mut dpdk_sys::rte_mbuf) -> Mbuf<'eal> {
         let raw = unsafe { NonNull::new_unchecked(raw) };
         Mbuf {
             raw,
-            marker: PhantomData,
+            eal: PhantomData,
         }
     }
 
@@ -894,17 +938,17 @@ pub const MBUF_BURST: usize = 64;
 /// The contained [`Mbuf`]s are reachable as a slice via [`Deref`], and can be moved out by value
 /// with [`IntoIterator`]; an `Mbuf` taken out individually is freed on its own when dropped.
 #[derive(Debug)]
-pub struct MbufArray<const N: usize = MBUF_BURST> {
-    bufs: ArrayVec<Mbuf, N>,
+pub struct MbufArray<'eal, const N: usize = MBUF_BURST> {
+    bufs: ArrayVec<Mbuf<'eal>, N>,
 }
 
-impl<const N: usize> MbufArray<N> {
+impl<'eal, const N: usize> MbufArray<'eal, N> {
     /// The capacity of the array: the maximum number of mbufs it can hold.
     pub const CAPACITY: usize = N;
 
     /// Create an empty [`MbufArray`].
     #[must_use]
-    pub fn new_empty() -> MbufArray<N> {
+    pub fn new_empty() -> MbufArray<'eal, N> {
         MbufArray {
             bufs: ArrayVec::new(),
         }
@@ -927,7 +971,7 @@ impl<const N: usize> MbufArray<N> {
     /// # Errors
     ///
     /// Returns the mbuf back (so its ownership is not lost) if the array is already at capacity.
-    pub fn try_push(&mut self, mbuf: Mbuf) -> Result<(), Mbuf> {
+    pub fn try_push(&mut self, mbuf: Mbuf<'eal>) -> Result<(), Mbuf<'eal>> {
         self.bufs.try_push(mbuf).map_err(|err| err.element())
     }
 
@@ -937,7 +981,7 @@ impl<const N: usize> MbufArray<N> {
     ///
     /// Every pointer in `ptrs` must be a live, non-null mbuf that is solely owned by the caller,
     /// and `ptrs.len()` must not exceed `N`.
-    pub(crate) unsafe fn from_raw_ptrs(ptrs: &[*mut dpdk_sys::rte_mbuf]) -> MbufArray<N> {
+    pub(crate) unsafe fn from_raw_ptrs(ptrs: &[*mut dpdk_sys::rte_mbuf]) -> MbufArray<'eal, N> {
         debug_assert!(ptrs.len() <= N, "more mbufs than the array can hold");
         let mut bufs = ArrayVec::new();
         for &raw in ptrs {
@@ -951,29 +995,29 @@ impl<const N: usize> MbufArray<N> {
     }
 }
 
-impl<const N: usize> Default for MbufArray<N> {
-    fn default() -> MbufArray<N> {
+impl<const N: usize> Default for MbufArray<'_, N> {
+    fn default() -> Self {
         MbufArray::new_empty()
     }
 }
 
-impl<const N: usize> Deref for MbufArray<N> {
-    type Target = [Mbuf];
+impl<'eal, const N: usize> Deref for MbufArray<'eal, N> {
+    type Target = [Mbuf<'eal>];
 
-    fn deref(&self) -> &[Mbuf] {
+    fn deref(&self) -> &[Mbuf<'eal>] {
         &self.bufs
     }
 }
 
-impl<const N: usize> DerefMut for MbufArray<N> {
-    fn deref_mut(&mut self) -> &mut [Mbuf] {
+impl<'eal, const N: usize> DerefMut for MbufArray<'eal, N> {
+    fn deref_mut(&mut self) -> &mut [Mbuf<'eal>] {
         &mut self.bufs
     }
 }
 
-impl<const N: usize> IntoIterator for MbufArray<N> {
-    type Item = Mbuf;
-    type IntoIter = arrayvec::IntoIter<Mbuf, N>;
+impl<'eal, const N: usize> IntoIterator for MbufArray<'eal, N> {
+    type Item = Mbuf<'eal>;
+    type IntoIter = arrayvec::IntoIter<Mbuf<'eal>, N>;
 
     fn into_iter(mut self) -> Self::IntoIter {
         // Move the mbufs out, leaving an empty array behind.  When `self` then drops, the bulk
@@ -983,25 +1027,25 @@ impl<const N: usize> IntoIterator for MbufArray<N> {
     }
 }
 
-impl<'a, const N: usize> IntoIterator for &'a MbufArray<N> {
-    type Item = &'a Mbuf;
-    type IntoIter = core::slice::Iter<'a, Mbuf>;
+impl<'a, 'eal, const N: usize> IntoIterator for &'a MbufArray<'eal, N> {
+    type Item = &'a Mbuf<'eal>;
+    type IntoIter = core::slice::Iter<'a, Mbuf<'eal>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.bufs.iter()
     }
 }
 
-impl<'a, const N: usize> IntoIterator for &'a mut MbufArray<N> {
-    type Item = &'a mut Mbuf;
-    type IntoIter = core::slice::IterMut<'a, Mbuf>;
+impl<'a, 'eal, const N: usize> IntoIterator for &'a mut MbufArray<'eal, N> {
+    type Item = &'a mut Mbuf<'eal>;
+    type IntoIter = core::slice::IterMut<'a, Mbuf<'eal>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.bufs.iter_mut()
     }
 }
 
-impl<const N: usize> Drop for MbufArray<N> {
+impl<const N: usize> Drop for MbufArray<'_, N> {
     fn drop(&mut self) {
         if self.bufs.is_empty() {
             return;
@@ -1064,7 +1108,7 @@ impl<const N: usize> Drop for MbufArray<N> {
 /// ```
 #[derive(Debug)]
 pub struct Consigned<'eal> {
-    batch: MbufArray,
+    batch: MbufArray<'eal>,
     guard: Pool<'eal>,
 }
 
@@ -1124,7 +1168,7 @@ impl<'eal> Consigned<'eal> {
     ///
     /// Returns the number transmitted. The guard never leaves the batch, so this is safe to call
     /// on whichever thread the batch was consigned to.
-    pub fn transmit_on(&mut self, tx: &mut crate::queue::tx::TxQueue<'_>) -> usize {
+    pub fn transmit_on(&mut self, tx: &mut crate::queue::tx::TxQueue<'eal>) -> usize {
         let offered = self.batch.len();
         // Move the batch out and put the unsent remainder back; `transmit` takes ownership, and
         // `MbufArray::default()` is empty, so nothing is lost if this unwinds.
@@ -1134,14 +1178,14 @@ impl<'eal> Consigned<'eal> {
     }
 }
 
-impl AsRef<[Mbuf]> for Consigned<'_> {
-    fn as_ref(&self) -> &[Mbuf] {
+impl<'eal> AsRef<[Mbuf<'eal>]> for Consigned<'eal> {
+    fn as_ref(&self) -> &[Mbuf<'eal>] {
         &self.batch
     }
 }
 
-impl AsMut<[Mbuf]> for Consigned<'_> {
-    fn as_mut(&mut self) -> &mut [Mbuf] {
+impl<'eal> AsMut<[Mbuf<'eal>]> for Consigned<'eal> {
+    fn as_mut(&mut self) -> &mut [Mbuf<'eal>] {
         &mut self.batch
     }
 }
