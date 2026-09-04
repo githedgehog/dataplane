@@ -1127,9 +1127,10 @@ fn run_rx_test(label: &str, expect_rx: bool) {
         .take_tx(TxQueueIndex(0))
         .expect("tx queue 0 missing after start");
 
-    // Helper: allocate one mbuf per frame, copy the frame bytes in, and collect them into the
-    // burst-sized array `transmit` takes.
-    let make_batch = |pool: &Pool, frames: &[&[u8]]| -> MbufArray {
+    // A `fn` rather than a closure: the returned batch carries the pool's EAL brand, and a
+    // closure cannot express "the output borrows for as long as the input does" -- it infers one
+    // fresh lifetime per parameter and cannot tie them.
+    fn make_batch<'eal>(pool: &Pool<'eal>, frames: &[&[u8]]) -> MbufArray<'eal> {
         let mbufs = pool
             .alloc_bulk(frames.len())
             .expect("failed to allocate mbufs from tx pool");
@@ -1152,7 +1153,7 @@ fn run_rx_test(label: &str, expect_rx: bool) {
             );
         }
         batch
-    };
+    }
 
     log_hex_dump("tx:ndp", &ndp_frame, 86);
     log_hex_dump("tx:echo", &echo_frame, 62);
@@ -1168,6 +1169,12 @@ fn run_rx_test(label: &str, expect_rx: bool) {
         "tx queue refused {refused} of {sent} probe frames",
         refused = unsent.len(),
     );
+    // Released here rather than at the end of the function. The assertion above says it is empty,
+    // so this frees nothing -- but the borrow checker is right to insist: an `MbufArray` still
+    // alive at teardown would have its `Drop` run *after* the pool was released, and before the
+    // mbufs were branded that is exactly what happened, silently, on any run where the queue did
+    // refuse a frame.
+    drop(unsent);
     eprintln!("[tx] {sent} probe frames transmitted");
 
     // ── poll rx queue for responses ─────────────────────────────────────
@@ -1276,11 +1283,18 @@ fn run_rx_test(label: &str, expect_rx: bool) {
     //
     // Both steps are spelled out rather than left to `Drop` so that a teardown failure fails the
     // test instead of being logged and swallowed.
+    //
+    // The order below is no longer a matter of care: the queue set borrows the device and the
+    // device borrows the EAL, so releasing them in any other order is a borrow error. What this
+    // file used to enforce with a comment, the compiler now enforces.
+    //
+    // Only `queues` needs releasing explicitly. The individual queue handles have no `Drop` -- a
+    // handle is pure bookkeeping -- so NLL ends their borrows at their last use, whereas `Queues`
+    // owns `Vec`s and therefore holds its borrow to the end of the scope.
+    drop(queues);
+    let t = Instant::now();
     let stopped = started.stop().expect("failed to stop device");
     let closed = stopped.close().expect("failed to close device");
-
-    // And the EAL itself, which this test used to leak. See `assert_teardown_is_prompt`.
-    let t = Instant::now();
     drop(closed);
     drop(eal);
     let elapsed = t.elapsed();

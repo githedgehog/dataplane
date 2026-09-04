@@ -210,7 +210,7 @@ impl<'dev> RxQueue<'dev> {
     /// Receive up to [`MBUF_BURST`] packets. The returned batch owns them and frees
     /// any remaining packets on drop.
     #[tracing::instrument(level = "trace")]
-    pub fn receive(&mut self) -> MbufArray {
+    pub fn receive(&mut self) -> MbufArray<'dev> {
         let mut pkts = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",
