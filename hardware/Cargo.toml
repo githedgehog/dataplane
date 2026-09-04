@@ -41,6 +41,9 @@ sysfs = { workspace = true }
 # what comes back off the wire; neither is needed by the library itself.
 dpdk = { workspace = true, features = [] }
 net = { workspace = true, features = [] }
+# `tests/dpdk_pipeline_on_nic.rs` runs the real network-function pipeline over
+# mbufs received from a physical port.
+pipeline = { workspace = true, features = [] }
 fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
 n-vm = { workspace = true }
