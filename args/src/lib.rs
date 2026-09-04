@@ -51,6 +51,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub use clap::Parser;
+use clap::builder::TypedValueParser;
 use miette::{Context, IntoDiagnostic};
 use net::interface::IllegalInterfaceName;
 use net::interface::InterfaceName;
@@ -58,6 +59,7 @@ use sha2::Digest;
 use std::borrow::Borrow;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
+use std::num::NonZero;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::str::FromStr;
 
@@ -1236,15 +1238,15 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     )]
     interface: Vec<InterfaceArg>,
 
-    /// Number of worker threads for the kernel driver.
+    /// Number of packet-processing worker threads.
     #[arg(
         long,
         value_name = "N",
-        default_value_t = 1,
-        value_parser = clap::value_parser!(u16).range(1..=64),
-        help = "Number of worker threads for the kernel driver in [1..64]"
+        default_value_t = NonZero::<u16>::MIN,
+        value_parser = clap::value_parser!(u16).range(1..=64).try_map(NonZero::<u16>::try_from),
+        help = "Number of packet-processing worker threads in [1..64]"
     )]
-    num_workers: u16,
+    num_workers: NonZero<u16>,
 
     #[arg(
         long,
@@ -1436,11 +1438,16 @@ impl CmdArgs {
     ///
     /// # Note
     ///
-    /// This value is only relevant when using the kernel driver. The DPDK driver
-    /// uses its own threading model configured via EAL arguments.
+    /// Deprecated in favour of [`num_workers`](Self::num_workers): the count is driver-neutral.
     #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
-        self.num_workers.into()
+        self.num_workers().get().into()
+    }
+
+    /// Get the number of packet-processing workers for either driver.
+    #[must_use]
+    pub fn num_workers(&self) -> NonZero<u16> {
+        self.num_workers
     }
 
     /// Get the list of kernel network interfaces to use.
@@ -1600,5 +1607,21 @@ mod tests {
         assert_eq!(err, "Burst must be greater than 0");
         let err = TracingRateLimit::from_str("10:0").unwrap_err();
         assert_eq!(err, "Replenish-per-second must be greater than 0");
+    }
+
+    #[test]
+    fn a_worker_count_outside_one_to_sixty_four_is_refused_at_parse_time() {
+        use crate::{CmdArgs, Parser};
+        let parse = |n: &str| CmdArgs::try_parse_from(["dataplane", "--num-workers", n]);
+        assert_eq!(
+            CmdArgs::try_parse_from(["dataplane"])
+                .unwrap()
+                .num_workers()
+                .get(),
+            1
+        );
+        assert_eq!(parse("64").unwrap().num_workers().get(), 64);
+        assert!(parse("0").is_err());
+        assert!(parse("65").is_err());
     }
 }
