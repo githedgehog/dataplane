@@ -372,7 +372,7 @@ impl From<MemFile> for FinalizedMemFile {
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct GeneralConfigSection {
     /// Name to give to this dataplane/gateway
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Configuration for the packet processing driver used by the dataplane.
@@ -426,6 +426,8 @@ pub struct DpdkDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
+    /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
+    pub num_workers: u16,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -447,6 +449,8 @@ pub struct DpdkDriverConfigSection {
 pub struct KernelDriverConfigSection {
     /// Kernel network interfaces to manage
     pub interfaces: Vec<InterfaceArg>,
+    /// Packet-processing worker threads to run
+    pub num_workers: u16,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -693,7 +697,49 @@ impl Default for ProfilingConfigSection {
     }
 }
 
+impl DriverConfigSection {
+    /// The driver's name, as the `--driver` flag spells it.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            DriverConfigSection::Dpdk(_) => "dpdk",
+            DriverConfigSection::Kernel(_) => "kernel",
+        }
+    }
+
+    /// The interfaces this driver was configured with.
+    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.interfaces.iter(),
+            DriverConfigSection::Kernel(kernel) => kernel.interfaces.iter(),
+        }
+    }
+
+    /// The number of packet-processing workers to run.
+    #[must_use]
+    pub fn num_workers(&self) -> usize {
+        match self {
+            DriverConfigSection::Dpdk(dpdk) => dpdk.num_workers.into(),
+            DriverConfigSection::Kernel(kernel) => kernel.num_workers.into(),
+        }
+    }
+}
+
 impl LaunchConfiguration {
+    /// Whether both standard configuration descriptors are open.
+    #[must_use]
+    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
+    pub fn was_inherited() -> bool {
+        // SAFETY: `BorrowedFd` is only used for the duration of the `fcntl` call and never closed;
+        // borrowing a descriptor that turns out not to be open is exactly what is being tested, and
+        // `fcntl` reports that as `EBADF` rather than misbehaving.
+        let present = |fd: RawFd| {
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+        };
+        present(Self::STANDARD_INTEGRITY_CHECK_FD) && present(Self::STANDARD_CONFIG_FD)
+    }
+
     /// Standard file descriptor number for the integrity check memfd.
     ///
     /// The parent process must pass the integrity check (SHA-384 hash) file at this
@@ -747,10 +793,13 @@ impl LaunchConfiguration {
 
         let mut mmap_options = memmap2::MmapOptions::new();
         let mmap_options = mmap_options.no_reserve_swap();
-        let launch_config_memmap = unsafe { mmap_options.map(launch_configuration_file.as_ref()) }
-            .into_diagnostic()
-            .wrap_err("failed to memory map launch configuration")
-            .unwrap();
+        // Private and read-only: older kernels refuse any shared mapping of a memfd sealed
+        // with `F_SEAL_WRITE`, even a read-only one, and nothing here writes to it.
+        let launch_config_memmap =
+            unsafe { mmap_options.map_copy_read_only(launch_configuration_file.as_ref()) }
+                .into_diagnostic()
+                .wrap_err("failed to memory map launch configuration")
+                .unwrap();
 
         // VERY IMPORTANT: we must check for unaligned pointer here or risk undefined behavior.
 
@@ -1162,11 +1211,13 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     DriverConfigSection::Dpdk(DpdkDriverConfigSection {
                         interfaces: value.interfaces().collect(),
                         eal_args,
+                        num_workers: value.num_workers,
                     })
                 }
                 Some(driver) if driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
                         interfaces: value.interfaces().collect(),
+                        num_workers: value.num_workers,
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
