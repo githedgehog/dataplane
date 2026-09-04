@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -139,14 +139,20 @@ fn main() -> Result<(), Err> {
         "--no-telemetry",
     ]);
     let info = eal.dev.iter().next().ok_or("no DPDK port probed")?;
-    let pool0 = Pool::new_pkt_pool(
-        PoolConfig::new("rss_pool0", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool0: {e:?}"))?;
-    let pool1 = Pool::new_pkt_pool(
-        PoolConfig::new("rss_pool1", PoolParams::default()).map_err(|e| format!("pool: {e:?}"))?,
-    )
-    .map_err(|e| format!("pool1: {e:?}"))?;
+    let pool0 = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("rss_pool0", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool0: {e:?}"))?;
+    let pool1 = eal
+        .mem
+        .new_pkt_pool(
+            PoolConfig::new("rss_pool1", PoolParams::default())
+                .map_err(|e| format!("pool: {e:?}"))?,
+        )
+        .map_err(|e| format!("pool1: {e:?}"))?;
     let cfg = DevConfig {
         num_rx_queues: 2,
         num_tx_queues: 1,

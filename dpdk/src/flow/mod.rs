@@ -142,17 +142,17 @@ pub struct Flow;
 
 impl Flow {
     /// Begin an ingress (NIC-domain) flow rule.
-    pub fn ingress(dev: &Dev<Started>) -> FlowBuilder<'_, Ingress, ()> {
+    pub fn ingress<'dev>(dev: &'dev Dev<'dev, Started>) -> FlowBuilder<'dev, Ingress, ()> {
         FlowBuilder::start(dev)
     }
 
     /// Begin an egress (NIC-domain) flow rule.
-    pub fn egress(dev: &Dev<Started>) -> FlowBuilder<'_, Egress, ()> {
+    pub fn egress<'dev>(dev: &'dev Dev<'dev, Started>) -> FlowBuilder<'dev, Egress, ()> {
         FlowBuilder::start(dev)
     }
 
     /// Begin a transfer (embedded-switch / FDB) flow rule.
-    pub fn transfer(dev: &Dev<Started>) -> FlowBuilder<'_, Transfer, ()> {
+    pub fn transfer<'dev>(dev: &'dev Dev<'dev, Started>) -> FlowBuilder<'dev, Transfer, ()> {
         FlowBuilder::start(dev)
     }
 }

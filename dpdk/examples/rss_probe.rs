@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RssConf, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -106,11 +106,13 @@ fn main() -> Result<(), Err> {
     println!("port {bdf} probed as dpdk index {port}; bringing up {N_RXQ} rx + 1 tx queue");
 
     for q in 0..N_RXQ {
-        let pool = Pool::new_pkt_pool(
-            PoolConfig::new(format!("rss_pool_{q}"), PoolParams::default())
-                .map_err(|e| format!("pool config: {e:?}"))?,
-        )
-        .map_err(|e| format!("pool create: {e:?}"))?;
+        let pool = eal
+            .mem
+            .new_pkt_pool(
+                PoolConfig::new(format!("rss_pool_{q}"), PoolParams::default())
+                    .map_err(|e| format!("pool config: {e:?}"))?,
+            )
+            .map_err(|e| format!("pool create: {e:?}"))?;
         dev.new_rx_queue(RxQueueConfig {
             dev: idx,
             queue_index: RxQueueIndex(q),
