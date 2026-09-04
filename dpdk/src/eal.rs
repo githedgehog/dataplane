@@ -76,9 +76,14 @@ pub struct Eal {
 /// - [`socket`](Self::socket): NUMA and lcore-to-socket lookups, all reads of static topology.
 /// - [`has_pci`](Self::has_pci): `rte_eal_has_pci`, a read of a flag fixed at init.
 ///
-/// The `mem` and `lcore` managers are absent because they have no shared-safe operations to
-/// offer: both are presently namespaces with no public methods, and they are the two most likely
-/// to gain owned, thread-affine state (the pool registry, a QSBR publisher).
+/// - [`mem`](Self::mem): mempool creation. `rte_pktmbuf_pool_create` is internally locked and the
+///   pool registry is behind a mutex, so this is safe from any thread. Note it was *absent* from
+///   this projection while `mem::Manager` owned a `!Sync` reclaimer; the reclaimer is gone, so the
+///   manager is shareable again -- and pool creation needs to be reachable from a thread that does
+///   not own the `Eal`, since a test cannot know which thread initialised it.
+///
+/// Releasing pools is deliberately *not* here: it happens once, from the owning `Eal`'s `Drop`.
+/// The `lcore` manager is absent because it has no public methods at all.
 ///
 /// The projection borrows the [`Eal`], so it cannot outlive the EAL it describes.
 ///
@@ -101,6 +106,7 @@ pub struct Eal {
 pub struct EalShared<'eal> {
     dev: &'eal dev::Manager,
     socket: &'eal socket::Manager,
+    mem: &'eal mem::Manager,
 }
 
 impl<'eal> EalShared<'eal> {
@@ -114,6 +120,12 @@ impl<'eal> EalShared<'eal> {
     #[must_use]
     pub fn socket(&self) -> &'eal socket::Manager {
         self.socket
+    }
+
+    /// Memory pool creation. See the type documentation for why this is shareable.
+    #[must_use]
+    pub fn mem(&self) -> &'eal mem::Manager {
+        self.mem
     }
 
     /// Returns `true` if the [`Eal`] is using the PCI bus.
@@ -323,6 +335,7 @@ impl Eal {
         EalShared {
             dev: &self.dev,
             socket: &self.socket,
+            mem: &self.mem,
         }
     }
 
@@ -391,12 +404,11 @@ impl Drop for Eal {
         // if one never does.  Devices are covered separately and earlier: a `Dev` cannot outlive
         // the borrow a worker holds on it, and its own `Drop` stops and closes the port, which is
         // what returns the PMD's mbufs to their pools.
-        self.mem.shutdown();
-
-        // From here on, a stray `Pool` handle that outlives this `Eal` must not free its mempool:
-        // `rte_eal_cleanup` below dismantles the memory subsystem underneath it.  Set after the
-        // drain, so the drain itself still frees normally.
-        mem::mark_eal_torn_down();
+        // SAFETY: every device is already closed -- a `Dev` borrows this `Eal`, so it cannot
+        // still be alive here -- and no `Pool` handle can exist either, for the same reason.  A
+        // stray handle outliving the EAL, which previously needed a runtime guard to stop it
+        // freeing a mempool against a dismantled EAL, is now unrepresentable.
+        unsafe { self.mem.release_all() };
 
         info!("Closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
@@ -464,7 +476,7 @@ mod tests {
     #[test]
     #[with_eal]
     fn errno_is_reported_per_thread() {
-        use crate::mem::{Pool, PoolConfig, PoolParams};
+        use crate::mem::{PoolConfig, PoolParams};
 
         let shared = crate::test_support::start_eal();
         let params = PoolParams {
@@ -475,9 +487,15 @@ mod tests {
         let config = |()| {
             PoolConfig::new("errno_probe_pool", params).unwrap_or_else(|e| panic!("config: {e:?}"))
         };
-        let _first = Pool::new_pkt_pool(config(())).expect("first create should succeed");
+        let _first = shared
+            .mem()
+            .new_pkt_pool(config(()))
+            .expect("first create should succeed");
         // Same name again: DPDK refuses and sets this thread's `rte_errno`.
-        Pool::new_pkt_pool(config(())).expect_err("a duplicate pool name must be refused");
+        shared
+            .mem()
+            .new_pkt_pool(config(()))
+            .expect_err("a duplicate pool name must be refused");
 
         let here = shared.errno();
         assert_ne!(
