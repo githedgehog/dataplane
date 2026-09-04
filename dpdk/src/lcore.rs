@@ -91,6 +91,22 @@ pub struct ServiceThread<'scope> {
 // TODO: take stack size as an EAL argument instead of hard coding it
 const STACK_SIZE: usize = 8 << 20;
 
+/// Releases this thread's EAL lcore registration when it goes out of scope, including on unwind.
+///
+/// Constructed only after a successful [`rte_thread_register`](dpdk_sys::rte_thread_register), and
+/// never moved off the thread that registered -- `rte_thread_unregister` releases the *calling*
+/// thread's id, so running it anywhere else would strand this one and corrupt another.
+#[allow(missing_debug_implementations)]
+struct LcoreRegistration;
+
+impl Drop for LcoreRegistration {
+    fn drop(&mut self) {
+        // SAFETY: paired with the `rte_thread_register` that preceded this guard's construction,
+        // on the same thread, and runs exactly once because the guard is never cloned or moved.
+        unsafe { dpdk_sys::rte_thread_unregister() };
+    }
+}
+
 impl ServiceThread<'_> {
     #[cold]
     #[allow(clippy::expect_used)]
@@ -112,10 +128,15 @@ impl ServiceThread<'_> {
                     let msg = format!("rte thread exited with code {ret}, errno: {errno}");
                     Eal::fatal_error(msg)
                 }
+                // Unregister on the way out however this thread ends.  A bare call after `run()`
+                // is skipped when `run()` unwinds, and every skipped unregister strands an lcore
+                // id for the life of the process -- `RTE_MAX_LCORE` of them and no further thread
+                // can register at all.  A panicking service thread is exactly the situation where
+                // that matters, since it is also the one most likely to be retried.
+                let _registration = LcoreRegistration;
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { dpdk_sys::rte_thread_unregister() };
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
