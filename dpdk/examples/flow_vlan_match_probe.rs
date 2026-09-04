@@ -103,7 +103,10 @@ fn main() -> Result<(), Err> {
         .create()?;
     println!("rule: eth / vlan(vid={vid_raw}) -> queue 0 / mark({MARK_ID:#x}) installed");
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!(
         "polling {secs}s -- send VLAN-tagged (vid {vid_raw}) traffic from the load gen now..."
     );

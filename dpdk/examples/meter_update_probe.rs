@@ -440,7 +440,8 @@ fn main() -> Result<(), Err> {
     println!("installed {created} group-1 rules -> the ONE indirect METER_MARK handle");
 
     // ---- stream; swap the handle to the FAST profile at half-time ----
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx q0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues.take_rx(RxQueueIndex(0)).ok_or("rx q0 missing")?;
     println!(
         "streaming {secs}s; will swap METER_MARK -> fast profile at {}s. Inject now...",
         secs / 2

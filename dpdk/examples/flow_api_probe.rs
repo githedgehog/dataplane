@@ -96,7 +96,10 @@ fn main() -> Result<(), Err> {
         .create()?;
     println!("group1 eth/ipv4 -> MARK 0x{mark_id:x} + QUEUE0: installed");
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling rx queue 0 for {secs}s -- inject IPv4 from the peer now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut marked) = (0u64, 0u64);

@@ -149,12 +149,17 @@ fn main() -> Result<(), Err> {
     let mut samples = 0u32;
     println!("polling {N_RXQ} rx queues for {secs}s -- inject varied IPv4 now...");
 
+    // Each queue is owned for the duration of the poll loop.  Previously this looked the queue up
+    // from the device on every iteration, which handed out an alias per lookup -- exactly what
+    // `take_rx` now prevents.
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxqs: Vec<_> = (0..N_RXQ)
+        .filter_map(|q| queues.take_rx(RxQueueIndex(q)))
+        .collect();
+
     while Instant::now() < deadline {
         let mut idle = true;
-        for q in 0..N_RXQ {
-            let Some(rxq) = dev.rx_queue(RxQueueIndex(q)) else {
-                continue;
-            };
+        for rxq in &mut rxqs {
             let burst = rxq.receive();
             if burst.is_empty() {
                 continue;

@@ -1065,6 +1065,20 @@ fn run_rx_test(label: &str, expect_rx: bool) {
     //
     // The underlying DPDK global state survives the forget — all port,
     // queue, and mempool handles remain valid for the rest of the process.
+    //
+    // NOTE: forgetting the Eal also skips `mem::release_all()`, so the
+    // mempools are never freed.  That is harmless in a process that is
+    // about to exit, but it does mean this test does not exercise the
+    // pool-release path — the ordering it validates is device stop/close
+    // (below), not mempool teardown.
+    //
+    // The `rte_eal_mp_wait_lcore()` attribution above is unverified and
+    // looks doubtful: this test launches no worker lcores, so that call
+    // should return immediately.  A likelier culprit is `rte_eal_cleanup`
+    // itself — note that these EAL args, unlike the unit-test ones in
+    // `dpdk::test_support::start_eal`, do not pass `--no-telemetry`, and
+    // the telemetry socket thread is torn down during cleanup.  Worth
+    // testing that before assuming the wait is at fault.
     std::mem::forget(eal);
     let tx_pool = tx_pool.expect("setup_dpdk_device should return a tx pool");
 
@@ -1102,8 +1116,12 @@ fn run_rx_test(label: &str, expect_rx: bool) {
 
     // ── transmit probes ─────────────────────────────────────────────────
 
-    let tx_queue = started
-        .tx_queue(TxQueueIndex(0))
+    // Take the device's queues once. Each leaves the set by value, so these handles are the only
+    // way to drive those queues -- which is what makes DPDK's one-queue-one-thread rule a borrow
+    // error rather than a convention.
+    let mut queues = started.take_queues().expect("device queues already taken");
+    let mut tx_queue = queues
+        .take_tx(TxQueueIndex(0))
         .expect("tx queue 0 missing after start");
 
     // Helper: allocate one mbuf per frame, copy the frame bytes in, and collect them into the
@@ -1151,8 +1169,8 @@ fn run_rx_test(label: &str, expect_rx: bool) {
 
     // ── poll rx queue for responses ─────────────────────────────────────
 
-    let rx_queue = started
-        .rx_queue(RxQueueIndex(0))
+    let mut rx_queue = queues
+        .take_rx(RxQueueIndex(0))
         .expect("rx queue 0 missing after start");
 
     let deadline = Instant::now() + RX_POLL_TIMEOUT;
@@ -1243,14 +1261,20 @@ fn run_rx_test(label: &str, expect_rx: bool) {
         eprintln!("=== {label} complete — tx path validated, rx skipped (no traffic source) ===");
     }
 
-    // Teardown order matters, and the natural one is wrong. The PMD owns every
-    // transmitted mbuf until the device is stopped and its tx ring reclaimed, and those
-    // mbufs live in `tx_pool`. Rust drops locals in reverse declaration order, which
-    // would free the mempool first and leave the stop path walking freed memory -- a
-    // SIGSEGV inside `rte_pktmbuf_free`, after every assertion above has already passed.
-    // Stop the device first, explicitly.
-    drop(started);
-    drop(tx_pool);
+    // Teardown. This used to be an ordering hazard: the PMD owns every transmitted mbuf until
+    // the device is stopped and its tx ring reclaimed, those mbufs live in `tx_pool`, and Rust
+    // drops locals in reverse declaration order -- so the natural order freed the mempool first
+    // and left the stop path walking freed memory (a SIGSEGV inside `rte_pktmbuf_free`, after
+    // every assertion above had already passed).
+    //
+    // It is no longer expressible. `Pool` is a `Copy` handle whose mempool is released at EAL
+    // teardown, after every device is closed, so there is no early free to get wrong -- the
+    // compiler now rejects `drop(tx_pool)` as a no-op on a `Copy` type.
+    //
+    // Both steps are spelled out rather than left to `Drop` so that a teardown failure fails the
+    // test instead of being logged and swallowed.
+    let stopped = started.stop().expect("failed to stop device");
+    stopped.close().expect("failed to close device");
 }
 
 // ---------------------------------------------------------------------------
