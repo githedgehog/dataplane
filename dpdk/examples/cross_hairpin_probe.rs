@@ -18,7 +18,7 @@ use core::ptr::null;
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
+use dataplane_dpdk::mem::{PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dataplane_dpdk::socket::Preference;
@@ -126,11 +126,13 @@ fn main() -> Result<(), Err> {
     };
     let mut devs = Vec::new();
     for (n, info) in infos.into_iter().take(2).enumerate() {
-        let pool = Pool::new_pkt_pool(
-            PoolConfig::new(format!("xhp_pool_{n}"), PoolParams::default())
-                .map_err(|e| format!("pool cfg: {e:?}"))?,
-        )
-        .map_err(|e| format!("pool: {e:?}"))?;
+        let pool = eal
+            .mem
+            .new_pkt_pool(
+                PoolConfig::new(format!("xhp_pool_{n}"), PoolParams::default())
+                    .map_err(|e| format!("pool cfg: {e:?}"))?,
+            )
+            .map_err(|e| format!("pool: {e:?}"))?;
         let mut dev = cfg
             .apply(info)
             .map_err(|e| format!("configure port {n}: {e:?}"))?;

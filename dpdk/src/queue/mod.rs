@@ -16,10 +16,10 @@ use alloc::vec::Vec;
 /// Produced by [`Dev::<Stopped>::start`](crate::dev::Dev::start) and consumed by
 /// [`Dev::<Started>::take_queues`](crate::dev::Dev::take_queues); callers do not construct one.
 #[derive(Debug, Default)]
-pub(crate) struct QueueStore {
-    pub(crate) rx: Vec<RxQueue<'static>>,
-    pub(crate) tx: Vec<TxQueue<'static>>,
-    pub(crate) hairpin: Vec<HairpinQueue<'static>>,
+pub(crate) struct QueueStore<'eal> {
+    pub(crate) rx: Vec<RxQueue<'eal>>,
+    pub(crate) tx: Vec<TxQueue<'eal>>,
+    pub(crate) hairpin: Vec<HairpinQueue<'eal>>,
 }
 
 /// The set of a device's queues, for distribution to workers.
