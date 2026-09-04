@@ -3,8 +3,10 @@
 
 use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
-use args::{CmdArgs, Parser};
+use args::{CmdArgs, Parser, PortArg};
 
+use crate::drivers::DriverError;
+use crate::drivers::dpdk::{DriverDpdk, Port};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::driver_status_access;
 use lifecycle::{
@@ -12,6 +14,8 @@ use lifecycle::{
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
+use dpdk::dev::DevInfo;
+use dpdk::eal::Eal;
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
@@ -20,7 +24,7 @@ use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
 
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{error, info, level_filters::LevelFilter, warn};
 
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
@@ -165,6 +169,102 @@ fn spawn_signal_handler(
     });
 }
 
+/// Bring up the EAL with arguments appropriate to the configured driver.
+///
+/// Only ever called once: `rte_eal_init` is process-global and a second call fails.
+fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
+    let main_lcore_arg = dpdk::eal::main_lcore_arg();
+
+    let mut eal_args: Vec<String> = vec![
+        "dataplane".to_string(),
+        "--in-memory".to_string(),
+        "--no-telemetry".to_string(),
+        "--no-shconf".to_string(),
+        "--iova-mode=va".to_string(),
+        "--lcores".to_string(),
+        main_lcore_arg.clone(),
+    ];
+
+    if args.driver_name() == "dpdk" {
+        // Allow exactly the devices named on the command line. Without an allowlist the EAL probes
+        // every PCI device it recognises, which on a host with more than one NIC means attaching to
+        // one the operator did not offer us -- including, potentially, the management uplink.
+        for interface in args.interfaces() {
+            if let Some(PortArg::PCI(addr)) = &interface.port {
+                eal_args.push("-a".to_string());
+                eal_args.push(addr.to_string());
+            }
+        }
+    } else {
+        // Classifier-only: rte_acl needs the memory subsystem and nothing else.
+        eal_args.push("--no-huge".to_string());
+        eal_args.push("--no-pci".to_string());
+    }
+
+    info!("Initializing DPDK EAL with: {}", eal_args.join(" "));
+    dpdk::eal::init(eal_args)
+}
+
+/// Configure and start every DPDK port named on the command line.
+///
+/// Ports must already be *bound* to a driver DPDK can attach to. That is `dataplane-init`'s job,
+/// not this one: for most NICs it means unbinding from the kernel driver and binding to `vfio-pci`,
+/// and for mlx5 it means deliberately leaving the kernel driver in place, because that driver is
+/// bifurcated and DPDK attaches alongside it. By the time this runs the EAL has already probed
+/// whatever was bound, so a port that is missing here was missing then.
+fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>>, DriverError> {
+    let num_workers = u16::try_from(args.num_workers()).map_err(|_| {
+        DriverError::PortSetup(format!("{} workers is too many", args.num_workers()))
+    })?;
+
+    // What the EAL actually probed, keyed by PCI address so the command line can be matched against
+    // it. A device the operator named but the EAL did not probe is a hard error rather than a
+    // warning: silently forwarding on a subset of the configured ports is a worse outcome than
+    // refusing to start.
+    let mut probed: Vec<DevInfo<'eal>> = eal.dev.iter().collect();
+    info!("EAL probed {} DPDK port(s)", probed.len());
+
+    let mut ports = Vec::new();
+    for interface in args.interfaces() {
+        let Some(PortArg::PCI(addr)) = &interface.port else {
+            return Err(DriverError::PortSetup(format!(
+                "interface '{}' has no PCI address; the DPDK driver needs one \
+                 (--interface {}=pci@0000:xx:yy.z)",
+                interface.interface, interface.interface
+            )));
+        };
+
+        // `DevInfo` does not carry the PCI address, so ports are matched positionally in the order
+        // the EAL probed them, which is the order of the `-a` allowlist built from these same
+        // arguments. That is fragile and deliberately temporary -- matching on the device name is
+        // the right fix, and needs an accessor the dpdk crate does not have yet.
+        if probed.is_empty() {
+            return Err(DriverError::PortSetup(format!(
+                "no DPDK port left to match interface '{}' ({addr}); the EAL probed fewer devices \
+                 than were configured. If this is zero overall, the usual cause is that the NIC was \
+                 never bound for DPDK -- see dataplane-init.",
+                interface.interface
+            )));
+        }
+        let info = probed.remove(0);
+        ports.push(Port::bring_up(
+            eal,
+            info,
+            interface.interface.to_string(),
+            num_workers,
+        )?);
+    }
+
+    if !probed.is_empty() {
+        warn!(
+            "{} DPDK port(s) were probed but not configured; they will carry no traffic",
+            probed.len()
+        );
+    }
+
+    Ok(ports)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     let args = CmdArgs::parse();
@@ -177,28 +277,20 @@ pub fn main() {
     };
     init_logging(&args, &gwname);
 
-    // Initialize a minimal EAL as early as possible. Stages such as the ACL filter and the
-    // flow-filter build rte_acl classifiers when configuration is applied (which happens before any
-    // packet driver starts), and rte_acl needs the EAL memory subsystem up. These are the
-    // lightweight, classifier-only args (no hugepages / no PCI). NOTE: there can be only one
-    // `rte_eal_init` per process, so the real DPDK datapath driver (currently `todo!()`) must
-    // eventually take over EAL ownership with device-appropriate args rather than adding a second
-    // init. The guard is held for the life of the process.
+    // Initialize the EAL as early as possible, and exactly once.
+    //
+    // Two things need it and they want different arguments. Stages such as the ACL filter and the
+    // flow-filter build rte_acl classifiers when configuration is applied -- which happens before
+    // any packet driver starts -- and rte_acl needs only the EAL memory subsystem. The DPDK
+    // datapath driver needs hugepages and its devices probed. There can be only one
+    // `rte_eal_init` per process, so the driver decides: with `--driver dpdk` the EAL comes up
+    // device-capable and rte_acl uses it happily, and otherwise it comes up in the lightweight
+    // classifier-only form. The guard is held for the life of the process.
     //
     // `--lcores` pins DPDK's main lcore to every CPU currently allowed for this process rather
     // than letting `rte_eal_init` default it to a single CPU; see `main_lcore_arg` for why that
     // default matters here (it otherwise pins every thread spawned after EAL init, not just DPDK's).
-    let main_lcore_arg = dpdk::eal::main_lcore_arg();
-    let _eal = dpdk::eal::init([
-        "--no-huge",
-        "--no-pci",
-        "--in-memory",
-        "--no-telemetry",
-        "--no-shconf",
-        "--iova-mode=va",
-        "--lcores",
-        main_lcore_arg.as_str(),
-    ]);
+    let eal = init_eal(&args);
 
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
 
@@ -299,6 +391,22 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
+    // Ports are brought up before the worker scope opens, because the queue handles workers own are
+    // branded with the borrow of the port they came from: the ports have to outlive every thread
+    // that touches one. An empty vector for any other driver.
+    let ports = if args.driver_name() == "dpdk" {
+        match bring_up_ports(&eal, &args) {
+            Ok(ports) => ports,
+            Err(e) => {
+                error!("Failed to bring up DPDK ports: {e}");
+                shutdown.fail();
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     concurrency::thread::scope(|scope| {
         let mgmt_result = run_mgmt(
             &mgmt_handle,
@@ -331,7 +439,14 @@ pub fn main() {
                 let driver_result = match args.driver_name() {
                     "dpdk" => {
                         info!("Using driver DPDK...");
-                        todo!();
+                        Some(DriverDpdk::start(
+                            scope,
+                            &shutdown.workers,
+                            &ports,
+                            args.num_workers(),
+                            &ingredients.factory(),
+                            driver_status_writer,
+                        ))
                     }
                     "kernel" => {
                         info!("Using driver kernel...");
@@ -374,6 +489,13 @@ pub fn main() {
     });
 
     let exit_code = i32::from(shutdown.is_fatal());
+
+    // Every worker has been joined by the scope above, so the queue handles that borrowed these
+    // ports are gone and the ports can be stopped. Explicitly, rather than leaving it to
+    // `PortLifecycle`'s `Drop` backstop, so a device that refuses to stop is reported.
+    for port in ports {
+        port.shutdown();
+    }
 
     setup.router.stop();
     mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
