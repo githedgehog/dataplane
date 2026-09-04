@@ -8,7 +8,7 @@ use args::{
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{DriverDpdk, Port};
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -344,6 +344,15 @@ fn enter_datapath_netns(netns: &NetworkNamespace) -> Result<(), String> {
     Ok(())
 }
 
+/// Coordinate datapath readiness and management startup.
+struct DatapathHandshake {
+    /// How the datapath reports that it is ready (for DPDK, that the EAL exists), which management
+    /// must not serve without.
+    ready: std::sync::mpsc::Sender<Result<(), String>>,
+    /// How the datapath is told management is running and the hardware may come up.
+    go: std::sync::mpsc::Receiver<()>,
+}
+
 /// Run the packet path on a thread in the datapath namespace.
 ///
 /// Report readiness once the namespace is entered (and, for DPDK, the EAL exists, since management
@@ -357,9 +366,10 @@ fn run_datapath(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
-    ready: &std::sync::mpsc::Sender<Result<(), String>>,
-    go: &std::sync::mpsc::Receiver<()>,
+    bridge: Option<DatapathEnds>,
+    handshake: &DatapathHandshake,
 ) {
+    let DatapathHandshake { ready, go } = handshake;
     if let Err(detail) = enter_datapath_netns(netns) {
         error!("{detail}");
         drop(ready.send(Err(detail)));
@@ -390,6 +400,7 @@ fn run_datapath(
             timer_handle,
             ingredients,
             status_writer,
+            bridge,
         ),
         None => run_kernel_driver(config, workers, ingredients, status_writer),
     }
@@ -423,6 +434,7 @@ fn run_kernel_driver(
 }
 
 /// Bring up the DPDK ports and run their workers until they stop.
+#[allow(clippy::too_many_arguments)]
 fn run_dpdk_driver(
     eal: &mut Eal,
     config: &LaunchConfiguration,
@@ -430,6 +442,7 @@ fn run_dpdk_driver(
     timer_handle: &tokio::runtime::Handle,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    mut bridge: Option<DatapathEnds>,
 ) {
     let ports = match bring_up_ports(eal, config) {
         Ok(ports) => ports,
@@ -439,6 +452,17 @@ fn run_dpdk_driver(
             return;
         }
     };
+
+    // Give each TAP its port's MAC and MTU.
+    if let Some(bridge) = &bridge {
+        for port in &ports {
+            bridge.report(PortIdentity {
+                name: port.name.clone(),
+                mac: port.mac,
+                mtu: port.mtu,
+            });
+        }
+    }
 
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
@@ -451,11 +475,16 @@ fn run_dpdk_driver(
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
+            bridge.as_mut(),
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the DPDK driver could not be started");
         }
     });
+
+    if let Some(bridge) = &bridge {
+        bridge.report_unclaimed();
+    }
 
     // Explicit shutdown reports errors that the Drop backstop would suppress.
     for port in ports {
@@ -607,10 +636,62 @@ pub fn main() {
     let ingredients = setup.pipeline;
     let pipeline_data = ingredients.data();
 
+    // The control-plane bridge, built here and not on the datapath thread.
+    //
+    // `TUNSETIFF` creates a tap in the network namespace of the calling thread, so this has to
+    // happen while every thread in the process is still in the control namespace -- before the
+    // datapath thread below jumps into the one that owns the NICs. Afterwards the taps are only
+    // descriptors, which work from anywhere.
+    //
+    // # When there is one
+    //
+    // Exactly when the datapath runs in a namespace other than this one, which is the only
+    // circumstance in which the taps have names free to take. The taps are named after the
+    // configured interfaces, so they can only exist somewhere the physical devices are not.
+    //
+    // The kernel driver's datapath shares this namespace: its interfaces *are* the real ones, and
+    // the kernel carries the control plane itself.
+    let want_bridge = match datapath_netns.is_current() {
+        Ok(shared) => !shared,
+        Err(e) => {
+            error!("Failed to identify the datapath network namespace: {e}");
+            shutdown.fail();
+            false
+        }
+    };
+    let (_cp_bridge, cp_ends) = if want_bridge {
+        match CpBridge::create(
+            &mgmt_handle,
+            &shutdown.mgmt,
+            config.driver.interfaces().map(|i| &i.interface),
+        ) {
+            Ok((bridge, ends)) => (Some(bridge), Some(ends)),
+            Err(e) => {
+                // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
+                // their own this is the control plane's *only* path to the wire, so the dataplane
+                // would come up, forward nothing it had not been told about, and never learn a
+                // route.
+                error!("Failed to build the control-plane bridge: {e}");
+                shutdown.fail();
+                (None, None)
+            }
+        }
+    } else {
+        info!(
+            "The datapath shares this network namespace, so no control-plane bridge: the kernel \
+             keeps the netdevs and carries the control plane itself"
+        );
+        (None, None)
+    };
+
     concurrency::thread::scope(|scope| {
         // Management waits for the datapath to be ready, then releases it after its own startup.
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let handshake = DatapathHandshake {
+            ready: ready_tx,
+            go: go_rx,
+        };
 
         let spawned = thread::Builder::new()
             .name("datapath".to_string())
@@ -627,8 +708,8 @@ pub fn main() {
                         timer_handle,
                         ingredients,
                         driver_status_writer,
-                        &ready_tx,
-                        &go_rx,
+                        cp_ends,
+                        &handshake,
                     );
                 }
             });

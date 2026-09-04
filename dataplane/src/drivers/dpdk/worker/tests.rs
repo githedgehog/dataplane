@@ -81,6 +81,24 @@ fn drop_verdicts_and_removed_packets_are_counted_once() {
 }
 
 #[test]
+fn control_plane_verdicts_remain_available_to_the_driver() {
+    let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[
+        Some(DoneReason::Unhandled),
+        Some(DoneReason::NotIp),
+        Some(DoneReason::RouteFailure),
+    ]));
+    let mut counters = RxCounters::default();
+    let packets = process_burst(
+        (0..3).map(|_| frame()),
+        InterfaceIndex::try_new(1).unwrap(),
+        &mut pipeline,
+        &mut counters,
+    );
+    assert_eq!(packets.len(), 3);
+    assert_eq!(counters.ppline_drops, 0);
+}
+
+#[test]
 fn additional_pipeline_outputs_do_not_count_as_drops() {
     let mut pipeline =
         DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered); 2]));

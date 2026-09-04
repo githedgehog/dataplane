@@ -6,17 +6,20 @@
 use std::collections::HashMap;
 
 use concurrency::sync::Arc;
-use dpdk::mem::{Mbuf, MbufArray};
+use dpdk::mem::{MBUF_BURST, Mbuf, MbufArray};
 use lifecycle::Subsystem;
-use net::buffer::PacketBufferMut;
+use net::buffer::{Append, PacketBufferMut};
+use net::headers::TryEth;
 use net::interface::InterfaceIndex;
-use net::packet::{DoneReason, Packet};
+use net::packet::DoneReason;
+use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
 use tracing::{debug, error, trace, warn};
 
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
+use super::cpbridge::{Disposition, addressed_to, disposition};
 use super::port::PortQueues;
 
 #[cfg(all(test, not(feature = "shuttle")))]
@@ -33,6 +36,8 @@ pub(crate) struct WorkerPort<'p> {
     pub(crate) queues: PortQueues<'p>,
     pub(crate) watchdog: Watchdog,
 }
+/// Bound control-plane injection so receiving traffic cannot starve.
+const INJECT_PER_POLL: usize = MBUF_BURST;
 
 /// A worker and its exclusively owned queue handles.
 pub(crate) struct Worker<'p> {
@@ -121,10 +126,11 @@ impl<'p> Worker<'p> {
         }
     }
 
-    /// Receive one burst from the port in `slot`, run it through the pipeline, and transmit.
+    /// Do one port's work: inject whatever the kernel has queued, then receive a burst, run it
+    /// through the pipeline, and transmit.
     ///
     /// Transmit outcomes are counted against the receiving port, as the kernel driver does.
-    /// Returns whether any frame was received, which is what paces the idle backoff.
+    /// Returns whether there was anything to do, which is what paces the idle backoff.
     fn poll_one(
         &mut self,
         slot: usize,
@@ -132,20 +138,50 @@ impl<'p> Worker<'p> {
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
         counters: &mut RxCounters,
     ) -> bool {
+        // Before the receive, and unconditionally: a port with no incoming traffic still has to
+        // carry the control plane's outgoing traffic, and a BGP session whose keepalives only left
+        // when data happened to arrive would drop on the first quiet hold timer.
+        let injected = self.inject(slot, counters);
+
         let burst = self.ports[slot].queues.rx.receive();
         if burst.is_empty() {
-            return false;
+            return injected;
         }
         let rx_if = self.ports[slot].queues.if_index;
         let processed = process_burst(burst.into_iter(), rx_if, pipeline, counters);
 
         // Batch transmission by output port.
         let mut batches: HashMap<usize, MbufArray<'p>> = HashMap::new();
+        // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
+        // atomic increment, which is not free at burst rates and buys nothing here.
+        let port_mac = self.ports[slot].queues.mac;
+        let punt = self.ports[slot].queues.punt.as_ref();
         for packet in processed {
-            match packet.get_done() {
-                Some(DoneReason::Delivered) => {}
-                // Locally consumed packets release their mbufs here.
-                _ => continue,
+            // Who the frame was addressed to, read before the pipeline's verdict is acted on. It is
+            // only consulted for verdicts that did not rewrite the ethernet header, so this is the
+            // destination the frame arrived with.
+            let addressed_to_us = packet
+                .try_eth()
+                .is_some_and(|eth| addressed_to(eth.destination().inner(), port_mac));
+
+            match disposition(packet.get_done(), addressed_to_us) {
+                Disposition::Transmit => {}
+                Disposition::Punt => {
+                    Self::punt(
+                        self.id,
+                        &self.ports[slot].queues.name,
+                        punt,
+                        packet,
+                        counters,
+                    );
+                    continue;
+                }
+                // A packet the pipeline finished with and the kernel has no business seeing.
+                // Dropping it here frees its mbuf.
+                Disposition::Drop => {
+                    counters.ppline_drops += 1;
+                    continue;
+                }
             }
 
             let Some(oif) = packet.meta().oif else {
@@ -205,9 +241,157 @@ impl<'p> Worker<'p> {
 
         true
     }
+
+    /// Hand one frame to the kernel through the ingress port's tap.
+    ///
+    /// The frame is copied, because that is the only thing it can be: an `Mbuf` is `!Send` and
+    /// branded with the EAL's lifetime, and the far end of this channel is a task on the management
+    /// runtime. `serialize` first, so what the kernel sees is the frame as the pipeline left it --
+    /// the same buffer a transmit would have sent -- rather than the payload without its headers.
+    fn punt(
+        id: WorkerId,
+        port: &str,
+        punt: Option<&tokio::sync::mpsc::Sender<super::cpbridge::Frame>>,
+        packet: Packet<Mbuf<'p>>,
+        counters: &mut RxCounters,
+    ) {
+        // No bridge means no tap to punt to, which is every configuration that did not ask for one.
+        // The packet is dropped exactly as it was before this path existed.
+        let Some(punt) = punt else {
+            return;
+        };
+        let mbuf = match packet.serialize() {
+            Ok(mbuf) => mbuf,
+            Err(e) => {
+                counters.tx_drops += 1;
+                trace!(
+                    worker = id,
+                    "failed to serialize a frame to punt on {port}: {e:?}"
+                );
+                return;
+            }
+        };
+        // `try_send` rather than a blocking send: this is the packet path, and there is nothing it
+        // may wait for. A full queue means the tap's pump is not keeping up, which is a control
+        // plane problem and not a reason to stop forwarding.
+        if punt.try_send(mbuf.raw_data().to_vec()).is_err() {
+            counters.tx_drops += 1;
+            trace!(
+                worker = id,
+                "punt queue for {port} is full; dropping a frame for the kernel"
+            );
+        }
+    }
+
+    /// Move whatever the kernel has queued for this port onto the wire.
+    ///
+    /// Returns whether anything was injected, which counts as activity for the idle backoff.
+    ///
+    /// # Why this bypasses the pipeline
+    ///
+    /// FRR has already made the forwarding decision. These frames come off a tap that stands in for
+    /// this exact port, with the headers the kernel built; running them through the pipeline would
+    /// route them a second time, by tables the kernel's own decision was derived from.
+    ///
+    /// # Why this transmits separately rather than joining the forwarding batch
+    ///
+    /// A transmit batch holds one burst. Sharing it would let a burst of forwarded traffic crowd
+    /// out the control plane -- exactly backwards, since losing a BGP keepalive costs the session
+    /// and losing a forwarded packet costs a retransmit. The extra `rte_eth_tx_burst` only happens
+    /// when there was something to inject, which at control-plane rates is rare.
+    fn inject(&mut self, slot: usize, counters: &mut RxCounters) -> bool {
+        let queue = &mut self.ports[slot].queues;
+        let Some(inject) = queue.inject.as_mut() else {
+            return false;
+        };
+
+        // Drained into a local buffer first: the mbufs come from a pool this same struct owns, so
+        // the receiver's borrow has to end before the allocation begins. Bounded by
+        // `INJECT_PER_POLL`, which is also the batch's capacity, so the `try_push` below cannot
+        // overflow.
+        let mut frames: Vec<super::cpbridge::Frame> = Vec::new();
+        for _ in 0..INJECT_PER_POLL {
+            let Ok(frame) = inject.try_recv() else {
+                break;
+            };
+            frames.push(frame);
+        }
+        if frames.is_empty() {
+            return false;
+        }
+
+        // All-or-nothing, which is what the DPDK bulk allocator gives: a partial allocation would
+        // have to be unwound by hand.
+        let mbufs = match queue.pool.alloc_bulk(frames.len()) {
+            Ok(mbufs) => mbufs,
+            Err(e) => {
+                counters.tx_drops += frames.len() as u64;
+                warn!(
+                    worker = self.id,
+                    "could not allocate {} mbuf(s) to inject on {}: {e}. The control plane's \
+                     traffic is being dropped because the port's receive pool is exhausted.",
+                    frames.len(),
+                    queue.name
+                );
+                return false;
+            }
+        };
+
+        // Filled and pushed in one pass, so an mbuf whose frame could not be copied is simply not
+        // pushed -- and being owned by this loop, it is freed when the iteration drops it rather
+        // than transmitted empty.
+        let mut batch = MbufArray::new_empty();
+        for (mut mbuf, frame) in mbufs.into_iter().zip(frames) {
+            let Ok(len) = u16::try_from(frame.len()) else {
+                counters.tx_drops += 1;
+                warn!(
+                    worker = self.id,
+                    "the kernel offered a {} byte frame on {}, which is not a frame; dropping it",
+                    frame.len(),
+                    queue.name
+                );
+                continue;
+            };
+            match mbuf.append(len) {
+                Ok(room) => room.copy_from_slice(&frame),
+                Err(e) => {
+                    counters.tx_drops += 1;
+                    warn!(
+                        worker = self.id,
+                        "the kernel offered a {len} byte frame on {}, which does not fit an mbuf \
+                         from its pool ({e}); dropping it. The tap's MTU and the port's disagree.",
+                        queue.name
+                    );
+                    continue;
+                }
+            }
+            if batch.try_push(mbuf).is_err() {
+                // Unreachable: at most `INJECT_PER_POLL` frames were drained and that is the
+                // batch's capacity. Counted rather than asserted, because losing a control frame is
+                // not worth stopping the packet path for.
+                counters.tx_drops += 1;
+            }
+        }
+
+        let attempted = batch.len() as u64;
+        if attempted == 0 {
+            return false;
+        }
+        let unsent = queue.tx.transmit(batch);
+        let refused = unsent.len() as u64;
+        counters.tx += attempted - refused;
+        if refused > 0 {
+            counters.tx_drops += refused;
+            trace!(
+                worker = self.id,
+                "tx queue on {} refused {refused} of {attempted} injected frame(s)", queue.name
+            );
+        }
+        true
+    }
 }
 
-/// Parse a burst and retain packets delivered to an interface or the local stack.
+/// Parse a burst and retain forwarded packets and possible control-plane traffic.
 fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
@@ -234,7 +418,14 @@ fn process_burst<Buf: PacketBufferMut>(
     // Some stages remove packets instead of returning a drop verdict.
     counters.ppline_drops += parsed.saturating_sub(packets.len()) as u64;
     packets.retain(|packet| {
-        if let Some(DoneReason::Delivered | DoneReason::Local) = packet.get_done() {
+        if let Some(
+            DoneReason::Delivered
+            | DoneReason::Local
+            | DoneReason::Unhandled
+            | DoneReason::NotIp
+            | DoneReason::RouteFailure,
+        ) = packet.get_done()
+        {
             true
         } else {
             counters.ppline_drops += 1;
