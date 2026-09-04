@@ -55,7 +55,7 @@ hwlocality = { workspace = true, features = ["hwloc-latest"] }
 pci-ids = { workspace = true, features = [] }
 serde = { workspace = true, features = ["std"] }
 serde_yaml_ng = { workspace = true, features = [] }
-nix = { workspace = true, features = ["sched"] }
+nix = { workspace = true, features = ["sched", "mount"] }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 
