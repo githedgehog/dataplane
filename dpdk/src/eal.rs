@@ -10,15 +10,30 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
+use core::marker::PhantomData;
 use dpdk_sys;
 use tracing::{error, info, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
-/// This is a zero-sized type that is used for lifetime management and to ensure that the Eal is
-/// properly initialized and cleaned up.
+/// Owns the EAL for the process: dropping it releases every registered mempool and then calls
+/// [`rte_eal_cleanup`](dpdk_sys::rte_eal_cleanup).
+///
+/// # Thread affinity
+///
+/// `Eal` is `!Send` and `!Sync`, so the handle stays on the thread that created it. That thread is
+/// the main lcore by DPDK's own contract -- `rte_eal_init` "is to be executed on the MAIN lcore
+/// only", and the thread that calls it *becomes* the main lcore -- so pinning the handle there
+/// keeps teardown on a predictable thread rather than wherever the value happened to be moved.
+///
+/// To use EAL services from another thread, take a [`shared`](Self::shared) projection. That is
+/// the point of the split: `Eal` will grow state that genuinely cannot be shared (a QSBR publisher
+/// is `!Sync` by design, and the pool registry wants a single owner), and this type previously
+/// carried a bare `unsafe impl Sync` with no justification at all. Nothing reachable through it
+/// was unsound at the time, but the assertion pre-approved every future field, which is exactly
+/// backwards. [`EalShared`] instead exposes a subset chosen because each operation in it has a
+/// thread-safety argument.
 #[derive(Debug)]
-#[repr(transparent)]
 #[non_exhaustive]
 pub struct Eal {
     /// The memory manager.
@@ -38,11 +53,84 @@ pub struct Eal {
     ///
     /// You can manage logical cores and task dispatch here.
     pub lcore: lcore::Manager,
+    /// Pins the handle to its creating thread; see the type documentation.
+    ///
+    /// Not [`Local<Eal>`](concurrency::local::Local) only because the manager fields above are
+    /// public and reached as `eal.dev`, which a wrapper would turn into `eal.as_ref().dev` at
+    /// every call site for no gain here. `Local` remains the right tool for wrapping a value whose
+    /// interior is not a public namespace.
+    _local: PhantomData<*const ()>,
     // TODO: queue
     // TODO: flow
 }
 
-unsafe impl Sync for Eal {}
+/// The subset of EAL services that are safe to use from any thread.
+///
+/// Obtained from [`Eal::shared`], `Copy`, and `Send + Sync` -- not by assertion, but because every
+/// operation reachable through it is a read-only DPDK query:
+///
+/// - [`dev`](Self::dev): `rte_eth_dev_info_get`, `rte_eth_dev_count_avail` and
+///   `rte_eth_find_next_owned_by`, which read ethdev's port table without mutating it. Note this
+///   is deliberately *only* the query surface -- configuring a device goes through
+///   [`DevConfig::apply`](crate::dev::DevConfig::apply), which is not reachable from here.
+/// - [`socket`](Self::socket): NUMA and lcore-to-socket lookups, all reads of static topology.
+/// - [`has_pci`](Self::has_pci): `rte_eal_has_pci`, a read of a flag fixed at init.
+///
+/// The `mem` and `lcore` managers are absent because they have no shared-safe operations to
+/// offer: both are presently namespaces with no public methods, and they are the two most likely
+/// to gain owned, thread-affine state (the pool registry, a QSBR publisher).
+///
+/// The projection borrows the [`Eal`], so it cannot outlive the EAL it describes.
+///
+/// It is `Send + Sync + Copy`, so it can be handed to every worker:
+///
+/// ```
+/// # use dataplane_dpdk::eal::EalShared;
+/// fn assert_shareable<T: Send + Sync + Copy>() {}
+/// assert_shareable::<EalShared<'static>>();
+/// ```
+///
+/// whereas the owning [`Eal`] cannot cross a thread boundary at all:
+///
+/// ```compile_fail,E0277
+/// # use dataplane_dpdk::eal::Eal;
+/// fn assert_send<T: Send>() {}
+/// assert_send::<Eal>();
+/// ```
+#[derive(Debug, Copy, Clone)]
+pub struct EalShared<'eal> {
+    dev: &'eal dev::Manager,
+    socket: &'eal socket::Manager,
+}
+
+impl<'eal> EalShared<'eal> {
+    /// Ethernet device *queries*. See the type documentation for why only queries.
+    #[must_use]
+    pub fn dev(&self) -> &'eal dev::Manager {
+        self.dev
+    }
+
+    /// Socket (NUMA) topology queries.
+    #[must_use]
+    pub fn socket(&self) -> &'eal socket::Manager {
+        self.socket
+    }
+
+    /// Returns `true` if the [`Eal`] is using the PCI bus.
+    #[must_use]
+    pub fn has_pci(&self) -> bool {
+        // SAFETY: reads a flag fixed during `rte_eal_init`; no mutation, no thread affinity.
+        unsafe { dpdk_sys::rte_eal_has_pci() != 0 }
+    }
+
+    /// The **calling thread's** DPDK error number.
+    ///
+    /// `rte_errno` is thread-local, so this reports the errno of whichever thread asks -- which is
+    /// what a caller wants, but note it is not a property of the EAL shared between threads.
+    pub fn errno(&self) -> errno::ErrorCode {
+        errno::ErrorCode::parse_i32(unsafe { dpdk_sys::rte_errno_get() })
+    }
+}
 
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
@@ -221,10 +309,23 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
         dev: dev::Manager::init(),
         socket: socket::Manager::init(),
         lcore: lcore::Manager::init(),
+        _local: PhantomData,
     }
 }
 
 impl Eal {
+    /// A shareable projection of the EAL services that are safe to use from any thread.
+    ///
+    /// This is how a worker thread gets at device and socket queries: the `Eal` handle itself is
+    /// `!Send`, but [`EalShared`] is `Copy + Send + Sync` and borrows from it.
+    #[must_use]
+    pub fn shared(&self) -> EalShared<'_> {
+        EalShared {
+            dev: &self.dev,
+            socket: &self.socket,
+        }
+    }
+
     /// Returns `true` if the [`Eal`] is using the PCI bus.
     ///
     /// This is mostly a safe wrapper around [`dpdk_sys::rte_eal_has_pci`]
@@ -316,5 +417,89 @@ impl EalErrno {
         let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
         let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
         Eal::fatal_error(ret_msg)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use crate::with_eal;
+
+    /// The point of the projection: EAL queries work from a thread that does not and cannot hold
+    /// the `Eal` itself.
+    #[test]
+    #[with_eal]
+    fn the_projection_answers_queries_from_another_thread() {
+        let shared = crate::test_support::start_eal();
+
+        let here_sockets = shared.socket().count();
+        let here_devices = shared.dev().num_devices();
+        assert!(here_sockets >= 1, "a running EAL has at least one socket");
+
+        // `EalShared` is `Copy + Send`, so it moves into the thread by value.
+        let (there_sockets, there_devices) =
+            std::thread::spawn(move || (shared.socket().count(), shared.dev().num_devices()))
+                .join()
+                .expect("far thread panicked");
+
+        assert_eq!(here_sockets, there_sockets);
+        assert_eq!(here_devices, there_devices);
+    }
+
+    /// `errno` is per-thread, and the projection's documentation promises exactly that -- so the
+    /// promise is tested rather than asserted.
+    ///
+    /// `rte_errno` is set by provoking a real DPDK failure (creating a pool whose name is already
+    /// taken), since `rte_errno_set` is not exported. A thread that has not failed at anything
+    /// must not see it.
+    #[test]
+    #[with_eal]
+    fn errno_is_reported_per_thread() {
+        use crate::mem::{Pool, PoolConfig, PoolParams};
+
+        let shared = crate::test_support::start_eal();
+        let params = PoolParams {
+            size: 63,
+            cache_size: 0,
+            ..Default::default()
+        };
+        let config = |()| {
+            PoolConfig::new("errno_probe_pool", params).unwrap_or_else(|e| panic!("config: {e:?}"))
+        };
+        let _first = Pool::new_pkt_pool(config(())).expect("first create should succeed");
+        // Same name again: DPDK refuses and sets this thread's `rte_errno`.
+        Pool::new_pkt_pool(config(())).expect_err("a duplicate pool name must be refused");
+
+        let here = shared.errno();
+        assert_ne!(
+            here,
+            errno::ErrorCode::parse_i32(0),
+            "the failed create should have set this thread's rte_errno"
+        );
+
+        let there = std::thread::spawn(move || shared.errno())
+            .join()
+            .expect("far thread panicked");
+        assert_ne!(
+            here, there,
+            "rte_errno is thread-local, so a thread that has not failed must not observe ours"
+        );
+    }
+
+    /// `has_pci` reads a flag fixed at init, so it is the same everywhere.
+    #[test]
+    #[with_eal]
+    fn has_pci_agrees_across_threads() {
+        let shared = crate::test_support::start_eal();
+        let here = shared.has_pci();
+        let there = std::thread::spawn(move || shared.has_pci())
+            .join()
+            .expect("far thread panicked");
+        assert_eq!(here, there);
+        // The test EAL is started with `--no-pci`.
+        assert!(!here, "the test EAL should have no PCI bus");
     }
 }
