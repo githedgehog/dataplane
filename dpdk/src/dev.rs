@@ -1033,10 +1033,22 @@ impl Drop for PortLifecycle {
 /// [`start`][Dev::<Stopped>::start] to transition it to [`Started`] and back with
 /// [`stop`][Dev::<Started>::stop].
 pub struct Dev<S: DevState = Stopped> {
-    /// Owns the port's stop/close obligation.
+    /// Owns the port's stop/close obligation -- the only field here with a `Drop` that does
+    /// anything to the device.
     ///
-    /// Declared first so that it is dropped first: the port is stopped and closed before the queue
-    /// bookkeeping below goes away.
+    /// Declared first, so it also happens to drop first, but unlike
+    /// [`Consigned`](crate::mem::Consigned) that ordering is *not* load-bearing and this type
+    /// deliberately has no `Drop` of its own to enforce it. `Dev` implementing `Drop` is exactly
+    /// what would forbid moving its fields out, which is what makes [`transition`](Self::transition)
+    /// an ordinary safe move instead of a `ManuallyDrop` plus a `ptr::read` per field.
+    ///
+    /// It is not load-bearing because no other field has a teardown effect on DPDK state. `info`
+    /// and `config` are plain data; the only reachable `Drop` is the [`Pool`](crate::mem::Pool)
+    /// clone held by each queue's config, and that can free a mempool only if it is the *last*
+    /// handle -- which the crate's pool registry prevents by holding one until EAL teardown. If
+    /// that floor ever goes away, the ordering here becomes real and this type will need the
+    /// obligation restructured (most likely by having `PortLifecycle` own the queue store) rather
+    /// than a `Drop` bolted on.
     lifecycle: PortLifecycle,
     /// The device info
     pub info: DevInfo,
