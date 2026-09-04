@@ -30,28 +30,29 @@ pub enum LCorePriority {
     RealTime = dpdk_sys::rte_thread_priority::RTE_THREAD_PRIORITY_REALTIME_CRITICAL as c_uint,
 }
 
-/// Iterates enabled EAL lcores except the main lcore.
+/// Iterates enabled EAL lcores, optionally excluding the main lcore.
 #[derive(Debug)]
-#[repr(transparent)]
 struct LCoreIdIterator {
     current: LCoreId,
+    skip_main: bool,
 }
 
 impl LCoreIdIterator {
-    /// Start an iterator which loops over all available [`LCoreId`]
-    ///
-    /// This is internal and should not be directly exposed to the end user of this crate.
-    ///
-    /// # Note
-    ///
-    /// We start the [`LCoreId`] in an invalid condition as a signal to DPDK to
-    /// return the first actual [`LCoreId`] on the first call to `.next()`.
-    /// This value is never supposed to be exposed to the user as `u32::MAX` is
-    /// an invalid [`LCoreId`].
+    /// Iterate enabled EAL lcores, including the main lcore.
     #[tracing::instrument(level = "trace")]
-    fn new() -> Self {
+    fn all() -> Self {
         Self {
             current: LCoreId::INVALID,
+            skip_main: false,
+        }
+    }
+
+    /// Iterate enabled EAL lcores except the main lcore.
+    #[tracing::instrument(level = "trace")]
+    fn workers() -> Self {
+        Self {
+            current: LCoreId::INVALID,
+            skip_main: true,
         }
     }
 }
@@ -61,7 +62,9 @@ impl Iterator for LCoreIdIterator {
 
     #[tracing::instrument(level = "trace")]
     fn next(&mut self) -> Option<Self::Item> {
-        let next = unsafe { dpdk_sys::rte_get_next_lcore(self.current.0 as c_uint, 1, 0) };
+        let next = unsafe {
+            dpdk_sys::rte_get_next_lcore(self.current.0 as c_uint, c_int::from(self.skip_main), 0)
+        };
         if next >= dpdk_sys::RTE_MAX_LCORE {
             return None;
         }
@@ -229,9 +232,16 @@ pub mod err {
 impl LCoreId {
     pub const MAX: u32 = dpdk_sys::RTE_MAX_LCORE;
 
+    /// Iterate enabled EAL lcores, including the main lcore.
     #[tracing::instrument(level = "trace")]
-    pub fn iter() -> impl Iterator<Item = LCoreId> {
-        LCoreIdIterator::new()
+    pub fn all() -> impl Iterator<Item = LCoreId> {
+        LCoreIdIterator::all()
+    }
+
+    /// Iterate enabled EAL lcores except the main lcore.
+    #[tracing::instrument(level = "trace")]
+    pub fn workers() -> impl Iterator<Item = LCoreId> {
+        LCoreIdIterator::workers()
     }
 
     pub(crate) fn as_u32(&self) -> u32 {
@@ -318,7 +328,7 @@ impl LCoreIndexIterator {
     #[tracing::instrument(level = "trace")]
     pub fn new() -> Self {
         Self {
-            inner: LCoreIdIterator::new(),
+            inner: LCoreIdIterator::workers(),
         }
     }
 }
@@ -329,5 +339,48 @@ impl Iterator for LCoreIndexIterator {
     #[tracing::instrument(level = "trace", skip(self))]
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()?.to_index()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::with_eal;
+
+    #[test]
+    #[with_eal]
+    fn all_includes_the_main_lcore_and_workers_excludes_it() {
+        let main = LCoreId::main();
+        let all: Vec<_> = LCoreId::all().collect();
+        let workers: Vec<_> = LCoreId::workers().collect();
+
+        assert!(
+            all.contains(&main),
+            "all() must include the main lcore {main:?}, got {all:?}"
+        );
+        assert!(
+            !workers.contains(&main),
+            "workers() must exclude the main lcore {main:?}, got {workers:?}"
+        );
+        assert_eq!(
+            all.len(),
+            workers.len() + 1,
+            "the two sets should differ by exactly the main lcore"
+        );
+    }
+
+    #[test]
+    #[with_eal]
+    fn all_yields_only_valid_enabled_lcores() {
+        let all: Vec<_> = LCoreId::all().collect();
+        assert!(!all.is_empty(), "a running EAL has at least one lcore");
+        for lcore in all {
+            assert!(lcore.as_u32() < LCoreId::MAX, "{lcore:?} out of range");
+            assert_ne!(
+                unsafe { dpdk_sys::rte_lcore_is_enabled(lcore.as_u32()) },
+                0,
+                "{lcore:?} was yielded but DPDK does not consider it enabled"
+            );
+        }
     }
 }
