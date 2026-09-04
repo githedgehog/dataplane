@@ -216,6 +216,19 @@ impl Pool {
         &self.0.config
     }
 
+    /// The number of mbufs currently checked out of this pool.
+    ///
+    /// A direct oracle for "was this batch freed exactly once": it rises by the size of an
+    /// allocation and must return to its previous value once the mbufs are released. Used by the
+    /// tests to distinguish a leak (count stays high) from a double free (count goes *below* where
+    /// it started, because the same objects were returned to the ring twice).
+    #[must_use]
+    pub fn in_use(&self) -> u32 {
+        // SAFETY: `self.0.pool` is a live mempool for the lifetime of this handle, and this reads
+        // its accounting without mutating it.
+        unsafe { dpdk_sys::rte_mempool_in_use_count(self.0.pool.as_ptr()) }
+    }
+
     /// A mutable pointer to the raw DPDK [`rte_mempool`](dpdk_sys::rte_mempool).
     ///
     /// Handing this to a `dpdk_sys` function that retains it is sound in a way it was not when
@@ -1051,10 +1064,31 @@ impl<const N: usize> Drop for MbufArray<N> {
 /// ```
 #[derive(Debug)]
 pub struct Consigned {
-    /// Declared before the guard so the mbufs are returned to the pool before the handle that
-    /// keeps the pool alive is released.
     batch: MbufArray,
     guard: Pool,
+}
+
+impl Drop for Consigned {
+    fn drop(&mut self) {
+        // The mbufs must be returned to the pool *before* the guard that keeps that pool alive is
+        // released.  The other way round, the guard could be the last handle, the mempool would be
+        // freed, and the bulk free of the batch would then walk memory that no longer exists.
+        //
+        // Field declaration order above already places `batch` before `guard`, so default
+        // field-drop order honours it.  This assignment states the ordering in code instead of
+        // leaving it implied, in the same spirit as `quiescent::Subscriber`'s `Drop`: an invariant
+        // that holds only because of declaration order is one a field reorder breaks silently,
+        // with no compile error.  Assigning drops the old value, so this is the bulk free.
+        //
+        // Worth being honest about the current strength of this: the hazard is **latent, not
+        // live**.  Reversing the fields *and* deleting this line leaves every test passing,
+        // because the pool registry holds a handle to each pool until EAL teardown, so `guard`
+        // can never be the last one.  The ordering becomes real the moment that floor goes away --
+        // which the planned QSBR ownership work may well do, since its whole purpose is to decide
+        // reclamation by quiescence rather than by a process-lifetime handle.  Keeping the
+        // ordering explicit now means that change does not have to rediscover this.
+        self.batch = MbufArray::new_empty();
+    }
 }
 
 // SAFETY: what makes an `Mbuf` unsafe to send is that its pool might be freed while it is in
@@ -1270,6 +1304,40 @@ mod tests {
         .join()
         .expect("far thread panicked");
         assert_eq!(observed, 8);
+    }
+
+    /// Dropping a `Consigned` must return its mbufs to the pool exactly once.
+    ///
+    /// This is the test for the explicit `Drop` on `Consigned`. "It did not crash" would pass
+    /// even if the batch leaked, and a double free of a bulk batch pushes the same pointers into
+    /// the mempool ring twice -- which shows up as an in-use count *below* where it started, not
+    /// as a fault. Only occupancy accounting distinguishes all three outcomes.
+    #[test]
+    #[with_eal]
+    fn dropping_a_consigned_batch_returns_every_mbuf_exactly_once() {
+        let pool = pool("consign_accounting", 511);
+        let baseline = pool.in_use();
+
+        let batch = pool.alloc_bulk(8).expect("alloc_bulk failed");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 8,
+            "allocation should be accounted"
+        );
+
+        let consigned = pool.consign(batch).map_err(|(e, _)| e).expect("consign");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 8,
+            "consigning must not allocate or free anything"
+        );
+
+        drop(consigned);
+        assert_eq!(
+            pool.in_use(),
+            baseline,
+            "every mbuf must be back in the pool -- higher means a leak, lower means a double free"
+        );
     }
 
     /// Guarding the wrong pool would keep the wrong memory alive, so it is rejected -- and the
