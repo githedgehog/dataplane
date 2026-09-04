@@ -342,8 +342,9 @@ fn main() -> Result<(), Err> {
     println!("rule installed: eth -> QUEUE(hairpin q{HAIRPIN_Q})");
 
     // ---- inject; watch port stats + the host rx queue ----
-    let rxq = dev
-        .rx_queue(RxQueueIndex(0))
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
         .ok_or("host rx queue 0 missing")?;
     let before = stats(port);
     println!("polling {secs}s -- inject from the peer now...");

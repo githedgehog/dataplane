@@ -145,7 +145,10 @@ fn main() -> Result<(), Err> {
         other => return Err(format!("unknown mode '{other}' (use push|set|xfer)").into()),
     };
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- inject plain IPv4 from the peer now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut tagged, mut correct) = (0u64, 0u64, 0u64);

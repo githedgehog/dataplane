@@ -63,6 +63,7 @@
 )]
 #![allow(missing_docs)]
 
+pub mod local;
 pub mod macros;
 mod stress;
 pub mod sync;

@@ -278,6 +278,19 @@ impl Drop for Eal {
     fn drop(&mut self) {
         info!("waiting on EAL threads");
         unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
+
+        // Release every registered mempool.
+        //
+        // This lives here, in the `Drop` *body*, rather than in `mem::Manager`'s `Drop`, because
+        // a struct's `Drop` body runs before its fields are dropped: putting it on the field
+        // would run it *after* `rte_eal_cleanup` below, which is far too late.
+        //
+        // SAFETY: the caller's contract for dropping the `Eal` is that every [`Dev`] has already
+        // been dropped -- and a `Dev`'s own `Drop` stops and closes it, which is what returns the
+        // PMD's mbufs to their pools.  Freeing the pools here, before `rte_eal_cleanup`, is
+        // therefore the last point at which the memory is still known to be unreferenced.
+        unsafe { mem::release_all() };
+
         info!("Closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
         if ret != 0 {

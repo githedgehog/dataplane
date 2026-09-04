@@ -402,8 +402,9 @@ fn main() -> Result<(), Err> {
     println!("installed {created} group-1 rules -> the ONE indirect RSS handle");
 
     // ---- stream, flip the handle to queue 1 at half-time, watch all rules re-steer ----
-    let rxq0 = dev.rx_queue(RxQueueIndex(0)).ok_or("rx q0 missing")?;
-    let rxq1 = dev.rx_queue(RxQueueIndex(1)).ok_or("rx q1 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq0 = queues.take_rx(RxQueueIndex(0)).ok_or("rx q0 missing")?;
+    let mut rxq1 = queues.take_rx(RxQueueIndex(1)).ok_or("rx q1 missing")?;
     println!(
         "streaming {secs}s; will flip RSS -> queue 1 at {}s. Inject now...",
         secs / 2
@@ -437,7 +438,7 @@ fn main() -> Result<(), Err> {
             updated = true;
             println!("    *** handle_update: RSS -> queue 1 (one update, all rules) ***");
         }
-        for (rxq, is_q0) in [(&rxq0, true), (&rxq1, false)] {
+        for (rxq, is_q0) in [(&mut rxq0, true), (&mut rxq1, false)] {
             for m in &rxq.receive() {
                 if !is_ours(m.as_ref()) {
                     continue;

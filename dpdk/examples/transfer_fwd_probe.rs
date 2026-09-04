@@ -248,8 +248,9 @@ fn main() -> Result<(), Err> {
 
     // host rx should stay empty (the eswitch forwarded, no host bounce). Peer-side rx (measured by
     // the harness) tells us if the frames actually came back out the wire.
-    let rxq = dev
-        .rx_queue(RxQueueIndex(0))
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
         .ok_or("host rx queue 0 missing")?;
     println!("polling {secs}s -- inject from the peer now (watch peer rx_packets)...");
     let deadline = Instant::now() + Duration::from_secs(secs);

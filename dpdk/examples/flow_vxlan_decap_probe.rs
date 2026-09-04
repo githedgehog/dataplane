@@ -110,7 +110,10 @@ fn main() -> Result<(), Err> {
         .create()?;
     println!("rule: vxlan(vni={ORIG_VNI}) -> vxlan_decap / queue 0 installed");
 
-    let rxq = dev.rx_queue(RxQueueIndex(0)).ok_or("rx queue 0 missing")?;
+    let mut queues = dev.take_queues().ok_or("device queues already taken")?;
+    let mut rxq = queues
+        .take_rx(RxQueueIndex(0))
+        .ok_or("rx queue 0 missing")?;
     println!("polling {secs}s -- send VXLAN vni {ORIG_VNI} traffic from the load gen now...");
     let deadline = Instant::now() + Duration::from_secs(secs);
     let (mut total, mut encapped) = (0u64, 0u64);
