@@ -68,6 +68,7 @@ test-utils = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
+caps = { workspace = true } # `#[wrap(with_caps(..))]` in tests/reconcile.rs
 ipnet = { workspace = true }
 nix = { workspace = true, default-features = false, features = ["sched"] }
 pretty_assertions = { workspace = true, features = ["std"] }

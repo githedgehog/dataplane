@@ -27,11 +27,9 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 use test_utils::with_caps;
 use tracing::info;
-use tracing_test::traced_test;
 
 #[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[cfg_attr(not(emulated), traced_test)]
 fn reconcile_fuzz() {
     #[n_vm::config]
     const _: _ = n_vm::VmConfigBuilder::default()
@@ -131,7 +129,6 @@ where
 /// must not confuse the two.
 #[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
-#[cfg_attr(not(emulated), traced_test)]
 fn foreign_cni_devices_are_not_removed() {
     const FLANNEL_VTEP: &str = "flannel.1";
     const FLANNEL_BRIDGE: &str = "cni0";
@@ -292,7 +289,6 @@ fn foreign_cni_devices_are_not_removed() {
 #[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
 #[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[cfg_attr(not(emulated), traced_test)]
 async fn reconcile_demo() {
     let mut required_interface_map = MultiIndexInterfaceSpecMap::default();
     let interfaces = [

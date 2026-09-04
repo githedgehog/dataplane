@@ -1637,6 +1637,7 @@ version = "0.27.0"
 dependencies = [
  "bolero",
  "bytes",
+ "caps",
  "chrono",
  "dataplane-acl-filter",
  "dataplane-args",
