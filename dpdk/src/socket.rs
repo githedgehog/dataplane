@@ -12,7 +12,7 @@
 use crate::dev::DevIndex;
 use crate::lcore::LCoreId;
 use core::ffi::c_uint;
-use errno::ErrorCode;
+use errno::{ErrorCode, StandardErrno};
 use tracing::{debug, info};
 
 /// DPDK socket manager.
@@ -213,10 +213,23 @@ impl SocketId {
 
     /// Look up a [`SocketId`] by the lcore it is associated with.
     ///
-    /// Returns `None` if the lcore is not valid.
+    /// Returns `None` if `id` is not a valid lcore id.
+    ///
+    /// The bounds check is load-bearing, not defensive.
+    /// [`rte_lcore_to_socket_id`](dpdk_sys::rte_lcore_to_socket_id) indexes a fixed array with no
+    /// checking of its own -- its contract says the argument "MUST be between 0 and
+    /// RTE_MAX_LCORE-1" -- and the value most likely to be passed here is
+    /// [`LCoreId::current`](crate::lcore::LCoreId::current), which is `LCORE_ID_ANY`
+    /// (`u32::MAX`) on any thread that is neither an EAL thread nor registered. Handing that
+    /// through read wildly out of bounds and segfaulted, from entirely safe code.
     #[must_use]
-    pub fn get_by_lcore_id(id: LCoreId) -> SocketId {
-        SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(id.as_u32()) })
+    pub fn get_by_lcore_id(id: LCoreId) -> Option<SocketId> {
+        if id.as_u32() >= LCoreId::MAX {
+            return None;
+        }
+        Some(SocketId(unsafe {
+            dpdk_sys::rte_lcore_to_socket_id(id.as_u32())
+        }))
     }
 
     /// Look up a [`SocketId`] by the device it is associated with.
@@ -247,10 +260,90 @@ impl TryFrom<Preference> for SocketId {
 
     fn try_from(value: Preference) -> Result<Self, Self::Error> {
         match value {
-            Preference::CurrentThread => Ok(SocketId::get_by_lcore_id(LCoreId::current())),
+            // `rte_socket_id` reads a per-thread value and is safe to call from anywhere,
+            // reporting `ANY` on a thread with no NUMA affinity.  The lcore route is *not*: it
+            // used to go through `get_by_lcore_id(LCoreId::current())`, and on any non-EAL thread
+            // `current()` is `LCORE_ID_ANY`, which indexed an array out of bounds and segfaulted.
+            // Since this is the `#[default]` preference, that was reachable from a plain
+            // `RxQueueConfig { .. }` on the wrong thread.
+            Preference::CurrentThread => Ok(SocketId::current()),
             Preference::Id(id) => Ok(id),
-            Preference::LCore(lcore_id) => Ok(SocketId::get_by_lcore_id(lcore_id)),
+            Preference::LCore(lcore_id) => SocketId::get_by_lcore_id(lcore_id)
+                .ok_or(ErrorCode::Standard(StandardErrno::InvalidArgument)),
             Preference::Dev(dev) => dev.socket_id(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::with_eal;
+
+    /// Regression test for a segfault reachable from safe code.
+    ///
+    /// `rte_lcore_to_socket_id` indexes a fixed array and requires its argument to be a real
+    /// lcore id. `LCoreId::current()` is `LCORE_ID_ANY` (`u32::MAX`) on any thread that is
+    /// neither an EAL thread nor registered, and `get_by_lcore_id` used to pass it straight
+    /// through -- reading wildly out of bounds. Since `Preference::CurrentThread` is the
+    /// `#[default]`, a plain `RxQueueConfig { .. }` built on the wrong thread was enough to hit
+    /// it.
+    #[test]
+    #[with_eal]
+    fn resolving_the_current_thread_preference_off_an_lcore_does_not_fault() {
+        // A plain std thread is not an EAL thread and has not registered.
+        let (lcore, resolved, by_lcore) = std::thread::spawn(|| {
+            let lcore = LCoreId::current();
+            (
+                lcore.as_u32(),
+                SocketId::try_from(Preference::CurrentThread),
+                SocketId::get_by_lcore_id(lcore),
+            )
+        })
+        .join()
+        .expect("far thread panicked -- it should not even be able to fault now");
+
+        assert_eq!(
+            lcore,
+            u32::MAX,
+            "an unregistered thread reports LCORE_ID_ANY"
+        );
+        assert!(
+            resolved.is_ok(),
+            "the default preference must resolve on any thread"
+        );
+        assert!(
+            by_lcore.is_none(),
+            "an out-of-range lcore id must be rejected, not indexed"
+        );
+    }
+
+    /// An in-range lcore still resolves, so the bounds check did not break the useful case.
+    #[test]
+    #[with_eal]
+    fn a_valid_lcore_still_resolves() {
+        let main = crate::lcore::LCoreId::main();
+        assert!(main.as_u32() < LCoreId::MAX);
+        assert!(
+            SocketId::get_by_lcore_id(main).is_some(),
+            "the main lcore must have a socket"
+        );
+        assert!(SocketId::try_from(Preference::LCore(main)).is_ok());
+    }
+
+    /// Every lcore id at or past `RTE_MAX_LCORE` is rejected rather than indexed.
+    #[test]
+    #[with_eal]
+    fn out_of_range_lcore_ids_are_all_rejected() {
+        for id in [LCoreId::MAX, LCoreId::MAX + 1, u32::MAX / 2, u32::MAX] {
+            assert!(
+                SocketId::get_by_lcore_id(LCoreId(id)).is_none(),
+                "lcore id {id} is out of range and must be rejected"
+            );
         }
     }
 }
