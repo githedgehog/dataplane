@@ -15,6 +15,7 @@ use crate::test_support::{available, packet_pool};
 use concurrency::process_global::{Mutex, MutexGuard};
 use net::buffer::Append;
 use std::ffi::{CStr, CString, c_int};
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 // The ring PMD is used only by these tests. Signature from rte_eth_ring.h.
@@ -24,8 +25,8 @@ unsafe extern "C" {
 }
 
 struct Loopback {
-    rx: RxQueue,
-    tx: TxQueue,
+    rx: RxQueue<'static>,
+    tx: TxQueue<'static>,
     ring: NonNull<dpdk_sys::rte_ring>,
     name: CString,
     _guard: MutexGuard<'static, ()>,
@@ -63,7 +64,7 @@ impl Loopback {
                     128,
                     SocketId::ANY.as_c_uint(),
                     &Default::default(),
-                    pool.inner().as_mut_ptr(),
+                    pool.as_mut_ptr(),
                 ),
                 0
             );
@@ -90,6 +91,7 @@ impl Loopback {
                     pool,
                 },
                 dev,
+                _dev: PhantomData,
             },
             tx: TxQueue {
                 config: TxQueueConfig {
@@ -99,6 +101,7 @@ impl Loopback {
                     config: (),
                 },
                 dev,
+                _dev: PhantomData,
             },
             ring,
             // SAFETY: the successful lookup wrote a NUL-terminated port name.
@@ -138,7 +141,7 @@ fn packet_ids(batch: &MbufArray) -> Vec<u8> {
 
 #[test]
 fn empty_rx_and_tx_leave_the_pool_untouched() {
-    let port = Loopback::new(8);
+    let mut port = Loopback::new(8);
     assert!(port.rx.receive().is_empty());
     assert!(port.tx.transmit(MbufArray::new_empty()).is_empty());
     assert!(port.rx.receive().is_empty());
@@ -147,7 +150,7 @@ fn empty_rx_and_tx_leave_the_pool_untouched() {
 
 #[test]
 fn transmitted_packets_stay_owned_by_the_driver_until_received() {
-    let port = Loopback::new(128);
+    let mut port = Loopback::new(128);
     let packets = port.packets(MBUF_BURST);
     let pointers: Vec<_> = packets.iter().map(|mbuf| mbuf.raw).collect();
     assert!(port.tx.transmit(packets).is_empty());
@@ -169,7 +172,7 @@ fn transmitted_packets_stay_owned_by_the_driver_until_received() {
 
 #[test]
 fn partial_tx_returns_the_unsent_tail_for_retry() {
-    let port = Loopback::new(8); // Seven usable ring entries.
+    let mut port = Loopback::new(8); // Seven usable ring entries.
     let unsent = port.tx.transmit(port.packets(10));
     assert_eq!(packet_ids(&unsent), [7, 8, 9]);
     assert_eq!(available(port.pool()), 117);
@@ -192,7 +195,7 @@ fn partial_tx_returns_the_unsent_tail_for_retry() {
 
 #[test]
 fn dropping_unsent_packets_preserves_the_accepted_prefix() {
-    let port = Loopback::new(8);
+    let mut port = Loopback::new(8);
     for count in 0..=MBUF_BURST {
         let accepted = count.min(7);
         let unsent = port.tx.transmit(port.packets(count));
@@ -214,7 +217,7 @@ fn dropping_unsent_packets_preserves_the_accepted_prefix() {
 
 #[test]
 fn dropping_an_rx_iterator_frees_undelivered_packets() {
-    let port = Loopback::new(128);
+    let mut port = Loopback::new(128);
     assert!(port.tx.transmit(port.packets(MBUF_BURST)).is_empty());
     let mut received = port.rx.receive().into_iter();
     let first = received.next().unwrap();

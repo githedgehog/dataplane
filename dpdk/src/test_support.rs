@@ -50,5 +50,5 @@ pub(crate) fn packet_pool(size: u32) -> crate::mem::Pool {
 #[cfg(test)]
 pub(crate) fn available(pool: &crate::mem::Pool) -> usize {
     // SAFETY: the pool is live and its per-core cache is disabled.
-    unsafe { dpdk_sys::rte_mempool_avail_count(pool.inner().as_mut_ptr()) as usize }
+    unsafe { dpdk_sys::rte_mempool_avail_count(pool.as_mut_ptr()) as usize }
 }
