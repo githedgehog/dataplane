@@ -1057,29 +1057,6 @@ fn run_rx_test(label: &str, expect_rx: bool) {
 
     let (eal, mut started, tx_pool) = setup_dpdk_device(true);
 
-    // Leak the Eal handle to prevent `Eal::drop()` from running at
-    // function exit.  `Eal::drop()` calls `rte_eal_mp_wait_lcore()`
-    // which blocks indefinitely waiting for worker lcores to finish,
-    // hanging the test process and preventing the VM init system from
-    // performing a clean shutdown (`reboot(RB_POWER_OFF)`).
-    //
-    // The underlying DPDK global state survives the forget — all port,
-    // queue, and mempool handles remain valid for the rest of the process.
-    //
-    // NOTE: forgetting the Eal also skips `mem::release_all()`, so the
-    // mempools are never freed.  That is harmless in a process that is
-    // about to exit, but it does mean this test does not exercise the
-    // pool-release path — the ordering it validates is device stop/close
-    // (below), not mempool teardown.
-    //
-    // The `rte_eal_mp_wait_lcore()` attribution above is unverified and
-    // looks doubtful: this test launches no worker lcores, so that call
-    // should return immediately.  A likelier culprit is `rte_eal_cleanup`
-    // itself — note that these EAL args, unlike the unit-test ones in
-    // `dpdk::test_support::start_eal`, do not pass `--no-telemetry`, and
-    // the telemetry socket thread is torn down during cleanup.  Worth
-    // testing that before assuming the wait is at fault.
-    std::mem::forget(eal);
     let tx_pool = tx_pool.expect("setup_dpdk_device should return a tx pool");
 
     // ── enable promiscuous mode ─────────────────────────────────────────
@@ -1274,7 +1251,71 @@ fn run_rx_test(label: &str, expect_rx: bool) {
     // Both steps are spelled out rather than left to `Drop` so that a teardown failure fails the
     // test instead of being logged and swallowed.
     let stopped = started.stop().expect("failed to stop device");
-    stopped.close().expect("failed to close device");
+    let closed = stopped.close().expect("failed to close device");
+
+    // And the EAL itself, which this test used to leak. See `assert_teardown_is_prompt`.
+    let t = Instant::now();
+    drop(closed);
+    drop(eal);
+    let elapsed = t.elapsed();
+    eprintln!("[teardown] device + EAL released in {elapsed:?}");
+    assert!(
+        elapsed < TEARDOWN_BUDGET,
+        "teardown took {elapsed:?}, over the {TEARDOWN_BUDGET:?} budget -- \
+         if this is a hang rather than a slow machine, see `assert_teardown_is_prompt`"
+    );
+}
+
+/// How long a full device + EAL teardown may take before the test calls it a hang.
+///
+/// Measured at well under a millisecond for both phases on every configuration in this matrix, so
+/// the budget is three orders of magnitude of headroom rather than a tight bound.
+const TEARDOWN_BUDGET: Duration = Duration::from_secs(5);
+
+/// Drop the device and then the EAL, asserting both complete promptly.
+///
+/// # Why this is an assertion and not just a `drop`
+///
+/// Every test in this file used to call `std::mem::forget(eal)`, on the stated grounds that
+/// `Eal::drop` "calls `rte_eal_mp_wait_lcore()` which blocks indefinitely waiting for worker
+/// lcores to finish". That attribution is measurably wrong: `rte_eal_mp_wait_lcore` returns in
+/// under a microsecond even with 64 lcores enabled and none launched (see
+/// `dpdk/examples/eal_teardown_probe.rs`, which times each phase). Telemetry and log volume were
+/// ruled out the same way, and dropping the EAL with the device still open completes in under a
+/// millisecond too -- it segfaults *afterwards*, when the device is closed against a torn-down
+/// EAL, which is a different bug entirely.
+///
+/// Whatever the original cause was, it does not reproduce here, so the leak is gone and teardown
+/// is exercised for real. What is *not* established is why. The two candidates are the DPDK
+/// 26.03 -> 26.07 bump and the device now being closed explicitly (nothing ever called
+/// `rte_eth_dev_close` before), and distinguishing them would mean running this test against the
+/// old pin. Rather than guess, this asserts the property we actually care about: teardown
+/// finishes promptly. If it ever hangs again the test fails on a budget instead of wedging the
+/// VM, which is what made the original so unpleasant to diagnose.
+///
+/// # Panics
+///
+/// Panics if either phase exceeds [`TEARDOWN_BUDGET`], or if stop or close reports an error.
+fn assert_teardown_is_prompt(eal: Eal, started: Dev<Started>) {
+    let t = Instant::now();
+    let stopped = started.stop().expect("failed to stop device");
+    let closed = stopped.close().expect("failed to close device");
+    drop(closed);
+    let device = t.elapsed();
+
+    let t = Instant::now();
+    drop(eal);
+    let eal_drop = t.elapsed();
+
+    eprintln!("[teardown] device closed in {device:?}, EAL dropped in {eal_drop:?}");
+    assert!(
+        device < TEARDOWN_BUDGET,
+        "closing the device took {device:?}, over the {TEARDOWN_BUDGET:?} budget"
+    );
+    assert!(
+        eal_drop < TEARDOWN_BUDGET,
+        "dropping the EAL took {eal_drop:?}, over the {TEARDOWN_BUDGET:?} budget"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,14 +1412,11 @@ const E1000E_QEMU_IOMMU_1G: VmConfig = E1000E_QEMU_IOMMU
 fn dpdk_eal_init_virtio_cloud_hypervisor() {
     eprintln!("=== Phase 0 spike: DPDK EAL init in cloud-hypervisor VM ===");
 
-    let (eal, _started, _) = setup_dpdk_device(false);
-
-    // Leak the Eal handle so `Eal::drop()` does not hang the test
-    // process on `rte_eal_mp_wait_lcore()`.  See the comment in
-    // `run_rx_test` for the full explanation.
-    std::mem::forget(eal);
+    let (eal, started, _) = setup_dpdk_device(false);
 
     eprintln!("=== Phase 0 spike complete — DPDK init works in the VM! ===");
+
+    assert_teardown_is_prompt(eal, started);
 }
 
 /// Rx spike: cloud-hypervisor + virtio-net, VFIO no-IOMMU (PA mode).

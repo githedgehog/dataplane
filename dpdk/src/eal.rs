@@ -393,6 +393,11 @@ impl Drop for Eal {
         // what returns the PMD's mbufs to their pools.
         self.mem.shutdown();
 
+        // From here on, a stray `Pool` handle that outlives this `Eal` must not free its mempool:
+        // `rte_eal_cleanup` below dismantles the memory subsystem underneath it.  Set after the
+        // drain, so the drain itself still frees normally.
+        mem::mark_eal_torn_down();
+
         info!("Closing EAL");
         let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
         if ret != 0 {
