@@ -44,7 +44,7 @@ impl From<u16> for RxQueueIndex {
 
 /// Configuration for a DPDK receive queue.
 #[derive(Debug)]
-pub struct RxQueueConfig {
+pub struct RxQueueConfig<'eal> {
     /// The index of the device this rx queue is associated with
     pub dev: DevIndex,
     /// The index of the rx queue.
@@ -56,7 +56,7 @@ pub struct RxQueueConfig {
     /// Hardware offloads to use
     pub offloads: RxOffload,
     /// The memory pool to use for the rx queue.
-    pub pool: mem::Pool,
+    pub pool: mem::Pool<'eal>,
 }
 
 /// Error type for receive queue configuration failures.
@@ -106,12 +106,12 @@ impl ConfigFailure {
 /// we want.
 #[derive(Debug)]
 pub struct RxQueue<'dev> {
-    pub(crate) config: RxQueueConfig,
+    pub(crate) config: RxQueueConfig<'dev>,
     pub(crate) dev: DevIndex,
     pub(crate) _dev: PhantomData<&'dev ()>,
 }
 
-impl RxQueue<'_> {
+impl<'dev> RxQueue<'dev> {
     /// Create and configure a new receive queue.
     ///
     /// This method is crate internal.
@@ -122,7 +122,10 @@ impl RxQueue<'_> {
     /// associated with the device.
     #[cold]
     #[tracing::instrument(level = "info")]
-    pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
+    pub(crate) fn setup(
+        dev: &dev::Dev,
+        config: RxQueueConfig<'dev>,
+    ) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
             .map_err(|_| ConfigFailure::InvalidSocket(Errno(errno::NEG_EINVAL)))?;
 
@@ -207,7 +210,7 @@ impl RxQueue<'_> {
     /// Receive up to [`MBUF_BURST`] packets. The returned batch owns them and frees
     /// any remaining packets on drop.
     #[tracing::instrument(level = "trace")]
-    pub fn receive(&mut self) -> MbufArray {
+    pub fn receive(&mut self) -> MbufArray<'dev> {
         let mut pkts = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         trace!(
             "Polling for packets from rx queue {queue} on dev {dev}",

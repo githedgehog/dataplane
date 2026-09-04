@@ -110,11 +110,11 @@ impl Loopback {
         }
     }
 
-    fn pool(&self) -> &Pool {
-        &self.rx.config.pool
+    fn pool(&self) -> Pool<'static> {
+        self.rx.config.pool.clone()
     }
 
-    fn packets(&self, count: usize) -> MbufArray {
+    fn packets(&self, count: usize) -> MbufArray<'static> {
         let mut packets = self.pool().alloc_bulk(count).unwrap();
         for (id, mbuf) in packets.iter_mut().enumerate() {
             mbuf.append(1).unwrap()[0] = id as u8;
@@ -145,7 +145,7 @@ fn empty_rx_and_tx_leave_the_pool_untouched() {
     assert!(port.rx.receive().is_empty());
     assert!(port.tx.transmit(MbufArray::new_empty()).is_empty());
     assert!(port.rx.receive().is_empty());
-    assert_eq!(available(port.pool()), 127);
+    assert_eq!(available(&port.pool()), 127);
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn transmitted_packets_stay_owned_by_the_driver_until_received() {
     let packets = port.packets(MBUF_BURST);
     let pointers: Vec<_> = packets.iter().map(|mbuf| mbuf.raw).collect();
     assert!(port.tx.transmit(packets).is_empty());
-    assert_eq!(available(port.pool()), 127 - MBUF_BURST);
+    assert_eq!(available(&port.pool()), 127 - MBUF_BURST);
 
     let received = port.rx.receive();
     assert_eq!(
@@ -165,9 +165,9 @@ fn transmitted_packets_stay_owned_by_the_driver_until_received() {
         received.iter().map(|mbuf| mbuf.raw).collect::<Vec<_>>(),
         pointers
     );
-    assert_eq!(available(port.pool()), 127 - MBUF_BURST);
+    assert_eq!(available(&port.pool()), 127 - MBUF_BURST);
     drop(received);
-    assert_eq!(available(port.pool()), 127);
+    assert_eq!(available(&port.pool()), 127);
 }
 
 #[test]
@@ -175,22 +175,22 @@ fn partial_tx_returns_the_unsent_tail_for_retry() {
     let mut port = Loopback::new(8); // Seven usable ring entries.
     let unsent = port.tx.transmit(port.packets(10));
     assert_eq!(packet_ids(&unsent), [7, 8, 9]);
-    assert_eq!(available(port.pool()), 117);
+    assert_eq!(available(&port.pool()), 117);
 
     let unsent = port.tx.transmit(unsent);
     assert_eq!(packet_ids(&unsent), [7, 8, 9]);
-    assert_eq!(available(port.pool()), 117);
+    assert_eq!(available(&port.pool()), 117);
     let received = port.rx.receive();
     assert_eq!(packet_ids(&received), [0, 1, 2, 3, 4, 5, 6]);
     drop(received);
-    assert_eq!(available(port.pool()), 124);
+    assert_eq!(available(&port.pool()), 124);
 
     assert!(port.tx.transmit(unsent).is_empty());
-    assert_eq!(available(port.pool()), 124);
+    assert_eq!(available(&port.pool()), 124);
     let received = port.rx.receive();
     assert_eq!(packet_ids(&received), [7, 8, 9]);
     drop(received);
-    assert_eq!(available(port.pool()), 127);
+    assert_eq!(available(&port.pool()), 127);
 }
 
 #[test]
@@ -204,14 +204,14 @@ fn dropping_unsent_packets_preserves_the_accepted_prefix() {
             (accepted as u8..count as u8).collect::<Vec<_>>()
         );
         drop(unsent);
-        assert_eq!(available(port.pool()), 127 - accepted);
+        assert_eq!(available(&port.pool()), 127 - accepted);
         let received = port.rx.receive();
         assert_eq!(
             packet_ids(&received),
             (0..accepted as u8).collect::<Vec<_>>()
         );
         drop(received);
-        assert_eq!(available(port.pool()), 127);
+        assert_eq!(available(&port.pool()), 127);
     }
 }
 
@@ -222,8 +222,8 @@ fn dropping_an_rx_iterator_frees_undelivered_packets() {
     let mut received = port.rx.receive().into_iter();
     let first = received.next().unwrap();
     drop(received);
-    assert_eq!(available(port.pool()), 126);
+    assert_eq!(available(&port.pool()), 126);
     assert_eq!(first.raw_data(), &[0]);
     drop(first);
-    assert_eq!(available(port.pool()), 127);
+    assert_eq!(available(&port.pool()), 127);
 }

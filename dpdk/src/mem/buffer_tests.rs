@@ -7,7 +7,7 @@ use net::buffer::{
     Append, DeepCopy, PacketLength, Tailroom, TestBuffer, TrimFromEnd, TrimFromStart,
 };
 
-fn chain(pool: &Pool, segments: &[&[u8]]) -> Mbuf {
+fn chain<'eal>(pool: &Pool<'eal>, segments: &[&[u8]]) -> Mbuf<'eal> {
     assert!(!segments.is_empty());
     let mut bufs = pool.alloc_bulk(segments.len()).unwrap().into_iter();
     let mut head = bufs.next().unwrap();
@@ -128,7 +128,7 @@ fn deep_copy_failure_reclaims_partial_chains_and_preserves_source() {
     assert_eq!(available(&pool), 7);
 }
 
-fn matching_chain(pool: &Pool, input: &[&[u8]]) -> Mbuf {
+fn matching_chain<'eal>(pool: &Pool<'eal>, input: &[&[u8]]) -> Mbuf<'eal> {
     let mbuf = chain(pool, input);
     let mut raw = mbuf.raw.as_ptr();
     for (i, data) in input.iter().enumerate() {
@@ -229,7 +229,7 @@ where
     buf
 }
 
-fn mbuf_edit_sequence(pool: &Pool, input: &[&[u8]], steps: &[(u8, u16)]) {
+fn mbuf_edit_sequence(pool: &Pool<'static>, input: &[&[u8]], steps: &[(u8, u16)]) {
     let mbuf = edit_sequence(matching_chain(pool, input), input, steps);
     let mut raw = mbuf.raw.as_ptr();
     while !raw.is_null() {
