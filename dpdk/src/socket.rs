@@ -73,10 +73,7 @@ impl Manager {
     /// Returns `None` if the lcore is not valid.
     #[must_use]
     pub fn id_for_lcore(&self, lcore: u32) -> Option<SocketId> {
-        if lcore >= unsafe { dpdk_sys::rte_lcore_count() } {
-            return None;
-        }
-        Some(SocketId(unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore) }))
+        SocketId::get_by_lcore_id(LCoreId(lcore))
     }
 }
 
@@ -211,12 +208,17 @@ impl SocketId {
         unsafe { dpdk_sys::rte_socket_count() }
     }
 
-    /// Look up the socket associated with an lcore.
+    /// Look up the socket of an active lcore, including registered non-EAL threads.
     ///
-    /// Returns `None` for out-of-range IDs, including an unregistered thread's ID.
+    /// Returns `None` for out-of-range or inactive IDs.
     #[must_use]
     pub fn get_by_lcore_id(id: LCoreId) -> Option<SocketId> {
         if id.as_u32() >= LCoreId::MAX {
+            return None;
+        }
+        if unsafe { dpdk_sys::rte_eal_lcore_role(id.as_u32()) }
+            == dpdk_sys::rte_lcore_role_t::ROLE_OFF
+        {
             return None;
         }
         Some(SocketId(unsafe {
@@ -265,7 +267,29 @@ impl TryFrom<Preference> for SocketId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lcore::ServiceThread;
     use crate::with_eal;
+
+    #[test]
+    #[with_eal]
+    fn a_registered_thread_resolves_to_its_socket() {
+        std::thread::scope(|scope| {
+            ServiceThread::new(scope, "socket-lookup", || {
+                let id = LCoreId::current();
+                assert!(id.as_u32() < LCoreId::MAX);
+                assert_eq!(
+                    unsafe { dpdk_sys::rte_eal_lcore_role(id.as_u32()) },
+                    dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL
+                );
+                let socket = SocketId::current();
+                assert_eq!(SocketId::get_by_lcore_id(id), Some(socket));
+                assert_eq!(Manager::init().id_for_lcore(id.as_u32()), Some(socket));
+                assert_eq!(SocketId::try_from(Preference::LCore(id)), Ok(socket));
+            })
+            .join()
+            .expect("registered thread panicked");
+        });
+    }
 
     #[test]
     #[with_eal]
@@ -295,6 +319,60 @@ mod tests {
             by_lcore.is_none(),
             "an out-of-range lcore id must be rejected, not indexed"
         );
+    }
+
+    /// Query DPDK directly to check the wrapper independently of its iterator.
+    fn enabled_lcores() -> Vec<u32> {
+        (0..LCoreId::MAX)
+            .filter(|id| unsafe { dpdk_sys::rte_lcore_is_enabled(*id) } != 0)
+            .collect()
+    }
+
+    /// The shared test EAL enables only lcore 0; sparse IDs need a separate process.
+    #[test]
+    #[with_eal]
+    fn every_enabled_lcore_resolves_to_a_socket() {
+        let enabled = enabled_lcores();
+        assert!(!enabled.is_empty(), "a running EAL has at least one lcore");
+        let manager = Manager::init();
+        for lcore in enabled {
+            assert!(
+                manager.id_for_lcore(lcore).is_some(),
+                "lcore {lcore} is enabled but did not resolve"
+            );
+        }
+    }
+
+    #[test]
+    #[with_eal]
+    fn an_in_range_but_inactive_lcore_is_rejected() {
+        // Registrations take low IDs; choose an inactive ID from the other end.
+        let Some(inactive) = (0..LCoreId::MAX).rev().find(|id| {
+            (unsafe { dpdk_sys::rte_eal_lcore_role(*id) }) == dpdk_sys::rte_lcore_role_t::ROLE_OFF
+        }) else {
+            return; // every lcore active; nothing to assert
+        };
+        let manager = Manager::init();
+        assert!(
+            manager.id_for_lcore(inactive).is_none(),
+            "lcore {inactive} is inactive and must not resolve"
+        );
+        assert_eq!(
+            SocketId::try_from(Preference::LCore(LCoreId(inactive))),
+            Err(ErrorCode::Standard(StandardErrno::InvalidArgument))
+        );
+    }
+
+    #[test]
+    #[with_eal]
+    fn id_for_lcore_rejects_out_of_range_ids() {
+        let manager = Manager::init();
+        for id in [LCoreId::MAX, LCoreId::MAX + 1, u32::MAX] {
+            assert!(
+                manager.id_for_lcore(id).is_none(),
+                "lcore id {id} is out of range and must be rejected"
+            );
+        }
     }
 
     #[test]
