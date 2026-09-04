@@ -535,3 +535,136 @@ async fn reconcile_demo() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// A plan with exactly one tap device in it, named `name`.
+fn plan_with_tap(name: &str) -> RequiredInformationBase {
+    let mut interfaces = MultiIndexInterfaceSpecMap::default();
+    interfaces
+        .try_insert(
+            InterfaceSpecBuilder::default()
+                .name(name.try_into().unwrap())
+                .admin_state(AdminState::Up)
+                .properties(InterfacePropertiesSpec::Tap)
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+    RequiredInformationBaseBuilder::default()
+        .interfaces(interfaces)
+        .vteps(MultiIndexVtepPropertiesSpecMap::default())
+        .vrfs(MultiIndexVrfPropertiesSpecMap::default())
+        .associations(MultiIndexInterfaceAssociationSpecMap::default())
+        .build()
+        .unwrap()
+}
+
+/// Drive `manager` to convergence against `required`, or panic saying it did not converge.
+async fn converge(
+    manager: &VpcManager<RequiredInformationBase>,
+    required: &mut RequiredInformationBase,
+) {
+    let mut passes = 0;
+    while !manager
+        .reconcile(required, &manager.observe().await.unwrap())
+        .await
+    {
+        passes += 1;
+        assert!(passes < 30, "reconciliation did not converge");
+    }
+}
+
+/// True if an interface by this name exists, and is a tap.
+async fn tap_exists(manager: &VpcManager<RequiredInformationBase>, name: &str) -> bool {
+    match manager
+        .observe()
+        .await
+        .unwrap()
+        .interfaces
+        .get_by_name(&InterfaceName::try_from(name).unwrap())
+    {
+        None => false,
+        Some(interface) => {
+            assert!(
+                matches!(interface.properties, InterfaceProperties::Tap),
+                "{name} exists but is not a tap: {interface:?}"
+            );
+            true
+        }
+    }
+}
+
+/// A tap device must not outlive the manager which created it.
+///
+/// The dataplane's taps stand in for physical devices which the packet path took into a network
+/// namespace of its own.  Those devices come back to the host when that namespace goes away, and
+/// udev renames them into place; a tap left sitting on one of those names would break the rename
+/// and strand the real device.  So the taps have to go when the dataplane does, including when it
+/// is killed rather than shut down, and the only mechanism which still works then is the kernel's
+/// own: a tap exists for exactly as long as somebody holds a descriptor for it.
+///
+/// This is the test which fails if anybody reintroduces `TUNSETPERSIST`.
+#[n_vm::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+fn taps_do_not_outlive_the_manager_which_made_them() {
+    const TAP: &str = "dp0-tap";
+
+    in_private_netns(|| async {
+        let Ok((connection, handle, _)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+        tokio::spawn(connection);
+        let handle = Arc::new(handle);
+
+        let mut required = plan_with_tap(TAP);
+        let vpcs = VpcManager::<RequiredInformationBase>::new(handle.clone());
+        converge(&vpcs, &mut required).await;
+        assert!(tap_exists(&vpcs, TAP).await, "{TAP} was never created");
+
+        drop(vpcs);
+
+        // A second manager sees the same kernel, and must not see the tap.
+        let after = VpcManager::<RequiredInformationBase>::new(handle);
+        assert!(
+            !tap_exists(&after, TAP).await,
+            "{TAP} outlived the manager which created it"
+        );
+    });
+}
+
+/// A tap device dropped from the plan must be removed, exactly like any other interface of ours.
+///
+/// This is the companion to [`taps_do_not_outlive_the_manager_which_made_them`]: holding the
+/// descriptor is what keeps a tap alive, so letting go of it has to be wired into the reconciler's
+/// removal path.  Nothing else can collect one, because there is no netlink object to unlink.
+#[n_vm::test]
+#[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+fn a_tap_dropped_from_the_plan_is_removed() {
+    const TAP: &str = "dp0-tap";
+
+    in_private_netns(|| async {
+        let Ok((connection, handle, _)) = rtnetlink::new_connection() else {
+            panic!("failed to create connection");
+        };
+        tokio::spawn(connection);
+
+        let vpcs = VpcManager::<RequiredInformationBase>::new(Arc::new(handle));
+
+        let mut required = plan_with_tap(TAP);
+        converge(&vpcs, &mut required).await;
+        assert!(tap_exists(&vpcs, TAP).await, "{TAP} was never created");
+
+        required
+            .interfaces
+            .remove_by_name(&InterfaceName::try_from(TAP).unwrap())
+            .unwrap();
+        converge(&vpcs, &mut required).await;
+        assert!(
+            !tap_exists(&vpcs, TAP).await,
+            "{TAP} is absent from the plan and should have been removed"
+        );
+        assert!(
+            vpcs.taps().is_empty(),
+            "{TAP} is gone from the kernel but its descriptor is still held: that is a leak"
+        );
+    });
+}

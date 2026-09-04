@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use concurrency::sync::Mutex;
 use derive_builder::Builder;
 use multi_index_map::MultiIndexMap;
 use net::buffer::{PacketBuffer, PacketBufferMut};
 use net::interface::InterfaceName;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::num::NonZero;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::error;
+use tracing::{error, info, warn};
 
 /// The planned properties of a dummy interface.
 #[derive(
@@ -72,23 +74,17 @@ mod helper {
     #[allow(unsafe_code)]
     unsafe impl Send for InterfaceRequest {}
 
+    use super::TapDevice;
     use net::interface::InterfaceName;
     use nix::libc;
     use std::os::fd::AsRawFd;
     use std::pin::Pin;
-    use tracing::{info, trace, warn};
+    use tracing::{trace, warn};
 
     nix::ioctl_write_ptr_bad!(
         /// Create a tap device
         make_tap_device,
         libc::TUNSETIFF,
-        InterfaceRequestInner
-    );
-
-    nix::ioctl_write_ptr_bad!(
-        /// Keep the tap device after the program ends
-        persist_tap_device,
-        libc::TUNSETPERSIST,
         InterfaceRequestInner
     );
 
@@ -124,7 +120,12 @@ mod helper {
             Self { name, request }
         }
 
-        pub async fn create(self) -> Result<(), std::io::Error> {
+        /// Create the tap device this request describes, and hand back the descriptor which
+        /// keeps it alive.
+        ///
+        /// The device is created in the network namespace of the calling thread, and stays in
+        /// that namespace for as long as it exists.
+        pub async fn create(self) -> Result<TapDevice, std::io::Error> {
             let name = self.name;
             trace!("opening /dev/net/tun");
             let tap_file = tokio::fs::OpenOptions::new()
@@ -142,17 +143,7 @@ mod helper {
                 warn!("failed to create tap device {name}: {err}");
                 return Err(err);
             }
-            info!("created tap device {name}");
-            trace!("attempting to persist tap device");
-            #[allow(unsafe_code, clippy::borrow_as_ptr)] // well-checked constraints
-            let ret = unsafe { persist_tap_device(tap_file.as_raw_fd(), &*self.request)? };
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                warn!("failed to persist tap device: {err}");
-                return Err(err);
-            }
-            info!("persisted tap device: {name}");
-            Ok(())
+            Ok(TapDevice { file: tap_file })
         }
     }
 
@@ -220,14 +211,18 @@ mod helper {
 }
 
 impl TapDevice {
-    /// Open (or create) a persisted Tap device with the provided name.
+    /// Create a tap device with the provided name.
+    ///
+    /// The device exists for exactly as long as the returned [`TapDevice`] does: dropping it
+    /// removes the device from the kernel.  Callers who want the device to outlive the call have
+    /// to keep the value; [`TapRegistry`] is what does that for the dataplane.
     ///
     /// # Errors
     ///
-    /// If the tap device cannot be opened or created, an `io::Error` is returned.
+    /// If the tap device cannot be created, an `io::Error` is returned.
     #[cold]
     #[tracing::instrument(level = "info")]
-    pub async fn open(name: &InterfaceName) -> Result<(), std::io::Error> {
+    pub async fn open(name: &InterfaceName) -> Result<TapDevice, std::io::Error> {
         helper::InterfaceRequest::new(name.clone()).create().await
     }
 
@@ -288,5 +283,91 @@ impl TapDevice {
     #[tracing::instrument(level = "trace")]
     pub async fn write<Buf: PacketBuffer>(&mut self, buf: Buf) -> Result<(), tokio::io::Error> {
         self.file.write_all(buf.as_ref()).await
+    }
+}
+
+/// The tap devices this process created, and which it keeps alive by holding them open.
+///
+/// A tap device exists for exactly as long as somebody holds a descriptor for it, unless it has
+/// been marked persistent.  The dataplane deliberately declines to persist its taps, so that they
+/// vanish when the dataplane does, however it dies.
+///
+/// The alternative is worse than it looks.  A persisted tap outlives the process which made it,
+/// and the dataplane's taps stand in for physical devices which the packet path moved into a
+/// network namespace of its own.  When that namespace goes away those devices come back to the
+/// host under their kernel names, and udev renames them into their configured names.  A leftover
+/// tap sitting on one of those names would make that rename fail, which strands the real device
+/// under a name nothing is looking for.  Nothing recovers from that but an operator.
+///
+/// Declining to persist means somebody has to hold the descriptors, and this is that somebody.
+/// It belongs to the manager which reconciles interfaces, so the taps live as long as the
+/// dataplane's interface plan does and no longer.
+///
+/// # Namespaces
+///
+/// A tap is created in the network namespace of the thread which opens it, and stays there.  The
+/// dataplane opens its taps from the management runtime, which runs in the namespace the dataplane
+/// was launched in, not the one the packet path moved the physical devices into.  That is the
+/// point: a tap is the kernel's end of a device the dataplane proxies, and the kernel is the side
+/// which stayed behind.
+#[derive(Debug)]
+pub struct TapRegistry {
+    held: Mutex<HashMap<InterfaceName, TapDevice>>,
+}
+
+impl Default for TapRegistry {
+    fn default() -> Self {
+        Self {
+            held: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl TapRegistry {
+    /// Create the tap device named `name` and hold it open until [`Self::close`] removes it, or
+    /// until this registry is dropped.
+    ///
+    /// Asking for a tap this registry already holds replaces the descriptor, which removes the
+    /// device the old one named.  Nothing in the reconciler asks for a tap it already has, so this
+    /// means something outside the dataplane destroyed the original; replacing it is the repair.
+    ///
+    /// # Errors
+    ///
+    /// If the tap device cannot be created, an `io::Error` is returned.
+    pub async fn open(&self, name: &InterfaceName) -> Result<(), std::io::Error> {
+        let tap = TapDevice::open(name).await?;
+        if self.held.lock().insert(name.clone(), tap).is_some() {
+            warn!("replaced our descriptor for tap device {name}: something else removed it");
+        } else {
+            info!("created tap device {name}");
+        }
+        Ok(())
+    }
+
+    /// Close this process's descriptor for the tap device named `name`, which removes the device.
+    ///
+    /// Returns `false` if this registry does not hold that tap, in which case removing it is still
+    /// the caller's problem.  That happens for a tap which outlived the process which made it,
+    /// which is what an upgrade from a build that persisted its taps leaves behind.
+    #[must_use]
+    pub fn close(&self, name: &InterfaceName) -> bool {
+        let Some(tap) = self.held.lock().remove(name) else {
+            return false;
+        };
+        drop(tap);
+        info!("removed tap device {name}");
+        true
+    }
+
+    /// The number of tap devices this registry is holding open.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.held.lock().len()
+    }
+
+    /// True if this registry is holding no tap devices open.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.held.lock().is_empty()
     }
 }
