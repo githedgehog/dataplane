@@ -834,6 +834,38 @@ impl DevInfo<'_> {
         self.inner.if_index
     }
 
+    /// The device's name, as DPDK's bus layer knows it.
+    ///
+    /// For a PCI device this is its extended BDF address (`0000:02:00.1`), whatever kernel driver
+    /// the device is bound to and whether or not it has one. That makes it the only stable identity
+    /// a port has: [`if_index`](Self::if_index) is 0 for a device bound to `vfio-pci`, because such
+    /// a device has no netdev, and the port index is just the order the EAL happened to probe in.
+    ///
+    /// Not always a PCI address -- DPDK also names SoC devices (`fsl-gmac0`) and virtual ones
+    /// (`net_tap0`) through the same call -- so callers matching against configuration should parse
+    /// rather than assume.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`] if the port index is not valid, or `EINVAL` if the name
+    /// DPDK returns is not UTF-8.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn name(&self) -> Result<String, ErrorCode> {
+        let mut buf = [0 as core::ffi::c_char; dpdk_sys::RTE_ETH_NAME_MAX_LEN as usize];
+        let ret = unsafe {
+            dpdk_sys::rte_eth_dev_get_name_by_port(self.index.as_u16(), buf.as_mut_ptr())
+        };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        // SAFETY: on success DPDK has written a NUL-terminated string of at most
+        // `RTE_ETH_NAME_MAX_LEN` bytes into `buf`, which is exactly that long.
+        let name = unsafe { CStr::from_ptr(buf.as_ptr()) };
+        name.to_str()
+            .map(ToString::to_string)
+            .map_err(|_| ErrorCode::parse_i32(errno::NEG_EINVAL))
+    }
+
     #[allow(clippy::expect_used)]
     #[tracing::instrument(level = "debug")]
     /// Get the driver name of the device.

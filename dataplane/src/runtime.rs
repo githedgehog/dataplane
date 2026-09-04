@@ -16,6 +16,7 @@ use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
 use dpdk::dev::DevInfo;
 use dpdk::eal::Eal;
+use hardware::pci::address::PciAddress;
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
@@ -211,22 +212,46 @@ fn init_eal(args: &CmdArgs) -> dpdk::eal::Eal {
 /// not this one: for most NICs it means unbinding from the kernel driver and binding to `vfio-pci`,
 /// and for mlx5 it means deliberately leaving the kernel driver in place, because that driver is
 /// bifurcated and DPDK attaches alongside it. By the time this runs the EAL has already probed
-/// whatever was bound, so a port that is missing here was missing then.
+/// whatever was bound, so a port missing here was missing then.
+///
+/// Ports are matched to configuration by **PCI address**, using the same
+/// [`PciAddress`] type `dataplane-init` binds them with, so the two agree on what
+/// `0000:02:00.1` means rather than each parsing the string their own way.
 fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>>, DriverError> {
     let num_workers = u16::try_from(args.num_workers()).map_err(|_| {
         DriverError::PortSetup(format!("{} workers is too many", args.num_workers()))
     })?;
 
-    // What the EAL actually probed, keyed by PCI address so the command line can be matched against
-    // it. A device the operator named but the EAL did not probe is a hard error rather than a
-    // warning: silently forwarding on a subset of the configured ports is a worse outcome than
-    // refusing to start.
-    let mut probed: Vec<DevInfo<'eal>> = eal.dev.iter().collect();
-    info!("EAL probed {} DPDK port(s)", probed.len());
+    // What the EAL actually probed, keyed by PCI address. `DevInfo::name` is the device's bus-level
+    // name, which for a PCI device is its extended BDF whatever driver it is bound to -- unlike
+    // `if_index`, which is 0 for a `vfio-pci` device because it has no netdev, and unlike the port
+    // index, which is only the order the EAL happened to probe in.
+    let mut probed: Vec<(PciAddress, DevInfo<'eal>)> = Vec::new();
+    for info in eal.dev.iter() {
+        let index = info.index();
+        let name = info.name().map_err(|e| {
+            DriverError::PortSetup(format!("could not read the name of DPDK port {index}: {e}"))
+        })?;
+        match PciAddress::try_from(name.as_str()) {
+            Ok(addr) => probed.push((addr, info)),
+            // Not every DPDK device is a PCI device: SoC and virtual devices are named differently.
+            // None of those can be named by the configuration, so skipping them is right.
+            Err(e) => warn!("DPDK port {index} is named '{name}', which is not a PCI address: {e}"),
+        }
+    }
+    info!(
+        "EAL probed {} DPDK port(s): {}",
+        probed.len(),
+        probed
+            .iter()
+            .map(|(addr, _)| addr.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let mut ports = Vec::new();
     for interface in args.interfaces() {
-        let Some(PortArg::PCI(addr)) = &interface.port else {
+        let Some(PortArg::PCI(ebdf)) = &interface.port else {
             return Err(DriverError::PortSetup(format!(
                 "interface '{}' has no PCI address; the DPDK driver needs one \
                  (--interface {}=pci@0000:xx:yy.z)",
@@ -234,19 +259,25 @@ fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>
             )));
         };
 
-        // `DevInfo` does not carry the PCI address, so ports are matched positionally in the order
-        // the EAL probed them, which is the order of the `-a` allowlist built from these same
-        // arguments. That is fragile and deliberately temporary -- matching on the device name is
-        // the right fix, and needs an accessor the dpdk crate does not have yet.
-        if probed.is_empty() {
-            return Err(DriverError::PortSetup(format!(
-                "no DPDK port left to match interface '{}' ({addr}); the EAL probed fewer devices \
-                 than were configured. If this is zero overall, the usual cause is that the NIC was \
-                 never bound for DPDK -- see dataplane-init.",
+        let wanted = PciAddress::try_from(ebdf.to_string().as_str()).map_err(|e| {
+            DriverError::PortSetup(format!(
+                "interface '{}' names '{ebdf}', which is not a valid PCI address: {e}",
                 interface.interface
-            )));
-        }
-        let info = probed.remove(0);
+            ))
+        })?;
+
+        let at = probed.iter().position(|(addr, _)| *addr == wanted).ok_or_else(|| {
+            DriverError::PortSetup(format!(
+                "interface '{}' names PCI device {wanted}, which the EAL did not probe. Either it \
+                 was not passed to the EAL, or it is not bound to a driver DPDK can attach to -- \
+                 binding is dataplane-init's job.",
+                interface.interface
+            ))
+        })?;
+        // Removed rather than borrowed, so a device named twice is caught by the lookup above
+        // failing the second time rather than quietly producing two ports on one device.
+        let (_, info) = probed.remove(at);
+
         ports.push(Port::bring_up(
             eal,
             info,
@@ -257,8 +288,13 @@ fn bring_up_ports<'eal>(eal: &'eal Eal, args: &CmdArgs) -> Result<Vec<Port<'eal>
 
     if !probed.is_empty() {
         warn!(
-            "{} DPDK port(s) were probed but not configured; they will carry no traffic",
-            probed.len()
+            "{} probed DPDK port(s) were not named by any interface and will carry no traffic: {}",
+            probed.len(),
+            probed
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
