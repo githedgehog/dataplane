@@ -39,11 +39,11 @@
         "owner": "githedgehog",
         "repo": "dpdk"
       },
-      "branch": "v26.03-hh",
+      "branch": "v26.07-hh",
       "submodules": false,
-      "revision": "fa7e361d592b845cedbd341eb959016aa029132c",
-      "url": "https://github.com/githedgehog/dpdk/archive/fa7e361d592b845cedbd341eb959016aa029132c.tar.gz",
-      "hash": "sha256-2lNzH6Yk7mhIujkJ+vt7AL+BTy1O+6zOYadFqMysr4I="
+      "revision": "65fedc72bea19e8118b65c8e4f47fd7acbe87ae4",
+      "url": "https://github.com/githedgehog/dpdk/archive/65fedc72bea19e8118b65c8e4f47fd7acbe87ae4.tar.gz",
+      "hash": "sha256-tkKm/1Ffelb12vQ9xXYWPRq9qTX3MZ5cXQPheTf73ms="
     },
     "dplane-plugin": {
       "type": "Git",
