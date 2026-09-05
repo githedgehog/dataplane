@@ -280,15 +280,17 @@ fn exec_dataplane(config: LaunchConfiguration, netns: Option<NetworkNamespace>) 
         });
     }
 
-    let error = std::process::Command::new(DATAPLANE_BINARY)
-        .fd_mappings(mappings)
-        .unwrap_or_else(|e| {
-            error!("failed to map configuration descriptors for the dataplane: {e}");
-            std::process::exit(1);
-        })
-        .env_clear()
-        .env("RUST_BACKTRACE", "full")
-        .exec();
+    let mut command = std::process::Command::new(DATAPLANE_BINARY);
+    command.fd_mappings(mappings).unwrap_or_else(|e| {
+        error!("failed to map configuration descriptors for the dataplane: {e}");
+        std::process::exit(1);
+    });
+
+    // Preserve Kubernetes configuration and any backtrace setting supplied by the launcher.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        command.env("RUST_BACKTRACE", "full");
+    }
+    let error = command.exec();
 
     // `exec` only returns on failure.
     error!("failed to exec {DATAPLANE_BINARY}: {error}");
