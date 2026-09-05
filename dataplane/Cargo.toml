@@ -43,7 +43,7 @@ metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
-nix = { workspace = true, features = ["socket", "hostname"] }
+nix = { workspace = true, features = ["socket", "hostname", "net"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
