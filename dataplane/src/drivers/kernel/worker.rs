@@ -227,11 +227,12 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
-                // number of packets output by pipeline: includes delivered and local (which should not be
-                // accounted as pipeline drops)
-                let num_out_pkts: u64 = out_pkts.len() as u64;
-
-                // send each of the packets output by the pipeline, except those to be locally delivered
+                // Send each packet the pipeline delivered. Everything else is a packet the
+                // datapath declined, and here that means dropping it: with the kernel driver the
+                // interfaces are the kernel's own, so it already saw the frame through its own
+                // stack and has nothing to be handed. (Under DPDK the kernel has no netdev for the
+                // port, which is why that driver punts instead -- see `drivers::dpdk::cpbridge`.)
+                let mut ppline_drops: u64 = 0;
                 for out_pkt in out_pkts {
                     let done = out_pkt.get_done();
                     debug_assert!(done.is_some());
@@ -242,6 +243,8 @@ impl Worker {
                         } else {
                             tx_drops += 1;
                         }
+                    } else {
+                        ppline_drops += 1;
                     }
                 }
 
@@ -251,8 +254,11 @@ impl Worker {
                     "Sent {tx_pkts} packets out of {to_tx}, dropped {tx_drops}",
                 );
 
-                // update rx task stats
-                counters.ppline_drops = rx_pkts.saturating_sub(num_out_pkts);
+                // update rx task stats.
+                //
+                // Counted by verdict rather than derived from how many packets the pipeline
+                // swallowed: it no longer swallows any, so the difference is always zero now.
+                counters.ppline_drops = ppline_drops;
                 counters.tx = tx_pkts;
                 counters.tx_drops = tx_drops;
                 intf.watchdog.record(&counters);
