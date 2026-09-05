@@ -90,7 +90,12 @@ jobs:
         run: |
           set -euo pipefail
           case "${EVENT}" in
-            merge_group | push) value="4" ;;
+            # EXPERIMENT (dpdk in vlab): `workflow_dispatch` is in the fast arm.
+            #
+            # The throttle exists so pull requests cannot crowd out merge gating, which is not a
+            # concern while iterating on the gateway at low CI demand -- and serialised matrices
+            # are most of the wall clock between a dispatch and a lab result.
+            merge_group | push | workflow_dispatch) value="4" ;;
             *) value="1" ;;
           esac
           printf 'value=%s\n' "${value}" >>"${GITHUB_OUTPUT}"
@@ -186,6 +191,13 @@ jobs:
 
   check:
     name: "check/${{ matrix.profile }}"
+    # EXPERIMENT (dpdk in vlab): parked. The question this branch is asking is whether the merged
+    # gateway comes up in a CI lab, and neither the test suite nor coverage can answer it. Last
+    # run: 1973/1973 tests passed, `check-docs` failed on a private intra-doc link (since fixed),
+    # and `coverage` died in an unrelated `n-vm-initramfs` zstd race. Both come back with the rest
+    # of the scaffolding, and that initramfs race wants chasing on its own.
+    if: false
+
     runs-on: "lab"
     needs:
       - plan
@@ -483,9 +495,15 @@ jobs:
           - validator
         # TODO: enable cfi and safe-stack on release when possible
         profile: "${{ fromJSON(needs.plan.outputs.container_profiles) }}"
-        exclude:
-          - nix-target: validator
-            profile: debug
+        # EXPERIMENT (dpdk in vlab): the `validator`/`debug` exclusion is lifted.
+        #
+        # The lab runs debug images so that a panic names a line instead of seventeen frames of
+        # `<unknown source file>`, and fabricator derives the validator's tag from
+        # `Versions.Gateway.Dataplane` -- one field for both. Point the dataplane at `-debug` with
+        # this exclusion in place and hhfab goes looking for a validator tag nothing built.
+        # exclude:
+        #   - nix-target: validator
+        #     profile: debug
     steps:
       - *checkout
       - *nix-setup
@@ -544,6 +562,13 @@ jobs:
 
   coverage:
     name: "coverage/${{ matrix.profile }}"
+    # EXPERIMENT (dpdk in vlab): parked. The question this branch is asking is whether the merged
+    # gateway comes up in a CI lab, and neither the test suite nor coverage can answer it. Last
+    # run: 1973/1973 tests passed, `check-docs` failed on a private intra-doc link (since fixed),
+    # and `coverage` died in an unrelated `n-vm-initramfs` zstd race. Both come back with the rest
+    # of the scaffolding, and that initramfs race wants chasing on its own.
+    if: false
+
     runs-on: "lab"
     # Start baseline coverage immediately; deep jobs wait for cheap checks first.
     needs:
@@ -870,8 +895,8 @@ jobs:
       # --ready` hangs to the job timeout rather than failing. Revert all three together.
       fabricatorref: dev/daniel-noland/dpdk-vlab-experiment
       prebuild: |
-        just bump dataplane ${{ needs.version.outputs.version }}-release
-        just bump frr ${{ needs.version.outputs.version }}-release
+        just bump dataplane ${{ needs.version.outputs.version }}-debug
+        just bump frr ${{ needs.version.outputs.version }}-debug
         just bump fabric v0-855962708 855962708430e4c109579ee4ccdc455c3dd11853
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
