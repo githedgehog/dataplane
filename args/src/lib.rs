@@ -1381,6 +1381,16 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
 
     #[arg(
         long,
+        default_value_t = false,
+        help = "Run FRR and frr-agent as children of dataplane-init, in the same network \
+                namespace as the control plane, instead of expecting them in a container of \
+                their own. They share this process's fate: if any of the three stops, all of \
+                them do."
+    )]
+    supervise_frr: bool,
+
+    #[arg(
+        long,
         value_name = "CPI Unix socket path",
         help = "Unix socket for FRR to send route update messages to the dataplane",
         default_value = DEFAULT_DP_UX_PATH
@@ -1682,6 +1692,18 @@ impl CmdArgs {
     #[must_use]
     pub fn control_netns(&self) -> Option<&String> {
         self.control_netns.as_ref()
+    }
+
+    /// Whether `dataplane-init` should run FRR and `frr-agent` itself.
+    ///
+    /// Absent from [`LaunchConfiguration`] for the same reason as
+    /// [`control_netns`](Self::control_netns): by the time the dataplane runs, the decision has
+    /// been acted on, and the dataplane reaches FRR over unix sockets whose paths it already
+    /// knows. Whether the process on the other end is a sibling container or a sibling child is
+    /// not something it can or should behave differently about.
+    #[must_use]
+    pub fn supervise_frr(&self) -> bool {
+        self.supervise_frr
     }
 
     /// Whether the packet path was asked for a network namespace of its own.

@@ -4,9 +4,11 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::pedantic, missing_docs)]
 
+mod frr;
+mod supervisor;
+
 use std::collections::BTreeMap;
 use std::os::fd::AsRawFd;
-use std::os::unix::process::CommandExt;
 
 use args::{
     AsFinalizedMemFile, CmdArgs, DpdkDriverConfigSection, DriverConfigSection, LaunchConfiguration,
@@ -21,11 +23,10 @@ use hardware::nic::{BindToVfioPci, PciNic};
 use hardware::pci::address::PciAddress;
 use hardware::support::{DpdkDriverType, SupportedDevice};
 use nix::mount::MsFlags;
+use supervisor::{Outcome, Process, Supervisor, SupervisorError};
 use tracing::{Level, debug, error, info, span, warn};
 
-/// Where the dataplane is installed. `exec`'d, not spawned: this process has nothing left to do
-/// once it has prepared the hardware, and staying alive as a parent would only add a layer between
-/// the supervisor and the process that matters.
+/// Where the dataplane is installed.
 const DATAPLANE_BINARY: &str = "/bin/dataplane";
 
 /// Hugetlbfs mount points, and how much to back each with.
@@ -340,10 +341,11 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
 ///
 /// # Why nothing has to hold the namespace afterwards
 ///
-/// `setns` on the main thread is inherited across `exec`, and this process has no other threads by
-/// then, so the dataplane *is* in the namespace. A namespace with a process in it does not go away,
-/// so there is no descriptor to keep and nothing to clean up. A namespace opened by path (the
-/// `--control-netns` case) was somebody else's to begin with and stays theirs.
+/// This process stays in the namespace for as long as it supervises anything, and a namespace with
+/// a process in it does not go away, so there is no descriptor to keep and nothing to clean up.
+/// Every process started from here inherits it, because namespaces are inherited at `fork` -- which
+/// is also why this has to happen before anything is started rather than after. A namespace opened
+/// by path (the `--control-netns` case) was somebody else's to begin with and stays theirs.
 fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
     let netns = if let Some(path) = path {
         info!("entering the control network namespace at {path}");
@@ -369,9 +371,9 @@ fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
     // `InterfaceUnknown`. Measured: a tap reads `type = 1` under a fresh sysfs and does not exist
     // at all under an inherited one.
     //
-    // The mount namespace is unshared here, on the main thread, so the dataplane inherits it across
-    // `exec` and every one of its threads gets the right view. The datapath thread unshares again
-    // for its own namespace, which is unaffected by this.
+    // The mount namespace is unshared here, on the main thread, so every process started from here
+    // inherits it and every one of the dataplane's threads gets the right view. The datapath thread
+    // unshares again for its own namespace, which is unaffected by this.
     netns
         .enter_with_sysfs()
         .map_err(|e| format!("could not enter the control network namespace: {e}"))?;
@@ -431,18 +433,49 @@ async fn bring_up_loopback() -> Result<(), String> {
     Ok(())
 }
 
-/// Hand the configuration to the dataplane and become it.
+/// Anything that can go wrong between "the hardware is ready" and "the gateway is running".
+#[derive(Debug, thiserror::Error)]
+enum HandoffError {
+    /// The datapath namespace descriptor could not be duplicated for the dataplane.
+    #[error("could not duplicate the datapath network namespace descriptor: {0}")]
+    DuplicateNetns(#[source] std::io::Error),
+
+    /// Two descriptors wanted the same number in the child.
+    #[error("could not place the dataplane's descriptors: {0}")]
+    PlaceDescriptors(#[source] command_fds::FdMappingCollision),
+
+    /// A runtime for the supervisor could not be built.
+    #[error("could not build a runtime to supervise the gateway: {0}")]
+    Runtime(#[source] std::io::Error),
+
+    /// FRR could not be worked out well enough to start it.
+    #[error(transparent)]
+    Frr(#[from] frr::FrrError),
+
+    /// Supervision itself failed.
+    #[error(transparent)]
+    Supervisor(#[from] SupervisorError),
+}
+
+/// Describe how to start the dataplane.
 ///
 /// The configuration travels as a sealed memfd rather than as arguments: it is passed once,
 /// immutably, alongside a hash of itself, so the dataplane can verify it received what was sent and
-/// then read it in place. `exec` replaces this process, so the descriptors below are the only thing
-/// that outlives it.
-fn exec_dataplane(config: LaunchConfiguration, netns: Option<NetworkNamespace>) -> ! {
+/// then read it in place.
+///
+/// The namespace travels the same way, as a descriptor at an agreed number. It is **duplicated**
+/// rather than handed over, because this process stays alive and a namespace is kept alive by
+/// anything holding a descriptor to it. Keeping ours means the namespace -- and so the NICs inside
+/// it, with the ifindices and MAC addresses they already have -- survives a dataplane that dies.
+/// Recreating it would mean another devlink reload, another link flap, and several seconds during
+/// which the hardware is somewhere else.
+fn dataplane_process(
+    config: LaunchConfiguration,
+    netns: Option<&NetworkNamespace>,
+) -> Result<Process, HandoffError> {
     let mut config_file = config.finalize();
     let integrity_check = config_file.integrity_check().finalize().to_owned_fd();
     let config_fd = config_file.to_owned_fd();
-
-    info!("handing configuration to {DATAPLANE_BINARY} and exec'ing it");
 
     let mut mappings = vec![
         FdMapping {
@@ -455,31 +488,103 @@ fn exec_dataplane(config: LaunchConfiguration, netns: Option<NetworkNamespace>) 
         },
     ];
 
-    // The namespace travels as a descriptor, and that descriptor is also what keeps it alive: this
-    // process is about to be replaced, so once `exec` happens the dataplane holds the only
-    // reference. Nothing is registered under `/run/netns`, so there is no name to collide with and
-    // nothing to clean up -- when the dataplane exits, however it exits, the kernel closes the
-    // descriptor and the namespace goes with it.
     if let Some(netns) = netns {
+        let duplicate = netns
+            .as_raw()
+            .try_clone_to_owned()
+            .map_err(HandoffError::DuplicateNetns)?;
         mappings.push(FdMapping {
-            parent_fd: netns.into_fd(),
+            parent_fd: duplicate,
             child_fd: LaunchConfiguration::STANDARD_NETNS_FD,
         });
     }
 
-    let error = std::process::Command::new(DATAPLANE_BINARY)
+    let mut command = std::process::Command::new(DATAPLANE_BINARY);
+    command
         .fd_mappings(mappings)
-        .unwrap_or_else(|e| {
-            error!("failed to map configuration descriptors for the dataplane: {e}");
-            std::process::exit(1);
-        })
+        .map_err(HandoffError::PlaceDescriptors)?
         .env_clear()
-        .env("RUST_BACKTRACE", "full")
-        .exec();
+        .env("RUST_BACKTRACE", "full");
 
-    // `exec` only returns on failure.
-    error!("failed to exec {DATAPLANE_BINARY}: {error}");
-    std::process::exit(1);
+    Ok(Process::new("dataplane", command))
+}
+
+/// Run the gateway until something stops it.
+///
+/// # Order
+///
+/// The dataplane first, and when FRR is ours to run, not merely started first but *waited for*.
+/// Zebra's `hh_dplane` module connects to the dataplane's control-plane socket as it loads; a zebra
+/// that starts first finds nothing there, and the gateway comes up with a routing daemon that
+/// cannot tell the datapath anything. Waiting for the socket to exist is what removes the race, and
+/// it is cheap: the socket is bound while the router starts, long before the packet path does.
+///
+/// `frr-agent` last, because it is the one thing here that depends on FRR rather than the other way
+/// round: it applies configuration through `vtysh`.
+async fn run_gateway(
+    config: LaunchConfiguration,
+    netns: Option<NetworkNamespace>,
+    supervise_frr: bool,
+) -> Result<Outcome, HandoffError> {
+    // Taken before the configuration is consumed below.
+    let control_plane_socket = config.routing.control_plane_socket.clone();
+    let agent_socket = config.routing.frr_agent_socket.clone();
+
+    let mut supervisor = Supervisor::new();
+
+    let dataplane = dataplane_process(config, netns.as_ref())?;
+    let dataplane = if supervise_frr {
+        dataplane.ready_when_path_exists(control_plane_socket)
+    } else {
+        // Nothing here is waiting on it, so there is nothing to gain by waiting: FRR is in a
+        // container of its own and already has to tolerate starting in any order.
+        dataplane
+    };
+    supervisor.start(dataplane).await?;
+
+    if supervise_frr {
+        let (config_dir, daemon_dir) = frr::install();
+        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
+        supervisor.start(frr::watchfrr(&daemons)).await?;
+        supervisor.start(frr::agent(&agent_socket)).await?;
+    }
+
+    Ok(supervisor.supervise().await?)
+}
+
+/// Start the gateway and stay as its supervisor, returning the status this process should exit
+/// with.
+///
+/// A **current-thread** runtime, and this matters more than it looks. Children inherit the network
+/// and mount namespaces of the thread that forks them, and the namespace work above was done on
+/// this thread. A multi-threaded runtime would spawn from a worker that is still where this process
+/// started, and the dataplane would come up unable to see its own hardware.
+fn supervise_gateway(
+    config: LaunchConfiguration,
+    netns: Option<NetworkNamespace>,
+    supervise_frr: bool,
+) -> i32 {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(HandoffError::Runtime)
+    {
+        Ok(runtime) => runtime,
+        Err(e) => fail("could not start the gateway", &e.to_string()),
+    };
+
+    match runtime.block_on(run_gateway(config, netns, supervise_frr)) {
+        Ok(Outcome::Exited { name, report }) => {
+            error!("{name} {report}");
+            report.as_exit_code()
+        }
+        // A requested stop is a successful one. The orchestrator asked, and everything came down.
+        Ok(Outcome::Signalled { signal }) => {
+            info!("stopped on {signal}");
+            0
+        }
+        Err(e) => fail("the gateway could not be started", &e.to_string()),
+    }
 }
 
 /// Give up, having said why.
@@ -497,12 +602,14 @@ fn main() {
     let main = span!(Level::INFO, "init");
     let _main = main.enter();
 
-    // The arguments are kept, not just converted. `--control-netns` is this program's alone: it
-    // says where to put the control plane before `exec`, and the dataplane has no opinion to form
-    // about it afterwards, so it is deliberately absent from the sealed configuration.
+    // The arguments are kept, not just converted. `--control-netns` and `--supervise-frr` are this
+    // program's alone: they say where to put the control plane and what to start in it, and the
+    // dataplane has no opinion to form about either afterwards, so both are deliberately absent
+    // from the sealed configuration.
     let args = CmdArgs::parse();
     let control_netns = args.control_netns().cloned();
     let wants_datapath_netns = args.datapath_netns();
+    let supervise_frr = args.supervise_frr();
 
     let config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
@@ -599,5 +706,5 @@ fn main() {
         }
     };
 
-    exec_dataplane(config, netns);
+    std::process::exit(supervise_gateway(config, netns, supervise_frr));
 }
