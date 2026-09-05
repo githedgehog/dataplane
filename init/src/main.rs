@@ -382,54 +382,40 @@ fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String>
     Ok(netns)
 }
 
-/// Choose the control namespace.
+/// Choose the control namespace and return a descriptor for the original namespace.
 /// Create a private namespace only when init also starts FRR. External FRR must
 /// share the caller's namespace unless `--control-netns` explicitly selects another.
-fn place_control_plane(path: Option<&String>, supervise_frr: bool) -> Result<(), String> {
+/// When the control plane stays put, the original namespace is the current one.
+fn place_control_plane(
+    path: Option<&String>,
+    supervise_frr: bool,
+) -> Result<NetworkNamespace, String> {
     if path.is_none() && !supervise_frr {
         info!(
             "the control plane stays in the namespace this process started in: FRR is not ours to \
              start, so it is somewhere we cannot follow, and it has to see the taps"
         );
-        return Ok(());
+        return NetworkNamespace::current()
+            .map_err(|e| format!("could not open the current network namespace: {e}"));
     }
     enter_control_netns(path)
 }
 
-/// Put this process into the network namespace the control plane will run in.
+/// Enter the selected control namespace and bring up loopback.
+/// Do this after moving the NICs, while their devlink instances are still reachable,
+/// and before spawning children so they inherit the control namespace.
 ///
-/// # Why the control plane needs one at all
-///
-/// The dataplane's control path to the wire is a **tap** per configured interface, named exactly
-/// the configured name -- that is the name FRR's configuration, the routing tables and the ACLs all
-/// use. The physical device wants that name too. In the host's namespace those two collide: a tap
-/// sitting on `dp0` makes udev's rename of the returning physical device fail, which strands the
-/// real device under a name nothing is looking for.
-///
-/// A private namespace removes the collision entirely, because the physical device is never in it.
-/// It also gives FRR somewhere to live where the only interfaces it can see are the ones the
-/// dataplane means it to see.
-///
-/// # Why this happens after the devlink reload and not before
-///
-/// The devices are moved with a devlink reload, and a PCI device's devlink instance belongs to the
-/// namespace the device is in -- which, at that point, is the host's. Entering the control
-/// namespace first would put this process somewhere the devlink instance is not.
-///
-/// # Why `lo` has to come up
-///
-/// FRR binds its vty to `127.0.0.1` and the dataplane's `frr-agent` connects to it there. A fresh
-/// namespace's loopback is down, so without this the two cannot talk at all -- and the failure
-/// looks like an agent that will not connect rather than an interface that is down.
-///
-/// # Why nothing has to hold the namespace afterwards
-///
-/// This process stays in the namespace for as long as it supervises anything, and a namespace with
-/// a process in it does not go away, so there is no descriptor to keep and nothing to clean up.
-/// Every process started from here inherits it, because namespaces are inherited at `fork` -- which
-/// is also why this has to happen before anything is started rather than after. A namespace opened
-/// by path (the `--control-netns` case) was somebody else's to begin with and stays theirs.
-fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
+/// The process holds the control namespace alive. Return a descriptor for the
+/// original namespace so the dataplane can create its host-facing runtime there.
+fn enter_control_netns(path: Option<&String>) -> Result<NetworkNamespace, String> {
+    // Opened *before* the move, because afterwards there is no way to name it. `/proc/self/ns/net`
+    // always means "the namespace this thread is in now", so asking after `setns` returns the
+    // control namespace and the way back is lost. The dataplane needs it: its Kubernetes client,
+    // its metrics endpoint and its Pyroscope pushes all reach outside the fabric, and the control
+    // namespace is a place with no route anywhere.
+    let host = NetworkNamespace::open("/proc/self/ns/net")
+        .map_err(|e| format!("could not open the current network namespace: {e}"))?;
+
     let netns = if let Some(path) = path {
         info!("entering the control network namespace at {path}");
         NetworkNamespace::open(path)
@@ -464,7 +450,7 @@ fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
 
     // Dropped rather than kept: this process is in the namespace, which is what holds it open.
     drop(netns);
-    Ok(())
+    Ok(host)
 }
 
 /// Bring `lo` up in the calling thread's network namespace.
@@ -539,6 +525,7 @@ enum HandoffError {
 fn dataplane_process(
     config: LaunchConfiguration,
     netns: &NetworkNamespace,
+    host_netns: &NetworkNamespace,
 ) -> Result<Process, HandoffError> {
     let mut config_file = config.finalize();
     let integrity_check = config_file.integrity_check().finalize().to_owned_fd();
@@ -559,6 +546,18 @@ fn dataplane_process(
                 .try_clone_to_owned()
                 .map_err(HandoffError::DuplicateNetns)?,
             child_fd: LaunchConfiguration::STANDARD_NETNS_FD,
+        },
+        // The namespace this process started in: the dataplane's way out to Kubernetes, its
+        // metrics scraper and Pyroscope. Also duplicated rather than handed over: once the control
+        // plane has moved, this process's copy is the only thing on our side still referring to
+        // it, and a supervisor that outlives one dataplane has to hand the next one the same way
+        // back.
+        FdMapping {
+            parent_fd: host_netns
+                .as_raw()
+                .try_clone_to_owned()
+                .map_err(HandoffError::DuplicateNetns)?,
+            child_fd: LaunchConfiguration::STANDARD_HOST_NETNS_FD,
         },
     ];
 
@@ -604,21 +603,13 @@ fn clean_up_endpoints(
     Ok(())
 }
 
-/// Run the gateway until something stops it.
-///
-/// # Order
-///
-/// The dataplane first, and when FRR is ours to run, not merely started first but *waited for*.
-/// Zebra's `hh_dplane` module connects to the dataplane's control-plane socket as it loads; a zebra
-/// that starts first finds nothing there, and the gateway comes up with a routing daemon that
-/// cannot tell the datapath anything. Waiting for the socket to exist is what removes the race, and
-/// it is cheap: the socket is bound while the router starts, long before the packet path does.
-///
-/// `frr-agent` last, because it is the one thing here that depends on FRR rather than the other way
-/// round: it applies configuration through `vtysh`.
+/// Prepare and supervise the gateway.
+/// When init owns FRR, start dataplane, watchfrr, and agent in that order, waiting
+/// for each socket before starting its consumer.
 async fn run_gateway(
     config: LaunchConfiguration,
     netns: NetworkNamespace,
+    host_netns: NetworkNamespace,
     supervise_frr: bool,
 ) -> Result<Outcome, HandoffError> {
     // Taken before the configuration is consumed below.
@@ -630,7 +621,7 @@ async fn run_gateway(
     // Clear owned endpoints before any child starts, including configured paths outside /run/frr.
     clean_up_endpoints(&config, supervise_frr)?;
 
-    let dataplane = dataplane_process(config, &netns)?;
+    let dataplane = dataplane_process(config, &netns, &host_netns)?;
     let mut processes = if supervise_frr {
         vec![dataplane.ready_when_socket_exists(control_plane_socket)]
     } else {
@@ -663,6 +654,7 @@ async fn run_gateway(
 fn supervise_gateway(
     config: LaunchConfiguration,
     netns: NetworkNamespace,
+    host_netns: NetworkNamespace,
     supervise_frr: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -674,7 +666,7 @@ fn supervise_gateway(
         Err(e) => fail("could not start the gateway", &e.to_string()),
     };
 
-    match runtime.block_on(run_gateway(config, netns, supervise_frr)) {
+    match runtime.block_on(run_gateway(config, netns, host_netns, supervise_frr)) {
         Ok(Outcome::Exited { name, report }) => {
             error!("{name} {report}");
             report.as_exit_code()
@@ -716,7 +708,7 @@ fn main() {
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
 
-    let netns = match &config.driver {
+    let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
             let devices = match resolve_devices(dpdk) {
@@ -743,34 +735,15 @@ fn main() {
             };
 
             // Last, because it is one-way: after this the process is somewhere the devlink
-            // instances above are not, and there is no going back.
-            if let Err(e) = place_control_plane(control_netns.as_ref(), supervise_frr) {
-                fail("failed to enter the control network namespace", &e);
-            }
+            // instances above are not, and there is no going back. It hands back the namespace
+            // we are leaving, which is the dataplane's way out to Kubernetes, its metrics
+            // scraper and Pyroscope.
+            let host_netns = match place_control_plane(control_netns.as_ref(), supervise_frr) {
+                Ok(host_netns) => host_netns,
+                Err(e) => fail("failed to enter the control network namespace", &e),
+            };
 
-            // Named rather than left to be discovered. The k8s client and the metrics endpoint
-            // reach *out* of this process, and a fresh control namespace has no route to
-            // anywhere; they have not been split onto a runtime that stays in the host's
-            // namespace yet. Without `--config-dir` the dataplane will retry k8s init ten times
-            // and give up, which says nothing about why.
-            //
-            // A warning rather than an error, because `--control-netns` names a namespace the
-            // operator built, and they may well have given it a path out.
-            if config
-                .config_server
-                .as_ref()
-                .and_then(|c| c.config_dir.as_ref())
-                .is_none()
-            {
-                warn!(
-                    "the control plane is in a network namespace of its own and no \
-                     --config-dir was given, so the dataplane will try to reach Kubernetes \
-                     from in there. Until the host-namespace split lands, this configuration \
-                     is --config-dir only."
-                );
-            }
-
-            netns
+            (netns, host_netns)
         }
         DriverConfigSection::Kernel(kernel) => {
             // Renamed (and, for `pci@`, returned from vfio-pci) first: the move below is by
@@ -795,13 +768,14 @@ fn main() {
                 Err(e) => fail("failed to isolate the network interfaces", &e),
             };
 
-            if let Err(e) = place_control_plane(control_netns.as_ref(), supervise_frr) {
-                fail("failed to enter the control network namespace", &e);
-            }
+            let host_netns = match place_control_plane(control_netns.as_ref(), supervise_frr) {
+                Ok(host_netns) => host_netns,
+                Err(e) => fail("failed to enter the control network namespace", &e),
+            };
 
-            netns
+            (netns, host_netns)
         }
     };
 
-    std::process::exit(supervise_gateway(config, netns, supervise_frr));
+    std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
 }
