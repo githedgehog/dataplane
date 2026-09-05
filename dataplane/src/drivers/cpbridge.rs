@@ -66,7 +66,7 @@ use concurrency::sync::Arc;
 use interface_manager::interface::{TapDevice, TapRegistry};
 use lifecycle::{CancellationToken, Subsystem};
 use net::eth::mac::Mac;
-use net::interface::InterfaceName;
+use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::DoneReason;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -99,6 +99,21 @@ pub(crate) struct PortIdentity {
 
 /// The datapath's end of one port's bridge.
 pub(crate) struct PortCpQueues {
+    /// The **tap's** interface index, which is the identity the rest of the dataplane uses.
+    ///
+    /// Not the port's own index, and the difference is the whole point. Interface indices are
+    /// per-namespace: the port has one in the datapath namespace and the tap standing in for it has
+    /// an unrelated one in the control namespace. Everything above the driver -- the configuration,
+    /// the interface table the ingress stage looks packets up in, the `oif` the router picks -- was
+    /// built by looking interfaces up **by name in the control namespace**, so all of it speaks in
+    /// tap indices. A driver that stamped its own index instead would have every packet rejected as
+    /// `InterfaceUnknown`, and every transmit fail to find its interface.
+    ///
+    /// The two can coincide, which is worse than if they never did: two freshly created namespaces
+    /// both number upwards from `lo`, so a single-port dataplane in fresh namespaces gets `2` on
+    /// both sides and works by accident. A control plane in a namespace that has other interfaces
+    /// in it -- the host's, say -- immediately does not.
+    pub(crate) index: InterfaceIndex,
     /// Frames the datapath is handing to the kernel.
     pub(crate) punt: mpsc::Sender<Frame>,
     /// Frames the kernel wants transmitted, present on exactly one worker.
@@ -272,6 +287,17 @@ pub(crate) enum BridgeError {
         #[source]
         source: std::io::Error,
     },
+    /// A tap was created but the kernel would not say what index it got.
+    ///
+    /// Fatal rather than skipped: without the index the datapath has no name for this interface
+    /// that the rest of the dataplane would recognise.
+    #[error("could not learn the interface index of the tap for {name}: {problem}")]
+    TapIndex {
+        /// The interface whose tap could not be identified.
+        name: InterfaceName,
+        /// What went wrong.
+        problem: String,
+    },
 }
 
 /// The control plane's end of the bridge: the taps, and the tasks which pump them.
@@ -322,6 +348,15 @@ impl CpBridge {
                 source,
             })?;
 
+            // Asked for now, on the thread that made it and in the namespace it lives in. This
+            // index is what the whole dataplane above the driver will call this interface -- see
+            // `PortCpQueues::index` -- so a bridge that could not learn it has not built a usable
+            // port.
+            let index = tap_index(name).map_err(|problem| BridgeError::TapIndex {
+                name: name.clone(),
+                problem,
+            })?;
+
             let (punt_tx, punt_rx) = mpsc::channel(QUEUE_DEPTH);
             let (inject_tx, inject_rx) = mpsc::channel(QUEUE_DEPTH);
 
@@ -333,9 +368,11 @@ impl CpBridge {
                 cancel.clone(),
             ));
 
+            debug!("tap {name} is interface index {index}");
             ports.insert(
                 name.to_string(),
                 PortCpQueues {
+                    index,
                     punt: punt_tx,
                     inject: Some(inject_rx),
                 },
@@ -486,6 +523,22 @@ async fn dress_taps(
         }
     }
     debug!("tap identity applier stopped");
+}
+
+/// Ask the kernel what index it gave a tap.
+///
+/// By name, because that is the only handle we have: `TUNSETIFF` reports the name it settled on but
+/// not an index, and the device has only just appeared.
+///
+/// `if_nametoindex` rather than netlink, and not merely because it is shorter. The bridge is built
+/// with the management runtime *entered* on this thread, and `Handle::enter` is enough to make
+/// `Handle::block_on` panic with "Cannot start a runtime from within a runtime" -- so an `async`
+/// lookup here has no way to be awaited. A synchronous syscall has no such problem, and it resolves
+/// in the calling thread's namespace, which is exactly the one the tap was just created in.
+fn tap_index(name: &InterfaceName) -> Result<InterfaceIndex, String> {
+    let raw = nix::net::if_::if_nametoindex(name.to_string().as_str())
+        .map_err(|e| format!("if_nametoindex: {e}"))?;
+    InterfaceIndex::try_new(raw).map_err(|e| e.to_string())
 }
 
 /// Apply one port's identity to its tap.
