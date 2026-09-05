@@ -227,11 +227,8 @@ impl Worker {
                     .process(packets.map(|pkt| *pkt))
                     .collect::<Vec<_>>();
 
-                // number of packets output by pipeline: includes delivered and local (which should not be
-                // accounted as pipeline drops)
-                let num_out_pkts: u64 = out_pkts.len() as u64;
-
-                // send each of the packets output by the pipeline, except those to be locally delivered
+                // Transmit delivered packets; the kernel already handles local traffic.
+                let mut ppline_drops: u64 = 0;
                 for out_pkt in out_pkts {
                     let done = out_pkt.get_done();
                     debug_assert!(done.is_some());
@@ -242,6 +239,8 @@ impl Worker {
                         } else {
                             tx_drops += 1;
                         }
+                    } else if !matches!(done, Some(DoneReason::Local) | None) {
+                        ppline_drops += 1;
                     }
                 }
 
@@ -251,8 +250,8 @@ impl Worker {
                     "Sent {tx_pkts} packets out of {to_tx}, dropped {tx_drops}",
                 );
 
-                // update rx task stats
-                counters.ppline_drops = rx_pkts.saturating_sub(num_out_pkts);
+                // Update RX task stats.
+                counters.ppline_drops = ppline_drops;
                 counters.tx = tx_pkts;
                 counters.tx_drops = tx_drops;
                 intf.watchdog.record(&counters);
