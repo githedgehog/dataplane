@@ -757,22 +757,24 @@ unsafe fn take_inherited_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
 }
 
 impl LaunchConfiguration {
-    /// Whether init supplied the configuration, its integrity check, and the datapath namespace.
+    /// Whether init supplied the configuration, its integrity check, and both network namespaces.
     ///
     /// # Errors
     ///
     /// Rejects an incomplete handoff or a failed descriptor lookup.
     pub fn was_inherited() -> std::io::Result<bool> {
-        match (
+        let open = [
             descriptor_is_open(Self::STANDARD_INTEGRITY_CHECK_FD)?,
             descriptor_is_open(Self::STANDARD_CONFIG_FD)?,
             descriptor_is_open(Self::STANDARD_NETNS_FD)?,
-        ) {
-            (true, true, true) => Ok(true),
-            (false, false, false) => Ok(false),
+            descriptor_is_open(Self::STANDARD_HOST_NETNS_FD)?,
+        ];
+        match open {
+            [true, true, true, true] => Ok(true),
+            [false, false, false, false] => Ok(false),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "incomplete launch configuration handoff: expected descriptors 30, 40 and 50",
+                "incomplete launch configuration handoff: expected descriptors 30, 40, 50 and 60",
             )),
         }
     }
@@ -811,6 +813,41 @@ impl LaunchConfiguration {
     pub unsafe fn inherit_netns() -> std::io::Result<OwnedFd> {
         // SAFETY: the caller guarantees exclusive ownership of the inherited descriptor.
         unsafe { take_inherited_fd(Self::STANDARD_NETNS_FD) }
+    }
+
+    /// Standard file descriptor number for the namespace `dataplane-init` itself started in.
+    ///
+    /// # Why the dataplane needs a way out
+    ///
+    /// Not everything the dataplane does is control-plane traffic. It watches a Kubernetes API
+    /// server, serves a metrics endpoint something outside scrapes, and pushes profiles to
+    /// Pyroscope -- three things that reach past the fabric. When `dataplane-init` moves the
+    /// control plane into a namespace of its own, that namespace has no route anywhere. FRR and the
+    /// taps, by contrast, must be *in* it. The two sets cannot share a thread, so they do not: this
+    /// descriptor is what lets the outward-facing half run on a runtime whose threads `setns` back
+    /// here. When the control plane did not move, this is simply the dataplane's own namespace.
+    ///
+    /// A descriptor rather than `/proc/1/ns/net` for the same reason as the datapath's: it names
+    /// one specific namespace, it cannot be raced by a PID changing meaning, and it works whether
+    /// or not `/proc` is mounted the way this process expects.
+    pub const STANDARD_HOST_NETNS_FD: RawFd = 60;
+
+    /// Claim the host network namespace descriptor.
+    /// The caller must validate its namespace type before using it.
+    ///
+    /// # Safety
+    ///
+    /// Call only once for a descriptor supplied by init. FD 60 must belong exclusively to this
+    /// handoff, have no other owner, and not be closed or replaced concurrently.
+    /// Claim it at startup before other components can reuse that number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor is missing or cannot be marked close-on-exec.
+    #[allow(unsafe_code)]
+    pub unsafe fn inherit_host_netns() -> std::io::Result<OwnedFd> {
+        // SAFETY: the caller guarantees exclusive ownership of the inherited descriptor.
+        unsafe { take_inherited_fd(Self::STANDARD_HOST_NETNS_FD) }
     }
 
     /// Inherit the launch configuration from the parent process.
