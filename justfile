@@ -1533,3 +1533,57 @@ vlab-patch-frr:
     pushd ./scripts/vlab
     ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"overrides":{"versions":{"gateway":{"frr":"{{version}}"}}}}}'
     popd
+
+# Checkout of github.com/githedgehog/fabric, which is where the gateway DaemonSets are built.
+#
+# Not the `gateway` repo, which carries a copy of `pkg/ctrl/gateway_ctrl.go` that no longer runs:
+# fabricator wires `DataplaneRef` into `fabric/api/meta`'s FabricConfig and never reads
+# `Versions.Gateway.Controller`, so it is the fabric controller that reconciles the dataplane pod.
+[private]
+fabric_repo := env("FABRIC_REPO", "")
+
+# Build, push the fabric controller to the vlab registry, and patch the running fabric
+[script]
+vlab-patch-fabric:
+    {{ _just_debuggable_ }}
+    # This is how a change to the way the dataplane is *launched* -- its command, its arguments,
+    # the volumes and namespaces it gets -- reaches vlab. `vlab-patch-dataplane` replaces the
+    # image; this replaces the controller that decides what to run out of it.
+    repo="{{ fabric_repo }}"
+    if [ -z "${repo}" ]; then
+        >&2 echo "vlab-patch-fabric: set FABRIC_REPO to a checkout of github.com/githedgehog/fabric"
+        exit 1
+    fi
+    if [ ! -d "${repo}/pkg/ctrl" ]; then
+        >&2 echo "vlab-patch-fabric: ${repo} does not look like the fabric repository"
+        exit 1
+    fi
+    # Fabric builds with the system Go, which this dev shell deliberately does not carry. Said
+    # here rather than left to `go: command not found` several minutes into a kustomize run.
+    if ! command -v go >/dev/null 2>&1; then
+        >&2 echo "vlab-patch-fabric: no go on PATH; fabric builds with it (try: nix-shell -p go)"
+        exit 1
+    fi
+    # Pinned once and passed to every invocation. Fabric derives its own version from
+    # `git describe` plus, on a dirty tree, two random characters -- so two `just` runs in that
+    # repo disagree about what they are building, and the image would land under a tag the chart
+    # does not name. The timestamp is what makes each push a new tag, which is what makes the
+    # controller pod actually roll.
+    fabric_version="$(git -C "${repo}" describe --tags --dirty --always)-dp$(date -u +%H%M%S)"
+    echo "vlab-patch-fabric: building fabric ${fabric_version}"
+    # Only the controller: `Versions.Fabric.Controller` names both the `fabric` image and the
+    # `fabric` chart, and nothing else. Leaving api/agent/boot/dhcpd alone avoids reloading the
+    # agent on every switch in the lab for a change that does not touch them.
+    for recipe in "_docker-build fabric" "_helm-fabric" "_docker-push fabric" "_helm-push fabric"; do
+        (cd "${repo}" && just version="${fabric_version}" oci=http oci_repo="{{ vlab_oci_repo }}" ${recipe})
+    done
+    # Same reasoning as vlab-patch-dataplane: pointing the fabric at a tag the registry does not
+    # have takes the controller down with ImagePullBackOff, and a controller that is not running
+    # looks exactly like a controller with nothing to do.
+    if ! skopeo inspect --tls-verify=false "docker://{{ vlab_oci_repo }}/githedgehog/fabric/fabric:${fabric_version}" >/dev/null 2>&1; then
+        >&2 echo "vlab-patch-fabric: fabric:${fabric_version} is not in the registry; refusing to patch"
+        exit 1
+    fi
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p "{\"spec\":{\"overrides\":{\"versions\":{\"fabric\":{\"controller\":\"${fabric_version}\"}}}}}"
+    popd
