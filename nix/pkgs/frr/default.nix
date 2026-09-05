@@ -24,7 +24,7 @@
   pcre2,
   readline,
   rtrlib,
-  libgccjit,
+  libatomic,
 
   # other general options besides snmp support
   numMultipath ? 8,
@@ -122,12 +122,13 @@ stdenv.mkDerivation (finalAttrs: {
     python3Minimal
     readline
   ]
-  # libgccjit is only the carrier for libatomic.so.1 on glibc targets
-  # (see the LDFLAGS comment in nix/overlays/frr.nix).  On musl FRR pulls
-  # libatomic from the cross-musl gcc-libs output via `stdenv.cc.cc.lib`
-  # in the overlay, so pulling libgccjit into the build closure here just
-  # bloats the runtime image without contributing any symbol.
-  ++ lib.optionals stdenv.hostPlatform.isGnu [ libgccjit ]
+  # libatomic.so.1 is a DT_NEEDED of libfrr.so and of every daemon.  On glibc
+  # it comes from `fancy.libatomic`, a re-export of the single file FRR needs
+  # out of libgccjit (see the note on that attribute in nix/overlays/frr.nix).
+  # On musl FRR pulls libatomic from the cross-musl gcc-libs output via
+  # `stdenv.cc.cc.lib` in the overlay instead, so naming it here would only
+  # bloat the build closure without contributing any symbol.
+  ++ lib.optionals stdenv.hostPlatform.isGnu [ libatomic ]
   ++ lib.optionals bgpRpki [ rtrlib ];
 
   # cross-compiling: clippy is compiled with the build host toolchain, split it out to ease
@@ -227,6 +228,25 @@ stdenv.mkDerivation (finalAttrs: {
     make DESTDIR=$out install;
     mkdir -p $build/src/
     cp -r . $build/src/frr
+
+    # Libtool archives are build-time metadata with no runtime consumer, and a
+    # standing closure hazard: a `.la` file records the *whole* link line as
+    # text, so nix's reference scanner reads store paths out of it that no ELF
+    # in this output needs -- including the `-L` paths of libraries we link
+    # statically on purpose and therefore expect to vanish at install time.
+    # `fancy.libnl` already drops its own for the same reason.
+    #
+    # Measured honestly: removing them changes this package's closure by
+    # nothing at all today (22 paths, 272.6 MB either way).  Every path they
+    # named was already named by a real ELF.  They go because they are dead
+    # weight standing next to a live wire, not because they were the leak --
+    # the 154 MB that used to be here came from `libatomic` resolving through
+    # `libgccjit`, and that is fixed in nix/overlays/frr.nix, not here.
+    #
+    # Anything linking against FRR does so through pkg-config and the headers,
+    # so nothing downstream misses these; `dplane-plugin`, the only thing in
+    # this tree that links FRR, builds without them.
+    rm -f $out/lib/*.la
   '';
 
   doCheck = false;
