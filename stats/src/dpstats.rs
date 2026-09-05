@@ -885,7 +885,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
             }
         }
-        input.filter_map(|mut packet| {
+        input.map(|mut packet| {
             let sdisc = packet.meta().src_vpcd;
             let ddisc = packet.meta().dst_vpcd;
             // A packet must always carry a verdict by the time it reaches this stage. If it does
@@ -951,8 +951,28 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                     None => trace!("no source or dest discriminants for packet"),
                 },
             }
-            packet.meta_mut().set_keep(false); /* no longer disable enforce */
-            packet.enforce()
+            // Deliberately *not* `set_keep(false)` + `enforce()` any more.
+            //
+            // This stage used to be where every packet the pipeline had finished with was actually
+            // freed: `Packet::new` sets KEEP, which makes the `enforce()` calls in the earlier
+            // stages no-ops, so clearing it here and enforcing was the one place a verdict became a
+            // drop. That is the wrong place for the decision, and it silently defeated the
+            // control plane.
+            //
+            // Only `Delivered`, `Local` and "no verdict" survive `enforce`. Under the DPDK driver
+            // the kernel has no netdev for the port, so a frame the datapath did not want -- an ARP
+            // request (`Unhandled`), an ARP reply (`NotIp`) -- is the control plane's traffic and
+            // has to reach the driver to be punted onto the port's tap. Enforcing here dropped
+            // exactly those, one stage before the driver could see them, which meant no adjacency
+            // could ever form. Measured on a BlueField-3: the verdicts were right and the packets
+            // were gone.
+            //
+            // So the pipeline now hands every packet to the driver with its verdict attached, and
+            // the driver decides. It is the only layer that knows whether there is a kernel to hand
+            // a packet to. Both drivers already keyed off `DoneReason::Delivered` for transmission,
+            // so what reaches the wire is unchanged; what changes is that a packet the datapath
+            // declined is now the driver's to dispose of.
+            packet
         })
     }
 }
@@ -1158,6 +1178,69 @@ mod drop_stats_tests {
     /// mutable borrow of `stats` ends.
     fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
         let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+    }
+
+    /// Every packet must leave this stage, whatever its verdict.
+    ///
+    /// This stage used to be where the pipeline actually dropped packets: `Packet::new` sets KEEP,
+    /// which makes the `enforce()` calls in the earlier stages no-ops, so clearing KEEP here and
+    /// enforcing was the single place a verdict became a drop. Only `Delivered`, `Local` and "no
+    /// verdict" survive `enforce`.
+    ///
+    /// That silently broke the control plane. Under the DPDK driver the kernel has no netdev for a
+    /// port, so a frame the datapath declined -- an ARP request (`Unhandled`), an ARP reply
+    /// (`NotIp`) -- is the control plane's traffic and has to reach the *driver* to be punted onto
+    /// the port's tap. Enforcing here dropped exactly those, one stage before the driver could see
+    /// them, so no adjacency could ever form. Measured on a BlueField-3: the verdicts were right
+    /// and the packets were gone.
+    ///
+    /// So the drop decision belongs to the driver, which is the only layer that knows whether there
+    /// is a kernel to hand a packet to. This is the test that fails if the enforcement comes back.
+    #[test]
+    fn every_verdict_survives_this_stage() {
+        // One per verdict this stage might plausibly be tempted to swallow, including the two the
+        // control plane depends on and several unambiguous drops.
+        let verdicts = [
+            DoneReason::Delivered,
+            DoneReason::Local,
+            DoneReason::Unhandled,
+            DoneReason::NotIp,
+            DoneReason::RouteFailure,
+            DoneReason::AclDropped,
+            DoneReason::Filtered,
+            DoneReason::RouteDrop,
+            DoneReason::MacNotForUs,
+            DoneReason::Unroutable,
+        ];
+        for verdict in verdicts {
+            let mut stats = new_stats();
+            let out: Vec<_> = stats
+                .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), Some(verdict))].into_iter())
+                .collect();
+            assert_eq!(
+                out.len(),
+                1,
+                "a packet with verdict {verdict:?} was swallowed by the stats stage; the driver \
+                 never got the chance to punt or drop it"
+            );
+            assert_eq!(
+                out[0].get_done(),
+                Some(verdict),
+                "the stats stage changed the verdict on a {verdict:?} packet"
+            );
+        }
+    }
+
+    /// A packet that reaches this stage with no verdict is a bug upstream, and is marked as one --
+    /// but it still has to come out, so the driver can account for it.
+    #[test]
+    fn a_packet_with_no_verdict_is_marked_and_still_emitted() {
+        let mut stats = new_stats();
+        let out: Vec<_> = stats
+            .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), None)].into_iter())
+            .collect();
+        assert_eq!(out.len(), 1, "a verdict-less packet was swallowed");
+        assert_eq!(out[0].get_done(), Some(DoneReason::InternalFailure));
     }
 
     #[test]
