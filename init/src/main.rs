@@ -346,7 +346,20 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
 /// Every process started from here inherits it, because namespaces are inherited at `fork` -- which
 /// is also why this has to happen before anything is started rather than after. A namespace opened
 /// by path (the `--control-netns` case) was somebody else's to begin with and stays theirs.
-fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
+///
+/// # Returns
+///
+/// The namespace this process was in **before** the move, so the dataplane can be handed a way
+/// back. This one does have to be held: nothing else in this process refers to it any more.
+fn enter_control_netns(path: Option<&String>) -> Result<NetworkNamespace, String> {
+    // Opened *before* the move, because afterwards there is no way to name it. `/proc/self/ns/net`
+    // always means "the namespace this thread is in now", so asking after `setns` returns the
+    // control namespace and the way back is lost. The dataplane needs it: its Kubernetes client,
+    // its metrics endpoint and its Pyroscope pushes all reach outside the fabric, and the control
+    // namespace is a place with no route anywhere.
+    let host = NetworkNamespace::open("/proc/self/ns/net")
+        .map_err(|e| format!("could not open the current network namespace: {e}"))?;
+
     let netns = if let Some(path) = path {
         info!("entering the control network namespace at {path}");
         NetworkNamespace::open(path)
@@ -395,7 +408,7 @@ fn enter_control_netns(path: Option<&String>) -> Result<(), String> {
 
     // Dropped rather than kept: this process is in the namespace, which is what holds it open.
     drop(netns);
-    Ok(())
+    Ok(host)
 }
 
 /// Bring `lo` up in the calling thread's network namespace.
@@ -472,6 +485,7 @@ enum HandoffError {
 fn dataplane_process(
     config: LaunchConfiguration,
     netns: Option<&NetworkNamespace>,
+    host_netns: Option<&NetworkNamespace>,
 ) -> Result<Process, HandoffError> {
     let mut config_file = config.finalize();
     let integrity_check = config_file.integrity_check().finalize().to_owned_fd();
@@ -496,6 +510,22 @@ fn dataplane_process(
         mappings.push(FdMapping {
             parent_fd: duplicate,
             child_fd: LaunchConfiguration::STANDARD_NETNS_FD,
+        });
+    }
+
+    // The namespace this process started in, when the control plane was moved out of it. Also
+    // duplicated rather than handed over, and for a different reason than the datapath's: this
+    // process keeps its own copy because it is the only thing still referring to that namespace on
+    // our side, and a supervisor that outlives one dataplane has to be able to hand the next one
+    // the same way back.
+    if let Some(host_netns) = host_netns {
+        let duplicate = host_netns
+            .as_raw()
+            .try_clone_to_owned()
+            .map_err(HandoffError::DuplicateNetns)?;
+        mappings.push(FdMapping {
+            parent_fd: duplicate,
+            child_fd: LaunchConfiguration::STANDARD_HOST_NETNS_FD,
         });
     }
 
@@ -539,6 +569,7 @@ fn dataplane_process(
 async fn run_gateway(
     config: LaunchConfiguration,
     netns: Option<NetworkNamespace>,
+    host_netns: Option<NetworkNamespace>,
     supervise_frr: bool,
 ) -> Result<Outcome, HandoffError> {
     // Taken before the configuration is consumed below.
@@ -547,7 +578,7 @@ async fn run_gateway(
 
     let mut supervisor = Supervisor::new();
 
-    let dataplane = dataplane_process(config, netns.as_ref())?;
+    let dataplane = dataplane_process(config, netns.as_ref(), host_netns.as_ref())?;
     let dataplane = if supervise_frr {
         dataplane.ready_when_path_exists(control_plane_socket)
     } else {
@@ -577,6 +608,7 @@ async fn run_gateway(
 fn supervise_gateway(
     config: LaunchConfiguration,
     netns: Option<NetworkNamespace>,
+    host_netns: Option<NetworkNamespace>,
     supervise_frr: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -588,7 +620,7 @@ fn supervise_gateway(
         Err(e) => fail("could not start the gateway", &e.to_string()),
     };
 
-    match runtime.block_on(run_gateway(config, netns, supervise_frr)) {
+    match runtime.block_on(run_gateway(config, netns, host_netns, supervise_frr)) {
         Ok(Outcome::Exited { name, report }) => {
             error!("{name} {report}");
             report.as_exit_code()
@@ -643,7 +675,7 @@ fn main() {
         );
     }
 
-    let netns = match &config.driver {
+    let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
             let devices = match resolve_devices(dpdk) {
@@ -673,34 +705,15 @@ fn main() {
                 };
 
                 // Last, because it is one-way: after this the process is somewhere the devlink
-                // instances above are not, and there is no going back.
-                if let Err(e) = enter_control_netns(control_netns.as_ref()) {
-                    fail("failed to enter the control network namespace", &e);
-                }
+                // instances above are not, and there is no going back. It hands back the namespace
+                // we are leaving, which is the dataplane's way out to Kubernetes, its metrics
+                // scraper and Pyroscope.
+                let host_netns = match enter_control_netns(control_netns.as_ref()) {
+                    Ok(host_netns) => host_netns,
+                    Err(e) => fail("failed to enter the control network namespace", &e),
+                };
 
-                // Named rather than left to be discovered. The k8s client and the metrics endpoint
-                // reach *out* of this process, and a fresh control namespace has no route to
-                // anywhere; they have not been split onto a runtime that stays in the host's
-                // namespace yet. Without `--config-dir` the dataplane will retry k8s init ten times
-                // and give up, which says nothing about why.
-                //
-                // A warning rather than an error, because `--control-netns` names a namespace the
-                // operator built, and they may well have given it a path out.
-                if config
-                    .config_server
-                    .as_ref()
-                    .and_then(|c| c.config_dir.as_ref())
-                    .is_none()
-                {
-                    warn!(
-                        "the control plane is in a network namespace of its own and no \
-                         --config-dir was given, so the dataplane will try to reach Kubernetes \
-                         from in there. Until the host-namespace split lands, this configuration \
-                         is --config-dir only."
-                    );
-                }
-
-                Some(netns)
+                (Some(netns), Some(host_netns))
             } else {
                 // Without a datapath namespace the physical devices are still here, so there is
                 // nowhere for the taps to go that is not on top of them. The dataplane runs where
@@ -709,7 +722,7 @@ fn main() {
                     "the packet path was not asked for a namespace of its own; the control plane \
                      stays where this process started"
                 );
-                None
+                (None, None)
             }
         }
         DriverConfigSection::Kernel(_) => {
@@ -717,9 +730,9 @@ fn main() {
             // hardware to prepare and nothing here to do but hand over. It must *not* get a control
             // namespace: its `AF_PACKET` sockets are opened on the real interfaces, which are here.
             info!("kernel driver selected; no device preparation required");
-            None
+            (None, None)
         }
     };
 
-    std::process::exit(supervise_gateway(config, netns, supervise_frr));
+    std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
 }

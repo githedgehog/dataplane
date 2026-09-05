@@ -26,6 +26,12 @@ pub enum LaunchError {
     K8LessError(#[from] K8sLessError),
     #[error("Mgmt init cancelled before completion")]
     Cancelled,
+    /// The k8s init task did not run to completion -- it panicked, or its runtime went away.
+    ///
+    /// Distinct from a k8s error: nothing was learned about the API server, so the message says so
+    /// rather than blaming a connection that was never attempted.
+    #[error("K8s init task did not complete: {0}")]
+    K8sInitTask(String),
 }
 
 pub struct MgmtParams {
@@ -124,6 +130,7 @@ async fn interface_event_notify(
 /// a clean-shutdown signal — callers must not flip the fatal flag for it.
 pub fn run_mgmt(
     handle: &tokio::runtime::Handle,
+    host_handle: &tokio::runtime::Handle,
     mgmt: &Subsystem,
     params: MgmtParams,
 ) -> Result<(), LaunchError> {
@@ -159,7 +166,11 @@ pub fn run_mgmt(
         ))
     } else {
         debug!("Will start watching k8s for configuration changes");
-        handle.block_on(run_k8s(handle, mgmt, params.hostname.as_str(), client))
+        // `host_handle`, not `handle`. Where the dataplane's control plane has a network namespace
+        // of its own, that namespace has no route to the API server; `host_handle` names a runtime
+        // whose threads are back where the process started. Where there is no split the two are
+        // the same handle and this is the arrangement it always had.
+        handle.block_on(run_k8s(host_handle, mgmt, params.hostname.as_str(), client))
     }
 }
 
@@ -207,7 +218,18 @@ async fn run_k8s(
 ) -> Result<(), LaunchError> {
     let k8s_client = Arc::new(K8sClient::new(hostname, client));
     let k8s_client_for_status = k8s_client.clone();
-    k8s_mgmt_init(&k8s_client, &mgmt.root_token()).await?;
+
+    // Spawned onto `handle` and awaited, rather than awaited directly. This function is reached
+    // through `Handle::block_on`, which polls its future on the *calling* thread -- and it is the
+    // first poll that opens the connection to the API server, so a socket created there would
+    // belong to whatever namespace the caller is in rather than to `handle`'s runtime. Spawning
+    // puts the whole of init on a thread that runtime owns.
+    let k8s_client_for_init = k8s_client.clone();
+    let token = mgmt.root_token();
+    handle
+        .spawn(async move { k8s_mgmt_init(&k8s_client_for_init, &token).await })
+        .await
+        .map_err(|e| LaunchError::K8sInitTask(e.to_string()))??;
 
     mgmt.spawn_fatal_on_exit(
         "k8s status updater",
