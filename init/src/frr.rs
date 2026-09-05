@@ -74,6 +74,19 @@ const STATE_DIR: &str = "/run/frr";
 /// The agent that applies dataplane-generated configuration to FRR.
 const AGENT_BINARY: &str = "/bin/frr-agent";
 
+/// The reloader `frr-agent` drives to turn a configuration into commands FRR accepts.
+///
+/// Passed explicitly because the agent's own default, `/hedgehog/frr-reload.py`, describes a
+/// Debian FRR container and names nothing in this image. The `DaemonSet` this replaces passed this
+/// same path, so getting it wrong does not fail at startup -- the agent starts, listens, and then
+/// fails every reload it is asked for.
+const RELOADER: &str = "/libexec/frr/frr-reload.py";
+
+/// Where the reloader looks for `vtysh`, the agent's `--bindir`.
+///
+/// Its default is `/usr/local/bin`, which is empty here. Same failure mode as [`RELOADER`].
+const VTYSH_DIR: &str = "/bin";
+
 /// Daemons FRR runs whether or not `/etc/frr/daemons` mentions them.
 ///
 /// The same three `frrcommon.sh` forces on: `zebra` is FRR, and `mgmtd` and `staticd` are how
@@ -113,6 +126,23 @@ pub enum FrrError {
         daemon: &'static str,
         /// Where it was looked for.
         path: PathBuf,
+    },
+
+    /// The image has no `frr` user for the daemons to drop to.
+    #[error("this image has no {user} user, so FRR has nothing to drop privileges to")]
+    NoFrrUser {
+        /// The user that was looked for.
+        user: &'static str,
+    },
+
+    /// FRR's state directory could not be made ready for it.
+    #[error("could not prepare {path} for FRR: {source}")]
+    StateDir {
+        /// The directory that could not be prepared.
+        path: PathBuf,
+        /// Why it could not be prepared.
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -213,6 +243,114 @@ fn readiness(state_dir: &Path) -> PathBuf {
     state_dir.join("zebra.vty")
 }
 
+/// The user FRR's daemons drop to.
+///
+/// Compiled in as `--enable-user=frr` / `--enable-group=frr` (`nix/pkgs/frr/default.nix`), so it
+/// is not a choice made here -- it is the name that has to resolve, out of the image's
+/// `/etc/passwd`, for FRR to be able to open anything.
+const FRR_USER: &str = "frr";
+
+/// Make FRR's state directory writable by FRR.
+///
+/// Every path in the image is laid down read-only and owned by root -- `dataplane.tar` is tarred
+/// with `--mode='ugo-sw'` -- and FRR starts as root only long enough to drop to [`FRR_USER`].
+/// After that it has to create `<state>/<daemon>.vty`, which is both how `watchfrr` decides a
+/// daemon is up and how [`readiness`] decides FRR is, and the plugin's socket in `<state>/hh`.
+/// Left to the image, all of that fails and FRR looks like it hangs on startup.
+///
+/// This is init's to do rather than the image's because it is the one thing here that is true at
+/// runtime and not at build time: the image cannot carry an ownership it has no `chown` to apply,
+/// and a container runtime will not apply one either.
+///
+/// # Errors
+///
+/// Returns [`FrrError::NoFrrUser`] if the image has no `frr` user, and [`FrrError::StateDir`] if
+/// the directory cannot be created or given to it.
+pub fn prepare_state_dir(state_dir: &Path) -> Result<(), FrrError> {
+    let user = nix::unistd::User::from_name(FRR_USER)
+        .ok()
+        .flatten()
+        .ok_or(FrrError::NoFrrUser { user: FRR_USER })?;
+
+    // `hh` as well as the directory itself: the plugin binds its end of the control-plane socket
+    // there as `frr`, while the dataplane binds the other end as root. Creating only the parent
+    // leaves the pair half-working in a way that looks like a dataplane problem.
+    for path in [state_dir.to_path_buf(), state_dir.join("hh")] {
+        fs::create_dir_all(&path).map_err(|source| FrrError::StateDir {
+            path: path.clone(),
+            source,
+        })?;
+        nix::unistd::chown(&path, Some(user.uid), Some(user.gid)).map_err(|errno| {
+            FrrError::StateDir {
+                path: path.clone(),
+                source: std::io::Error::from(errno),
+            }
+        })?;
+        // The image's mode has the write bit stripped, so the `chown` alone would hand FRR a
+        // directory it still cannot write to.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(|source| {
+            FrrError::StateDir {
+                path: path.clone(),
+                source,
+            }
+        })?;
+    }
+
+    sweep_stale_state(state_dir);
+
+    debug!(
+        "{} is {FRR_USER}'s, uid {} gid {}",
+        state_dir.display(),
+        user.uid,
+        user.gid
+    );
+    Ok(())
+}
+
+/// Suffixes a previous FRR left behind in a state directory that outlives it.
+///
+/// The vty sockets are the ones that matter. `<state>/zebra.vty` is what [`readiness`] waits for,
+/// so a stale one is worse than a missing one: FRR is declared up the instant it is started, the
+/// agent is released to configure a zebra that is not listening yet, and the failure surfaces as a
+/// configuration that did not apply rather than as a startup problem.
+const STALE_SUFFIXES: &[&str] = &[".pid", ".vty", ".sock", ".api", ".started"];
+
+/// Remove what a previous FRR left in the state directory.
+///
+/// The directory is a host path that outlives the pod, which is what makes this necessary; the
+/// `init-frr` container this replaces swept the same set. Only the top level, and only these
+/// suffixes: `hh/` below it holds the control-plane socket the dataplane has *already* bound by
+/// the time this runs, and taking that away would break the pair this exists to start.
+///
+/// Failures are logged rather than returned. A file that cannot be removed is a reason to look,
+/// not a reason to refuse to start -- FRR will say so itself, and more usefully, when it tries.
+fn sweep_stale_state(state_dir: &Path) {
+    let Ok(entries) = fs::read_dir(state_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !STALE_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => info!("removed {}, left by a previous FRR", path.display()),
+            Err(e) => warn!("could not remove {}: {e}", path.display()),
+        }
+    }
+}
+
+/// Where FRR keeps its state, for callers that have to prepare it.
+#[must_use]
+pub fn state_dir() -> PathBuf {
+    PathBuf::from(STATE_DIR)
+}
+
 /// Run FRR.
 ///
 /// `watchfrr` is left in the foreground: it is this process's child and its exit is what tells the
@@ -235,6 +373,8 @@ pub fn watchfrr(daemons: &[String]) -> Process {
 pub fn agent(socket: &str) -> Process {
     let mut command = Command::new(AGENT_BINARY);
     command.arg("--sock-path").arg(socket);
+    command.arg("--reloader").arg(RELOADER);
+    command.arg("--bindir").arg(VTYSH_DIR);
     Process::new("frr-agent", command).ready_when_path_exists(socket)
 }
 
@@ -432,14 +572,64 @@ mod test {
         assert_eq!(process.name, "frr-agent");
         assert_eq!(
             process.command.get_args().collect::<Vec<_>>(),
-            ["--sock-path", "/run/frr/frr-agent.sock"],
-            "the socket the dataplane will connect to is the agent's to bind"
+            [
+                "--sock-path",
+                "/run/frr/frr-agent.sock",
+                "--reloader",
+                RELOADER,
+                "--bindir",
+                VTYSH_DIR,
+            ],
+            "the socket the dataplane will connect to is the agent's to bind, and the reloader \
+             and vtysh directory are passed because the agent's own defaults describe a Debian \
+             container: getting them wrong fails every reload rather than the startup"
         );
         assert_eq!(
             process.ready,
             crate::supervisor::Ready::Path(PathBuf::from("/run/frr/frr-agent.sock")),
             "and the same path is the evidence it is listening"
         );
+    }
+
+    /// The sweep exists for `zebra.vty`; `hh/` exists for a socket the dataplane already bound.
+    #[test]
+    fn a_stale_vty_goes_and_the_dataplanes_socket_stays() {
+        let root = std::env::temp_dir().join(format!("frr-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("hh")).expect("temp dir");
+        for name in [
+            "zebra.vty",
+            "bgpd.pid",
+            "frr-agent.sock",
+            "watchfrr.started",
+        ] {
+            fs::write(root.join(name), "").expect("stale file");
+        }
+        fs::write(root.join("hh/dataplane.sock"), "").expect("live socket");
+        // Not one of ours, and not a suffix we sweep: a sweep that took this would be a sweep
+        // nobody could keep anything beside.
+        fs::write(root.join("frr.log"), "").expect("bystander");
+
+        sweep_stale_state(&root);
+
+        for name in [
+            "zebra.vty",
+            "bgpd.pid",
+            "frr-agent.sock",
+            "watchfrr.started",
+        ] {
+            assert!(
+                !root.join(name).exists(),
+                "{name} would have made FRR look up before it was"
+            );
+        }
+        assert!(
+            root.join("hh/dataplane.sock").exists(),
+            "the dataplane binds this before FRR starts; sweeping it breaks the pair"
+        );
+        assert!(root.join("frr.log").exists(), "not ours to remove");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// `watchfrr` must stay in the foreground, or the supervisor has nothing to wait on.
