@@ -27,7 +27,7 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
 static_assertions = { workspace = true, features = [] }
 thiserror = { workspace = true, features = ["std"] }
-tokio = { workspace = true, default-features = false, features = ["fs", "io-util"] }
+tokio = { workspace = true, default-features = false, features = ["io-util", "macros", "net"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 

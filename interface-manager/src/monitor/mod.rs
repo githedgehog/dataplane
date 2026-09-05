@@ -5,6 +5,20 @@
 //! and disseminates them over a broadcast channel. It does not make any attempt to interpret
 //! the events received via netlink. The interface monitor reports events on ethernet interfaces.
 //! For testing, it can be allowed to report events for other types of network devices.
+//!
+//! # What it can and cannot see under the DPDK driver
+//!
+//! The socket is opened in the calling thread's network namespace and the names it tracks are the
+//! *configured* interface names. With the DPDK driver and a datapath namespace, that means it
+//! watches the **taps** the control-plane bridge made -- which do carry those names, in the control
+//! namespace this runs in -- and not the physical ports, which are in the datapath namespace with
+//! different indices.
+//!
+//! So it reports the tap's state, which is whatever the bridge last set it to, and never the
+//! physical link's. A port going down looks to FRR like a link that is still up, and nothing here
+//! can fix that: the state lives on the other side of a namespace boundary, in the DPDK driver,
+//! which already knows it. Propagating it onto the tap is a follow-on, and it belongs to the driver
+//! rather than to this monitor.
 
 use concurrency::sync::Arc;
 use net::interface::{InterfaceIndex, InterfaceName};

@@ -3,9 +3,14 @@
 
 //! Network namespaces, held by descriptor rather than by name.
 //!
-//! The dataplane spans two network namespaces: the control plane stays in the host's, while the
-//! packet path runs in an isolated one that owns the NICs. `dataplane-init` creates that namespace
-//! and moves the devices into it; the dataplane enters it on one thread and drives DPDK from there.
+//! The dataplane spans two network namespaces, and neither of them is the host's. `dataplane-init`
+//! creates a **datapath** namespace, moves the NICs into it, and then puts itself -- and so, across
+//! `exec`, the whole dataplane -- into a **control** namespace where FRR lives and where the taps
+//! that stand in for those NICs are created. The dataplane enters the datapath namespace on one
+//! thread and drives DPDK from there; every other thread stays on the control side.
+//!
+//! The host's namespace still has tenants (Kubernetes, the metrics endpoint), but nothing in the
+//! dataplane process is in it. Giving those their own runtime is a later split.
 //!
 //! # Why a descriptor and not `/run/netns/<name>`
 //!
@@ -51,7 +56,11 @@
 //! `setns` and `unshare` affect the calling thread alone, and threads inherit both namespaces from
 //! whichever thread created them. That is what makes the design work: one thread jumps, spawns the
 //! DPDK workers, and they land in the right place, while every other thread in the process carries
-//! on in the host's namespace serving the control plane.
+//! on in the control namespace serving the control plane.
+//!
+//! It is also what makes `TUNSETIFF` placement matter. A tap is created in the namespace of the
+//! thread which opens it and no later `setns` moves it, so the control-plane bridge has to build
+//! its taps before the datapath thread jumps.
 
 use std::fs::File;
 use std::io;
@@ -126,7 +135,9 @@ impl NetworkNamespace {
     /// down and re-probed from scratch, taking about **seven seconds** for two ports, with a link
     /// retrain, a **new ifindex**, and the netdev reappearing as `eth0` before udev renames it.
     /// Nothing may cache an ifindex across that, and anything holding the device's name -- a tap,
-    /// say -- will collide with udev's rename and leave the device misnamed.
+    /// say -- will collide with udev's rename and leave the device misnamed. That collision is the
+    /// reason the dataplane's taps live in a control namespace of their own rather than the host's:
+    /// there is nothing there for the returning device to collide with.
     ///
     /// # Errors
     ///
@@ -208,6 +219,15 @@ impl NetworkNamespace {
     /// inherited, and `/dev/infiniband/uverbs*` can be opened, which are the two things the mlx5
     /// PMD needs and which fail independently of each other.
     ///
+    /// It is also what a thread joining the **control** namespace wants, for an unrelated reason
+    /// with the same cause. `netdev` reads an interface's type from `/sys/class/net/<name>/type`
+    /// and reports `Unknown` when it cannot; the configuration builder rejects an interface whose
+    /// type it does not recognise. Under an inherited sysfs that path does not exist for any
+    /// interface in the joined namespace, so every config apply fails. Measured on a tap: `type`
+    /// reads `1` (`ARPHRD_ETHER`) under a fresh sysfs and is absent under an inherited one, while
+    /// netlink reports the interface correctly either way -- so nothing about the symptom points
+    /// at the mount.
+    ///
     /// The mount namespace is unshared first, and its tree made private, before anything is
     /// mounted. Both matter: unsharing keeps `/sys` unchanged for every other thread in this
     /// process, and making the tree private keeps the new mount from propagating back out through
@@ -259,5 +279,100 @@ pub fn current() -> String {
     match std::fs::read_link(NetworkNamespace::THREAD_NETNS) {
         Ok(path) => path.display().to_string(),
         Err(e) => format!("unknown ({e})"),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::NetworkNamespace;
+    use caps::Capability;
+    use fixin::wrap;
+    use std::collections::BTreeSet;
+    use test_utils::with_caps;
+
+    /// What `/sys/class/net` lists to the calling thread.
+    fn sysfs_interfaces() -> BTreeSet<String> {
+        std::fs::read_dir("/sys/class/net")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// `setns` alone leaves the thread reading the *old* namespace's sysfs.
+    ///
+    /// This is the trap the module documentation describes, pinned down as a test because both of
+    /// its failure modes are silent and neither points at the mount. It has now cost two separate
+    /// bugs: the DPDK datapath enumerating no RDMA devices, and -- later, and far less obviously --
+    /// every configured interface coming back as `InterfaceType::Unknown` in the control namespace,
+    /// because `netdev` reads an interface's type from `/sys/class/net/<name>/type`. Every config
+    /// apply then failed with "Unsupported type of interface", the routing table never learned the
+    /// interface, and the datapath dropped every frame arriving on it as `InterfaceUnknown`.
+    ///
+    /// Netlink is namespace-aware and gets it right either way, which is what makes this so hard to
+    /// see: the interface is *there*, with the right name, index and MAC. Only its type is missing.
+    ///
+    /// The namespaces are entered on scratch threads because `setns` and `unshare` are per-thread
+    /// and irreversible; doing either on the test thread would strand the rest of the run.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn setns_alone_leaves_the_old_namespaces_sysfs_behind() {
+        let netns = NetworkNamespace::create().expect("could not create a namespace");
+
+        let here = sysfs_interfaces();
+        assert!(
+            here.len() > 1,
+            "this test needs the starting namespace to have interfaces beyond `lo` for the \
+             comparison below to mean anything; it listed {here:?}"
+        );
+
+        // `enter` alone. The thread is in a namespace whose only interface is `lo`, but sysfs was
+        // mounted elsewhere and `setns` does not retag an existing mount.
+        let inherited = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    netns.enter().expect("could not enter");
+                    sysfs_interfaces()
+                })
+                .join()
+                .expect("scratch thread panicked")
+        });
+        assert_eq!(
+            inherited, here,
+            "sysfs unexpectedly reflected the joined namespace after `enter` alone. If this ever \
+             starts passing, the kernel's sysfs tagging has changed -- but until then, dropping \
+             `enter_with_sysfs` breaks both the datapath and the control plane."
+        );
+
+        // `enter_with_sysfs`. A fresh sysfs is tagged with this namespace, so it lists exactly what
+        // the namespace holds: a new namespace has only loopback.
+        let fresh = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    netns
+                        .enter_with_sysfs()
+                        .expect("could not enter with a fresh sysfs");
+                    let listed = sysfs_interfaces();
+                    // Readable, not merely listed: this is the file `netdev` needs, and 772 is
+                    // ARPHRD_LOOPBACK.
+                    let ty = std::fs::read_to_string("/sys/class/net/lo/type").ok();
+                    (listed, ty)
+                })
+                .join()
+                .expect("scratch thread panicked")
+        });
+        let (listed, lo_type) = fresh;
+        assert_eq!(
+            listed,
+            BTreeSet::from(["lo".to_string()]),
+            "a fresh sysfs must list exactly the joined namespace's interfaces"
+        );
+        assert_eq!(
+            lo_type.as_deref().map(str::trim),
+            Some("772"),
+            "with a fresh sysfs an interface's type must be readable; without it `netdev` reports \
+             `Unknown` and every config apply fails"
+        );
     }
 }

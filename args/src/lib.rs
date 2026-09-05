@@ -431,8 +431,12 @@ pub struct DpdkDriverConfigSection {
     /// Whether to isolate the packet path in its own network namespace.
     ///
     /// When set, `dataplane-init` creates a network namespace, moves the configured devices into
-    /// it, and hands it to the dataplane as a descriptor. The dataplane keeps its control plane in
-    /// the host's namespace and runs only the datapath thread in the isolated one.
+    /// it, and hands it to the dataplane as a descriptor. Only the datapath thread runs there.
+    ///
+    /// It also implies a **control** namespace: with the physical devices gone from where the
+    /// dataplane runs, the taps that stand in for them can take the configured interface names,
+    /// which is what makes FRR and the routing tables find them. `dataplane-init` enters that
+    /// namespace before `exec`, so the whole dataplane is in it. See `--control-netns`.
     ///
     /// This is meaningful for bifurcated drivers such as mlx5, where the device is still a kernel
     /// netdev and can therefore belong to a namespace. A device bound to `vfio-pci` has no
@@ -1368,6 +1372,15 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
 
     #[arg(
         long,
+        value_name = "path to a network namespace",
+        help = "Run the control plane in this network namespace instead of a fresh one. \
+                dataplane-init enters it before exec'ing the dataplane, so FRR started under the \
+                same namespace can reach the dataplane's taps. Requires --datapath-netns."
+    )]
+    control_netns: Option<String>,
+
+    #[arg(
+        long,
         value_name = "CPI Unix socket path",
         help = "Unix socket for FRR to send route update messages to the dataplane",
         default_value = DEFAULT_DP_UX_PATH
@@ -1658,6 +1671,27 @@ impl CmdArgs {
     #[must_use]
     pub fn config_dir(&self) -> Option<&String> {
         self.config_dir.as_ref()
+    }
+
+    /// The network namespace `dataplane-init` should put the control plane into, if one was named.
+    ///
+    /// Deliberately absent from [`LaunchConfiguration`]: the dataplane never acts on this. By the
+    /// time it runs, `dataplane-init` has already entered the namespace and `exec`'d, so the
+    /// dataplane's own namespace *is* the answer and there is nothing left for it to decide. Making
+    /// it part of the sealed configuration would invite a second, contradictory opinion.
+    #[must_use]
+    pub fn control_netns(&self) -> Option<&String> {
+        self.control_netns.as_ref()
+    }
+
+    /// Whether the packet path was asked for a network namespace of its own.
+    ///
+    /// `dataplane-init` needs this before the configuration is built, to decide whether a control
+    /// namespace is coherent: taps named after the configured interfaces can only exist somewhere
+    /// the real devices are not.
+    #[must_use]
+    pub fn datapath_netns(&self) -> bool {
+        self.datapath_netns
     }
 }
 
