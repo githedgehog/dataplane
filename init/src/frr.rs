@@ -319,8 +319,8 @@ const STALE_SUFFIXES: &[&str] = &[".pid", ".vty", ".sock", ".api", ".started"];
 ///
 /// The directory is a host path that outlives the pod, which is what makes this necessary; the
 /// `init-frr` container this replaces swept the same set. Only the top level, and only these
-/// suffixes: `hh/` below it holds the control-plane socket the dataplane has *already* bound by
-/// the time this runs, and taking that away would break the pair this exists to start.
+/// suffixes -- `hh/` below it is the dataplane's, and it binds its control-plane socket there
+/// moments after this runs.
 ///
 /// Failures are logged rather than returned. A file that cannot be removed is a reason to look,
 /// not a reason to refuse to start -- FRR will say so itself, and more usefully, when it tries.
@@ -625,7 +625,7 @@ mod test {
         }
         assert!(
             root.join("hh/dataplane.sock").exists(),
-            "the dataplane binds this before FRR starts; sweeping it breaks the pair"
+            "`hh/` is the dataplane's; it binds its control-plane socket there moments after this"
         );
         assert!(root.join("frr.log").exists(), "not ours to remove");
 

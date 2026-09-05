@@ -719,6 +719,27 @@ async fn run_gateway(
 
     let mut supervisor = Supervisor::new();
 
+    // Everything FRR needs decided *before* anything starts, because the dataplane is first out of
+    // the gate and it already depends on one of these answers.
+    //
+    // The state directory is the reason this is not merely tidy. `/run/frr` is a volume that
+    // outlives the pod and arrives empty on a fresh install, and the dataplane binds its
+    // control-plane socket *inside* it, at `<state>/hh`. Prepare it afterwards and the dataplane
+    // dies on startup with a bind failure -- which is what happened, and which only a lab built
+    // from scratch could show: a machine that has run the old two-container gateway already has
+    // the directory, left behind by the `init-frr` container this replaces.
+    //
+    // Reading the daemon list early is worth having for its own sake: an FRR install missing zebra
+    // should be a refusal to start, not a discovery made after the datapath is already up.
+    let daemons = if supervise_frr {
+        let (config_dir, daemon_dir) = frr::install();
+        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
+        frr::prepare_state_dir(&frr::state_dir())?;
+        Some(daemons)
+    } else {
+        None
+    };
+
     let dataplane = dataplane_process(config, netns.as_ref(), host_netns.as_ref())?;
     let dataplane = if supervise_frr {
         dataplane.ready_when_path_exists(control_plane_socket)
@@ -729,10 +750,7 @@ async fn run_gateway(
     };
     supervisor.start(dataplane).await?;
 
-    if supervise_frr {
-        let (config_dir, daemon_dir) = frr::install();
-        let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
-        frr::prepare_state_dir(&frr::state_dir())?;
+    if let Some(daemons) = daemons {
         supervisor.start(frr::watchfrr(&daemons)).await?;
         supervisor.start(frr::agent(&agent_socket)).await?;
     }
