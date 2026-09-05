@@ -29,6 +29,7 @@ strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
 tokio = { workspace = true, features = ["rt"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 

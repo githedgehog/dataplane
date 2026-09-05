@@ -9,10 +9,13 @@ use dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dpdk::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use dpdk::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use dpdk::socket;
+use net::eth::mac::Mac;
 use net::interface::InterfaceIndex;
-use tracing::{error, info};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 
 use super::DriverError;
+use super::cpbridge::{DatapathEnds, Frame};
 
 /// Receive descriptors per queue.
 ///
@@ -44,9 +47,19 @@ pub(crate) struct Port<'eal> {
     /// The kernel `ifindex` of this port's netdev, which is what the pipeline knows it by.
     pub(crate) if_index: InterfaceIndex,
     /// Human-readable name for logs and status.
+    ///
+    /// This is the *configured* interface name, which is also the name of the tap that stands in
+    /// for this port in the kernel. It is the key the control-plane bridge is addressed by.
     pub(crate) name: String,
-    /// Kept only so it is visible in diagnostics; the mempool itself belongs to the EAL.
-    #[allow(dead_code)]
+    /// The MAC the PMD reports for this port.
+    ///
+    /// The port's tap has to be given this, or the peer resolves the wrong address for it and the
+    /// frames it sends back come in as `MacNotForUs`.
+    pub(crate) mac: Mac,
+    /// The MTU the port settled on, which is not necessarily the one that was requested: it is
+    /// clamped into the device's advertised range at configuration time.
+    pub(crate) mtu: u16,
+    /// Where injected control-plane frames are allocated from, and where received frames live.
     pub(crate) rx_pool: Pool<'eal>,
 }
 
@@ -160,14 +173,34 @@ impl<'eal> Port<'eal> {
             .start()
             .map_err(|e| DriverError::PortSetup(format!("failed to start port {index}: {e}")))?;
 
+        // Both read after the port has started, because both are properties of the running device
+        // rather than of the configuration: the MTU was clamped into the device's range and the MAC
+        // came from the PMD. A port whose identity cannot be read is still usable for forwarding
+        // but cannot have a working control plane, which is worth failing over rather than
+        // discovering as an adjacency that never forms.
+        let mac = dev.mac_address().map_err(|e| {
+            DriverError::PortSetup(format!(
+                "port {index} ({name}) is up but would not report its MAC address: {e:?}. Its tap \
+                 could not then answer ARP for it."
+            ))
+        })?;
+        let mtu = dev.mtu().map_err(|e| {
+            DriverError::PortSetup(format!(
+                "port {index} ({name}) is up but would not report its MTU: {e:?}"
+            ))
+        })?;
+
         info!(
-            "DPDK port {index} ({name}) up: ifindex {if_index}, {num_workers} rx/tx queue pair(s)"
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s)"
         );
 
         Ok(Port {
             dev,
             if_index,
             name,
+            mac,
+            mtu,
             rx_pool,
         })
     }
@@ -192,8 +225,23 @@ pub(crate) struct PortQueues<'p> {
     /// Which interface frames off this queue arrived on.
     pub(crate) if_index: InterfaceIndex,
     pub(crate) name: String,
+    /// The MAC this port answers to, which is what decides whether a frame was addressed to us.
+    pub(crate) mac: Mac,
     pub(crate) rx: RxQueue<'p>,
     pub(crate) tx: TxQueue<'p>,
+    /// The pool injected control-plane frames are copied into.
+    ///
+    /// The port's receive pool, deliberately: a second pool per port would be memory reserved for
+    /// a handful of frames a second. The cost is that a burst of injection competes with receive
+    /// buffering, which at control-plane rates it will not do noticeably.
+    pub(crate) pool: Pool<'p>,
+    /// Where to hand a frame this port received which the kernel should see.
+    ///
+    /// `None` when there is no control-plane bridge, which is every configuration that did not ask
+    /// for one -- there is then nowhere to punt to and local delivery is dropped as it always was.
+    pub(crate) punt: Option<mpsc::Sender<Frame>>,
+    /// Frames the kernel wants this port to transmit, on the one worker that drains them.
+    pub(crate) inject: Option<mpsc::Receiver<Frame>>,
 }
 
 /// Deal every port's queues out to the workers: worker `i` gets queue `i` of each port.
@@ -209,12 +257,41 @@ pub(crate) struct PortQueues<'p> {
 pub(crate) fn deal_queues<'p>(
     ports: &'p [Port<'_>],
     num_workers: u16,
+    bridge: Option<&mut DatapathEnds>,
 ) -> Result<Vec<Vec<PortQueues<'p>>>, DriverError> {
     let mut per_worker: Vec<Vec<PortQueues<'p>>> = (0..num_workers)
         .map(|_| Vec::with_capacity(ports.len()))
         .collect();
 
+    let mut bridge = bridge;
+    // Whether there is a bridge at all, as distinct from whether it knows about a given port. No
+    // bridge is an ordinary configuration -- the kernel still has the netdevs and carries the
+    // control plane itself. A bridge that is missing *this* port is a mismatch worth a warning.
+    let bridged = bridge.is_some();
     for port in ports {
+        // The injection queue goes to exactly one worker; the punt sender is cloned to all of them,
+        // because any worker can receive a frame the kernel should see but only one may drain a
+        // queue without reordering the session it carries.
+        let (punt, mut inject) = if let Some(queues) =
+            bridge.as_deref_mut().and_then(|b| b.take(&port.name))
+        {
+            (Some(queues.punt), queues.inject)
+        } else {
+            if bridged {
+                warn!(
+                    "the control-plane bridge has no tap for port {}; frames the kernel should see \
+                     will be dropped and nothing can be injected",
+                    port.name
+                );
+            } else {
+                debug!(
+                    "no control-plane bridge, so port {} delivers nothing to the kernel",
+                    port.name
+                );
+            }
+            (None, None)
+        };
+
         let mut queues = port.dev.take_queues().ok_or_else(|| {
             DriverError::PortSetup(format!(
                 "queues for port {} were already taken; each device hands its set out once",
@@ -238,8 +315,13 @@ pub(crate) fn deal_queues<'p>(
             per_worker[worker as usize].push(PortQueues {
                 if_index: port.if_index,
                 name: port.name.clone(),
+                mac: port.mac,
                 rx,
                 tx,
+                pool: port.rx_pool,
+                punt: punt.clone(),
+                // `take` rather than `clone`: worker 0 gets it, everybody else gets `None`.
+                inject: inject.take(),
             });
         }
     }
