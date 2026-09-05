@@ -123,11 +123,11 @@
         "owner": "githedgehog",
         "repo": "netlink-packet-route"
       },
-      "branch": "pr/daniel-noland/swing6",
+      "branch": "hh/tc-blocks-and-gact",
       "submodules": false,
-      "revision": "9a257c60e25bc5db50a1cd14aa493d6ec294c23d",
-      "url": "https://github.com/githedgehog/netlink-packet-route/archive/9a257c60e25bc5db50a1cd14aa493d6ec294c23d.tar.gz",
-      "hash": "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=",
+      "revision": "8bfd4aa6337b9ae260316fc3bd808e74ca2c40fa",
+      "url": "https://github.com/githedgehog/netlink-packet-route/archive/8bfd4aa6337b9ae260316fc3bd808e74ca2c40fa.tar.gz",
+      "hash": "sha256-2+t79vfKhlxWQtutYl9WziTQSbVPu63tNbkCPCf2iPk=",
       "frozen": true
     },
     "crate-rtnetlink": {
@@ -137,11 +137,11 @@
         "owner": "githedgehog",
         "repo": "rtnetlink"
       },
-      "branch": "hh/tc-actions4",
+      "branch": "hh/tc-actions5",
       "submodules": false,
-      "revision": "c6b8d9865858c458e7f27fa67469f2171e1644a4",
-      "url": "https://github.com/githedgehog/rtnetlink/archive/c6b8d9865858c458e7f27fa67469f2171e1644a4.tar.gz",
-      "hash": "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=",
+      "revision": "93f43a949f83d771d6635acc80d83b24587555d9",
+      "url": "https://github.com/githedgehog/rtnetlink/archive/93f43a949f83d771d6635acc80d83b24587555d9.tar.gz",
+      "hash": "sha256-k3adHrxnMADLFkat7AZy/+DCObGmHe1UzO8//nJll5w=",
       "frozen": true
     },
     "dpdk": {
