@@ -843,16 +843,20 @@ let
     outputHashes = {
       "git+https://github.com/githedgehog/bolero.git?rev=2fa595633a72e9b30721f9d37f0014a6ae8f77d4#2fa595633a72e9b30721f9d37f0014a6ae8f77d4" =
         "sha256-ipue/XsDxOeO4lThRcIdpQsztC5AbAkgwUHDYWTH9qY=";
+      "git+https://github.com/githedgehog/devlink.git?branch=main#11bb53b4a60fe1fbc206b5f48e65ec8127a47216" =
+        "sha256-wa/dm8G2AvRp12pjUrQI8BowB55IPkZq4sNcg7NGqnk=";
       "git+https://github.com/githedgehog/dplane-rpc.git?branch=pr/daniel-noland/bumps#6c84b7aff35abb4e94fbb0d09870a0b4a2322913" =
         "sha256-YOCcWOynWN49KKY17KfP31QBK1ZM6x6Xl4/tdfNwgIs=";
       "git+https://github.com/githedgehog/fixin?branch=main#5e0de31606466b17372f8a2cff090cc0461d572c" =
         "sha256-GfBnaL6ke3ekm+HbV34yXdF4ArYHismxbPHF5/M94yk=";
       "git+https://github.com/githedgehog/left-right.git?branch=fredi/fix-writehandle-drop#765813aa25c8328746e93a7a5ccc75deb57b1d80" =
         "sha256-GVP11hLRmHip5+MH9U1bD4bANxDpdnkN9cvMo6RDFfY=";
-      "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr/daniel-noland/swing6#9a257c60e25bc5db50a1cd14aa493d6ec294c23d" =
-        "sha256-w5dK1IfqR1kJDa4ugbvEC4VIASwGlKU6oxEd9USUwMw=";
-      "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4" =
-        "sha256-u14ugCKWU4nwXkQdlleThJLYU4Ft/LJNTKywMUlwxPM=";
+      "git+https://github.com/githedgehog/netlink-packet-devlink.git?branch=main#4c920fa98461432a7386dc98463e846f8902ba1a" =
+        "sha256-7hFrrFUtoz0exuxgGgVuWiFMP+1Pi76eHOhd2Ga9AUI=";
+      "git+https://github.com/githedgehog/netlink-packet-route.git?branch=hh/tc-blocks-and-gact#8bfd4aa6337b9ae260316fc3bd808e74ca2c40fa" =
+        "sha256-2+t79vfKhlxWQtutYl9WziTQSbVPu63tNbkCPCf2iPk=";
+      "git+https://github.com/githedgehog/rtnetlink.git?branch=hh/tc-actions5#93f43a949f83d771d6635acc80d83b24587555d9" =
+        "sha256-k3adHrxnMADLFkat7AZy/+DCObGmHe1UzO8//nJll5w=";
     };
   };
   # Rename per-revision images so the CI push filter keeps them out of Cachix;
