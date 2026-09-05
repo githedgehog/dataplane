@@ -149,7 +149,7 @@ impl Create for Manager<Interface> {
                 LinkBridge::new(requirement.name.as_ref())
                     .set_info_data(InfoData::Bridge(vec![
                         InfoBridge::VlanFiltering(properties.vlan_filtering),
-                        InfoBridge::VlanProtocol(properties.vlan_protocol.as_u16()),
+                        InfoBridge::VlanProtocol(properties.vlan_protocol.as_u16().into()),
                     ]))
                     .build()
             }
@@ -340,7 +340,7 @@ impl Update for Manager<InterfaceProperties> {
                     .set_port(
                         LinkUnspec::new_with_index(observation.index.to_u32())
                             .set_info_data(InfoData::Bridge(vec![
-                                InfoBridge::VlanProtocol(req.vlan_protocol.as_u16()),
+                                InfoBridge::VlanProtocol(req.vlan_protocol.as_u16().into()),
                                 InfoBridge::VlanFiltering(req.vlan_filtering),
                             ]))
                             .build(),
@@ -695,7 +695,9 @@ fn extract_bridge_info(builder: &mut BridgePropertiesBuilder, datas: &[InfoBridg
                 builder.vlan_filtering(*f);
             }
             InfoBridge::VlanProtocol(p) => {
-                builder.vlan_protocol(EthType::from(*p));
+                // netlink-packet-route models this as an enum of the two protocols the kernel
+                // accepts, so it no longer round-trips an arbitrary ethertype.
+                builder.vlan_protocol(EthType::from(u16::from(*p)));
             }
             _ => {}
         }

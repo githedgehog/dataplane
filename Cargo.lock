@@ -2114,7 +2114,7 @@ dependencies = [
  "netlink-packet-core 0.8.2",
  "netlink-packet-devlink",
  "netlink-packet-generic",
- "netlink-proto",
+ "netlink-proto 0.12.2",
  "thiserror 2.0.20",
  "tokio",
 ]
@@ -2626,7 +2626,7 @@ dependencies = [
  "log",
  "netlink-packet-core 0.8.2",
  "netlink-packet-generic",
- "netlink-proto",
+ "netlink-proto 0.12.2",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -3916,7 +3916,7 @@ dependencies = [
  "libc",
  "mac-addr",
  "netlink-packet-core 0.9.0",
- "netlink-packet-route 0.33.0",
+ "netlink-packet-route 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "netlink-sys 0.9.0",
  "objc2-core-foundation",
  "objc2-system-configuration",
@@ -4015,18 +4015,6 @@ dependencies = [
 
 [[package]]
 name = "netlink-packet-route"
-version = "0.30.0"
-source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing6#9a257c60e25bc5db50a1cd14aa493d6ec294c23d"
-dependencies = [
- "bitflags 2.13.1",
- "byteorder",
- "libc",
- "log",
- "netlink-packet-core 0.8.2",
-]
-
-[[package]]
-name = "netlink-packet-route"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59d48ffc8b73a506e1ff0878528c72668f2bfbc3d875b6be890a96be5d0d5576"
@@ -4039,14 +4027,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "netlink-packet-utils"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3176f18d11a1ae46053e59ec89d46ba318ae1343615bd3f8c908bfc84edae35c"
+name = "netlink-packet-route"
+version = "0.33.0"
+source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=hh%2Ftc-blocks-and-gact#8bfd4aa6337b9ae260316fc3bd808e74ca2c40fa"
 dependencies = [
- "byteorder",
- "pastey",
- "thiserror 2.0.20",
+ "bitflags 2.13.1",
+ "libc",
+ "log",
+ "netlink-packet-core 0.9.0",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4061,6 +4050,21 @@ dependencies = [
  "log",
  "netlink-packet-core 0.8.2",
  "netlink-sys 0.8.8",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "netlink-proto"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97e03ae6247c6cdb499e8f14e98c72b83954d85822b687056e3a21150b438f2b"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "log",
+ "netlink-packet-core 0.9.0",
+ "netlink-sys 0.9.0",
  "thiserror 2.0.20",
 ]
 
@@ -4084,8 +4088,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c99d38e00b420df49e940fe0826e667c3dad82ac68eb4c2bbf754c1c14a83a10"
 dependencies = [
  "bytes",
+ "futures-util",
  "libc",
  "log",
+ "tokio",
 ]
 
 [[package]]
@@ -4334,12 +4340,6 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
-
-[[package]]
-name = "pastey"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "pci-ids"
@@ -5137,17 +5137,16 @@ checksum = "18bd8a37d17a58532776dcdf6041ce64929adca78e8489d5cacbafe99229d3e1"
 
 [[package]]
 name = "rtnetlink"
-version = "0.21.0"
-source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions4#c6b8d9865858c458e7f27fa67469f2171e1644a4"
+version = "0.23.0"
+source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions5#93f43a949f83d771d6635acc80d83b24587555d9"
 dependencies = [
  "futures-channel",
  "futures-util",
  "log",
- "netlink-packet-core 0.8.2",
- "netlink-packet-route 0.30.0",
- "netlink-packet-utils",
- "netlink-proto",
- "netlink-sys 0.8.8",
+ "netlink-packet-core 0.9.0",
+ "netlink-packet-route 0.33.0 (git+https://github.com/githedgehog/netlink-packet-route.git?branch=hh%2Ftc-blocks-and-gact)",
+ "netlink-proto 0.13.0",
+ "netlink-sys 0.9.0",
  "nix 0.31.3",
  "thiserror 2.0.20",
  "tokio",

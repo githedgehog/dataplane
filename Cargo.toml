@@ -217,7 +217,7 @@ roaring = { version = "0.11.5", default-features = false, features = [] }
 # this crate takes the target as a descriptor (`Netns::Fd`), which is what lets
 # the namespace stay nameless.
 devlink = { path = "/home/dnoland/code/githedgehog/rust-netlink/devlink", default-features = false, features = ["tokio_socket"] }
-rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions4", default-features = false, features = [] }
+rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions5", default-features = false, features = [] }
 rustls = { version = "0.23.43", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.229", default-features = false, features = [] }
