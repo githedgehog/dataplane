@@ -555,7 +555,13 @@ build-container target="dataplane" *args: _refuse-instrumented-artifact (build (
             # here. A controller owns the dataplane's argv in a fabric, so an environment
             # variable baked in at import is the only way to reach an option like the pyroscope
             # endpoint.
-            declare -a import_changes=(--change 'ENTRYPOINT ["/bin/dataplane"]')
+            # `dataplane-init`, not `dataplane`. The image carries FRR and the whole gateway
+            # now, and init is what starts it: it prepares the hardware, places the namespaces,
+            # and supervises the dataplane, watchfrr and frr-agent together. It also takes the
+            # dataplane's own arguments and execs it when there is nothing else to do, so an
+            # orchestrator that still names the dataplane's argv and no command gets what it
+            # asked for.
+            declare -a import_changes=(--change 'ENTRYPOINT ["/bin/dataplane-init"]')
             if [ -n "{{ pyroscope_url }}" ]; then
                 import_changes+=(--change 'ENV DATAPLANE_PYROSCOPE_URL={{ pyroscope_url }}')
             fi
