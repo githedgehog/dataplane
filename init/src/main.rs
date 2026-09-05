@@ -415,6 +415,45 @@ fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String>
     Ok(netns)
 }
 
+/// Decide where the control plane runs, and put this process there.
+///
+/// Returns the namespace this process was in beforehand when it moved, and `None` when it stayed.
+/// `None` is not a failure: it says the control plane is already where it belongs, so nothing needs
+/// a way back and the dataplane needs no second runtime.
+///
+/// # The rule
+///
+/// **A private control namespace is only correct when FRR is ours to place.** FRR has to see the
+/// taps -- it is configured by looking each interface up in the kernel, and it peers through them
+/// -- so it must share this namespace. When `--supervise-frr` says we start it, that is
+/// automatic, because it inherits ours. When FRR is a container of its own, it is somewhere we do
+/// not control, and moving out of that namespace would leave it looking at an empty one: config
+/// applies fail with "Unable to find kernel interface", and no session ever comes up.
+///
+/// `--control-netns` overrides both: it names a namespace an operator arranged for the two to
+/// share, and taking it at face value is the point of having the flag.
+///
+/// # Why staying put is still worth having a datapath namespace for
+///
+/// The two namespaces answer different questions. The datapath's takes the interfaces away from
+/// the host stack, which is what stops the kernel routing and answering ARP behind the dataplane's
+/// back. The control plane's separates FRR from everything else in the host, which only matters
+/// once FRR is ours. The first is useful on its own; the taps take the names the real interfaces
+/// just vacated.
+fn place_control_plane(
+    path: Option<&String>,
+    supervise_frr: bool,
+) -> Result<Option<NetworkNamespace>, String> {
+    if path.is_none() && !supervise_frr {
+        info!(
+            "the control plane stays in the namespace this process started in: FRR is not ours to \
+             start, so it is somewhere we cannot follow, and it has to see the taps"
+        );
+        return Ok(None);
+    }
+    enter_control_netns(path).map(Some)
+}
+
 /// Put this process into the network namespace the control plane will run in.
 ///
 /// # Why the control plane needs one at all
@@ -810,12 +849,12 @@ fn main() {
                 // instances above are not, and there is no going back. It hands back the namespace
                 // we are leaving, which is the dataplane's way out to Kubernetes, its metrics
                 // scraper and Pyroscope.
-                let host_netns = match enter_control_netns(control_netns.as_ref()) {
+                let host_netns = match place_control_plane(control_netns.as_ref(), supervise_frr) {
                     Ok(host_netns) => host_netns,
                     Err(e) => fail("failed to enter the control network namespace", &e),
                 };
 
-                (Some(netns), Some(host_netns))
+                (Some(netns), host_netns)
             } else {
                 // Without a datapath namespace the physical devices are still here, so there is
                 // nowhere for the taps to go that is not on top of them. The dataplane runs where
@@ -846,12 +885,12 @@ fn main() {
                     Err(e) => fail("failed to isolate the network interfaces", &e),
                 };
 
-                let host_netns = match enter_control_netns(control_netns.as_ref()) {
+                let host_netns = match place_control_plane(control_netns.as_ref(), supervise_frr) {
                     Ok(host_netns) => host_netns,
                     Err(e) => fail("failed to enter the control network namespace", &e),
                 };
 
-                (Some(netns), Some(host_netns))
+                (Some(netns), host_netns)
             } else {
                 // The interfaces stay where they are, and so does the control plane. The taps the
                 // bridge would create are named after those interfaces, so there is nowhere to put
