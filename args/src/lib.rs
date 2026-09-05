@@ -1422,7 +1422,7 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         long,
         value_name = "path to a network namespace",
         help = "Run the control plane in this network namespace instead of a fresh one. \
-                dataplane-init enters it before exec'ing the dataplane, so FRR started under the \
+                dataplane-init enters it before starting the dataplane, so FRR started under the \
                 same namespace can reach the dataplane's taps."
     )]
     control_netns: Option<String>,

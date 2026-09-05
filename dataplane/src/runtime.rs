@@ -516,7 +516,7 @@ fn run_datapath(
             status_writer,
             bridge,
         ),
-        None => run_kernel_driver(config, workers, ingredients, status_writer),
+        None => run_kernel_driver(config, workers, ingredients, status_writer, bridge),
     }
 }
 
@@ -526,6 +526,7 @@ fn run_kernel_driver(
     workers: &lifecycle::Subsystem,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
+    bridge: Option<DatapathEnds>,
 ) {
     concurrency::thread::scope(|scope| {
         info!("Using driver kernel...");
@@ -540,6 +541,7 @@ fn run_kernel_driver(
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
+            bridge,
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the kernel driver could not be started");
@@ -780,8 +782,10 @@ pub fn main() {
     // circumstance in which the taps have names free to take. The taps are named after the
     // configured interfaces, so they can only exist somewhere the physical devices are not.
     //
-    // The kernel driver's datapath shares this namespace: its interfaces *are* the real ones, and
-    // the kernel carries the control plane itself.
+    // The namespace alone decides, not the driver. Either driver whose interfaces were moved
+    // needs the bridge, because the control plane's namespace then contains no real interface;
+    // a datapath sharing this namespace must not have one, because the taps would be created on
+    // top of the very devices they are named after.
     let want_bridge = match datapath_netns.is_current() {
         Ok(shared) => !shared,
         Err(e) => {

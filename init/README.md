@@ -13,11 +13,11 @@ The primary steps of this program are to:
 The dataplane refuses to start without this handoff, so this program is the container's entrypoint and takes the
 dataplane's command line unchanged.
 
-With the DPDK driver, the datapath namespace is new and owned only by descriptors.
-Bifurcated devices (mlx5) are moved into it; when the gateway stops the kernel destroys the namespace and returns
-them to the host.
-With the kernel driver, the datapath shares this program's namespace, because routing still depends on the host stack
-seeing its interfaces.
+The datapath namespace is new and owned only by descriptors.
+With the DPDK driver, bifurcated devices (mlx5) are moved into it; with the kernel driver, the configured interfaces
+are.
+When the gateway stops the kernel destroys the namespace and returns physical devices to the host.
+Virtual interfaces (veth, VLAN and the like) are destroyed with the namespace rather than returned.
 
 For most network cards, this configuration step involves unbinding the NIC from the kernel driver and re-binding it to
 the [vfio-pci] driver.
@@ -34,20 +34,20 @@ Only a very limited set of network cards are currently supported, although this 
 
 ## Network namespaces
 
-With `--driver dpdk`, this program leaves the dataplane spanning **two** network namespaces, and
-neither of them is the host's:
+This program leaves the dataplane spanning **two** network namespaces, and neither of them is the host's:
 
 ```text
 init  (host ns)   prepare NICs -> create datapath ns -> devlink reload NICs into it
                   -> open/create control ns -> lo up -> setns(control) -> start and supervise
 dataplane         main + mgmt runtime            : control ns  (taps, rtnetlink, FRR IPC, BMP)
-                  dpdk-datapath thread           : datapath ns (setns + fresh sysfs)
+                  datapath thread                : datapath ns (setns + fresh sysfs)
 FRR               control ns
 ```
 
 The order is not a preference. The devices are moved with a **devlink reload**, and a PCI device's devlink instance
 belongs to the namespace the device is in, which at that point is the host's; entering the control namespace first
-would put this process somewhere those instances are not. Conversely a child inherits the namespaces of the thread
+would put this process somewhere those instances are not. (Kernel-driver interfaces are moved with netlink instead,
+which has no such constraint.) Conversely a child inherits the namespaces of the thread
 that forked it, so `setns` on the main thread has to happen before anything is started, which puts it last.
 
 ### Why the control plane needs a namespace at all
@@ -81,9 +81,7 @@ $ dataplane-init --driver dpdk --interface dp0=pci@0000:03:00.0 \
       --control-netns /run/netns/gwctl --config-dir /dpconf
 ```
 
-It requires the DPDK driver, and is rejected with the kernel driver: taps named after the configured interfaces can
-only exist somewhere the physical devices are not. The kernel driver never gets a control namespace at all — its
-`AF_PACKET` sockets are opened on the real interfaces.
+Both drivers use it the same way: their interfaces are in the datapath namespace, so the names are free for the taps.
 
 ## Supervision
 

@@ -10,7 +10,6 @@
 //! because the pipeline identifies interfaces by ifindex. Forwarding runs in software.
 //! Control-plane frames cross per-port TAP interfaces through [`cpbridge`].
 
-pub(crate) mod cpbridge;
 mod port;
 mod worker;
 
@@ -30,7 +29,7 @@ use super::DriverError;
 use super::status::DriverStatusWriter;
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
-pub(crate) use cpbridge::{CpBridge, DatapathEnds, PortIdentity};
+pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 pub(crate) use port::Port;
 use worker::{Worker, WorkerPort};
 

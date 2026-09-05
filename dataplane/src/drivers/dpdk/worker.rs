@@ -19,8 +19,8 @@ use tracing::{debug, error, trace, warn};
 use crate::drivers::status::WorkerId;
 use crate::drivers::watchdog::{RxCounters, Watchdog};
 
-use super::cpbridge::{Disposition, addressed_to, disposition};
 use super::port::PortQueues;
+use crate::drivers::cpbridge::{Disposition, addressed_to, disposition};
 
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests;
@@ -251,7 +251,7 @@ impl<'p> Worker<'p> {
     fn punt(
         id: WorkerId,
         port: &str,
-        punt: Option<&tokio::sync::mpsc::Sender<super::cpbridge::Frame>>,
+        punt: Option<&tokio::sync::mpsc::Sender<crate::drivers::cpbridge::Frame>>,
         packet: Packet<Mbuf<'p>>,
         counters: &mut RxCounters,
     ) {
@@ -309,7 +309,7 @@ impl<'p> Worker<'p> {
         // the receiver's borrow has to end before the allocation begins. Bounded by
         // `INJECT_PER_POLL`, which is also the batch's capacity, so the `try_push` below cannot
         // overflow.
-        let mut frames: Vec<super::cpbridge::Frame> = Vec::new();
+        let mut frames: Vec<crate::drivers::cpbridge::Frame> = Vec::new();
         for _ in 0..INJECT_PER_POLL {
             let Ok(frame) = inject.try_recv() else {
                 break;

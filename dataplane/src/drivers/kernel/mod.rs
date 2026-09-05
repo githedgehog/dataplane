@@ -27,6 +27,7 @@ use tracectl::trace_target;
 use tracing::{debug, error, info, trace, warn};
 
 use super::DriverError;
+use super::cpbridge::{DatapathEnds, PortIdentity};
 use super::status::DriverStatusWriter;
 use super::supervisor::{WorkerMonitor, spawn_supervisor};
 use kif::{Kif, bring_kifs_up};
@@ -51,12 +52,49 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         interfaces: &[Kif],
+        mut cp_ends: Option<&mut DatapathEnds>,
     ) -> Result<Vec<WorkerMonitor<'scope, std::io::Error>>, std::io::Error> {
+        use crate::drivers::kernel::worker::BridgedPort;
         let mut monitors = Vec::with_capacity(num_workers);
 
         info!("Spawning {num_workers} workers");
 
+        // Split once, before any worker exists. The punt sender is cloned to every worker,
+        // because any of them may receive a frame the kernel should see; the injection receiver
+        // goes to exactly one, because two draining the same queue would interleave a peering
+        // session's frames and reorder them. The tap's index goes to all of them -- it is what
+        // every worker must stamp on a received packet, not just the one that injects.
+        let mut bridge: Vec<BridgedPort> = Vec::new();
+        if let Some(ends) = cp_ends.as_mut() {
+            for kif in interfaces {
+                if let Some(queues) = ends.take(&kif.name) {
+                    bridge.push(BridgedPort {
+                        name: kif.name.clone(),
+                        index: queues.index,
+                        punt: queues.punt,
+                        inject: queues.inject,
+                    });
+                }
+            }
+        }
+
         for workerid in 0..num_workers {
+            // Every worker sees every port, with the injection queue moved out for all but the
+            // first.
+            let worker_bridge: Vec<BridgedPort> = bridge
+                .iter_mut()
+                .map(|port| BridgedPort {
+                    name: port.name.clone(),
+                    index: port.index,
+                    punt: port.punt.clone(),
+                    inject: if workerid == 0 {
+                        port.inject.take()
+                    } else {
+                        None
+                    },
+                })
+                .collect();
+
             // create worker
             let worker = Worker::new(
                 workerid,
@@ -66,7 +104,7 @@ impl DriverKernel {
             );
             // start worker. We get a `WorkerMonitor` on success, which includes
             // an interface monitor for each of its rx tasks
-            let wk_monitor = worker.start(scope, interfaces)?;
+            let wk_monitor = worker.start(scope, interfaces, worker_bridge)?;
 
             // store monitor
             monitors.push(wk_monitor);
@@ -86,6 +124,7 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         status_writer: DriverStatusWriter,
+        mut cp_ends: Option<DatapathEnds>,
     ) -> Result<(), DriverError> {
         // A current_thread runtime built inside another tokio runtime
         // panics; catch nesting in debug.
@@ -94,6 +133,8 @@ impl DriverKernel {
             "DriverKernel::start must not be invoked from within a tokio runtime context"
         );
 
+        // This thread is already in the datapath namespace, with a sysfs that reflects it, so
+        // discovery and link setup see the interfaces wherever init put them.
         info!("Collecting interfaces from config");
         let interfaces = kif::get_interfaces(args)?;
 
@@ -102,13 +143,40 @@ impl DriverKernel {
             .build()?
             .block_on(bring_kifs_up(interfaces.as_slice()))?;
 
+        // Tell the control plane what each interface turned out to be, so its tap can wear the
+        // same MAC and MTU. Without the MAC, ARP for this interface resolves to the tap's random
+        // address and the peer's frames arrive with a destination this interface will not accept.
+        if let Some(ends) = &cp_ends {
+            for kif in &interfaces {
+                if let Some(mac) = kif.mac {
+                    ends.report(PortIdentity {
+                        name: kif.name.clone(),
+                        mac,
+                        mtu: u16::try_from(kif.mtu.unwrap_or(0)).unwrap_or(u16::MAX),
+                    });
+                } else {
+                    warn!(
+                        "the kernel reports no MAC for {}, so its tap keeps the one it was given \
+                         and ARP for this interface will not resolve",
+                        kif.name
+                    );
+                }
+            }
+        }
+
         let worker_monitors = Self::spawn_workers_scoped(
             scope,
             workers_subsystem,
             num_workers,
             setup_pipeline,
             interfaces.as_slice(),
+            cp_ends.as_mut(),
         )?;
+
+        // After the workers have claimed theirs, so this names only the taps nothing took.
+        if let Some(ends) = &cp_ends {
+            ends.report_unclaimed();
+        }
         debug_assert_eq!(worker_monitors.len(), num_workers);
 
         spawn_supervisor(
