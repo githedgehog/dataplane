@@ -256,10 +256,24 @@ in
     # Measured: this package's closure went from 272.6 MB over 22 paths to
     # 118.4 MB over 14, and the shipped `containers.frr.dataplane` image
     # tarball from 116.8 MiB to 62.7 MiB.
-    libatomic = final.runCommand "libatomic-${prev.libgccjit.version}" { } ''
-      mkdir -p "$out/lib"
-      cp -a ${final.fancy.libgccjit}/lib/libatomic.so* "$out/lib/"
-    '';
+    #
+    # Cross-compiling for glibc, the gcc behind the cross stdenv already carries a target libatomic
+    # in its runtime libs, built (and cached) as part of the toolchain.  Taking it from libgccjit
+    # instead would mean building gcc for the target from source, which buys nothing and does not
+    # currently succeed.
+    libatomic =
+      let
+        cross = final.stdenv.hostPlatform.config != final.stdenv.buildPlatform.config;
+        from =
+          if cross then
+            "${final.stdenv.cc.cc.lib}/${final.stdenv.hostPlatform.config}/lib"
+          else
+            "${final.fancy.libgccjit}/lib";
+      in
+      final.runCommand "libatomic-${prev.libgccjit.version}" { } ''
+        mkdir -p "$out/lib"
+        cp -a ${from}/libatomic.so* "$out/lib/"
+      '';
     libgccjit =
       (prev.libgccjit.override {
         # TODO: debug issue preventing clang build
