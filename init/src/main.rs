@@ -502,9 +502,24 @@ fn dataplane_process(
     let mut command = std::process::Command::new(DATAPLANE_BINARY);
     command
         .fd_mappings(mappings)
-        .map_err(HandoffError::PlaceDescriptors)?
-        .env_clear()
-        .env("RUST_BACKTRACE", "full");
+        .map_err(HandoffError::PlaceDescriptors)?;
+
+    // The environment is inherited, not cleared. Sealing the *configuration* into a memfd is what
+    // stops the dataplane being reconfigured behind our back; it says nothing about the ambient
+    // environment, and the dataplane needs that environment to do its job.
+    //
+    // Clearing it broke three things at once, all silently. `KUBERNETES_SERVICE_HOST` and
+    // `KUBERNETES_SERVICE_PORT` are how an in-cluster client finds the API server, so the k8s
+    // client failed to infer any configuration at all and the gateway never reported its status.
+    // `HOME` is how it finds a kubeconfig to fall back on, so the error named `/var/empty/.kube/
+    // config`, a path belonging to nobody. And `DATAPLANE_PYROSCOPE_URL` exists precisely because
+    // a controller owns argv here -- a flag with no environment fallback is a flag nobody can set
+    // -- so clearing the environment took away the only way to turn profiling on.
+    //
+    // Set only if the launcher did not, so an operator who chose a backtrace level keeps it.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        command.env("RUST_BACKTRACE", "full");
+    }
 
     Ok(Process::new("dataplane", command))
 }
