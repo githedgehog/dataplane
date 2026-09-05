@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use super::DriverError;
-use super::cpbridge::{DatapathEnds, Frame};
+use crate::drivers::cpbridge::{DatapathEnds, Frame};
 
 /// Receive descriptors per queue.
 ///
@@ -271,10 +271,13 @@ pub(crate) fn deal_queues<'p>(
         // The injection queue goes to exactly one worker; the punt sender is cloned to all of them,
         // because any worker can receive a frame the kernel should see but only one may drain a
         // queue without reordering the session it carries.
-        let (punt, mut inject) = if let Some(queues) =
+        let (if_index, punt, mut inject) = if let Some(queues) =
             bridge.as_deref_mut().and_then(|b| b.take(&port.name))
         {
-            (Some(queues.punt), queues.inject)
+            // The tap's index, not the port's. Interface indices are per-namespace and these two
+            // live in different ones; everything above the driver was built from the control
+            // plane's view, so it speaks in tap indices. See `cpbridge::PortCpQueues::index`.
+            (queues.index, Some(queues.punt), queues.inject)
         } else {
             if bridged {
                 warn!(
@@ -288,7 +291,9 @@ pub(crate) fn deal_queues<'p>(
                     port.name
                 );
             }
-            (None, None)
+            // No bridge, so nothing moved and the port's own index is the one the control plane
+            // saw too.
+            (port.if_index, None, None)
         };
 
         let mut queues = port.dev.take_queues().ok_or_else(|| {
@@ -312,7 +317,7 @@ pub(crate) fn deal_queues<'p>(
                 ))
             })?;
             per_worker[worker as usize].push(PortQueues {
-                if_index: port.if_index,
+                if_index,
                 name: port.name.clone(),
                 mac: port.mac,
                 rx,
