@@ -430,6 +430,26 @@ package = "dataplane-nat"
 miri = true
 wasm = false # split
 
+[workspace.metadata.package.n-it]
+package = "dataplane-n-it"
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.n-preinit]
+package = "dataplane-n-preinit"
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.n-vm]
+package = "dataplane-n-vm"
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.n-vm-macros]
+package = "dataplane-n-vm-macros"
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.n-vm-protocol]
+package = "dataplane-n-vm-protocol"
+wasm = false # hopeless + pointless
+
 [workspace.metadata.package.pipeline]
 package = "dataplane-pipeline"
 miri = true
