@@ -7,7 +7,7 @@ The primary steps of this program are to:
 1. Drive the NIC into the configuration needed by DPDK to use the NIC
 2. Put the packet path and the control plane into network namespaces of their own
 3. (TODO) Drop some hazardous privileges (especially [`CAP_SYS_ADMIN`])
-4. `exec` the dataplane process on success
+4. Start the processes a gateway is made of, and supervise them until one stops
 
 For most network cards, this configuration step involves unbinding the NIC from the kernel driver and re-binding it to
 the [vfio-pci] driver.
@@ -29,7 +29,7 @@ neither of them is the host's:
 
 ```text
 init  (host ns)   prepare NICs -> create datapath ns -> devlink reload NICs into it
-                  -> open/create control ns -> lo up -> setns(control) -> exec dataplane
+                  -> open/create control ns -> lo up -> setns(control) -> start and supervise
 dataplane         main + mgmt runtime            : control ns  (taps, rtnetlink, FRR IPC, BMP)
                   dpdk-datapath thread           : datapath ns (setns + fresh sysfs)
 FRR               control ns
@@ -37,8 +37,8 @@ FRR               control ns
 
 The order is not a preference. The devices are moved with a **devlink reload**, and a PCI device's devlink instance
 belongs to the namespace the device is in, which at that point is the host's; entering the control namespace first
-would put this process somewhere those instances are not. Conversely `setns` on the main thread is what `exec`
-carries over, so it has to be last.
+would put this process somewhere those instances are not. Conversely a child inherits the namespaces of the thread
+that forked it, so `setns` on the main thread has to happen before anything is started, which puts it last.
 
 ### Why the control plane needs a namespace at all
 
@@ -53,12 +53,12 @@ collide: a leftover tap on `dp0` makes udev's rename of the returning physical d
 device under a name nothing is looking for. A private namespace removes the collision, because the physical device
 is never in it.
 
-`lo` is brought up in the new namespace before `exec`. FRR binds its vty to `127.0.0.1` and the dataplane's
-`frr-agent` connects to it there; a fresh namespace's loopback is down, and the resulting failure looks like an agent
-that will not connect rather than an interface that is down.
+`lo` is brought up in the new namespace before anything is started. FRR binds its vty to `127.0.0.1` and the
+dataplane's `frr-agent` connects to it there; a fresh namespace's loopback is down, and the resulting failure looks
+like an agent that will not connect rather than an interface that is down.
 
-Nothing holds the control namespace open by descriptor. A namespace with a process in it does not go away, and after
-`exec` the dataplane is that process.
+Nothing holds the control namespace open by descriptor. A namespace with a process in it does not go away, and this
+process is in it.
 
 ### `--control-netns`
 
@@ -74,6 +74,39 @@ $ dataplane-init --driver dpdk --interface dp0=pci@0000:03:00.0 \
 It requires `--datapath-netns`, and is rejected without it: taps named after the configured interfaces can only exist
 somewhere the physical devices are not. The kernel driver never gets a control namespace at all — its `AF_PACKET`
 sockets are opened on the real interfaces.
+
+## Supervision
+
+A gateway is not one program. The dataplane forwards packets, FRR decides where they should go, and `frr-agent`
+carries configuration between them. This process starts them and stays as their parent, which is what `exec`ing the
+dataplane made impossible: namespaces are inherited at `fork`, so once this process had been replaced there was
+nobody left to fork a second one from.
+
+Every supervised process is **fatal**. When one exits, for any reason and with any status, the rest are brought down
+and this process exits with a status derived from whichever went first. Nothing is restarted in place. That is a
+stronger coupling than three containers, and it is deliberate: a dataplane forwarding on a FIB whose author has died
+is its own kind of wrong, and the orchestrator above knows better than we do whether restarting beats continuing.
+
+### `--supervise-frr`
+
+Off by default, because FRR still ships as a container of its own. Given it, this program also starts:
+
+```text
+watchfrr <daemons from /etc/frr/daemons>    # which starts zebra, bgpd, ...
+frr-agent --sock-path <--frr-agent-path>
+```
+
+which is what `/libexec/frr/docker-start` used to do. Two things that script did are gone. The `wait -n` is replaced
+by the shared fate above. The sweep of stale zebra nexthops is unnecessary, because it was cleanup after a *previous*
+container in a namespace that outlived it — and the control namespace is now created per start.
+
+Startup is ordered rather than raced: the dataplane is waited for until its control-plane socket exists, because
+zebra's `hh_dplane` module connects to it as it loads and a zebra that starts first finds nothing there. `frr-agent`
+is started last and waited for at its own socket.
+
+`watchfrr` rather than the daemons individually, which was tried and does not reproduce FRR faithfully — enough of
+the startup lives in `watchfrr.sh` and `frrcommon.sh` (per-daemon options, config file creation, the `vtysh -b` pass)
+that launching the binaries by hand produced an FRR which never applied the interface address it was given.
 
 ### What this costs, for now
 
