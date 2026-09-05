@@ -139,13 +139,21 @@ jobs:
           labels: "test/all-profiles"
           # The build matrix has no fuzz container targets.
           on-value: '["debug", "release"]'
-          # Pull-request lab labels require both debug and release images.
+          # Anything that runs a lab needs the release image, because the lab jobs pin
+          # `<version>-release`. Two ways in: a pull request carrying a lab label, or a manual
+          # dispatch that did not opt out of vlab. The dispatch case was missing, and it fails
+          # late and confusingly -- the vlab job starts, and hhfab fails mirroring an image tag
+          # nothing ever built.
           off-value: >-
             ${{
-              github.event_name == 'pull_request'
-              && (
-                contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
-                || contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+              (
+                github.event_name == 'pull_request'
+                && (
+                  contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
+                  || contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+                )
+                || github.event_name == 'workflow_dispatch'
+                && (inputs.skip_vlab_tests != true || inputs.run_hlab_tests == true)
               )
               && '["debug", "release"]'
               || '["debug"]'
