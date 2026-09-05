@@ -937,7 +937,7 @@ impl DevInfo<'_> {
 ///
 /// This is the term-level mirror of the [`DevState`] typestate. It exists because [`Drop`] cannot
 /// be specialized per typestate: the guard that actually stops and closes the port
-/// ([`PortLifecycle`]) is not generic, so it records the stage it is responsible for.
+/// (`PortLifecycle`) is not generic, so it records the stage it is responsible for.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Stage {
     /// Configured, not running. Queues may be (re)configured.
@@ -955,7 +955,7 @@ pub enum Stage {
 /// configuring a queue on a running device -- or receiving on a stopped one -- is a compile error
 /// rather than a runtime check.
 pub trait DevState: dev_state::Sealed {
-    /// The [`Stage`] this typestate denotes, recorded in [`PortLifecycle`] on every transition so
+    /// The [`Stage`] this typestate denotes, recorded in `PortLifecycle` on every transition so
     /// that the non-generic `Drop` knows what teardown the port still owes.
     const STAGE: Stage;
 }
