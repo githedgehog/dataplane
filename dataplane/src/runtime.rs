@@ -962,3 +962,89 @@ pub fn main() {
     info!("Dataplane shutdown completed");
     std::process::exit(exit_code);
 }
+
+#[cfg(test)]
+mod test {
+    use super::host_runtime;
+    use caps::Capability;
+    use fixin::wrap;
+    use hardware::netns::NetworkNamespace;
+    use test_utils::with_caps;
+
+    /// The namespace the calling thread is in, in the `net:[...]` form `readlink` gives.
+    fn here() -> String {
+        hardware::netns::current()
+    }
+
+    /// The whole point of the split: a task on this runtime must run somewhere other than the
+    /// thread that built it.
+    ///
+    /// Written as an inequality *and* an equality. Asserting only that the runtime is in the
+    /// target namespace would also pass if `setns` had silently done nothing and both were the
+    /// same namespace to begin with, which is exactly the failure this is guarding.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_SYS_ADMIN]))]
+    fn tasks_run_in_the_namespace_the_runtime_was_given() {
+        let elsewhere = NetworkNamespace::create().expect("should be able to make a namespace");
+        let expected = std::fs::read_link(format!(
+            "/proc/self/fd/{}",
+            std::os::fd::AsRawFd::as_raw_fd(&elsewhere.as_raw())
+        ))
+        .expect("the namespace descriptor should be readable")
+        .display()
+        .to_string();
+
+        let caller = here();
+        assert_ne!(
+            caller, expected,
+            "a freshly created namespace should not be the one this thread is already in; \
+             without that the rest of this test proves nothing"
+        );
+
+        let runtime = host_runtime(&elsewhere).expect("the host runtime should build and verify");
+
+        let observed = runtime.block_on(runtime.spawn(async { here() })).unwrap();
+        assert_eq!(
+            observed, expected,
+            "a spawned task ran in {observed}, not the namespace the runtime was given"
+        );
+        assert_ne!(
+            observed, caller,
+            "the task ran in the caller's namespace, so setns did nothing"
+        );
+    }
+
+    /// `spawn_blocking` threads come from a different pool than the workers, and the Pyroscope
+    /// agent is built on one of them. If `on_thread_start` did not cover that pool the agent would
+    /// be created in the wrong namespace while every worker looked correct.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_SYS_ADMIN]))]
+    fn blocking_threads_are_in_the_namespace_too() {
+        let elsewhere = NetworkNamespace::create().expect("should be able to make a namespace");
+        let caller = here();
+        let runtime = host_runtime(&elsewhere).expect("the host runtime should build and verify");
+
+        let observed = runtime
+            .block_on(runtime.spawn_blocking(here))
+            .expect("the blocking task should run");
+        assert_ne!(
+            observed, caller,
+            "a spawn_blocking thread stayed in the caller's namespace, so anything built on one \
+             -- the Pyroscope agent above, for instance -- would push from the wrong place"
+        );
+    }
+
+    /// A dataplane whose namespace work silently failed is worse than one that refuses to start,
+    /// because the symptoms are timeouts rather than an error. Handing `host_runtime` the
+    /// namespace the caller is *already* in is the closest thing to "setns did nothing" that can
+    /// be arranged on purpose, and it must still be reported as agreement rather than as failure.
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_SYS_ADMIN]))]
+    fn the_current_namespace_is_accepted_rather_than_mistaken_for_a_failure() {
+        let ours = NetworkNamespace::open("/proc/thread-self/ns/net")
+            .expect("this thread's own namespace should be openable");
+        let runtime = host_runtime(&ours).expect("entering the namespace we are in should succeed");
+        let observed = runtime.block_on(runtime.spawn(async { here() })).unwrap();
+        assert_eq!(observed, here());
+    }
+}
