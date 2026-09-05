@@ -1558,11 +1558,19 @@ vlab-patch-fabric:
         >&2 echo "vlab-patch-fabric: ${repo} does not look like the fabric repository"
         exit 1
     fi
-    # Fabric builds with the system Go, which this dev shell deliberately does not carry. Said
-    # here rather than left to `go: command not found` several minutes into a kustomize run.
+    # Fabric builds with the system Go, which this dev shell deliberately does not carry -- it is
+    # not a dataplane dependency and does not belong in the shipped shell. Borrow one from the
+    # ambient nixpkgs rather than failing: fabric's own toolchain is unpinned anyway (it `go
+    # install`s kustomize, helm, helmify and skopeo at fixed versions into its `bin/`), so the
+    # compiler is the one thing here nobody has an opinion about.
+    declare -a with_go=(bash -c)
     if ! command -v go >/dev/null 2>&1; then
-        >&2 echo "vlab-patch-fabric: no go on PATH; fabric builds with it (try: nix-shell -p go)"
-        exit 1
+        if ! command -v nix-shell >/dev/null 2>&1; then
+            >&2 echo "vlab-patch-fabric: no go and no nix-shell on PATH; fabric needs a Go toolchain"
+            exit 1
+        fi
+        echo "vlab-patch-fabric: no go on PATH, borrowing one from nixpkgs"
+        with_go=(nix-shell -p go --run)
     fi
     # Pinned once and passed to every invocation. Fabric derives its own version from
     # `git describe` plus, on a dirty tree, two random characters -- so two `just` runs in that
@@ -1574,16 +1582,35 @@ vlab-patch-fabric:
     # Only the controller: `Versions.Fabric.Controller` names both the `fabric` image and the
     # `fabric` chart, and nothing else. Leaving api/agent/boot/dhcpd alone avoids reloading the
     # agent on every switch in the lab for a change that does not touch them.
+    # `oci=http` and an override, because fabric's two settings for it disagree. That one knob
+    # gives skopeo `--dest-tls-verify=false` -- HTTPS, unverified -- and helm `--plain-http`,
+    # cleartext. The vlab zot is TLS with a self-signed certificate, so skopeo is right and helm
+    # talks cleartext at a TLS listener: `curl http://.../v2/` answers 400 where `curl -k
+    # https://` answers 200, and helm reports that 400 as an unexpected status from a blob HEAD
+    # with no hint that the scheme is what is wrong. Nothing reaches zot, so its log is silent.
     for recipe in "_docker-build fabric" "_helm-fabric" "_docker-push fabric" "_helm-push fabric"; do
-        (cd "${repo}" && just version="${fabric_version}" oci=http oci_repo="{{ vlab_oci_repo }}" ${recipe})
+        # Both forms of `with_go` take the command as one string, so it stays quoted here: the
+        # nix-shell branch is `--run <string>` and would otherwise swallow only the first word.
+        (cd "${repo}" && "${with_go[@]}" "just version=${fabric_version} oci=http helm_insecure_push=--insecure-skip-tls-verify oci_repo={{ vlab_oci_repo }} ${recipe}")
     done
     # Same reasoning as vlab-patch-dataplane: pointing the fabric at a tag the registry does not
     # have takes the controller down with ImagePullBackOff, and a controller that is not running
     # looks exactly like a controller with nothing to do.
-    if ! skopeo inspect --tls-verify=false "docker://{{ vlab_oci_repo }}/githedgehog/fabric/fabric:${fabric_version}" >/dev/null 2>&1; then
-        >&2 echo "vlab-patch-fabric: fabric:${fabric_version} is not in the registry; refusing to patch"
-        exit 1
-    fi
+    #
+    # Both artifacts, because `Versions.Fabric.Controller` names both and either one missing is
+    # equally fatal. Checking only the image is how a chart push that failed on its own gets
+    # mistaken for a successful patch.
+    #
+    # `--raw`, because a helm chart is an OCI artifact and not an image: plain `skopeo inspect`
+    # refuses it with "unsupported image-specific operation on artifact with type
+    # application/vnd.cncf.helm.config.v1+json" even when the chart is sitting right there.
+    # `--raw` just fetches the manifest, which is all this needs and works for both.
+    for artifact in "fabric" "charts/fabric"; do
+        if ! skopeo inspect --raw --tls-verify=false "docker://{{ vlab_oci_repo }}/githedgehog/fabric/${artifact}:${fabric_version}" >/dev/null 2>&1; then
+            >&2 echo "vlab-patch-fabric: ${artifact}:${fabric_version} is not in the registry; refusing to patch"
+            exit 1
+        fi
+    done
     pushd ./scripts/vlab
     ./control.sh kubectl -n fab patch fab/default --type=merge -p "{\"spec\":{\"overrides\":{\"versions\":{\"fabric\":{\"controller\":\"${fabric_version}\"}}}}}"
     popd
