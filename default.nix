@@ -1882,10 +1882,18 @@ let
         prometheus
         pyroscope
 
-        (writeTextDir "etc/loki/config.yaml" (builtins.readFile ./scripts/telemetry/root/etc/loki/config.yaml))
-        (writeTextDir "etc/prometheus/prometheus.yml" (builtins.readFile ./scripts/telemetry/root/etc/prometheus/prometheus.yml))
-        (writeTextDir "etc/pyroscope/config.yaml" (builtins.readFile ./scripts/telemetry/root/etc/pyroscope/config.yaml))
-        (writeTextDir "etc/grafana/grafana.ini" (builtins.readFile ./scripts/telemetry/root/etc/grafana/grafana.ini))
+        (writeTextDir "etc/loki/config.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/loki/config.yaml
+        ))
+        (writeTextDir "etc/prometheus/prometheus.yml" (
+          builtins.readFile ./scripts/telemetry/root/etc/prometheus/prometheus.yml
+        ))
+        (writeTextDir "etc/pyroscope/config.yaml" (
+          builtins.readFile ./scripts/telemetry/root/etc/pyroscope/config.yaml
+        ))
+        (writeTextDir "etc/grafana/grafana.ini" (
+          builtins.readFile ./scripts/telemetry/root/etc/grafana/grafana.ini
+        ))
         (writeTextDir "etc/grafana/provisioning/datasources/datasources.yaml" (
           builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/datasources/datasources.yaml
         ))
