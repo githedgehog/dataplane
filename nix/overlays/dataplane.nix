@@ -6,6 +6,7 @@
   instrumentations,
   platform,
   profile,
+  instrumentation,
   ...
 }:
 final: prev:
@@ -16,23 +17,26 @@ let
     // (
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
     );
+  # Map build paths to source-store paths only for coverage. Other profiles use
+  # relative names so __FILE__ strings do not retain source trees in runtime closures.
+  # Read finalAttrs.src because package overrides may replace the original source.
   dataplane-dep =
     pkg:
-    (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (orig: {
-      env = helpers.addToEnv (orig.env or { }) (
-        let
-          # -ffile-prefix-map is a simple trick to map /build to /nix/store paths for code coverage data.
-          # This trick does not work well for .tar packages or source code generated during the build, but it's
-          # the best I can do without massively increasing build system complexity.
-          extra-cflags = "-ffile-prefix-map=/build=${orig.src} -ffile-prefix-map=/build/source=${orig.src}";
-          extra-cxxflags = extra-cflags;
-        in
-        {
-          NIX_CFLAGS_COMPILE = extra-cflags;
-          NIX_CXXFLAGS_COMPILE = extra-cxxflags;
-        }
-      );
-    });
+    (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (
+      finalAttrs: orig: {
+        env = helpers.addToEnv (orig.env or { }) (
+          let
+            prefix = if instrumentation == "coverage" then "${finalAttrs.src}" else "source";
+            extra-cflags = "-ffile-prefix-map=/build=${prefix} -ffile-prefix-map=/build/source=${prefix}";
+            extra-cxxflags = extra-cflags;
+          in
+          {
+            NIX_CFLAGS_COMPILE = extra-cflags;
+            NIX_CXXFLAGS_COMPILE = extra-cxxflags;
+          }
+        );
+      }
+    );
 
 in
 {
@@ -99,6 +103,17 @@ in
       mkdir -p $static/lib
       find $out/lib -name '*.la' -exec rm {} \;
       mv $out/lib/*.a $static/lib/
+
+      # Move nested CLI plugin archives into the static output too. ThinLTO bitcode
+      # can retain compiler paths and pull the toolchain into the runtime closure.
+      # Preserve the directory structure for static consumers.
+      if [ -d "$out/lib/libnl" ]; then
+        while IFS= read -r -d "" archive; do
+          relative="''${archive#$out/lib/}"
+          mkdir -p "$static/lib/$(dirname "$relative")"
+          mv "$archive" "$static/lib/$relative"
+        done < <(find "$out/lib/libnl" -name '*.a' -print0)
+      fi
     '';
   });
 
@@ -270,7 +285,13 @@ in
     }).overrideAttrs
       (orig: {
         outputs = (orig.outputs or [ ]) ++ [ "static" ];
-        CFLAGS = "-ffile-prefix-map=/build/hwloc=${orig.src}";
+        # Same reasoning as `dataplane-dep` above: the store path only when
+        # coverage will read it, an inert name otherwise. Kept as a non-empty
+        # `CFLAGS` either way, because clearing it would hand hwloc's configure
+        # back its `-g -O2` default and change what gets built.
+        CFLAGS = "-ffile-prefix-map=/build/hwloc=${
+          if instrumentation == "coverage" then "${orig.src}" else "hwloc"
+        }";
         configureFlags = (orig.configureFlags or [ ]) ++ [
           "--enable-static"
         ];
