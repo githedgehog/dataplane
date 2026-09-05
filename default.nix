@@ -1942,184 +1942,188 @@ let
   #
   # Fixed tag "latest": nothing versions this against the dataplane, and scripts/telemetry/run.sh
   # refers to it by name.
-  containers.lgtm = pkgs.dockerTools.buildLayeredImage {
-    name = "lgtm";
-    tag = "latest";
-    contents = pkgs.buildEnv {
-      name = "lgtm-env";
-      pathsToLink = [ "/" ];
-      paths = with pkgs.pkgsHostHost; [
-        bashInteractive
-        cacert
-        coreutils
-        curl
-        dockerTools.binSh
-        dockerTools.fakeNss
-        dockerTools.usrBinEnv
-        grafana
-        grafana-loki
-        prometheus
-        pyroscope
+  containers.lgtm =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "lgtm";
+      tag = "latest";
+      contents = pkgs.buildEnv {
+        name = "lgtm-env";
+        pathsToLink = [ "/" ];
+        paths = with pkgs.pkgsHostHost; [
+          bashInteractive
+          cacert
+          coreutils
+          curl
+          dockerTools.binSh
+          dockerTools.fakeNss
+          dockerTools.usrBinEnv
+          grafana
+          grafana-loki
+          prometheus
+          pyroscope
 
-        (writeTextDir "etc/loki/config.yaml" (
-          builtins.readFile ./scripts/telemetry/root/etc/loki/config.yaml
-        ))
-        (writeTextDir "etc/prometheus/prometheus.yml" (
-          builtins.readFile ./scripts/telemetry/root/etc/prometheus/prometheus.yml
-        ))
-        (writeTextDir "etc/pyroscope/config.yaml" (
-          builtins.readFile ./scripts/telemetry/root/etc/pyroscope/config.yaml
-        ))
-        (writeTextDir "etc/grafana/grafana.ini" (
-          builtins.readFile ./scripts/telemetry/root/etc/grafana/grafana.ini
-        ))
-        (writeTextDir "etc/grafana/provisioning/datasources/datasources.yaml" (
-          builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/datasources/datasources.yaml
-        ))
-        (writeTextDir "etc/grafana/provisioning/dashboards/dashboards.yaml" (
-          builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/dashboards/dashboards.yaml
-        ))
-        (writeTextDir "etc/grafana/dashboards/dataplane-nat.json" (
-          builtins.readFile ./scripts/telemetry/root/etc/grafana/dashboards/dataplane-nat.json
-        ))
+          (writeTextDir "etc/loki/config.yaml" (
+            builtins.readFile ./scripts/telemetry/root/etc/loki/config.yaml
+          ))
+          (writeTextDir "etc/prometheus/prometheus.yml" (
+            builtins.readFile ./scripts/telemetry/root/etc/prometheus/prometheus.yml
+          ))
+          (writeTextDir "etc/pyroscope/config.yaml" (
+            builtins.readFile ./scripts/telemetry/root/etc/pyroscope/config.yaml
+          ))
+          (writeTextDir "etc/grafana/grafana.ini" (
+            builtins.readFile ./scripts/telemetry/root/etc/grafana/grafana.ini
+          ))
+          (writeTextDir "etc/grafana/provisioning/datasources/datasources.yaml" (
+            builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/datasources/datasources.yaml
+          ))
+          (writeTextDir "etc/grafana/provisioning/dashboards/dashboards.yaml" (
+            builtins.readFile ./scripts/telemetry/root/etc/grafana/provisioning/dashboards/dashboards.yaml
+          ))
+          (writeTextDir "etc/grafana/dashboards/dataplane-nat.json" (
+            builtins.readFile ./scripts/telemetry/root/etc/grafana/dashboards/dataplane-nat.json
+          ))
 
-        (writeShellApplication {
-          name = "lgtm-entrypoint";
-          runtimeInputs = [
-            coreutils
-            grafana
-            grafana-loki
-            prometheus
-            pyroscope
-          ];
-          text = builtins.readFile ./scripts/telemetry/entrypoint.sh;
-        })
-      ];
-    };
-
-    # The volume mounts over /telemetry at run time; /tmp is not in the closure and Grafana's
-    # provisioning walk wants it.
-    extraCommands = ''
-      mkdir -p tmp telemetry
-      chmod 1777 tmp
-    '';
-
-    config = {
-      WorkingDir = "/telemetry";
-      Volumes."/telemetry" = { };
-      ExposedPorts = {
-        "3000/tcp" = { };
-        "3100/tcp" = { };
-        "4040/tcp" = { };
-        "9090/tcp" = { };
+          (writeShellApplication {
+            name = "lgtm-entrypoint";
+            runtimeInputs = [
+              coreutils
+              grafana
+              grafana-loki
+              prometheus
+              pyroscope
+            ];
+            text = builtins.readFile ./scripts/telemetry/entrypoint.sh;
+          })
+        ];
       };
-      Env = [
-        "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-        # Grafana's static assets live in the store, so its home path is only knowable from nix.
-        "GF_PATHS_HOME=${pkgs.grafana}/share/grafana"
-        "GF_PATHS_DATA=/telemetry/grafana"
-        "GF_PATHS_PROVISIONING=/etc/grafana/provisioning"
-      ];
-      Entrypoint = [ "/bin/lgtm-entrypoint" ];
-    };
-  };
 
-  containers.vlab = pkgs.dockerTools.buildLayeredImage {
-    name = "vlab";
-    tag = "latest";
-    contents = pkgs.buildEnv {
-      name = "vlab-env";
-      pathsToLink = [ "/" ];
-      paths = with pkgs.pkgsHostHost; [
-        bashInteractive
-        cacert
-        coreutils
-        curl
-        docker-client
-        dockerTools.binSh
-        dockerTools.fakeNss
-        dockerTools.usrBinEnv
-        findutils
-        gawk
-        git
-        gnugrep
-        gnused
-        gnutar
-        gzip
-        iproute2
-        jq
-        less
-        neovim
-        openssh
-        openssl
-        oras
-        qemu_kvm
-        socat
-        sudo
-        wget
-        # Python's kislyuk yq (supports the `-y` flag used by run.sh);
-        # nixpkgs.yq-go is mikefarah's Go port with a different CLI surface.
-        yq
-        zot
+      # The volume mounts over /telemetry at run time; /tmp is not in the closure and Grafana's
+      # provisioning walk wants it.
+      extraCommands = ''
+        mkdir -p tmp telemetry
+        chmod 1777 tmp
+      '';
 
-        # nixpkgs' sudo is always built with PAM on linux, so we need to ship
-        # a /etc/pam.d/sudo config or sudo aborts with "unable to initialize
-        # PAM: Critical error - immediate abort" the moment hhfab vlab up
-        # shells out to it.  The container runs as root in a privileged
-        # sandbox, so we use pam_permit.so for every stage; absolute module
-        # paths sidestep libpam's compiled-in module search path.
-        (writeTextDir "etc/pam.d/sudo" ''
-          auth     sufficient   ${pam}/lib/security/pam_permit.so
-          account  sufficient   ${pam}/lib/security/pam_permit.so
-          password sufficient   ${pam}/lib/security/pam_permit.so
-          session  sufficient   ${pam}/lib/security/pam_permit.so
-        '')
+      config = {
+        WorkingDir = "/telemetry";
+        Volumes."/telemetry" = { };
+        ExposedPorts = {
+          "3000/tcp" = { };
+          "3100/tcp" = { };
+          "4040/tcp" = { };
+          "9090/tcp" = { };
+        };
+        Env = [
+          "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          # Grafana's static assets live in the store, so its home path is only knowable from nix.
+          "GF_PATHS_HOME=${pkgs.grafana}/share/grafana"
+          "GF_PATHS_DATA=/telemetry/grafana"
+          "GF_PATHS_PROVISIONING=/etc/grafana/provisioning"
+        ];
+        Entrypoint = [ "/bin/lgtm-entrypoint" ];
+      };
+    }).overrideAttrs
+      source-volatile;
 
-        # zot config and cert.ini are immutable across runs, so they live
-        # in the image rather than in any mount or bind-mount.
-        (writeTextDir "etc/zot/config.json" (builtins.readFile ./scripts/vlab/root/etc/zot/config.json))
-        (writeTextDir "etc/zot/cert.ini" (builtins.readFile ./scripts/vlab/root/etc/zot/cert.ini))
+  containers.vlab =
+    (pkgs.dockerTools.buildLayeredImage {
+      name = "vlab";
+      tag = "latest";
+      contents = pkgs.buildEnv {
+        name = "vlab-env";
+        pathsToLink = [ "/" ];
+        paths = with pkgs.pkgsHostHost; [
+          bashInteractive
+          cacert
+          coreutils
+          curl
+          docker-client
+          dockerTools.binSh
+          dockerTools.fakeNss
+          dockerTools.usrBinEnv
+          findutils
+          gawk
+          git
+          gnugrep
+          gnused
+          gnutar
+          gzip
+          iproute2
+          jq
+          less
+          neovim
+          openssh
+          openssl
+          oras
+          qemu_kvm
+          socat
+          sudo
+          wget
+          # Python's kislyuk yq (supports the `-y` flag used by run.sh);
+          # nixpkgs.yq-go is mikefarah's Go port with a different CLI surface.
+          yq
+          zot
 
-        # Entrypoint script: generates TLS material into a tmpfs, validates
-        # or provisions ghcr.io credentials in a persistent docker volume,
-        # then execs zot.  See scripts/vlab/entrypoint.sh for modes.
-        (writeShellApplication {
-          name = "vlab-entrypoint";
-          runtimeInputs = [
-            cacert
-            coreutils
-            curl
-            jq
-            openssl
-            zot
-          ];
-          text = builtins.readFile ./scripts/vlab/entrypoint.sh;
-        })
-      ];
-    };
+          # nixpkgs' sudo is always built with PAM on linux, so we need to ship
+          # a /etc/pam.d/sudo config or sudo aborts with "unable to initialize
+          # PAM: Critical error - immediate abort" the moment hhfab vlab up
+          # shells out to it.  The container runs as root in a privileged
+          # sandbox, so we use pam_permit.so for every stage; absolute module
+          # paths sidestep libpam's compiled-in module search path.
+          (writeTextDir "etc/pam.d/sudo" ''
+            auth     sufficient   ${pam}/lib/security/pam_permit.so
+            account  sufficient   ${pam}/lib/security/pam_permit.so
+            password sufficient   ${pam}/lib/security/pam_permit.so
+            session  sufficient   ${pam}/lib/security/pam_permit.so
+          '')
 
-    # /tmp and the /vlab working dir don't exist in the pure nix closure;
-    # pre-create them so docker exec commands can write to them.  The tmpfs
-    # at /run/vlab and the vlab-secrets volume at /var/lib/vlab are created
-    # by docker at container start.
-    extraCommands = ''
-      mkdir -p tmp vlab
-      chmod 1777 tmp
-    '';
+          # zot config and cert.ini are immutable across runs, so they live
+          # in the image rather than in any mount or bind-mount.
+          (writeTextDir "etc/zot/config.json" (builtins.readFile ./scripts/vlab/root/etc/zot/config.json))
+          (writeTextDir "etc/zot/cert.ini" (builtins.readFile ./scripts/vlab/root/etc/zot/cert.ini))
 
-    config = {
-      WorkingDir = "/vlab";
-      Volumes."/vlab" = { };
-      Env = [
-        # Go (and hhfab) read SSL_CERT_FILE; the entrypoint writes the merged
-        # bundle (nixpkgs system CAs + the freshly-minted zot CA) to this path
-        # before exec'ing zot.
-        "SSL_CERT_FILE=/run/vlab/ca-bundle.pem"
-      ];
-      Entrypoint = [ "/bin/vlab-entrypoint" ];
-      Cmd = [ "run" ];
-    };
-  };
+          # Entrypoint script: generates TLS material into a tmpfs, validates
+          # or provisions ghcr.io credentials in a persistent docker volume,
+          # then execs zot.  See scripts/vlab/entrypoint.sh for modes.
+          (writeShellApplication {
+            name = "vlab-entrypoint";
+            runtimeInputs = [
+              cacert
+              coreutils
+              curl
+              jq
+              openssl
+              zot
+            ];
+            text = builtins.readFile ./scripts/vlab/entrypoint.sh;
+          })
+        ];
+      };
+
+      # /tmp and the /vlab working dir don't exist in the pure nix closure;
+      # pre-create them so docker exec commands can write to them.  The tmpfs
+      # at /run/vlab and the vlab-secrets volume at /var/lib/vlab are created
+      # by docker at container start.
+      extraCommands = ''
+        mkdir -p tmp vlab
+        chmod 1777 tmp
+      '';
+
+      config = {
+        WorkingDir = "/vlab";
+        Volumes."/vlab" = { };
+        Env = [
+          # Go (and hhfab) read SSL_CERT_FILE; the entrypoint writes the merged
+          # bundle (nixpkgs system CAs + the freshly-minted zot CA) to this path
+          # before exec'ing zot.
+          "SSL_CERT_FILE=/run/vlab/ca-bundle.pem"
+        ];
+        Entrypoint = [ "/bin/vlab-entrypoint" ];
+        Cmd = [ "run" ];
+      };
+    }).overrideAttrs
+      source-volatile;
 
   containers.frr.host =
     (pkgs.dockerTools.buildLayeredImage {
