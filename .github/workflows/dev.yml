@@ -850,10 +850,22 @@ jobs:
           || (github.event_name == 'push' || github.event_name == 'merge_group')
           && matrix.hybrid
         }}
-      fabricatorref: master
+      # EXPERIMENT (dpdk in vlab): both of these are branches, not master.
+      #
+      # The gateway is one pod now -- FRR runs under `dataplane-init` beside the dataplane -- and
+      # that needs a matched set across three repositories:
+      #
+      #   * this one, for the merged image and init's supervision;
+      #   * githedgehog/fabric#1608, for the controller that stops making a second DaemonSet;
+      #   * githedgehog/fabricator, for a readiness check that no longer waits on one.
+      #
+      # Without the fabricator half, `StatusFRR` reports NotFound forever and `hhfab vlab up
+      # --ready` hangs to the job timeout rather than failing. Revert all three together.
+      fabricatorref: dev/daniel-noland/dpdk-vlab-experiment
       prebuild: |
         just bump dataplane ${{ needs.version.outputs.version }}-release
         just bump frr ${{ needs.version.outputs.version }}-release
+        just bump fabric v0-855962708 855962708430e4c109579ee4ccdc455c3dd11853
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
       includeonie: ${{ matrix.includeonie }}
@@ -880,7 +892,12 @@ jobs:
           - false
         upgradefrom:
           - ""
-          - "26.03"
+          # EXPERIMENT (dpdk in vlab): upgrade is deliberately parked until a clean install
+          # passes. An upgrade from 26.03 starts with the old two-DaemonSet gateway and a
+          # host-namespace zebra, so it exercises the transition -- a stale VTEP address and
+          # leftover nexthops on the host's `lo`, which used to be swept by init containers this
+          # work deletes -- on top of everything else that is new. One variable at a time.
+          # - "26.03"
         include:
           # gateway l3vni
           - fabricmode: spine-leaf
