@@ -1515,8 +1515,14 @@ vlab-patch-dataplane:
     #
     # Built from `vlab_oci_repo` rather than reusing `oci_image_dataplane`, which is derived
     # from the default `oci_repo` (127.0.0.1) -- not the bridge address the push above used.
+    #
+    # `--raw`, because the validator is an OCI artifact rather than an image: oras pushes it with
+    # artifactType `application/vnd.unknown.artifact.v1`, and plain `skopeo inspect` refuses that
+    # with "unsupported image-specific operation" no matter that the push just reported success.
+    # A guard that says "not in the registry" about something it is looking straight at sends you
+    # hunting the push. `--raw` fetches the manifest, which is the whole question here.
     for image in "{{ vlab_oci_repo }}/{{ oci_name }}:{{ version }}" "{{ vlab_oci_repo }}/{{ oci_name }}/validator:{{ version }}"; do
-        if ! skopeo inspect --tls-verify=false "docker://${image}" >/dev/null 2>&1; then
+        if ! skopeo inspect --raw --tls-verify=false "docker://${image}" >/dev/null 2>&1; then
             >&2 echo "vlab-patch-dataplane: ${image} is not in the registry; refusing to patch"
             exit 1
         fi
