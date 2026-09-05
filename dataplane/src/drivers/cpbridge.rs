@@ -1,19 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! The control-plane bridge: what carries a control packet between a DPDK port and the kernel.
+//! The control-plane bridge: what carries a control packet between a port and the kernel.
 //!
 //! # Why this has to exist at all
 //!
-//! With the kernel driver, FRR and the dataplane share a namespace with the real NIC. FRR peers
-//! through the kernel's own stack and `AF_PACKET` hands the dataplane a copy; nothing has to be
-//! carried anywhere.
+//! The dataplane puts the interfaces it drives into a network namespace of their own, and the
+//! control plane -- FRR, the routing tables, the interface manager -- into another. Nothing in the
+//! control plane's namespace is a real NIC, so the kernel's end of every port is a **tap**, and
+//! *every* control frame -- BGP, BFD, ARP, LLDP -- has to be carried across by the dataplane.
+//! Without that the control plane is not merely degraded; it never forms an adjacency.
 //!
-//! With DPDK there is no NIC on the kernel's side of the fence. On a bifurcated driver the netdev
-//! exists, but it was moved into the datapath's network namespace, and on `vfio-pci` it does not
-//! exist at all. So the kernel's end of every port is a **tap**, and *every* control frame -- BGP,
-//! BFD, ARP, LLDP -- has to be carried across by the dataplane. Without that the control plane is
-//! not merely degraded; it never forms an adjacency.
+//! # Why both drivers, and not just DPDK
+//!
+//! Under DPDK the separation is forced: on `vfio-pci` there is no netdev at all, and on a
+//! bifurcated driver the netdev was moved away. The kernel driver could in principle leave its
+//! interfaces where the control plane can see them and let `AF_PACKET` hand the dataplane a copy,
+//! which is what it used to do. Three things argue against it:
+//!
+//! - **The host stack answers behind the dataplane's back.** An interface the kernel still owns is
+//!   an interface the kernel will route, ARP for and terminate connections on, with no dataplane
+//!   involvement. Keeping VXLAN traffic away from it took netfilter rules; moving the device out
+//!   of that namespace removes the thing those rules were defending against.
+//! - **One punt policy instead of two.** With both drivers punting through the same channels, the
+//!   decision about what the kernel should see lives in [`disposition`] alone, and a new
+//!   [`DoneReason`] forces that decision once rather than in two places that can disagree.
+//! - **The control plane stops caring which driver is running.** It configures taps either way.
+//!
+//! So the shape below is symmetric, and the driver-specific part is only how a frame gets in and
+//! out of the datapath's own buffers.
 //!
 //! # Shape
 //!
@@ -24,22 +39,24 @@
 //!
 //! Each tap gets a bounded pair of channels of owned byte buffers:
 //!
-//! - **punt**: datapath to kernel. A worker copies the frame out of its mbuf and hands it over.
-//! - **inject**: kernel to datapath. Worker 0 drains the queue, copies into a fresh mbuf, and adds
-//!   it to that port's transmit batch, bypassing the pipeline entirely -- FRR has already made the
-//!   forwarding decision.
+//! - **punt**: datapath to kernel. A worker copies the frame out of its own buffer and hands it
+//!   over.
+//! - **inject**: kernel to datapath. One worker per port drains the queue and transmits, bypassing
+//!   the pipeline entirely -- FRR has already made the forwarding decision.
 //!
-//! The buffers are copies. An `Mbuf` is `!Send` and branded with the EAL's lifetime, so it cannot
-//! cross to the management runtime under any circumstances, and control-plane volume does not
-//! justify anything cleverer than a `Vec<u8>` per frame. This is PoC-grade and deliberately so: it
-//! allocates per frame, on both paths. Fixing that means a pool of reusable buffers on each side,
-//! which is a change worth making when there is a measurement saying it matters.
+//! The buffers are copies. Under DPDK an `Mbuf` is `!Send` and branded with the EAL's lifetime, so
+//! it cannot cross to the management runtime under any circumstances; the kernel driver has no such
+//! constraint but shares the channel type rather than growing a second one. Control-plane volume
+//! does not justify anything cleverer than a `Vec<u8>` per frame. This is PoC-grade and
+//! deliberately so: it allocates per frame, on both paths. Fixing that means a pool of reusable
+//! buffers on each side, which is a change worth making when there is a measurement saying it
+//! matters.
 //!
 //! # Where the taps are created, and why it matters
 //!
 //! `TUNSETIFF` creates the device in the network namespace of the **calling thread**, and no later
 //! `setns` moves it. The bridge is therefore built on the management runtime, in the control
-//! namespace the whole process was launched into, *before* the datapath thread is spawned and jumps
+//! namespace the whole process was launched into, *before* any datapath thread is spawned and jumps
 //! into the namespace that owns the NICs. The descriptors work from anywhere afterwards; only the
 //! moment of creation is namespace-sensitive.
 
@@ -54,7 +71,7 @@ use net::packet::DoneReason;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-/// One control-plane frame, copied out of (or destined for) an mbuf.
+/// One control-plane frame, copied out of (or destined for) a driver's own buffer.
 pub(crate) type Frame = Vec<u8>;
 
 /// How many frames one direction of one port's bridge will hold before it starts dropping.

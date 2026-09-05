@@ -768,8 +768,11 @@ pub fn main() {
     // it did before this existed. Making taps there would collide with those very devices.
     //
     // The kernel driver never gets one: its interfaces *are* the real ones.
-    let want_bridge =
-        matches!(config.driver, DriverConfigSection::Dpdk(_)) && datapath_netns.is_some();
+    // The namespace alone decides, not the driver. Either driver whose interfaces were moved
+    // needs the bridge, because the control plane's namespace then contains no real interface;
+    // either driver whose interfaces stayed put must not have one, because the taps would be
+    // created on top of the very devices they are named after.
+    let want_bridge = datapath_netns.is_some();
     let (_cp_bridge, cp_ends) = if want_bridge {
         match CpBridge::create(
             &mgmt_handle,
@@ -788,12 +791,10 @@ pub fn main() {
             }
         }
     } else {
-        if matches!(config.driver, DriverConfigSection::Dpdk(_)) {
-            info!(
-                "No datapath network namespace, so no control-plane bridge: the kernel keeps the \
-                 netdevs and carries the control plane itself"
-            );
-        }
+        info!(
+            "No datapath network namespace, so no control-plane bridge: the kernel keeps the \
+             netdevs and carries the control plane itself"
+        );
         (None, None)
     };
 
@@ -853,9 +854,15 @@ pub fn main() {
                 }
                 None
             }
-            // The kernel driver has no namespace to enter and its EAL is already up, so it starts
-            // below in this scope exactly as it always has.
-            DriverConfigSection::Kernel(_) => Some((ingredients, driver_status_writer)),
+            // The kernel driver's EAL is already up, so it starts below in this scope. It takes
+            // the bridge ends and the namespace with it: its workers open `AF_PACKET` sockets, and
+            // a socket belongs to the namespace of the thread that created it.
+            DriverConfigSection::Kernel(_) => Some((
+                ingredients,
+                driver_status_writer,
+                cp_ends,
+                datapath_netns.as_ref(),
+            )),
         };
 
         let mgmt_result = run_mgmt(
@@ -895,7 +902,7 @@ pub fn main() {
                 info!("Management is running now");
 
                 match kernel_driver {
-                    Some((ingredients, driver_status_writer)) => {
+                    Some((ingredients, driver_status_writer, cp_ends, netns)) => {
                         info!("Using driver kernel...");
                         if let Err(e) = DriverKernel::start(
                             scope,
@@ -908,6 +915,8 @@ pub fn main() {
                             config.driver.num_workers(),
                             &ingredients.factory(),
                             driver_status_writer,
+                            cp_ends,
+                            netns,
                         ) {
                             error!("Failed to start driver: {e}");
                             shutdown.fail();
