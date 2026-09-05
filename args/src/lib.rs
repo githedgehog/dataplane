@@ -819,6 +819,58 @@ impl LaunchConfiguration {
         Some(unsafe { OwnedFd::from_raw_fd(Self::STANDARD_NETNS_FD) })
     }
 
+    /// Standard file descriptor number for the namespace `dataplane-init` itself started in.
+    ///
+    /// Optional, like [`STANDARD_NETNS_FD`](Self::STANDARD_NETNS_FD), and present under exactly
+    /// one condition: `dataplane-init` moved the control plane into a namespace of its own. When
+    /// it did, this is the way back out.
+    ///
+    /// # Why the dataplane needs a way out
+    ///
+    /// Not everything the dataplane does is control-plane traffic. It watches a Kubernetes API
+    /// server, serves a metrics endpoint something outside scrapes, and pushes profiles to
+    /// Pyroscope -- three things that reach past the fabric, from a namespace that has no route
+    /// anywhere. FRR and the taps, by contrast, must be *in* that namespace. The two sets cannot
+    /// share a thread, so they do not: this descriptor is what lets the outward-facing half run on
+    /// a runtime whose threads `setns` back here.
+    ///
+    /// A descriptor rather than `/proc/1/ns/net` for the same reason as the datapath's: it names
+    /// one specific namespace, it cannot be raced by a PID changing meaning, and it works whether
+    /// or not `/proc` is mounted the way this process expects.
+    pub const STANDARD_HOST_NETNS_FD: RawFd = 60;
+
+    /// Whether the parent left us a way back to the namespace it started in.
+    ///
+    /// Tested the same way as [`netns_was_inherited`](Self::netns_was_inherited): an open
+    /// descriptor at the agreed number is the whole protocol.
+    #[must_use]
+    #[allow(unsafe_code)] // asking whether a raw descriptor is open requires borrowing it
+    pub fn host_netns_was_inherited() -> bool {
+        // SAFETY: as in `was_inherited` -- the borrow does not outlive the `fcntl` call, is never
+        // closed, and a descriptor that is not open is reported as `EBADF` rather than misbehaving.
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(Self::STANDARD_HOST_NETNS_FD) };
+        nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+    }
+
+    /// Take ownership of the descriptor for the namespace the parent started in, if there is one.
+    ///
+    /// Returns `None` when the control plane was not moved, in which case this process is already
+    /// where the outward-facing work belongs and there is nothing to return to.
+    ///
+    /// # Panics
+    ///
+    /// Never: the descriptor is only claimed once its presence has been established.
+    #[must_use]
+    #[allow(unsafe_code)] // claiming an inherited descriptor is inherently a raw operation
+    pub fn inherit_host_netns() -> Option<OwnedFd> {
+        if !Self::host_netns_was_inherited() {
+            return None;
+        }
+        // SAFETY: the descriptor is open, was placed there by the parent for this purpose, and is
+        // claimed exactly once -- this is the only caller, and it consumes the number.
+        Some(unsafe { OwnedFd::from_raw_fd(Self::STANDARD_HOST_NETNS_FD) })
+    }
+
     /// Inherit the launch configuration from the parent process.
     ///
     /// This method is called by the dataplane worker process to receive its configuration
