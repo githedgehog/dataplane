@@ -732,6 +732,7 @@ async fn run_gateway(
     if supervise_frr {
         let (config_dir, daemon_dir) = frr::install();
         let daemons = frr::enabled_daemons(&config_dir, &daemon_dir)?;
+        frr::prepare_state_dir(&frr::state_dir())?;
         supervisor.start(frr::watchfrr(&daemons)).await?;
         supervisor.start(frr::agent(&agent_socket)).await?;
     }
