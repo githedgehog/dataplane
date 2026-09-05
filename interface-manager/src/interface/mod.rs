@@ -37,7 +37,6 @@ pub use netdevsim::*;
 
 use crate::{Manager, manager_of};
 use derive_builder::Builder;
-use futures::TryFutureExt;
 use multi_index_map::MultiIndexMap;
 use net::eth::ethtype::EthType;
 use net::eth::mac::SourceMac;
@@ -170,18 +169,6 @@ impl Create for Manager<Interface> {
                 warn!("expected pci device missing: {requirement:#?}");
                 return Err(rtnetlink::Error::RequestFailed);
             }
-            InterfacePropertiesSpec::Tap => {
-                // A tap is not a netlink object we create; it is a descriptor we open, and the
-                // device exists only while we hold it.  The registry is the holder.
-                return self
-                    .taps
-                    .open(&requirement.name)
-                    .map_err(|err| {
-                        warn!("failed to create tap device: {err:?}");
-                        rtnetlink::Error::RequestFailed
-                    })
-                    .await;
-            }
         };
         if let Some(mac) = requirement.mac {
             message
@@ -207,15 +194,10 @@ impl Remove for Manager<Interface> {
     where
         Self: 'a,
     {
-        if matches!(observation.properties, InterfaceProperties::Tap)
-            && self.taps.close(&observation.name)
-        {
-            // Our descriptor was the only thing keeping that device alive, so closing it is the
-            // removal; there is no netdev left for netlink to unlink.  A tap we do not hold falls
-            // through to the ordinary path, which is what collects one left behind by an older
-            // build that persisted its taps.
-            return Ok(());
-        }
+        // A tap the dataplane still holds does not appear here: the reconciler is not told to
+        // plan taps any more, so the only ones it ever meets are strays -- a `<name>-tap` from a
+        // build which generated them, or one left behind by a build which persisted them.  Both
+        // have a netdev for netlink to unlink, which is exactly what this does.
         self.handle
             .link()
             .del(observation.index.to_u32())

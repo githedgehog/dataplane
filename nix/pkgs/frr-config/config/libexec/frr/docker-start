@@ -2,6 +2,14 @@
 
 . /libexec/frr/frrcommon.sh
 
+# Collect the nexthops a previous zebra left behind, which a restarting zebra would otherwise meet
+# and refuse to reuse.
+#
+# This cannot be deleted yet, and moving the control plane into a network namespace of its own does
+# not make it deletable. It only becomes removable once FRR dying kills the container that holds
+# the namespace: watchfrr restarts individual daemons *in place*, and a restarted zebra in a
+# surviving namespace still meets its own leftover nexthops. Lifecycle coupling is a precondition
+# for this cleanup, not something that follows from the namespace split.
 ip -j -d nexthop show | \
   jq --raw-output '.[] | select(.protocol=="zebra").id' | \
   while read -r id; do ip nexthop del id "${id}"; done

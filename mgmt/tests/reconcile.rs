@@ -10,7 +10,7 @@ use interface_manager::interface::{
     BridgePropertiesSpec, InterfaceAssociationSpec, InterfacePropertiesSpec, InterfaceSpecBuilder,
     MultiIndexBridgePropertiesSpecMap, MultiIndexInterfaceAssociationSpecMap,
     MultiIndexInterfaceSpecMap, MultiIndexPciNetdevPropertiesSpecMap,
-    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, VrfPropertiesSpec,
+    MultiIndexVrfPropertiesSpecMap, MultiIndexVtepPropertiesSpecMap, TapDevice, VrfPropertiesSpec,
     VtepPropertiesSpec,
 };
 use mgmt::vpc_manager::{RequiredInformationBase, RequiredInformationBaseBuilder, VpcManager};
@@ -381,7 +381,6 @@ async fn reconcile_demo() {
             InterfacePropertiesSpec::Pci(prop) => {
                 pci_props.try_insert(prop.clone()).unwrap();
             }
-            InterfacePropertiesSpec::Tap => {}
         }
     }
 
@@ -469,9 +468,7 @@ async fn reconcile_demo() {
         ];
         for interface in interfaces {
             match &interface.properties {
-                InterfacePropertiesSpec::Bridge(_)
-                | InterfacePropertiesSpec::Pci(_)
-                | InterfacePropertiesSpec::Tap => {}
+                InterfacePropertiesSpec::Bridge(_) | InterfacePropertiesSpec::Pci(_) => {}
                 InterfacePropertiesSpec::Vtep(props) => {
                     req.vteps.try_insert(props.clone()).unwrap();
                 }
@@ -536,28 +533,6 @@ async fn reconcile_demo() {
     }
 }
 
-/// A plan with exactly one tap device in it, named `name`.
-fn plan_with_tap(name: &str) -> RequiredInformationBase {
-    let mut interfaces = MultiIndexInterfaceSpecMap::default();
-    interfaces
-        .try_insert(
-            InterfaceSpecBuilder::default()
-                .name(name.try_into().unwrap())
-                .admin_state(AdminState::Up)
-                .properties(InterfacePropertiesSpec::Tap)
-                .build()
-                .unwrap(),
-        )
-        .unwrap();
-    RequiredInformationBaseBuilder::default()
-        .interfaces(interfaces)
-        .vteps(MultiIndexVtepPropertiesSpecMap::default())
-        .vrfs(MultiIndexVrfPropertiesSpecMap::default())
-        .associations(MultiIndexInterfaceAssociationSpecMap::default())
-        .build()
-        .unwrap()
-}
-
 /// Drive `manager` to convergence against `required`, or panic saying it did not converge.
 async fn converge(
     manager: &VpcManager<RequiredInformationBase>,
@@ -593,53 +568,33 @@ async fn tap_exists(manager: &VpcManager<RequiredInformationBase>, name: &str) -
     }
 }
 
-/// A tap device must not outlive the manager which created it.
-///
-/// The dataplane's taps stand in for physical devices which the packet path took into a network
-/// namespace of its own.  Those devices come back to the host when that namespace goes away, and
-/// udev renames them into place; a tap left sitting on one of those names would break the rename
-/// and strand the real device.  So the taps have to go when the dataplane does, including when it
-/// is killed rather than shut down, and the only mechanism which still works then is the kernel's
-/// own: a tap exists for exactly as long as somebody holds a descriptor for it.
-///
-/// This is the test which fails if anybody reintroduces `TUNSETPERSIST`.
-#[n_vm::test]
-#[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
-fn taps_do_not_outlive_the_manager_which_made_them() {
-    const TAP: &str = "dp0-tap";
-
-    in_private_netns(|| async {
-        let Ok((connection, handle, _)) = rtnetlink::new_connection() else {
-            panic!("failed to create connection");
-        };
-        tokio::spawn(connection);
-        let handle = Arc::new(handle);
-
-        let mut required = plan_with_tap(TAP);
-        let vpcs = VpcManager::<RequiredInformationBase>::new(handle.clone());
-        converge(&vpcs, &mut required).await;
-        assert!(tap_exists(&vpcs, TAP).await, "{TAP} was never created");
-
-        drop(vpcs);
-
-        // A second manager sees the same kernel, and must not see the tap.
-        let after = VpcManager::<RequiredInformationBase>::new(handle);
-        assert!(
-            !tap_exists(&after, TAP).await,
-            "{TAP} outlived the manager which created it"
-        );
-    });
+/// An empty plan: nothing required, so everything of ours in the kernel is surplus.
+fn empty_plan() -> RequiredInformationBase {
+    RequiredInformationBaseBuilder::default()
+        .interfaces(MultiIndexInterfaceSpecMap::default())
+        .vteps(MultiIndexVtepPropertiesSpecMap::default())
+        .vrfs(MultiIndexVrfPropertiesSpecMap::default())
+        .associations(MultiIndexInterfaceAssociationSpecMap::default())
+        .build()
+        .unwrap()
 }
 
-/// A tap device dropped from the plan must be removed, exactly like any other interface of ours.
+/// A stray `<name>-tap` must be reconciled away.
 ///
-/// This is the companion to [`taps_do_not_outlive_the_manager_which_made_them`]: holding the
-/// descriptor is what keeps a tap alive, so letting go of it has to be wired into the reconciler's
-/// removal path.  Nothing else can collect one, because there is no netlink object to unlink.
+/// Taps used to be part of the plan, generated per configured ethernet interface and named with
+/// the dataplane's `-tap` suffix.  They are not any more: the control-plane bridge creates them
+/// from the driver, named exactly the configured interface name, because that is the name FRR and
+/// the routing tables look for.  A `-tap` device is therefore something only an older build
+/// produced -- but it still wears the dataplane's naming scheme, so it is still ours to collect,
+/// and an upgrade which left one behind must clean it up rather than walk past it.
+///
+/// This also pins down the *other* half of that split, which is the half that would break the
+/// bridge: a tap named without the suffix is foreign to the reconciler and must survive.
 #[n_vm::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
-fn a_tap_dropped_from_the_plan_is_removed() {
-    const TAP: &str = "dp0-tap";
+fn a_stray_suffixed_tap_is_removed_and_a_bridge_tap_is_not() {
+    const STRAY: &str = "dp0-tap";
+    const BRIDGE_TAP: &str = "dp0";
 
     in_private_netns(|| async {
         let Ok((connection, handle, _)) = rtnetlink::new_connection() else {
@@ -647,24 +602,33 @@ fn a_tap_dropped_from_the_plan_is_removed() {
         };
         tokio::spawn(connection);
 
+        // Held for the duration: a tap exists exactly as long as somebody holds its descriptor,
+        // so these stand in for the bridge which would be holding them in a running dataplane.
+        let stray = TapDevice::open(&InterfaceName::try_from(STRAY).unwrap()).unwrap();
+        let bridge_tap = TapDevice::open(&InterfaceName::try_from(BRIDGE_TAP).unwrap()).unwrap();
+
         let vpcs = VpcManager::<RequiredInformationBase>::new(Arc::new(handle));
-
-        let mut required = plan_with_tap(TAP);
-        converge(&vpcs, &mut required).await;
-        assert!(tap_exists(&vpcs, TAP).await, "{TAP} was never created");
-
-        required
-            .interfaces
-            .remove_by_name(&InterfaceName::try_from(TAP).unwrap())
-            .unwrap();
-        converge(&vpcs, &mut required).await;
+        assert!(tap_exists(&vpcs, STRAY).await, "{STRAY} was never created");
         assert!(
-            !tap_exists(&vpcs, TAP).await,
-            "{TAP} is absent from the plan and should have been removed"
+            tap_exists(&vpcs, BRIDGE_TAP).await,
+            "{BRIDGE_TAP} was never created"
+        );
+
+        let mut required = empty_plan();
+        converge(&vpcs, &mut required).await;
+
+        assert!(
+            !tap_exists(&vpcs, STRAY).await,
+            "{STRAY} wears the dataplane's naming scheme and is absent from the plan, so the \
+             reconciler should have removed it"
         );
         assert!(
-            vpcs.taps().is_empty(),
-            "{TAP} is gone from the kernel but its descriptor is still held: that is a leak"
+            tap_exists(&vpcs, BRIDGE_TAP).await,
+            "{BRIDGE_TAP} is the control-plane bridge's own tap; the reconciler must leave it \
+             alone or the dataplane loses its control path on the first config apply"
         );
+
+        drop(stray);
+        drop(bridge_tap);
     });
 }

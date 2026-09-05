@@ -13,8 +13,6 @@ use serde::{Deserialize, Serialize};
 pub enum InterfacePropertiesSpec {
     /// The planned properties of a bridge.
     Bridge(BridgePropertiesSpec),
-    /// The planned properties of a tap device
-    Tap,
     /// The expected properties of a pci netdev.
     Pci(PciNetdevPropertiesSpec),
     /// The planned properties of a vtep (vxlan device).
@@ -39,8 +37,11 @@ impl AsRequirement<InterfacePropertiesSpec> for InterfaceProperties {
             }
             InterfaceProperties::Vrf(props) => InterfacePropertiesSpec::Vrf(props.as_requirement()),
             InterfaceProperties::Pci(rep) => InterfacePropertiesSpec::Pci(rep.as_requirement()),
-            InterfaceProperties::Tap => InterfacePropertiesSpec::Tap,
-            InterfaceProperties::Other => return None,
+            // A tap has no requirement to be expressed.  The dataplane's own taps belong to the
+            // control-plane bridge, which creates them from the driver rather than from a
+            // configuration, and anything else wearing a tap's clothes is a stray to be removed.
+            // Reporting `None` is what puts both on the "not part of the plan" path.
+            InterfaceProperties::Tap | InterfaceProperties::Other => return None,
         })
     }
 }

@@ -32,7 +32,15 @@
 //!   bring-up with a clear error rather than silently mapping onto interface 0. Supporting those
 //!   ports means giving the configuration layer a way to name a port that is not a netdev.
 //! - **No hairpin or offloaded forwarding.** Every packet goes through the software pipeline.
+//!
+//! # The control plane
+//!
+//! With the kernel driver, FRR shares a namespace with the real NIC and peers through the kernel's
+//! own stack. Here the kernel has no NIC, so every control frame is carried across by
+//! [`cpbridge`], which is what makes a tap the kernel's end of each port. See that module for the
+//! punt policy and its costs.
 
+pub(crate) mod cpbridge;
 mod port;
 mod worker;
 
@@ -56,6 +64,7 @@ use super::status::{
 };
 use super::watchdog::{Activity, Watchdog};
 
+pub(crate) use cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 pub(crate) use port::Port;
 
 trace_target!("dpdk-driver", LevelFilter::INFO, &["driver"]);
@@ -84,6 +93,9 @@ impl DriverDpdk {
     /// queues and every mbuf drawn from their pools are branded with the EAL's lifetime, so none of
     /// it can outlive the EAL that owns the memory it all lives in.
     ///
+    /// `bridge` is the datapath's end of the control-plane bridge, if there is one. Its queues are
+    /// dealt out alongside the hardware queues, because the two are used from the same loop.
+    ///
     /// # Errors
     ///
     /// Returns [`DriverError`] if a port cannot be brought up, if the queue split fails, or if a
@@ -95,6 +107,7 @@ impl DriverDpdk {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'p, Mbuf<'p>> + 'p>,
         status_writer: DriverStatusWriter,
+        bridge: Option<&mut DatapathEnds>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -121,7 +134,7 @@ impl DriverDpdk {
             ));
         }
 
-        let dealt = port::deal_queues(ports, num_workers)?;
+        let dealt = port::deal_queues(ports, num_workers, bridge)?;
 
         info!(
             "Starting {num_workers} DPDK worker(s) across {} port(s)",

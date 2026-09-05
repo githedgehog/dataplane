@@ -5,8 +5,9 @@ This program is responsible for initializing the dataplane.
 The primary steps of this program are to:
 
 1. Drive the NIC into the configuration needed by DPDK to use the NIC
-2. (TODO) Drop some hazardous privileges (especially [`CAP_SYS_ADMIN`])
-3. (TODO) `exec` the dataplane process on success
+2. Put the packet path and the control plane into network namespaces of their own
+3. (TODO) Drop some hazardous privileges (especially [`CAP_SYS_ADMIN`])
+4. `exec` the dataplane process on success
 
 For most network cards, this configuration step involves unbinding the NIC from the kernel driver and re-binding it to
 the [vfio-pci] driver.
@@ -20,6 +21,68 @@ In particular, it makes no attempt to rebind the NIC back to the kernel driver.
 Thus, expect this program to make network cards disappear from the perspective of tooling like [iproute2] and [ethtool].
 
 Only a very limited set of network cards are currently supported, although this set can easily be expanded over time.
+
+## Network namespaces
+
+With `--driver dpdk --datapath-netns`, this program leaves the dataplane spanning **two** network namespaces, and
+neither of them is the host's:
+
+```text
+init  (host ns)   prepare NICs -> create datapath ns -> devlink reload NICs into it
+                  -> open/create control ns -> lo up -> setns(control) -> exec dataplane
+dataplane         main + mgmt runtime            : control ns  (taps, rtnetlink, FRR IPC, BMP)
+                  dpdk-datapath thread           : datapath ns (setns + fresh sysfs)
+FRR               control ns
+```
+
+The order is not a preference. The devices are moved with a **devlink reload**, and a PCI device's devlink instance
+belongs to the namespace the device is in, which at that point is the host's; entering the control namespace first
+would put this process somewhere those instances are not. Conversely `setns` on the main thread is what `exec`
+carries over, so it has to be last.
+
+### Why the control plane needs a namespace at all
+
+In DPDK mode the kernel has no NIC: on a bifurcated driver the netdev went into the datapath namespace, and on
+[vfio-pci] there is no netdev to begin with. So the kernel's end of every port is a **tap**, created by the
+dataplane, and every control frame — BGP, BFD, ARP, LLDP — is carried across by the dataplane between that tap and
+the port.
+
+Those taps are named **exactly** the configured interface name, because that is the name FRR's configuration, the
+routing tables and the ACLs all use. The physical device wants that name too, and in the host's namespace the two
+collide: a leftover tap on `dp0` makes udev's rename of the returning physical device fail, which strands the real
+device under a name nothing is looking for. A private namespace removes the collision, because the physical device
+is never in it.
+
+`lo` is brought up in the new namespace before `exec`. FRR binds its vty to `127.0.0.1` and the dataplane's
+`frr-agent` connects to it there; a fresh namespace's loopback is down, and the resulting failure looks like an agent
+that will not connect rather than an interface that is down.
+
+Nothing holds the control namespace open by descriptor. A namespace with a process in it does not go away, and after
+`exec` the dataplane is that process.
+
+### `--control-netns`
+
+Given a path, this program enters that namespace instead of making one. That is the lever for running FRR by hand:
+
+```console
+$ ip netns add gwctl
+$ ip netns exec gwctl <start frr>
+$ dataplane-init --driver dpdk --interface dp0=pci@0000:03:00.0 \
+      --datapath-netns --control-netns /run/netns/gwctl --config-dir /dpconf
+```
+
+It requires `--datapath-netns`, and is rejected without it: taps named after the configured interfaces can only exist
+somewhere the physical devices are not. The kernel driver never gets a control namespace at all — its `AF_PACKET`
+sockets are opened on the real interfaces.
+
+### What this costs, for now
+
+- `prometheus-frr-exporter` cannot reach FRR from the host's namespace any more. It needs a proxy through the
+  dataplane's metrics endpoint.
+- Kubernetes mode is unavailable: the k8s client and the metrics endpoint are outbound from the host's namespace, and
+  they have not been split onto a runtime of their own yet. This configuration is `--config-dir` only.
+- Physical link state does not reach FRR. The DPDK driver knows it; nothing yet propagates it onto the tap, so a port
+  going down looks to FRR like a link that is still up.
 
 ## Error Handling Strategy
 

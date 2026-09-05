@@ -8,7 +8,7 @@ use args::{
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{DriverDpdk, Port};
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -318,14 +318,31 @@ fn bring_up_ports<'eal>(
     Ok(ports)
 }
 
+/// The two handshakes between `main` and the datapath thread.
+///
+/// Grouped because they are one protocol in two parts, and because they are meaningless apart: see
+/// "Why it stops twice" on [`run_dpdk_datapath`].
+struct DatapathHandshake {
+    /// How the datapath reports that the EAL exists, which management must not serve without.
+    eal_ready: std::sync::mpsc::Sender<Result<(), String>>,
+    /// How the datapath is told management is running and the hardware may come up.
+    go: std::sync::mpsc::Receiver<()>,
+}
+
 /// Everything that has to happen on the datapath's own thread, in the order it has to happen in.
 ///
 /// # Why this is a thread and not just more of `main`
 ///
-/// The dataplane spans two network namespaces: the control plane stays in the host's, talking to
-/// Kubernetes and FRR, while the packet path runs in one that owns the NICs. A thread moves between
-/// them with `setns`, which affects the calling thread alone -- so the jump has to happen somewhere
-/// that is not `main`, or the control plane would go with it.
+/// The dataplane spans two network namespaces, and neither of them is the host's. `dataplane-init`
+/// puts the whole process into a **control** namespace -- where FRR lives, and where the taps that
+/// stand in for the ports are created -- and moves the NICs into a **datapath** namespace of their
+/// own. This thread is the one that jumps into the second. `setns` affects the calling thread
+/// alone, so the jump has to happen somewhere that is not `main`, or the control plane would go
+/// with it.
+///
+/// (The host's namespace still has tenants -- Kubernetes and the metrics endpoint reach out of the
+/// container -- but nothing in this process is in it any more. Giving those their own runtime is
+/// the next split, and the reason this configuration is `--config-dir` only.)
 ///
 /// The DPDK objects then pin themselves to this side. `rte_eal_init` only finds devices belonging
 /// to the namespace it runs in, so it must run *after* the jump; [`Eal`] is `!Send`; ports borrow
@@ -348,15 +365,22 @@ fn bring_up_ports<'eal>(
 /// 2. Wait on `go` before touching the hardware, so ports come up and workers start only once
 ///    management is running. This is where the driver has always started; moving the EAL earlier
 ///    should not drag the packet path along with it.
+///
+/// # What it reports back
+///
+/// A port's MAC and MTU are properties of the running device, so they are only knowable here, after
+/// the ports are up -- and the control plane needs both, to dress each tap as the port it stands
+/// for. `bridge` is the channel that carries them back.
 fn run_dpdk_datapath(
     config: &LaunchConfiguration,
     netns: Option<&NetworkNamespace>,
     workers: &lifecycle::Subsystem,
     ingredients: PipelineIngredients,
     status_writer: DriverStatusWriter,
-    eal_ready: &std::sync::mpsc::Sender<Result<(), String>>,
-    go: &std::sync::mpsc::Receiver<()>,
+    mut bridge: Option<DatapathEnds>,
+    handshake: &DatapathHandshake,
 ) {
+    let DatapathHandshake { eal_ready, go } = handshake;
     if let Some(netns) = netns {
         // Both halves matter, and the second is the one that is easy to miss: `setns` gets access
         // to the devices, and the fresh sysfs is what lets them be *enumerated*. Without it the EAL
@@ -397,6 +421,20 @@ fn run_dpdk_datapath(
         }
     };
 
+    // Tell the control plane what each port turned out to be, so it can give the matching tap the
+    // port's MAC and MTU. Without the MAC the peer resolves the wrong address for us and every
+    // frame it sends back is dropped as `MacNotForUs`, which looks like a link problem rather than
+    // an addressing one.
+    if let Some(bridge) = &bridge {
+        for port in &ports {
+            bridge.report(PortIdentity {
+                name: port.name.clone(),
+                mac: port.mac,
+                mtu: port.mtu,
+            });
+        }
+    }
+
     // An inner scope, because the queue handles the workers own borrow these ports: the ports have
     // to outlive every thread that touches one, and the scope is what proves they do. It returns
     // when the supervisor has joined every worker, which happens once `workers` is cancelled.
@@ -409,11 +447,19 @@ fn run_dpdk_datapath(
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,
+            bridge.as_mut(),
         ) {
             error!("Failed to start driver: {e}");
             workers.report_fatal("the DPDK driver could not be started");
         }
     });
+
+    if let Some(bridge) = &bridge {
+        // Anything left in here is a tap the bridge made for an interface no DPDK port claimed,
+        // which means the configuration named a device the EAL did not probe -- already an error at
+        // bring-up, but worth naming again from the side that would have carried its traffic.
+        bridge.report_unclaimed();
+    }
 
     // Every worker has been joined, so the queue handles that borrowed these ports are gone and the
     // ports can be stopped. Explicitly, rather than leaving it to `PortLifecycle`'s `Drop`
@@ -584,12 +630,65 @@ pub fn main() {
         info!("Inherited a network namespace for the datapath");
     }
 
+    // The control-plane bridge, built here and not on the datapath thread.
+    //
+    // `TUNSETIFF` creates a tap in the network namespace of the calling thread, so this has to
+    // happen while every thread in the process is still in the control namespace -- before the
+    // datapath thread below jumps into the one that owns the NICs. Afterwards the taps are only
+    // descriptors, which work from anywhere.
+    //
+    // # When there is one
+    //
+    // Exactly when `dataplane-init` handed over a datapath namespace, which is the only
+    // circumstance in which the taps have names free to take. The taps are named after the
+    // configured interfaces, so they can only exist somewhere the physical devices are not; a
+    // namespace for the datapath is what makes that true, and `dataplane-init` enters a control
+    // namespace whenever it makes one.
+    //
+    // Without it -- a DPDK dataplane run directly, or one whose devices stayed put -- the kernel
+    // still has the netdevs on a bifurcated driver and carries the control plane itself, exactly as
+    // it did before this existed. Making taps there would collide with those very devices.
+    //
+    // The kernel driver never gets one: its interfaces *are* the real ones.
+    let want_bridge =
+        matches!(config.driver, DriverConfigSection::Dpdk(_)) && datapath_netns.is_some();
+    let (_cp_bridge, cp_ends) = if want_bridge {
+        match CpBridge::create(
+            &mgmt_handle,
+            &shutdown.mgmt,
+            config.driver.interfaces().map(|i| &i.interface),
+        ) {
+            Ok((bridge, ends)) => (Some(bridge), Some(ends)),
+            Err(e) => {
+                // Fatal, and not because the bridge is a nicety: with the NICs in a namespace of
+                // their own this is the control plane's *only* path to the wire, so the dataplane
+                // would come up, forward nothing it had not been told about, and never learn a
+                // route.
+                error!("Failed to build the control-plane bridge: {e}");
+                shutdown.fail();
+                (None, None)
+            }
+        }
+    } else {
+        if matches!(config.driver, DriverConfigSection::Dpdk(_)) {
+            info!(
+                "No datapath network namespace, so no control-plane bridge: the kernel keeps the \
+                 netdevs and carries the control plane itself"
+            );
+        }
+        (None, None)
+    };
+
     concurrency::thread::scope(|scope| {
         // Two handshakes with the datapath thread. `eal_ready` is how it reports that the EAL
         // exists, which management must not serve without; `go` is how it is told management is
         // running and the hardware can come up. See `run_dpdk_datapath`.
         let (eal_ready_tx, eal_ready_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let handshake = DatapathHandshake {
+            eal_ready: eal_ready_tx,
+            go: go_rx,
+        };
 
         // Only one driver ever runs, but the compiler cannot see that this arm and the kernel arm
         // further down are exclusive, so ownership of the pipeline factory and the status writer
@@ -609,8 +708,8 @@ pub fn main() {
                                 workers,
                                 ingredients,
                                 driver_status_writer,
-                                &eal_ready_tx,
-                                &go_rx,
+                                cp_ends,
+                                &handshake,
                             );
                         }
                     });
