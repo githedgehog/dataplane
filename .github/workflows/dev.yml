@@ -461,7 +461,14 @@ jobs:
     needs:
       - plan
       - version
-      - lint
+      # EXPERIMENT (dpdk in vlab): `lint` is deliberately not a dependency here.
+      #
+      # It still runs and still reports; it just no longer gates the images, and so no longer
+      # gates vlab. Every lint iteration on this branch costs a full round trip through a lab
+      # runner to learn nothing about whether the gateway comes up, and the commits are going to
+      # be rewritten wholesale before any of this lands. Restore the dependency with the rest of
+      # the experimental scaffolding.
+      # - lint
     permissions:
       contents: "read"
       packages: "write" # nix-setup logs into ghcr.io; this job pushes images via `just push-container`
