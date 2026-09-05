@@ -1555,6 +1555,54 @@ let
           # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
           # isn't present in the image.
           libc-tar-input = "${libc-pkg.out}";
+          # FRR, and the pieces that carry configuration into it, composed once so that the
+          # collisions between busybox's applets, coreutils and FRR's own binaries are
+          # `buildEnv`'s problem rather than this build phase's.
+          #
+          # This has to be laid down as a *tree*, not merely reached through the store, because
+          # FRR is configured with absolute image paths and nothing else will do:
+          # `--bindir=/bin`, `--libdir=/lib`, `--sbindir=/libexec/frr`, `--sysconfdir=/etc`,
+          # `--localstatedir=/run/frr` and `--with-moduledir=/lib/frr/modules`
+          # (nix/pkgs/frr/default.nix).  zebra looks for `hh_dplane` at `/lib/frr/modules` and
+          # will not look anywhere else.
+          #
+          # The same set as `containers.frr.dataplane` less `tini`: `dataplane-init` is pid 1 in
+          # this image and reaps its own orphans, which is the whole reason the two images
+          # became one.
+          frr-env = pkgs.buildEnv {
+            name = "dataplane-gateway-frr-env";
+            # No `/share`: the only things in it are locale, man pages and bash completions, and
+            # FRR's own data lives under its `--prefix`.
+            pathsToLink = [
+              "/bin"
+              "/etc"
+              "/lib"
+              "/libexec"
+            ];
+            paths = with pkgs; [
+              bash
+              coreutils
+              fancy.dplane-plugin
+              fancy.dplane-rpc
+              fancy.frr-agent
+              fancy.frr-config
+              fancy.frr.dataplane
+              findutils
+              gnugrep
+              iproute2
+              # Runs as a sidecar in the merged pod rather than under the supervisor: it reads
+              # FRR's vty sockets, which are files, so it does not care which network namespace
+              # FRR ends up in -- and it is a metrics endpoint, whose fate should not be the
+              # gateway's.
+              prometheus-frr-exporter
+              python3Minimal
+            ];
+          };
+          # The tree above is symlinks into the store, so the targets have to be in the tar too or
+          # every one of them dangles.  `closureInfo` is what knows the full set -- notably the
+          # python interpreter, which nothing links against and which `frr-reload.py` reaches only
+          # through its `#!` line.
+          frr-closure = pkgs.closureInfo { rootPaths = [ frr-env ]; };
         in
         ''
           tmp="$(mktemp -d)"
@@ -1573,6 +1621,42 @@ let
           ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
           ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
           ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
+          # FRR, laid over busybox rather than beside it: where both provide a name -- `ip`, most
+          # of coreutils -- the full implementation wins, as it does in the FRR image this
+          # replaces.  `frrcommon.sh` and `watchfrr.sh` were written against those, not against
+          # busybox's approximations of them.
+          for i in "${frr-env}/bin/"*; do
+              ln -sf "$i" "$tmp/bin/$(basename "$i")"
+          done
+          # Real directories holding symlinks, which is `buildEnv`'s own shape and not an
+          # accident of it: FRR creates files beside its configuration and its state, and a
+          # directory that is itself a symlink into the store is one it cannot write into.
+          mkdir -p "$tmp/libexec"
+          cp --archive "${frr-env}/lib/." "$tmp/lib/"
+          cp --archive "${frr-env}/libexec/." "$tmp/libexec/"
+          # `--remove-destination`, because `fakeNss` was copied here first and arrived read-only
+          # from the store.  Its `/etc/passwd` has never heard of `frr`, which is the user every
+          # FRR daemon drops to, so this file has to be FRR's rather than merged with it.
+          cp --archive --remove-destination "${frr-env}/etc/." "$tmp/etc/"
+          # One deduplicated list rather than a run of positional arguments.  FRR's closure and
+          # the dataplane's overlap -- libc at least, and everything under it -- and a path named
+          # twice is archived twice.  `sort -u` also fixes the order, which `--sort=name` alone
+          # does not do across separate arguments.
+          #
+          # `$inputs` is a sibling of `$tmp`, not a child: anything inside `$tmp` is archived by
+          # the `.` below, and a build's own scratch file has no business in the image.
+          inputs="$(mktemp)"
+          {
+            printf '%s\n' \
+              ${libc-tar-input} \
+              ${libgcc-tar-input} \
+              ${workspace.dataplane} \
+              ${workspace.init} \
+              ${workspace.cli} \
+              ${pkgs.pkgsHostHost.busybox}
+            cat "${frr-closure}/store-paths"
+          } | sed '/^$/d' | sort -u > "$inputs"
+
           # we take some care to make the tar file reproducible here
           tar \
             --create \
@@ -1631,13 +1715,8 @@ let
             --verbose \
             --file "$out" \
             \
-            . \
-            ${libc-tar-input} \
-            ${libgcc-tar-input} \
-            ${workspace.dataplane} \
-            ${workspace.init} \
-            ${workspace.cli} \
-            ${pkgs.pkgsHostHost.busybox}
+            --files-from "$inputs" \
+            .
         '';
     }).overrideAttrs
       source-volatile;
@@ -2141,7 +2220,7 @@ let
         }
         {
           pattern = "(^|-)python3";
-          why = "an interpreter the dataplane does not use and should not offer an attacker";
+          why = "an interpreter: one more thing in the image able to run code it was not built with. FRR needs one and is exempted below; nothing else gets to arrive quietly beside it";
         }
         {
           pattern = "(^|-)(binutils|gcc-wrapper|cmake|meson|ninja|pkg-config|autoconf|automake)";
@@ -2176,6 +2255,26 @@ let
         "source"
       ];
 
+      # Names that trip a rule and ship anyway, each with the reason it is not
+      # the thing that rule is looking for.
+      #
+      # An exemption is deliberately not a rule change. The pattern still
+      # matches, the canary that proves the pattern works still fires, and
+      # anything else matching it still fails the build -- what changes is that
+      # this one name is permitted in the closure. Widening the pattern instead
+      # would have retired the rule quietly.
+      #
+      # Every exemption has to be *used*, or the build fails. An exemption
+      # nobody needs is a hole nobody is watching: if FRR ever stops reaching
+      # for an interpreter, this should be deleted at that commit rather than
+      # left behind to cover the next thing that reaches for one.
+      exempt = [
+        {
+          pattern = "^python3-minimal-";
+          why = "FRR's `frr-reload.py` is how any configuration reaches FRR at all, and its `#!` line names this interpreter; the gateway image ships FRR because the control plane and the datapath share one process tree";
+        }
+      ];
+
       # Names that must *not* trip any rule, so a pattern cannot be widened
       # into one that flags the whole image.
       allowed = [
@@ -2207,10 +2306,12 @@ let
         inherit rules;
         canaries = lines (c: c) canaries;
         allowed = lines (a: a) allowed;
+        exemptions = lines (e: "${e.pattern}\t${e.why}") exempt;
         passAsFile = [
           "rules"
           "canaries"
           "allowed"
+          "exemptions"
         ];
       }
       ''
@@ -2248,23 +2349,53 @@ let
           fi
         done < "$allowedPath"
 
+        # The exemption, if any, that permits this name. Prints "pattern<TAB>why".
+        exemption() {
+          local name="$1"
+          while IFS=$'\t' read -r pattern why; do
+            [ -n "$pattern" ] || continue
+            if printf '%s' "$name" | grep -Eq -e "$pattern"; then
+              printf '%s\t%s\n' "$pattern" "$why"
+              return
+            fi
+          done < "$exemptionsPath"
+        }
+
         status=0
         count=0
+        used=""
         while read -r path; do
           count=$((count + 1))
           rest="''${path#/nix/store/}"
           name="''${rest#*-}"
           hit="$(matches "$name" || true)"
-          if [ -n "$hit" ]; then
-            status=1
-            echo "forbidden in the runtime closure: $name" >&2
-            printf '%s\n' "$hit" | while IFS=$'\t' read -r _ why; do
-              echo "    $why" >&2
-            done
-            echo "    $path" >&2
-            echo >&2
+          [ -n "$hit" ] || continue
+          pass="$(exemption "$name" || true)"
+          if [ -n "$pass" ]; then
+            used="$used''${pass%%$'\t'*}"$'\n'
+            echo "permitted in the runtime closure: $name" >&2
+            echo "    ''${pass#*$'\t'}" >&2
+            continue
           fi
+          status=1
+          echo "forbidden in the runtime closure: $name" >&2
+          printf '%s\n' "$hit" | while IFS=$'\t' read -r _ why; do
+            echo "    $why" >&2
+          done
+          echo "    $path" >&2
+          echo >&2
         done < "$closure/store-paths"
+
+        # An exemption nobody needed is one nobody is watching. See the comment
+        # on `exempt` in default.nix.
+        while IFS=$'\t' read -r pattern _; do
+          [ -n "$pattern" ] || continue
+          if ! printf '%s' "$used" | grep -Fqx -- "$pattern"; then
+            echo "closure-check has a stale exemption: nothing in the closure matches '$pattern'." >&2
+            echo "Delete it from \`exempt\` in default.nix; the rule it covers is doing its job again." >&2
+            exit 1
+          fi
+        done < "$exemptionsPath"
 
         if [ "$status" -ne 0 ]; then
           echo "dataplane.tar's runtime closure contains build-only paths (listed above)." >&2
