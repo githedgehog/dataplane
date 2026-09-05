@@ -113,29 +113,46 @@ impl DriverKernel {
         mut cp_ends: Option<&mut DatapathEnds>,
         netns: Option<&'scope NetworkNamespace>,
     ) -> Result<Vec<WorkerMonitor<'scope>>, std::io::Error> {
+        use crate::drivers::kernel::worker::BridgedPort;
         let mut monitors: Vec<WorkerMonitor> = Vec::with_capacity(num_workers);
 
         info!("Spawning {num_workers} workers");
 
+        // Split once, before any worker exists. The punt sender is cloned to every worker,
+        // because any of them may receive a frame the kernel should see; the injection receiver
+        // goes to exactly one, because two draining the same queue would interleave a peering
+        // session's frames and reorder them. The tap's index goes to all of them -- it is what
+        // every worker must stamp on a received packet, not just the one that injects.
+        let mut bridge: Vec<BridgedPort> = Vec::new();
+        if let Some(ends) = cp_ends.as_mut() {
+            for kif in interfaces {
+                if let Some(queues) = ends.take(&kif.name) {
+                    bridge.push(BridgedPort {
+                        name: kif.name.clone(),
+                        index: queues.index,
+                        punt: queues.punt,
+                        inject: queues.inject,
+                    });
+                }
+            }
+        }
+
         for workerid in 0..num_workers {
-            // The bridge ends go to worker 0 alone. Only one worker may drain a given injection
-            // queue -- two would interleave a peering session's frames and reorder them -- and
-            // taking them here means every other worker gets `None` rather than a share.
-            let bridge = if workerid == 0 {
-                cp_ends
-                    .as_mut()
-                    .map(|ends| {
-                        interfaces
-                            .iter()
-                            .filter_map(|kif| {
-                                ends.take(&kif.name).map(|queues| (kif.ifindex, queues))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            // Every worker sees every port, with the injection queue moved out for all but the
+            // first.
+            let worker_bridge: Vec<BridgedPort> = bridge
+                .iter_mut()
+                .map(|port| BridgedPort {
+                    name: port.name.clone(),
+                    index: port.index,
+                    punt: port.punt.clone(),
+                    inject: if workerid == 0 {
+                        port.inject.take()
+                    } else {
+                        None
+                    },
+                })
+                .collect();
 
             // create worker
             let worker = Worker::new(
@@ -146,7 +163,7 @@ impl DriverKernel {
             );
             // start worker. We get a `WorkerMonitor` on success, which includes
             // an interface monitor for each of its rx tasks
-            let wk_monitor = worker.start(scope, interfaces, bridge, netns)?;
+            let wk_monitor = worker.start(scope, interfaces, worker_bridge, netns)?;
 
             // store monitor
             monitors.push(wk_monitor);

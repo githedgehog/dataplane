@@ -28,7 +28,7 @@ use pipeline::{DynPipeline, NetworkFunction};
 use hardware::netns::NetworkNamespace;
 use net::eth::mac::Mac;
 
-use crate::drivers::cpbridge::{Disposition, Frame, PortCpQueues, addressed_to, disposition};
+use crate::drivers::cpbridge::{Disposition, Frame, addressed_to, disposition};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
@@ -39,6 +39,24 @@ use crate::drivers::watchdog::{RxCounters, Watchdog};
 
 use tracing::{debug, error, info, trace, warn};
 
+/// One port's share of the control-plane bridge, as a single worker sees it.
+///
+/// The parts are split differently on purpose. `index` and `punt` are given to **every** worker:
+/// any worker can receive a frame the kernel should see, and every worker has to stamp received
+/// packets with the index the rest of the dataplane knows this interface by. `inject` is given to
+/// exactly one, because two workers draining the same queue would interleave a peering session's
+/// frames across two sockets and reorder them.
+pub(crate) struct BridgedPort {
+    /// The interface this stands in for, which is also the tap's name.
+    pub(crate) name: String,
+    /// The tap's interface index -- see [`crate::drivers::cpbridge::PortCpQueues::index`].
+    pub(crate) index: InterfaceIndex,
+    /// Where a punted frame goes.
+    pub(crate) punt: tokio::sync::mpsc::Sender<Frame>,
+    /// Frames the kernel wants transmitted. `None` on every worker but the drainer.
+    pub(crate) inject: Option<tokio::sync::mpsc::Receiver<Frame>>,
+}
+
 struct WorkerInterfaceWriter {
     if_name: String,
     #[allow(unused)]
@@ -48,6 +66,12 @@ struct WorkerInterfaceWriter {
 
 struct WorkerInterfaceReader {
     if_name: String,
+    /// The index the rest of the dataplane knows this interface by.
+    ///
+    /// The tap's, when a bridge stands in for this interface, and the kernel interface's own
+    /// otherwise. Stamped onto every received packet as `iif`, because the ingress stage looks the
+    /// interface up in a table built from the *control plane's* view. See
+    /// [`PortCpQueues::index`](crate::drivers::cpbridge::PortCpQueues::index).
     if_index: InterfaceIndex,
     read_fd: AsyncFd<std::os::unix::io::OwnedFd>,
     watchdog: Watchdog,
@@ -71,6 +95,8 @@ fn create_worker_interface(
     mac: Option<Mac>,
     punt: Option<tokio::sync::mpsc::Sender<Frame>>,
 ) -> io::Result<(WorkerInterfaceWriter, WorkerInterfaceReader)> {
+    // `if_index` is the dataplane-wide identity; the socket is bound by *name*, which resolves in
+    // this thread's namespace to the real interface. The two are deliberately different things.
     let mut sock = RawPacketStream::new()?;
     sock.bind(if_name)
         .inspect_err(|e| error!("Failed to open raw sock for interface {if_name}: {e}"))?;
@@ -320,7 +346,7 @@ impl Worker {
         self,
         scope: &'scope thread::Scope<'scope, '_>,
         interfaces: &[Kif],
-        bridge: Vec<(InterfaceIndex, PortCpQueues)>,
+        bridge: Vec<BridgedPort>,
         netns: Option<&'scope NetworkNamespace>,
     ) -> Result<WorkerMonitor<'scope>, io::Error> {
         let id = self.id;
@@ -341,7 +367,10 @@ impl Worker {
 
         let worker_ifmonitors = ifmonitors.clone();
 
-        let mut bridge: HashMap<InterfaceIndex, PortCpQueues> = bridge.into_iter().collect();
+        let mut bridge: HashMap<String, BridgedPort> = bridge
+            .into_iter()
+            .map(|port| (port.name.clone(), port))
+            .collect();
 
         let thread_builder = thread::Builder::new().name(format!("dp-worker-{id}"));
         let handle_res = thread_builder.spawn_scoped(scope, move || {
@@ -400,22 +429,18 @@ impl Worker {
                 // And one task per interface whose queues this worker took, carrying what the
                 // control plane wants sent. Only this worker has them -- see
                 // `DriverKernel::spawn_workers_scoped` for why that is not merely tidiness.
-                for (ifindex, queues) in bridge.drain() {
-                    let Some(inject) = queues.inject else {
+                for (if_name, port) in bridge.drain() {
+                    let Some(inject) = port.inject else {
                         continue;
                     };
-                    let Some(writer) = if_table.get(&ifindex).cloned() else {
+                    let Some(writer) = if_table.get(&port.index).cloned() else {
                         warn!(
                             worker = id,
-                            "the bridge has an injection queue for ifindex {ifindex}, which this \
-                             worker has no socket for; the control plane cannot transmit on it"
+                            "the bridge has an injection queue for {if_name}, which this worker \
+                             has no socket for; the control plane cannot transmit on it"
                         );
                         continue;
                     };
-                    let if_name = interfaces
-                        .iter()
-                        .find(|kif| kif.ifindex == ifindex)
-                        .map_or_else(|| ifindex.to_string(), |kif| kif.name.clone());
                     reader_handles.spawn_local(inject_frames(
                         id,
                         if_name,
@@ -456,7 +481,7 @@ fn build_interface_table(
     total_workers: usize,
     interfaces: &[Kif],
     ifmonitors: &[WorkerIfaceMonitor],
-    bridge: &mut HashMap<InterfaceIndex, PortCpQueues>,
+    bridge: &mut HashMap<String, BridgedPort>,
 ) -> Result<(WorkerInterfaceReaders, Arc<WorkerIfTable>), io::Error> {
     let mut if_table = HashMap::new();
     let mut readers = Vec::new();
@@ -468,21 +493,26 @@ fn build_interface_table(
             .map(|ifm| ifm.watchdog.clone())
             .ok_or(io::Error::other("Failed to find interface watchdog"))?;
 
-        // The punt half is cloned out and the queues left in place; the inject half is drained
-        // separately, after the table is built, by the one worker that owns it.
-        let punt = bridge.get(&kif.ifindex).map(|queues| queues.punt.clone());
+        // Keyed by name, because the two indices in play mean different things and only the name
+        // is common to both namespaces.
+        let bridged = bridge.get(kif.name.as_str());
+        let punt = bridged.map(|port| port.punt.clone());
+
+        // The tap's index when there is a bridge, this interface's own when there is not. This is
+        // the number the pipeline will use for both `iif` and `oif`, so the table is keyed by it.
+        let if_index = bridged.map_or(kif.ifindex, |port| port.index);
 
         let (writer, reader) = create_worker_interface(
             id,
             total_workers,
             &kif.name,
-            kif.ifindex,
+            if_index,
             watchdog,
             kif.mac,
             punt,
         )?;
 
-        if_table.insert(kif.ifindex, Arc::new(Mutex::new(writer)));
+        if_table.insert(if_index, Arc::new(Mutex::new(writer)));
         readers.push(reader);
     }
     Ok((readers, Arc::new(if_table)))
