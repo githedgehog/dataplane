@@ -23,7 +23,7 @@ command-fds = { workspace = true }
 # the half DPDK attaches through.
 devlink = { workspace = true }
 futures = { workspace = true }
-nix = { workspace = true, features = ["mount", "fs", "process", "signal"] }
+nix = { workspace = true, features = ["mount", "fs", "process", "signal", "user"] }
 procfs = { workspace = true, features = [] }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
