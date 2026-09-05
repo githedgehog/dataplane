@@ -16,6 +16,14 @@ use tracing::{debug, error, info};
 pub struct Kif {
     /// Linux ifindex of the interface
     pub ifindex: InterfaceIndex,
+    /// The MAC the kernel reports for this interface.
+    ///
+    /// Carried because the control-plane bridge needs it: the tap standing in for this interface
+    /// has to answer ARP with the same address, or the peer sends frames this interface will not
+    /// accept. `None` when the kernel reported none, which a physical interface never does.
+    pub mac: Option<net::eth::mac::Mac>,
+    /// The MTU the kernel reports, which the tap is given so both ends agree.
+    pub mtu: Option<u32>,
     /// Name of the interface, must be a name that can bound using bind on a socket
     pub name: String,
 }
@@ -23,9 +31,13 @@ pub struct Kif {
 impl Kif {
     /// Create a kernel interface entry.
     #[allow(clippy::unnecessary_wraps)] // Eventually we'll do work that could return an error
-    fn new(ifindex: InterfaceIndex, name: &str) -> io::Result<Self> {
+    fn new(ifindex: InterfaceIndex, name: &str, interface: &Interface) -> io::Result<Self> {
         let iface = Self {
             ifindex,
+            mac: interface
+                .mac_addr
+                .map(|mac| net::eth::mac::Mac::from(mac.octets())),
+            mtu: interface.mtu,
             name: name.to_owned(),
         };
         debug!("Successfully created interface '{name}'");
@@ -151,7 +163,11 @@ pub fn get_interfaces(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Re
     let mut kifs = Vec::new();
     for ifname in &ifnames {
         let if_index = get_interface_ifindex(&interfaces, ifname)?;
-        kifs.push(Kif::new(if_index, ifname)?);
+        let interface = interfaces
+            .iter()
+            .find(|i| &i.name == ifname)
+            .ok_or_else(|| io::Error::other(format!("interface '{ifname}' vanished mid-scan")))?;
+        kifs.push(Kif::new(if_index, ifname, interface)?);
     }
 
     /* interfaces that will be used */

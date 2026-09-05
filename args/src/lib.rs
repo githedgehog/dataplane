@@ -465,6 +465,13 @@ pub struct KernelDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// Packet-processing worker threads to run
     pub num_workers: u16,
+    /// Whether the interfaces were moved into a network namespace of the datapath's own.
+    ///
+    /// The same knob as [`DpdkDriverConfigSection::netns`] and for the same reasons. It is not
+    /// only DPDK that benefits: an interface the kernel still owns is one the kernel will route,
+    /// ARP for and terminate connections on with no dataplane involvement, which is what the
+    /// netfilter rules keeping VXLAN away from the host stack existed to prevent.
+    pub netns: bool,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -1335,6 +1342,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
                         interfaces: value.interfaces().collect(),
                         num_workers: value.num_workers,
+                        netns: value.datapath_netns,
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
@@ -1418,7 +1426,9 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         long,
         default_value_t = false,
         help = "Run the packet path in its own network namespace, created by dataplane-init and \
-                handed to the dataplane as a descriptor. Only meaningful with --driver dpdk."
+                handed to the dataplane as a descriptor. The control plane then reaches the wire \
+                through a tap per interface, named after it, and the kernel has no path to the \
+                hardware except through the dataplane. Supported by both drivers."
     )]
     datapath_netns: bool,
 
