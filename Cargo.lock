@@ -2108,6 +2108,7 @@ dependencies = [
 [[package]]
 name = "devlink"
 version = "0.1.0"
+source = "git+https://github.com/githedgehog/devlink.git?branch=main#11bb53b4a60fe1fbc206b5f48e65ec8127a47216"
 dependencies = [
  "futures",
  "genetlink",
