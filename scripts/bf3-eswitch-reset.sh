@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
 #
 # Best-effort, re-entrant reset of the BF-3 e-switch into the "stock production"
 # topology: switchdev mode, HWS steering, multiport e-switch, 2 VFs per port.
