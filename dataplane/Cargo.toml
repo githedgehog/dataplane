@@ -6,7 +6,11 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = []
+default = ["af-xdp"]
+# AF_XDP packet driver, and the default one. Building it needs libxdp, which
+# the `dataplane-xdp` build compiles from source; turn it off for a build
+# without that toolchain, which then has only the kernel driver.
+af-xdp = ["dep:xdp", "xdp/runtime", "nix/fs", "nix/mount"]
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
 loom = ["concurrency/loom"]
@@ -53,6 +57,7 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
 vpcmap = { workspace = true }
+xdp = { workspace = true, optional = true }
 
 [dev-dependencies]
 # internal

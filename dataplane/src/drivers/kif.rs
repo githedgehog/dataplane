@@ -31,6 +31,45 @@ impl Kif {
         debug!("Successfully created interface '{name}'");
         Ok(iface)
     }
+
+    /// Number of RX queues the interface exposes, as counted from the `rx-*`
+    /// entries under its sysfs `queues` directory.
+    ///
+    /// A driver that binds one socket per queue needs this to size its worker
+    /// pool. Interfaces without a `queues` directory (veth pairs on older
+    /// kernels, some virtual devices) are reported as having a single queue,
+    /// which is what the kernel gives them anyway.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `queues` directory exists but cannot be read.
+    #[cfg(feature = "af-xdp")]
+    pub fn num_rx_queues(&self) -> io::Result<u32> {
+        let queues_path = format!("/sys/class/net/{}/queues", self.name);
+        let path = std::path::Path::new(&queues_path);
+
+        if !path.exists() {
+            tracing::warn!(
+                "No sysfs queues directory for '{}'; assuming a single RX queue",
+                self.name
+            );
+            return Ok(1);
+        }
+
+        let count = std::fs::read_dir(path)?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().as_encoded_bytes().starts_with(b"rx-"))
+            .count();
+
+        // The kernel gives every netdev at least one RX queue, so a count of
+        // zero means we failed to see them, not that there are none.
+        let count = u32::try_from(count.max(1))
+            .map_err(|_| io::Error::other(format!("Too many RX queues for '{}'", self.name)))?;
+
+        debug!("Interface '{}' has {count} RX queues", self.name);
+        Ok(count)
+    }
+
     /// Bring the kernel interface represented by a [`Kif`] up and double check it went up.
     async fn bring_up(&self, handle: &Handle) -> io::Result<()> {
         info!("Bringing interface {} up ...", self.name);
@@ -164,8 +203,37 @@ pub fn get_interfaces(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Re
     Ok(kifs)
 }
 
+/// Collect the interfaces named on the command line and bring them up.
+///
+/// Every driver needs both, and the second half needs a tokio runtime that the
+/// drivers themselves do not otherwise have, so the runtime lives here rather
+/// than being built the same way in each of them.
+///
+/// # Errors
+///
+/// Returns an error if an interface is not one this host has, or if it cannot
+/// be brought up.
+pub fn prepare(args: impl IntoIterator<Item = impl AsRef<str> + Clone>) -> io::Result<Vec<Kif>> {
+    // A current_thread runtime built inside another tokio runtime panics;
+    // catch nesting in debug.
+    debug_assert!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "interfaces must not be prepared from within a tokio runtime context"
+    );
+
+    info!("Collecting interfaces from config");
+    let interfaces = get_interfaces(args)?;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(bring_kifs_up(interfaces.as_slice()))?;
+
+    Ok(interfaces)
+}
+
 /// Bring all of the interfaces in the slice of `Kif`s up
-pub async fn bring_kifs_up(kifs: &[Kif]) -> io::Result<()> {
+async fn bring_kifs_up(kifs: &[Kif]) -> io::Result<()> {
     let (connection, handle, _) = rtnetlink::new_connection()?;
     let h = tokio::spawn(connection);
 

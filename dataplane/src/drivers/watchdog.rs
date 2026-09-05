@@ -30,6 +30,7 @@ struct WatchdogInner {
     rx: AtomicU64,           // number of packets received by task
     tx: AtomicU64,           // number of packets sent by task
     ppline_drops: AtomicU64, // number of packets dropped by task pipeline
+    local: AtomicU64,        // number of packets the pipeline sent to the kernel
     tx_drops: AtomicU64,     // number of tx failures
     parse_errors: AtomicU64, // number of frames we failed to parse
     truncated: AtomicU64,    // number of frames larger than the rx buffer
@@ -58,6 +59,7 @@ impl Watchdog {
         accumulate(&self.0.rx, counters.rx);
         accumulate(&self.0.tx, counters.tx);
         accumulate(&self.0.ppline_drops, counters.ppline_drops);
+        accumulate(&self.0.local, counters.local);
         accumulate(&self.0.tx_drops, counters.tx_drops);
         accumulate(&self.0.parse_errors, counters.parse_errors);
         accumulate(&self.0.truncated, counters.truncated);
@@ -76,6 +78,7 @@ impl Watchdog {
             rx: self.0.rx.swap(0, Ordering::Relaxed),
             tx: self.0.tx.swap(0, Ordering::Relaxed),
             ppline_drops: self.0.ppline_drops.swap(0, Ordering::Relaxed),
+            local: self.0.local.swap(0, Ordering::Relaxed),
             tx_drops: self.0.tx_drops.swap(0, Ordering::Relaxed),
             parse_errors: self.0.parse_errors.swap(0, Ordering::Relaxed),
             truncated: self.0.truncated.swap(0, Ordering::Relaxed),
@@ -129,6 +132,14 @@ pub struct RxCounters {
     pub tx: u64,
     /// Pkts received that the pipeline dropped
     pub ppline_drops: u64,
+    /// Pkts the pipeline asked to be delivered to the kernel, which no driver
+    /// can do: userspace cannot inject into an interface's receive path.
+    ///
+    /// Whether that costs anything depends on how the driver reads packets. A
+    /// driver reading a copy the kernel also kept loses nothing. One that
+    /// takes packets away from the kernel loses exactly these, unless it
+    /// arranges for such traffic never to reach it.
+    pub local: u64,
     /// Pkts received dropped on tx
     pub tx_drops: u64,
     /// Frames received but that we failed to parse

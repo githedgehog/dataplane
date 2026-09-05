@@ -375,9 +375,20 @@ pub struct GeneralConfigSection {
     name: Option<String>,
 }
 
+/// The packet driver used when the command line does not name one.
+///
+/// `AF_XDP` needs no more of a NIC than the kernel driver does, and moves packets
+/// without the copy through a socket buffer that the kernel driver pays for on
+/// every frame, so it is what a dataplane that is not told otherwise should run.
+pub const DEFAULT_DRIVER: &str = "af-xdp";
+
 /// Configuration for the packet processing driver used by the dataplane.
 ///
-/// The dataplane supports two packet processing backends:
+/// The dataplane supports three packet processing backends:
+///
+/// - **`AF_XDP`**: The default. Binds `AF_XDP` sockets to kernel interfaces, which lets
+///   the kernel put received packets straight into memory shared with the dataplane.
+///   Where the NIC driver supports it, that happens without a copy.
 ///
 /// - **DPDK (Data Plane Development Kit)**: High-performance userspace driver for
 ///   specialized network hardware. Provides kernel-bypass networking with direct access
@@ -388,10 +399,11 @@ pub struct GeneralConfigSection {
 ///
 /// # Choosing a Driver
 ///
+/// - Use **`AF_XDP`** unless there is a reason not to; it needs nothing of the NIC that
+///   the kernel driver does not.
 /// - Use **DPDK** for maximum performance on supported hardware, typically in production
 ///   environments with dedicated NICs.
-/// - Use **Kernel** for development, testing, or environments without DPDK-compatible
-///   hardware.
+/// - Use **Kernel** where the process cannot be given the capabilities `AF_XDP` needs.
 #[derive(
     Debug, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
@@ -399,6 +411,8 @@ pub struct GeneralConfigSection {
 #[serde(rename_all = "snake_case")]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum DriverConfigSection {
+    /// `AF_XDP` driver configuration
+    AfXdp(AfXdpDriverConfigSection),
     /// DPDK userspace driver configuration
     Dpdk(DpdkDriverConfigSection),
     /// Linux kernel driver configuration
@@ -426,6 +440,27 @@ pub struct DpdkDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
+}
+
+/// Configuration for the `AF_XDP` driver.
+///
+/// Interfaces are named the way the kernel names them, as they are for the kernel
+/// driver; the difference is in how packets are moved, not in how the devices are
+/// found.
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct AfXdpDriverConfigSection {
+    /// Kernel network interfaces to bind sockets to
+    pub interfaces: Vec<InterfaceArg>,
 }
 
 /// Configuration for the Linux kernel networking driver.
@@ -1105,10 +1140,8 @@ pub enum InvalidCmdArguments {
     /// (e.g., `eth0`, `ens3`)
     #[error(transparent)]
     InvalidInterfaceName(#[from] IllegalInterfaceName),
-    #[error("\"{0}\" is not a valid driver.  Must be dpdk or kernel")]
+    #[error("\"{0}\" is not a valid driver.  Must be af-xdp, af-packet or dpdk")]
     InvalidDriver(String),
-    #[error("Must specify driver as dpdk or kernel")]
-    NoDriverSpecified,
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
     #[error(transparent)]
@@ -1164,13 +1197,22 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         eal_args,
                     })
                 }
-                Some(driver) if driver == "kernel" => {
+                Some(driver) if driver == "af-packet" || driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
                         interfaces: value.interfaces().collect(),
                     })
                 }
+                // No --driver is not an omission to complain about: it names
+                // the default, which is what `driver_name` resolves it to.
+                Some(driver) if driver == DEFAULT_DRIVER => {
+                    DriverConfigSection::AfXdp(AfXdpDriverConfigSection {
+                        interfaces: value.interfaces().collect(),
+                    })
+                }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
-                None => Err(InvalidCmdArguments::NoDriverSpecified)?,
+                None => DriverConfigSection::AfXdp(AfXdpDriverConfigSection {
+                    interfaces: value.interfaces().collect(),
+                }),
             },
             cli: CliConfigSection {
                 cli_sock_path: value.cli_sock_path(),
@@ -1220,7 +1262,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
-    #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
+    #[arg(long, value_name = "packet driver to use: af-xdp, af-packet or dpdk")]
     driver: Option<String>,
     #[arg(
         long,
@@ -1361,12 +1403,16 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
 impl CmdArgs {
     /// Get the configured driver name.
     ///
-    /// Returns `"dpdk"` if no driver was explicitly specified (the default),
-    /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    /// Returns [`DEFAULT_DRIVER`] if no driver was explicitly specified,
+    /// otherwise the name that was (`"af-xdp"`, `"af-packet"` or `"dpdk"`).
+    ///
+    /// `"kernel"` is the old name for the `AF_PACKET` driver and is still
+    /// accepted, though the dataplane currently serves it with `AF_XDP`; see
+    /// the note in `runtime.rs`.
     #[must_use]
     pub fn driver_name(&self) -> &str {
         match &self.driver {
-            None => "dpdk",
+            None => DEFAULT_DRIVER,
             Some(name) => name,
         }
     }
@@ -1453,7 +1499,8 @@ impl CmdArgs {
     ///
     /// # Note
     ///
-    /// This is only used with the kernel driver.
+    /// This is used by the drivers that name interfaces the way the kernel
+    /// does: the kernel driver and the `AF_XDP` one.
     #[must_use]
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface

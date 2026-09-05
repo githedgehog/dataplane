@@ -153,6 +153,77 @@ You can override this with the `oci_repo` argument
 just oci_repo=my-registry.example.com:5000 push-container dataplane
 ```
 
+## Packet drivers
+
+The dataplane can move packets in more than one way, selected with `--driver`:
+
+| Driver      | Notes                                                                 |
+| ----------- | --------------------------------------------------------------------- |
+| `af-xdp`    | The default. `AF_XDP` sockets; no copy where the NIC driver allows it |
+| `af-packet` | `AF_PACKET` sockets; works anywhere, copies every frame               |
+| `dpdk`      | Not wired up yet                                                      |
+
+`--driver kernel` is the old name for `af-packet`, and is **temporarily served
+by the `AF_XDP` driver instead**: the gateway controller in the fabric repo
+passes it unconditionally for interfaces named the way the kernel names them,
+so it is the only name the VLAB and CI ever ask for. Pass `af-packet` to get
+the `AF_PACKET` driver. This goes away once fabric can ask for a driver by
+name.
+
+### AF_XDP
+
+`AF_XDP` is what the dataplane uses when it is not told otherwise, so nothing
+has to be passed to get it:
+
+```bash
+dataplane --interface eth0=kernel@eth0 --interface eth1=kernel@eth1
+```
+
+The process needs `CAP_NET_RAW` to open the sockets and `CAP_BPF` to load the
+XDP program that decides where packets go. Where it cannot be given those, pass
+`--driver kernel` instead.
+
+The driver runs one worker per RX queue, each with a socket on every interface.
+Zero-copy is tried first on every one of them and copy mode used where the NIC
+driver will not do it, which the log says at startup.
+
+The kernel will not register a UMEM whose chunks are larger than a page, so a
+packet above about 3.8KB does not fit in one and is carried in several. Those
+are gathered into one buffer on the way in and split again on the way out,
+which costs a copy each way; everything smaller is untouched. Without it a
+jumbo MTU would not work at all -- the kernel refuses to attach an XDP program
+that does not declare it to an interface whose MTU exceeds a buffer, and drops
+what will not fit.
+
+### What the host still receives
+
+Redirecting a packet to an `AF_XDP` socket is final: the network stack never
+sees it. If everything on an interface were redirected, anything running on the
+host -- routing sessions, neighbour discovery -- would stop receiving, and
+nothing in userspace can put a packet back on an interface's receive path.
+
+So the XDP program in `xdp-ebpf/` decides. It passes to the kernel what is not
+IP, what is addressed to one of the host's own addresses -- which the driver
+keeps it told about as they are configured and removed -- and link-local
+multicast, which is how neighbours address each other: `ND`, router
+advertisements, OSPF, VRRP. VXLAN is the exception: it arrives addressed to the
+gateway too, and it is what the dataplane is for. Everything else goes to the
+dataplane.
+
+Packets the pipeline asks to be delivered locally are counted as `to-kernel` in
+`show driver status`. That number should stay at zero; anything else is traffic
+the XDP program redirected to us that the host was expecting.
+
+### Building
+
+The build compiles libxdp from source, along with the libbpf it bundles, and
+builds the XDP program for the BPF target with bpf-linker. The nix shell and
+the packaged build provide both; `just build-ebpf` rebuilds the program alone
+when iterating on it.
+
+`--no-default-features` leaves the driver out altogether, for a build without
+the toolchain, and such a build has to be told to use the kernel driver.
+
 ## Common build arguments
 
 Most just recipes accept the following arguments, which can be combined freely:

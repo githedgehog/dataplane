@@ -5,12 +5,15 @@ use crate::packet_processor::start_router;
 use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
+#[cfg(feature = "af-xdp")]
+use crate::drivers::af_xdp::DriverAfXdp;
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::driver_status_access;
 use lifecycle::{
     CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
 };
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
+use net::buffer::test_buffer::TestBuffer;
 
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
@@ -20,7 +23,7 @@ use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
 
-use tracing::{error, info, level_filters::LevelFilter};
+use tracing::{error, info, level_filters::LevelFilter, warn};
 
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
@@ -296,7 +299,7 @@ pub fn main() {
         setup.stats,
     );
 
-    let pipeline_factory = setup.pipeline;
+    let pipeline = setup.pipeline.clone();
 
     concurrency::thread::scope(|scope| {
         let mgmt_result = run_mgmt(
@@ -308,7 +311,7 @@ pub fn main() {
                 interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
-                    pipeline_data: pipeline_factory().get_data(),
+                    pipeline_data: pipeline.data(),
                     flow_table: setup.flow_table,
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
@@ -327,21 +330,67 @@ pub fn main() {
             Ok(()) => {
                 info!("Management is running now");
 
-                let driver_result = match args.driver_name() {
+                // TEMPORARY: the gateway controller in the fabric repo works out
+                // the driver from whether the interfaces are named by PCI
+                // address or by kernel name, and passes --driver kernel for the
+                // latter whatever else is true (pkg/ctrl/gateway_ctrl.go). That
+                // is the only name the VLAB and CI ever ask for, so asking for
+                // AF_XDP there means changing two other repositories first.
+                // Serve that name from the AF_XDP driver until they can ask for
+                // what they want; --driver af-packet still selects the
+                // AF_PACKET one, and this goes away once fabric stops deciding
+                // for us.
+                let requested = args.driver_name();
+                let driver = if requested == "kernel" && cfg!(feature = "af-xdp") {
+                    warn!(
+                        "Serving --driver kernel with the AF_XDP driver. Pass --driver \
+                         af-packet for the AF_PACKET one."
+                    );
+                    "af-xdp"
+                } else {
+                    requested
+                };
+
+                let driver_result = match driver {
                     "dpdk" => {
                         info!("Using driver DPDK...");
                         todo!();
                     }
-                    "kernel" => {
-                        info!("Using driver kernel...");
+                    // "kernel" only reaches here in a build without the AF_XDP
+                    // driver, where it is the only thing it can mean.
+                    "af-packet" | "kernel" => {
+                        info!("Using driver AF_PACKET...");
+                        let factory = pipeline.builder::<TestBuffer>();
                         Some(DriverKernel::start(
                             scope,
                             &shutdown.workers,
                             args.kernel_interfaces(),
                             args.kernel_num_workers(),
-                            &pipeline_factory,
+                            &factory,
                             driver_status_writer,
                         ))
+                    }
+                    #[cfg(feature = "af-xdp")]
+                    "af-xdp" => {
+                        info!("Using driver AF_XDP...");
+                        let factory = pipeline.builder::<xdp::buffer::XdpBuffer>();
+                        Some(DriverAfXdp::start(
+                            scope,
+                            &shutdown.workers,
+                            args.kernel_interfaces(),
+                            &factory,
+                            driver_status_writer,
+                        ))
+                    }
+                    #[cfg(not(feature = "af-xdp"))]
+                    "af-xdp" => {
+                        error!(
+                            "This dataplane was built without the af-xdp feature, so it \
+                             cannot run the driver it would otherwise default to. Rebuild \
+                             with it, or pass --driver kernel. Stopping dataplane..."
+                        );
+                        shutdown.fail();
+                        None
                     }
                     other => {
                         error!("Unknown driver '{other}'. Stopping dataplane...");

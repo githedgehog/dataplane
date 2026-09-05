@@ -3,8 +3,12 @@
 
 use thiserror::Error;
 
+#[cfg(feature = "af-xdp")]
+pub mod af_xdp;
 pub mod kernel;
+pub(crate) mod kif;
 pub mod status;
+pub(crate) mod supervisor;
 pub mod watchdog;
 
 #[derive(Error, Debug)]

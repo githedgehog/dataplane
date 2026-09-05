@@ -111,6 +111,14 @@ let
           fancy.numactl.static
           fancy.rdma-core.dev
           fancy.rdma-core.static
+          # libelf and zlib are what libbpf, which libxdp bundles, links
+          # against; the AF_XDP driver needs both. Only the static libraries
+          # go in, as for everything else here: the dataplane ships in an
+          # image with no shared libraries of its own to find.
+          fancy.elfutils.dev
+          fancy.elfutils.static
+          pkgs.zlib.dev
+          pkgs.zlib.static
         ];
       }
     else
@@ -175,6 +183,8 @@ let
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
+      fancy.bpf-linker # links the XDP program of the AF_XDP driver
+      m4 # libxdp's build preprocesses its dispatcher program with it
       markdownlint-cli2
       nixfmt
       npins
@@ -216,6 +226,15 @@ let
       # Rust's pkg-config crate refuses cross-target builds by default; opt in
       # since our PKG_CONFIG_PATH already points at the matching cross sysroot.
       PKG_CONFIG_ALLOW_CROSS = "1";
+      # libxdp compiles BPF programs of its own, and the wrapped compiler adds
+      # hardening flags that clang rejects for the bpf target. Point that one
+      # build at the compiler underneath the wrapper; everything else keeps
+      # using `clang` from the PATH, wrapper and all.
+      CLANG = "${pkgs.pkgsBuildBuild.llvmPackages'.clang.cc}/bin/clang";
+      # So that a build in the shell finds an XDP program without anyone having
+      # to build one first. Point this at your own to iterate on it; `just
+      # build-ebpf` says where it leaves the one it builds.
+      DATAPLANE_XDP_EBPF = "${xdp-ebpf}";
     };
   };
   # Nix escaping made the old regexes match unrelated .sh and .patch files.
@@ -309,6 +328,7 @@ let
       pkgs.stdenv'.targetPlatform.rust.rustcTarget;
   is-cross-compile = pkgs.stdenv'.buildPlatform.rust.rustcTarget != ctarget;
   cxx = if is-cross-compile then "${ctarget}-clang++" else "clang++";
+  bintools = pkgs.pkgsBuildHost.binutils;
   strip = if is-cross-compile then "${ctarget}-strip" else "strip";
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
@@ -335,6 +355,66 @@ let
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
+
+  # The XDP program of the AF_XDP driver, built for the BPF target.
+  #
+  # It cannot come from the workspace build: the target has no prebuilt std, so
+  # core is compiled from source, and the object is linked by bpf-linker rather
+  # than by the linker everything else uses. It is a derivation of its own, and
+  # the dataplane build is handed the result through DATAPLANE_XDP_EBPF.
+  xdp-ebpf-src = pkgs.lib.cleanSourceWith {
+    name = "xdp-ebpf-source";
+    src = lib.cleanSource ./xdp-ebpf;
+    # `target` is whatever a local `just build-ebpf` left behind, and
+    # including it would change the derivation every time someone built here.
+    filter = full-path: _type: baseNameOf full-path != "target";
+  };
+  xdp-ebpf-vendor = craneLib.vendorMultipleCargoDeps {
+    cargoLockList = [
+      ./xdp-ebpf/Cargo.lock
+      "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+    ];
+  };
+  xdp-ebpf = pkgs.stdenvNoCC.mkDerivation {
+    pname = "dataplane-xdp-ebpf";
+    inherit version;
+    src = xdp-ebpf-src;
+    nativeBuildInputs = [
+      pkgs.pkgsBuildHost.rust-toolchain
+      pkgs.pkgsBuildHost.fancy.bpf-linker
+    ];
+    configurePhase = ''
+      runHook preConfigure
+      export CARGO_HOME="$NIX_BUILD_TOP/cargo-home"
+      mkdir -p "$CARGO_HOME"
+      cp ${xdp-ebpf-vendor}/config.toml "$CARGO_HOME/config.toml"
+      runHook postConfigure
+    '';
+    buildPhase = ''
+      runHook preBuild
+      cargo build \
+        --offline \
+        --release \
+        --target bpfel-unknown-none \
+        -Zbuild-std=core
+      runHook postBuild
+    '';
+    installPhase = ''
+      runHook preInstall
+      install -Dm444 \
+        target/bpfel-unknown-none/release/dataplane-xdp-ebpf \
+        "$out"
+      runHook postInstall
+    '';
+    env = {
+      # -Zbuild-std is a nightly option, and the toolchain is stable.
+      RUSTC_BOOTSTRAP = "1";
+    };
+    # The output is a BPF object, and the fixup phase's tools only understand
+    # host ELF; left to try, they warn about every one of them.
+    dontPatchELF = true;
+    dontStrip = true;
+  };
   # The `loom` and `shuttle` features require `panic = "unwind"` (see
   # nix/profiles.nix), as do test builds.  The sysroot needs the matching
   # panic runtime and std feature, so we build two cargo command prefixes:
@@ -367,6 +447,16 @@ let
       else
         [ ]
     );
+  # libxdp wraps each of the BPF programs it compiles in an object of the host
+  # architecture, with `ld -r -b binary`, and reads LD and OBJCOPY to know which
+  # tools to do it with. A cross build leaves both naming the build host's,
+  # which produce an object that the final link, for the target, then refuses.
+  # Exported here rather than set in `env` because the toolchain's setup hooks
+  # overwrite both before any of the build's own phases run.
+  target-binutils = ''
+    export LD=${bintools}/bin/${bintools.targetPrefix}ld
+    export OBJCOPY=${bintools}/bin/${bintools.targetPrefix}objcopy
+  '';
   cargo-cmd-prefix = mk-cargo-cmd-prefix needs-unwind;
   cargo-cmd-prefix-tests = mk-cargo-cmd-prefix needs-unwind-tests;
   invoke =
@@ -406,7 +496,13 @@ let
           cargo-nextest
           llvmPackages'.clang
           llvmPackages'.lld
+          pkgs.pkgsBuildHost.m4 # libxdp's build preprocesses its dispatcher program with it
           pkg-config
+          # As for the dev shell above: under a cross pkgs the one callPackage
+          # hands us is named for the target, and libbpf's build looks for it
+          # unprefixed. PKG_CONFIG_PATH below already points at the sysroot of
+          # the target, so the unprefixed one answers for it.
+          pkgs.pkgsBuildBuild.pkg-config
         ];
 
         buildInputs = [
@@ -420,6 +516,17 @@ let
           CARGO_PROFILE = cargo-profile;
           DATAPLANE_SYSROOT = "${sysroot}";
           LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
+          # libxdp compiles BPF programs of its own, and the wrapped compiler
+          # adds hardening flags that clang rejects for the bpf target. Point
+          # that one build at the compiler underneath the wrapper.
+          CLANG = "${pkgs.pkgsBuildHost.llvmPackages'.clang.cc}/bin/clang";
+          # libbpf is compiled by gcc, which on aarch64 calls out to libgcc for
+          # its atomics, while the link is clang and lld against a sysroot that
+          # has no libgcc in it. Have it emit the instructions inline instead.
+          LIBBPF_SYS_EXTRA_CFLAGS = lib.optionalString pkgs.stdenv'.hostPlatform.isAarch64 "-mno-outline-atomics";
+          # The XDP program of the AF_XDP driver, built for the BPF target by a
+          # derivation of its own.
+          DATAPLANE_XDP_EBPF = "${xdp-ebpf}";
           C_INCLUDE_PATH = "${sysroot}/include";
           LIBRARY_PATH = "${sysroot}/lib";
           PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
@@ -450,6 +557,7 @@ let
           {
             # Only dependency builds should retain crane's target archive.
             doInstallCargoArtifacts = for-deps;
+            preBuild = target-binutils + (orig.preBuild or "");
             postBuild = (orig.postBuild or "") + ''
               unset RUSTFLAGS;
             '';
@@ -457,6 +565,7 @@ let
         else
           {
             separateDebugInfo = true;
+            preBuild = target-binutils + (orig.preBuild or "");
 
             # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
             # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
@@ -1213,6 +1322,7 @@ in
     sysroot
     tests
     workspace
+    xdp-ebpf
     ;
   profile = profile';
   platform = platform';
