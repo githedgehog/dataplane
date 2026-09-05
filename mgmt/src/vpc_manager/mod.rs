@@ -47,6 +47,15 @@ impl<R> VpcManager<R> {
             _marker: PhantomData,
         }
     }
+
+    /// The netlink handle this manager reconciles through.
+    ///
+    /// Exposed so that work which belongs to the same config apply -- putting the configured
+    /// addresses on the configured interfaces, say -- talks to the kernel through the same socket,
+    /// which is the one opened in the control namespace.
+    pub fn handle(&self) -> &Handle {
+        &self.handle
+    }
 }
 
 impl<T, U> From<&VpcManager<T>> for VpcManager<U> {

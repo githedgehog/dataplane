@@ -20,6 +20,11 @@ use config::internal::status::{
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwConfig};
 
+use config::internal::interfaces::interface::InterfaceConfig;
+use futures::TryStreamExt;
+
+/// `EEXIST`. Spelled out rather than pulled from libc for a single constant.
+const EEXIST: i32 = 17;
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterContext, FlowFilterContextWriter};
@@ -419,6 +424,9 @@ impl VpcManager<RequiredInformationBase> {
         }
         debug!("VPC-manager successfully applied config for genid {genid}");
 
+        /* put the configured addresses on the configured interfaces */
+        self.ensure_interface_addresses(internal).await;
+
         let obs_rib = self.observe().await.map_err(|_| {
             ConfigError::InternalFailure("Failed to observe interface state".to_string())
         })?;
@@ -437,6 +445,99 @@ impl VpcManager<RequiredInformationBase> {
         Ok(())
     }
 
+    /// Put every address the configuration gives an interface onto that interface.
+    ///
+    /// # Why the dataplane does this and not FRR
+    ///
+    /// FRR is given the same addresses -- they are rendered into its configuration as `ip address`
+    /// lines -- and zebra installs them faithfully on a physical interface. It does **not** install
+    /// them on a *tap* of the same name. Measured in vlab, twice, including with an FRR started
+    /// after the taps already existed, so it is not a question of ordering:
+    ///
+    /// ```text
+    /// physical enp2s1 in the host namespace:  172.30.128.9/31   <- zebra applied it
+    /// tap enp2s1 standing in for it:          fe80::.../64 only <- zebra never does
+    /// ```
+    ///
+    /// Once the dataplane's interfaces move into a namespace of their own, every interface the
+    /// control plane sees is a tap, so that is every interface -- and without an address there is
+    /// no connected route, nothing is recognised as locally destined, and packets addressed to us
+    /// are *forwarded* instead. Since eBGP between directly connected peers uses a TTL of 1, they
+    /// then expire, and the session never comes up. Nothing in that chain of symptoms mentions an
+    /// address.
+    ///
+    /// So the component that creates the taps also dresses them, which it already does for their
+    /// MAC and MTU. Applying the same addresses to a *physical* interface is harmless: they are the
+    /// ones zebra would install anyway, and an address that is already there is reported as
+    /// `EEXIST` and skipped.
+    ///
+    /// # What this deliberately does not do
+    ///
+    /// It adds, and never removes. An address the configuration has stopped mentioning stays until
+    /// the interface goes away -- which for a tap is the next restart. Removing would mean deciding
+    /// that any address not in the configuration is ours to delete, and on an interface the kernel
+    /// still owns that is not true. Doing it properly means teaching the reconciler about
+    /// addresses, which is where this belongs in the end.
+    ///
+    /// Failures are logged, not raised: a config apply that has otherwise succeeded should not be
+    /// reported as failed because one interface is missing, and the next apply retries.
+    async fn ensure_interface_addresses(&self, internal: &InternalConfig) {
+        // Collected before the first await. The multi-index iterators are not `Send`, and holding
+        // one across an await makes the whole config processor's future non-`Send`, which is a
+        // compile error a long way from here.
+        let configured: Vec<&InterfaceConfig> = internal
+            .vrfs
+            .iter_by_name()
+            .flat_map(|vrf| vrf.interfaces.values())
+            .filter(|interface| !interface.addresses.is_empty())
+            .collect();
+
+        for interface in configured {
+            if let Err(e) = self.address_interface(interface).await {
+                warn!(
+                    "could not give interface {} its configured addresses: {e}. Without them it \
+                     has no connected route, so traffic addressed to it will be forwarded rather \
+                     than delivered.",
+                    interface.name
+                );
+            }
+        }
+    }
+
+    /// Add the configured addresses of one interface, skipping any it already has.
+    async fn address_interface(&self, interface: &InterfaceConfig) -> Result<(), String> {
+        let link = self
+            .handle()
+            .link()
+            .get()
+            .match_name(interface.name.clone())
+            .execute()
+            .try_next()
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no such interface".to_string())?;
+
+        for address in &interface.addresses {
+            match self
+                .handle()
+                .address()
+                .add(link.header.index, address.address, address.mask_len)
+                .execute()
+                .await
+            {
+                Ok(()) => info!("gave interface {} the address {address}", interface.name),
+                // Already there, which is the ordinary case on every apply after the first, and
+                // also what happens on a physical interface zebra has already dressed.
+                Err(rtnetlink::Error::NetlinkError(e)) if e.raw_code() == -EEXIST => {
+                    debug!("interface {} already has {address}", interface.name);
+                }
+                Err(e) => return Err(format!("adding {address}: {e}")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the current set of kernel interfaces of type VRF keyed by name
     /// Get the current set of kernel interfaces of type VRF keyed by name
     async fn get_kernel_vrfs(&self) -> Result<HashMap<InterfaceName, Interface>, ConfigError> {
         let obs_rib = self.observe().await.map_err(|_| {
