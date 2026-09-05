@@ -32,7 +32,10 @@ use tracectl::trace_target;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use hardware::netns::NetworkNamespace;
+
 use super::DriverError;
+use super::cpbridge::{DatapathEnds, PortIdentity};
 use super::status::{
     DriverStatus, DriverStatusWriter, RxTaskStatus, WorkerEndResult, WorkerId, WorkerState,
     WorkerStatus,
@@ -68,18 +71,72 @@ impl DriverKernel {
     /// Spawn `num_workers` worker threads into `scope`, each with its own
     /// pipeline. Bails on the first spawn failure; workers that did spawn
     /// drain via the scope join.
+    /// Run `work` in the datapath's network namespace, or here if there is none.
+    ///
+    /// The namespace is entered on a scratch thread and the thread is then thrown away. `setns`
+    /// and `unshare` are per-thread and cannot be undone, so entering in place would strand the
+    /// caller -- the process's main thread, which the control plane still needs where it is.
+    fn in_datapath_netns<T, F>(netns: Option<&NetworkNamespace>, work: F) -> Result<T, DriverError>
+    where
+        F: FnOnce() -> Result<T, std::io::Error> + Send,
+        T: Send,
+    {
+        let Some(netns) = netns else {
+            return Ok(work()?);
+        };
+
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    netns.enter_with_sysfs().map_err(|e| {
+                        DriverError::PortSetup(format!(
+                            "could not enter the datapath network namespace: {e}"
+                        ))
+                    })?;
+                    work().map_err(DriverError::IoError)
+                })
+                .join()
+                .map_err(|_| {
+                    DriverError::PortSetup(
+                        "the thread setting up the datapath namespace panicked".to_string(),
+                    )
+                })?
+        })
+    }
+
     fn spawn_workers_scoped<'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         interfaces: &[Kif],
+        mut cp_ends: Option<&mut DatapathEnds>,
+        netns: Option<&'scope NetworkNamespace>,
     ) -> Result<Vec<WorkerMonitor<'scope>>, std::io::Error> {
         let mut monitors: Vec<WorkerMonitor> = Vec::with_capacity(num_workers);
 
         info!("Spawning {num_workers} workers");
 
         for workerid in 0..num_workers {
+            // The bridge ends go to worker 0 alone. Only one worker may drain a given injection
+            // queue -- two would interleave a peering session's frames and reorder them -- and
+            // taking them here means every other worker gets `None` rather than a share.
+            let bridge = if workerid == 0 {
+                cp_ends
+                    .as_mut()
+                    .map(|ends| {
+                        interfaces
+                            .iter()
+                            .filter_map(|kif| {
+                                ends.take(&kif.name).map(|queues| (kif.ifindex, queues))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
             // create worker
             let worker = Worker::new(
                 workerid,
@@ -89,7 +146,7 @@ impl DriverKernel {
             );
             // start worker. We get a `WorkerMonitor` on success, which includes
             // an interface monitor for each of its rx tasks
-            let wk_monitor = worker.start(scope, interfaces)?;
+            let wk_monitor = worker.start(scope, interfaces, bridge, netns)?;
 
             // store monitor
             monitors.push(wk_monitor);
@@ -189,6 +246,7 @@ impl DriverKernel {
     /// # Errors
     /// Returns [`DriverError`] on interface setup or thread spawn failure.
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub fn start<'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
@@ -196,6 +254,8 @@ impl DriverKernel {
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         status_writer: DriverStatusWriter,
+        mut cp_ends: Option<DatapathEnds>,
+        netns: Option<&'scope NetworkNamespace>,
     ) -> Result<(), DriverError> {
         // A current_thread runtime built inside another tokio runtime
         // panics; catch nesting in debug.
@@ -204,13 +264,50 @@ impl DriverKernel {
             "DriverKernel::start must not be invoked from within a tokio runtime context"
         );
 
+        // Discovery and link setup happen wherever the interfaces are, which is not necessarily
+        // here. `enter_with_sysfs` rather than a plain `setns`, because `netdev::get_interfaces`
+        // reads `/sys/class/net`, and sysfs is tagged with the namespace it was *mounted* in --
+        // a thread that merely joined the namespace still reads the old one and would find no
+        // interfaces at all. See `hardware::netns` for the whole trap.
+        //
+        // On a scratch thread because both `setns` and `unshare` are per-thread and irreversible;
+        // doing either here would strand the caller, which is the process's main thread.
         info!("Collecting interfaces from config");
-        let interfaces = kif::get_interfaces(args)?;
+        // Collected here rather than passed through: the closure below runs on another thread, and
+        // the caller's iterator is not required to be `Send`.
+        let names: Vec<String> = args
+            .into_iter()
+            .map(|name| name.as_ref().to_string())
+            .collect();
+        let interfaces = Self::in_datapath_netns(netns, move || {
+            let interfaces = kif::get_interfaces(names)?;
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(bring_kifs_up(interfaces.as_slice()))?;
+            Ok(interfaces)
+        })?;
 
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(bring_kifs_up(interfaces.as_slice()))?;
+        // Tell the control plane what each interface turned out to be, so its tap can wear the
+        // same MAC and MTU. Without the MAC, ARP for this interface resolves to the tap's random
+        // address and the peer's frames arrive with a destination this interface will not accept.
+        if let Some(ends) = &cp_ends {
+            for kif in &interfaces {
+                if let Some(mac) = kif.mac {
+                    ends.report(PortIdentity {
+                        name: kif.name.clone(),
+                        mac,
+                        mtu: u16::try_from(kif.mtu.unwrap_or(0)).unwrap_or(u16::MAX),
+                    });
+                } else {
+                    warn!(
+                        "the kernel reports no MAC for {}, so its tap keeps the one it was given \
+                         and ARP for this interface will not resolve",
+                        kif.name
+                    );
+                }
+            }
+        }
 
         let mut worker_monitors = Self::spawn_workers_scoped(
             scope,
@@ -218,7 +315,14 @@ impl DriverKernel {
             num_workers,
             setup_pipeline,
             interfaces.as_slice(),
+            cp_ends.as_mut(),
+            netns,
         )?;
+
+        // After the workers have claimed theirs, so this names only the taps nothing took.
+        if let Some(ends) = &cp_ends {
+            ends.report_unclaimed();
+        }
         debug_assert_eq!(worker_monitors.len(), num_workers);
 
         // The supervisor loops over worker monitors (which include join handles) and

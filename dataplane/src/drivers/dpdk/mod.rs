@@ -40,7 +40,6 @@
 //! [`cpbridge`], which is what makes a tap the kernel's end of each port. See that module for the
 //! punt policy and its costs.
 
-pub(crate) mod cpbridge;
 mod port;
 mod worker;
 
@@ -64,7 +63,7 @@ use super::status::{
 };
 use super::watchdog::{Activity, Watchdog};
 
-pub(crate) use cpbridge::{CpBridge, DatapathEnds, PortIdentity};
+pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
 pub(crate) use port::Port;
 
 trace_target!("dpdk-driver", LevelFilter::INFO, &["driver"]);

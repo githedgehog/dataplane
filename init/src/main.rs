@@ -313,6 +313,108 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
     Ok(netns)
 }
 
+/// Move the kernel driver's interfaces into a network namespace of their own.
+///
+/// The counterpart of [`move_devices_to_netns`], and much the simpler of the two. A netdev the
+/// kernel drives moves with one `RTM_NEWLINK` carrying `IFLA_NET_NS_FD`; there is no driver to
+/// reinitialize, no devlink instance to find, and no RDMA subsystem to have an opinion about it.
+///
+/// # What moving them buys
+///
+/// Not merely symmetry with DPDK. An interface the kernel still owns is an interface the kernel
+/// will route through, answer ARP on and terminate connections on, all without the dataplane
+/// knowing -- which is what the netfilter rules that kept VXLAN traffic away from the host stack
+/// were defending against. With the device somewhere the host stack is not, there is nothing to
+/// defend.
+///
+/// # What it costs
+///
+/// The interface **loses its addresses and routes**, as any interface does when it changes
+/// namespace, and it comes back administratively down. Nothing here restores them, and nothing
+/// should: the dataplane drives these interfaces with `AF_PACKET` and does not want the kernel
+/// configuring them, and the addresses the control plane cares about belong on the taps that take
+/// their names.
+async fn move_interfaces_to_netns(
+    interfaces: &[String],
+    netns: &NetworkNamespace,
+) -> Result<(), String> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|e| format!("could not open a netlink socket: {e}"))?;
+    let connection = tokio::spawn(connection);
+
+    let result = async {
+        let mut problems = Vec::new();
+        for name in interfaces {
+            // Looked up by name and moved by index. The name is what the configuration gives, but
+            // it is also what a tap is about to take in the control namespace, so resolving to an
+            // index first means the move cannot be redirected by a later name collision.
+            let link = match handle
+                .link()
+                .get()
+                .match_name(name.clone())
+                .execute()
+                .try_next()
+                .await
+            {
+                Ok(Some(link)) => link,
+                Ok(None) => {
+                    problems.push(format!("interface '{name}' does not exist"));
+                    continue;
+                }
+                Err(e) => {
+                    problems.push(format!("could not look up interface '{name}': {e}"));
+                    continue;
+                }
+            };
+
+            info!("moving {name} into the datapath network namespace");
+            // The descriptor is borrowed for this call only; the kernel resolves it during the
+            // request and takes its own reference to the namespace.
+            if let Err(e) = handle
+                .link()
+                .set(
+                    rtnetlink::LinkUnspec::new_with_index(link.header.index)
+                        .setns_by_fd(netns.as_raw().as_raw_fd())
+                        .build(),
+                )
+                .execute()
+                .await
+            {
+                problems.push(format!("could not move '{name}' into the namespace: {e}"));
+                continue;
+            }
+            info!("{name} is now in the datapath network namespace");
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("\n  "))
+        }
+    }
+    .await;
+
+    connection.abort();
+    result
+}
+
+/// Create the datapath's network namespace and move the kernel driver's interfaces into it.
+///
+/// The kernel-driver twin of [`isolate_devices`], with the same ownership rule: the descriptor
+/// alone keeps the namespace alive, nothing is registered under `/run/netns`, and when this process
+/// exits the kernel returns the interfaces to where they came from.
+fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String> {
+    let netns = NetworkNamespace::create()
+        .map_err(|e| format!("could not create a network namespace for the datapath: {e}"))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("could not build a runtime to talk to netlink: {e}"))?;
+
+    runtime.block_on(move_interfaces_to_netns(interfaces, &netns))?;
+    Ok(netns)
+}
+
 /// Put this process into the network namespace the control plane will run in.
 ///
 /// # Why the control plane needs one at all
@@ -725,12 +827,41 @@ fn main() {
                 (None, None)
             }
         }
-        DriverConfigSection::Kernel(_) => {
-            // The kernel driver uses interfaces exactly as the kernel presents them, so there is no
-            // hardware to prepare and nothing here to do but hand over. It must *not* get a control
-            // namespace: its `AF_PACKET` sockets are opened on the real interfaces, which are here.
+        DriverConfigSection::Kernel(kernel) => {
+            // No hardware to prepare -- these are interfaces the kernel already drives -- but the
+            // namespace work is the same as DPDK's, and for the same reasons. See
+            // `move_interfaces_to_netns` for what moving them buys and what it costs.
             info!("kernel driver selected; no device preparation required");
-            (None, None)
+            if kernel.netns {
+                let names: Vec<String> = kernel
+                    .interfaces
+                    .iter()
+                    .map(|i| i.interface.to_string())
+                    .collect();
+                let netns = match isolate_interfaces(&names) {
+                    Ok(netns) => {
+                        info!("datapath network namespace ready");
+                        netns
+                    }
+                    Err(e) => fail("failed to isolate the network interfaces", &e),
+                };
+
+                let host_netns = match enter_control_netns(control_netns.as_ref()) {
+                    Ok(host_netns) => host_netns,
+                    Err(e) => fail("failed to enter the control network namespace", &e),
+                };
+
+                (Some(netns), Some(host_netns))
+            } else {
+                // The interfaces stay where they are, and so does the control plane. The taps the
+                // bridge would create are named after those interfaces, so there is nowhere to put
+                // them that is not on top of the real ones.
+                info!(
+                    "the packet path was not asked for a namespace of its own; the control plane \
+                     stays where this process started"
+                );
+                (None, None)
+            }
         }
     };
 
