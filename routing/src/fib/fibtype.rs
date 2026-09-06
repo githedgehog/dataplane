@@ -383,6 +383,9 @@ impl FibWriter {
     pub fn as_fibreader(&self) -> FibReader {
         FibReader::new(self.0.clone())
     }
+    /// # Panics
+    ///
+    /// Panics if the fib is still marked valid after the invalidation is taken.
     pub fn destroy(mut self) {
         self.0.append(FibChange::Invalidate);
         self.0.publish();
