@@ -87,7 +87,7 @@ fn attempt(port: u16, queue: u16) -> Attempt {
     };
 
     Attempt {
-        lcore_id: unsafe { dpdk_sys::rte_lcore_id_w() },
+        lcore_id: unsafe { dpdk_sys::rte_lcore_id() },
         get_monitor_addr,
         power_monitor,
         power_pause: unsafe { dpdk_sys::rte_power_pause(already_expired) },
