@@ -41,7 +41,7 @@ let
       cargo-features
       host-arch
       ;
-    inherit (platform') arch;
+    inherit (platform') arch target-cpu;
   };
   # Test archives run on the host (e.g. `cargo nextest run --archive-file`)
   # rather than in the nix build sandbox, so panics in fixtures must
@@ -54,7 +54,7 @@ let
       cargo-features
       host-arch
       ;
-    inherit (platform') arch;
+    inherit (platform') arch target-cpu;
     for-tests = true;
   };
   cargo-profile =

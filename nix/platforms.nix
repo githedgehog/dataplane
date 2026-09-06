@@ -9,6 +9,11 @@ let
     x86-64-v3 = rec {
       arch = "x86_64";
       march = "x86-64-v3";
+      # The rustc spelling of the C `-march=`/`-mcpu=` below. These are one
+      # decision, not two: LLVM will not inline across a target-feature
+      # mismatch, so a C flag without its rustc counterpart silently costs
+      # every cross-language inline. Keep them on adjacent lines.
+      target-cpu = march;
       numa = {
         max-nodes = 8;
       };
@@ -22,6 +27,7 @@ let
     };
     x86-64-v4 = lib.recursiveUpdate x86-64-v3 rec {
       march = "x86-64-v4";
+      target-cpu = march;
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -30,6 +36,7 @@ let
     };
     zen3 = lib.recursiveUpdate x86-64-v4 rec {
       march = "znver3";
+      target-cpu = march;
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -38,6 +45,7 @@ let
     };
     zen4 = lib.recursiveUpdate zen3 rec {
       march = "znver4";
+      target-cpu = march;
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -46,6 +54,7 @@ let
     };
     zen5 = lib.recursiveUpdate zen4 rec {
       march = "znver5";
+      target-cpu = march;
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -55,6 +64,7 @@ let
     aarch64 = rec {
       arch = "aarch64";
       march = "generic";
+      target-cpu = null;
       numa = {
         max-nodes = 8;
       };
@@ -69,6 +79,7 @@ let
     bluefield2 = lib.recursiveUpdate aarch64 rec {
       march = "armv8.2-a";
       mcpu = "cortex-a72";
+      target-cpu = mcpu;
       numa = {
         max-nodes = 1;
       };
@@ -83,6 +94,7 @@ let
     bluefield3 = lib.recursiveUpdate bluefield2 rec {
       march = "armv8.4-a";
       mcpu = "cortex-a78ae";
+      target-cpu = mcpu;
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -92,6 +104,7 @@ let
     wasm32-wasip1 = {
       arch = "wasm32";
       march = "wasm32";
+      target-cpu = null;
       override.stdenv.env = { };
     };
   };

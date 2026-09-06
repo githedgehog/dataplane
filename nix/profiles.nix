@@ -2,6 +2,10 @@
 # Copyright Open Network Fabric Authors
 {
   arch,
+  # The rustc spelling of the platform's C `-march=`/`-mcpu=`, or null where the
+  # platform passes neither. See `nix/platforms.nix`, where the two are set side
+  # by side.
+  target-cpu ? null,
   host-arch,
   profile,
   sanitizers,
@@ -55,6 +59,15 @@ let
     "-Clink-arg=-Wl,--thinlto-jobs=4" # setting this parameter too high causes massive memory load on the linking step
   ]
   ++ (
+    # Must match the machine flags the C compiler gets, or cross-language LTO
+    # silently degrades to no inlining at all: LLVM refuses to inline a callee
+    # whose target features are not a subset of the caller's, and C compiled at
+    # `-march=x86-64-v3` has a large superset of what rustc assumes by default.
+    # The result links and runs, and every DPDK `static inline` stays an
+    # out-of-line call.
+    if target-cpu == null then [ ] else [ "-Ctarget-cpu=${target-cpu}" ]
+  )
+  ++ (
     if needs-unwind then
       [ ]
     else
@@ -107,24 +120,32 @@ let
   ]
   ++ (map (flag: "-Clink-arg=${flag}") secure.NIX_CFLAGS_LINK);
   march.x86_64.NIX_CFLAGS_COMPILE = [
-    # DPDK functionally requires some -m flags on x86_64.
-    # These features have been available for a long time and can be found on any reasonably recent machine, so just
-    # enable them here for all x86_64 builds.
-    # In the (very) unlikely event that you need to edit these flags, also edit the associated RUSTFLAGS to match.
+    # DPDK functionally requires rtm on x86_64: `rte_rtm.h` calls `_xbegin`, and
+    # `rte_spinlock.h` pulls it in, so the headers do not compile without this.
+    # Every x86_64 platform we build for is x86-64-v3 or better, which already
+    # implies ssse3 and crc32 (SSE4.2) -- naming them again here would only add
+    # features rustc has to be told about separately, for nothing.
+    #
+    # Anything added here MUST get its counterpart in `march.x86_64.RUSTFLAGS`
+    # below, or cross-language inlining stops. See the note there.
     "-mrtm" # TODO: try to convince DPDK not to rely on rtm
-    "-mcrc32"
-    "-mssse3"
     "-fcf-protection=full"
   ];
   march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
   march.x86_64.NIX_CFLAGS_LINK = march.x86_64.NIX_CXXFLAGS_COMPILE;
   march.x86_64.RUSTFLAGS = [
-    # Ideally these should be kept in 1:1 alignment with the x86_64 NIX_CFLAGS_COMPILE settings.
-    # That said, rtm and crc32 are only kinda supported by rust, and rtm is functionally deprecated anyway, so we should
-    # try to remove DPDK's insistence on it.  We are absolutely not using hardware memory transactions anyway; they
-    # proved to be broken in Intel's implementation, and AMD never built them in the first place.
-    # "-Ctarget-feature=+rtm,+crc32,+ssse3"
-    "-Ctarget-feature=+ssse3"
+    # In 1:1 alignment with `march.x86_64.NIX_CFLAGS_COMPILE` above, and it has
+    # to stay that way. LLVM will not inline a callee whose target features are
+    # not a subset of the caller's, so a single unmatched `-m` flag on the C side
+    # is enough to stop *every* DPDK `static inline` from inlining into Rust.
+    # Nothing fails when that happens; the calls just stay out of line.
+    #
+    # rustc warns that `rtm` is unstable, once per invocation. That is the price
+    # of DPDK requiring it. We are certainly not issuing hardware transactions
+    # ourselves -- Intel's implementation proved broken and AMD never shipped one
+    # -- so the feature only ever has to be *permitted*, never used. Dropping
+    # `-mrtm` on the C side is the real fix, and would let this line go too.
+    "-Ctarget-feature=+rtm"
     "-Zcf-protection=full"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") march.x86_64.NIX_CFLAGS_LINK);
