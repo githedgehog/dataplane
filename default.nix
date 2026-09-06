@@ -43,7 +43,7 @@ let
       cargo-features
       host-arch
       ;
-    inherit (platform') arch;
+    inherit (platform') arch target-cpu;
   };
   # The same flag table with the sanitizer left out, which is how
   # `sanitizer-rustflags` below works out what the sanitizer added.  Cheap:
@@ -77,7 +77,7 @@ let
       cargo-features
       host-arch
       ;
-    inherit (platform') arch;
+    inherit (platform') arch target-cpu;
     for-tests = true;
   };
   cargo-profile =
