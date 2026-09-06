@@ -42,6 +42,21 @@ stdenv.mkDerivation {
     sed -i 's/#define RTE_TRACE 1/#undef RTE_TRACE/g' config/rte_config.h
     # We have no use for receive or transmit callbacks at this time so disable them
     sed -i 's/#define RTE_ETHDEV_RXTX_CALLBACKS 1/#undef RTE_ETHDEV_RXTX_CALLBACKS/g' config/rte_config.h
+    # Never take the restricted transactional memory path.  `rte_rtm_supported` gates the `_tm`
+    # spinlock and rwlock variants (librte_hash uses them); DPDK sets it from CPUID at init, so on a
+    # TSX-capable Intel part those locks really do run transactionally.  We do not want that: Intel's
+    # implementation was broken badly enough to be disabled in microcode across most of the fleet,
+    # AMD never shipped one at all, and a fast path that exists only on some hosts is a fast path we
+    # cannot reason about or test.  Forcing it off makes `rte_try_tm` return 0 everywhere, which is
+    # DPDK's own designed fallback to a plain spinlock, not a behaviour we invented.
+    #
+    # This does not touch `rte_power_monitor_multi`, which is gated separately by
+    # `rte_cpu_get_intrinsics_support` and which we never call.
+    #
+    # The grep is the point: a silently non-applying sed would put the transactional path back.
+    grep -q 'rte_rtm_supported = rte_cpu_get_flag_enabled(RTE_CPUFLAG_RTM);' lib/eal/x86/rte_spinlock.c
+    sed -i 's/rte_rtm_supported = rte_cpu_get_flag_enabled(RTE_CPUFLAG_RTM);/rte_rtm_supported = 0;/' \
+      lib/eal/x86/rte_spinlock.c
   '';
 
   mesonFlags =
@@ -81,7 +96,6 @@ stdenv.mkDerivation {
         "regexdev"
         "reorder"
         "rib"
-        "sched"
         "table"
       ];
       enabledLibs = [
@@ -91,6 +105,7 @@ stdenv.mkDerivation {
         "ethdev"
         "eventdev"
         "pci"
+        "sched"
         "security"
         "timer"
         "vhost"
@@ -283,11 +298,11 @@ stdenv.mkDerivation {
       "-Dmax_numa_nodes=${toString platform.numa.max-nodes}"
       "-Dtests=false" # Running DPDK tests in CI is usually silly
       "-Duse_hpet=false"
-      ''-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}''
-      ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
-      ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
-      ''-Ddisable_apps=*''
-      ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
+      "-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}"
+      "-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}"
+      "-Denable_libs=${lib.concatStringsSep "," enabledLibs}"
+      "-Ddisable_apps=*"
+      "-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}"
     ]
     ++ (if isCrossCompile then [ "--cross-file=${cross-file}" ] else [ ]);
 

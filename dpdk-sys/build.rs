@@ -147,6 +147,7 @@ fn main() {
         "rte_rcu",
         "rte_ring",
         "rte_acl",
+        "rte_sched",
         "rte_eal",
         "rte_argparse",
         "rte_kvargs",
