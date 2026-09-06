@@ -30,3 +30,4 @@ dpdk-sysroot-helper = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true, default-features = false, features = ["std"] }
 dataplane-dpdk = { path = ".", features = ["test"] }
+net = { workspace = true, features = ["test_buffer"] }

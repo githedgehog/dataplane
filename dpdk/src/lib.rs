@@ -41,6 +41,7 @@ pub mod lcore;
 pub mod mem;
 pub mod queue;
 pub mod ring;
+pub mod sched;
 pub mod socket;
 
 #[cfg(any(test, feature = "test"))]
