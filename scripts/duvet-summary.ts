@@ -81,7 +81,7 @@ function bar(part: number, whole: number): string {
 
 function specName(id: string): string {
   const rfc = /rfc(\d+)$/.exec(id);
-  return rfc ? `RFC ${rfc[1]}` : id.replace(/^https?:\/\
+  return rfc ? `RFC ${rfc[1]}` : id.replace(/^https?:\/\//, "");
 }
 
 const sectionName = (id: string) =>
