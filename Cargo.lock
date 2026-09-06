@@ -1574,6 +1574,7 @@ name = "dataplane-dpdk-sys"
 version = "0.29.0"
 dependencies = [
  "bindgen 0.73.2",
+ "cc",
  "dataplane-dpdk-sysroot-helper",
  "doxygen-bindgen",
 ]
