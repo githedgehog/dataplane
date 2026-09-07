@@ -77,7 +77,7 @@ pub(crate) struct Blueprint {
     pipeline: Arc<PipelineData>,
     underlay: Option<Underlay>,
     flow_table: Arc<FlowTable>,
-    declared: Arc<[Prefix]>,
+    declared: Arc<[DeclaredPool]>,
 }
 
 struct Underlay {
@@ -143,7 +143,7 @@ impl Fleet {
                 adjacencies: tables.adjacency_factory(),
             }),
             flow_table,
-            declared: declared_public_ranges(overlay),
+            declared: declared_pools(overlay),
         };
 
         Self {
@@ -573,9 +573,9 @@ fn assert_covered(covered: bool, what: &str) {
 #[derive(Default)]
 pub(crate) struct Translations {
     was: std::collections::HashMap<u64, net::FlowKey>,
-    from: std::collections::HashMap<u64, IpAddr>,
+    from: std::collections::HashMap<u64, (IpAddr, Option<VpcDiscriminant>)>,
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
-    declared: Arc<[Prefix]>,
+    declared: Arc<[DeclaredPool]>,
 }
 
 #[cfg(test)]
@@ -590,7 +590,7 @@ impl Translations {
         };
         self.was.insert(test.id, key);
         if let Some(source) = packet.ip_source() {
-            self.from.insert(test.id, source);
+            self.from.insert(test.id, (source, packet.meta().dst_vpcd));
         }
     }
 
@@ -616,15 +616,16 @@ impl Translations {
             );
         }
 
-        if self
-            .from
-            .get(&test.id)
-            .is_some_and(|before| *before != source)
+        if let Some((before, towards)) = self.from.get(&test.id).copied()
+            && before != source
         {
             assert!(
-                self.declared.iter().any(|p| p.covers_addr(&source)),
-                "{at}: masquerade rewrote a source to {source}, which no declared public range \
-                 covers"
+                self.declared
+                    .iter()
+                    .any(|pool| pool.admits(before, source, towards)),
+                "{at}: masquerade rewrote {before} to {source} on the way to {towards:?}, which \
+                 is not a pool any expose publishing {before} declares towards that vpc; the \
+                 flow emerged on some other expose's pool"
             );
         }
     }
@@ -635,7 +636,7 @@ impl Translations {
         self.given.clear();
     }
 
-    fn declaring(declared: &Arc<[Prefix]>) -> Self {
+    fn declaring(declared: &Arc<[DeclaredPool]>) -> Self {
         Self {
             declared: declared.clone(),
             ..Self::default()
@@ -643,19 +644,68 @@ impl Translations {
     }
 }
 
+/// One expose's private side, and the public side a source from it may be rewritten to.
+///
+/// Kept as pairs rather than flattened into one list of public prefixes. Flattening asks only
+/// whether *some* expose in the overlay declares the address a source was rewritten to, which
+/// accepts a flow emerging on an unrelated tenant's pool -- the containment failure actually
+/// worth finding. Binding the two ends together means the pool has to be one the address being
+/// translated is entitled to.
 #[cfg(test)]
-fn declared_public_ranges(overlay: &ValidatedOverlay) -> Arc<[Prefix]> {
+pub(crate) struct DeclaredPool {
+    private: Vec<Prefix>,
+    public: Vec<Prefix>,
+    /// The vpc this expose publishes *towards*. A vpc that exposes the same addresses to two
+    /// peers under two pools is entitled to only one of them per destination, so without this
+    /// the check would still accept a flow drawn from the pool meant for the other peer.
+    towards: Option<VpcDiscriminant>,
+}
+
+#[cfg(test)]
+impl DeclaredPool {
+    /// Whether this expose is the one that would rewrite `private` to `public` on the way to
+    /// `towards`. An unknown destination falls back to the addresses alone -- it is the
+    /// flow-filter's job to place a packet, and a packet it has not placed is not this
+    /// assertion's to judge.
+    fn admits(&self, private: IpAddr, public: IpAddr, towards: Option<VpcDiscriminant>) -> bool {
+        (towards.is_none() || self.towards.is_none() || self.towards == towards)
+            && self.private.iter().any(|p| p.covers_addr(&private))
+            && self.public.iter().any(|p| p.covers_addr(&public))
+    }
+}
+
+#[cfg(test)]
+fn declared_pools(overlay: &ValidatedOverlay) -> Arc<[DeclaredPool]> {
+    fn prefixes<'a, S>(set: S) -> Vec<Prefix>
+    where
+        S: IntoIterator<Item = &'a lpm::prefix::PrefixWithOptionalPorts>,
+    {
+        set.into_iter()
+            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+            .collect()
+    }
+
+    let discriminant = |name: &str| {
+        overlay
+            .vpc_table()
+            .values()
+            .find(|vpc| vpc.name() == name)
+            .map(|vpc| VpcDiscriminant::VNI(vpc.vni()))
+    };
+
     let mut declared = Vec::new();
     for vpc in overlay.vpc_table().values() {
         for peering in vpc.peerings() {
-            for manifest in [peering.local(), peering.remote()] {
-                for expose in manifest.valexp() {
-                    declared.extend(
-                        expose
-                            .public_ips()
-                            .into_iter()
-                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
-                    );
+            let (local, remote) = (peering.local(), peering.remote());
+            // Each manifest publishes towards the vpc named by the *other* one.
+            for (mine, theirs) in [(local, remote), (remote, local)] {
+                let towards = discriminant(theirs.name());
+                for expose in mine.valexp() {
+                    declared.push(DeclaredPool {
+                        private: prefixes(expose.ips()),
+                        public: prefixes(expose.public_ips()),
+                        towards,
+                    });
                 }
             }
         }
