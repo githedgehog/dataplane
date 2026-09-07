@@ -43,24 +43,29 @@ impl ValueGenerator for Scenario {
 fn settled(body: impl FnOnce()) {
     const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
     const GIVE_UP: usize = 4096;
-    // nosemgrep: rust-no-direct-std-sync-import
-    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
-        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
-    CLOCK.block_on(async {
-        body();
-        clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
-        let handle = tokio::runtime::Handle::current();
-        for _ in 0..GIVE_UP {
-            if handle.metrics().num_alive_tasks() == 0 {
-                return;
+    // One clock per *thread*, not per process. See the twin in `masquerade::fuzz` for why:
+    // `cargo nextest` gives each test its own process, so a `static` looked equivalent, and
+    // under `cargo test` every property in this crate shared one timeline.
+    thread_local! {
+        static CLOCK: clock::virtual_time::Paused = clock::virtual_time::Paused::new();
+    }
+    CLOCK.with(|clock| {
+        clock.block_on(async {
+            body();
+            clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+            let handle = tokio::runtime::Handle::current();
+            for _ in 0..GIVE_UP {
+                if handle.metrics().num_alive_tasks() == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        panic!(
-            "{} tasks from this case would not retire; the flow tables they hold will accumulate \
-             until the run is out of memory",
-            handle.metrics().num_alive_tasks()
-        );
+            panic!(
+                "{} tasks from this case would not retire; the flow tables they hold will \
+                 accumulate until the run is out of memory",
+                handle.metrics().num_alive_tasks()
+            );
+        });
     });
 }
 
