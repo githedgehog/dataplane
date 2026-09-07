@@ -161,6 +161,18 @@ impl Fabric {
         )
     }
 
+    /// A second worker over someone else's flow table: this fabric's port-forwarding
+    /// snapshot, `flows`'s shared table.
+    ///
+    /// Every worker builds its own pipeline and so holds its own left-right read guard on the
+    /// port-forwarding table, while the flow table is one `Arc` shared by all of them. A
+    /// configuration published between two workers' batches therefore leaves them translating
+    /// one public tuple to two different backends, racing to install the same forward key --
+    /// the key is the *pre*-translation tuple, so it collides however far apart the targets are.
+    pub(crate) fn worker_over(&self, flows: &Arc<FlowTable>) -> PortForwarder {
+        PortForwarder::new("port-forwarder-2", self.writer.reader(), flows.clone())
+    }
+
     /// Enact `exposes` over this fabric's live flow table, the way a configuration apply does:
     /// install the new rules, then carry the flows they still open onto `genid` and invalidate
     /// the rest. The rule *set* this fabric reports is deliberately left describing the fabric
