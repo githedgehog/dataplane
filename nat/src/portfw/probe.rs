@@ -161,6 +161,20 @@ impl Fabric {
         )
     }
 
+    /// Enact `exposes` over this fabric's live flow table, the way a configuration apply does:
+    /// install the new rules, then carry the flows they still open onto `genid` and invalidate
+    /// the rest. The rule *set* this fabric reports is deliberately left describing the fabric
+    /// as built, so a caller can still ask what the flows were opened by.
+    pub(crate) fn re_enact(&mut self, exposes: &[VpcExpose], genid: config::GenId) {
+        let validated = overlay_with_exposes(exposes.to_vec())
+            .ok()
+            .and_then(|overlay| overlay.validate().ok())
+            .unwrap_or_else(|| unreachable!("the fixture exposes validate"));
+        self.writer
+            .update_from_vpc_table(validated.vpc_table(), &self.flow_table, genid)
+            .unwrap_or_else(|e| unreachable!("{e}"));
+    }
+
     pub(crate) fn is_probeable(&self) -> bool {
         !self.rules.is_empty()
     }
