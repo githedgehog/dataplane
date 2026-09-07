@@ -407,6 +407,14 @@ impl FlowTable {
         Some(table.len())
     }
 
+    /// Tells whether the table physically stores no entries at all, expired ones included.
+    /// `None` when the lock is held, exactly as [`Self::len`].
+    #[must_use]
+    pub fn is_empty(&self) -> Option<bool> {
+        let table = self.table.try_read()?;
+        Some(table.is_empty())
+    }
+
     /// Returns the number of *active* (non-expired, non-cancelled) flows in the table.
     /// This is mostly for testing.
     #[must_use]
