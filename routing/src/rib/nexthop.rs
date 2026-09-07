@@ -427,6 +427,15 @@ impl NhopStore {
             .map(Rc::downgrade)
             .collect()
     }
+
+    /// Update the ifname of all next-hops with a given ifindex.
+    /// This method is for future use
+    #[allow(dead_code)]
+    pub fn refresh_nhop_ifname(&self, ifindex: InterfaceIndex, ifname: &String) {
+        self.iter()
+            .filter(|nhop| nhop.key.ifindex == Some(ifindex))
+            .for_each(|nhop| nhop.set_ifname(Some(ifname)));
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +464,7 @@ impl NhopStore {
 
 #[cfg(test)]
 mod tests {
+    use super::NhopStore;
     use crate::evpn::RmacStore;
     use crate::fib::fibobjects::{FibEntry, PktInstruction};
     use crate::rib::nexthop::*;
@@ -1058,6 +1068,35 @@ mod tests {
             whole_store.contains("(LOOP)"),
             "loop not reported in {whole_store}"
         );
+    }
+
+    #[cfg_attr(not(emulated), traced_test)]
+    #[test]
+    fn test_nhop_ifname_update() {
+        let store = build_test_nhop_store();
+        let ifindices: Vec<InterfaceIndex> =
+            store.iter().filter_map(|nhop| nhop.key.ifindex).collect();
+
+        assert!(!ifindices.is_empty(), "bad next-hop store (no ifindex)");
+
+        for ifindex in ifindices {
+            let ifname = format!("interface-index-{ifindex}");
+            store.refresh_nhop_ifname(ifindex, &ifname);
+        }
+        for nhop in store.iter() {
+            if let Some(index) = nhop.key.ifindex {
+                let matches = nhop
+                    .ifname
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|name| *name == format!("interface-index-{index}"));
+
+                assert!(matches);
+            } else {
+                // no ifname if no ifindex
+                assert!(nhop.ifname.borrow().as_ref().is_none());
+            }
+        }
     }
 }
 
