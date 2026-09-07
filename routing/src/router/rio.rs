@@ -607,8 +607,16 @@ mod tests {
     // chosen for headroom over the last honest measurement rather than over
     // this one. If it is reached again, the thing to suspect is rio, not the
     // deadline.
+    //
+    // `sanitized` joins `instrumented` on the long arm for the same reason and
+    // on the same evidence: under ThreadSanitizer that test took 31.1 s against
+    // the old 30, and failed as a dead peer. A sanitizer does not reduce the
+    // work, it slows every bit of it down, so a deadline calibrated on an
+    // uninstrumented run is not a deadline there. That it is the same test and
+    // very nearly the same 31 s in both places is the argument for the long
+    // arm being generous rather than exact.
     const PATIENCE: Duration = Duration::from_secs(cfg_select! {
-        instrumented => 300,
+        any(instrumented, sanitized) => 300,
         _ => 120,
     });
 
