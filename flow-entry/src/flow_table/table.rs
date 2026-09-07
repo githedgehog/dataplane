@@ -38,6 +38,7 @@ pub struct FlowTable {
     // TODO(mvachhar) move this to a cross beam sharded lock
     pub(crate) table: Arc<RwLock<Table>>,
     capacity: AtomicUsize,
+    live: Arc<AtomicUsize>,
 }
 
 impl Default for FlowTable {
@@ -84,6 +85,7 @@ impl FlowTable {
                 num_shards,
             ))),
             capacity: AtomicUsize::new(Self::DEFAULT_CAPACITY),
+            live: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -170,7 +172,7 @@ impl FlowTable {
 
     /// Start a timer task for a flow
     #[allow(unused)]
-    fn start_timer(table: Arc<RwLock<Table>>, flow_info: Arc<FlowInfo>) {
+    fn start_timer(table: Arc<RwLock<Table>>, live: Arc<AtomicUsize>, flow_info: Arc<FlowInfo>) {
         tokio::task::spawn(async move {
             let table = table;
             let flow_key = flow_info.flowkey();
@@ -212,6 +214,8 @@ impl FlowTable {
                     let res = table.remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info));
                     if res.is_none() {
                         debug!("Flow-timer: Unable to remove flow {flow_key}: not found");
+                    } else {
+                        live.fetch_sub(1, Ordering::Relaxed);
                     }
                     return;
                 }
@@ -224,8 +228,8 @@ impl FlowTable {
         });
     }
 
-    fn admit(&self, table: &Table, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
-        self.admit_at_len(table.len(), val)
+    fn admit(&self, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
+        self.admit_at_len(self.live.load(Ordering::Relaxed), val)
     }
 
     fn admit_at_len(&self, len: usize, val: &Arc<FlowInfo>) -> Result<(), FlowTableError> {
@@ -262,9 +266,12 @@ impl FlowTable {
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key}");
 
-        self.admit(&table, val)?;
+        self.admit(val)?;
 
         let result = table.insert(*flow_key, val.clone());
+        if result.is_none() {
+            self.live.fetch_add(1, Ordering::Relaxed);
+        }
         // Set Active only after the insert so that the invariant holds: Active iff in the
         // table.  The narrow window where the entry is in the DashMap but not yet Active is
         // harmless: drain_stale's stale condition is (status != Active || expires_at <= now),
@@ -273,7 +280,7 @@ impl FlowTable {
         drop(table);
 
         #[cfg(not(any(feature = "shuttle", feature = "loom")))]
-        Self::start_timer(self.table.clone(), val.clone());
+        Self::start_timer(self.table.clone(), self.live.clone(), val.clone());
 
         Self::displace(result.as_ref());
 
@@ -296,7 +303,7 @@ impl FlowTable {
         let flow_key = val.flowkey();
         debug!("insert: inserting flow {flow_key} unless it is already held");
 
-        let len = table.len();
+        let len = self.live.load(Ordering::Relaxed);
 
         let previous = val.update_status(FlowStatus::Active);
 
@@ -313,6 +320,7 @@ impl FlowTable {
                     Found::Refused(e)
                 } else {
                     vacant.insert(val.clone());
+                    self.live.fetch_add(1, Ordering::Relaxed);
                     Found::Inserted(None)
                 }
             }
@@ -335,7 +343,7 @@ impl FlowTable {
         drop(table);
 
         #[cfg(not(any(feature = "shuttle", feature = "loom")))]
-        Self::start_timer(self.table.clone(), val.clone());
+        Self::start_timer(self.table.clone(), self.live.clone(), val.clone());
 
         Self::displace(displaced.as_ref());
 
@@ -370,6 +378,9 @@ impl FlowTable {
         debug!("remove: Removing flow key {flow_key}");
         let table = self.table.read();
         let result = table.remove(flow_key);
+        if result.is_some() {
+            self.live.fetch_sub(1, Ordering::Relaxed);
+        }
         if let Some((_key, flow_info)) = result.as_ref() {
             flow_info.update_status(FlowStatus::Detached);
             flow_info.token.cancel();
@@ -378,6 +389,16 @@ impl FlowTable {
     }
 
     #[allow(clippy::len_without_is_empty)]
+    /// The number of entries the table believes it holds, maintained alongside every insert and
+    /// removal so the capacity check does not have to read-lock every `DashMap` shard.
+    ///
+    /// `DashMap::len` sums the shards one at a time, so the figure it returns may never have
+    /// existed; this counter is no less exact and costs one atomic.
+    #[must_use]
+    pub fn live_len(&self) -> usize {
+        self.live.load(Ordering::Relaxed)
+    }
+
     /// Returns the total number of entries physically stored in the table, regardless of
     /// their expiration status.  This is mostly for testing.
     #[must_use]
@@ -716,6 +737,52 @@ mod tests {
 
             let () = tokio::time::sleep(Duration::from_secs(5)).await;
             assert_eq!(flow_table.active_len().unwrap(), 0);
+        }
+
+        #[tokio::test]
+        async fn the_live_counter_tracks_what_the_table_holds() {
+            use std::time::Instant;
+            let flow_table = FlowTable::default();
+            let far_future = Instant::now() + Duration::from_hours(1);
+            let keys: Vec<FlowKey> = (0u16..8).map(|i| key_for(3000 + i)).collect();
+
+            for key in &keys {
+                flow_table
+                    .insert_from_arc(&Arc::new(FlowInfo::new(*key, far_future)))
+                    .unwrap();
+            }
+            assert_eq!(flow_table.live_len(), flow_table.len().unwrap());
+
+            for key in keys.iter().take(3) {
+                flow_table.remove(key);
+            }
+            assert_eq!(flow_table.live_len(), flow_table.len().unwrap());
+
+            let held = Arc::new(FlowInfo::new(keys[4], far_future));
+            flow_table.insert_from_arc(&held).unwrap();
+            assert_eq!(
+                flow_table.live_len(),
+                flow_table.len().unwrap(),
+                "replacing an existing key must not change the count"
+            );
+
+            let fresh = Arc::new(FlowInfo::new(key_for(4999), far_future));
+            assert!(matches!(
+                flow_table.insert_if_absent(&fresh).unwrap(),
+                Insertion::Installed
+            ));
+            assert_eq!(flow_table.live_len(), flow_table.len().unwrap());
+
+            let second = Arc::new(FlowInfo::new(key_for(4999), far_future));
+            assert!(matches!(
+                flow_table.insert_if_absent(&second).unwrap(),
+                Insertion::Occupied(_)
+            ));
+            assert_eq!(
+                flow_table.live_len(),
+                flow_table.len().unwrap(),
+                "standing aside for a live flow must not change the count"
+            );
         }
 
         fn key_for(src_port: u16) -> FlowKey {
