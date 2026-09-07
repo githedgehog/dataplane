@@ -3532,6 +3532,7 @@ source = "git+https://github.com/githedgehog/left-right.git?branch=hh%2Fshuttle#
 dependencies = [
  "crossbeam-utils",
  "loom",
+ "shuttle",
  "slab",
 ]
 
