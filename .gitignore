@@ -2,6 +2,7 @@
 **/__fuzz__/**
 .fuzz-corpus/
 # libfuzzer writes one of these per worker into the working directory when
+# `-jN` is used, and never cleans them up.
 fuzz-*.log
 # qemu-user core dumps from SIGABRT under emulated tests.
 **/qemu_*.core

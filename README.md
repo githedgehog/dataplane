@@ -90,12 +90,12 @@ just profile=release test
 ```
 
 You can enable a comma separated list of sanitizers via the `sanitize` argument.
-You don't strictly need to use the fuzz profile with the sanitizers, but it is recommended.
+You don't strictly need to use the `checked` profile with the sanitizers, but it is recommended.
 
 ```bash
-just sanitize=address,leak profile=fuzz test
-just sanitize=safe-stack profile=fuzz test
-just sanitize=thread profile=fuzz test
+just sanitize=address,leak profile=checked test
+just sanitize=safe-stack profile=checked test
+just sanitize=thread profile=checked test
 ```
 
 You can also build and run the tests for a specific package from within this workspace.
@@ -131,10 +131,10 @@ just build-container frr.dataplane
 Sanitizers work with the container builds too
 
 ```bash
-just sanitize=address,leak profile=fuzz build-container dataplane
-just sanitize=address,leak profile=fuzz build-container frr.dataplane
-just sanitize=thread profile=fuzz build-container dataplane
-just sanitize=thread profile=fuzz build-container frr.dataplane
+just sanitize=address,leak profile=checked build-container dataplane
+just sanitize=address,leak profile=checked build-container frr.dataplane
+just sanitize=thread profile=checked build-container dataplane
+just sanitize=thread profile=checked build-container frr.dataplane
 ```
 
 ### Step 5. Push container images

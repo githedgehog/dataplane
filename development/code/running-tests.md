@@ -76,8 +76,8 @@ just coverage-archive nat      # one package, as with `just test`
 ```
 
 Additional arguments are forwarded to nextest. CI collects `debug` on every pull
-request and adds `fuzz` on a deep run or behind the `ci:+test/all-profiles`
-label; pick one with, for example, `just profile=fuzz coverage-archive`.
+request and adds `checked` on a deep run or behind the `ci:+test/all-profiles`
+label; pick one with, for example, `just profile=checked coverage-archive`.
 `release` is deliberately excluded from the coverage matrix: it strips the
 debug assertions and overflow checks that make a coverage run worth reading,
 and `fuzz` gives the same optimization while keeping them.
@@ -165,8 +165,8 @@ The suite as a whole can also be run under either sanitizer with the standard ru
 CI's `sanitize/fuzz/*` jobs do:
 
 ```shell
-just profile=fuzz sanitize=thread test
-just profile=fuzz sanitize=address test
+just profile=checked sanitize=thread test
+just profile=checked sanitize=address test
 ```
 
 That covers far more code than a single fuzz target, but only with the brief random driver rather

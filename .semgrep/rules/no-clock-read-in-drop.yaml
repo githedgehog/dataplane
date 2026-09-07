@@ -23,5 +23,12 @@ rules:
             ...
           }
       - pattern-either:
+          # Every facade entry point that reads the routed clock, qualified and imported.
+          # `clock::elapsed` is one: it calls `now()` and takes the same teardown path.
           - pattern: clock::now()
           - pattern: clock::system_now()
+          - pattern: clock::elapsed(...)
+          - pattern: clock::checked_now()
+          - pattern: now()
+          - pattern: system_now()
+          - pattern: elapsed(...)

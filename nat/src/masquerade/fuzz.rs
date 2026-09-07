@@ -44,24 +44,37 @@ impl ValueGenerator for Scenario {
 fn settled(body: impl FnOnce()) {
     const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
     const GIVE_UP: usize = 4096;
-    // nosemgrep: rust-no-direct-std-sync-import
-    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
-        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
-    CLOCK.block_on(async {
-        body();
-        clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
-        let handle = tokio::runtime::Handle::current();
-        for _ in 0..GIVE_UP {
-            if handle.metrics().num_alive_tasks() == 0 {
-                return;
+    // One clock per *thread*, not per process. `cargo nextest` gives each test its own
+    // process, so a `static` looked equivalent -- but `cargo test` runs them as threads in
+    // one process, and then every property here shares a timeline. The 30-minute advance
+    // below is a cleanup step for the case that just ran; sharing it means it also lands on
+    // whatever a sibling property has live, expiring flows mid-assertion. That is the whole
+    // of the twelve-test failure `cargo test -p dataplane-nat` used to produce and
+    // `--test-threads=1` used to hide.
+    //
+    // A thread-local is enough because the rest of the facade is already per-thread:
+    // `Paused::new` bumps this thread's `IN_WORLD` depth, and the spawn hook hands the
+    // handle down to any thread the body starts, so a child still reads its parent's clock.
+    thread_local! {
+        static CLOCK: clock::virtual_time::Paused = clock::virtual_time::Paused::new();
+    }
+    CLOCK.with(|clock| {
+        clock.block_on(async {
+            body();
+            clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+            let handle = tokio::runtime::Handle::current();
+            for _ in 0..GIVE_UP {
+                if handle.metrics().num_alive_tasks() == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        panic!(
-            "{} tasks from this case would not retire; the flow tables they hold will accumulate \
-             until the run is out of memory",
-            handle.metrics().num_alive_tasks()
-        );
+            panic!(
+                "{} tasks from this case would not retire; the flow tables they hold will \
+                 accumulate until the run is out of memory",
+                handle.metrics().num_alive_tasks()
+            );
+        });
     });
 }
 

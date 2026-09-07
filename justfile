@@ -238,7 +238,10 @@ test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" 
 [script]
 fuzz-list *args="":
     {{ _just_debuggable_ }}
-    cargo bolero list {{ _cargo_feature_flags }} {{ args }}
+    # `--profile checked` for the same reason `fuzz` passes it: cargo-bolero defaults to a
+    # profile named `fuzz`, and this workspace renamed that profile. Without it the recipe
+    # dies with `profile 'fuzz' is not defined` before listing anything.
+    cargo bolero list --profile checked {{ _cargo_feature_flags }} {{ args }}
 
 # Fuzz one bolero target under libfuzzer. See development/code/running-tests.md
 [script]
@@ -261,6 +264,18 @@ fuzz target time="60s" *args="":
       *) want="{{ sanitize }}" ;;
     esac
     sysroot="${DATAPLANE_SYSROOT:-}"
+    if [ -n "${sysroot}" ] && [ ! -r "${sysroot}/.sanitize" ] && [ -n "{{ sanitize }}" ]; then
+      # No stamp means the sysroot predates it, so its instrumentation is unknown -- which is
+      # the same risk as a mismatch, not a reason to skip the check. Letting it through is how
+      # a half-instrumented, falsely green run happens: rust is instrumented, the C
+      # dependencies linked from this sysroot are not, and the sanitizer reports nothing.
+      printf 'refusing to fuzz: sanitize=%s was asked for, but %s has no .sanitize stamp so its\n' \
+        "{{ sanitize }}" "${sysroot}" >&2
+      printf 'instrumentation is unknown. Rebuild it with:\n' >&2
+      printf '  just sanitize=%s setup-roots && nix-shell --argstr sanitize %s\n' \
+        "{{ sanitize }}" "{{ sanitize }}" >&2
+      exit 1
+    fi
     if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
       built_with="$(cat "${sysroot}/.sanitize")"
       built_with="${built_with:-none}"

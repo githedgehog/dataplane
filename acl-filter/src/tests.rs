@@ -968,7 +968,7 @@ mod end_to_end {
         // Port forwarding
         let mut portfw_writer = PortFwTableWriter::new();
         portfw_writer
-            .update_from_vpc_table(overlay.vpc_table())
+            .update_from_vpc_table(overlay.vpc_table(), &flow_table, 1)
             .unwrap();
         pipeline = pipeline.add_stage(PortForwarder::new(
             "port-forwarder",

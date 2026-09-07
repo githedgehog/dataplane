@@ -59,11 +59,22 @@ pub fn elapsed(anchor: Instant) -> Duration {
 pub fn checked_now() -> Option<Instant> {
     #[cfg(all(feature = "virtual", not(wall_clock)))]
     {
-        if virtual_time::armed() && tokio::runtime::Handle::try_current().is_err() {
-            // No context of this thread's own -- but the spawn hook may have
-            // handed it the driving one, and reading through that is the same
-            // timeline. Anything else here is not, so `None` means refuse.
-            return virtual_time::read_inherited();
+        if virtual_time::armed() {
+            match tokio::runtime::Handle::try_current() {
+                // A runtime of this thread's own, and one of the paused worlds it is
+                // inside: same timeline, so the read stands.
+                Ok(handle) if virtual_time::is_a_paused_runtime(handle.id()) => {}
+                // A runtime, but not one of them. `tokio::time::Instant::now()` would
+                // answer from *that* runtime -- the wall clock, if it is not paused --
+                // while every deadline around it came from the paused one. Asking "is
+                // there a runtime" instead of "is it this world's" is how a read an hour
+                // out of step gets accepted.
+                Ok(_) => return None,
+                // No context of this thread's own -- but the spawn hook may have
+                // handed it the driving one, and reading through that is the same
+                // timeline. Anything else here is not, so `None` means refuse.
+                Err(_) => return virtual_time::read_inherited(),
+            }
         }
         Some(tokio::time::Instant::now().into_std())
     }
@@ -96,18 +107,29 @@ pub fn system_now() -> SystemTime {
     SystemTime::now()
 }
 
+/// One section per *process*, so plain `#[test]`s do not race each other's global state.
+///
+/// Deliberately `process_global`, not [`concurrency::sync`]. A facade primitive belongs to the
+/// model-checker execution that created it, and a `static` outlives every execution: under
+/// shuttle the second touch aborts with `ExecutionState is not set`, which is what eleven of
+/// this crate's twelve tests did. Nothing here asks for shuttle -- it arrives by feature
+/// unification from `dataplane/shuttle -> concurrency/shuttle`.
+///
+/// The facade was reached for in the first place because `Mutex::new` is not `const fn` under
+/// loom or shuttle, so the in-place `static` form stops compiling. `process_global::Mutex::new`
+/// is `const fn`, so no `LazyLock` wrapper is needed either -- and the wrapper was what turned
+/// a compile error into a runtime one.
+///
+/// `clippy::disallowed_types` resolves through the re-export to `std::sync::Mutex`, so the
+/// allowance cannot live on the re-export and has to be here.
 #[cfg(test)]
-pub(crate) fn serially() -> concurrency::sync::MutexGuard<'static, ()> {
-    // Lazily, not `static SERIAL: Mutex<()> = Mutex::new(())`. The facade's
-    // `Mutex::new` is not `const fn` under loom or shuttle -- `concurrency::sync`
-    // says so in its own module docs -- so the in-place form stops compiling the
-    // moment the workspace is built with `--features shuttle`. Nothing in this
-    // crate asks for shuttle; it arrives by feature unification from
-    // `dataplane/shuttle -> concurrency/shuttle`, and `clock` depends on
-    // `concurrency`. That is why `just shuttle` never got as far as running.
-    static SERIAL: concurrency::sync::LazyLock<concurrency::sync::Mutex<()>> =
-        concurrency::sync::LazyLock::new(|| concurrency::sync::Mutex::new(()));
-    SERIAL.lock()
+#[allow(clippy::disallowed_types)]
+pub(crate) fn serially() -> concurrency::process_global::MutexGuard<'static, ()> {
+    static SERIAL: concurrency::process_global::Mutex<()> =
+        concurrency::process_global::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(concurrency::process_global::PoisonError::into_inner)
 }
 
 #[cfg(test)]

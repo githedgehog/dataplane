@@ -12,13 +12,44 @@ const YIELDS: usize = 4;
 
 thread_local! {
     static IN_WORLD: Cell<usize> = const { Cell::new(0) };
+
 }
+
+/// Every live `Paused` runtime in the process.
+///
+/// `IN_WORLD` says whether *this thread* is inside a paused world; this says which runtimes
+/// those worlds are. A read has to answer from one of them to be on the same timeline as the
+/// deadlines around it, and "is there a runtime" is not the same question -- an unpaused
+/// runtime entered inside a paused world answers from the wall clock, an hour out of step
+/// after an hour of `advance`, and nothing said so.
+///
+/// Process-wide rather than thread-local because entering another thread's `Paused::handle()`
+/// is the documented way to bring a thread that the spawn hook could not reach -- DPDK's EAL,
+/// anything behind `pthread_create` -- into the world. That thread has the right runtime and
+/// none of the creator's thread-locals, so a per-thread registry would refuse exactly the
+/// case the refusal message tells you to use.
+///
+/// `std::sync`, deliberately, for the same reason as `LIVE` above: this is one registry per
+/// *process*, outside anything a model checker should schedule. It is the category
+/// `concurrency::process_global` names, but `clock` sits below `concurrency` -- which is only
+/// a dev-dependency here -- so it says so in words instead.
+#[cfg(not(wall_clock))]
+#[allow(clippy::disallowed_types)]
+// nosemgrep: rust-no-direct-std-sync-import
+static WORLDS: std::sync::RwLock<Vec<tokio::runtime::Id>> = std::sync::RwLock::new(Vec::new());
 
 #[cfg(not(wall_clock))]
 #[inline]
 #[must_use]
 pub(crate) fn armed() -> bool {
     LIVE.load(Ordering::Acquire) != 0 && IN_WORLD.with(Cell::get) != 0
+}
+
+/// Whether `id` is a live paused runtime, and so on the virtual timeline.
+#[cfg(not(wall_clock))]
+#[must_use]
+pub(crate) fn is_a_paused_runtime(id: tokio::runtime::Id) -> bool {
+    WORLDS.read().is_ok_and(|worlds| worlds.contains(&id))
 }
 
 thread_local! {
@@ -72,10 +103,17 @@ fn inherit_across_spawns() {}
 #[cfg(not(wall_clock))]
 pub(crate) fn read_inherited() -> Option<crate::Instant> {
     INHERITED.with(|slot| {
-        slot.get().map(|handle| {
-            let _entered = handle.enter();
-            tokio::time::Instant::now().into_std()
-        })
+        slot.get()
+            // The handle is written once and never invalidated, so it can outlive the world
+            // it came from: spawn a worker inside clock A, drop A, create clock B, and the
+            // worker still answers from A's shut-down runtime -- measured at exactly one
+            // hour behind B. Checking it against the live registry is what makes the
+            // `OnceCell` safe to keep.
+            .filter(|handle| is_a_paused_runtime(handle.id()))
+            .map(|handle| {
+                let _entered = handle.enter();
+                tokio::time::Instant::now().into_std()
+            })
     })
 }
 
@@ -117,6 +155,10 @@ impl Paused {
         if !cfg!(wall_clock) {
             inherit_across_spawns();
             IN_WORLD.with(|depth| depth.set(depth.get() + 1));
+            #[cfg(not(wall_clock))]
+            if let Ok(mut worlds) = WORLDS.write() {
+                worlds.push(runtime.handle().id());
+            }
             LIVE.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -143,6 +185,15 @@ impl Drop for Paused {
     fn drop(&mut self) {
         if !cfg!(wall_clock) {
             IN_WORLD.with(|depth| depth.set(depth.get().saturating_sub(1)));
+            #[cfg(not(wall_clock))]
+            {
+                let id = self.runtime.handle().id();
+                if let Ok(mut worlds) = WORLDS.write()
+                    && let Some(at) = worlds.iter().rposition(|held| *held == id)
+                {
+                    worlds.remove(at);
+                }
+            }
             LIVE.fetch_sub(1, Ordering::Release);
         }
     }
@@ -315,6 +366,80 @@ mod tests {
             worker >= driver,
             "an entered worker read {:?} behind the thread that advanced the clock",
             driver.saturating_duration_since(worker)
+        );
+    }
+
+    /// A runtime that is not one of the paused worlds is refused, not read.
+    ///
+    /// The refusal used to ask only whether a runtime was current. An unpaused one entered
+    /// inside a paused world satisfies that and then answers from the wall clock: measured
+    /// at 3599.9998s of disagreement after a one-hour `advance`, silently, in the direction
+    /// that makes a deadline look long past. `is_a_paused_runtime` asks the question the
+    /// refusal message was always describing.
+    #[cfg(not(wall_clock))]
+    #[test]
+    fn an_unpaused_runtime_inside_a_paused_world_is_refused() {
+        let _serial = serially();
+        let paused = Paused::new();
+        paused.block_on(async { advance(LONG).await });
+        let inside = paused.block_on(async { now() });
+
+        let plain = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a plain current-thread runtime builds");
+        let refused = plain.block_on(async { std::panic::catch_unwind(crate::now) });
+
+        assert!(
+            refused.is_err(),
+            "a read through an unpaused runtime was accepted while this thread was inside a \
+             paused world; it answered {:?} behind the paused timeline",
+            inside.saturating_duration_since(
+                refused.unwrap_or_else(|_| unreachable!("checked is_err above"))
+            )
+        );
+    }
+
+    /// A worker whose inherited clock has been dropped is refused, not answered.
+    ///
+    /// `INHERITED` is written once by the spawn hook and never invalidated, so the handle can
+    /// outlive the world it came from. Spawn a worker inside clock A, drop A, create clock B:
+    /// the worker used to answer from A's shut-down runtime, measured at 3600.0001s behind B
+    /// with no refusal. `read_inherited` checks the handle against the live registry now.
+    #[cfg(not(wall_clock))]
+    #[test]
+    fn a_worker_whose_clock_was_dropped_is_refused() {
+        use std::sync::mpsc;
+
+        let _serial = serially();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let (answer_tx, answer_rx) = mpsc::channel();
+
+        let a = Paused::new();
+        a.block_on(async { advance(LONG).await });
+        // Spawned from inside the world, so the hook really does hand over a handle.
+        let worker = a.block_on(async move {
+            thread::spawn(move || {
+                go_rx.recv().expect("released");
+                drop(answer_tx.send(std::panic::catch_unwind(now)));
+            })
+        });
+        drop(a);
+
+        let b = Paused::new();
+        b.block_on(async { advance(LONG).await });
+        let live = b.block_on(async { now() });
+
+        go_tx.send(()).expect("release the worker");
+        let answer = answer_rx.recv().expect("the worker answered");
+        worker.join().expect("the worker joined");
+
+        assert!(
+            answer.is_err(),
+            "a worker read {:?} behind the live clock, through a runtime that had been dropped",
+            live.saturating_duration_since(
+                answer.unwrap_or_else(|_| unreachable!("checked is_err above"))
+            )
         );
     }
 

@@ -43,24 +43,29 @@ impl ValueGenerator for Scenario {
 fn settled(body: impl FnOnce()) {
     const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
     const GIVE_UP: usize = 4096;
-    // nosemgrep: rust-no-direct-std-sync-import
-    static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
-        std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
-    CLOCK.block_on(async {
-        body();
-        clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
-        let handle = tokio::runtime::Handle::current();
-        for _ in 0..GIVE_UP {
-            if handle.metrics().num_alive_tasks() == 0 {
-                return;
+    // One clock per *thread*, not per process. See the twin in `masquerade::fuzz` for why:
+    // `cargo nextest` gives each test its own process, so a `static` looked equivalent, and
+    // under `cargo test` every property in this crate shared one timeline.
+    thread_local! {
+        static CLOCK: clock::virtual_time::Paused = clock::virtual_time::Paused::new();
+    }
+    CLOCK.with(|clock| {
+        clock.block_on(async {
+            body();
+            clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+            let handle = tokio::runtime::Handle::current();
+            for _ in 0..GIVE_UP {
+                if handle.metrics().num_alive_tasks() == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        panic!(
-            "{} tasks from this case would not retire; the flow tables they hold will accumulate \
-             until the run is out of memory",
-            handle.metrics().num_alive_tasks()
-        );
+            panic!(
+                "{} tasks from this case would not retire; the flow tables they hold will \
+                 accumulate until the run is out of memory",
+                handle.metrics().num_alive_tasks()
+            );
+        });
     });
 }
 
@@ -223,9 +228,10 @@ fn a_forwarded_packet_lands_inside_the_published_target() {
                     };
 
                     assert!(
-                        fabric.is_private(addr, port),
-                        "{published:?} was forwarded to {addr}:{port}, which no rule names as a \
-                         target; that address never published this service"
+                        fabric.is_target_of(published, addr, port),
+                        "{published:?} was forwarded to {addr}:{port}, which is not a target of \
+                         the rule that publishes {published:?}; the packet reached a backend \
+                         belonging to some other published service"
                     );
                     tally.reached.fetch_add(1, Ordering::Relaxed);
                 }
