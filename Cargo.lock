@@ -1813,6 +1813,7 @@ dependencies = [
  "netgauze-bgp-pkt",
  "netgauze-bmp-pkt",
  "nix 0.31.3",
+ "ordermap",
  "procfs",
  "rand 0.10.2",
  "serde",

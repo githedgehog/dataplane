@@ -8,9 +8,8 @@ use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
+use ordermap::OrderSet;
 
-use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
-use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -26,11 +25,6 @@ use tracing::{debug, error, warn};
 
 use tracectl::trace_target;
 trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
-
-#[derive(Debug)]
-/// A collection of unique next-hops. Next-hops are identified by a next-hop key
-/// that can contain an address, ifindex and encapsulation.
-pub(crate) struct NhopStore(BTreeSet<Rc<Nhop>>);
 
 #[derive(Debug)]
 /// A next-hop object that can be shared by multiple routes and that can have
@@ -130,12 +124,6 @@ impl NhopKey {
     }
 }
 
-/* Implement some traits needed to use Nhop as set element of BtreeSet. Since a Nhop can
-   be internally mutated, we have to implement these manually to leave the resolvers,
-   instructions and fibgroup out, as those may change.
-   The implementations leverage the derived trait implementations for the `NhopKey`
-   contained in the Nhop.
-*/
 impl Eq for Nhop {}
 
 impl PartialEq for Nhop {
@@ -143,18 +131,6 @@ impl PartialEq for Nhop {
         self.key.eq(&other.key)
     }
 }
-impl Ord for Nhop {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key.cmp(&other.key)
-    }
-}
-impl PartialOrd for Nhop {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/* Hash is only needed if we use HashSet instead of BtreeSet for the NhopMap */
 impl Hash for Nhop {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.key.hash(state);
@@ -275,7 +251,7 @@ impl Nhop {
     }
 
     #[cfg(test)]
-    fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>, visited: &mut Visited) {
+    fn quick_resolve_rec(&self, result: &mut OrderSet<NhopKey>, visited: &mut Visited) {
         if visited.contains(&self.id()) {
             return;
         }
@@ -324,18 +300,23 @@ impl Nhop {
     /// by a small recursion in the next-hop store, which is stateful and persists the results.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
-    pub fn quick_resolve(&self) -> BTreeSet<NhopKey> {
-        let mut out: BTreeSet<NhopKey> = BTreeSet::new();
+    pub fn quick_resolve(&self) -> OrderSet<NhopKey> {
+        let mut out: OrderSet<NhopKey> = OrderSet::new();
         self.quick_resolve_rec(&mut out, &mut Visited::new());
         out
     }
 }
 
+#[derive(Debug)]
+/// A collection of unique next-hops. Next-hops are identified by a next-hop key
+/// that can contain an address, ifindex and encapsulation.
+pub(crate) struct NhopStore(OrderSet<Rc<Nhop>>);
+
 impl NhopStore {
     /// Create a next-hop map object.
     #[must_use]
     pub(crate) fn new() -> Self {
-        Self(BTreeSet::new())
+        Self(OrderSet::new())
     }
 
     /// Get the number of next-hops in the store
@@ -459,7 +440,7 @@ impl NhopStore {
     /// exists for that address, returns None. Otherwise, it returns the
     /// result of `quick_resolve()` on the next-hop found.
     /// This function is probably only useful for testing.
-    pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<BTreeSet<NhopKey>> {
+    pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<OrderSet<NhopKey>> {
         let key = NhopKey::with_address(address);
         self.get_nhop(&key).map(|nh| nh.quick_resolve())
     }
@@ -847,7 +828,7 @@ mod tests {
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
             assert_eq!(
-                res.pop_first().expect("Should be there").fwaction,
+                res.pop().expect("Should be there").fwaction,
                 FwAction::Drop,
                 "It should be drop"
             );
@@ -858,7 +839,7 @@ mod tests {
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
             assert_eq!(
-                res.pop_first().expect("Should be there").fwaction,
+                res.pop().expect("Should be there").fwaction,
                 FwAction::Drop,
                 "It should be drop"
             );
