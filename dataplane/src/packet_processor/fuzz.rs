@@ -4631,6 +4631,279 @@ mod routed {
 }
 
 #[cfg(test)]
+mod icmp_error {
+    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
+    use super::*;
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
+    use net::flows::FlowInfo;
+    use net::headers::{TryEth, TryHeaders};
+    use net::icmp4::Icmp4DestUnreachable;
+    use net::packet::test_utils::build_icmp4_error_quoting;
+    use net::parse::DeParse;
+    use std::net::Ipv4Addr;
+
+    const PEER: &str = "3.3.3.1";
+
+    /// One case: a flow to open, and how the router on the far side quotes it back at us.
+    #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+    struct Reported {
+        host: u8,
+        sport: u16,
+        dport: u16,
+        quoted: Quoted,
+        code: Code,
+        /// Quote the flow we opened, or a datagram shaped like it that names no flow at all.
+        names_a_live_flow: bool,
+    }
+
+    /// How much of the offending datagram the far-side router put in the quote.
+    ///
+    /// RFC 792 asks for the IP header plus eight octets and RFC 1812 asks for as much as will
+    /// fit, so everything from "the whole datagram" down to "not even a full IP header" is on
+    /// the wire somewhere, and each length is a different walk through the embedded parser.
+    /// `First` is the one that matters: a plain "trim n octets from the end" never reaches a
+    /// header boundary, because the datagrams this fixture emits are the better part of two
+    /// kilobytes and `n` is a byte.
+    #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+    enum Quoted {
+        Whole,
+        First(u8),
+        AllBut(u8),
+    }
+
+    impl Quoted {
+        fn of(self, datagram: &[u8]) -> &[u8] {
+            let keep = match self {
+                Quoted::Whole => datagram.len(),
+                Quoted::First(n) => (n as usize).min(datagram.len()),
+                Quoted::AllBut(n) => datagram.len().saturating_sub(n as usize),
+            };
+            &datagram[..keep]
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+    enum Code {
+        Network,
+        Host,
+        Protocol,
+        Port,
+        FragmentationNeeded,
+    }
+
+    impl From<Code> for Icmp4DestUnreachable {
+        fn from(code: Code) -> Self {
+            match code {
+                Code::Network => Icmp4DestUnreachable::Network,
+                Code::Host => Icmp4DestUnreachable::Host,
+                Code::Protocol => Icmp4DestUnreachable::Protocol,
+                Code::Port => Icmp4DestUnreachable::Port,
+                Code::FragmentationNeeded => Icmp4DestUnreachable::FragmentationNeeded {
+                    next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
+                },
+            }
+        }
+    }
+
+    /// A packet's bytes from its IP header onwards -- what a router quotes back at you.
+    fn datagram(packet: Packet<TestBuffer>) -> Option<Vec<u8>> {
+        let eth = packet.headers().try_eth()?.size().get() as usize;
+        let wire = packet.serialize().ok()?;
+        Some(wire.as_ref().get(eth..)?.to_vec())
+    }
+
+    fn v4(addr: IpAddr) -> Option<Ipv4Addr> {
+        match addr {
+            IpAddr::V4(addr) => Some(addr),
+            IpAddr::V6(_) => None,
+        }
+    }
+
+    fn peer() -> IpAddr {
+        PEER.parse().unwrap_or_else(|_| unreachable!())
+    }
+
+    /// Open a flow and hand back the frame the gateway put on the wire for it.
+    fn open(fabric: &mut Fabric, host: u8, sport: u16, dport: u16) -> Option<Packet<TestBuffer>> {
+        let src: IpAddr = format!("1.1.0.{host}")
+            .parse()
+            .unwrap_or_else(|_| unreachable!());
+        let request = super::round_trip::udp(src, peer(), sport, dport)?;
+        let out = fabric.send(tunnelled(&request));
+        matches!(verdict(&out), Verdict::Delivered { .. }).then_some(out)
+    }
+
+    fn live(fabric: &Fabric) -> Vec<Arc<FlowInfo>> {
+        fabric
+            .fleet()
+            .blueprint()
+            .flow_table
+            .snapshot(|_, flow| flow.is_active())
+            .collect()
+    }
+
+    /// What one case did, for the coverage guards to add up.
+    struct Outcome {
+        refused: bool,
+        tore_down: bool,
+        named_nobody: bool,
+    }
+
+    /// Open a flow, have the far side quote it back as an ICMP error, and see what happens.
+    ///
+    /// `None` when the case could not be set up -- an address or port the fixture will not
+    /// accept, a quote too mangled to assemble. Those are skipped rather than failed; the
+    /// coverage guards on the caller are what notice if too many of them are.
+    fn run_case(reported: &Reported) -> Option<Outcome> {
+        let &Reported {
+            host,
+            sport,
+            dport,
+            quoted,
+            code,
+            names_a_live_flow,
+        } = reported;
+        // A bystander on the same peering, opened first and never mentioned again. Its flows are
+        // what the containment assertion is about: an ICMP error is entitled to the pair it
+        // names and to nothing else.
+        let bystander = host.wrapping_add(1);
+        if bystander == host {
+            return None;
+        }
+
+        let mut fabric = Fabric::routed(&exposes(), None)?;
+        open(&mut fabric, bystander, 1024, 53)?;
+        let watched = live(&fabric);
+        if watched.is_empty() {
+            return None;
+        }
+        let delivered = open(&mut fabric, host, sport, dport)?;
+        let public = v4(delivered
+            .ip_source()
+            .unwrap_or_else(|| unreachable!("a delivered frame has a source")))?;
+
+        let offending = if names_a_live_flow {
+            inside(&delivered)?
+        } else {
+            // The same shape and the same public address, on a port the allocator has not handed
+            // out, so the reversed key misses the table entirely.
+            super::round_trip::udp(IpAddr::V4(public), peer(), sport ^ 0x8000, dport)?
+        };
+        let bytes = datagram(offending)?;
+        let peer_v4: Ipv4Addr = PEER.parse().unwrap_or_else(|_| unreachable!());
+        let error = build_icmp4_error_quoting(code.into(), peer_v4, public, quoted.of(&bytes))?;
+
+        let out = fabric.send(tunnelled_from(vni(REMOTE_VNI), &error));
+        let survivors = live(&fabric);
+
+        for flow in &watched {
+            assert!(
+                flow.is_active(),
+                "an icmp error quoting {}another flow invalidated a bystander's flow {}. Only \
+                 the pair the quote names may be torn down; the reversed embedded key is what \
+                 picks it, so a miss there must let the packet by, not take the nearest flow \
+                 with it",
+                if names_a_live_flow {
+                    ""
+                } else {
+                    "nothing, and "
+                },
+                flow.flowkey()
+            );
+        }
+
+        Some(Outcome {
+            refused: matches!(
+                verdict(&out),
+                Verdict::Dropped(DoneReason::IcmpErrorIncomplete)
+            ),
+            tore_down: survivors.len() < watched.len() + 2,
+            named_nobody: !names_a_live_flow,
+        })
+    }
+
+    /// An ICMP error quoting any prefix of a live flow is judged, and judges only that flow.
+    ///
+    /// The handler had never been driven by a generated packet. `fn stack` emits an ICMP header
+    /// with an error type and no quoted datagram at all, so every generated case died in
+    /// `IcmpErrorPacket::new`, and four of the handler's six outcomes were reached zero times by
+    /// the entire suite -- measured, not guessed. What gets past that gate is quoting a datagram
+    /// the pipeline really emitted for a flow it really holds, which is free: the fixture has
+    /// one in hand the moment the request is delivered.
+    ///
+    /// The coverage guards below are the point as much as the assertion is. Without them this
+    /// property would go on passing after a change that put it back to generating quotes nothing
+    /// can parse, which is exactly how the gap it closes came to exist.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn an_icmp_error_quoting_a_live_flow_judges_that_flow_and_no_other() {
+        static HANDLED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static TORE_DOWN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static SPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NAMED_NOBODY: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type::<Reported>()
+            .for_each(|reported| {
+                let Some(outcome) = run_case(reported) else {
+                    return;
+                };
+                if outcome.refused {
+                    REFUSED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    HANDLED.fetch_add(1, Ordering::Relaxed);
+                }
+                if outcome.tore_down {
+                    TORE_DOWN.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    SPARED.fetch_add(1, Ordering::Relaxed);
+                }
+                if outcome.named_nobody {
+                    NAMED_NOBODY.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let (handled, refused) = (
+            HANDLED.load(Ordering::Relaxed),
+            REFUSED.load(Ordering::Relaxed),
+        );
+        let (tore_down, spared, nobody) = (
+            TORE_DOWN.load(Ordering::Relaxed),
+            SPARED.load(Ordering::Relaxed),
+            NAMED_NOBODY.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "handled={handled} refused={refused} tore-down={tore_down} spared={spared} \
+             named-nobody={nobody}"
+        );
+        super::assert_covered(
+            handled > 0,
+            "every quote was refused, so the handler was never driven -- the exact state this \
+             property exists to keep from returning",
+        );
+        super::assert_covered(
+            refused > 0,
+            "no quote was ever short enough to refuse, so the truncation is not being generated",
+        );
+        super::assert_covered(
+            tore_down > 0,
+            "no icmp error ever tore a flow down, so the teardown path is still unexercised",
+        );
+        super::assert_covered(
+            spared > 0,
+            "every icmp error tore a flow down, so nothing exercised the sparing path",
+        );
+        super::assert_covered(
+            nobody > 0,
+            "no quote ever named a flow that does not exist, so the miss path is unexercised",
+        );
+    }
+}
+
+#[cfg(test)]
 mod model {
     use super::derive::loads_carried;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
