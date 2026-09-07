@@ -29,12 +29,14 @@ pub type VrfId = u32;
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
+    pub ifname: Option<String>,
 }
 impl Default for RouteNhop {
     fn default() -> Self {
         Self {
             vrfid: 0,
             key: NhopKey::with_drop(),
+            ifname: None,
         }
     }
 }
@@ -359,6 +361,7 @@ impl Vrf {
                 } else {
                     Some(nhop.vrfid)
                 };
+                shared.set_ifname(&nhop.ifname);
                 let shim = ShimNhop::new(ext_vrf, shared);
                 nhop_refs.push(shim);
             }
@@ -800,11 +803,12 @@ pub mod tests {
         let key = NhopKey::new(
             RouteOrigin::default(),
             address.map(mk_addr),
-            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()), encap,FwAction::Forward, None);
+            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()), encap,FwAction::Forward);
 
         RouteNhop {
             vrfid,
             key,
+            ifname: None,
         }
     }
     pub fn build_test_route(origin: RouteOrigin, distance: u8, metric: u32) -> Route {

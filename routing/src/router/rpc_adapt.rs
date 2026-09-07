@@ -11,6 +11,7 @@
 
 use crate::errors::RouterError;
 use crate::evpn::{RmacEntry, RmacStore};
+use crate::interfaces::iftable::IfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, NhopKey};
 use crate::rib::vrf::{Route, RouteFlags, RouteNhop, RouteOrigin, Vrf};
@@ -98,7 +99,11 @@ impl TryFrom<&Rmac> for RmacEntry {
 
 impl RouteNhop {
     #[tracing::instrument(level = "debug")]
-    fn from_rpc_nhop(nh: &NextHop, origin: RouteOrigin) -> Result<Self, RouterError> {
+    fn from_rpc_nhop(
+        nh: &NextHop,
+        origin: RouteOrigin,
+        iftable: &IfTable,
+    ) -> Result<Self, RouterError> {
         let mut ifindex = nh
             .ifindex
             .map(|i| match InterfaceIndex::try_new(i) {
@@ -123,13 +128,19 @@ impl RouteNhop {
             None => None,
         };
 
+        // lookup interface name
+        let ifname = match ifindex {
+            None => None,
+            Some(k) => iftable.get_interface(k).map(|iface| iface.name.clone()),
+        };
+
+        // build key for this next hop
         let key = NhopKey::new(
             origin,
             nh.address,
             ifindex,
             encap,
             FwAction::from(nh.fwaction),
-            None,
         );
 
         // validate next hop from its key
@@ -140,6 +151,7 @@ impl RouteNhop {
         Ok(RouteNhop {
             key,
             vrfid: nh.vrfid,
+            ifname,
         })
     }
 }
@@ -165,7 +177,13 @@ impl Route {
 }
 
 impl Vrf {
-    pub fn add_route_rpc(&mut self, iproute: &IpRoute, vrf0: Option<&Vrf>, rstore: &RmacStore) {
+    pub fn add_route_rpc(
+        &mut self,
+        iproute: &IpRoute,
+        vrf0: Option<&Vrf>,
+        rstore: &RmacStore,
+        iftable: &IfTable,
+    ) {
         let prefix = match Prefix::try_from((iproute.prefix, iproute.prefix_len)) {
             Ok(p) => p,
             Err(e) => {
@@ -195,7 +213,7 @@ impl Vrf {
         let route = Route::from_iproute(&prefix, iproute);
         let mut nhops = Vec::with_capacity(iproute.nhops.len());
         for nhop in &iproute.nhops {
-            match RouteNhop::from_rpc_nhop(nhop, route.origin) {
+            match RouteNhop::from_rpc_nhop(nhop, route.origin, iftable) {
                 Ok(nh) => nhops.push(nh),
                 Err(e) => error!("Omitting next-hop {nhop} in route to {prefix}: {e}"),
             }
@@ -424,9 +442,7 @@ mod rpc_properties {
             return None;
         }
 
-        Some(NhopKey::new(
-            origin, address, ifindex, encap, fwaction, None,
-        ))
+        Some(NhopKey::new(origin, address, ifindex, encap, fwaction))
     }
 
     fn test_vrf() -> Vrf {
@@ -469,9 +485,10 @@ mod rpc_properties {
             .with_generator(Routes)
             .cloned()
             .for_each(|spec: RouteSpec| {
+                let iftable = IfTable::new(); // empty
                 for origin in [RouteOrigin::Local, RouteOrigin::Bgp, RouteOrigin::Connected] {
                     for nhop in &spec.nhops {
-                        let got = RouteNhop::from_rpc_nhop(&wire_nhop(nhop), origin);
+                        let got = RouteNhop::from_rpc_nhop(&wire_nhop(nhop), origin, &iftable);
                         match expected_key(nhop, origin) {
                             Some(want) => {
                                 let got = got.unwrap_or_else(|e| {
@@ -494,8 +511,9 @@ mod rpc_properties {
             .cloned()
             .for_each(|spec: RouteSpec| {
                 let rstore = RmacStore::new();
+                let iftable = IfTable::new(); // empty
                 let mut vrf = test_vrf();
-                vrf.add_route_rpc(&wire_route(&spec), None, &rstore);
+                vrf.add_route_rpc(&wire_route(&spec), None, &rstore, &iftable);
 
                 let (raw, len) = prefixes()[spec.prefix];
                 let Ok(prefix) = Prefix::try_from((raw, len)) else {
@@ -532,9 +550,10 @@ mod rpc_properties {
             .cloned()
             .for_each(|spec: RouteSpec| {
                 let rstore = RmacStore::new();
+                let iftable = IfTable::new(); // empty
                 let mut vrf = test_vrf();
                 let route = wire_route(&spec);
-                vrf.add_route_rpc(&route, None, &rstore);
+                vrf.add_route_rpc(&route, None, &rstore, &iftable);
                 vrf.del_route_rpc(&route, None, &rstore);
 
                 let (raw, len) = prefixes()[spec.prefix];

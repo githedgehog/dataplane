@@ -94,13 +94,11 @@ impl Display for RouteOrigin {
         }
     }
 }
+
 impl Display for NhopKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(address) = self.address {
             write!(f, " via {address}")?;
-        }
-        if let Some(ifname) = &self.ifname {
-            write!(f, " interface {ifname}")?;
         }
         if let Some(ifindex) = self.ifindex {
             write!(f, " (idx {ifindex})")?;
@@ -116,14 +114,29 @@ impl Display for NhopKey {
 }
 impl Display for Nhop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.key)?;
+        let key = &self.key;
+        if let Some(address) = key.address {
+            write!(f, " via {address}")?;
+        }
+        if let Some(ifname) = &*self.ifname.borrow() {
+            write!(f, " interface {ifname}")?;
+        }
+        if let Some(ifindex) = key.ifindex {
+            write!(f, " (idx {ifindex})")?;
+        }
+        if let Some(encap) = key.encap {
+            write!(f, " encap {encap}")?;
+        }
+        if key.fwaction != FwAction::Forward {
+            write!(f, " action {:?}", key.fwaction)?;
+        }
         if self.invalid.get() {
             write!(f, " (INVALID)")?;
         }
         if self.is_unresolved() {
             write!(f, " (unresolved)")?;
         }
-        fmt_nhop_resolvers(f, self, 2, &mut vec![self.id()])
+        Ok(())
     }
 }
 
@@ -140,7 +153,7 @@ fn fmt_nhop_resolvers(
     let tab = 5 * depth as usize;
     let indent = " ".repeat(tab);
     for r in resolvers.iter().filter_map(Weak::upgrade) {
-        write!(f, "\n{indent} {}", r.key)?;
+        write!(f, "\n{indent} {r}")?;
         if r.is_unresolved() {
             write!(f, " (UNRESOLVED)")?;
         }
@@ -230,7 +243,8 @@ impl Display for ShimNhop {
         if let Some(ext_vrf) = self.ext_vrf {
             write!(f, "(from VRF {ext_vrf})")?;
         }
-        self.rc.fmt(f) // Nhop
+        self.rc.fmt(f)?; // Nhop
+        fmt_nhop_resolvers(f, &self.rc, 2, &mut vec![self.rc.id()])
     }
 }
 impl Display for RouteFlags {
