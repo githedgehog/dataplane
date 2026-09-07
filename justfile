@@ -232,7 +232,7 @@ test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" 
 [script]
 fuzz-list *args="":
     {{ _just_debuggable_ }}
-    cargo bolero list {{ _cargo_feature_flags }} {{ args }}
+    cargo bolero list --profile checked {{ _cargo_feature_flags }} {{ args }}
 
 # Fuzz one bolero target under libfuzzer. See development/code/running-tests.md
 [script]
