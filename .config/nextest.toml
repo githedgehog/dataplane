@@ -162,6 +162,40 @@ filter = '''
 platform = 'cfg(unix)'
 test-group = 'vm'
 
+# The generated properties in `packet_processor::fuzz`, which assert on how much they covered.
+#
+# bolero ends a property at whichever comes first, its iteration count or its wall-clock budget,
+# and that budget defaults to one second. A property that is only searching is fine with a small
+# sample -- it just searches less. These are not only searching: each one ends in `assert_covered`
+# calls that fail if some branch was never reached, so for them the sample size *is* the test.
+#
+# 620 tests in this workspace run on that one-second budget, 347 of them in `dataplane-net`, and
+# each is CPU-bound for the whole second. Packed together they starve each other.
+# `every_shape_leaves_the_pipeline_with_a_verdict` got 2 cases at 1.90 iterations/s in CI and
+# failed with `NoIp=0`. Neither the pipeline nor the guard was wrong -- the test got about a
+# fifteenth of a core.
+#
+# Reproduced and measured by pinning nextest to ten CPUs while it runs 32 threads, which is the
+# shape of the CI runner's cgroup, over `package(dataplane-net) + test(shapes::every_shape_leaves)`:
+#
+#     without this override   3.51 iterations/s    4 cases    NoIp  7
+#     with it                   18 iterations/s   20 cases    NoIp 36
+#     the test on its own        29 iterations/s   29 cases    NoIp 55
+#
+# Four cases is a coin toss on whether a shape appears at all, which is how this reaches CI as an
+# intermittent failure in a test that has nothing intermittent about it.
+#
+# `threads-required` is the fix rather than a longer budget or a guard that stands down when its
+# sample is small. A longer budget multiplies the cost of all 620 tests to help these 24, and a
+# guard that gives up when starved stops guarding on exactly the slow and varied machines nobody
+# here can measure. Reserving the thread budget costs the ~26 test-seconds this module takes.
+#
+# It is scoped to the module and not to the 24 test names so that a property added beside them
+# inherits it; the price of that is a cheap test added here also getting the machine to itself.
+[[profile.default.overrides]]
+filter = 'package(dataplane) & test(packet_processor::fuzz::)'
+threads-required = "num-test-threads"
+
 [test-groups]
 vm = { max-threads = 1 }
 
