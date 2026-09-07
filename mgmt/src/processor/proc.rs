@@ -547,12 +547,14 @@ fn apply_masquerade_config(
 
 fn apply_port_forwarding_config(
     vpc_table: &ValidatedVpcTable,
+    flow_table: &FlowTable,
     portfw_w: &mut PortFwTableWriter,
+    genid: GenId,
 ) -> ConfigResult {
     let ruleset = build_port_forwarding_configuration(vpc_table)?;
     debug!("Port-forwarding configuration successfully built. Applying changes ...");
     portfw_w
-        .update_table(&ruleset)
+        .update_table_and_flows(&ruleset, flow_table, genid)
         .map_err(|e| ConfigError::PortForwarding(e.to_string()))?;
 
     debug!("Successfully updated the port-forwarding table");
@@ -661,7 +663,7 @@ impl ConfigProcessor {
         );
 
         /* apply port-forwarding config */
-        apply_port_forwarding_config(overlay.vpc_table(), portfw_w)?;
+        apply_port_forwarding_config(overlay.vpc_table(), flow_table.as_ref(), portfw_w, genid)?;
 
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(&config, vpcmapw);

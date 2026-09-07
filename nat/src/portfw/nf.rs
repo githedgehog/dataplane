@@ -8,7 +8,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::{FlowTable, Insertion};
 
 use net::buffer::PacketBufferMut;
-use net::flows::{ExtractMut, ExtractRef, FlowInfo};
+use net::flows::{ExtractRef, FlowInfo};
 use net::headers::{Transport, TryHeaders, TryIp};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -18,6 +18,7 @@ use std::num::NonZero;
 use crate::common::NatAction;
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
+use crate::portfw::flow_state::reassign_port_fw_rule;
 use crate::portfw::flow_state::refresh_port_fw_entry;
 use crate::portfw::flow_state::setup_forward_flow;
 use crate::portfw::flow_state::setup_reverse_flow;
@@ -304,13 +305,6 @@ impl PortForwarder {
         }
     }
 
-    fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
-        let mut flow_info_locked = flow_info.locked.write();
-        if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
-            state.rule = Arc::downgrade(entry);
-        }
-    }
-
     fn get_rule_from_pkt<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
@@ -330,9 +324,9 @@ impl PortForwarder {
         // if we found an entry, let the port-forwarding state of the flow (and the one in the reverse path)
         // point to it so that subsequent packets are fast-forwarded.
         if let Some(entry) = entry.as_ref() {
-            Self::reassign_port_fw_rule(flow_info, entry);
+            reassign_port_fw_rule(flow_info, entry);
             if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
-                Self::reassign_port_fw_rule(&related, entry);
+                reassign_port_fw_rule(&related, entry);
             }
         }
 

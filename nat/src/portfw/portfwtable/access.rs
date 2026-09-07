@@ -7,7 +7,10 @@
 use super::super::build_port_forwarding_configuration;
 use super::PortFwTableError;
 use super::objects::{PortFwEntry, PortFwTable};
+use crate::portfw::flows::migrate_port_forwarded_flows;
+use config::GenId;
 use config::external::overlay::vpc::ValidatedVpcTable;
+use flow_entry::flow_table::table::FlowTable;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 
 #[allow(unused)]
@@ -56,13 +59,45 @@ impl PortFwTableWriter {
         self.0.publish(); // intended
         Ok(())
     }
+    /// Install `ruleset` and carry the live port-forwarded flows onto `genid`.
+    ///
+    /// This is the entry point a configuration enactment wants, and the counterpart of
+    /// `NatAllocatorWriter::update_nat_allocator`, which has always taken the flow table and the
+    /// generation for the same reason: a stage that runs *before* port forwarding refuses a flow
+    /// whose generation is behind the pipeline's, so nothing the port-forwarding stage does
+    /// later can rescue it. [`Self::update_table`] alone installs the rules and leaves every
+    /// live flow a generation behind.
+    pub fn update_table_and_flows(
+        &mut self,
+        ruleset: &[PortFwEntry],
+        flow_table: &FlowTable,
+        genid: GenId,
+    ) -> Result<(), PortFwTableError> {
+        self.update_table(ruleset)?;
+        let Some(table) = self.enter() else {
+            error!("Port-forwarding table is unreadable; live flows keep their old generation");
+            debug_assert!(false, "a writer can always read its own table");
+            return Ok(());
+        };
+        drop(migrate_port_forwarded_flows(flow_table, &table, genid));
+        Ok(())
+    }
+
+    /// Lower `vpc_table` to rules, install them, and carry the live flows onto `genid`.
+    ///
+    /// Takes the flow table and the generation for the same reason
+    /// [`Self::update_table_and_flows`] does, and for the additional one that this is the shape
+    /// an enactment has: whoever is holding a validated configuration is also the one who knows
+    /// what generation it is.
     pub fn update_from_vpc_table(
         &mut self,
         vpc_table: &ValidatedVpcTable,
+        flow_table: &FlowTable,
+        genid: GenId,
     ) -> Result<(), PortFwTableError> {
         let ruleset = build_port_forwarding_configuration(vpc_table)
             .map_err(|e| PortFwTableError::Unsupported(e.to_string()))?;
-        self.update_table(&ruleset)
+        self.update_table_and_flows(&ruleset, flow_table, genid)
     }
 }
 

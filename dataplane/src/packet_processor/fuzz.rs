@@ -120,7 +120,7 @@ impl Fleet {
 
         let mut portfw = PortFwTableWriter::new();
         portfw
-            .update_from_vpc_table(overlay.vpc_table())
+            .update_from_vpc_table(overlay.vpc_table(), &flow_table, FIRST_GENID)
             .expect("a validated overlay lowers to port forwarding");
 
         let mut masquerade = NatAllocatorWriter::new();
@@ -213,7 +213,11 @@ impl Fleet {
         if doing(Enact::PortForward) {
             self.portfw
                 .borrow_mut()
-                .update_from_vpc_table(overlay.vpc_table())
+                .update_from_vpc_table(
+                    overlay.vpc_table(),
+                    &self.blueprint.flow_table,
+                    self.genid.get(),
+                )
                 .expect("a validated overlay lowers to port forwarding");
         }
         if doing(Enact::Generation) {
@@ -2171,9 +2175,13 @@ mod acl {
         )
     }
 
+    /// Port forwarding did not migrate its own flows, so a port-forwarded connection lost its
+    /// flow-scoped `Allow` the moment *any* configuration was enacted -- however unrelated, a
+    /// byte-for-byte re-enactment included. `AclFilter` runs before `PortForwarder` and refuses a
+    /// flow a generation behind, so the stage that could have revalidated it never saw the reply.
     #[tokio::test]
     #[dpdk::with_eal]
-    async fn a_port_forwarded_flow_loses_its_acl_permission_on_any_configuration_change() {
+    async fn a_port_forwarded_flow_keeps_its_acl_permission_across_a_configuration_change() {
         let acl = flow_scoped_permit();
         let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
             .expect("the fixture assembles")
@@ -2219,13 +2227,12 @@ mod acl {
         fabric.fleet().enact(&overlay, Enact::Everything);
 
         let after = answer(&mut fabric);
-        assert_eq!(
-            after,
-            Verdict::Dropped(DoneReason::AclDropped),
-            "a port-forwarded flow kept its acl permission across a configuration change. If \
-             `update_nat_allocator`'s generation upgrade now covers port-forwarded flows, this \
-             test has served its purpose -- delete it, and stop excluding flow-scoped peerings \
-             from `a_configuration_change_leaves_traffic_outside_its_footprint_alone`"
+        assert!(
+            matches!(after, Verdict::Forwarded { .. }),
+            "a port-forwarded flow lost its acl permission to a configuration change that did \
+             not touch it: {after:?}. `migrate_port_forwarded_flows` is what carries it, and it \
+             runs from `PortFwTableWriter::update_table_and_flows` -- check the enactment still \
+             calls that rather than bare `update_table`"
         );
     }
 
@@ -4584,7 +4591,7 @@ mod model {
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Draft, Footprint, Guard, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
 
     type Tuple = (Option<IpAddr>, Option<u16>);
@@ -5992,7 +5999,6 @@ mod model {
             let carried = derive::carried_by(draft);
             move |named| {
                 carried(named)
-                    && draft.guard_named(named.peering) != Some(Guard::PermitFlow)
                     && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)
