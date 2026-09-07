@@ -833,9 +833,9 @@ mod tests {
         vrf.nhstore.lazy_resolve_all(&vrf);
         vrf.nhstore.rebuild_nhop_instructions(&rstore);
         vrf.nhstore.rebuild_fibgroups(&rstore);
+        // calling
         // vrf.refresh_fib(&rstore, None);
-        // refresh_fib() won't work because add_route() does not build the packet instructions
-        // It doesn't because it does not get an rmac store by design
+        // would also do the job
 
         print!("{}", Frame("Initial fibgroups"));
         show_fibgroups(&vrf, "8.0.0.1");
