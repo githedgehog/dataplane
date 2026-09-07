@@ -274,6 +274,18 @@ overflow-checks = false
 codegen-units = 1
 rpath = true
 
+# Build scripts and proc macros, which run on the host and are then thrown away.
+#
+# Cargo already spares them most of this profile: the emitted rustc line carries
+# `-C embed-bitcode=no` and neither `-C opt-level` nor `-C codegen-units`, so they are built
+# unoptimised, without LTO, and at the default codegen-unit count no matter what the profile
+# above says. Debuginfo is the one setting they do inherit, and `-C debuginfo=2` on every build
+# script and proc macro in the graph is object size and link time spent on code nobody will ever
+# put a debugger on.
+#
+# `checked` inherits `release`, so the test profile picks this up too.
+[profile.release.build-override]
+debug = false
 
 [profile.checked]
 inherits = "release"
