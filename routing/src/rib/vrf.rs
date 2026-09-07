@@ -4,7 +4,6 @@
 //! VRF module to store Ipv4 and Ipv6 routing tables
 
 use bitflags::bitflags;
-use std::borrow::Cow;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::{Rc, Weak};
@@ -345,17 +344,24 @@ impl Vrf {
     /// Register a shared next-hop for the route if not there and return a
     /// vector of shared references to the next-hops used by the route.
     /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhops(&mut self, nhops: &[RouteNhop]) -> Vec<ShimNhop> {
+    fn register_shared_nhops(&mut self, prefix: &Prefix, nhops: &[RouteNhop]) -> Vec<ShimNhop> {
         let mut nhop_refs = Vec::with_capacity(nhops.len());
-        for nhop in nhops {
-            let shared = self.nhstore.add_nhop(&nhop.key);
-            let ext_vrf = if nhop.vrfid == self.vrfid {
-                None
-            } else {
-                Some(nhop.vrfid)
-            };
-            let shim = ShimNhop::new(ext_vrf, shared);
+        if nhops.is_empty() {
+            warn!("Route to {prefix} has no next-hop: will install one with action drop");
+            let shared = self.nhstore.add_nhop(&NhopKey::with_drop());
+            let shim = ShimNhop::new(None, shared);
             nhop_refs.push(shim);
+        } else {
+            for nhop in nhops {
+                let shared = self.nhstore.add_nhop(&nhop.key);
+                let ext_vrf = if nhop.vrfid == self.vrfid {
+                    None
+                } else {
+                    Some(nhop.vrfid)
+                };
+                let shim = ShimNhop::new(ext_vrf, shared);
+                nhop_refs.push(shim);
+            }
         }
         nhop_refs
     }
@@ -393,15 +399,6 @@ impl Vrf {
         }
     }
 
-    fn nhops_or_drop<'a>(prefix: &Prefix, nhops: &'a [RouteNhop]) -> Cow<'a, [RouteNhop]> {
-        if nhops.is_empty() {
-            warn!("Route to {prefix} has no next-hop: will install it with action drop");
-            Cow::Owned(vec![RouteNhop::default()])
-        } else {
-            Cow::Borrowed(nhops)
-        }
-    }
-
     /////////////////////////////////////////////////////////////////////////
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
@@ -413,7 +410,7 @@ impl Vrf {
         vrf0: Option<&Vrf>,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(&Self::nhops_or_drop(prefix, nhops));
+        route.s_nhops = self.register_shared_nhops(prefix, nhops);
 
         // resolve the new route next-hops. This is only for testing. In prod code,
         // this method is only used for drop routes which require no resolution.
@@ -474,7 +471,7 @@ impl Vrf {
         rstore: &RmacStore,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(&Self::nhops_or_drop(prefix, nhops));
+        route.s_nhops = self.register_shared_nhops(prefix, nhops);
 
         let rvrf = vrf0.unwrap_or(self);
 
