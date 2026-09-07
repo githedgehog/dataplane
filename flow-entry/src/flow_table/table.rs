@@ -749,9 +749,8 @@ mod tests {
 
         #[tokio::test]
         async fn the_live_counter_tracks_what_the_table_holds() {
-            use std::time::Instant;
             let flow_table = FlowTable::default();
-            let far_future = Instant::now() + Duration::from_hours(1);
+            let far_future = clock::now() + Duration::from_hours(1);
             let keys: Vec<FlowKey> = (0u16..8).map(|i| key_for(3000 + i)).collect();
 
             for key in &keys {
