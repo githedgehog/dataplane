@@ -16,6 +16,35 @@ jobs := "1"
 
 cores := "10"
 
+# What a ThinLTO profile may use, which is not the same question as how many cores there are.
+#
+# `cores` becomes `NIX_BUILD_CORES`, which crane turns into `CARGO_BUILD_JOBS`, so it also sets
+# how many `rustc` link steps may be in flight -- and in a profile carrying `lto = "thin"` plus
+# `-Clinker-plugin-lto`, every one of those spawns an `ld.lld` that ThinLTOs the whole program,
+# Rust and DPDK together. `tests.all` archives 65 binaries, so the peak is set by how many of
+# those links overlap, not by how much work there is in total.
+#
+# Measured building `tests.all` at `profile=release`, summing the resident size of every
+# compiler and linker process once every two seconds:
+#
+#     cores=10   25.93 GiB   28 procs   367s      <- over budget
+#     cores=6    19.75 GiB   16 procs   472s      <- 99% of budget
+#     cores=4    14.29 GiB   12 procs   585s
+#     cores=2     9.34 GiB    6 procs   924s
+#
+# The runner gets 20 GiB in its own cgroup. `cores=10` is what killed `check/release`: the
+# runner stopped answering inside the `test` step twice, at 21 and 32 minutes, the second time
+# with no other job on the lab, and no log survived either time. At the peak seven `ld.lld`
+# processes were resident at once, the largest 3.68 GiB.
+#
+# `cores=4` is the largest value with real headroom, and it costs about 60% more wall time on
+# that derivation than `cores=10` did.
+#
+# Changing this forks nothing: `--cores` is deliberately outside the derivation hash, and
+# `nix path-info --derivation` returns the same `.drv` at 10, 4 and 1. It is a scheduling knob,
+# not a build input.
+lto_cores := "4"
+
 # Small per-package derivations use the budget better when split two ways.
 test_each_jobs := "2"
 
@@ -26,6 +55,10 @@ _lab-common := " docker_sock=/run/docker/docker.sock" + " oci_repo=ghcr.io" + " 
 
 [private]
 _lab := "jobs=" + jobs + " cores=" + cores + _lab-common
+
+# For the profiles that link with ThinLTO. See `lto_cores`.
+[private]
+_lab-lto := "jobs=" + jobs + " cores=" + lto_cores + _lab-common
 
 [private]
 _lab-test-each := "jobs=" + test_each_jobs + " cores=" + test_each_cores + _lab-common
@@ -41,13 +74,13 @@ check-fmt:
     just {{ _lab }} fmt --check
 
 check-test profile:
-    just {{ _lab }} profile={{ profile }} test
+    just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} test
 
 check-clippy profile:
     just {{ _lab }} profile={{ profile }} clippy
 
 check-doctest profile:
-    just {{ _lab }} profile={{ profile }} doctest
+    just {{ if profile == "debug" { _lab } else { _lab-lto } }} profile={{ profile }} doctest
 
 check-docs profile:
     just {{ _lab }} profile={{ profile }} docs
