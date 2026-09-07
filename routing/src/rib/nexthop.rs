@@ -6,6 +6,7 @@
 
 use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
+use crate::IfTable;
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{FibGroup, PktInstruction};
 use ordermap::OrderSet;
@@ -151,7 +152,8 @@ impl Nhop {
         }
     }
 
-    /// Set (overwrite) the ifname for a next-hop
+    /// Set (overwrite) the ifname for a next-hop. We have to account for the fact that,
+    /// temporarily, we may not know the name corresponding to an ifindex.
     pub(crate) fn set_ifname(&self, ifname: &Option<String>) {
         self.ifname.replace(ifname.clone());
     }
@@ -426,6 +428,35 @@ impl NhopStore {
             .filter(|nhop| nhop.set_fibgroup(rstore))
             .map(Rc::downgrade)
             .collect()
+    }
+
+    /// Set the ifname for all nhops that have an ifindex, according to the interface table
+    /// This method is for future use
+    #[allow(unused)]
+    pub fn refresh_nhop_ifnames_all(&self, iftable: &IfTable) {
+        self.iter().for_each(|nhop| {
+            if let Some(ifindex) = &nhop.key.ifindex {
+                let ifname = iftable
+                    .get_interface(*ifindex)
+                    .map(|iface| iface.name.clone());
+
+                let current = nhop.ifname.borrow();
+                let update = *current != ifname;
+                drop(current);
+                if update {
+                    nhop.set_ifname(&ifname);
+                }
+            }
+        });
+    }
+
+    /// Update the ifname of all next-hops with a given ifindex.
+    /// This method is for future use
+    #[allow(unused)]
+    pub fn refresh_nhop_ifname(&self, ifindex: InterfaceIndex, ifname: &String) {
+        self.iter()
+            .filter(|nhop| nhop.key.ifindex == Some(ifindex))
+            .for_each(|nhop| nhop.set_ifname(&Some(ifname.clone())));
     }
 }
 
