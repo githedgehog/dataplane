@@ -201,6 +201,9 @@ impl Fleet {
         }
         if doing(Enact::Masquerade) {
             self.genid.set(self.genid.get() + 1);
+            // `mgmt` opens the generation for stamping here, immediately before the first walk
+            // that migrates flows into it and long before `Enact::Generation` enforces it.
+            self.blueprint.pipeline.open_generation(self.genid.get());
             self.masquerade.borrow_mut().update_nat_allocator(
                 MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
                 self.genid.get(),
@@ -2223,6 +2226,72 @@ mod acl {
              `update_nat_allocator`'s generation upgrade now covers port-forwarded flows, this \
              test has served its purpose -- delete it, and stop excluding flow-scoped peerings \
              from `a_configuration_change_leaves_traffic_outside_its_footprint_alone`"
+        );
+    }
+
+    /// A configuration apply is not atomic: `mgmt` installs every table, migrates the flows of
+    /// the previous generation, and only then publishes the new generation id. A flow opened in
+    /// between was admitted by the new tables but used to stamp itself from the generation still
+    /// published, so the publish immediately made it look like a leftover of the generation
+    /// before -- and the ACL dropped its reply. Nothing rescues a port-forwarded flow from that:
+    /// unlike a masqueraded one it is never re-stamped from the allocator's generation, and the
+    /// ACL runs ahead of the port-forwarder, so the reply dies before the stage that would fix it.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_flow_opened_while_a_configuration_is_applied_survives_the_publish() {
+        let acl = flow_scoped_permit();
+        let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
+            .expect("the fixture assembles")
+            .validate()
+            .expect("a port-forwarding side accepts a flow-scoped rule");
+        let mut fabric = Fabric::over(&overlay, None, Arc::new(FlowTable::default()));
+
+        // Re-enact the running configuration, stopping short of publishing the generation. This
+        // is the state `mgmt` is in from its first table swap until its last statement.
+        for step in [
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+        ] {
+            fabric.fleet().enact(&overlay, step);
+        }
+
+        let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
+        let outside = peer(advertised);
+
+        // Open the flow inside the window.
+        let mut request = super::round_trip::udp(outside, advertised, 40000, 2003)
+            .expect("a well-formed request");
+        arrive(&mut request, remote());
+        let arrived = fabric.send(request);
+        let Verdict::Forwarded {
+            dst: Some(inside), ..
+        } = verdict(&arrived)
+        else {
+            panic!(
+                "the request never reached the service mid-apply: {:?}",
+                verdict(&arrived)
+            );
+        };
+        let inside_port = arrived
+            .transport_dst_port()
+            .expect("a forwarded request has a destination port");
+
+        // Close the apply.
+        fabric.fleet().enact(&overlay, Enact::Generation);
+
+        let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
+            .expect("a well-formed answer");
+        arrive(&mut answer, local());
+        let after = verdict(&fabric.send(answer));
+        assert!(
+            matches!(after, Verdict::Forwarded { .. }),
+            "a flow opened while the configuration was being applied was stale the moment the \
+             apply finished, and its answer was refused: {after:?}. The generation a new flow \
+             stamps itself with must be opened before the migration walks, not published after \
+             them -- see `PipelineData::open_generation`"
         );
     }
 }

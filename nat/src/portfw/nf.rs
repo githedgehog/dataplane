@@ -136,8 +136,10 @@ impl PortForwarder {
             return;
         };
 
-        // set the generation id for the flow
-        fw_flow.set_genid_pair(self.pipeline_data.genid());
+        // set the generation id for the flow. This is the generation being installed, not the one
+        // being enforced: the two differ only while a configuration apply is in flight, and a flow
+        // born then belongs to the generation whose tables just admitted it.
+        fw_flow.set_genid_pair(self.pipeline_data.staging_genid());
 
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
@@ -344,7 +346,9 @@ impl PortForwarder {
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
     ) {
-        let genid = self.pipeline_data.genid();
+        // The generation to re-stamp a flow with once we have re-checked it against the table
+        // below, which is the one being installed rather than the one being enforced.
+        let genid = self.pipeline_data.staging_genid();
 
         // fast-path based on the flow table
         if let Some(state) = get_packet_port_fw_state(packet) {

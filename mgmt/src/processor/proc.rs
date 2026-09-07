@@ -644,6 +644,14 @@ impl ConfigProcessor {
         /* apply static NAT config */
         apply_static_nat_config(overlay.vpc_table(), nattablesw)?;
 
+        /* open the new generation for stamping before the first walk that migrates flows into
+        it. A flow created from here on stamps itself `genid`, so neither the walk missing it
+        nor the publish at the end of this function can leave it stale. The flow-filter and
+        ACL tables -- the two that enforce the generation -- are already the new ones by this
+        point, so a flow stamped in the window really was validated against the configuration
+        `genid` names. */
+        self.proc_params.pipeline_data.open_generation(genid);
+
         /* apply masquerade config */
         apply_masquerade_config(
             overlay.vpc_table(),
