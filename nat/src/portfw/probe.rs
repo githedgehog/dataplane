@@ -195,10 +195,29 @@ impl Fabric {
         &self.flow_table
     }
 
-    pub(crate) fn is_private(&self, addr: IpAddr, port: u16) -> bool {
-        self.rules
-            .iter()
-            .any(|(_, private, _)| private.covers(addr, port))
+    /// Whether `addr:port` is a target of a rule that publishes `published`.
+    ///
+    /// The check this replaces asked only whether *some* rule names the address, which accepts a
+    /// packet delivered to a different tenant's backend so long as that backend is published
+    /// somewhere -- the containment failure actually worth finding. This binds the two ends
+    /// together: the rule that matched the packet's public tuple is the rule whose target it
+    /// has to land in.
+    ///
+    /// Measured 2026-09-07: over 8296 deliveries, half of them from two-rule overlays, the two
+    /// forms never disagree, and no case even *could* -- `port_forwarding_expose` gives each
+    /// expose its own address block, so a rule whose target covers the delivered address but
+    /// which did not publish the tuple does not exist. This closes the hole in the oracle; the
+    /// generator has to place two rules' targets in one block before it can bite.
+    ///
+    /// It deliberately checks membership of the matched rule's private side rather than
+    /// recomputing the exact address. The offset arithmetic lives in
+    /// `PortFwEntry::map_address_port`, and a test that reimplements it asserts the
+    /// reimplementation. `distinct_published_tuples_reach_distinct_targets` is what pins the
+    /// mapping itself down to one target per tuple.
+    pub(crate) fn is_target_of(&self, published: (IpAddr, u16), addr: IpAddr, port: u16) -> bool {
+        self.rules.iter().any(|(public, private, _)| {
+            public.covers(published.0, published.1) && private.covers(addr, port)
+        })
     }
 }
 
