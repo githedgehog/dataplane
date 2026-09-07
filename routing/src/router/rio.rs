@@ -598,8 +598,14 @@ mod tests {
     // CI runner `a_large_answer_arrives_whole` took 11.15 s against the old 10,
     // and under coverage 123.2 s against the old 120. Overrunning surfaces as
     // `WouldBlock` from `recv_from` -- a passing test reported as a dead peer.
+    //
+    // `sanitized` joins `instrumented` on the long arm for the same reason and
+    // on the same evidence: under ThreadSanitizer that test took 31.1 s against
+    // this 30, and failed as a dead peer. A sanitizer does not reduce the work,
+    // it slows every bit of it down, so a deadline calibrated on an
+    // uninstrumented run is not a deadline there.
     const PATIENCE: Duration = Duration::from_secs(cfg_select! {
-        instrumented => 300,
+        any(instrumented, sanitized) => 300,
         _ => 30,
     });
 
