@@ -35,7 +35,20 @@
 //!   each instance registers with the loom executor; shuttle's is
 //!   `const fn`, but the facade exposes the lowest common
 //!   denominator. So `static M: Mutex<T> = Mutex::new(...)` compiles
-//!   under the default and `parking_lot` backends and fails to
+//!   under the default and `parking_lot` backends and fails to compile
+//!   the moment the workspace is built with `--features loom` or
+//!   `--features shuttle` -- which happens by feature unification, not
+//!   only when you ask for it.
+//!
+//!   Reaching for `LazyLock<Mutex<T>>` to get around that trades a
+//!   compile error for a runtime one: the primitive still belongs to
+//!   the execution that created it, and a `static` outlives every
+//!   execution, so the *second* execution to touch it aborts with
+//!   `ExecutionState is not set`. If the thing really is one per
+//!   process -- harness bookkeeping, a serialising lock for plain
+//!   `#[test]`s -- it does not want the facade at all. Take
+//!   [`crate::process_global`], which is `std::sync` under a name that
+//!   says so.
 //!
 //! * **`OnceLock` under `loom`/`shuttle*` is re-exported from
 //!   `std::sync` unchanged.** It is sound for laziness, but it uses

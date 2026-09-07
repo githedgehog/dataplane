@@ -64,6 +64,7 @@
 #![allow(missing_docs)]
 
 pub mod macros;
+pub mod process_global;
 mod stress;
 pub mod sync;
 pub mod thread;

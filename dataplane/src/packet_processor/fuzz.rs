@@ -1071,8 +1071,8 @@ impl<Buf: PacketBufferMut, F: Fn(&str, &Packet<Buf>) + 'static> NetworkFunction<
 
 mod contract {
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
     pub(super) static JUDGED: LazyLock<[AtomicU64; 4]> =
         LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
@@ -1356,8 +1356,8 @@ mod smoke {
 mod shapes {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::Prefix;
     use net::headers::builder::ChainBase;
@@ -1596,8 +1596,8 @@ mod shapes {
 mod round_trip {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
     use net::headers::builder::HeaderStack;
@@ -1822,8 +1822,8 @@ mod round_trip {
 mod acl {
     use super::*;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::acl::{
         Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
     };
@@ -2232,8 +2232,8 @@ mod port_forward {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled_from};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
     use net::headers::TryVxlan;
@@ -2439,8 +2439,8 @@ mod port_forward {
 mod interleaved {
     use super::routed::{Blast, Conversation, Path, exposes};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use std::ops::Bound::Included;
 
     const LOADS: usize = 6;
@@ -2602,8 +2602,8 @@ mod interleaved {
 mod offers {
     use super::derive::{Vary, loads_for};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::overlay_with_exposes;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
@@ -2782,8 +2782,8 @@ mod generated {
     use super::derive::{Named, Vary, loads_where};
     use super::*;
     use bolero::ValueGenerator;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::algebra::{Draft, Guard, Op, Sequence};
     use std::cell::Cell;
     use std::ops::Bound::Included;
@@ -3252,8 +3252,8 @@ mod burst {
     use super::round_trip::udp;
     use super::routed::{exposes, inside, tunnelled};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::headers::TryVxlan;
 
     const BURST: usize = 8;
@@ -3559,8 +3559,8 @@ mod destination {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::{overlay_with_peers, peer_vni};
     use lpm::prefix::Prefix;
     use net::headers::TryVxlan;
@@ -3700,8 +3700,8 @@ mod routed {
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
     use super::{Load, drive};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::buffer::TestBuffer;
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::ip::dscp::Dscp;
@@ -4509,9 +4509,9 @@ mod model {
     use super::derive::loads_carried;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
+    use concurrency::process_global::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use concurrency::process_global::{LazyLock, OnceLock};
     use concurrency::sync::Mutex;
-    use concurrency::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use concurrency::sync::{LazyLock, OnceLock};
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
@@ -6285,7 +6285,7 @@ mod model {
     #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
     #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
     async fn report_why_the_masquerade_swap_disturbs_traffic() {
-        use concurrency::sync::atomic::AtomicBool;
+        use concurrency::process_global::atomic::AtomicBool;
         use config::external::overlay::algebra::{
             Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
         };
