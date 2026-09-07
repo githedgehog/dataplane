@@ -4622,6 +4622,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn two_workers_are_not_given_the_same_public_tuple() {
         const CASES: usize = 64;
 
@@ -5595,6 +5600,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
         const CASES: usize = 64;
 
@@ -5722,6 +5732,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn the_cli_can_be_read_while_the_dataplane_works() {
         const CASES: usize = 64;
 
@@ -5880,6 +5895,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
         const CASES: usize = 64;
         const ROUNDS: u8 = 3;
