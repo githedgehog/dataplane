@@ -199,6 +199,23 @@ threads-required = "num-test-threads"
 [test-groups]
 vm = { max-threads = 1 }
 
+# For chasing a hang, where the question is *which* tests wedge rather than what they report.
+#
+# Both bounds are deliberately impatient. `slow-timeout` reaps a test after 10s so that one hang
+# stops hiding every test queued behind it -- the default profile has no `terminate-after` at all,
+# so a single wedged test blocks the run until you notice, and `cross-qemu`'s 60s x 5 still costs
+# five minutes per hang. `global-timeout` then caps the whole run, because a suite of hangs
+# otherwise outlasts anyone's patience.
+#
+# Not for judging results: 10s will reap a legitimately slow test, and several of the model-checked
+# properties take longer than that when they are working. Use it to get the list, then re-run the
+# named test on a profile that gives it room.
+[profile.scratch]
+slow-timeout = { period = "10s", terminate-after = 1 }
+global-timeout = "300s"
+fail-fast = false
+final-status-level = "all"
+
 [profile.miri]
 slow-timeout = { period = "500s" }
 
