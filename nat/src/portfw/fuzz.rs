@@ -102,7 +102,7 @@ fn source_of(packet: &Packet<TestBuffer>) -> (IpAddr, u16) {
 fn judged(built: usize) -> bool {
     /// One case cannot support a rate; anything above that, the ratios can speak to.
     const ENOUGH_CONFIGURATIONS: usize = 2;
-    !cfg!(instrumented) && !cfg!(emulated) && built >= ENOUGH_CONFIGURATIONS
+    !cfg!(instrumented) && !cfg!(emulated) && !cfg!(sanitized) && built >= ENOUGH_CONFIGURATIONS
 }
 
 #[derive(Default)]

@@ -541,11 +541,14 @@ fn assert_within_budget<G: bolero::ValueGenerator>(name: &str, generator: &G) {
 
 #[cfg(test)]
 fn assert_covered(covered: bool, what: &str) {
-    if (cfg!(instrumented) || cfg!(emulated)) && !covered {
-        // Coverage and emulation are both slow enough per case that bolero's
-        // budget buys a sample too small for "did anything reach this branch"
-        // to mean anything: qemu-user gets a couple of orders of magnitude
-        // fewer cases than a native run, and instrumentation is not far behind.
+    if (cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized)) && !covered {
+        // Coverage, emulation and the sanitizers are all slow enough per case
+        // that bolero's budget buys a sample too small for "did anything reach
+        // this branch" to mean anything: qemu-user gets a couple of orders of
+        // magnitude fewer cases than a native run, and instrumentation is not
+        // far behind. A sanitizer keeps every iteration -- deliberately, races
+        // need them -- but bolero still stops on wall-clock, so the sample is
+        // just as small and this guard would be judging the sanitizer.
         // Say so and carry on -- the point of those runs is the line counts and
         // the target's own behaviour, and failing here loses both.
         eprintln!("{what} -- not asserted: too few cases under this build");

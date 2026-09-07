@@ -13,7 +13,7 @@ CARGO_LLVM_COV_BUILD_DIR = { value = "target/llvm-cov/target", relative = true, 
 
 [build]
 # Register `emulated` and `instrumented` so cfg sites do not trip unexpected_cfgs natively.
-rustflags = ["--cfg=tokio_unstable", "--check-cfg=cfg(emulated)", "--check-cfg=cfg(instrumented)"]
+rustflags = ["--cfg=tokio_unstable", "--check-cfg=cfg(emulated)", "--check-cfg=cfg(instrumented)", "--check-cfg=cfg(sanitized)"]
 
 [target.wasm32-wasip1]
 # Trailing `--` separates wasmtime's CLI from the module + module args

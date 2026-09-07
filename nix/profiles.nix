@@ -48,6 +48,12 @@ let
     # Only coverage lowers counter-heavy loop counts; sanitizers retain the
     # iterations that help expose races.
     "--check-cfg=cfg(instrumented)"
+    # Separate from `instrumented` on purpose. That one means "this build runs
+    # fewer iterations"; this one means "this build runs them slowly". A
+    # sanitizer keeps every iteration -- which is the point, races need them --
+    # but bolero stops on wall-clock, so the *sample* is small either way and a
+    # coverage guard reading it is judging the sanitizer, not the code.
+    "--check-cfg=cfg(sanitized)"
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
@@ -65,6 +71,7 @@ let
   )
   ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
   ++ (if builtins.elem "coverage" instrumentations then [ "--cfg=instrumented" ] else [ ])
+  ++ (if sanitizers != [ ] then [ "--cfg=sanitized" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"

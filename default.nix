@@ -1431,7 +1431,7 @@ let
         cargoArtifacts = cargo-artifacts-tests;
         # `cargo test --doc` runs rustdoc, which does not inherit rustc's
         # registered cfg declarations either.
-        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented)";
+        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented) --check-cfg=cfg(sanitized)";
         # The sandbox cannot resolve the runner's `/usr/bin/env bash` shebang.
         preBuild = "patchShebangs scripts/test-runner.sh";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
@@ -1466,7 +1466,7 @@ let
         inherit pname;
         cargoArtifacts = cargo-artifacts;
         # Rustdoc does not inherit rustc's registered cfg declarations.
-        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented)";
+        RUSTDOCFLAGS = "-D warnings --check-cfg=cfg(emulated) --check-cfg=cfg(instrumented) --check-cfg=cfg(sanitized)";
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"

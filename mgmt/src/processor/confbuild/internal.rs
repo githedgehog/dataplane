@@ -442,7 +442,7 @@ mod chain_properties {
     //
     // Half the range rather than `usize::MAX`, which clippy reads as an absurd
     // comparison and rejects at the call sites.
-    const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) {
+    const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized) {
         usize::MAX / 2
     } else {
         200
