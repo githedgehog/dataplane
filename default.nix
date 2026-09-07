@@ -98,19 +98,20 @@ let
     profile = profile';
     platform = platform';
   };
+  native-pkgs = import sources.nixpkgs {
+    overlays = [
+      overlays.rust
+      overlays.llvm
+      overlays.dataplane
+      overlays.dataplane-dev
+      overlays.frr
+    ];
+  };
   pkgs =
-    let
-      over = import sources.nixpkgs {
-        overlays = [
-          overlays.rust
-          overlays.llvm
-          overlays.dataplane
-          overlays.dataplane-dev
-          overlays.frr
-        ];
-      };
-    in
-    if platform != "wasm32-wasip1" then over.pkgsCross.${platform'.info.nixarch} else over;
+    if platform != "wasm32-wasip1" then
+      native-pkgs.pkgsCross.${platform'.info.nixarch}
+    else
+      native-pkgs;
   sysroot-stamp = ''
     printf '%s' '${builtins.concatStringsSep "," sanitizers}' > "$out/.sanitize"
     printf '%s' '${builtins.concatStringsSep "," instrumentations}' > "$out/.instrumentation"
@@ -224,11 +225,6 @@ let
       zizmor
     ]);
   };
-  # Whether the guest architecture (= the test binary's target arch, i.e.
-  # the nix host platform) differs from the build machine's arch.  When it
-  # does, the test VM is software-emulated (TCG) rather than KVM-accelerated.
-  is-cross-guest = platform'.arch != host-arch;
-
   # The bootable kernel image filename as linux-fancy emits it.
   # x86_64 produces a `bzImage`; aarch64 produces a raw `Image`.  Both are
   # installed into the manifest as `vmlinuz`, so nothing downstream has to
@@ -706,32 +702,7 @@ let
   # `nixosTestRunner = true` is nixpkgs' headless "boot a VM" profile: it
   # disables exactly those backends and its only other effect is a 9p
   # uid0 patch we never exercise (we mount via vhost-user-fs, not -virtfs).
-  #
-  # - Native guest: `qemu_test` (= `qemu_kvm` + `nixosTestRunner`): the
-  #   prebuilt, cache-hit, host-cpu-only emulator (`qemu-system-<host>`
-  #   with KVM).  Headless, so no gtk in the common (native) devroot.
-  # - Cross guest: the base `qemu`, headless and restricted to just the
-  #   targets we need: the guest `*-softmmu` we actually emulate under TCG
-  #   (e.g. `aarch64-softmmu`) plus the build-host `*-softmmu` (so QEMU's
-  #   `qemu-kvm` compat symlink -> `qemu-system-<host>` resolves; omitting
-  #   it trips the `noBrokenSymlinks` install check).  A genuine-cross
-  #   `pkgsBuildHost` qemu is not in the binary cache regardless (Hydra
-  #   never builds that derivation), so trimming targets + dropping the GUI
-  #   keeps that unavoidable build small.
-  #
-  # Both provide `bin/qemu-system-<arch>`, matching
-  # `n_vm::Arch::qemu_system_binary`.
-  qemu-system =
-    if is-cross-guest then
-      pkgs.pkgsBuildHost.qemu.override {
-        nixosTestRunner = true;
-        hostCpuTargets = [
-          "${host-arch}-softmmu"
-          "${platform'.arch}-softmmu"
-        ];
-      }
-    else
-      pkgs.pkgsBuildHost.qemu_test;
+  qemu-system = native-pkgs.qemu_test;
 
   # Container-tier tools for the scratch-container test infrastructure.
   #
@@ -748,14 +719,11 @@ let
   # binaries and their transitive library dependencies.
   #
   # See development/ideam.md for the design rationale.
-  # NOTE: cloud-hypervisor and virtiofsd stay on `pkgsBuildHost` (they run
-  # on the x86 container host).  Only the kernel is host-arch; the qemu
-  # choice is arch-aware (see `qemu-system`).
   testroot = pkgs.symlinkJoin {
     name = "dataplane-test-root";
     paths = [
-      pkgs.pkgsBuildHost.cloud-hypervisor
-      pkgs.pkgsBuildHost.virtiofsd
+      native-pkgs.cloud-hypervisor
+      native-pkgs.virtiofsd
       qemu-system
       kernel-image
     ];
