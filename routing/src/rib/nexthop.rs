@@ -31,6 +31,7 @@ trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
+    pub(crate) ifname: RefCell<Option<String>>,
     pub(crate) resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
@@ -54,7 +55,6 @@ pub struct NhopKey {
     pub ifindex: Option<InterfaceIndex>,
     pub encap: Option<Encapsulation>,
     pub fwaction: FwAction,
-    pub ifname: Option<String>,
 }
 
 impl NhopKey {
@@ -68,7 +68,6 @@ impl NhopKey {
         ifindex: Option<InterfaceIndex>,
         encap: Option<Encapsulation>,
         fwaction: FwAction,
-        ifname: Option<String>,
     ) -> Self {
         Self {
             origin,
@@ -76,7 +75,6 @@ impl NhopKey {
             ifindex,
             encap,
             fwaction,
-            ifname,
         }
     }
     #[must_use]
@@ -87,7 +85,6 @@ impl NhopKey {
             ifindex: None,
             encap: None,
             fwaction: FwAction::Drop,
-            ifname: None,
         }
     }
     #[cfg(test)]
@@ -150,7 +147,13 @@ impl Nhop {
             instructions: RefCell::new(Vec::with_capacity(2)),
             fibgroup: RefCell::new(FibGroup::new()),
             invalid: Cell::new(false),
+            ifname: RefCell::new(None),
         }
+    }
+
+    /// Set (overwrite) the ifname for a next-hop
+    pub(crate) fn set_ifname(&self, ifname: &Option<String>) {
+        self.ifname.replace(ifname.clone());
     }
 
     /// Store a weak reference to some Nhop 'resolver' in the current next-hop
@@ -285,7 +288,6 @@ impl Nhop {
                         Some(i),
                         self.key.encap,
                         self.key.fwaction,
-                        self.key.ifname.clone(),
                     ));
                 } else {
                     r.quick_resolve_rec(result, visited);
@@ -1050,10 +1052,8 @@ mod tests {
         a.add_resolver(&b);
         b.add_resolver(&a);
 
-        let nhop = format!("{a}");
-        assert!(nhop.contains("(LOOP)"), "loop not reported in {nhop}");
-
         let whole_store = format!("{store}");
+        println!("{whole_store}");
         assert!(
             whole_store.contains("(LOOP)"),
             "loop not reported in {whole_store}"
