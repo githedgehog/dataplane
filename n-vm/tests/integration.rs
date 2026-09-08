@@ -246,11 +246,13 @@ fn test_which_runs_in_vm_with_qemu_iommu() {
 }
 
 #[n_vm::test(config = HOST_1G_VM)]
+#[ignore = "needs a 1 GiB host hugepage; CI runners reserve none (boot parameter required)"]
 fn vm_boots_with_host_hugepages() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
 
 #[n_vm::test(config = HOST_1G_VM_QEMU)]
+#[ignore = "needs a 1 GiB host hugepage; CI runners reserve none (boot parameter required)"]
 fn vm_boots_with_host_hugepages_on_qemu() {
     assert!(std::path::Path::new("/proc/meminfo").exists());
 }
