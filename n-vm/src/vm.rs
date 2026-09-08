@@ -38,12 +38,48 @@ const VM_OVERHEAD_ALLOWANCE_KVM: Duration = Duration::from_secs(60);
 /// a guest kernel boot alone can take tens of seconds.
 const VM_OVERHEAD_ALLOWANCE_TCG: Duration = Duration::from_secs(300);
 
-/// The VM's overhead allowance for the given acceleration mode.
-const fn vm_overhead_allowance(accel: config::Accel) -> Duration {
-    match accel {
+/// How long each vsock channel gets to finish delivering after the guest has
+/// been shut down.
+const DRAIN_TIMEOUT_BASE: Duration = Duration::from_secs(5);
+
+/// [`DRAIN_TIMEOUT_BASE`] scaled, so that a slower guest gets a
+/// proportionally longer drain. See the call site for why cutting this short
+/// turns a passing test into a failure rather than into missing output.
+fn drain_timeout(scale: f64) -> Duration {
+    DRAIN_TIMEOUT_BASE.mul_f64(scale)
+}
+
+/// The VM's overhead allowance for the given acceleration mode, scaled by
+/// [`ENV_OVERHEAD_SCALE`](n_vm_protocol::ENV_OVERHEAD_SCALE).
+///
+/// A run-time knob rather than a build-time one, for the reason
+/// [`ENV_VIRTIOFS_CACHE`](n_vm_protocol::ENV_VIRTIOFS_CACHE) gives: rebuilding
+/// `n-vm` to change a timeout also changes the binary under test. It is also
+/// the only form that stays honest outside this workspace -- a `cfg` would
+/// have to name dataplane's `instrumented`, which means nothing to another
+/// consumer of this crate.
+///
+/// The scale exists because coverage is not a small tax on a guest. Measured
+/// on the CI runners, the `n-vm` suite went from 76s uninstrumented to 155s,
+/// and `a_vm_boots_the_kernel_profile_it_named` overran the 60s allowance at
+/// 96s -- reported not as "slow" but as "no parseable test verdict from
+/// guest", because the timeout shoots the VM and the verdict dies with it.
+fn vm_overhead_allowance(accel: config::Accel) -> Duration {
+    vm_overhead_allowance_with(accel, n_vm_protocol::overhead_scale())
+}
+
+/// [`vm_overhead_allowance`] with the scale given rather than read from the
+/// environment.
+///
+/// Split out for the same reason the host share was: the scale is
+/// process-wide state, and a test that asserts a duration cannot be right
+/// both with and without it. CI sets it for a whole job.
+fn vm_overhead_allowance_with(accel: config::Accel, scale: f64) -> Duration {
+    let base = match accel {
         config::Accel::Kvm => VM_OVERHEAD_ALLOWANCE_KVM,
         config::Accel::Tcg => VM_OVERHEAD_ALLOWANCE_TCG,
-    }
+    };
+    base.mul_f64(scale)
 }
 
 /// How long the VM may run before it is shut down by force.
@@ -58,7 +94,13 @@ const fn vm_overhead_allowance(accel: config::Accel) -> Duration {
 /// it.  `guest_budget` of zero -- nothing declared, which is nearly every
 /// test -- leaves this exactly where it has always been.
 fn vm_test_timeout(accel: config::Accel, guest_budget: Duration) -> Duration {
-    vm_overhead_allowance(accel).saturating_add(guest_budget)
+    vm_test_timeout_with(accel, guest_budget, n_vm_protocol::overhead_scale())
+}
+
+/// [`vm_test_timeout`] with the scale given rather than read from the
+/// environment.
+fn vm_test_timeout_with(accel: config::Accel, guest_budget: Duration, scale: f64) -> Duration {
+    vm_overhead_allowance_with(accel, scale).saturating_add(guest_budget)
 }
 
 /// The longest the guest's work was declared to take.
@@ -662,16 +704,25 @@ impl<B: HypervisorBackend> TestVm<B> {
 
         B::shutdown(&controller).await;
 
-        const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+        // Scaled with the VM allowance, for the same reason and by the same
+        // knob. This one is not about how long the guest runs but about how
+        // long its four vsock channels take to drain *after* shutdown, and an
+        // instrumented guest writes its coverage profile on the way out. A
+        // drain that gives up early does not merely lose console output: the
+        // verdict arrives on one of these channels, so the run reports "no
+        // parseable test verdict from guest" and a passing test is recorded as
+        // a failure. Measured on the coverage job, where 5s was not enough and
+        // all four channels timed out together.
+        let drain_timeout = drain_timeout(n_vm_protocol::overhead_scale());
 
-        let init_trace = drain_or_fallback(init_trace, "init system trace", DRAIN_TIMEOUT).await;
-        let test_stdout = drain_or_fallback(test_stdout, "test stdout", DRAIN_TIMEOUT).await;
-        let test_stderr = drain_or_fallback(test_stderr, "test stderr", DRAIN_TIMEOUT).await;
-        let test_result = drain_or_fallback(test_result, "test result", DRAIN_TIMEOUT).await;
+        let init_trace = drain_or_fallback(init_trace, "init system trace", drain_timeout).await;
+        let test_stdout = drain_or_fallback(test_stdout, "test stdout", drain_timeout).await;
+        let test_stderr = drain_or_fallback(test_stderr, "test stderr", drain_timeout).await;
+        let test_result = drain_or_fallback(test_result, "test result", drain_timeout).await;
 
         let hypervisor_output = ProcessOutput::from_child(hypervisor, B::NAME).await;
 
-        let kernel_log = drain_or_fallback(kernel_log, "kernel log", DRAIN_TIMEOUT).await;
+        let kernel_log = drain_or_fallback(kernel_log, "kernel log", drain_timeout).await;
 
         let virtiofsd_output = ProcessOutput::from_child(virtiofsd, "virtiofsd").await;
 
@@ -868,11 +919,11 @@ mod timeout_tests {
     #[test]
     fn an_ordinary_test_gets_what_it_always_got() {
         assert_eq!(
-            vm_test_timeout(config::Accel::Kvm, Duration::ZERO),
+            vm_test_timeout_with(config::Accel::Kvm, Duration::ZERO, 1.0),
             VM_OVERHEAD_ALLOWANCE_KVM,
         );
         assert_eq!(
-            vm_test_timeout(config::Accel::Tcg, Duration::ZERO),
+            vm_test_timeout_with(config::Accel::Tcg, Duration::ZERO, 1.0),
             VM_OVERHEAD_ALLOWANCE_TCG,
         );
     }
@@ -885,17 +936,48 @@ mod timeout_tests {
             let work = Duration::from_secs(secs);
             for accel in [config::Accel::Kvm, config::Accel::Tcg] {
                 assert!(
-                    vm_test_timeout(accel, work) > work,
+                    vm_test_timeout_with(accel, work, 1.0) > work,
                     "{accel:?}: {secs}s of work must not get a {secs}s VM",
                 );
             }
         }
     }
 
+    /// A scale of one is the identity, so an ordinary run is untouched by the
+    /// knob existing, and a larger scale buys strictly more room.
+    #[test]
+    fn the_scale_multiplies_the_allowance_and_one_changes_nothing() {
+        for accel in [config::Accel::Kvm, config::Accel::Tcg] {
+            let plain = vm_overhead_allowance_with(accel, 1.0);
+            assert_eq!(
+                plain,
+                vm_test_timeout_with(accel, Duration::ZERO, 1.0),
+                "{accel:?}: an undeclared body is all allowance",
+            );
+            assert_eq!(vm_overhead_allowance_with(accel, 3.0), plain * 3);
+            assert!(vm_overhead_allowance_with(accel, 0.5) < plain);
+        }
+        assert!(
+            VM_OVERHEAD_ALLOWANCE_TCG > VM_OVERHEAD_ALLOWANCE_KVM,
+            "emulating every instruction cannot be the cheaper mode",
+        );
+    }
+
+    /// The drain scales with the same knob as the allowance. It is a separate
+    /// deadline from the VM's, and raising only the VM's is what left a
+    /// coverage run reporting "no parseable test verdict from guest" from a
+    /// guest that had in fact passed.
+    #[test]
+    fn the_drain_scales_with_the_allowance() {
+        assert_eq!(drain_timeout(1.0), DRAIN_TIMEOUT_BASE);
+        assert_eq!(drain_timeout(3.0), DRAIN_TIMEOUT_BASE * 3);
+        assert!(drain_timeout(3.0) > drain_timeout(1.0));
+    }
+
     #[test]
     fn declared_work_is_added_to_the_allowance() {
         assert_eq!(
-            vm_test_timeout(config::Accel::Kvm, Duration::from_secs(600)),
+            vm_test_timeout_with(config::Accel::Kvm, Duration::from_secs(600), 1.0),
             VM_OVERHEAD_ALLOWANCE_KVM + Duration::from_secs(600),
         );
     }

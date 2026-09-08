@@ -563,6 +563,14 @@ jobs:
 
       - name: "coverage-archive"
         uses: *just
+        env:
+          # Headroom on the VM kill deadline for an instrumented guest, which
+          # is slower than a plain one and writes its coverage profile on the
+          # way out. Cheap insurance rather than a measured requirement: this
+          # is when a hung guest is shot, not a delay anything waits out, and
+          # overrunning it surfaces as "no parseable test verdict from guest"
+          # -- a passing test reported as a broken harness.
+          N_VM_OVERHEAD_SCALE: "3"
         with:
           recipe: "ci::coverage"
           recipe_args: "${{ matrix.profile }}"

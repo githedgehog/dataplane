@@ -416,10 +416,32 @@ reap *args:
 [script]
 setup-roots *args:
     {{ _just_debuggable_ }}
+    # The toolchain roots take the feature list. The guest roots must not.
+    #
+    # `devroot`/`sysroot`: `features` picks the panic runtime. `loom` and `shuttle`
+    # require `panic = "unwind"` and `-Zbuild-std` has to match (see `mk-needs-unwind`
+    # in default.nix), so withholding it here would hand a shuttle build a
+    # `panic_abort` std.
+    #
+    # `testroot`/`vmroot`: qemu, cloud-hypervisor, virtiofsd, a kernel, an initramfs
+    # and the in-VM runner. None of that is the code under test -- the test binaries
+    # arrive at runtime under `test-bin`. Passing the feature list only asks crates
+    # that never declared it to build with it, and `just shuttle` consequently died
+    # in `setup-roots` with "the package 'dataplane-n-preinit' does not contain this
+    # feature: shuttle", before a single test ran. It is the same trade the pre-init
+    # already makes for the sanitizer: it is the scaffolding that execs the code
+    # under test, not the code under test.
     for root in devroot sysroot testroot vmroot; do
+      declare -a featureargs
+      case "${root}" in
+        testroot|vmroot) featureargs=() ;;
+        *) featureargs=(
+             --argstr default-features '{{ default_features }}'
+             --argstr features '{{ features }}'
+           ) ;;
+      esac
       nix build -f default.nix "${root}" \
-        --argstr default-features '{{ default_features }}' \
-        --argstr features '{{ features }}' \
+        "${featureargs[@]}" \
         --argstr instrumentation '{{ instrument }}' \
         --argstr kernel '{{ kernel }}' \
         --argstr libc '{{ libc }}' \
