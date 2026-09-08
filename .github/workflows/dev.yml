@@ -652,7 +652,7 @@ jobs:
         env:
           # Miri bypasses `nix build`, so cap it through its own module.
           JUST_VARS: >-
-            miri::cores=8
+            miri::cores=10
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
@@ -668,7 +668,7 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
-            miri::cores=8
+            miri::cores=10
             miri::seeds=8
             miri::cpu=${{ matrix.cpu }}
             miri::provenance=permissive
@@ -679,7 +679,7 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
-            miri::cores=8
+            miri::cores=10
             miri::cpu=${{ matrix.cpu }}
             miri::provenance=strict
         with:
