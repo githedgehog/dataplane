@@ -405,6 +405,78 @@ pub enum DriverConfigSection {
     Kernel(KernelDriverConfigSection),
 }
 
+/// Hugepages `dataplane-init` secured before the dataplane started, and where.
+///
+/// Crosses to the dataplane in the launch configuration so that the EAL can be asked for exactly
+/// what was verified to be free, rather than for a figure someone guessed. See
+/// `dataplane-init`'s `hugepages` module for why the reservation cannot be left to DPDK.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(Debug, PartialEq, Eq)))]
+pub struct HugepagePlan {
+    /// Page size actually used, in kilobytes: 1048576 for 1 GiB pages, 2048 for 2 MiB pages.
+    pub page_size_kb: u64,
+    /// Megabytes secured, per NUMA node id, ascending.
+    pub per_node_mb: Vec<(u32, u64)>,
+}
+
+impl HugepagePlan {
+    /// Render the EAL's per-node preallocation argument.
+    ///
+    /// DPDK 26.07 renamed `--socket-mem` to `--numa-mem` and keeps the old spelling as an alias;
+    /// the new name is used here. The value is positional -- one entry per NUMA node from 0 up to
+    /// the highest node named -- so nodes we secured nothing on are filled with `0`.
+    ///
+    /// Returns `None` when nothing was secured, so the caller can omit the flag entirely rather
+    /// than pass `0` and forbid the EAL from allocating at all.
+    #[must_use]
+    pub fn numa_mem_arg(&self) -> Option<String> {
+        let highest = self.per_node_mb.iter().map(|(node, _)| *node).max()?;
+        if self.per_node_mb.iter().all(|(_, mb)| *mb == 0) {
+            return None;
+        }
+        let mut per_node = vec![0u64; (highest as usize) + 1];
+        for (node, mb) in &self.per_node_mb {
+            per_node[*node as usize] = *mb;
+        }
+        Some(
+            per_node
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
+}
+
+impl std::fmt::Display for HugepagePlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let size = if self.page_size_kb >= 1024 * 1024 {
+            format!("{} GiB", self.page_size_kb / (1024 * 1024))
+        } else {
+            format!("{} MiB", self.page_size_kb / 1024)
+        };
+        let total: u64 = self.per_node_mb.iter().map(|(_, mb)| *mb).sum();
+        write!(f, "{total} MiB in {size} pages (")?;
+        for (i, (node, mb)) in self.per_node_mb.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "node {node}: {mb} MiB")?;
+        }
+        write!(f, ")")
+    }
+}
+
 /// Configuration for the DPDK (Data Plane Development Kit) driver.
 ///
 /// DPDK provides kernel-bypass networking for high-performance packet processing.
@@ -428,6 +500,11 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
     /// Packet-processing worker threads to run, each owning one rx/tx queue pair per port
     pub num_workers: u16,
+    /// Hugepages `dataplane-init` reserved on the NUMA node(s) of the configured devices.
+    ///
+    /// `None` when nothing could be reserved, which leaves the EAL to take whatever the host
+    /// already has -- the behaviour from before the reservation existed.
+    pub hugepages: Option<HugepagePlan>,
     /// Whether to isolate the packet path in its own network namespace.
     ///
     /// When set, `dataplane-init` creates a network namespace, moves the configured devices into
@@ -1335,6 +1412,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         interfaces: value.interfaces().collect(),
                         eal_args,
                         num_workers: value.num_workers,
+                        // Filled in by `dataplane-init` once it knows which NUMA node the devices
+                        // are on and what the kernel was actually willing to reserve.
+                        hugepages: None,
                         netns: value.datapath_netns,
                     })
                 }
@@ -1852,5 +1932,79 @@ mod tests {
         assert_eq!(err, "Burst must be greater than 0");
         let err = TracingRateLimit::from_str("10:0").unwrap_err();
         assert_eq!(err, "Replenish-per-second must be greater than 0");
+    }
+}
+
+#[cfg(test)]
+mod hugepage_plan_test {
+    use super::HugepagePlan;
+
+    #[test]
+    fn a_single_node_plan_names_that_node_positionally() {
+        let plan = HugepagePlan {
+            page_size_kb: 1024 * 1024,
+            per_node_mb: vec![(0, 4096)],
+        };
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("4096"));
+    }
+
+    #[test]
+    fn a_plan_on_a_later_node_pads_the_earlier_ones_with_zero() {
+        // The EAL reads the list positionally, so node 1 has to be the *second* entry. Getting
+        // this wrong would preallocate on node 0 -- the exact cross-NUMA placement this exists to
+        // prevent, and it would look like it worked.
+        let plan = HugepagePlan {
+            page_size_kb: 1024 * 1024,
+            per_node_mb: vec![(1, 4096)],
+        };
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("0,4096"));
+    }
+
+    #[test]
+    fn a_plan_spanning_two_nodes_names_both() {
+        let plan = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![(0, 4096), (2, 2048)],
+        };
+        assert_eq!(plan.numa_mem_arg().as_deref(), Some("4096,0,2048"));
+    }
+
+    #[test]
+    fn a_plan_that_secured_nothing_yields_no_argument() {
+        // Not `Some("0")`: passing zero would forbid the EAL from allocating at all, which is a
+        // worse outcome than letting it take whatever the host already has.
+        let plan = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![(0, 0)],
+        };
+        assert_eq!(plan.numa_mem_arg(), None);
+        assert_eq!(
+            HugepagePlan {
+                page_size_kb: 2048,
+                per_node_mb: vec![]
+            }
+            .numa_mem_arg(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_display_form_reports_the_page_size_an_operator_asked_for() {
+        let gib = HugepagePlan {
+            page_size_kb: 1024 * 1024,
+            per_node_mb: vec![(1, 4096)],
+        };
+        assert_eq!(
+            gib.to_string(),
+            "4096 MiB in 1 GiB pages (node 1: 4096 MiB)"
+        );
+        let mib = HugepagePlan {
+            page_size_kb: 2048,
+            per_node_mb: vec![(0, 4096)],
+        };
+        assert_eq!(
+            mib.to_string(),
+            "4096 MiB in 2 MiB pages (node 0: 4096 MiB)"
+        );
     }
 }
