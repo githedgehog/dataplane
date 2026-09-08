@@ -1029,6 +1029,7 @@ mod std_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "a subnet-sized v6 pool is too slow under miri")]
     fn a_v6_subnet_sized_pool_can_be_printed() {
         let base = u128::from_be_bytes(
             "2001:db8::"
