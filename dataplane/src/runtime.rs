@@ -292,7 +292,15 @@ fn eal_arguments(config: &LaunchConfiguration) -> Vec<String> {
         main_lcore_arg,
     ];
 
-    if !matches!(config.driver, DriverConfigSection::Dpdk(_)) {
+    if let DriverConfigSection::Dpdk(dpdk) = &config.driver {
+        // Preallocate the per-node memory selected by init.
+        if let Some(plan) = &dpdk.hugepages
+            && let Some(arg) = plan.numa_mem_arg()
+        {
+            info!("EAL will preallocate {plan}");
+            eal_args.push(format!("--numa-mem={arg}"));
+        }
+    } else {
         // Classifier-only: rte_acl needs the memory subsystem and nothing else.
         eal_args.push("--no-huge".to_string());
         eal_args.push("--no-pci".to_string());
