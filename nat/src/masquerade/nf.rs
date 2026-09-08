@@ -95,10 +95,9 @@ pub struct Masquerade {
 
 impl Masquerade {
     // Slow emulated tests need more wall-clock time between packet-driven refreshes.
-    const TIMEOUT_SCALE: u64 = cfg_select! {
-        emulated => 100,
-        _ => 1,
-    };
+    // Shared with port forwarding so the two cannot drift apart again; see
+    // `crate::common::TIMEOUT_SCALE`.
+    const TIMEOUT_SCALE: u64 = crate::common::TIMEOUT_SCALE;
 
     // Internal flow timeouts for masquerading
     //= https://www.rfc-editor.org/rfc/rfc5382#section-5
