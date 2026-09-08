@@ -10,7 +10,10 @@ use crate::icmp_handler::icmp_error_msg::{
 };
 pub use crate::static_nat::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, NetError, TryEmbeddedTransport, TryInnerIp, TryIpMut, TryTcpUdpMut};
+use net::headers::{
+    Net, NetError, TryEmbeddedTransport, TryHeadersMut, TryInnerIp, TryIpMut, TryTcpUdpMut,
+    TryTransportMut,
+};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp_udp::TcpUdpMut;
@@ -108,6 +111,34 @@ impl StaticNat {
         transport.set_dst_port(new_port);
     }
 
+    /// Fold an address and/or port change into the transport checksum (RFC 1624), or ask for a full
+    /// recompute if that is not possible.
+    ///
+    /// Split out because this file mutates through `TcpUdpMut`, which cannot reach a checksum, so
+    /// unlike `masquerade` and `portfw` the delta has to be applied after the fact from values
+    /// captured before. Same arithmetic, awkwarder plumbing.
+    fn fold_checksum_deltas<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+        addr_change: Option<(IpAddr, IpAddr)>,
+        port_change: Option<(NonZero<u16>, NonZero<u16>)>,
+    ) {
+        let Some(transport) = packet.headers_mut().try_transport_mut() else {
+            // No transport header to update; nothing to do and nothing to fall back to.
+            return;
+        };
+        let mut incremental_ok = true;
+        if let Some((old, new)) = addr_change {
+            incremental_ok &= transport.increment_checksum_for_address(old, new);
+        }
+        if let Some((old, new)) = port_change {
+            transport.increment_checksum_for_u16(old.get(), new.get());
+        }
+        if !incremental_ok {
+            // An IP version change; the pseudo-header changes shape, so only a recompute will do.
+            packet.meta_mut().set_checksum_refresh(true);
+        }
+    }
+
     fn translate_icmp_inner_packet_src_if_any<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
@@ -177,22 +208,45 @@ impl StaticNat {
             table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
         {
             let net = packet.try_ip_mut().ok_or(StaticNatError::NoIpHeader)?;
-            if new_src_addr.inner() != src_addr {
+            let addr_changed = new_src_addr.inner() != src_addr;
+            if addr_changed {
                 self.translate_src(net, new_src_addr)?;
                 modified = true;
             }
+            // Captured for the checksum delta below. The mutation happens through a
+            // `TcpUdpMut`, which cannot reach the transport's checksum, so the old value has to
+            // survive past the borrow rather than being folded in on the spot the way
+            // `masquerade` and `portfw` do it.
+            let mut port_change = None;
             if let (Some(mut transport), Some(new_src_port)) =
                 (packet.try_tcp_udp_mut(), new_src_port_opt)
                 && new_src_port.get() != transport.src_port().get()
             {
+                port_change = Some((transport.src_port(), new_src_port));
                 self.translate_src_port(&mut transport, new_src_port);
                 modified = true;
             }
+            if modified {
+                Self::fold_checksum_deltas(
+                    packet,
+                    addr_changed.then_some((src_addr, new_src_addr.inner())),
+                    port_change,
+                );
+            }
         }
 
-        // ICMP Error messages
+        // ICMP Error messages.
+        //
+        // Left on the full recompute. `icmp_error_msg` already maintains the embedded headers'
+        // checksums incrementally, and says the outer ICMP checksum "will not be updated again
+        // when deparsing" -- but the outer ICMP checksum covers the whole quoted packet, and
+        // proving the two agree needs its own test. Correct and slower is the right default for a
+        // path this rare; revisit with a test rather than by assertion.
         if icmp_err {
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
+            if modified {
+                packet.meta_mut().set_checksum_refresh(true);
+            }
         }
 
         if modified {
@@ -222,22 +276,41 @@ impl StaticNat {
             table.find_dst_mapping(&dst_addr, dst_port_opt)
         {
             let net = packet.try_ip_mut().ok_or(StaticNatError::NoIpHeader)?;
-            if new_dst_addr != dst_addr {
+            let addr_changed = new_dst_addr != dst_addr;
+            if addr_changed {
                 self.translate_dst(net, new_dst_addr)?;
                 modified = true;
             }
+            let mut port_change = None;
             if let (Some(mut transport), Some(new_dst_port)) =
                 (packet.try_tcp_udp_mut(), new_dst_port_opt)
                 && new_dst_port.get() != transport.dst_port().get()
             {
+                port_change = Some((transport.dst_port(), new_dst_port));
                 self.translate_dst_port(&mut transport, new_dst_port);
                 modified = true;
             }
+            if modified {
+                Self::fold_checksum_deltas(
+                    packet,
+                    addr_changed.then_some((dst_addr, new_dst_addr)),
+                    port_change,
+                );
+            }
         }
 
-        // ICMP Error messages
+        // ICMP Error messages.
+        //
+        // Left on the full recompute. `icmp_error_msg` already maintains the embedded headers'
+        // checksums incrementally, and says the outer ICMP checksum "will not be updated again
+        // when deparsing" -- but the outer ICMP checksum covers the whole quoted packet, and
+        // proving the two agree needs its own test. Correct and slower is the right default for a
+        // path this rare; revisit with a test rather than by assertion.
         if icmp_err {
             modified |= Self::translate_icmp_inner_packet_src_if_any(table, packet)?;
+            if modified {
+                packet.meta_mut().set_checksum_refresh(true);
+            }
         }
 
         if modified {
@@ -322,7 +395,11 @@ impl StaticNat {
             }
             Ok(modified) => {
                 if modified {
-                    packet.meta_mut().set_checksum_refresh(true);
+                    // Deliberately *not* setting `checksum_refresh` here. The translation paths
+                    // fold their own deltas in incrementally and set the flag only where they
+                    // cannot (an IP version change, or the ICMP-error path). Setting it here
+                    // unconditionally would override that and reinstate the full payload sum for
+                    // every packet -- which is exactly what it did until this was noticed.
                     debug!("{nfi}: Packet was NAT'ed");
                 } else {
                     debug!("{nfi}: No NAT translation needed");

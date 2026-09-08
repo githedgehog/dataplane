@@ -1194,6 +1194,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-dpdk",
+ "dataplane-errno",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
  "dataplane-hardware",
