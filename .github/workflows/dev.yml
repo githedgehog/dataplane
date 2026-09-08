@@ -549,6 +549,8 @@ jobs:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
         exclude:
           - profile: release
+          # Temporarily disabled: coverage/fuzz exhausts runner memory.
+          - profile: fuzz
     steps:
       - *checkout
       - *nix-setup
