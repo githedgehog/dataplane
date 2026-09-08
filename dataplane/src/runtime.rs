@@ -322,6 +322,23 @@ fn init_eal(config: &LaunchConfiguration) -> dpdk::eal::Eal {
                 eal_args.push(addr.to_string());
             }
         }
+
+        // Preallocate on the NUMA node `dataplane-init` reserved the pages on.
+        //
+        // Without this the EAL still *prefers* the port's node -- it calls `numa_set_preferred`
+        // before faulting each page -- but `MPOL_PREFERRED` falls back to another node in silence
+        // when the preferred one is empty. The datapath then runs with its mbufs a hop away from
+        // the NIC and nothing anywhere says so. Naming the amount turns that into a startup
+        // failure, which is the outcome worth having: a benchmark that does not run beats one that
+        // quietly measures the wrong thing.
+        //
+        // `--numa-mem` is the DPDK 26.07 spelling; `--socket-mem` remains as an alias.
+        if let Some(plan) = &dpdk.hugepages
+            && let Some(arg) = plan.numa_mem_arg()
+        {
+            info!("EAL will preallocate {plan}");
+            eal_args.push(format!("--numa-mem={arg}"));
+        }
     } else {
         // Classifier-only: rte_acl needs the memory subsystem and nothing else.
         eal_args.push("--no-huge".to_string());
