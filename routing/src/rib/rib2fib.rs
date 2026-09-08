@@ -4,7 +4,7 @@
 //! Rib to fib route processor
 
 #[allow(unused)]
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
@@ -115,6 +115,9 @@ impl Nhop {
     fn build_nhop_fibgroup_rec(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop to the entry
         let instructions = self.instructions.borrow().clone();
+        if instructions.is_empty() {
+            error!("Stepped on next-hop without instructions. This is a bug");
+        }
         entry.extend_from_slice(&instructions);
 
         // check the instructions of the resolving next-hops, if any
@@ -165,15 +168,15 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Determine instructions for a next-hop and build its `FibGroup`.
+    /// Build the `FibGroup` for a next-hop.
     /// Returns true if the `Fibgroup` associated to a next-hop changed.
+    ///
+    /// N.B. this requires:
+    ///   - the next-hop to be resolved and its resolvers too
+    ///   - the next-hop instructions be up-to-date
+    ///     .. since the fibgroup accumulates them.
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) -> bool {
-        // determine nhop pkt instructions. This is independent of the routing table
-        self.build_nhop_instructions(rstore);
-
-        // build the fibgroup for a next-hop. This requires the nhop to be resolved
-        // and its resolvers too, and that these have packet instructions up to date
+    pub(crate) fn set_fibgroup(&self) -> bool {
         let fibgroup = self.build_nhop_fibgroup();
         let changed = fibgroup != *(self.fibgroup.borrow());
         if changed {

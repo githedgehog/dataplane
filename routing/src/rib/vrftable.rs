@@ -832,7 +832,7 @@ mod tests {
 
         vrf.nhstore.resolve_all(&vrf);
         vrf.nhstore.rebuild_nhop_instructions(&rstore);
-        vrf.nhstore.rebuild_fibgroups(&rstore);
+        vrf.nhstore.rebuild_fibgroups();
         // calling
         // vrf.refresh_fib(&rstore, None);
         // would also do the job
