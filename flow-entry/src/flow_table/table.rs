@@ -307,6 +307,14 @@ impl FlowTable {
 
         let previous = val.update_status(FlowStatus::Active);
 
+        // `dashmap`'s entry guard is a real `parking_lot` shard lock, so nothing inside this
+        // block may be a scheduling point: under shuttle every green thread shares one OS
+        // thread, and a preemption while the shard is held leaves the next thread to want that
+        // shard parked on a futex with nobody able to release it. `self.live` is a *facade*
+        // atomic -- checkable, and therefore schedulable -- so the count is bumped after the
+        // guard drops rather than under it. The window that opens is a `live` that lags one
+        // insert, which `live_len` already documents as no less exact than `DashMap::len`.
+        let mut counted = false;
         let found = match table.entry(*flow_key) {
             dashmap::Entry::Occupied(mut occupied) => {
                 if occupied.get().is_active() {
@@ -320,11 +328,14 @@ impl FlowTable {
                     Found::Refused(e)
                 } else {
                     vacant.insert(val.clone());
-                    self.live.fetch_add(1, Ordering::Relaxed);
+                    counted = true;
                     Found::Inserted(None)
                 }
             }
         };
+        if counted {
+            self.live.fetch_add(1, Ordering::Relaxed);
+        }
         let displaced = match found {
             Found::Inserted(displaced) => displaced,
             Found::Held(held) => {
