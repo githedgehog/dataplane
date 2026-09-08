@@ -5283,6 +5283,13 @@ mod model {
         );
     }
 
+    #[cfg_attr(
+        any(feature = "shuttle", feature = "loom"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "the model backends have no unwinding arm, so only this cfg is infallible"
+        )
+    )]
     fn without_unwinding<T>(body: impl FnOnce() -> T) -> Result<T, String> {
         cfg_select! {
             feature = "shuttle" => Ok(body()),
