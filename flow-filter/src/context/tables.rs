@@ -345,35 +345,18 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-concurrency::with_std! {
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+// A process-unique sequence for rte_acl context names. This is deliberately *not* scheduled:
+// the registry it feeds is rte_acl's own, which is process-global and outlives any model-checker
+// execution, so a facade atomic here would restart at zero on the second execution and collide.
+// It used to be spelled three times -- `with_std!` on the facade, `with_loom!` and
+// `with_shuttle!` on raw `std::sync` with four suppressions -- because there was no name for
+// "process-lifetime on purpose". There is now.
+use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
-    static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+static TABLE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    fn next_in_sequence() -> u64 {
-        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
-    }
-}
-
-concurrency::with_loom! {
-    // nosemgrep: rust-no-direct-std-sync-import
-    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    fn next_in_sequence() -> u64 {
-        // nosemgrep: rust-no-direct-std-sync-import
-        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-concurrency::with_shuttle! {
-    // nosemgrep: rust-no-direct-std-sync-import
-    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    fn next_in_sequence() -> u64 {
-        // nosemgrep: rust-no-direct-std-sync-import
-        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
+fn next_in_sequence() -> u64 {
+    TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A process-unique rte_acl context name (rte_acl rejects duplicate names).
