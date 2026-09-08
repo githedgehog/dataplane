@@ -260,7 +260,7 @@ fn re_reservation_after_a_config_change_is_honoured() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "exhaustive allocator walk is too slow under miri")]
+#[cfg_attr(emulated, ignore = "exhaustive allocator walk is too slow to emulate")]
 fn a_region_can_be_allocated_dry() {
     const PORTS_PER_ADDRESS: usize = 65536 - 1024;
     const ADDRESSES: usize = 2;
