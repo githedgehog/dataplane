@@ -604,8 +604,10 @@ impl ContainerParams {
     /// mountpoint has to come from the rootfs rather than from the `vmroot`
     /// derivation, which pre-creates `test-bin` for exactly this reason.
     ///
-    ///     mkdirat /var/lib/docker/rootfs/overlayfs/<id>/vm.root/test-bin:
-    ///         read-only file system
+    /// ```text
+    /// mkdirat /var/lib/docker/rootfs/overlayfs/<id>/vm.root/test-bin:
+    ///     read-only file system
+    /// ```
     ///
     /// Some versions of the daemon sort `HostConfig.Mounts` by destination
     /// before building the OCI spec and hide this; relying on that is a bet on
