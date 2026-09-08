@@ -592,6 +592,15 @@ impl ContainerParams {
             shares,
         ));
 
+        Self::parents_first(mounts)
+    }
+
+    fn parents_first(mut mounts: Vec<bollard::models::Mount>) -> Vec<bollard::models::Mount> {
+        mounts.sort_by_key(|mount| {
+            mount.target.as_deref().map_or(0, |target| {
+                target.split('/').filter(|s| !s.is_empty()).count()
+            })
+        });
         mounts
     }
 
@@ -2100,6 +2109,44 @@ mod tests {
         let mirror = mirror.unwrap();
         assert_eq!(mirror.source.as_deref(), Some("/target/debug/deps"));
         assert_eq!(mirror.read_only, Some(true));
+    }
+
+    #[test]
+    fn every_mount_follows_the_one_it_nests_inside() {
+        let params = sample_params();
+        let roots = ScratchRoots {
+            test_root: PathBuf::from("/nix/store/fake-test-root"),
+            vm_root: PathBuf::from("/nix/store/fake-vm-root"),
+        };
+        let params = ContainerParams {
+            scratch_roots: roots,
+            ..params
+        };
+        let mounts = ContainerParams::build_mounts_in(None, &params, &[], None);
+
+        let targets: Vec<&str> = mounts.iter().filter_map(|m| m.target.as_deref()).collect();
+        assert!(
+            targets.contains(&VM_ROOT_SHARE_PATH),
+            "the fixture did not produce the parent mount, so this proves nothing: {targets:?}"
+        );
+        let nested = format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}");
+        assert!(
+            targets.contains(&nested.as_str()),
+            "the fixture did not produce a nested mount, so this proves nothing: {targets:?}"
+        );
+
+        for (later, target) in targets.iter().enumerate() {
+            for (earlier, parent) in targets.iter().enumerate() {
+                if earlier <= later || !target.starts_with(&format!("{parent}/")) {
+                    continue;
+                }
+                panic!(
+                    "{target} is mounted before {parent} that contains it. runc would have to \
+                     create the mountpoint in the read-only container rootfs, and the container \
+                     fails to start. Order: {targets:?}"
+                );
+            }
+        }
     }
 
     #[test]
