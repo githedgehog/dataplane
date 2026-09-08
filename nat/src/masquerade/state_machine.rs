@@ -113,6 +113,7 @@ fn expected_tcp(action: NatAction, status: NatFlowStatus, f: Flags) -> NatFlowSt
 /// Exhaustive over all 320 (direction, status, flag) triples -- but against a transcription,
 /// so read it as a change detector. See [`expected_tcp`].
 #[test]
+#[cfg_attr(miri, ignore = "the full close sequence is 69s under miri")]
 fn the_tcp_state_machine_follows_the_close_sequence() {
     for action in [NatAction::SrcNat, NatAction::DstNat] {
         for status in STATUSES {
