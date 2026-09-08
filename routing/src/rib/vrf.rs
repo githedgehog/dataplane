@@ -434,7 +434,7 @@ impl Vrf {
         let resvrf = resvrf.unwrap_or(self);
         self.nhstore.rebuild_nhop_instructions(rstore);
         self.nhstore.resolve_all(resvrf);
-        self.nhstore.rebuild_fibgroups(rstore)
+        self.nhstore.rebuild_fibgroups()
     }
 
     /// Apply the given changes to a fib
@@ -482,7 +482,9 @@ impl Vrf {
         // call refresh_fib at the end. Leaving it for future optimizations.
         for shim in &route.s_nhops {
             let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
-            shim.rc.build_nhop_instructions(rstore); // not needed, set_fibgroup() calls it
+            if shim.rc.instructions.borrow().is_empty() {
+                shim.rc.build_nhop_instructions(rstore);
+            }
             if refc == 2 {
                 shim.rc.resolve(rvrf);
             }
@@ -493,7 +495,7 @@ impl Vrf {
         if let Some(fibw) = &mut self.fibw {
             let mut nhkeys = Vec::with_capacity(route.s_nhops.len());
             for shim in &route.s_nhops {
-                if shim.rc.as_ref().set_fibgroup(rstore) {
+                if shim.rc.as_ref().set_fibgroup() {
                     let fibgroup = &*shim.rc.as_ref().fibgroup.borrow();
                     fibw.register_fibgroup(&shim.rc.key, fibgroup, false);
                 }
@@ -1124,7 +1126,7 @@ pub mod tests {
 
         add_vxlan_routes(&mut vrf, 5);
 
-        vrf.dump(Some("VRF with partially resolved nexthops, lazily resolved on addition"));
+        vrf.dump(Some("VRF with partially resolved nexthops, resolved on addition"));
         vrf
     }
 

@@ -397,7 +397,7 @@ impl NhopStore {
         self.0.iter()
     }
 
-    /// Rebuild the instructions for each next-hop
+    /// Rebuild the instructions for all next-hops
     pub fn rebuild_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
             nhop.build_nhop_instructions(rstore);
@@ -412,14 +412,6 @@ impl NhopStore {
     }
 
     /// Flush all resolution state and re-resolve all next-hops.
-    ///
-    /// N.B. next-hops are resolved in no particular order, and every next-hop is resolved
-    /// on its own, so the resolvers of a next-hop are those found by whichever resolution
-    /// visited it last. That only makes a difference for next-hops involved in a
-    /// resolution loop: there, the resolvers of a next-hop may be a subset of those it
-    /// could be resolved with, leaving out those that resolve back through it. Such a
-    /// resolver could only be used by cutting the loop when building the fibgroup, which
-    /// is what `Nhop::resolves_with` used to rule out too.
     pub fn resolve_all(&self, vrf: &Vrf) {
         self.flush_resolvers();
         self.iter().for_each(|nhop| nhop.resolve(vrf));
@@ -431,9 +423,9 @@ impl NhopStore {
     /// of the fibgroups. N.B. we hand out weak references and not owning ones so as to
     /// not alter the strong count of the next-hops, which tells how many routes use them
     /// and determines if a next-hop can be removed (see `NhopStore::del_nhop()`).
-    pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<Weak<Nhop>> {
+    pub fn rebuild_fibgroups(&self) -> Vec<Weak<Nhop>> {
         self.iter()
-            .filter(|nhop| nhop.set_fibgroup(rstore))
+            .filter(|nhop| nhop.set_fibgroup())
             .map(Rc::downgrade)
             .collect()
     }
@@ -1209,7 +1201,7 @@ mod tests {
         );
 
         // with the chain complete, the next-hop gets a fibgroup that forwards traffic
-        nhop.set_fibgroup(&RmacStore::new());
+        nhop.set_fibgroup();
         let fibgroup = nhop.fibgroup.borrow();
         assert_eq!(fibgroup.len(), 1);
         assert_ne!(fibgroup.entries()[0], FibEntry::drop_fibentry());
@@ -1243,7 +1235,7 @@ mod tests {
         );
 
         // traffic to an unusable next-hop must be dropped
-        a.set_fibgroup(&RmacStore::new());
+        a.set_fibgroup();
         assert_eq!(a.fibgroup.borrow().entries(), &[FibEntry::drop_fibentry()]);
     }
 
@@ -1286,7 +1278,7 @@ mod tests {
         );
 
         // the loop is cut when building the fibgroup, which keeps the usable path only
-        a.set_fibgroup(&RmacStore::new());
+        a.set_fibgroup();
         let fibgroup = a.fibgroup.borrow();
         assert_eq!(fibgroup.len(), 1);
         assert_ne!(fibgroup.entries()[0], FibEntry::drop_fibentry());
