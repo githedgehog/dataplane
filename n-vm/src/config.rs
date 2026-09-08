@@ -648,7 +648,7 @@ pub struct VmConfig {
     /// materialises into `testroot` -- `flatcar` is a distribution kernel
     /// with its own module tree booted through an initramfs, `qemu` and
     /// `cloud_hypervisor` are the union kernel this repo builds and boots
-    /// directly.  See [`kernel_profiles`] for the names.
+    /// directly.  See [`crate::kernel_feature::kernel_profiles`] for the names.
     ///
     /// `None` leaves the choice to the run: `N_VM_PROFILE` if it is set,
     /// otherwise the manifest's default.  Naming one here outranks both,
@@ -694,7 +694,7 @@ pub struct VmConfig {
     /// Number of vCPUs.
     ///
     /// Arranged into a socket/die/core/thread topology by
-    /// [`SmpTopology::for_vcpus`], which is what both hypervisors actually
+    /// `SmpTopology::for_vcpus`, which is what both hypervisors actually
     /// want.  Like [`memory_mib`](Self::memory_mib) this bounds
     /// concurrency: vCPUs, not memory, is what usually limits how many of
     /// these VMs a host can run.
@@ -833,7 +833,7 @@ impl VmConfigBuilder {
 
     /// Names the kernel profile to boot.
     ///
-    /// Use a constant from [`kernel_profiles`] rather than a bare string,
+    /// Use a constant from [`crate::kernel_feature::kernel_profiles`] rather than a bare string,
     /// so a rename shows up as a build error instead of an "unknown
     /// profile" at launch.
     #[must_use]
@@ -1195,7 +1195,7 @@ impl VmConfig {
     /// The derivation is what is left after the two claims the engine
     /// cannot touch: a hugepage reservation, which the guest kernel hands
     /// to hugetlbfs and never hands back, and
-    /// [`GUEST_KERNEL_HEADROOM_BYTES`] for the kernel and `n-it`
+    /// `GUEST_KERNEL_HEADROOM_BYTES` for the kernel and `n-it`
     /// themselves.  That is a bound, not a measurement -- an engine that
     /// stays under it can still be killed by a guest that was busy
     /// elsewhere -- but every part of it is memory that provably is not
@@ -1610,7 +1610,7 @@ impl FabricNics {
     ///
     /// `usize` rather than `u8` so that an over-long [`Mixed`](Self::Mixed)
     /// is a number [`VmConfig::check`] can compare against
-    /// [`MAX_FABRIC_NICS`], instead of one that has already wrapped past
+    /// `MAX_FABRIC_NICS`, instead of one that has already wrapped past
     /// it.
     #[must_use]
     pub const fn len(&self) -> usize {
