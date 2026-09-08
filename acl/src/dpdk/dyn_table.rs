@@ -431,8 +431,8 @@ mod failing_repros {
             offset,
         }
     }
+    use concurrency::process_global::atomic::{AtomicU32, Ordering};
     use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU32, Ordering};
 
     // Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
     static SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
@@ -507,8 +507,8 @@ mod tests {
 
     dpdk_table_alias!(type FiveTupleTable<A> = FiveTuple);
 
+    use concurrency::process_global::atomic::{AtomicU32, Ordering};
     use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU32, Ordering};
 
     // Lazily initialized so this compiles under the loom backend, whose AtomicU32::new is not const
     static CTX_SEQ: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));

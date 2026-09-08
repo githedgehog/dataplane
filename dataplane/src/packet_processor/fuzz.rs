@@ -77,7 +77,7 @@ pub(crate) struct Blueprint {
     pipeline: Arc<PipelineData>,
     underlay: Option<Underlay>,
     flow_table: Arc<FlowTable>,
-    declared: Arc<[Prefix]>,
+    declared: Arc<[DeclaredPool]>,
 }
 
 struct Underlay {
@@ -120,7 +120,7 @@ impl Fleet {
 
         let mut portfw = PortFwTableWriter::new();
         portfw
-            .update_from_vpc_table(overlay.vpc_table())
+            .update_from_vpc_table(overlay.vpc_table(), &flow_table, FIRST_GENID)
             .expect("a validated overlay lowers to port forwarding");
 
         let mut masquerade = NatAllocatorWriter::new();
@@ -143,7 +143,7 @@ impl Fleet {
                 adjacencies: tables.adjacency_factory(),
             }),
             flow_table,
-            declared: declared_public_ranges(overlay),
+            declared: declared_pools(overlay),
         };
 
         Self {
@@ -201,6 +201,9 @@ impl Fleet {
         }
         if doing(Enact::Masquerade) {
             self.genid.set(self.genid.get() + 1);
+            // `mgmt` opens the generation for stamping here, immediately before the first walk
+            // that migrates flows into it and long before `Enact::Generation` enforces it.
+            self.blueprint.pipeline.open_generation(self.genid.get());
             self.masquerade.borrow_mut().update_nat_allocator(
                 MasqueradeConfig::new(overlay.vpc_table()).set_randomize(self.randomize.get()),
                 self.genid.get(),
@@ -210,7 +213,11 @@ impl Fleet {
         if doing(Enact::PortForward) {
             self.portfw
                 .borrow_mut()
-                .update_from_vpc_table(overlay.vpc_table())
+                .update_from_vpc_table(
+                    overlay.vpc_table(),
+                    &self.blueprint.flow_table,
+                    self.genid.get(),
+                )
                 .expect("a validated overlay lowers to port forwarding");
         }
         if doing(Enact::Generation) {
@@ -541,11 +548,14 @@ fn assert_within_budget<G: bolero::ValueGenerator>(name: &str, generator: &G) {
 
 #[cfg(test)]
 fn assert_covered(covered: bool, what: &str) {
-    if (cfg!(instrumented) || cfg!(emulated)) && !covered {
-        // Coverage and emulation are both slow enough per case that bolero's
-        // budget buys a sample too small for "did anything reach this branch"
-        // to mean anything: qemu-user gets a couple of orders of magnitude
-        // fewer cases than a native run, and instrumentation is not far behind.
+    if (cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized)) && !covered {
+        // Coverage, emulation and the sanitizers are all slow enough per case
+        // that bolero's budget buys a sample too small for "did anything reach
+        // this branch" to mean anything: qemu-user gets a couple of orders of
+        // magnitude fewer cases than a native run, and instrumentation is not
+        // far behind. A sanitizer keeps every iteration -- deliberately, races
+        // need them -- but bolero still stops on wall-clock, so the sample is
+        // just as small and this guard would be judging the sanitizer.
         // Say so and carry on -- the point of those runs is the line counts and
         // the target's own behaviour, and failing here loses both.
         eprintln!("{what} -- not asserted: too few cases under this build");
@@ -563,9 +573,9 @@ fn assert_covered(covered: bool, what: &str) {
 #[derive(Default)]
 pub(crate) struct Translations {
     was: std::collections::HashMap<u64, net::FlowKey>,
-    from: std::collections::HashMap<u64, IpAddr>,
+    from: std::collections::HashMap<u64, (IpAddr, Option<VpcDiscriminant>)>,
     given: std::collections::HashMap<net::FlowKey, (IpAddr, u16)>,
-    declared: Arc<[Prefix]>,
+    declared: Arc<[DeclaredPool]>,
 }
 
 #[cfg(test)]
@@ -580,7 +590,7 @@ impl Translations {
         };
         self.was.insert(test.id, key);
         if let Some(source) = packet.ip_source() {
-            self.from.insert(test.id, source);
+            self.from.insert(test.id, (source, packet.meta().dst_vpcd));
         }
     }
 
@@ -606,15 +616,16 @@ impl Translations {
             );
         }
 
-        if self
-            .from
-            .get(&test.id)
-            .is_some_and(|before| *before != source)
+        if let Some((before, towards)) = self.from.get(&test.id).copied()
+            && before != source
         {
             assert!(
-                self.declared.iter().any(|p| p.covers_addr(&source)),
-                "{at}: masquerade rewrote a source to {source}, which no declared public range \
-                 covers"
+                self.declared
+                    .iter()
+                    .any(|pool| pool.admits(before, source, towards)),
+                "{at}: masquerade rewrote {before} to {source} on the way to {towards:?}, which \
+                 is not a pool any expose publishing {before} declares towards that vpc; the \
+                 flow emerged on some other expose's pool"
             );
         }
     }
@@ -625,7 +636,7 @@ impl Translations {
         self.given.clear();
     }
 
-    fn declaring(declared: &Arc<[Prefix]>) -> Self {
+    fn declaring(declared: &Arc<[DeclaredPool]>) -> Self {
         Self {
             declared: declared.clone(),
             ..Self::default()
@@ -633,19 +644,68 @@ impl Translations {
     }
 }
 
+/// One expose's private side, and the public side a source from it may be rewritten to.
+///
+/// Kept as pairs rather than flattened into one list of public prefixes. Flattening asks only
+/// whether *some* expose in the overlay declares the address a source was rewritten to, which
+/// accepts a flow emerging on an unrelated tenant's pool -- the containment failure actually
+/// worth finding. Binding the two ends together means the pool has to be one the address being
+/// translated is entitled to.
 #[cfg(test)]
-fn declared_public_ranges(overlay: &ValidatedOverlay) -> Arc<[Prefix]> {
+pub(crate) struct DeclaredPool {
+    private: Vec<Prefix>,
+    public: Vec<Prefix>,
+    /// The vpc this expose publishes *towards*. A vpc that exposes the same addresses to two
+    /// peers under two pools is entitled to only one of them per destination, so without this
+    /// the check would still accept a flow drawn from the pool meant for the other peer.
+    towards: Option<VpcDiscriminant>,
+}
+
+#[cfg(test)]
+impl DeclaredPool {
+    /// Whether this expose is the one that would rewrite `private` to `public` on the way to
+    /// `towards`. An unknown destination falls back to the addresses alone -- it is the
+    /// flow-filter's job to place a packet, and a packet it has not placed is not this
+    /// assertion's to judge.
+    fn admits(&self, private: IpAddr, public: IpAddr, towards: Option<VpcDiscriminant>) -> bool {
+        (towards.is_none() || self.towards.is_none() || self.towards == towards)
+            && self.private.iter().any(|p| p.covers_addr(&private))
+            && self.public.iter().any(|p| p.covers_addr(&public))
+    }
+}
+
+#[cfg(test)]
+fn declared_pools(overlay: &ValidatedOverlay) -> Arc<[DeclaredPool]> {
+    fn prefixes<'a, S>(set: S) -> Vec<Prefix>
+    where
+        S: IntoIterator<Item = &'a lpm::prefix::PrefixWithOptionalPorts>,
+    {
+        set.into_iter()
+            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+            .collect()
+    }
+
+    let discriminant = |name: &str| {
+        overlay
+            .vpc_table()
+            .values()
+            .find(|vpc| vpc.name() == name)
+            .map(|vpc| VpcDiscriminant::VNI(vpc.vni()))
+    };
+
     let mut declared = Vec::new();
     for vpc in overlay.vpc_table().values() {
         for peering in vpc.peerings() {
-            for manifest in [peering.local(), peering.remote()] {
-                for expose in manifest.valexp() {
-                    declared.extend(
-                        expose
-                            .public_ips()
-                            .into_iter()
-                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix),
-                    );
+            let (local, remote) = (peering.local(), peering.remote());
+            // Each manifest publishes towards the vpc named by the *other* one.
+            for (mine, theirs) in [(local, remote), (remote, local)] {
+                let towards = discriminant(theirs.name());
+                for expose in mine.valexp() {
+                    declared.push(DeclaredPool {
+                        private: prefixes(expose.ips()),
+                        public: prefixes(expose.public_ips()),
+                        towards,
+                    });
                 }
             }
         }
@@ -1068,8 +1128,8 @@ impl<Buf: PacketBufferMut, F: Fn(&str, &Packet<Buf>) + 'static> NetworkFunction<
 
 mod contract {
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
 
     pub(super) static JUDGED: LazyLock<[AtomicU64; 4]> =
         LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
@@ -1353,8 +1413,8 @@ mod smoke {
 mod shapes {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::Prefix;
     use net::headers::builder::ChainBase;
@@ -1593,8 +1653,8 @@ mod shapes {
 mod round_trip {
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::MasqueradeExposes;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
     use net::headers::builder::HeaderStack;
@@ -1819,8 +1879,8 @@ mod round_trip {
 mod acl {
     use super::*;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::acl::{
         Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope,
     };
@@ -2165,9 +2225,13 @@ mod acl {
         )
     }
 
+    /// Port forwarding did not migrate its own flows, so a port-forwarded connection lost its
+    /// flow-scoped `Allow` the moment *any* configuration was enacted -- however unrelated, a
+    /// byte-for-byte re-enactment included. `AclFilter` runs before `PortForwarder` and refuses a
+    /// flow a generation behind, so the stage that could have revalidated it never saw the reply.
     #[tokio::test]
     #[dpdk::with_eal]
-    async fn a_port_forwarded_flow_loses_its_acl_permission_on_any_configuration_change() {
+    async fn a_port_forwarded_flow_keeps_its_acl_permission_across_a_configuration_change() {
         let acl = flow_scoped_permit();
         let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
             .expect("the fixture assembles")
@@ -2213,13 +2277,78 @@ mod acl {
         fabric.fleet().enact(&overlay, Enact::Everything);
 
         let after = answer(&mut fabric);
-        assert_eq!(
-            after,
-            Verdict::Dropped(DoneReason::AclDropped),
-            "a port-forwarded flow kept its acl permission across a configuration change. If \
-             `update_nat_allocator`'s generation upgrade now covers port-forwarded flows, this \
-             test has served its purpose -- delete it, and stop excluding flow-scoped peerings \
-             from `a_configuration_change_leaves_traffic_outside_its_footprint_alone`"
+        assert!(
+            matches!(after, Verdict::Forwarded { .. }),
+            "a port-forwarded flow lost its acl permission to a configuration change that did \
+             not touch it: {after:?}. `migrate_port_forwarded_flows` is what carries it, and it \
+             runs from `PortFwTableWriter::update_table_and_flows` -- check the enactment still \
+             calls that rather than bare `update_table`"
+        );
+    }
+
+    /// A configuration apply is not atomic: `mgmt` installs every table, migrates the flows of
+    /// the previous generation, and only then publishes the new generation id. A flow opened in
+    /// between was admitted by the new tables but used to stamp itself from the generation still
+    /// published, so the publish immediately made it look like a leftover of the generation
+    /// before -- and the ACL dropped its reply. Nothing rescues a port-forwarded flow from that:
+    /// unlike a masqueraded one it is never re-stamped from the allocator's generation, and the
+    /// ACL runs ahead of the port-forwarder, so the reply dies before the stage that would fix it.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn a_flow_opened_while_a_configuration_is_applied_survives_the_publish() {
+        let acl = flow_scoped_permit();
+        let overlay = overlay_with_exposes_and_acl(forwarding(), Some(&acl))
+            .expect("the fixture assembles")
+            .validate()
+            .expect("a port-forwarding side accepts a flow-scoped rule");
+        let mut fabric = Fabric::over(&overlay, None, Arc::new(FlowTable::default()));
+
+        // Re-enact the running configuration, stopping short of publishing the generation. This
+        // is the state `mgmt` is in from its first table swap until its last statement.
+        for step in [
+            Enact::FlowFilter,
+            Enact::Acl,
+            Enact::StaticNat,
+            Enact::Masquerade,
+            Enact::PortForward,
+        ] {
+            fabric.fleet().enact(&overlay, step);
+        }
+
+        let advertised: IpAddr = "172.16.0.5".parse().unwrap_or_else(|_| unreachable!());
+        let outside = peer(advertised);
+
+        // Open the flow inside the window.
+        let mut request = super::round_trip::udp(outside, advertised, 40000, 2003)
+            .expect("a well-formed request");
+        arrive(&mut request, remote());
+        let arrived = fabric.send(request);
+        let Verdict::Forwarded {
+            dst: Some(inside), ..
+        } = verdict(&arrived)
+        else {
+            panic!(
+                "the request never reached the service mid-apply: {:?}",
+                verdict(&arrived)
+            );
+        };
+        let inside_port = arrived
+            .transport_dst_port()
+            .expect("a forwarded request has a destination port");
+
+        // Close the apply.
+        fabric.fleet().enact(&overlay, Enact::Generation);
+
+        let mut answer = super::round_trip::udp(inside, outside, inside_port.get(), 40000)
+            .expect("a well-formed answer");
+        arrive(&mut answer, local());
+        let after = verdict(&fabric.send(answer));
+        assert!(
+            matches!(after, Verdict::Forwarded { .. }),
+            "a flow opened while the configuration was being applied was stale the moment the \
+             apply finished, and its answer was refused: {after:?}. The generation a new flow \
+             stamps itself with must be opened before the migration walks, not published after \
+             them -- see `PipelineData::open_generation`"
         );
     }
 }
@@ -2229,8 +2358,8 @@ mod port_forward {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled_from};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
     use net::headers::TryVxlan;
@@ -2436,8 +2565,8 @@ mod port_forward {
 mod interleaved {
     use super::routed::{Blast, Conversation, Path, exposes};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use std::ops::Bound::Included;
 
     const LOADS: usize = 6;
@@ -2599,8 +2728,8 @@ mod interleaved {
 mod offers {
     use super::derive::{Vary, loads_for};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::VpcExpose;
     use config::external::overlay::vpcpeering::contract::overlay_with_exposes;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
@@ -2779,8 +2908,8 @@ mod generated {
     use super::derive::{Named, Vary, loads_where};
     use super::*;
     use bolero::ValueGenerator;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::algebra::{Draft, Guard, Op, Sequence};
     use std::cell::Cell;
     use std::ops::Bound::Included;
@@ -3249,8 +3378,8 @@ mod burst {
     use super::round_trip::udp;
     use super::routed::{exposes, inside, tunnelled};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::headers::TryVxlan;
 
     const BURST: usize = 8;
@@ -3556,8 +3685,8 @@ mod destination {
     use super::round_trip::udp;
     use super::routed::{inside, tunnelled};
     use super::*;
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use config::external::overlay::vpcpeering::contract::{overlay_with_peers, peer_vni};
     use lpm::prefix::Prefix;
     use net::headers::TryVxlan;
@@ -3697,8 +3826,8 @@ mod routed {
     use super::shapes::{Batch, Shape, aim, wire};
     use super::*;
     use super::{Load, drive};
-    use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use net::buffer::TestBuffer;
     use net::headers::{TryEth, TryHeaders, TryHeadersMut, TryIpv4, TryVxlan};
     use net::ip::dscp::Dscp;
@@ -4502,17 +4631,290 @@ mod routed {
 }
 
 #[cfg(test)]
+mod icmp_error {
+    use super::routed::{exposes, inside, tunnelled, tunnelled_from};
+    use super::*;
+    use concurrency::process_global::LazyLock;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
+    use net::flows::FlowInfo;
+    use net::headers::{TryEth, TryHeaders};
+    use net::icmp4::Icmp4DestUnreachable;
+    use net::packet::test_utils::build_icmp4_error_quoting;
+    use net::parse::DeParse;
+    use std::net::Ipv4Addr;
+
+    const PEER: &str = "3.3.3.1";
+
+    /// One case: a flow to open, and how the router on the far side quotes it back at us.
+    #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+    struct Reported {
+        host: u8,
+        sport: u16,
+        dport: u16,
+        quoted: Quoted,
+        code: Code,
+        /// Quote the flow we opened, or a datagram shaped like it that names no flow at all.
+        names_a_live_flow: bool,
+    }
+
+    /// How much of the offending datagram the far-side router put in the quote.
+    ///
+    /// RFC 792 asks for the IP header plus eight octets and RFC 1812 asks for as much as will
+    /// fit, so everything from "the whole datagram" down to "not even a full IP header" is on
+    /// the wire somewhere, and each length is a different walk through the embedded parser.
+    /// `First` is the one that matters: a plain "trim n octets from the end" never reaches a
+    /// header boundary, because the datagrams this fixture emits are the better part of two
+    /// kilobytes and `n` is a byte.
+    #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+    enum Quoted {
+        Whole,
+        First(u8),
+        AllBut(u8),
+    }
+
+    impl Quoted {
+        fn of(self, datagram: &[u8]) -> &[u8] {
+            let keep = match self {
+                Quoted::Whole => datagram.len(),
+                Quoted::First(n) => (n as usize).min(datagram.len()),
+                Quoted::AllBut(n) => datagram.len().saturating_sub(n as usize),
+            };
+            &datagram[..keep]
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, bolero::TypeGenerator)]
+    enum Code {
+        Network,
+        Host,
+        Protocol,
+        Port,
+        FragmentationNeeded,
+    }
+
+    impl From<Code> for Icmp4DestUnreachable {
+        fn from(code: Code) -> Self {
+            match code {
+                Code::Network => Icmp4DestUnreachable::Network,
+                Code::Host => Icmp4DestUnreachable::Host,
+                Code::Protocol => Icmp4DestUnreachable::Protocol,
+                Code::Port => Icmp4DestUnreachable::Port,
+                Code::FragmentationNeeded => Icmp4DestUnreachable::FragmentationNeeded {
+                    next_hop_mtu: Some(1400.try_into().unwrap_or_else(|_| unreachable!())),
+                },
+            }
+        }
+    }
+
+    /// A packet's bytes from its IP header onwards -- what a router quotes back at you.
+    fn datagram(packet: Packet<TestBuffer>) -> Option<Vec<u8>> {
+        let eth = packet.headers().try_eth()?.size().get() as usize;
+        let wire = packet.serialize().ok()?;
+        Some(wire.as_ref().get(eth..)?.to_vec())
+    }
+
+    fn v4(addr: IpAddr) -> Option<Ipv4Addr> {
+        match addr {
+            IpAddr::V4(addr) => Some(addr),
+            IpAddr::V6(_) => None,
+        }
+    }
+
+    fn peer() -> IpAddr {
+        PEER.parse().unwrap_or_else(|_| unreachable!())
+    }
+
+    /// Open a flow and hand back the frame the gateway put on the wire for it.
+    fn open(fabric: &mut Fabric, host: u8, sport: u16, dport: u16) -> Option<Packet<TestBuffer>> {
+        let src: IpAddr = format!("1.1.0.{host}")
+            .parse()
+            .unwrap_or_else(|_| unreachable!());
+        let request = super::round_trip::udp(src, peer(), sport, dport)?;
+        let out = fabric.send(tunnelled(&request));
+        matches!(verdict(&out), Verdict::Delivered { .. }).then_some(out)
+    }
+
+    fn live(fabric: &Fabric) -> Vec<Arc<FlowInfo>> {
+        fabric
+            .fleet()
+            .blueprint()
+            .flow_table
+            .snapshot(|_, flow| flow.is_active())
+            .collect()
+    }
+
+    /// What one case did, for the coverage guards to add up.
+    struct Outcome {
+        refused: bool,
+        tore_down: bool,
+        named_nobody: bool,
+    }
+
+    /// Open a flow, have the far side quote it back as an ICMP error, and see what happens.
+    ///
+    /// `None` when the case could not be set up -- an address or port the fixture will not
+    /// accept, a quote too mangled to assemble. Those are skipped rather than failed; the
+    /// coverage guards on the caller are what notice if too many of them are.
+    fn run_case(reported: &Reported) -> Option<Outcome> {
+        let &Reported {
+            host,
+            sport,
+            dport,
+            quoted,
+            code,
+            names_a_live_flow,
+        } = reported;
+        // A bystander on the same peering, opened first and never mentioned again. Its flows are
+        // what the containment assertion is about: an ICMP error is entitled to the pair it
+        // names and to nothing else.
+        let bystander = host.wrapping_add(1);
+        if bystander == host {
+            return None;
+        }
+
+        let mut fabric = Fabric::routed(&exposes(), None)?;
+        open(&mut fabric, bystander, 1024, 53)?;
+        let watched = live(&fabric);
+        if watched.is_empty() {
+            return None;
+        }
+        let delivered = open(&mut fabric, host, sport, dport)?;
+        let public = v4(delivered
+            .ip_source()
+            .unwrap_or_else(|| unreachable!("a delivered frame has a source")))?;
+
+        let offending = if names_a_live_flow {
+            inside(&delivered)?
+        } else {
+            // The same shape and the same public address, on a port the allocator has not handed
+            // out, so the reversed key misses the table entirely.
+            super::round_trip::udp(IpAddr::V4(public), peer(), sport ^ 0x8000, dport)?
+        };
+        let bytes = datagram(offending)?;
+        let peer_v4: Ipv4Addr = PEER.parse().unwrap_or_else(|_| unreachable!());
+        let error = build_icmp4_error_quoting(code.into(), peer_v4, public, quoted.of(&bytes))?;
+
+        let out = fabric.send(tunnelled_from(vni(REMOTE_VNI), &error));
+        let survivors = live(&fabric);
+
+        for flow in &watched {
+            assert!(
+                flow.is_active(),
+                "an icmp error quoting {}another flow invalidated a bystander's flow {}. Only \
+                 the pair the quote names may be torn down; the reversed embedded key is what \
+                 picks it, so a miss there must let the packet by, not take the nearest flow \
+                 with it",
+                if names_a_live_flow {
+                    ""
+                } else {
+                    "nothing, and "
+                },
+                flow.flowkey()
+            );
+        }
+
+        Some(Outcome {
+            refused: matches!(
+                verdict(&out),
+                Verdict::Dropped(DoneReason::IcmpErrorIncomplete)
+            ),
+            tore_down: survivors.len() < watched.len() + 2,
+            named_nobody: !names_a_live_flow,
+        })
+    }
+
+    /// An ICMP error quoting any prefix of a live flow is judged, and judges only that flow.
+    ///
+    /// The handler had never been driven by a generated packet. `fn stack` emits an ICMP header
+    /// with an error type and no quoted datagram at all, so every generated case died in
+    /// `IcmpErrorPacket::new`, and four of the handler's six outcomes were reached zero times by
+    /// the entire suite -- measured, not guessed. What gets past that gate is quoting a datagram
+    /// the pipeline really emitted for a flow it really holds, which is free: the fixture has
+    /// one in hand the moment the request is delivered.
+    ///
+    /// The coverage guards below are the point as much as the assertion is. Without them this
+    /// property would go on passing after a change that put it back to generating quotes nothing
+    /// can parse, which is exactly how the gap it closes came to exist.
+    #[tokio::test]
+    #[dpdk::with_eal]
+    async fn an_icmp_error_quoting_a_live_flow_judges_that_flow_and_no_other() {
+        static HANDLED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static REFUSED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static TORE_DOWN: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static SPARED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+        static NAMED_NOBODY: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_type::<Reported>()
+            .for_each(|reported| {
+                let Some(outcome) = run_case(reported) else {
+                    return;
+                };
+                if outcome.refused {
+                    REFUSED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    HANDLED.fetch_add(1, Ordering::Relaxed);
+                }
+                if outcome.tore_down {
+                    TORE_DOWN.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    SPARED.fetch_add(1, Ordering::Relaxed);
+                }
+                if outcome.named_nobody {
+                    NAMED_NOBODY.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        let (handled, refused) = (
+            HANDLED.load(Ordering::Relaxed),
+            REFUSED.load(Ordering::Relaxed),
+        );
+        let (tore_down, spared, nobody) = (
+            TORE_DOWN.load(Ordering::Relaxed),
+            SPARED.load(Ordering::Relaxed),
+            NAMED_NOBODY.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "handled={handled} refused={refused} tore-down={tore_down} spared={spared} \
+             named-nobody={nobody}"
+        );
+        super::assert_covered(
+            handled > 0,
+            "every quote was refused, so the handler was never driven -- the exact state this \
+             property exists to keep from returning",
+        );
+        super::assert_covered(
+            refused > 0,
+            "no quote was ever short enough to refuse, so the truncation is not being generated",
+        );
+        super::assert_covered(
+            tore_down > 0,
+            "no icmp error ever tore a flow down, so the teardown path is still unexercised",
+        );
+        super::assert_covered(
+            spared > 0,
+            "every icmp error tore a flow down, so nothing exercised the sparing path",
+        );
+        super::assert_covered(
+            nobody > 0,
+            "no quote ever named a flow that does not exist, so the miss path is unexercised",
+        );
+    }
+}
+
+#[cfg(test)]
 mod model {
     use super::derive::loads_carried;
     use super::routed::{Conversation, exposes, inner, inside, tunnelled};
     use super::*;
+    use concurrency::process_global::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use concurrency::process_global::{LazyLock, OnceLock};
     use concurrency::sync::Mutex;
-    use concurrency::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use concurrency::sync::{LazyLock, OnceLock};
     use concurrency::thread;
     #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
     use concurrency::thread::BuilderExt;
-    use config::external::overlay::algebra::{Draft, Footprint, Guard, Sequence};
+    use config::external::overlay::algebra::{Draft, Footprint, Sequence};
     use net::packet::test_utils::build_test_udp_ipv4_packet;
 
     type Tuple = (Option<IpAddr>, Option<u16>);
@@ -4619,6 +5021,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn two_workers_are_not_given_the_same_public_tuple() {
         const CASES: usize = 64;
 
@@ -4876,6 +5283,13 @@ mod model {
         );
     }
 
+    #[cfg_attr(
+        any(feature = "shuttle", feature = "loom"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "the model backends have no unwinding arm, so only this cfg is infallible"
+        )
+    )]
     fn without_unwinding<T>(body: impl FnOnce() -> T) -> Result<T, String> {
         cfg_select! {
             feature = "shuttle" => Ok(body()),
@@ -5070,6 +5484,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
         const CASES: usize = 64;
 
@@ -5367,6 +5786,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
         const CASES: usize = 64;
 
@@ -5592,6 +6016,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn re_enacting_a_configuration_under_load_disturbs_nothing() {
         const CASES: usize = 64;
 
@@ -5719,6 +6148,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn the_cli_can_be_read_while_the_dataplane_works() {
         const CASES: usize = 64;
 
@@ -5877,6 +6311,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn a_configuration_change_leaves_traffic_outside_its_footprint_alone() {
         const CASES: usize = 64;
         const ROUNDS: u8 = 3;
@@ -5900,7 +6339,6 @@ mod model {
             let carried = derive::carried_by(draft);
             move |named| {
                 carried(named)
-                    && draft.guard_named(named.peering) != Some(Guard::PermitFlow)
                     && !footprint.touches_peering_named(named.peering)
                     && !footprint.touches_vpc_named(named.local)
                     && !footprint.touches_vpc_named(named.remote)
@@ -6282,7 +6720,7 @@ mod model {
     #[ignore = "an instrument, not a property: prints one trace and asserts nothing"]
     #[allow(clippy::too_many_lines, reason = "one instrument, read top to bottom")]
     async fn report_why_the_masquerade_swap_disturbs_traffic() {
-        use concurrency::sync::atomic::AtomicBool;
+        use concurrency::process_global::atomic::AtomicBool;
         use config::external::overlay::algebra::{
             Draft, Flavour, Op, PeeringHandle, Side, VpcHandle,
         };

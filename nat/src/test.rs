@@ -112,7 +112,7 @@ fn setup_masq_pipeline(
     // Port forwarding
     let mut portfw_writer = PortFwTableWriter::new();
     portfw_writer
-        .update_from_vpc_table(overlay.vpc_table())
+        .update_from_vpc_table(overlay.vpc_table(), &flow_table, 0)
         .unwrap();
     let portfw = PortForwarder::new("port-forwarder", portfw_writer.reader(), flow_table.clone());
     if let Some(table) = portfw_writer.enter() {

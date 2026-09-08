@@ -9,7 +9,7 @@
 /// handful of cases, where a ratio measures nothing and a threshold is pure flake. Below
 /// this many cases the counts are still printed, and coverage data is the thing to watch.
 #[cfg(test)]
-const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) {
+const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) || cfg!(sanitized) {
     // Coverage is the third case this gate was built for, and the one that
     // slips through a plain count. Emulation buys a handful of cases, well
     // under the native floor, so the gate closes on its own. Instrumentation

@@ -592,6 +592,35 @@ impl ContainerParams {
             shares,
         ));
 
+        Self::parents_first(mounts)
+    }
+
+    /// Order mounts so a target always follows any target it nests inside.
+    ///
+    /// `runc` mounts in the order it is given and creates a missing mountpoint
+    /// as it goes. The container's own rootfs is read-only, so creating one
+    /// there fails -- which is what happens when `/vm.root/test-bin` is
+    /// presented before `/vm.root`: the parent is not mounted yet, so the
+    /// mountpoint has to come from the rootfs rather than from the `vmroot`
+    /// derivation, which pre-creates `test-bin` for exactly this reason.
+    ///
+    /// ```text
+    /// mkdirat /var/lib/docker/rootfs/overlayfs/<id>/vm.root/test-bin:
+    ///     read-only file system
+    /// ```
+    ///
+    /// Some versions of the daemon sort `HostConfig.Mounts` by destination
+    /// before building the OCI spec and hide this; relying on that is a bet on
+    /// the runner's Docker, and the aarch64 CI runners lost it. Sorting by
+    /// component count is enough -- a parent always has fewer components than
+    /// anything nested in it -- and a stable sort leaves unrelated mounts in
+    /// the order they were declared.
+    fn parents_first(mut mounts: Vec<bollard::models::Mount>) -> Vec<bollard::models::Mount> {
+        mounts.sort_by_key(|mount| {
+            mount.target.as_deref().map_or(0, |target| {
+                target.split('/').filter(|s| !s.is_empty()).count()
+            })
+        });
         mounts
     }
 
@@ -2074,6 +2103,48 @@ mod tests {
         let mirror = mirror.unwrap();
         assert_eq!(mirror.source.as_deref(), Some("/target/debug/deps"));
         assert_eq!(mirror.read_only, Some(true));
+    }
+
+    /// `runc` creates a missing mountpoint as it goes, and the container rootfs is read-only,
+    /// so a nested target presented before the one it nests inside fails the whole container
+    /// with `read-only file system`. The daemon may or may not sort for us; this does not
+    /// depend on which.
+    #[test]
+    fn every_mount_follows_the_one_it_nests_inside() {
+        let params = sample_params();
+        let roots = ScratchRoots {
+            test_root: PathBuf::from("/nix/store/fake-test-root"),
+            vm_root: PathBuf::from("/nix/store/fake-vm-root"),
+        };
+        let params = ContainerParams {
+            scratch_roots: roots,
+            ..params
+        };
+        let mounts = ContainerParams::build_mounts_in(None, &params, &[], None);
+
+        let targets: Vec<&str> = mounts.iter().filter_map(|m| m.target.as_deref()).collect();
+        assert!(
+            targets.contains(&VM_ROOT_SHARE_PATH),
+            "the fixture did not produce the parent mount, so this proves nothing: {targets:?}"
+        );
+        let nested = format!("{VM_ROOT_SHARE_PATH}/{VM_TEST_BIN_DIR}");
+        assert!(
+            targets.contains(&nested.as_str()),
+            "the fixture did not produce a nested mount, so this proves nothing: {targets:?}"
+        );
+
+        for (later, target) in targets.iter().enumerate() {
+            for (earlier, parent) in targets.iter().enumerate() {
+                if earlier <= later || !target.starts_with(&format!("{parent}/")) {
+                    continue;
+                }
+                panic!(
+                    "{target} is mounted before {parent} that contains it. runc would have to \
+                     create the mountpoint in the read-only container rootfs, and the container \
+                     fails to start. Order: {targets:?}"
+                );
+            }
+        }
     }
 
     #[test]

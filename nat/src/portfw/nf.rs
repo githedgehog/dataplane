@@ -8,7 +8,7 @@ use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::{FlowTable, Insertion};
 
 use net::buffer::PacketBufferMut;
-use net::flows::{ExtractMut, ExtractRef, FlowInfo};
+use net::flows::{ExtractRef, FlowInfo};
 use net::headers::{Transport, TryHeaders, TryIp};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -18,6 +18,7 @@ use std::num::NonZero;
 use crate::common::NatAction;
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
+use crate::portfw::flow_state::reassign_port_fw_rule;
 use crate::portfw::flow_state::refresh_port_fw_entry;
 use crate::portfw::flow_state::setup_forward_flow;
 use crate::portfw::flow_state::setup_reverse_flow;
@@ -25,6 +26,25 @@ use crate::portfw::packet::nat_packet;
 
 #[allow(unused)]
 use tracing::{debug, error, trace, warn};
+
+/// Which pair a create attempt ended up translating with, and so what there is to undo.
+///
+/// The same distinction `MasqueradeFlow` draws in the sibling stage: the loser of a race
+/// forwards with the winner's state but owns nothing, so a later failure must not invalidate a
+/// pair another worker installed and is using.
+#[derive(Debug)]
+enum PortFwFlow {
+    Installed(Arc<FlowInfo>),
+    Held(Arc<FlowInfo>),
+}
+
+impl PortFwFlow {
+    fn flow(&self) -> &Arc<FlowInfo> {
+        match self {
+            PortFwFlow::Installed(flow) | PortFwFlow::Held(flow) => flow,
+        }
+    }
+}
 
 /// A port-forwarding network function
 pub struct PortForwarder {
@@ -136,54 +156,83 @@ impl PortForwarder {
             return;
         };
 
-        // set the generation id for the flow
-        fw_flow.set_genid_pair(self.pipeline_data.genid());
+        // set the generation id for the flow. This is the generation being installed, not the one
+        // being enforced: the two differ only while a configuration apply is in flight, and a flow
+        // born then belongs to the generation whose tables just admitted it.
+        fw_flow.set_genid_pair(self.pipeline_data.staging_genid());
 
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
-        // get the state we just created for the FORWARD direction
-        let locked = fw_flow.locked.read();
-        let pfw_state = locked
-            .port_fw_state
-            .extract_ref::<PortFwState>()
-            .unwrap_or_else(|| unreachable!());
-
-        // translate destination according to the rule. If this fails, no state will be created
-        if let Err(e) = nat_packet(packet, pfw_state) {
-            debug!("Failed to port-forward packet (initial):{e}");
-            packet.done(DoneReason::InternalFailure);
-            return;
-        }
-        drop(locked);
-
-        let insertion = match self.flow_table.insert_if_absent(&fw_flow) {
-            Ok(insertion) => insertion,
+        // Arbitrate before touching the packet.
+        //
+        // The forward key is the tuple the client addressed, *before* translation, so it is the
+        // same for every worker racing to create this flow however far apart the backends they
+        // would pick. Those backends can differ: each worker holds its own read guard on the
+        // port-forwarding table, so a configuration published between two workers' batches has
+        // them mapping one public tuple two ways. Translating first and then discarding the
+        // winner emitted the packet to the loser's backend while the table held only the
+        // winner's pair -- and the reverse key is derived from the backend, so the reply came
+        // back from an address nothing mapped and was dropped.
+        let outcome = match self.flow_table.insert_if_absent(&fw_flow) {
+            Ok(Insertion::Occupied(held)) => {
+                debug!(
+                    "Lost the race to create port-forwarding flow {fw_key}; \
+                     forwarding with the winner's state"
+                );
+                PortFwFlow::Held(held)
+            }
+            Ok(Insertion::Installed) => {
+                // The reverse insert is expected to always succeed: capacity enforcement
+                // recognises that rev_flow has a related flow (fw_flow) already in the table
+                // and admits it unconditionally.  Remove the forward entry on the unlikely
+                // event of failure to avoid leaving a one-sided flow.
+                if let Err(e) = self.flow_table.insert_from_arc(&rev_flow) {
+                    fw_flow.invalidate();
+                    warn!("Failed to insert flow (reverse) in the flow table: {e}");
+                    packet.done(DoneReason::FlowCapacityExceeded);
+                    debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
+                    return;
+                }
+                debug!("Inserted forward and reverse port-forwarding flow entries");
+                PortFwFlow::Installed(fw_flow)
+            }
             Err(e) => {
                 warn!("Failed to insert flow (forward) in the flow table: {e}");
                 packet.done(DoneReason::FlowCapacityExceeded);
                 return;
             }
         };
-        if matches!(insertion, Insertion::Occupied(_)) {
-            debug!("Lost the race to create port-forwarding flow {fw_key}; kept the winner's");
-            return;
-        }
 
-        // The reverse insert is expected to always succeed: capacity enforcement
-        // recognises that rev_flow has a related flow (fw_flow) already in the table
-        // and admits it unconditionally.  Remove the forward entry on the unlikely
-        // event of failure to avoid leaving a one-sided flow.
-        if let Err(e) = self.flow_table.insert_from_arc(&rev_flow) {
-            fw_flow.invalidate();
-            warn!("Failed to insert flow (reverse) in the flow table: {e}");
-            packet.done(DoneReason::FlowCapacityExceeded);
-            debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
+        // Take a copy of the state rather than translating under the guard: on the losing path
+        // this flow belongs to another worker and is live in the table, which is also why the
+        // miss below is handled instead of asserted -- for a pair this call installed it cannot
+        // happen, but the winner's flow is not ours to make promises about.
+        let pfw_state = outcome
+            .flow()
+            .locked
+            .read()
+            .port_fw_state
+            .extract_ref::<PortFwState>()
+            .cloned();
+        let Some(pfw_state) = pfw_state else {
+            error!("Port-forwarding flow {fw_key} carries no port-forwarding state");
+            packet.done(DoneReason::InternalFailure);
+            if let PortFwFlow::Installed(installed) = &outcome {
+                installed.invalidate_pair();
+            }
             return;
-        }
+        };
 
-        debug!("Inserted forward and reverse port-forwarding flow entries");
+        // translate destination according to whichever pair the table now holds
+        if let Err(e) = nat_packet(packet, &pfw_state) {
+            debug!("Failed to port-forward packet (initial):{e}");
+            packet.done(DoneReason::InternalFailure);
+            if let PortFwFlow::Installed(installed) = &outcome {
+                installed.invalidate_pair();
+            }
+        }
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
@@ -302,13 +351,6 @@ impl PortForwarder {
         }
     }
 
-    fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
-        let mut flow_info_locked = flow_info.locked.write();
-        if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
-            state.rule = Arc::downgrade(entry);
-        }
-    }
-
     fn get_rule_from_pkt<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
@@ -328,9 +370,9 @@ impl PortForwarder {
         // if we found an entry, let the port-forwarding state of the flow (and the one in the reverse path)
         // point to it so that subsequent packets are fast-forwarded.
         if let Some(entry) = entry.as_ref() {
-            Self::reassign_port_fw_rule(flow_info, entry);
+            reassign_port_fw_rule(flow_info, entry);
             if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
-                Self::reassign_port_fw_rule(&related, entry);
+                reassign_port_fw_rule(&related, entry);
             }
         }
 
@@ -344,7 +386,9 @@ impl PortForwarder {
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
     ) {
-        let genid = self.pipeline_data.genid();
+        // The generation to re-stamp a flow with once we have re-checked it against the table
+        // below, which is the one being installed rather than the one being enforced.
+        let genid = self.pipeline_data.staging_genid();
 
         // fast-path based on the flow table
         if let Some(state) = get_packet_port_fw_state(packet) {
@@ -435,10 +479,19 @@ mod race {
     }
 
     fn fabric() -> Fabric {
+        forwarding_to("10.0.0.0/30", 9000, 9003)
+    }
+
+    /// The same published range, `172.16.0.0/30:8000-8003`, forwarded to a chosen backend range.
+    ///
+    /// Two of these are two configuration generations: the public tuple a client addresses is
+    /// identical, so the forward flow key both workers race to install is identical, while the
+    /// backend each one would translate to is not.
+    fn forwarding_to(prefix: &str, first: u16, last: u16) -> Fabric {
         let expose = VpcExpose::empty()
             .make_port_forwarding(None, Some(L4Protocol::Tcp))
             .unwrap_or_else(|e| unreachable!("{e}"))
-            .ip(side("10.0.0.0/30", 9000, 9003))
+            .ip(side(prefix, first, last))
             .as_range(side("172.16.0.0/30", 8000, 8003))
             .unwrap_or_else(|e| unreachable!("{e}"));
         Fabric::build(&[expose]).unwrap_or_else(|| unreachable!("a fixed expose builds"))
@@ -562,6 +615,70 @@ mod race {
                 .snapshot(|_, _| true)
                 .all(|flow| flow.is_active()),
             "the burst left a half of the pair no longer live"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_loser_of_a_race_forwards_to_the_winners_backend() {
+        let old = forwarding_to("10.0.0.0/30", 9000, 9003);
+        let new = forwarding_to("10.0.1.0/30", 7000, 7003);
+
+        let (mut lookup, mut worker_on_old) = old.stages();
+        let mut worker_on_new = new.worker_over(old.flows());
+
+        let arrival = Arrival::inbound();
+        let peer: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let published: IpAddr = "172.16.0.1".parse().unwrap_or_else(|_| unreachable!());
+        let packet = || {
+            let mut packet: Packet<TestBuffer> = build(peer, published, true, 1234, 8001);
+            arrival.stamp(&mut packet);
+            packet
+        };
+
+        // Both clear flow lookup before either worker runs: neither finds a flow, so both take
+        // the create path with the snapshot its own worker is holding.
+        let mut stamped = lookup.process(vec![packet(), packet()].into_iter());
+        let mut first = stamped.next().unwrap_or_else(|| unreachable!());
+        let mut second = stamped.next().unwrap_or_else(|| unreachable!());
+        drop(stamped);
+        for packet in [&mut first, &mut second] {
+            packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+        }
+
+        let out = |packet: Packet<TestBuffer>| {
+            (
+                packet
+                    .ip_destination()
+                    .unwrap_or_else(|| unreachable!("the fixture is an ip packet")),
+                packet.transport_dst_port().map_or(0, NonZero::get),
+            )
+        };
+
+        let mut won = worker_on_old.process(std::iter::once(first));
+        let winner = out(won
+            .next()
+            .unwrap_or_else(|| unreachable!("the winner is forwarded")));
+        drop(won);
+        let mut lost = worker_on_new.process(std::iter::once(second));
+        let loser = out(lost
+            .next()
+            .unwrap_or_else(|| unreachable!("the loser is forwarded")));
+        drop(lost);
+
+        assert_eq!(
+            winner,
+            ("10.0.0.1".parse().unwrap_or_else(|_| unreachable!()), 9001),
+            "the winner did not forward to the backend its own snapshot names"
+        );
+        assert_eq!(
+            entries(&old).len(),
+            2,
+            "the race installed something other than one pair"
+        );
+        assert_eq!(
+            loser, winner,
+            "the loser forwarded to the backend of a snapshot that lost the race; the flow \
+             table holds only the winner's reverse key, so this backend's reply has no mapping"
         );
     }
 }

@@ -2961,8 +2961,8 @@ mod tests {
 mod opt_properties {
     use super::*;
     use crate::headers::{Headers, ShapedIcmpError, ThinHeaders};
+    use concurrency::process_global::atomic::AtomicUsize;
     use concurrency::sync::OnceLock;
-    use concurrency::sync::atomic::AtomicUsize;
     use std::cell::Cell;
 
     // `AtomicUsize::new` is not const under loom, so counters init on first use.
@@ -2974,7 +2974,7 @@ mod opt_properties {
         ($read:ident, $mutable:ident, [$($pre:ident),*], $strict:ident, $opt:ident) => {
             #[test]
             fn $read() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
                 static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
@@ -3008,7 +3008,7 @@ mod opt_properties {
 
             #[test]
             fn $mutable() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
                 static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
@@ -3133,7 +3133,7 @@ mod opt_properties {
         ) => {
             #[test]
             fn $read() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
                 static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
@@ -3169,7 +3169,7 @@ mod opt_properties {
 
             #[test]
             fn $mutable() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static STRICT: OnceLock<AtomicUsize> = OnceLock::new();
                 static OPT_ONLY: OnceLock<AtomicUsize> = OnceLock::new();
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
@@ -3501,7 +3501,7 @@ mod opt_properties {
 
     #[test]
     fn the_embedded_combinators_track_the_inner_match_only() {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        use concurrency::process_global::atomic::{AtomicUsize, Ordering};
         static DIVERGED: OnceLock<AtomicUsize> = OnceLock::new();
         bolero::check!()
             .with_generator(ShapedIcmpError)

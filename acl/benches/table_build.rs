@@ -7,8 +7,8 @@
 mod bench {
     use std::hint::black_box;
 
+    use concurrency::process_global::atomic::{AtomicU32, Ordering};
     use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU32, Ordering};
     use core::net::{Ipv4Addr, Ipv6Addr};
     use core::num::NonZero;
 

@@ -227,7 +227,10 @@ test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" 
 [script]
 fuzz-list *args="":
     {{ _just_debuggable_ }}
-    cargo bolero list {{ _cargo_feature_flags }} {{ args }}
+    # `--profile checked` for the same reason `fuzz` passes it: cargo-bolero defaults to a
+    # profile named `fuzz`, and this workspace renamed that profile. Without it the recipe
+    # dies with `profile 'fuzz' is not defined` before listing anything.
+    cargo bolero list --profile checked {{ _cargo_feature_flags }} {{ args }}
 
 # Fuzz one bolero target under libfuzzer. See development/code/running-tests.md
 [script]
