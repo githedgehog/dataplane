@@ -99,7 +99,6 @@ impl GatewayAgentBuilder {
 }
 
 /// Generate a random legal `GatewayAgent` value
-///
 /// Is not exhaustive due to hostname generation
 /// Coverage of values is subject to limitations of the `GatewayAgentSpec` `TypeGenerator` as well
 impl TypeGenerator for LegalValue<GatewayAgent> {
