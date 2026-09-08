@@ -144,7 +144,7 @@ fn reply_to(
 //# (Section 5) Behavior at any point in time, or under any particular
 //# conditions.
 #[test]
-#[cfg_attr(miri, ignore = "the 65k-session pool walk is too slow under miri")]
+#[cfg_attr(emulated, ignore = "the 65k-session pool walk is too slow to emulate")]
 fn pool_exhaustion_splits_a_host_across_public_addresses() {
     use std::collections::{BTreeMap, BTreeSet};
     with_paused_clock(|| async {
