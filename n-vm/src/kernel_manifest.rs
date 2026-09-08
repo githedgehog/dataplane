@@ -219,14 +219,14 @@ impl KernelManifest {
     ///
     /// Three inputs, in order.  `declared` is what the test's own
     /// configuration asked for and wins outright.  Failing that,
-    /// [`ENV_PROFILE`] points a whole run at a different environment
+    /// [`n_vm_protocol::ENV_PROFILE`] points a whole run at a different environment
     /// (`N_VM_PROFILE=qemu cargo test`) without editing any test.  Failing
     /// that, the manifest's `default`.
     ///
     /// `emulation_required` says the guest cannot run natively on this host,
     /// so the chosen profile's hypervisor has to be able to emulate.  It
     /// only affects the fallback -- see
-    /// [`default_emulating_profile`](Self::default_emulating_profile).
+    /// `default_emulating_profile`.
     /// Callers must derive it from the same fact in every tier: the host
     /// tier from the Docker daemon's architecture, later tiers from the
     /// [`ENV_ACCEL`](n_vm_protocol::ENV_ACCEL) it forwards.  Two tiers

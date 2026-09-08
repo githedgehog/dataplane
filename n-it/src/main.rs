@@ -4,7 +4,7 @@
 //! Minimal init system for the `n-vm` test infrastructure.
 //!
 //! This binary runs as **PID 1** inside a cloud-hypervisor VM booted by
-//! [`n_vm::run_in_vm`].  Its responsibilities are:
+//! `n_vm::run_in_vm`.  Its responsibilities are:
 //!
 //! 1. **Mount essential filesystems** -- `/proc`, `/sys`, `/tmp`, `/run`, and
 //!    `/sys/fs/cgroup` with appropriate security flags.

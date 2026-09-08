@@ -46,7 +46,7 @@
 //! channel's port, so the kernel routes guest vsock connections directly
 //! to the listener without any intermediate Unix socket mapping.
 //!
-//! The [`qmp`] submodule contains the QMP protocol client and wire types.
+//! The `qmp` submodule contains the QMP protocol client and wire types.
 
 pub mod error;
 pub(crate) mod qmp;
@@ -82,7 +82,7 @@ pub struct Qemu;
 
 /// Lifecycle controller for a running QEMU instance.
 ///
-/// Wraps a [`QmpWriter`] behind a mutex for interior mutability, since
+/// Wraps a `QmpWriter` behind a mutex for interior mutability, since
 /// the [`HypervisorBackend::shutdown`] method takes `&Self::Controller`.
 pub struct QemuController {
     writer: Arc<tokio::sync::Mutex<QmpWriter>>,
@@ -289,7 +289,7 @@ async fn drain_after_panic(stream: &mut QmpEventStream, log: &mut Vec<qapi_qmp::
 /// Computes the [`HypervisorVerdict`] from collected QMP events and a
 /// flag indicating whether any stream-level errors occurred.
 ///
-/// This is a **pure function** extracted from [`watch_events`] so that
+/// This is a **pure function** extracted from `watch_events` so that
 /// verdict logic can be unit-tested with hand-crafted event sequences
 /// without needing a socket or tokio runtime.
 ///

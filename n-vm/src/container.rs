@@ -1396,15 +1396,15 @@ fn profile_backend_conflict(
 /// normal `cargo test` invocation).  It:
 ///
 /// 1. Resolves the test identity, binary paths, and device group ownership
-///    via [`ContainerParams::resolve`].
+///    via `ContainerParams::resolve`.
 /// 2. Builds the Docker container configuration via
-///    [`ContainerParams::build_config`].
+///    `ContainerParams::build_config`.
 /// 3. Creates and starts the container via
-///    [`ContainerGuard::create_and_start`].
+///    `ContainerGuard::create_and_start`.
 /// 4. Streams container stdout/stderr to the host via
-///    [`ContainerGuard::stream_logs`].
+///    `ContainerGuard::stream_logs`.
 /// 5. Collects the exit status and removes the container via
-///    [`ContainerGuard::into_result`].
+///    `ContainerGuard::into_result`.
 ///
 /// The type parameter `F` is used only to derive the test name via
 /// [`std::any::type_name`]; the function itself is never called in this tier.

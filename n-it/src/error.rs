@@ -216,7 +216,7 @@ pub enum ListChildrenError {
     #[error("failed to read /proc entry: {0}")]
     ReadEntry(std::io::Error),
 
-    /// A child PID value overflows `i32` (required by [`Pid::from_raw`]).
+    /// A child PID value overflows `i32` (required by [`nix::unistd::Pid::from_raw`]).
     #[error("child pid {pid} overflows i32")]
     PidOverflow {
         /// The PID value that overflowed.

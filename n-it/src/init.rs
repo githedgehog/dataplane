@@ -3,11 +3,11 @@
 
 //! Init system orchestrator.
 //!
-//! This module ties together the [`mount`](crate::mount),
-//! [`child`](crate::child), and [`signal`](crate::signal) subsystems
+//! This module ties together the [`mount`], [`child`], and
+//! [`signal`](crate::signal) subsystems
 //! into the main init system lifecycle:
 //!
-//! 1. Register signal handlers ([`SignalSet`](crate::signal::SignalSet)).
+//! 1. Register signal handlers ([`SignalSet`]).
 //! 2. Mount essential filesystems.
 //! 3. Spawn the test process.
 //! 4. Enter the event loop -- forward signals and wait for exit.
@@ -38,7 +38,7 @@ use crate::signal::{SIGNAL_TABLE, SignalPolicy, SignalSet};
 /// This unit struct groups the top-level orchestration methods.  It is
 /// intended to run as PID 1 and delegates filesystem mounting, process
 /// lifecycle management, signal forwarding, and clean shutdown to the
-/// [`mount`], [`child`], and [`signal`] modules.
+/// [`mount`], [`child`], and [`signal`](crate::signal) modules.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct InitSystem;
