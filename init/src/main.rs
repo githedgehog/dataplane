@@ -5,6 +5,7 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 mod frr;
+mod hugepages;
 mod supervisor;
 
 use std::collections::BTreeMap;
@@ -818,7 +819,7 @@ fn main() {
     let wants_datapath_netns = args.datapath_netns();
     let supervise_frr = args.supervise_frr();
 
-    let config = match LaunchConfiguration::try_from(args) {
+    let mut config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
@@ -835,6 +836,9 @@ fn main() {
         );
     }
 
+    // Declared out here because the match borrows `config.driver`, and the plan has to be written
+    // back into it afterwards -- before `dataplane_process` seals it into the memfd.
+    let mut hugepage_plan = None;
     let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
@@ -842,6 +846,12 @@ fn main() {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
+            // Reserved here, after the devices are resolved, because the whole point is to put the
+            // pages on the node the NIC is attached to -- which is not knowable until we have the
+            // PCI addresses in hand. The result rides to the dataplane in the launch
+            // configuration; see `hugepages` for why the EAL cannot be left to do this itself.
+            hugepage_plan =
+                hugepages::reserve_for(&devices.iter().map(|d| d.address).collect::<Vec<_>>());
             if devices.is_empty() {
                 fail(
                     "no network devices to drive",
@@ -922,6 +932,13 @@ fn main() {
             }
         }
     };
+
+    // Recorded before the configuration is sealed. The dataplane turns this into `--numa-mem`,
+    // which makes the EAL fail loudly if the memory is not where we said it would be, instead of
+    // falling back to another node without a word.
+    if let DriverConfigSection::Dpdk(dpdk) = &mut config.driver {
+        dpdk.hugepages = hugepage_plan;
+    }
 
     std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
 }
