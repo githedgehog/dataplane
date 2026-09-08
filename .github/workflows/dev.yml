@@ -537,6 +537,10 @@ jobs:
         profile: "${{ fromJSON(needs.plan.outputs.profiles) }}"
         exclude:
           - profile: release
+          # TEMPORARY: `coverage/fuzz` exhausts the runner's memory. Disabled
+          # until that is diagnosed; a ticket tracks putting it back. Delete
+          # this one line to restore it.
+          - profile: fuzz
     steps:
       - *checkout
       - *nix-setup
