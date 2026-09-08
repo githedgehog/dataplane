@@ -18,13 +18,24 @@
 //! here is a plain thread running a loop, with no runtime, and one worker services every port
 //! rather than one task per interface.
 //!
+//! # How work is spread
+//!
+//! RSS distributes received frames across the per-worker receive queues by a Toeplitz hash over
+//! L3 addresses and L4 ports, so every packet of one flow reaches one worker and nothing within a
+//! flow is reordered. Which worker that is does not matter: flow state lives in a single
+//! [`FlowTable`](flow_entry::flow_table::FlowTable) shared by every worker, so any worker can
+//! service any packet.
+//!
+//! That is worth stating plainly because the obvious next thought -- "the two directions of a flow
+//! must reach the same worker, so the hash has to be symmetric" -- is wrong twice over here. The
+//! hardware route is closed (mlx5 rejects any hash function but the default at
+//! `rte_eth_dev_configure`; see [`RssConf`](dpdk::dev::RssConf)), and it would not help anyway: a
+//! NAT'd flow's reverse packet carries the *translated* tuple, not the reversed one, so no
+//! symmetry property the NIC can have would pair the two halves. Shared flow state is what makes
+//! that a non-problem.
+//!
 //! # What this does not do yet
 //!
-//! - **RSS is off**, so every frame lands on receive queue 0 and one worker does all the work. The
-//!   per-worker queues are real and exclusively owned either way; spreading across them needs a
-//!   *symmetric* hash key, so that both directions of a flow reach the same worker and the flow
-//!   table stays per-worker-coherent. That is its own change, and picking the key wrong is a
-//!   correctness bug rather than a performance one.
 //! - **Ports must have a kernel netdev.** The pipeline names interfaces by kernel `ifindex`, and
 //!   this driver takes that from `rte_eth_dev_info.if_index`. That is populated for a bifurcated
 //!   driver such as mlx5, where `mlx5_core` keeps the netdev while DPDK attaches through the RDMA
@@ -37,8 +48,8 @@
 //!
 //! With the kernel driver, FRR shares a namespace with the real NIC and peers through the kernel's
 //! own stack. Here the kernel has no NIC, so every control frame is carried across by
-//! [`cpbridge`], which is what makes a tap the kernel's end of each port. See that module for the
-//! punt policy and its costs.
+//! [`cpbridge`](crate::drivers::cpbridge), which is what makes a tap the kernel's end of each
+//! port. See that module for the punt policy and its costs.
 
 mod port;
 mod worker;
@@ -53,8 +64,9 @@ use concurrency::thread::ScopedJoinHandle;
 use dpdk::mem::Mbuf;
 use lifecycle::Subsystem;
 use pipeline::DynPipeline;
+use stats::PortMetrics;
 use tracectl::trace_target;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::DriverError;
 use super::status::{
@@ -166,17 +178,27 @@ impl DriverDpdk {
             });
         }
 
-        Self::spawn_supervisor(scope, workers_subsystem, monitors, status_writer)
+        Self::spawn_supervisor(scope, workers_subsystem, monitors, status_writer, ports)
     }
 
-    /// The supervisor thread: samples worker liveness, publishes status, joins on cancellation.
+    /// The supervisor thread: samples worker liveness, publishes status and port counters, joins on
+    /// cancellation.
+    ///
+    /// The port counters are polled *here* rather than from the metrics runtime because they are
+    /// the only thread that can be. `Dev::stats` needs the device, the devices are branded with
+    /// `'eal`, and `Eal` is `!Send` -- so the counters can only be read from a thread inside the
+    /// EAL's scope. The metrics server is a tokio task on the management runtime, which is neither.
     #[allow(clippy::too_many_lines)]
-    fn spawn_supervisor<'scope>(
+    fn spawn_supervisor<'p, 'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
         mut monitors: Vec<WorkerMonitor<'scope>>,
         status_writer: DriverStatusWriter,
-    ) -> Result<(), DriverError> {
+        ports: &'p [Port<'_>],
+    ) -> Result<(), DriverError>
+    where
+        'p: 'scope,
+    {
         let subsystem = workers_subsystem.clone();
         let check_period = Duration::from_secs(u64::from(Self::TASK_CHECK_PERIOD));
         let poll_period = Duration::from_secs(u64::from(Self::TASK_POLL_PERIOD));
@@ -198,6 +220,17 @@ impl DriverDpdk {
                         status
                     })
                     .collect();
+
+                // Registered once, here, rather than per poll: registration is configuration work
+                // and publishing follows traffic. Re-registering each time is what made the VPC
+                // collector quadratic.
+                let port_metrics: Vec<(&Port<'_>, PortMetrics)> = ports
+                    .iter()
+                    .map(|port| (port, PortMetrics::new(&port.name)))
+                    .collect();
+                // A PMD that implements no statistics reports `ENOTSUP` on every call. Complaining
+                // once per port beats a line per port per second for the life of the process.
+                let mut counters_unavailable: Vec<bool> = vec![false; port_metrics.len()];
 
                 let mut next_watchdog_check = std::time::Instant::now() + check_period;
 
@@ -279,11 +312,18 @@ impl DriverDpdk {
                         break;
                     }
 
+                    publish_port_counters(&port_metrics, &mut counters_unavailable);
+
                     status_writer.publish(DriverStatus {
                         workers: statuses.clone(),
                     });
                     thread::sleep(poll_period);
                 }
+
+                // One last read on the way out. A run that ends under load leaves its final drop
+                // count in the device, and without this the last thing a scrape ever sees is a
+                // poll_period old -- which is exactly the interval a shutdown is most interesting.
+                publish_port_counters(&port_metrics, &mut counters_unavailable);
 
                 status_writer.publish(DriverStatus {
                     workers: statuses.clone(),
@@ -296,6 +336,33 @@ impl DriverDpdk {
 
         info!("DPDK driver started successfully");
         Ok(())
+    }
+}
+
+/// Read every port's device counters and publish them.
+///
+/// `unavailable` is one flag per port, carried across calls so that a PMD which implements no
+/// statistics is complained about once rather than on every poll for the life of the process.
+fn publish_port_counters(port_metrics: &[(&Port<'_>, PortMetrics)], unavailable: &mut [bool]) {
+    for (slot, (port, metrics)) in port_metrics.iter().enumerate() {
+        match port.counters() {
+            Ok(counters) => {
+                metrics.publish(&counters);
+                // A port that starts reporting again after a failure is worth hearing about, so
+                // clear the flag rather than latching it.
+                unavailable[slot] = false;
+            }
+            Err(e) => {
+                if !unavailable[slot] {
+                    unavailable[slot] = true;
+                    warn!(
+                        "port {} would not report its counters: {e:?}. Receive drops on this port \
+                         are now invisible -- an overloaded dataplane will look like an idle wire.",
+                        port.name
+                    );
+                }
+            }
+        }
     }
 }
 
