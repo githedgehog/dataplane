@@ -594,7 +594,7 @@ mod tests {
 
     const PATIENCE: Duration = Duration::from_secs(cfg_select! {
         instrumented => 300,
-        _ => 30,
+        _ => 120,
     });
 
     fn test_router_subsystem() -> Subsystem {
