@@ -578,7 +578,7 @@ mod tests {
     use crate::router::rio::{Rio, RioConf, RioHandle, start_rio};
     use crate::routingdb::RoutingDb;
     use cli::cliproto::{CliAction, CliRequest, CliResponse, RequestArgs};
-    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use concurrency::process_global::atomic::{AtomicUsize, Ordering};
     use concurrency::thread;
     use config::GenId;
     use dplane_rpc::msg::{
