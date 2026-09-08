@@ -184,6 +184,7 @@ mod test {
     const UNIQUE_COUNTS: [u16; 4] = [0, 1, 10, 16];
 
     #[test]
+    #[cfg_attr(miri, ignore = "the uniqueness sweep is too slow under miri")]
     fn test_unique_v4_interface_address_generator() {
         for count in UNIQUE_COUNTS {
             let generator = crate::bolero::support::UniqueV4InterfaceAddressGenerator::new(count);
@@ -219,6 +220,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "the uniqueness sweep is 124s under miri")]
     fn test_unique_v6_interface_address_generator() {
         for count in UNIQUE_COUNTS {
             let generator = crate::bolero::support::UniqueV6InterfaceAddressGenerator::new(count);
