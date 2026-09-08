@@ -163,6 +163,7 @@ impl Tally {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn a_masqueraded_flow_comes_back() {
     let tally = Tally::default();
 
@@ -215,6 +216,7 @@ fn a_masqueraded_flow_comes_back() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn a_flow_keeps_its_translation() {
     let tally = Tally::default();
 
@@ -265,6 +267,7 @@ fn out_unchanged(out: &[Packet<TestBuffer>], before: (IpAddr, u16)) -> bool {
 //# REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
 //# behavior of "Paired".
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn an_internal_endpoint_keeps_one_public_address() {
     let tally = Tally::default();
 
@@ -334,6 +337,7 @@ fn an_internal_endpoint_keeps_one_public_address() {
 //# REQ-3:  A NAT MUST NOT have a "Port assignment" behavior of "Port
 //# overloading".
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn distinct_flows_do_not_share_a_translation() {
     let tally = Tally::default();
 
@@ -377,6 +381,7 @@ fn distinct_flows_do_not_share_a_translation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn a_translation_stays_inside_the_public_range() {
     let tally = Tally::default();
 
@@ -421,6 +426,7 @@ fn a_translation_stays_inside_the_public_range() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn nothing_is_masqueraded_without_permission() {
     let tally = Tally::default();
 
@@ -469,6 +475,7 @@ fn nothing_is_masqueraded_without_permission() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is ~15 min under miri")]
 fn a_flow_that_cannot_be_masqueraded_says_so() {
     let tally = Tally::default();
 
