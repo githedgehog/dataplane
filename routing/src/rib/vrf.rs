@@ -419,7 +419,7 @@ impl Vrf {
         // this method is only used for drop routes which require no resolution.
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
-            shim.rc.lazy_resolve(rvrf);
+            shim.rc.resolve(rvrf);
         }
 
         // store route
@@ -433,7 +433,7 @@ impl Vrf {
     fn refresh_nhops(&self, rstore: &RmacStore, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
         let resvrf = resvrf.unwrap_or(self);
         self.nhstore.rebuild_nhop_instructions(rstore);
-        self.nhstore.lazy_resolve_all(resvrf);
+        self.nhstore.resolve_all(resvrf);
         self.nhstore.rebuild_fibgroups(rstore)
     }
 
@@ -484,7 +484,7 @@ impl Vrf {
             let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
             shim.rc.build_nhop_instructions(rstore); // not needed, set_fibgroup() calls it
             if refc == 2 {
-                shim.rc.lazy_resolve(rvrf);
+                shim.rc.resolve(rvrf);
             }
         }
 
