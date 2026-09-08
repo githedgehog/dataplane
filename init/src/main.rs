@@ -5,6 +5,7 @@
 #![deny(clippy::pedantic, missing_docs)]
 
 mod frr;
+mod hugepages;
 mod supervisor;
 
 use std::collections::BTreeMap;
@@ -29,15 +30,22 @@ use tracing::{Level, debug, error, info, span, warn};
 /// Where the dataplane is installed.
 const DATAPLANE_BINARY: &str = "/bin/dataplane";
 
-/// Hugetlbfs mount points, and how much to back each with.
+/// Hugetlbfs mount points.
 ///
 /// Mounting these is best-effort. The dataplane asks the EAL for `--in-memory`, which backs its
 /// hugepages with memfd rather than files under a mount, so it starts without them; a mount is
 /// what a multi-process DPDK setup would need, and what makes the pages visible to an operator
 /// looking at the filesystem.
+///
+/// **Deliberately no `size=`.** hugetlbfs treats that option as a hard ceiling on the mount, not
+/// as a reservation, so a figure here silently caps what DPDK can take however many pages the
+/// kernel actually has. The 2 MiB mount carried `size=128M`, which is far below what a datapath
+/// asks for -- and the symptom is an allocation failure blamed on the host being short of pages,
+/// on a host with thousands of them free. Left off, the mount is bounded by the pool, which is the
+/// only limit that should apply.
 const HUGETLBFS_MOUNTS: &[(&str, &str)] = &[
-    ("/dev/hugepages/1G", "pagesize=1G,size=20G,rw"),
-    ("/dev/hugepages/2M", "pagesize=2M,size=128M,rw"),
+    ("/dev/hugepages/1G", "pagesize=1G,rw"),
+    ("/dev/hugepages/2M", "pagesize=2M,rw"),
 ];
 
 /// A device named in the configuration, resolved against the hardware actually present.
@@ -818,7 +826,7 @@ fn main() {
     let wants_datapath_netns = args.datapath_netns();
     let supervise_frr = args.supervise_frr();
 
-    let config = match LaunchConfiguration::try_from(args) {
+    let mut config = match LaunchConfiguration::try_from(args) {
         Ok(config) => config,
         Err(e) => fail("invalid command line arguments", &e.to_string()),
     };
@@ -835,6 +843,9 @@ fn main() {
         );
     }
 
+    // Declared out here because the match borrows `config.driver`, and the plan has to be written
+    // back into it afterwards -- before `dataplane_process` seals it into the memfd.
+    let mut hugepage_plan = None;
     let (netns, host_netns) = match &config.driver {
         DriverConfigSection::Dpdk(dpdk) => {
             mount_hugepages();
@@ -842,6 +853,12 @@ fn main() {
                 Ok(devices) => devices,
                 Err(problems) => fail("cannot use the requested network devices", &problems),
             };
+            // Reserved here, after the devices are resolved, because the whole point is to put the
+            // pages on the node the NIC is attached to -- which is not knowable until we have the
+            // PCI addresses in hand. The result rides to the dataplane in the launch
+            // configuration; see `hugepages` for why the EAL cannot be left to do this itself.
+            hugepage_plan =
+                hugepages::reserve_for(&devices.iter().map(|d| d.address).collect::<Vec<_>>());
             if devices.is_empty() {
                 fail(
                     "no network devices to drive",
@@ -922,6 +939,13 @@ fn main() {
             }
         }
     };
+
+    // Recorded before the configuration is sealed. The dataplane turns this into `--numa-mem`,
+    // which makes the EAL fail loudly if the memory is not where we said it would be, instead of
+    // falling back to another node without a word.
+    if let DriverConfigSection::Dpdk(dpdk) = &mut config.driver {
+        dpdk.hugepages = hugepage_plan;
+    }
 
     std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
 }
