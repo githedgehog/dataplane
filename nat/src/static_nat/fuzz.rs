@@ -251,6 +251,7 @@ macro_rules! drive_injectivity {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is 52s under miri")]
 fn distinct_sources_stay_distinct() {
     drive_injectivity!(Scenario::addresses(false));
 }
@@ -322,6 +323,7 @@ fn translation_touches_only_the_source() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "one configuration is 41s under miri")]
 fn port_translation_touches_only_the_source() {
     drive_frame!(Scenario::ports(false));
 }
