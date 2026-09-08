@@ -58,8 +58,8 @@ where
     cfg_select! {
         feature = "loom" => {
             // Keep this Arc outside loom's executor; the facade's loom Arc is
-            // tied to a single model run.
-            let body = std::sync::Arc::new(body); // nosemgrep: rust-no-direct-std-sync-import
+            // tied to a single model run, and this one is shared across all of them.
+            let body = crate::process_global::Arc::new(body);
             loom::model(move || {
                 let body = body.clone();
                 loom::thread::Builder::new()
