@@ -113,7 +113,10 @@ mod tests {
             emulated => 50,
             _ => 100_000,
         };
-        const NUM_WORKERS: u16 = 4;
+        const NUM_WORKERS: u16 = cfg_select! {
+            emulated => 2,
+            _ => 4,
+        };
 
         // sync main thread - worker thread(s)
         let done = Arc::new(AtomicU16::new(0));
@@ -249,7 +252,10 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn test_concurrency_fibtable() {
         // number of threads looking up fibtable
-        const NUM_WORKERS: u16 = 6;
+        const NUM_WORKERS: u16 = cfg_select! {
+            emulated => 2,
+            _ => 6,
+        };
         const NUM_PACKETS: u64 = cfg_select! {
             emulated => 30,
             // Coverage instruments every counter; the full count costs ~47s
