@@ -1,0 +1,5 @@
+error[E0425]: cannot find value `wanted` in this scope
+  --> tests/compile_fail/inline_config_captures_a_local.rs:12:57
+   |
+12 |     const _: _ = n_vm::VmConfigBuilder::default().iommu(wanted).build();
+   |                                                         ^^^^^^ not found in this scope

@@ -1,0 +1,5 @@
+error: #[n_vm::test] already provides the test harness: remove the #[test] attribute
+ --> tests/compile_fail/redundant_test_attr.rs:7:1
+  |
+7 | #[test]
+  | ^^^^^^^
