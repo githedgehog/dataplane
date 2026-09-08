@@ -623,9 +623,13 @@ impl Masquerade {
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done((&error).into());
             debug!("Did not masquerade packet: {error}");
-        } else {
-            packet.meta_mut().set_checksum_refresh(true);
         }
+        // Deliberately *not* setting `checksum_refresh` on success. `snat`/`dnat` fold their own
+        // changes into the transport checksum incrementally and set the flag only where they
+        // cannot. Setting it here unconditionally -- as this did -- silently reinstated the full
+        // payload sum for every masqueraded packet, so the incremental work was done and then
+        // thrown away. Nothing failed, which is why it survived: the packets were correct, just
+        // needlessly expensive.
     }
 }
 

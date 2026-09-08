@@ -26,6 +26,9 @@ concurrency = { workspace = true }
 config = { workspace = true }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
+# `Dev::stats` reports a `dpdk::…::ErrorCode` from this crate, and the DPDK driver polls
+# those counters, so it has to be able to name what a failed read returns.
+errno = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }

@@ -1254,3 +1254,88 @@ fn test_config_with_port_ranges_with_default() {
     assert_eq!(output_dst_port, orig_src_port);
     assert_eq!(done_reason, None);
 }
+
+/// After static NAT, the transport checksum must equal what a full recompute would produce, and
+/// the full recompute must have been skipped.
+///
+/// End-to-end through `StaticNat::process` rather than against the helpers, because this file
+/// mutates through a `TcpUdpMut` that cannot reach a checksum -- the delta is applied afterwards
+/// from values captured before, which is a shape with more room for the two to drift apart than
+/// `masquerade` or `portfw` have.
+#[test]
+#[cfg_attr(not(emulated), traced_test)]
+fn static_nat_leaves_a_checksum_a_full_recompute_would_agree_with() {
+    use net::checksum::Checksum;
+    use net::headers::{Transport, TryHeaders, TryTransport};
+
+    let expose1 = VpcExpose::empty()
+        .make_static_nat()
+        .unwrap()
+        .ip(PrefixWithOptionalPorts::new(
+            "1.1.0.0/16".into(),
+            Some(PortRange::new(4001, 5000).unwrap()),
+        ))
+        .as_range(PrefixWithOptionalPorts::new(
+            "10.1.0.0/16".into(),
+            Some(PortRange::new(8001, 9000).unwrap()),
+        ))
+        .unwrap();
+    let expose2 = VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+        "10.2.0.0/16".into(),
+        Some(PortRange::new(1, 5).unwrap()),
+    ));
+
+    let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
+    tablesw.update_nat_tables(nat_tables);
+
+    let src_vni = Vni::new_checked(100).unwrap();
+    let dst_vni = Vni::new_checked(200).unwrap();
+
+    let mut packet = build_test_ipv4_packet_with_transport(u8::MAX, Some(NextHeader::TCP)).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_static_nat_src(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+    set_addresses_v4(
+        &mut packet,
+        Ipv4Addr::new(1, 1, 0, 1),
+        Ipv4Addr::new(10, 2, 0, 1),
+    );
+    set_ports(&mut packet, 4001, 1);
+    // Start from a correct checksum, or the comparison proves nothing.
+    packet.update_checksums();
+
+    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let mut pkt_out = packets_out.into_iter().next().expect("one packet out");
+
+    // The translation must actually have happened, or this test would pass vacuously.
+    assert_ne!(
+        get_src_ip_v4(&pkt_out),
+        Ipv4Addr::new(1, 1, 0, 1),
+        "the packet was not translated; the test is not exercising anything"
+    );
+
+    let checksum_of = |p: &_| -> Option<u16> {
+        TryHeaders::headers(p)
+            .try_transport()
+            .and_then(|tp| match tp {
+                Transport::Tcp(tcp) => tcp.checksum().map(u16::from),
+                Transport::Udp(udp) => udp.checksum().map(u16::from),
+                _ => None,
+            })
+    };
+
+    assert!(
+        !pkt_out.meta().checksum_refresh(),
+        "static NAT asked for a full payload recompute; the incremental path was not taken"
+    );
+    let incremental = checksum_of(&pkt_out);
+    pkt_out.update_checksums();
+    assert_eq!(
+        incremental,
+        checksum_of(&pkt_out),
+        "the incremental checksum after static NAT disagrees with a full recompute"
+    );
+}
