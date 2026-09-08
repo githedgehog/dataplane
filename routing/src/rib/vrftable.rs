@@ -830,7 +830,7 @@ mod tests {
     fn test_vrf_fibgroup(mut vrf: Vrf) {
         let rstore = build_sample_rmac_store();
 
-        vrf.nhstore.lazy_resolve_all(&vrf);
+        vrf.nhstore.resolve_all(&vrf);
         vrf.nhstore.rebuild_nhop_instructions(&rstore);
         vrf.nhstore.rebuild_fibgroups(&rstore);
         // calling
