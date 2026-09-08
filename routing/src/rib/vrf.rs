@@ -586,28 +586,6 @@ impl Vrf {
         }
     }
 
-    /////////////////////////////////////////////////////////////////////////
-    // Route retrieval (mutable): we may not need this and if we do, extra
-    // care should be taken modifying route internals
-    /////////////////////////////////////////////////////////////////////////
-
-    #[cfg(test)]
-    fn get_route_v4_mut(&mut self, prefix: Ipv4Prefix) -> Option<&mut Route> {
-        self.routesv4.get_mut(prefix)
-    }
-    #[cfg(test)]
-    fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
-        self.routesv6.get_mut(prefix)
-    }
-    #[allow(unused)]
-    #[cfg(test)]
-    pub fn get_route_mut(&mut self, prefix: Prefix) -> Option<&mut Route> {
-        match prefix {
-            Prefix::IPV4(p) => self.get_route_v4_mut(p),
-            Prefix::IPV6(p) => self.get_route_v6_mut(p),
-        }
-    }
-
     // ///////////////////////////////////////////////////////////////////////
     // iterators, filters and counts
     // //////////////////////////////////////////////////////////////////////
