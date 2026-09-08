@@ -5484,6 +5484,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn an_icmp_teardown_leaves_another_workers_flow_alone() {
         const CASES: usize = 64;
 
@@ -5781,6 +5786,11 @@ mod model {
     }
 
     #[concurrency::model_test]
+    #[cfg_attr(
+        feature = "shuttle",
+        ignore = "walks the flow table, and dashmap's shard locks are real OS primitives that \
+                  park the single thread shuttle schedules its green threads onto"
+    )]
     fn a_next_hop_that_moves_is_never_seen_half_moved() {
         const CASES: usize = 64;
 
