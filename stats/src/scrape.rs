@@ -139,7 +139,12 @@ impl metrics::Recorder for Scrape {
             key.labels().map(|label| label.key().to_string()).collect(),
         ));
         self.held().entry(at.clone()).or_insert(0.0);
-        metrics::Gauge::from_arc(Arc::new(Cell {
+        // `metrics` owns this handle and hands it back to us later, so the pointer has to be a
+        // real `std::sync::Arc`: the facade's is a *loom* `Arc` under `--features loom`, and a
+        // third-party crate that never entered the model cannot be given one. This recorder is
+        // process-lifetime anyway -- it is installed once, globally, by `metrics::set_global_
+        // recorder` -- so `process_global` is what it should have asked for from the start.
+        metrics::Gauge::from_arc(concurrency::process_global::Arc::new(Cell {
             at,
             into: self.held.clone(),
         }))
