@@ -598,9 +598,18 @@ mod tests {
     // CI runner `a_large_answer_arrives_whole` took 11.15 s against the old 10,
     // and under coverage 123.2 s against the old 120. Overrunning surfaces as
     // `WouldBlock` from `recv_from` -- a passing test reported as a dead peer.
+    //
+    // 30 was set from that 11.15 s, and it stopped being clear of the worst
+    // observed: the same test hit it on `check/debug` in run 34055174667 and
+    // failed as a dead peer. Note what the deadline being *reached* costs us --
+    // the run tells us the test wanted more than 30 s, and nothing about how
+    // much more, so the next value cannot be calibrated on it. Hence a number
+    // chosen for headroom over the last honest measurement rather than over
+    // this one. If it is reached again, the thing to suspect is rio, not the
+    // deadline.
     const PATIENCE: Duration = Duration::from_secs(cfg_select! {
         instrumented => 300,
-        _ => 30,
+        _ => 120,
     });
 
     fn test_router_subsystem() -> Subsystem {
