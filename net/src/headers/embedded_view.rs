@@ -1836,8 +1836,8 @@ mod embedded_view_properties {
     use crate::icmp4::Icmp4;
     use crate::icmp6::Icmp6;
     use crate::vlan::Vlan;
+    use concurrency::process_global::atomic::AtomicUsize;
     use concurrency::sync::OnceLock;
-    use concurrency::sync::atomic::AtomicUsize;
 
     // `AtomicUsize::new` is not const under loom, so counters init on first use.
     fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
@@ -1852,7 +1852,7 @@ mod embedded_view_properties {
         ) => {
             #[test]
             fn $read() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()
@@ -1888,7 +1888,7 @@ mod embedded_view_properties {
 
             #[test]
             fn $mutable() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()
@@ -2063,7 +2063,7 @@ mod embedded_view_properties {
 
     #[test]
     fn mutable_inner_transport_enum() {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        use concurrency::process_global::atomic::{AtomicUsize, Ordering};
         static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
         static HIT: OnceLock<AtomicUsize> = OnceLock::new();
         bolero::check!()
@@ -2165,7 +2165,7 @@ mod embedded_view_properties {
         ($name:ident, $gen:expr, $outer:ty, $shape:ty, $($binding:ident),+) => {
             #[test]
             fn $name() {
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()

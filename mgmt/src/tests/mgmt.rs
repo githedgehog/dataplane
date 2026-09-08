@@ -713,7 +713,7 @@ mod peering_chain {
 
     #[test]
     fn a_config_with_a_nat_peering_builds_and_renders() {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        use concurrency::process_global::atomic::{AtomicUsize, Ordering};
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         static BUILT: AtomicUsize = AtomicUsize::new(0);
         static MULTI: AtomicUsize = AtomicUsize::new(0);
@@ -925,7 +925,7 @@ mod dataplane_tables {
     /// call site gives each test its own.
     macro_rules! drive {
         ($flavour:expr) => {{
-            use concurrency::sync::atomic::{AtomicUsize, Ordering};
+            use concurrency::process_global::atomic::{AtomicUsize, Ordering};
             let flavour: NatFlavour = $flavour;
             let seen = AtomicUsize::new(0);
             let built = AtomicUsize::new(0);
@@ -1110,7 +1110,7 @@ mod enacted {
 
 mod validator_completeness {
     use super::enacted::validator;
-    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use concurrency::process_global::atomic::{AtomicUsize, Ordering};
     use config::{ConfigError, ValidatedGwConfig};
     use flow_entry::flow_table::FlowTable;
     use k8s_intf::bolero::AddressFamily;
@@ -1276,7 +1276,7 @@ mod validator_completeness {
 
 mod ambiguity {
     use super::enacted::{Artifacts, validator};
-    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use concurrency::process_global::atomic::{AtomicUsize, Ordering};
     use k8s_intf::bolero::mutate::Mutation;
     use k8s_intf::bolero::permute::PermutedAgents;
     use k8s_intf::gateway_agent_crd::GatewayAgent;
@@ -1360,7 +1360,7 @@ mod ambiguity {
 
 mod relevance {
     use super::enacted::{Artifacts, validator};
-    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use concurrency::process_global::atomic::{AtomicUsize, Ordering};
     use k8s_intf::bolero::NatFlavour;
     use k8s_intf::bolero::mutate::Mutation;
     use k8s_intf::bolero::reduce::{Dropped, ReducedAgents};
@@ -1520,7 +1520,7 @@ mod filters {
     //! helpers because building an rte_acl table is expensive, and the sibling properties
     //! are worth more cases than they are worth ACL coverage.
     use acl_filter::AclFilterContext;
-    use concurrency::sync::atomic::{AtomicUsize, Ordering};
+    use concurrency::process_global::atomic::{AtomicUsize, Ordering};
     use config::ExternalConfig;
     use flow_filter::FlowFilterContext;
     use k8s_intf::bolero::AddressFamily;

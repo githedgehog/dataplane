@@ -528,7 +528,7 @@ mod chain_properties {
 
     #[test]
     fn whatever_validates_builds_and_renders() {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        use concurrency::process_global::atomic::{AtomicUsize, Ordering};
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         static ADVERTISED: AtomicUsize = AtomicUsize::new(0);
 
@@ -641,7 +641,7 @@ mod chain_properties {
 
     #[test]
     fn the_properties_are_not_vacuous() {
-        use concurrency::sync::atomic::{AtomicUsize, Ordering};
+        use concurrency::process_global::atomic::{AtomicUsize, Ordering};
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         static VALIDATED: AtomicUsize = AtomicUsize::new(0);
         static VPCS: AtomicUsize = AtomicUsize::new(0);

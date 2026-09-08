@@ -1488,7 +1488,10 @@ impl Draft {
 mod tests {
     use super::*;
     use bolero::check;
-    use concurrency::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    // Vacuity counters, read after `check!()` returns and so outside any execution: they are
+    // process-lifetime by construction, and a facade atomic in a `static` does not even compile
+    // under loom, whose `AtomicUsize::new` is not `const`.
+    use concurrency::process_global::atomic::{AtomicUsize, Ordering::Relaxed};
 
     #[test]
     fn writing_a_vpc_does_not_imply_writing_its_peerings() {

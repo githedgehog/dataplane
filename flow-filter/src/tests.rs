@@ -1538,8 +1538,8 @@ fn probe_packet(probe: &Probe) -> Option<(Packet<TestBuffer>, Probe)> {
 fn nf_metadata_matches_config_oracle() {
     use crate::context::fuzz::oracle_lookup;
     use crate::fuzz_gen::{OverlaySpec, ProbeSpec};
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
 
     // Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const.
     static ROUTED: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
@@ -1636,8 +1636,8 @@ mod adversarial_headers {
     use crate::context::fuzz::oracle_lookup;
     use crate::test_utils::{expose, expose_masquerade, expose_static, overlay, peering, vpcd};
     use bolero::{Driver, ValueGenerator};
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
     use concurrency::sync::LazyLock;
-    use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::ValidatedOverlay;
     use net::buffer::TestBuffer;
     use net::headers::Headers;
