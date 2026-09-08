@@ -2647,8 +2647,8 @@ mod view_mut_properties {
     use crate::eth::Eth;
     use crate::headers::view::{Look, LookMut};
     use crate::headers::{Headers, Net, ShapedHeaders, SometimesHeadless, Transport};
+    use concurrency::process_global::atomic::AtomicUsize;
     use concurrency::sync::OnceLock;
-    use concurrency::sync::atomic::AtomicUsize;
 
     // `AtomicUsize::new` is not const under loom, so counters init on first use.
     fn counter(slot: &OnceLock<AtomicUsize>) -> &AtomicUsize {
@@ -2750,7 +2750,7 @@ mod view_mut_properties {
             #[test]
             fn $read() {
                 type Shape = shape_of!($($layer),+);
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()
@@ -2793,7 +2793,7 @@ mod view_mut_properties {
             #[test]
             fn $mutable() {
                 type Shape = shape_of!($($layer),+);
-                use concurrency::sync::atomic::{AtomicUsize, Ordering};
+                use concurrency::process_global::atomic::{AtomicUsize, Ordering};
                 static SEEN: OnceLock<AtomicUsize> = OnceLock::new();
                 static HIT: OnceLock<AtomicUsize> = OnceLock::new();
                 bolero::check!()
