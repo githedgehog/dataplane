@@ -11,7 +11,7 @@ use std::net::IpAddr;
 
 use lpm::prefix::Prefix;
 use net::eth::mac::{Mac, SourceMac};
-use net::interface::InterfaceIndex;
+use net::interface::{InterfaceIndex, InterfaceName};
 use net::vxlan::Vni;
 
 use crate::atable::adjacency::Adjacency;
@@ -93,7 +93,12 @@ impl RouterTables {
     /// # Panics
     ///
     /// Panics if `ifindex` is already in use.
-    pub fn interface(&mut self, ifindex: InterfaceIndex, name: &str, mac: SourceMac) -> &mut Self {
+    pub fn interface(
+        &mut self,
+        ifindex: InterfaceIndex,
+        name: InterfaceName,
+        mac: SourceMac,
+    ) -> &mut Self {
         let mut config = RouterInterfaceConfig::new(name, ifindex);
         config.set_iftype(IfType::Ethernet(IfDataEthernet { mac }));
         config.set_admin_state(IfState::Up);

@@ -28,7 +28,7 @@ use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::{Mac, SourceMac};
-use net::interface::InterfaceIndex;
+use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::{DynPipeline, NetworkFunction, PipelineData};
@@ -1272,7 +1272,7 @@ pub(crate) fn topology(vnis: &[Vni]) -> RouterTables {
     tables.vrf(UNDERLAY_VRF, None);
     tables.interface(
         uplink(),
-        "uplink",
+        InterfaceName::try_from("uplink").unwrap(),
         SourceMac::new(GATEWAY_MAC).unwrap_or_else(|_| unreachable!()),
     );
     tables.attach(uplink(), UNDERLAY_VRF);
@@ -5986,7 +5986,7 @@ mod model {
                         let (_, oif) = waypoint(nth);
                         tables.interface(
                             oif,
-                            &format!("uplink-{nth}"),
+                            InterfaceName::try_from(format!("uplink-{nth}").as_str()).unwrap(),
                             SourceMac::new(framing(nth)).unwrap_or_else(|_| unreachable!()),
                         );
                         tables.attach(oif, UNDERLAY_VRF);
