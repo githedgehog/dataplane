@@ -364,36 +364,30 @@ const CASES: usize = 512;
 
 /// Draw up to `CASES` configurations, survey each, and count how many were drawn.
 ///
-/// The count is an out-parameter because `check!()` expands to a bare `return`,
-/// so this cannot have a return type of its own -- the same reason `census`
-/// exists.
-fn survey_drawn(seen: &RefCell<Observed>, drawn: &std::cell::Cell<usize>) {
-    let seen = std::panic::AssertUnwindSafe(seen);
-    let counter = std::panic::AssertUnwindSafe(drawn);
-    bolero::check!()
-        .with_generator(Sequence::default())
-        .with_iterations(CASES)
-        .for_each(|ops| {
-            counter.set(counter.get() + 1);
-            let overlay = Sequence::fold(ops)
-                .overlay()
-                .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
-            survey(&overlay, &mut seen.borrow_mut());
-        });
-}
-
-/// What the drawn configurations showed, and how many there were.
-///
 /// `with_iterations` is a ceiling, not a floor: bolero also stops at
 /// `BOLERO_RANDOM_TEST_TIME_MS`, and whichever comes first wins. Natively the 512
 /// take about 40ms and the budget never binds. Under miri the same draws run at
 /// under one a second, so a 30s budget buys about 27 -- and a claim about what 512
 /// draws reach, checked against 27, says nothing except how lucky the draw was.
-fn census() -> (Observed, usize) {
-    let seen = RefCell::new(Observed::default());
-    let drawn = std::cell::Cell::new(0usize);
-    survey_drawn(&seen, &drawn);
-    (seen.into_inner(), drawn.get())
+/// Hence the count, which every caller puts through [`enough_draws`].
+macro_rules! survey_drawn {
+    ($seen:expr) => {{
+        let seen = $seen;
+        let seen = std::panic::AssertUnwindSafe(seen);
+        let drawn = std::cell::Cell::new(0usize);
+        let counter = std::panic::AssertUnwindSafe(&drawn);
+        bolero::check!()
+            .with_generator(Sequence::default())
+            .with_iterations(CASES)
+            .for_each(|ops| {
+                counter.set(counter.get() + 1);
+                let overlay = Sequence::fold(ops)
+                    .overlay()
+                    .unwrap_or_else(|e| panic!("{ops:?} does not assemble: {e}"));
+                survey(&overlay, &mut seen.borrow_mut());
+            });
+        drawn.get()
+    }};
 }
 
 /// Whether the survey saw enough configurations to be worth asserting against.
@@ -418,7 +412,9 @@ fn enough_draws(drawn: usize) -> bool {
 
 #[test]
 fn every_surveyed_field_is_classified() {
-    let (seen, drawn) = census();
+    let seen = RefCell::new(Observed::default());
+    let drawn = survey_drawn!(&seen);
+    let seen = seen.into_inner();
     let surveyed: BTreeSet<&str> = seen.0.keys().copied().collect();
     let classified: BTreeSet<&str> = REACH.iter().map(|(field, _)| *field).collect();
 
@@ -455,7 +451,9 @@ fn every_surveyed_field_is_classified() {
 
 #[test]
 fn the_algebra_reaches_what_it_is_recorded_to_reach() {
-    let (seen, drawn) = census();
+    let seen = RefCell::new(Observed::default());
+    let drawn = survey_drawn!(&seen);
+    let seen = seen.into_inner();
     if !enough_draws(drawn) {
         return;
     }

@@ -22,8 +22,6 @@
 
 #![cfg(not(feature = "loom"))]
 
-use std::panic::RefUnwindSafe;
-
 use bolero::TypeGenerator;
 use dataplane_concurrency::sync::Arc;
 use dataplane_concurrency::sync::atomic::{AtomicUsize, Ordering};
@@ -155,20 +153,20 @@ fn run_plan(plan: &Plan) {
 
 const TEST_TIME: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn fuzz_test<Arg: Clone + TypeGenerator + RefUnwindSafe + std::fmt::Debug>(
-    test: impl Fn(Arg) + RefUnwindSafe,
-) {
-    bolero::check!()
-        .with_type()
-        .cloned()
-        .with_test_time(TEST_TIME)
-        .for_each(test);
+macro_rules! fuzz_test {
+    ($test:expr) => {{
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .with_test_time(TEST_TIME)
+            .for_each($test);
+    }};
 }
 
 #[test]
 #[cfg(feature = "shuttle")]
 fn protocol_under_shuttle() {
-    fuzz_test(|plan: Plan| {
+    fuzz_test!(|plan: Plan| {
         let runner = shuttle::Runner::new(
             shuttle::scheduler::RandomScheduler::new(1),
             dataplane_concurrency::shuttle_config(),
@@ -180,7 +178,7 @@ fn protocol_under_shuttle() {
 #[test]
 #[cfg(feature = "shuttle")]
 fn protocol_under_shuttle_pct() {
-    fuzz_test(|plan: Plan| {
+    fuzz_test!(|plan: Plan| {
         // PCT requires both threads to actually do atomic ops; if
         // either side is effectively empty, shuttle's PCT scheduler
         // panics with "test closure did not exercise any concurrency".
@@ -208,5 +206,5 @@ fn protocol_under_shuttle_pct() {
 #[test]
 #[cfg(not(feature = "shuttle"))]
 fn protocol_under_std() {
-    fuzz_test(|plan: Plan| run_plan(&plan));
+    fuzz_test!(|plan: Plan| run_plan(&plan));
 }

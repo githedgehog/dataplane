@@ -11,6 +11,7 @@ pub mod evidence;
 
 pub mod control;
 pub mod display;
+mod stamp;
 pub mod targets;
 mod throttle;
 
