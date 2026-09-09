@@ -142,6 +142,7 @@ impl<'eal> Port<'eal> {
         info: DevInfo<'eal>,
         name: String,
         num_workers: u16,
+        mtu: Option<u16>,
     ) -> Result<Self, DriverError> {
         let index = info.index();
 
@@ -171,7 +172,10 @@ impl<'eal> Port<'eal> {
                 RxOffload::NONE
             }),
             tx_offloads: Some(TxOffloadConfig::default()),
-            mtu: None,
+            // From the configuration when it named one. Left `None` the device takes DPDK's
+            // default of 1500, which on a 9036 fabric stops every connection the moment slow
+            // start reaches a full-size segment.
+            mtu,
             rss,
         };
 
