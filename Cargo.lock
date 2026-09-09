@@ -1694,6 +1694,7 @@ dependencies = [
 name = "dataplane-init"
 version = "0.29.0"
 dependencies = [
+ "caps",
  "command-fds",
  "dataplane-args",
  "dataplane-clock",
@@ -1702,7 +1703,9 @@ dependencies = [
  "dataplane-id",
  "dataplane-n-vm",
  "dataplane-sysfs",
+ "dataplane-test-utils",
  "devlink",
+ "fixin",
  "futures",
  "libc",
  "nix",

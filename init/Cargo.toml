@@ -35,8 +35,11 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 [dev-dependencies]
 # internal
 n-vm = { workspace = true }
+test-utils = { workspace = true }
 
 # external
+caps = { workspace = true }
+fixin = { workspace = true }
 libc = { workspace = true }
 nix = { workspace = true, features = ["mount", "net", "sched", "signal"] }
 
