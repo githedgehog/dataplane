@@ -93,7 +93,7 @@ impl NhopKey {
         }
     }
     #[cfg(test)]
-    pub fn from_address(address: &str) -> Self {
+    pub(crate) fn from_address(address: &str) -> Self {
         Self {
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ..Default::default()
@@ -101,7 +101,7 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_addr_ifindex(address: &str, ifindex: u32) -> Self {
+    pub(crate) fn with_addr_ifindex(address: &str, ifindex: u32) -> Self {
         Self {
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ifindex: Some(InterfaceIndex::try_new(ifindex).expect("Bad ifindex")),
@@ -110,7 +110,7 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_address(address: &IpAddr) -> Self {
+    pub(crate) fn with_address(address: &IpAddr) -> Self {
         Self {
             address: Some(*address),
             ..Default::default()
@@ -118,7 +118,7 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_ifindex(ifindex: u32) -> Self {
+    pub(crate) fn with_ifindex(ifindex: u32) -> Self {
         Self {
             ifindex: Some(InterfaceIndex::try_new(ifindex).unwrap()),
             ..Default::default()
