@@ -365,3 +365,63 @@ mod usability_test {
         assert!(!page_size_is_usable(0), "0 is not a page size");
     }
 }
+
+#[cfg(test)]
+mod escape_hatch_test {
+    use super::{DISABLE_ENV, reserve_for};
+    use hardware::pci::address::PciAddress;
+
+    /// A device that is not on this machine, so `numa_node_of` reports node-agnostic.
+    ///
+    /// It must be a *non-empty* list: `reserve_for(&[])` returns `None` because there are no nodes
+    /// to reserve on, which would make every assertion below pass whether the hatch works or not.
+    /// That vacuity is not hypothetical -- the first version of this test had it.
+    fn a_device() -> Vec<PciAddress> {
+        vec![PciAddress::try_from("0000:02:01.0").expect("a valid PCI address")]
+    }
+
+    /// The hatch has to work without being forwarded anywhere.
+    ///
+    /// It is read in `dataplane-init`'s own process, and what reaches the dataplane is the
+    /// *effect* -- a `None` plan sealed into the launch configuration -- not the variable. A
+    /// `None` plan is what makes `init_eal` omit `--numa-mem`.
+    #[test]
+    fn off_yields_no_plan_and_therefore_no_numa_mem() {
+        // SAFETY: nextest runs each test in its own process, so nothing else reads the
+        // environment concurrently.
+        unsafe { std::env::set_var(DISABLE_ENV, "off") };
+        let plan = reserve_for(&a_device());
+        unsafe { std::env::remove_var(DISABLE_ENV) };
+        assert!(
+            plan.is_none(),
+            "the escape hatch must suppress the plan, and a None plan is what drops --numa-mem"
+        );
+    }
+
+    /// Case-insensitively, because an operator setting this in a pod spec should not have to guess.
+    #[test]
+    fn the_hatch_is_case_insensitive() {
+        for value in ["off", "OFF", "Off"] {
+            unsafe { std::env::set_var(DISABLE_ENV, value) };
+            let plan = reserve_for(&a_device());
+            unsafe { std::env::remove_var(DISABLE_ENV) };
+            assert!(plan.is_none(), "{value} should disable the reservation");
+        }
+    }
+
+    /// Guards the guard: without the variable the same call must reach the reservation.
+    ///
+    /// This is what makes the two tests above mean something. If this ever starts returning `None`
+    /// -- because the machine has no usable hugepages, say -- then those tests are vacuous again
+    /// and this one says so instead of passing quietly.
+    #[test]
+    fn without_the_variable_the_reservation_is_attempted() {
+        unsafe { std::env::remove_var(DISABLE_ENV) };
+        let plan = reserve_for(&a_device());
+        assert!(
+            plan.is_some(),
+            "no plan without the hatch set: this host has no usable hugepages, so the escape-hatch \
+             tests above cannot distinguish the hatch from the absence of pages"
+        );
+    }
+}
