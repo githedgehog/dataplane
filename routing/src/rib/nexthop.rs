@@ -16,7 +16,7 @@ use std::hash::Hash;
 use std::net::IpAddr;
 use std::option::Option;
 
-use net::interface::InterfaceIndex;
+use net::interface::{InterfaceIndex, InterfaceName};
 use std::cell::Cell;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -33,7 +33,7 @@ trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) ifname: RefCell<Option<String>>,
+    pub(crate) ifname: RefCell<Option<InterfaceName>>,
     resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
@@ -154,8 +154,8 @@ impl Nhop {
 
     /// Set (overwrite) the ifname for a next-hop. We have to account for the fact that,
     /// temporarily, we may not know the name corresponding to an ifindex.
-    pub(crate) fn set_ifname(&self, ifname: &Option<String>) {
-        self.ifname.replace(ifname.clone());
+    pub(crate) fn set_ifname(&self, ifname: Option<&InterfaceName>) {
+        self.ifname.replace(ifname.cloned());
     }
 
     /// Store a weak reference to some Nhop 'resolver' in the current next-hop.
@@ -444,7 +444,7 @@ impl NhopStore {
                 let update = *current != ifname;
                 drop(current);
                 if update {
-                    nhop.set_ifname(&ifname);
+                    nhop.set_ifname(ifname.as_ref());
                 }
             }
         });
@@ -453,10 +453,10 @@ impl NhopStore {
     /// Update the ifname of all next-hops with a given ifindex.
     /// This method is for future use
     #[allow(unused)]
-    pub fn refresh_nhop_ifname(&self, ifindex: InterfaceIndex, ifname: &String) {
+    pub fn refresh_nhop_ifname(&self, ifindex: InterfaceIndex, ifname: &InterfaceName) {
         self.iter()
             .filter(|nhop| nhop.key.ifindex == Some(ifindex))
-            .for_each(|nhop| nhop.set_ifname(&Some(ifname.clone())));
+            .for_each(|nhop| nhop.set_ifname(Some(ifname)));
     }
 }
 

@@ -770,7 +770,7 @@ mod tests {
         let idx = InterfaceIndex::try_new(2).unwrap();
         if let Some(iftable) = iftr.enter() {
             let iface = iftable.get_interface(idx).expect("Should be there");
-            assert_eq!(iface.name, "eth0");
+            assert_eq!(iface.name.as_ref(), "eth0");
             debug!("\n{}", *iftable);
         }
 
