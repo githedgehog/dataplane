@@ -325,17 +325,19 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
 }
 
 #[cfg(test)]
-mod usability_test {
-    use super::{ONE_GIB_KB, TWO_MIB_KB, page_size_is_usable};
+mod pool_test {
+    use super::{DISABLE_ENV, ONE_GIB_KB, TWO_MIB_KB, page_size_is_usable, reserve_for};
+    use hardware::pci::address::PciAddress;
 
-    /// The probe must answer for a real page size without lying in either direction.
+    /// Everything that touches the host hugepage pool lives in **one** test, deliberately.
     ///
-    /// Deliberately not asserting *which* answer: a machine with no 1 GiB pool should say no and a
-    /// machine with one should say yes, and both are correct. What is asserted is that the probe
-    /// leaks nothing and agrees with itself, since a probe that consumed a page per call would
-    /// drain the pool it is measuring.
+    /// nextest gives each test its own process, but the pool is kernel-global: a second test
+    /// calling `reserve_for` transiently takes a page while this one is counting, and the leak
+    /// assertion below then fails for a reason that has nothing to do with the code. Process
+    /// isolation does not isolate the kernel. Split these apart again and the suite goes flaky in
+    /// a way that passes when run alone -- which is how it was found.
     #[test]
-    fn the_probe_is_repeatable_and_leaks_nothing() {
+    fn the_pool_is_probed_reserved_and_released_correctly() {
         let free = |kb: u64| -> Option<u64> {
             std::fs::read_to_string(format!(
                 "/sys/kernel/mm/hugepages/hugepages-{kb}kB/free_hugepages"
@@ -345,6 +347,10 @@ mod usability_test {
             .parse()
             .ok()
         };
+        let device = vec![PciAddress::try_from("0000:02:01.0").expect("a valid PCI address")];
+
+        // 1. The usability probe answers consistently and gives back what it takes. A probe that
+        //    leaked a page per call would drain the pool it exists to measure.
         for size in [ONE_GIB_KB, TWO_MIB_KB] {
             let before = free(size);
             let first = page_size_is_usable(size);
@@ -356,72 +362,30 @@ mod usability_test {
             }
             println!("{size} kB usable = {first} (free before={before:?} after={after:?})");
         }
-    }
 
-    /// A size the kernel has no pool for must be refused, not guessed at.
-    #[test]
-    fn an_unsupported_page_size_is_refused() {
+        // 2. A size the kernel has no pool for is refused rather than guessed at.
         assert!(!page_size_is_usable(4), "4 kB is not a hugepage size");
         assert!(!page_size_is_usable(0), "0 is not a page size");
-    }
-}
 
-#[cfg(test)]
-mod escape_hatch_test {
-    use super::{DISABLE_ENV, reserve_for};
-    use hardware::pci::address::PciAddress;
-
-    /// A device that is not on this machine, so `numa_node_of` reports node-agnostic.
-    ///
-    /// It must be a *non-empty* list: `reserve_for(&[])` returns `None` because there are no nodes
-    /// to reserve on, which would make every assertion below pass whether the hatch works or not.
-    /// That vacuity is not hypothetical -- the first version of this test had it.
-    fn a_device() -> Vec<PciAddress> {
-        vec![PciAddress::try_from("0000:02:01.0").expect("a valid PCI address")]
-    }
-
-    /// The hatch has to work without being forwarded anywhere.
-    ///
-    /// It is read in `dataplane-init`'s own process, and what reaches the dataplane is the
-    /// *effect* -- a `None` plan sealed into the launch configuration -- not the variable. A
-    /// `None` plan is what makes `init_eal` omit `--numa-mem`.
-    #[test]
-    fn off_yields_no_plan_and_therefore_no_numa_mem() {
-        // SAFETY: nextest runs each test in its own process, so nothing else reads the
-        // environment concurrently.
-        unsafe { std::env::set_var(DISABLE_ENV, "off") };
-        let plan = reserve_for(&a_device());
-        unsafe { std::env::remove_var(DISABLE_ENV) };
-        assert!(
-            plan.is_none(),
-            "the escape hatch must suppress the plan, and a None plan is what drops --numa-mem"
-        );
-    }
-
-    /// Case-insensitively, because an operator setting this in a pod spec should not have to guess.
-    #[test]
-    fn the_hatch_is_case_insensitive() {
+        // 3. The escape hatch suppresses the plan, and a `None` plan is what drops `--numa-mem`.
+        //    Note the device list is non-empty: `reserve_for(&[])` returns `None` because there
+        //    are no nodes to reserve on, which would pass whether the hatch worked or not.
         for value in ["off", "OFF", "Off"] {
+            // SAFETY: this test owns its process, and the pool-touching tests are all here.
             unsafe { std::env::set_var(DISABLE_ENV, value) };
-            let plan = reserve_for(&a_device());
+            let plan = reserve_for(&device);
             unsafe { std::env::remove_var(DISABLE_ENV) };
             assert!(plan.is_none(), "{value} should disable the reservation");
         }
-    }
 
-    /// Guards the guard: without the variable the same call must reach the reservation.
-    ///
-    /// This is what makes the two tests above mean something. If this ever starts returning `None`
-    /// -- because the machine has no usable hugepages, say -- then those tests are vacuous again
-    /// and this one says so instead of passing quietly.
-    #[test]
-    fn without_the_variable_the_reservation_is_attempted() {
+        // 4. The guard that makes step 3 mean something: without the variable, the same call must
+        //    reach the reservation. If this host has no usable hugepages it says so, rather than
+        //    letting step 3 pass for the wrong reason.
         unsafe { std::env::remove_var(DISABLE_ENV) };
-        let plan = reserve_for(&a_device());
         assert!(
-            plan.is_some(),
+            reserve_for(&device).is_some(),
             "no plan without the hatch set: this host has no usable hugepages, so the escape-hatch \
-             tests above cannot distinguish the hatch from the absence of pages"
+             assertions above cannot tell the hatch from the absence of pages"
         );
     }
 }
