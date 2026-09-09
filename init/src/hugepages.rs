@@ -38,6 +38,9 @@ use args::HugepagePlan;
 use hardware::pci::address::PciAddress;
 use tracing::{debug, info, warn};
 
+/// Set this to `off` to skip the reservation entirely and omit `--numa-mem`.
+const DISABLE_ENV: &str = "DATAPLANE_HUGEPAGE_RESERVE";
+
 /// A 1 GiB page, in kilobytes, as sysfs names it.
 const ONE_GIB_KB: u64 = 1024 * 1024;
 
@@ -162,6 +165,18 @@ fn try_reserve(node: Option<u32>, page_size_kb: u64, want_pages: u64) -> u64 {
 /// dataplane is left to whatever the host already has, exactly as before this existed.
 #[must_use]
 pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
+    // An escape hatch, because this touches host state and pins the EAL to a figure. When a lab
+    // run fails somewhere in memory setup, the first question is whether this is the cause, and
+    // answering it should not need a rebuild -- set DATAPLANE_HUGEPAGE_RESERVE=off and the
+    // dataplane is back to taking whatever the host already has, which is how it behaved before
+    // any of this existed.
+    if let Ok(setting) = std::env::var(DISABLE_ENV)
+        && setting.eq_ignore_ascii_case("off")
+    {
+        info!("{DISABLE_ENV}=off: leaving hugepages to the host and omitting --numa-mem");
+        return None;
+    }
+
     let mut nodes: Vec<Option<u32>> = devices.iter().copied().map(numa_node_of).collect();
     nodes.sort_unstable();
     nodes.dedup();
