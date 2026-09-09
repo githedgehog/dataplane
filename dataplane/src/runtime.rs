@@ -10,7 +10,7 @@ use args::{
 };
 
 use crate::drivers::DriverError;
-use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity};
+use crate::drivers::dpdk::{CpBridge, DatapathEnds, DriverDpdk, Port, PortIdentity, report_links};
 use crate::drivers::kernel::DriverKernel;
 use crate::drivers::status::{DriverStatusWriter, driver_status_access};
 use crate::packet_processor::PipelineIngredients;
@@ -406,6 +406,7 @@ fn bring_up_ports<'eal>(
 
         ports.push(Port::bring_up(eal, port, name, num_workers)?);
     }
+    report_links(&ports, num_workers);
 
     if !probed.is_empty() {
         warn!(

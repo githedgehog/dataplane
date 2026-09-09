@@ -31,7 +31,7 @@ use super::status::DriverStatusWriter;
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
-pub(crate) use port::Port;
+pub(crate) use port::{Port, report_links};
 use worker::{Worker, WorkerPort};
 
 trace_target!("dpdk-driver", LevelFilter::INFO, &["driver"]);
