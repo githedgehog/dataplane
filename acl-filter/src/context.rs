@@ -10,8 +10,6 @@ use acl::dpdk::lookup::DpdkAclLookup;
 use acl::dpdk::rule::{AclFieldChunks, RuleSpec};
 #[cfg(test)]
 use acl::reference::table::{RefRule, ReferenceTable};
-use concurrency::sync::LazyLock;
-use concurrency::sync::atomic::{AtomicU64, Ordering};
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::acl::{AclAction, AclProtoMatch, AclScope, ValidatedAclRule};
@@ -404,16 +402,41 @@ impl<K: MatchKey, A> fmt::Debug for AnyTable<K, A> {
     }
 }
 
-// Lazily initialized so this compiles under the loom backend, whose AtomicU64::new is not const
-// (each instance registers with the loom executor). The atomic itself is still the backend atomic,
-// so fetch_add() stays instrumented; only construction is deferred. On every other backend LazyLock
-// is a thin wrapper over an otherwise-const atomic.
-static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+concurrency::with_std! {
+    use concurrency::sync::LazyLock;
+    use concurrency::sync::atomic::{AtomicU64, Ordering};
+
+    static TABLE_SEQ: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(0));
+
+    fn next_in_sequence() -> u64 {
+        TABLE_SEQ.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+concurrency::with_loom! {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        // nosemgrep: rust-no-direct-std-sync-import
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+concurrency::with_shuttle! {
+    // nosemgrep: rust-no-direct-std-sync-import
+    static TABLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn next_in_sequence() -> u64 {
+        // nosemgrep: rust-no-direct-std-sync-import
+        TABLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// A process-unique rte_acl context name. rte_acl rejects duplicate names, and a hot-swap briefly
 /// keeps the old and new contexts alive at once, so the name must be unique across the process.
 fn table_name(base: &str) -> String {
-    format!("acl_{base}_{}", TABLE_SEQ.fetch_add(1, Ordering::Relaxed))
+    format!("acl_{base}_{}", next_in_sequence())
 }
 
 /// Build one table for the selected backend from rules in precedence (insertion) order.

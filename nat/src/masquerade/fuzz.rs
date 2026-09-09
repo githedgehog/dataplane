@@ -43,12 +43,25 @@ impl ValueGenerator for Scenario {
 
 fn settled(body: impl FnOnce()) {
     const PAST_ANY_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(30);
+    const GIVE_UP: usize = 4096;
     // nosemgrep: rust-no-direct-std-sync-import
     static CLOCK: std::sync::LazyLock<clock::virtual_time::Paused> =
         std::sync::LazyLock::new(clock::virtual_time::Paused::new); // nosemgrep: rust-no-direct-std-sync-import
     CLOCK.block_on(async {
         body();
         clock::virtual_time::advance(PAST_ANY_TIMEOUT).await;
+        let handle = tokio::runtime::Handle::current();
+        for _ in 0..GIVE_UP {
+            if handle.metrics().num_alive_tasks() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "{} tasks from this case would not retire; the flow tables they hold will accumulate \
+             until the run is out of memory",
+            handle.metrics().num_alive_tasks()
+        );
     });
 }
 
