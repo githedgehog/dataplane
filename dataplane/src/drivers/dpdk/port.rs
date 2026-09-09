@@ -3,6 +3,7 @@
 
 //! Bringing DPDK ports up, and the queue split that gives each worker its own.
 
+use concurrency::thread;
 use dpdk::dev::{Dev, DevConfig, DevInfo, PortClaim, RssConf, RxOffload, Started, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::mem::{Pool, PoolConfig, PoolParams};
@@ -13,6 +14,7 @@ use errno::ErrorCode;
 use net::eth::mac::SourceMac;
 use net::interface::{InterfaceIndex, InterfaceName};
 use stats::PortCounters;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -55,6 +57,70 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
         );
     }
     rss
+}
+
+/// How often [`report_links`] re-reads link state while waiting for carrier.
+const LINK_POLL: Duration = Duration::from_millis(100);
+
+/// How many polls [`report_links`] waits for autonegotiation before calling a link down.
+const LINK_POLLS: u32 = 50;
+
+/// Report carrier state separately from successful device startup, once every port has started.
+///
+/// A link read straight after `rte_eth_dev_start` is usually still down while autonegotiation
+/// runs, so ports get [`LINK_POLLS`] × [`LINK_POLL`] between them to come up before one is
+/// reported down. On bifurcated devices, a down kernel netdev can leave a started DPDK port
+/// without carrier.
+pub(crate) fn report_links(ports: &[Port<'_>], num_workers: u16) {
+    let mut waiting: Vec<&Port<'_>> = ports.iter().collect();
+    for poll in 0..=LINK_POLLS {
+        waiting.retain(|port| match port.dev.link() {
+            Ok(link) if link.up => {
+                info!(
+                    "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+                     {num_workers} rx/tx queue pair(s), link {link}",
+                    index = port.dev.info().index(),
+                    name = port.name,
+                    if_index = port.if_index,
+                    mac = port.mac,
+                    mtu = port.mtu,
+                );
+                false
+            }
+            Ok(_) => true,
+            Err(e) => {
+                info!(
+                    "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+                     {num_workers} rx/tx queue pair(s); link state unavailable ({e:?})",
+                    index = port.dev.info().index(),
+                    name = port.name,
+                    if_index = port.if_index,
+                    mac = port.mac,
+                    mtu = port.mtu,
+                );
+                false
+            }
+        });
+        if waiting.is_empty() || poll == LINK_POLLS {
+            break;
+        }
+        thread::sleep(LINK_POLL);
+    }
+    for port in waiting {
+        warn!(
+            "DPDK port {index} ({name}) is configured and started but its link is still down \
+             after {waited:?}: ifindex {if_index}, mac {mac}, mtu {mtu}, {num_workers} rx/tx \
+             queue pair(s). No traffic will pass until it comes up. For a bifurcated device such \
+             as mlx5 the port follows its kernel netdev, so check that the netdev is up inside \
+             the datapath network namespace.",
+            index = port.dev.info().index(),
+            name = port.name,
+            if_index = port.if_index,
+            mac = port.mac,
+            mtu = port.mtu,
+            waited = LINK_POLL * LINK_POLLS,
+        );
+    }
 }
 
 /// A started port and its receive pool. Workers borrow its queue handles.
@@ -204,11 +270,6 @@ impl<'eal> Port<'eal> {
                 "port {index} ({name}) is up but would not report its MTU: {e:?}"
             ))
         })?;
-
-        info!(
-            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
-             {num_workers} rx/tx queue pair(s)"
-        );
 
         Ok(Port {
             dev,
