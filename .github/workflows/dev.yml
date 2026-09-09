@@ -142,19 +142,26 @@ jobs:
         uses: *gate
         with:
           labels: "test/all-profiles"
-          # The build matrix has no fuzz container targets.
-          on-value: '["debug", "release"]'
-          # Pull-request lab labels require both debug and release images.
-          off-value: >-
-            ${{
-              github.event_name == 'pull_request'
-              && (
-                contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
-                || contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
-              )
-              && '["debug", "release"]'
-              || '["debug"]'
-            }}
+          # EXPERIMENT (dpdk in vlab): release only, both ways.
+          #
+          # The gateway is being debugged against physical hardware, and only CI can push images,
+          # so every one-line fix costs a full round trip. Half of that trip was building a debug
+          # image nothing in this loop installs. The lab wants the release artifact; the debug one
+          # comes back with the rest of the scaffolding.
+          on-value: '["release"]'
+          off-value: '["release"]'
+          # Restore with the scaffolding:
+          # on-value: '["debug", "release"]'
+          # off-value: >-
+          #   ${{
+          #     github.event_name == 'pull_request'
+          #     && (
+          #       contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
+          #       || contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+          #     )
+          #     && '["debug", "release"]'
+          #     || '["debug"]'
+          #   }}
 
       - id: "wasm"
         uses: *gate
@@ -296,6 +303,14 @@ jobs:
           limit-access-to-actor: true
 
   lint:
+    # EXPERIMENT (dpdk in vlab): parked, like `check` and `coverage`.
+    #
+    # It already does not gate the images. Parking it too is about the runner: every push in this
+    # break-fix loop is a one-line change to hugepage or namespace handling being tried against
+    # real hardware, and a lint pass costs a lab runner to say nothing about whether the gateway
+    # comes up. The commits here are going to be rewritten wholesale before any of this lands, so
+    # the lint that matters is the one run over the rewritten series. Restore with the rest.
+    if: false
     name: "lint"
     runs-on: "lab"
     permissions:
@@ -844,6 +859,16 @@ jobs:
       - *tmate
 
   vlab:
+    # EXPERIMENT (dpdk in vlab): parked while the gateway is debugged on real hardware.
+    #
+    # This is the job the branch was named for, so parking it deserves a reason: the question has
+    # moved. vlab answers "does the gateway come up in a virtual lab", and the current failures --
+    # hugepage cgroup limits, the RDMA namespace mode -- are properties of the physical host that
+    # a virtual lab does not have and cannot reproduce. Until the physical run gets past EAL
+    # startup, a vlab pass would tell us nothing and a vlab failure would be about something else.
+    #
+    # Unpark before drawing any conclusion about the merged gateway, and before this lands.
+    if: false
     needs:
       - version
       - build
