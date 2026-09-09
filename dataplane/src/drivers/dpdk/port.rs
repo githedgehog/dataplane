@@ -104,6 +104,29 @@ fn report_link(
     }
 }
 
+/// How many mbufs a port's receive pool holds and how big each one's data room is.
+///
+/// Split out to keep `bring_up` within its line budget; it belongs to it.
+///
+/// The room is sized against the MTU the device was just configured with, not against
+/// `PoolParams::default()`. The cost is logged because it multiplies: one room per mbuf and a
+/// 24-worker port wants ~98k of them, so this is the difference between ~200 MiB and ~900 MiB of
+/// hugepages on a single port, and a port reserving most of a grant should say so.
+fn pool_shape(
+    dev: &Dev<'_, dpdk::dev::Stopped>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    num_workers: u16,
+) -> (u32, u16) {
+    let data_room = dpdk::mem::mbuf_data_room(dev.mtu().unwrap_or(1500));
+    let pool_mbufs = POOL_MBUFS_PER_WORKER * u32::from(num_workers);
+    info!(
+        "port {index} ({name}) receive pool: {pool_mbufs} mbufs of {data_room} B = {} MiB",
+        (u64::from(pool_mbufs) * u64::from(data_room)) / (1024 * 1024)
+    );
+    (pool_mbufs, data_room)
+}
+
 /// A port that has been configured and started, with the pool its receive queues draw from.
 ///
 /// Held by the driver for the whole run. Workers borrow nothing from this; they are handed owned
@@ -197,13 +220,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        // Sized against the MTU the device was just configured with, not against the default.
-        let data_room = dpdk::mem::mbuf_data_room(dev.mtu().unwrap_or(1500));
-        let pool_mbufs = POOL_MBUFS_PER_WORKER * u32::from(num_workers);
-        info!(
-            "port {index} ({name}) receive pool: {pool_mbufs} mbufs of {data_room} B = {} MiB",
-            (u64::from(pool_mbufs) * u64::from(data_room)) / (1024 * 1024)
-        );
+        let (pool_mbufs, data_room) = pool_shape(&dev, index, &name, num_workers);
         let rx_pool = eal
             .mem
             .new_pkt_pool(
