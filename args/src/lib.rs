@@ -80,6 +80,14 @@ pub enum PortArg {
 pub struct InterfaceArg {
     pub interface: InterfaceName,
     pub port: Option<PortArg>,
+    /// MTU to configure the port with, when the configuration named one.
+    ///
+    /// `None` leaves the driver's default, which for DPDK is 1500 -- and on a fabric running
+    /// 9036 that is a path-MTU black hole rather than a slow link: the handshake and every small
+    /// packet pass, then the first full-size segment is untransmittable and the connection stops
+    /// dead with its window collapsed to a single segment. The kernel driver never showed this,
+    /// because an init container ran `ip l set mtu` in shell for it.
+    pub mtu: Option<u16>,
 }
 
 #[derive(
@@ -127,6 +135,22 @@ impl FromStr for PortArg {
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        // An optional `,mtu=N` suffix, so `name=pci@0000:02:01.0` keeps working untouched and
+        // `name=pci@0000:02:01.0,mtu=9036` sets the port's MTU. Split before the `=` handling
+        // because a PCI address contains no commas and an interface name cannot either.
+        let (input, mtu) = match input.split_once(",mtu=") {
+            Some((head, value)) => {
+                let mtu = value
+                    .parse::<u16>()
+                    .map_err(|e| format!("Bad mtu '{value}': {e}"))?;
+                if mtu < 68 {
+                    return Err(format!("Bad mtu {mtu}: below the IPv4 minimum of 68"));
+                }
+                (head, Some(mtu))
+            }
+            None => (input, None),
+        };
+
         if let Some((first, second)) = input.split_once('=') {
             let interface =
                 InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
@@ -135,6 +159,7 @@ impl FromStr for InterfaceArg {
             Ok(InterfaceArg {
                 interface,
                 port: Some(port),
+                mtu,
             })
         } else {
             let interface =
@@ -142,6 +167,7 @@ impl FromStr for InterfaceArg {
             Ok(InterfaceArg {
                 interface,
                 port: None,
+                mtu,
             })
         }
     }
@@ -2006,5 +2032,52 @@ mod hugepage_plan_test {
             mib.to_string(),
             "4096 MiB in 2 MiB pages (node 0: 4096 MiB)"
         );
+    }
+}
+
+#[cfg(test)]
+mod interface_arg_mtu_test {
+    use super::{InterfaceArg, PortArg};
+    use std::str::FromStr;
+
+    /// The existing syntax must keep working, MTU absent.
+    #[test]
+    fn an_interface_without_an_mtu_parses_as_before() {
+        let arg = InterfaceArg::from_str("enp2s1np0=pci@0000:02:01.0").expect("should parse");
+        assert_eq!(arg.interface.to_string(), "enp2s1np0");
+        assert!(matches!(arg.port, Some(PortArg::PCI(_))));
+        assert_eq!(arg.mtu, None, "absent means the driver's default, not 0");
+    }
+
+    /// And the suffix sets it without disturbing the PCI address, which is full of colons.
+    #[test]
+    fn an_mtu_suffix_is_parsed_and_the_address_survives() {
+        let arg =
+            InterfaceArg::from_str("enp2s1np0=pci@0000:02:01.0,mtu=9036").expect("should parse");
+        assert_eq!(arg.interface.to_string(), "enp2s1np0");
+        assert_eq!(arg.mtu, Some(9036));
+        match arg.port {
+            Some(PortArg::PCI(addr)) => assert_eq!(addr.to_string(), "0000:02:01.0"),
+            other => panic!("the PCI address did not survive the split: {other:?}"),
+        }
+    }
+
+    /// A kernel interface takes one too, since both drivers have the same hole.
+    #[test]
+    fn a_kernel_interface_takes_an_mtu() {
+        let arg = InterfaceArg::from_str("eth0=kernel@eth0,mtu=1500").expect("should parse");
+        assert_eq!(arg.mtu, Some(1500));
+    }
+
+    /// Nonsense is refused rather than silently ignored, which would restore the black hole.
+    #[test]
+    fn a_bad_mtu_is_an_error() {
+        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=").is_err());
+        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=nine").is_err());
+        assert!(
+            InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=67").is_err(),
+            "below the IPv4 minimum of 68"
+        );
+        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=68").is_ok());
     }
 }
