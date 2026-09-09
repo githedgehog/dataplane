@@ -434,6 +434,7 @@ fn bring_up_ports<'eal>(
             port,
             interface.interface.to_string(),
             num_workers,
+            interface.mtu,
         )?);
     }
 
