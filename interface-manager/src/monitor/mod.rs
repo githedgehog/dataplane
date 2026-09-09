@@ -21,6 +21,7 @@
 //! rather than to this monitor.
 
 use concurrency::sync::Arc;
+use net::eth::mac::{Mac, SourceMac};
 use net::interface::{InterfaceIndex, InterfaceName};
 use rtnetlink::MulticastGroup;
 use rtnetlink::packet_core::{NetlinkMessage, NetlinkPayload};
@@ -44,6 +45,19 @@ pub struct EthEvent {
     pub carrier: bool,
     pub carrierup: u32,
     pub carrierdown: u32,
+    /// The interface's link-layer address, when the message carried one.
+    ///
+    /// Carried because it *changes*, and because nothing else propagates that. The routing
+    /// `Interface` takes its MAC from the configuration, captured once when the config was built,
+    /// and the datapath tests every arriving frame's destination against it. A MAC set after that
+    /// moment -- which is exactly what happens to the control-plane bridge's taps, since a tap is
+    /// born with a random address and only later takes its port's -- left the datapath comparing
+    /// against an address the interface no longer had, and every unicast frame for it was dropped
+    /// as `MacNotForUs`.
+    ///
+    /// `None` when the message had no address attribute, which is not the same as "no MAC" and
+    /// must not be treated as a change to nothing.
+    pub mac: Option<SourceMac>,
 }
 impl std::fmt::Display for EthEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -53,8 +67,13 @@ impl std::fmt::Display for EthEvent {
         let carrier = if self.carrier { "yes" } else { "no" };
         write!(
             f,
-            "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier} carrierup:{} carrierdown:{}",
-            self.name, self.ifindex, self.carrierup, self.carrierdown
+            "ifname:{} ({}) ifup:{ifup} iflowerup:{ifloup} ifrun:{ifrun} carrier:{carrier} carrierup:{} carrierdown:{} mac:{}",
+            self.name,
+            self.ifindex,
+            self.carrierup,
+            self.carrierdown,
+            self.mac
+                .map_or_else(|| "none".to_string(), |mac| mac.to_string())
         )
     }
 }
@@ -111,6 +130,17 @@ impl InterfaceMonitor {
             LinkAttribute::CarrierDownCount(value) => Some(*value),
             _ => None,
         })?;
+        // Optional, unlike the attributes above: a message that does not carry an address is not
+        // a message saying the address was removed, and the `?` used for the others would throw
+        // away an otherwise perfectly good event.
+        let mac = link_msg.attributes.iter().find_map(|a| match a {
+            LinkAttribute::Address(bytes) => {
+                let octets: [u8; 6] = bytes.as_slice().try_into().ok()?;
+                SourceMac::new(Mac::from(octets)).ok()
+            }
+            _ => None,
+        });
+
         // `LinkAttribute::OperState` is not reliable for events, so we ignore it.
         // N.B. the above attributes are required (watch the ?)
 
@@ -124,6 +154,7 @@ impl InterfaceMonitor {
             carrier: *carrier != 0,
             carrierup,
             carrierdown,
+            mac,
         };
         info!("Got event for {event}");
         Some(event)

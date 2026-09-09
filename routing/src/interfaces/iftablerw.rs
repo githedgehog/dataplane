@@ -11,6 +11,7 @@ use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
 use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
+use net::eth::mac::SourceMac;
 use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
 
@@ -28,6 +29,7 @@ enum IfTableChange {
     DelIpAddress((InterfaceIndex, IfAddr)),
     UpdateOpState((InterfaceIndex, IfState)),
     UpdateAdmState((InterfaceIndex, IfState)),
+    UpdateMac((InterfaceIndex, SourceMac)),
 }
 impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
@@ -59,6 +61,9 @@ impl Absorb<IfTableChange> for IfTable {
             }
             IfTableChange::UpdateAdmState((ifindex, state)) => {
                 self.set_iface_admin_state(*ifindex, *state);
+            }
+            IfTableChange::UpdateMac((ifindex, mac)) => {
+                self.set_iface_mac(*ifindex, *mac);
             }
         }
     }
@@ -125,6 +130,10 @@ impl IfTableWriter {
     pub fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         self.0
             .append(IfTableChange::UpdateAdmState((ifindex, state)));
+        self.0.publish();
+    }
+    pub fn set_iface_mac(&mut self, ifindex: InterfaceIndex, mac: SourceMac) {
+        self.0.append(IfTableChange::UpdateMac((ifindex, mac)));
         self.0.publish();
     }
 
@@ -611,5 +620,84 @@ mod iftable_properties {
                     check(&world, &model, &format!("at step {step} of {changes:?}"));
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod mac_change_test {
+    use super::*;
+    use crate::interfaces::interface::{IfDataEthernet, IfType, RouterInterfaceConfig};
+    use net::eth::mac::Mac;
+
+    /// A MAC set after the configuration was built must reach the readers.
+    ///
+    /// This is the shape of a real failure, not a hypothetical. A control-plane tap is created
+    /// with the kernel's random address, the configuration is built and captures *that*, and only
+    /// afterwards does the tap take its DPDK port's MAC. Nothing carried the change: `EthEvent`
+    /// had no MAC field, so the datapath went on comparing every arriving frame against an address
+    /// the interface no longer had, and dropped all of them as `MacNotForUs` -- measured on
+    /// hardware as 767 frames lost and an ARP that never resolved.
+    #[test]
+    fn a_mac_set_after_configuration_reaches_the_readers() {
+        // The random address a tap is born with...
+        let born = SourceMac::new(Mac([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])).expect("valid");
+        // ...and the port's, which it takes afterwards.
+        let adopted = SourceMac::new(Mac([0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94])).expect("valid");
+        let ifindex = InterfaceIndex::try_new(2).expect("valid");
+
+        let (mut writer, reader) = IfTableWriter::new();
+        let mut config = RouterInterfaceConfig::new("enp2s1np0", ifindex);
+        config.set_iftype(IfType::Ethernet(IfDataEthernet { mac: born }));
+        writer
+            .add_interface(config)
+            .expect("could not add the interface");
+
+        assert_eq!(
+            reader
+                .enter()
+                .expect("a reader")
+                .get_interface(ifindex)
+                .expect("the interface")
+                .get_mac(),
+            Some(born),
+            "the table should start with the address the configuration captured"
+        );
+
+        writer.set_iface_mac(ifindex, adopted);
+
+        assert_eq!(
+            reader
+                .enter()
+                .expect("a reader")
+                .get_interface(ifindex)
+                .expect("the interface")
+                .get_mac(),
+            Some(adopted),
+            "the new address must reach readers, or the datapath drops every frame for itself"
+        );
+    }
+
+    /// An address change must not be able to change what kind of interface something is.
+    #[test]
+    fn setting_a_mac_on_a_loopback_is_ignored() {
+        let mac = SourceMac::new(Mac([0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94])).expect("valid");
+        let ifindex = InterfaceIndex::try_new(1).expect("valid");
+
+        let (mut writer, reader) = IfTableWriter::new();
+        let mut config = RouterInterfaceConfig::new("lo", ifindex);
+        config.set_iftype(IfType::Loopback);
+        writer
+            .add_interface(config)
+            .expect("could not add the interface");
+
+        writer.set_iface_mac(ifindex, mac);
+
+        let table = reader.enter().expect("a reader");
+        let iface = table.get_interface(ifindex).expect("the interface");
+        assert_eq!(iface.get_mac(), None, "a loopback still has no MAC");
+        assert!(
+            matches!(iface.iftype, IfType::Loopback),
+            "and is still a loopback"
+        );
     }
 }

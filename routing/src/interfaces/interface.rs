@@ -237,6 +237,23 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
+    /// Replace the link-layer address, keeping the interface's type
+    ///
+    /// Ignored for a type that has no address: an address change is not entitled to turn a
+    /// loopback into an Ethernet interface. The datapath compares every arriving frame's
+    /// destination against this, so an interface whose MAC changes after the configuration was
+    /// built -- a control-plane tap taking its port's address, say -- drops every frame meant for
+    /// itself as `MacNotForUs` until this is applied.
+    //////////////////////////////////////////////////////////////////
+    pub fn set_mac(&mut self, mac: SourceMac) {
+        match &mut self.iftype {
+            IfType::Ethernet(inner) => inner.mac = mac,
+            IfType::Dot1q(inner) => inner.mac = mac,
+            IfType::Unknown | IfType::Loopback | IfType::Vxlan => {}
+        }
+    }
+
+    //////////////////////////////////////////////////////////////////
     /// Get the MAC address of an [`Interface`], if any
     //////////////////////////////////////////////////////////////////
     #[must_use]
