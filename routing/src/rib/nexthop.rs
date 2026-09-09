@@ -15,7 +15,7 @@ use std::hash::Hash;
 use std::net::IpAddr;
 use std::option::Option;
 
-use net::interface::InterfaceIndex;
+use net::interface::{InterfaceIndex, InterfaceName};
 use std::cell::Cell;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -32,7 +32,7 @@ trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) ifname: RefCell<Option<String>>,
+    pub(crate) ifname: RefCell<Option<InterfaceName>>,
     resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
@@ -151,8 +151,9 @@ impl Nhop {
         }
     }
 
-    /// Set (overwrite) the ifname for a next-hop
-    pub(crate) fn set_ifname(&self, ifname: Option<&String>) {
+    /// Set (overwrite) the ifname for a next-hop. We have to account for the fact that,
+    /// temporarily, we may not know the name corresponding to an ifindex.
+    pub(crate) fn set_ifname(&self, ifname: Option<&InterfaceName>) {
         self.ifname.replace(ifname.cloned());
     }
 
@@ -431,7 +432,7 @@ impl NhopStore {
     /// Update the ifname of all next-hops with a given ifindex.
     /// This method is for future use
     #[allow(dead_code)]
-    pub fn refresh_nhop_ifname(&self, ifindex: InterfaceIndex, ifname: &String) {
+    pub fn refresh_nhop_ifname(&self, ifindex: InterfaceIndex, ifname: &InterfaceName) {
         self.iter()
             .filter(|nhop| nhop.key.ifindex == Some(ifindex))
             .for_each(|nhop| nhop.set_ifname(Some(ifname)));
@@ -1273,7 +1274,7 @@ mod tests {
         assert!(!ifindices.is_empty(), "bad next-hop store (no ifindex)");
 
         for ifindex in ifindices {
-            let ifname = format!("interface-index-{ifindex}");
+            let ifname = InterfaceName::try_from(format!("interface-{ifindex}")).unwrap();
             store.refresh_nhop_ifname(ifindex, &ifname);
         }
         for nhop in store.iter() {
@@ -1282,7 +1283,7 @@ mod tests {
                     .ifname
                     .borrow()
                     .as_ref()
-                    .is_some_and(|name| *name == format!("interface-index-{index}"));
+                    .is_some_and(|name| name.as_ref() == format!("interface-{index}"));
 
                 assert!(matches);
             } else {

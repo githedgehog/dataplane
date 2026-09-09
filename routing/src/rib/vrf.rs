@@ -17,6 +17,7 @@ use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtype::FibWriter;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
+use net::interface::InterfaceName;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use std::time::Instant;
@@ -29,7 +30,7 @@ pub type VrfId = u32;
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
-    pub ifname: Option<String>,
+    pub ifname: Option<InterfaceName>,
 }
 impl Default for RouteNhop {
     fn default() -> Self {

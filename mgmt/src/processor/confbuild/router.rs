@@ -58,16 +58,14 @@ fn build_router_interface_config(
     kiface: &NetDevInterface,
     vrfid: VrfId,
 ) -> Result<RouterInterfaceConfig, ConfigError> {
-    let name = kiface.name.as_str();
-    let ifindex = match InterfaceIndex::try_new(kiface.index) {
-        Ok(ifindex) => ifindex,
-        Err(err) => {
-            let msg = format!("{err}");
-            error!("failed to build router interface: {err}");
-            return Err(ConfigError::Invalid(msg));
-        }
-    };
-    let mut new = RouterInterfaceConfig::new(name, ifindex);
+    let ifindex =
+        InterfaceIndex::try_new(kiface.index).map_err(|e| ConfigError::Invalid(e.to_string()))?;
+
+    // convert name provided by kernel (ext dependency) into a `InterfaceName`. This should never fail
+    let name = InterfaceName::try_from(kiface.name.as_str())
+        .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+
+    let mut new = RouterInterfaceConfig::new(name.clone(), ifindex);
     // we don't expose a way to set admin state interface atm.
     // therefore, it is always up
     new.set_admin_state(IfState::Up);
@@ -135,6 +133,7 @@ fn generate_router_interface_config_per_vrf(
             error!("{msg}");
             ConfigError::InternalFailure(msg)
         })?;
+
         // Build interface config using the interface configuration and the kernel interface
         let rtr_ifconfig = build_router_interface_config(if_config, kiface, vrfid)?;
         router_config.add_interface(rtr_ifconfig);

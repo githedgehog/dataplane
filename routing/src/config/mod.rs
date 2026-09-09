@@ -236,11 +236,12 @@ mod tests {
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
     use net::eth::mac::{Mac, SourceMac};
-    use net::interface::InterfaceIndex;
-    use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
+    use net::interface::{InterfaceName, InterfaceIndex};
+    use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::AttachConfig, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
     use crate::interfaces::interface::IfType;
     use crate::interfaces::interface::IfDataEthernet;
+    use crate::interfaces::tests::build_test_interface_cfg;
 
     use crate::RouterError;
     use crate::routingdb::RoutingDb;
@@ -282,15 +283,13 @@ mod tests {
 
     }
     fn add_router_interface_configs(config: &mut RouterConfig) {
-        let lo_idx = InterfaceIndex::try_new(1).unwrap();
-        let mut ifconfig = RouterInterfaceConfig::new("Loopback", lo_idx);
+        let mut ifconfig = build_test_interface_cfg("Loopback", 1);
         ifconfig.set_description("main loopback interface");
         ifconfig.set_iftype(IfType::Loopback);
         ifconfig.set_admin_state(IfState::Up);
         config.add_interface(ifconfig);
 
-        let eth0_idx = InterfaceIndex::try_new(10).unwrap();
-        let mut ifconfig = RouterInterfaceConfig::new("Eth0", eth0_idx);
+        let mut ifconfig = build_test_interface_cfg("Eth0", 10);
         ifconfig.set_description("Interface to Spine-1");
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -299,8 +298,7 @@ mod tests {
         ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(100)));
         config.add_interface(ifconfig);
 
-        let eth1_idx = InterfaceIndex::try_new(11).unwrap();
-        let mut ifconfig = RouterInterfaceConfig::new("Eth1", eth1_idx);
+        let mut ifconfig = build_test_interface_cfg("Eth1", 11);
         ifconfig.set_description("Interface to Spine-2");
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -441,7 +439,7 @@ mod tests {
         config.genid = 6;
         let idx = InterfaceIndex::try_new(10).unwrap();
         let ifconfig = config.get_interface_mut(idx).expect("Should find config");
-        ifconfig.set_name("CHANGED-NAME");
+        ifconfig.set_name(&InterfaceName::try_from("CHANGED-NAME").unwrap());
         ifconfig.set_description("Interface with changed config");
         ifconfig.set_admin_state(IfState::Down);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
