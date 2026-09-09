@@ -4,7 +4,7 @@
 //! Module that contains definitions and methods for fib objects
 
 use crate::rib::encapsulation::Encapsulation;
-use net::interface::InterfaceIndex;
+use net::interface::{InterfaceIndex, InterfaceName};
 use net::vxlan::Vni;
 use std::net::IpAddr;
 
@@ -16,7 +16,7 @@ use std::net::IpAddr;
 pub struct EgressObject {
     pub(crate) ifindex: Option<InterfaceIndex>,
     pub(crate) address: Option<IpAddr>,
-    pub(crate) ifname: Option<String>,
+    pub(crate) ifname: Option<InterfaceName>,
 }
 
 impl EgressObject {
@@ -24,7 +24,7 @@ impl EgressObject {
     pub fn new(
         ifindex: Option<InterfaceIndex>,
         address: Option<IpAddr>,
-        ifname: Option<String>,
+        ifname: Option<InterfaceName>,
     ) -> Self {
         Self {
             ifindex,
@@ -41,7 +41,7 @@ impl EgressObject {
         &self.address
     }
     #[must_use]
-    pub fn ifname(&self) -> &Option<String> {
+    pub fn ifname(&self) -> &Option<InterfaceName> {
         &self.ifname
     }
     /// merge two egress objects appearing in a next-hop or a Fib entry. This is used as part
@@ -294,7 +294,7 @@ mod squash_properties {
         Some(EgressObject::new(
             choose(ifindex, &[index(1), index(2), index(3)]),
             choose(address, &ADDRESSES),
-            choose(ifname, &IFNAMES).map(str::to_string),
+            choose(ifname, &IFNAMES).map(|ifn| InterfaceName::try_from(ifn).unwrap()),
         ))
     }
 

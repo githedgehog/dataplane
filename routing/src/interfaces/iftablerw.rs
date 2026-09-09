@@ -221,6 +221,7 @@ mod iftable_properties {
     use crate::interfaces::interface::{Attachment, IfType};
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use bolero::{Driver, ValueGenerator};
+    use net::interface::InterfaceName;
     use net::interface::address::IfAddr;
     use std::collections::{BTreeMap, BTreeSet};
     use std::net::IpAddr;
@@ -337,23 +338,24 @@ mod iftable_properties {
         }
     }
 
-    fn name_of(iface: usize, renamed: bool) -> String {
-        if renamed {
+    fn name_of(iface: usize, renamed: bool) -> InterfaceName {
+        let name = if renamed {
             format!("eth{iface}-renamed")
         } else {
             format!("eth{iface}")
-        }
+        };
+        InterfaceName::try_from(name).unwrap()
     }
 
     fn config_for(iface: usize, renamed: bool) -> RouterInterfaceConfig {
-        let mut config = RouterInterfaceConfig::new(&name_of(iface, renamed), ifindexes()[iface]);
+        let mut config = RouterInterfaceConfig::new(name_of(iface, renamed), ifindexes()[iface]);
         config.set_iftype(IfType::Unknown);
         config
     }
 
     #[derive(Debug, Clone, PartialEq)]
     struct IfaceState {
-        name: String,
+        name: InterfaceName,
         admin: IfState,
         oper: IfState,
         attached: Option<usize>,
