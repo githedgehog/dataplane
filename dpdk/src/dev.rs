@@ -1289,6 +1289,40 @@ impl<'eal, S: DevState> Dev<'eal, S> {
     }
 }
 
+/// What a port's link is doing, as returned by [`Dev::link`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkStatus {
+    /// Carrier is present.
+    pub up: bool,
+    /// Negotiated speed in Mbit/s. `u32::MAX` is DPDK's "unknown".
+    pub speed_mbps: u32,
+    /// Full duplex rather than half.
+    pub full_duplex: bool,
+    /// The speed was autonegotiated rather than fixed.
+    pub autoneg: bool,
+}
+
+impl core::fmt::Display for LinkStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if !self.up {
+            return write!(f, "down");
+        }
+        if self.speed_mbps == u32::MAX {
+            return write!(f, "up at an unknown speed");
+        }
+        write!(
+            f,
+            "up at {} Mbit/s {}",
+            self.speed_mbps,
+            if self.full_duplex {
+                "full duplex"
+            } else {
+                "half duplex"
+            }
+        )
+    }
+}
+
 /// A port's I/O counters, as returned by [`Dev::stats`].
 ///
 /// A plain owned snapshot rather than a borrow of DPDK's `rte_eth_stats`: the counters are read by
@@ -1367,6 +1401,43 @@ impl<'eal, S: Open> Dev<'eal, S> {
     /// bifurcated driver such as mlx5 it reports a frame delivered to the port while saying nothing
     /// about whether any DPDK queue received it. [`PortStats::imissed`] and
     /// [`PortStats::rx_nombuf`] are where a frame that reached the port and never reached a
+    /// Whether the port has carrier, and at what speed.
+    ///
+    /// Worth having because a port with no link is otherwise **invisible**: DPDK will configure a
+    /// device, set up every queue and report it started with the link down, and the datapath then
+    /// runs perfectly while carrying nothing. Nothing in the driver is wrong in that state, so
+    /// nothing in the driver complains.
+    ///
+    /// For a bifurcated device this most often means the kernel netdev is administratively down --
+    /// `mlx5_core` keeps the netdev, and the physical port follows its state. Moving an interface
+    /// between network namespaces clears `IFF_UP`, which is exactly how a port ends up here.
+    ///
+    /// The `_nowait` form deliberately: this is for reporting, and the blocking variant can sit for
+    /// up to nine seconds per port waiting for autonegotiation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the driver's [`ErrorCode`]; a PMD without link support reports `ENOTSUP`.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn link(&self) -> Result<LinkStatus, ErrorCode> {
+        let mut raw: dpdk_sys::rte_eth_link = unsafe { core::mem::zeroed() };
+        // SAFETY: `raw` is live for the call and the port index comes from a started device.
+        let ret =
+            unsafe { dpdk_sys::rte_eth_link_get_nowait(self.info.index().as_u16(), &raw mut raw) };
+        if ret != 0 {
+            return Err(ErrorCode::parse_i32(ret));
+        }
+        // SAFETY: the union's struct arm is the documented way to read the fields; the `val64` arm
+        // exists only so the PMD can write the whole thing atomically.
+        let inner = unsafe { raw.annon1.annon1 };
+        Ok(LinkStatus {
+            up: u32::from(inner.link_status()) == dpdk_sys::RTE_ETH_LINK_UP,
+            speed_mbps: inner.link_speed,
+            full_duplex: u32::from(inner.link_duplex()) == dpdk_sys::RTE_ETH_LINK_FULL_DUPLEX,
+            autoneg: inner.link_autoneg() != 0,
+        })
+    }
+
     /// receive burst is accounted for.
     ///
     /// # Errors

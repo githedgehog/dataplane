@@ -68,6 +68,42 @@ fn rss_for(info: &DevInfo, name: &str, num_workers: u16) -> Option<RssConf> {
     rss
 }
 
+/// Say what the port's link is doing, loudly when it is down.
+///
+/// Separate from `bring_up` only to keep that function within its line budget; it belongs to it.
+///
+/// A port with no carrier is otherwise indistinguishable from a working one: every configuration
+/// step succeeds, the driver reports "started", the workers poll happily, and nothing arrives.
+/// Nothing is wrong from DPDK's side, so nothing in the driver complains. For a bifurcated device
+/// the usual cause is the kernel netdev being administratively down -- the port follows the netdev,
+/// and moving an interface between network namespaces clears `IFF_UP`.
+fn report_link(
+    dev: &Dev<'_, Started>,
+    index: dpdk::dev::DevIndex,
+    name: &str,
+    if_index: InterfaceIndex,
+    mac: Mac,
+    mtu: u16,
+    num_workers: u16,
+) {
+    match dev.link() {
+        Ok(link) if link.up => info!(
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s), link {link}"
+        ),
+        Ok(link) => warn!(
+            "DPDK port {index} ({name}) is configured and started but its link is {link}: \
+             ifindex {if_index}, mac {mac}, mtu {mtu}, {num_workers} rx/tx queue pair(s). No \
+             traffic will pass. For a bifurcated device such as mlx5 the port follows its kernel \
+             netdev, so check that the netdev is up inside the datapath network namespace."
+        ),
+        Err(e) => info!(
+            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
+             {num_workers} rx/tx queue pair(s); link state unavailable ({e:?})"
+        ),
+    }
+}
+
 /// A port that has been configured and started, with the pool its receive queues draw from.
 ///
 /// Held by the driver for the whole run. Workers borrow nothing from this; they are handed owned
@@ -226,10 +262,7 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
-        info!(
-            "DPDK port {index} ({name}) up: ifindex {if_index}, mac {mac}, mtu {mtu}, \
-             {num_workers} rx/tx queue pair(s)"
-        );
+        report_link(&dev, index, &name, if_index, mac, mtu, num_workers);
 
         Ok(Port {
             dev,
