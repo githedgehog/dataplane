@@ -286,30 +286,41 @@ async fn move_devices_to_netns(
         })
         .collect();
 
-    // Refuse here rather than let this surface as an empty device list.
+    // Say so here rather than let this surface only as an empty device list.
     //
-    // In shared mode `_ib_alloc_device` discards the requested net: the devlink instance moves and
-    // the reload *succeeds*, while the RDMA device -- the half the mlx5 PMD attaches through --
-    // stays in `init_net`. The datapath then enumerates nothing, which is indistinguishable from
-    // absent hardware, and the reason is a boot parameter no message in the failure path mentions.
+    // This warns; it used to refuse, and refusing was wrong. In shared mode `_ib_alloc_device`
+    // discards the requested net, so the devlink instance moves while the RDMA device -- the half
+    // the mlx5 PMD attaches through -- stays in `init_net`. That says where the device *lives*,
+    // not whether it can be reached: shared mode also means every RDMA device is visible from
+    // every namespace, and if the kernel does not namespace-tag them in that mode, the datapath
+    // finds it exactly as it would have in `init_net` and the arrangement works.
+    //
+    // What could be measured was: on an *exclusive*-mode host, a fresh network namespace with a
+    // fresh sysfs lists no infiniband devices, so the class is tagged and visibility follows the
+    // device's net. Whether that tagging still applies under shared mode is the part that decides
+    // this, and it cannot be answered on a machine that is not in shared mode.
+    //
+    // A refusal would stop the only kind of host that could settle it from starting at all, to
+    // prevent a failure that is now understood and reported when it happens.
+    // `hardware/tests/dpdk_in_netns.rs` is the probe that answers it properly.
     if !bifurcated.is_empty() {
         match rdma_netns_mode() {
             RdmaNetnsMode::Exclusive => {}
-            RdmaNetnsMode::Shared => {
-                return Err(format!(
-                    "the RDMA subsystem is in shared mode, so a network namespace cannot own {}. \
-                     Boot the host with `ib_core.netns_mode=0` (`rdma system show` should then say \
-                     `netns exclusive`), or run without --datapath-netns. Changing it at runtime \
-                     with `rdma system set netns exclusive` is only permitted while no network \
-                     namespace but the initial one exists, which is not the case on a node running \
-                     containers.",
-                    bifurcated
-                        .iter()
-                        .map(|d| d.address.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
+            RdmaNetnsMode::Shared => warn!(
+                "the RDMA subsystem is in shared mode, so {} cannot be given to a namespace: the \
+                 devlink instance moves while the RDMA device stays in init_net. Whether the \
+                 datapath can still reach it there is what this run will find out. If it reports \
+                 no devices, that is the answer, and the fix is to boot with \
+                 `ib_core.netns_mode=0` (`rdma system show` should then say `netns exclusive`) or \
+                 to run without --datapath-netns -- it cannot be changed at runtime, because \
+                 `rdma system set netns exclusive` is permitted only while no network namespace \
+                 but the initial one exists.",
+                bifurcated
+                    .iter()
+                    .map(|d| d.address.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             RdmaNetnsMode::Unknown => warn!(
                 "could not determine the RDMA namespace mode; if the datapath finds no device, \
                  check `rdma system show` for `netns exclusive`"
