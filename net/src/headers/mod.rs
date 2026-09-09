@@ -756,6 +756,20 @@ impl Headers {
         &self.net_ext
     }
 
+    #[must_use]
+    pub fn upper_layer_proto(&self) -> Option<NextHeader> {
+        let next = match self.net_ext.last() {
+            Some(NetExt::HopByHop(h)) => h.next_header(),
+            Some(NetExt::DestOpts(h)) => h.next_header(),
+            Some(NetExt::Routing(h)) => h.next_header(),
+            Some(NetExt::Fragment(h)) => h.next_header(),
+            Some(NetExt::Ipv4Auth(h)) => h.next_header(),
+            Some(NetExt::Ipv6Auth(h)) => h.next_header(),
+            None => self.net.as_ref()?.next_header(),
+        };
+        (!next.is_ipv6_extension()).then_some(next)
+    }
+
     /// Get a reference to the transport header, if present.
     #[must_use]
     pub fn transport(&self) -> Option<&Transport> {

@@ -61,7 +61,12 @@ impl PortForwarder {
             return None;
         };
 
-        if let Some((dst_ip, dst_port, proto)) =
+        let Some(proto) = packet.upper_layer_proto() else {
+            debug!("Ignoring packet: header chain was never walked to a transport");
+            return None;
+        };
+
+        if let Some((dst_ip, dst_port)) =
             match packet.headers().pat().eth().net().transport().done() {
                 Some((_, _net, Transport::Tcp(tcp))) if !tcp.is_first_segment() => {
                     debug!("Ignoring TCP packet: it has no SYN and we have no state for it");
@@ -73,7 +78,7 @@ impl PortForwarder {
                 {
                     if let Ok(dst_ip) = UnicastIpAddr::try_from(dst_ip) {
                         debug!("Packet qualifies for port-forwarding");
-                        Some((dst_ip, dst_port, net.next_header()))
+                        Some((dst_ip, dst_port))
                     } else {
                         debug!("Ignoring packet: destination IP is not unicast");
                         None
@@ -221,8 +226,8 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // These could be retrieved from the FlowKey, but we don't have it :( ...
         let src_vpcd = packet.meta().src_vpcd?;
+        let proto = packet.upper_layer_proto()?;
         let net = packet.try_ip()?;
-        let proto = net.next_header();
         let dst_ip = net.dst_addr();
         let dst_port = packet.transport_dst_port()?;
         let key = PortFwKey::new(src_vpcd, proto);
@@ -261,8 +266,8 @@ impl PortForwarder {
     ) -> Option<Arc<PortFwEntry>> {
         // get required properties from packet
         let src_vpcd = packet.meta().src_vpcd?;
+        let proto = packet.upper_layer_proto()?;
         let net = packet.try_ip()?;
-        let proto = net.next_header();
         let src_ip = net.src_addr();
         let src_port = packet.transport_src_port()?;
 
@@ -408,5 +413,155 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
 
     fn set_data(&mut self, data: Arc<PipelineData>) {
         self.pipeline_data = data;
+    }
+}
+
+#[cfg(test)]
+mod race {
+    use super::*;
+    use crate::portfw::probe::{Arrival, Fabric};
+    use crate::static_nat::probe::build;
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use lpm::prefix::{L4Protocol, PortRange, PrefixWithOptionalPorts};
+    use net::buffer::TestBuffer;
+    use pipeline::NetworkFunction;
+    use std::net::IpAddr;
+
+    fn side(prefix: &str, first: u16, last: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(
+            prefix.parse().unwrap_or_else(|_| unreachable!()),
+            Some(PortRange::new(first, last).unwrap_or_else(|_| unreachable!())),
+        )
+    }
+
+    fn fabric() -> Fabric {
+        let expose = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .ip(side("10.0.0.0/30", 9000, 9003))
+            .as_range(side("172.16.0.0/30", 8000, 8003))
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        Fabric::build(&[expose]).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+    }
+
+    fn v6_fabric() -> Fabric {
+        let expose = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+            .unwrap_or_else(|e| unreachable!("{e}"))
+            .ip(side("2001:db8::/126", 9000, 9003))
+            .as_range(side("2001:db8:1::/126", 8000, 8003))
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        Fabric::build(&[expose]).unwrap_or_else(|| unreachable!("a fixed expose builds"))
+    }
+
+    fn v6_hop_by_hop_syn(src: &str, dst: &str, sport: u16, dport: u16) -> Packet<TestBuffer> {
+        use net::eth::ethtype::EthType;
+        use net::headers::builder::HeaderStack;
+        use net::ipv6::UnicastIpv6Addr;
+        use net::packet::test_utils::make_default_for_eth;
+        use net::parse::DeParse;
+        use net::tcp::port::TcpPort;
+
+        let headers = HeaderStack::new()
+            .eth(|eth| *eth = make_default_for_eth(EthType::IPV6))
+            .ipv6(|ip| {
+                ip.set_source(
+                    UnicastIpv6Addr::new(src.parse().unwrap_or_else(|_| unreachable!()))
+                        .unwrap_or_else(|_| unreachable!()),
+                );
+                ip.set_destination(dst.parse().unwrap_or_else(|_| unreachable!()));
+                ip.set_hop_limit(64);
+            })
+            .hop_by_hop(|_| {})
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::try_from(sport).unwrap_or_else(|_| unreachable!()));
+                tcp.set_destination(TcpPort::try_from(dport).unwrap_or_else(|_| unreachable!()));
+                tcp.set_syn(true);
+            })
+            .build_headers()
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+
+        let mut buffer: TestBuffer = TestBuffer::new();
+        headers
+            .deparse(buffer.as_mut())
+            .unwrap_or_else(|e| unreachable!("{e:?}"));
+        Packet::new(buffer).unwrap_or_else(|_| unreachable!("the fixture parses"))
+    }
+
+    fn entries(fabric: &Fabric) -> Vec<usize> {
+        let mut ids: Vec<usize> = fabric
+            .flows()
+            .snapshot(|_, _| true)
+            .map(|flow| Arc::as_ptr(&flow) as usize)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_fresh_flow_behind_an_extension_header_is_forwarded() {
+        let fabric = v6_fabric();
+        let (mut lookup, mut pfw) = fabric.stages();
+        let arrival = Arrival::inbound();
+
+        let mut packet = v6_hop_by_hop_syn("2001:db8:ffff::1", "2001:db8:1::1", 1234, 8001);
+        arrival.stamp(&mut packet);
+
+        let mut stamped = lookup.process(std::iter::once(packet));
+        let mut packet = stamped.next().unwrap_or_else(|| unreachable!());
+        drop(stamped);
+        packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+
+        pfw.process(std::iter::once(packet)).for_each(drop);
+        assert_eq!(
+            entries(&fabric).len(),
+            2,
+            "a TCP SYN behind one Hop-by-Hop header did not match its port-forwarding rule"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_packet_of_one_burst_keeps_the_first_packets_flow() {
+        let fabric = fabric();
+        let (mut lookup, mut pfw) = fabric.stages();
+        let arrival = Arrival::inbound();
+
+        let peer: IpAddr = "3.3.3.1".parse().unwrap_or_else(|_| unreachable!());
+        let published: IpAddr = "172.16.0.1".parse().unwrap_or_else(|_| unreachable!());
+        let packet = || {
+            let mut packet: Packet<TestBuffer> = build(peer, published, true, 1234, 8001);
+            arrival.stamp(&mut packet);
+            packet
+        };
+
+        let mut stamped = lookup.process(vec![packet(), packet()].into_iter());
+        let mut first = stamped.next().unwrap_or_else(|| unreachable!());
+        let mut second = stamped.next().unwrap_or_else(|| unreachable!());
+        drop(stamped);
+        for packet in [&mut first, &mut second] {
+            packet.meta_mut().dst_vpcd = arrival.dst_vpcd.map(VpcDiscriminant::from_vni);
+        }
+
+        pfw.process(std::iter::once(first)).for_each(drop);
+        let installed = entries(&fabric);
+        assert_eq!(
+            installed.len(),
+            2,
+            "the first packet of the burst did not install a pair"
+        );
+
+        pfw.process(std::iter::once(second)).for_each(drop);
+        assert_eq!(
+            entries(&fabric),
+            installed,
+            "the second packet of the burst replaced the pair the first one installed"
+        );
+        assert!(
+            fabric
+                .flows()
+                .snapshot(|_, _| true)
+                .all(|flow| flow.is_active()),
+            "the burst left a half of the pair no longer live"
+        );
     }
 }

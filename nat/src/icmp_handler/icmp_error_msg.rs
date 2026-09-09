@@ -9,7 +9,8 @@ use crate::NatTranslationData;
 use net::buffer::PacketBufferMut;
 use net::checksum::Checksum;
 use net::headers::{
-    EmbeddedTransport, TryEmbeddedHeadersMut, TryEmbeddedTransportMut, TryInnerIpMut,
+    EmbeddedIpVersion, EmbeddedTransport, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
+    TryInnerIpMut,
 };
 use net::icmp_any::TruncatedIcmpAny;
 use net::packet::{DoneReason, Packet};
@@ -73,15 +74,19 @@ pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
         .embedded_headers_mut()
         .ok_or(IcmpErrorMsgError::NoEmbeddedHeaders)?;
 
-    embedded_headers
+    let inner_ip = embedded_headers
         .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?
+        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?;
+    let old_addr = inner_ip.src_addr();
+    inner_ip
         .try_set_source(
             target_addr
                 .try_into()
                 .map_err(|_| IcmpErrorMsgError::NotUnicast(target_addr))?,
         )
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    fold_inner_address(embedded_headers, old_addr, target_addr);
 
     let Some(target_port) = target_port else {
         // No port to translate, we're done
@@ -94,7 +99,7 @@ pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
 
     match transport {
         EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
-            translate_inner_tcp_udp_src(transport, target_port)?;
+            translate_inner_tcp_udp_src(transport, quoted_version(old_addr), target_port)?;
         }
         EmbeddedTransport::Icmp4(icmp4) => {
             translate_inner_icmp(icmp4, target_port);
@@ -106,6 +111,27 @@ pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
     Ok(())
 }
 
+fn quoted_version(addr: IpAddr) -> EmbeddedIpVersion {
+    if addr.is_ipv4() {
+        EmbeddedIpVersion::Ipv4
+    } else {
+        EmbeddedIpVersion::Ipv6
+    }
+}
+
+fn fold_inner_address<H>(embedded_headers: &mut H, old_addr: IpAddr, new_addr: IpAddr)
+where
+    H: TryEmbeddedTransportMut + ?Sized,
+{
+    if old_addr == new_addr {
+        return;
+    }
+    let Some(transport) = embedded_headers.try_embedded_transport_mut() else {
+        return;
+    };
+    transport.update_checksum_for_address(old_addr, new_addr);
+}
+
 pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     target_addr: IpAddr,
@@ -115,11 +141,15 @@ pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
         .embedded_headers_mut()
         .ok_or(IcmpErrorMsgError::NoEmbeddedHeaders)?;
 
-    embedded_headers
+    let inner_ip = embedded_headers
         .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?
+        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?;
+    let old_addr = inner_ip.dst_addr();
+    inner_ip
         .try_set_destination(target_addr)
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    fold_inner_address(embedded_headers, old_addr, target_addr);
 
     let Some(target_port) = target_port else {
         // No port to translate, we're done
@@ -132,7 +162,7 @@ pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
 
     match transport {
         EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
-            translate_inner_tcp_udp_dst(transport, target_port)
+            translate_inner_tcp_udp_dst(transport, quoted_version(old_addr), target_port)
         }
         _ => Ok(()), // ICMP is dealt with when dealing with the source port
     }
@@ -159,15 +189,17 @@ where
         // No checksum to update, we're done
         return;
     };
-    let _ = icmp.increment_update_checksum(
+    let updated = icmp.increment_update_checksum(
         T::Checksum::from(current_checksum),
         old_identifier,
         new_identifier,
     );
+    let _ = icmp.set_checksum(updated);
 }
 
 fn translate_inner_tcp_udp_src(
     transport: &mut EmbeddedTransport,
+    quoted: EmbeddedIpVersion,
     target_port: NatPort,
 ) -> Result<(), IcmpErrorMsgError> {
     // Assume we have TCP or UDP, with source port always present
@@ -185,13 +217,14 @@ fn translate_inner_tcp_udp_src(
     // transport checksum update is to do an unconditional, incremental update here. Note
     // that this checksum will not be updated again when deparsing the packet.
     if let Some(current_checksum) = transport.checksum() {
-        transport.update_checksum(current_checksum, old_port, new_port.get());
+        transport.update_checksum(quoted, current_checksum, old_port, new_port.get());
     }
     Ok(())
 }
 
 fn translate_inner_tcp_udp_dst(
     transport: &mut EmbeddedTransport,
+    quoted: EmbeddedIpVersion,
     target_port: NatPort,
 ) -> Result<(), IcmpErrorMsgError> {
     // Assume we have TCP or UDP, with destination port always present
@@ -209,7 +242,7 @@ fn translate_inner_tcp_udp_dst(
         .set_destination(new_port)
         .unwrap_or_else(|_| unreachable!());
     if let Some(current_checksum) = transport.checksum() {
-        transport.update_checksum(current_checksum, old_port, new_port.get());
+        transport.update_checksum(quoted, current_checksum, old_port, new_port.get());
     }
     Ok(())
 }
@@ -438,5 +471,206 @@ mod bolero_tests {
                     }
                 },
             );
+    }
+}
+
+#[cfg(test)]
+mod quoted_transport_checksum {
+    use super::*;
+    use net::buffer::TestBuffer;
+    use net::checksum::Checksum;
+    use net::headers::{TryEmbeddedTransport, TryEmbeddedTransportMut};
+    use net::icmp6::{Icmp6DestUnreachable, Icmp6Type};
+    use net::ip::NextHeader;
+    use net::packet::test_utils::{
+        Icmp6ErrorAddrs, build_test_icmp4_destination_unreachable_packet,
+        build_test_icmp6_error_packet,
+    };
+    use net::udp::UdpChecksum;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    const OUTER_SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+    const OUTER_DST: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
+    const INNER_SRC: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 7);
+    const INNER_DST: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 9);
+    const NAT_SRC: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 200);
+    const NAT_DST: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 250);
+
+    const OUTER_SRC_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+    const OUTER_DST_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+    const INNER_SRC_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 7);
+    const INNER_DST_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 9);
+    const NAT_SRC_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0xfeed, 0xf00d, 0, 0, 0, 0xc8);
+
+    const OLD_PORT: u16 = 1234;
+    const PEER_PORT: u16 = 5678;
+    const NEW_PORT: u16 = 4321;
+    const OLD_ID: u16 = 0x1111;
+    const NEW_ID: u16 = 0x7f7f;
+
+    fn quote_v4(
+        inner_src: Ipv4Addr,
+        inner_dst: Ipv4Addr,
+        next_header: NextHeader,
+        param_1: u16,
+        param_2: u16,
+    ) -> Packet<TestBuffer> {
+        build_test_icmp4_destination_unreachable_packet(
+            OUTER_SRC,
+            OUTER_DST,
+            inner_src,
+            inner_dst,
+            next_header,
+            param_1,
+            param_2,
+        )
+        .unwrap_or_else(|_| unreachable!())
+    }
+
+    fn quote_v6(
+        inner_src: Ipv6Addr,
+        inner_dst: Ipv6Addr,
+        next_header: NextHeader,
+        param_1: u16,
+        param_2: u16,
+    ) -> Packet<TestBuffer> {
+        build_test_icmp6_error_packet(
+            Icmp6Type::DestUnreachable(Icmp6DestUnreachable::NoRoute),
+            Icmp6ErrorAddrs {
+                outer_src: OUTER_SRC_V6,
+                outer_dst: OUTER_DST_V6,
+                inner_src,
+                inner_dst,
+            },
+            next_header,
+            param_1,
+            param_2,
+        )
+        .unwrap_or_else(|_| unreachable!())
+    }
+
+    fn quoted_checksum(packet: &Packet<TestBuffer>) -> u16 {
+        packet
+            .try_embedded_transport()
+            .and_then(EmbeddedTransport::checksum)
+            .unwrap_or_else(|| unreachable!())
+    }
+
+    fn port(value: u16) -> NatPort {
+        NatPort::new_port(NonZero::new(value).unwrap_or_else(|| unreachable!()))
+    }
+
+    #[test]
+    fn an_address_only_rewrite_reaches_a_quoted_tcp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::TCP, OLD_PORT, PEER_PORT);
+        nat_translate_icmp_inner_src(&mut translated, IpAddr::V4(NAT_SRC), None)
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(NAT_SRC, INNER_DST, NextHeader::TCP, OLD_PORT, PEER_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn an_address_and_port_rewrite_reaches_a_quoted_udp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::UDP, OLD_PORT, PEER_PORT);
+        nat_translate_icmp_inner_src(&mut translated, IpAddr::V4(NAT_SRC), Some(port(NEW_PORT)))
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(NAT_SRC, INNER_DST, NextHeader::UDP, NEW_PORT, PEER_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn a_destination_rewrite_reaches_a_quoted_tcp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::TCP, OLD_PORT, PEER_PORT);
+        nat_translate_icmp_inner_dst(&mut translated, IpAddr::V4(NAT_DST), Some(port(NEW_PORT)))
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(INNER_SRC, NAT_DST, NextHeader::TCP, OLD_PORT, NEW_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn an_ipv6_address_rewrite_reaches_a_quoted_tcp_checksum() {
+        let mut translated = quote_v6(
+            INNER_SRC_V6,
+            INNER_DST_V6,
+            NextHeader::TCP,
+            OLD_PORT,
+            PEER_PORT,
+        );
+        nat_translate_icmp_inner_src(&mut translated, IpAddr::V6(NAT_SRC_V6), None)
+            .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v6(
+            NAT_SRC_V6,
+            INNER_DST_V6,
+            NextHeader::TCP,
+            OLD_PORT,
+            PEER_PORT,
+        );
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn an_identifier_rewrite_reaches_a_quoted_icmp_checksum() {
+        let mut translated = quote_v4(INNER_SRC, INNER_DST, NextHeader::ICMP, OLD_ID, PEER_PORT);
+        nat_translate_icmp_inner_src(
+            &mut translated,
+            IpAddr::V4(NAT_SRC),
+            Some(NatPort::Identifier(NEW_ID)),
+        )
+        .unwrap_or_else(|_| unreachable!());
+
+        let built = quote_v4(NAT_SRC, INNER_DST, NextHeader::ICMP, NEW_ID, PEER_PORT);
+        assert_eq!(quoted_checksum(&translated), quoted_checksum(&built));
+    }
+
+    #[test]
+    fn a_disabled_ipv4_udp_quote_checksum_stays_disabled() {
+        let mut packet = quote_v4(INNER_SRC, INNER_DST, NextHeader::UDP, OLD_PORT, PEER_PORT);
+        match packet.try_embedded_transport_mut() {
+            Some(EmbeddedTransport::Udp(udp)) => {
+                udp.set_checksum(UdpChecksum::new(0))
+                    .unwrap_or_else(|_| unreachable!());
+            }
+            _ => unreachable!(),
+        }
+
+        nat_translate_icmp_inner_src(&mut packet, IpAddr::V4(NAT_SRC), Some(port(NEW_PORT)))
+            .unwrap_or_else(|_| unreachable!());
+
+        assert_eq!(
+            quoted_checksum(&packet),
+            0,
+            "a quote that carried no checksum came out carrying one"
+        );
+    }
+
+    #[test]
+    fn a_zero_ipv6_udp_quote_checksum_is_folded_into() {
+        let mut packet = quote_v6(
+            INNER_SRC_V6,
+            INNER_DST_V6,
+            NextHeader::UDP,
+            OLD_PORT,
+            PEER_PORT,
+        );
+        match packet.try_embedded_transport_mut() {
+            Some(EmbeddedTransport::Udp(udp)) => {
+                udp.set_checksum(UdpChecksum::new(0))
+                    .unwrap_or_else(|_| unreachable!());
+            }
+            _ => unreachable!(),
+        }
+
+        nat_translate_icmp_inner_src(&mut packet, IpAddr::V6(NAT_SRC_V6), Some(port(NEW_PORT)))
+            .unwrap_or_else(|_| unreachable!());
+
+        assert_ne!(
+            quoted_checksum(&packet),
+            0,
+            "an IPv6 quote was left with a checksum IPv6 forbids"
+        );
     }
 }
