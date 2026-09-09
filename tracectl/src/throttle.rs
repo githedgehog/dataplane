@@ -70,7 +70,7 @@ impl RateLimitFilter {
             buckets: Box::new(std::array::from_fn(|_| AtomicU64::new(initial))),
             capacity_milli,
             refill_milli_per_ms: u64::from(config.replenish_per_second),
-            baseline: Instant::now(),
+            baseline: clock::now(),
         }
     }
 
@@ -78,7 +78,7 @@ impl RateLimitFilter {
     /// `wrapping_sub` handles a wrap between two touches of the same bucket.
     #[allow(clippy::cast_possible_truncation)] // intentional wrap
     fn now_ms(&self) -> u32 {
-        self.baseline.elapsed().as_millis() as u32
+        clock::elapsed(self.baseline).as_millis() as u32
     }
 
     /// Map a callsite's `Metadata` address to a bucket index in `0..SHARDS`.

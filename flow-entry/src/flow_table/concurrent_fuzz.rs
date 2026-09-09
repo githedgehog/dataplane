@@ -49,12 +49,12 @@ use concurrency::sync::atomic::{AtomicU8, Ordering};
 use concurrency::sync::{Arc, Weak};
 use concurrency::thread;
 // `spawn_scoped` is inherent on std's `Builder`, but supplied by `BuilderExt` under shuttle
+use clock::Duration;
 #[cfg_attr(not(feature = "shuttle"), allow(unused_imports))]
 use concurrency::thread::BuilderExt;
 use net::FlowKey;
 use net::flows::{ExtractRef, FlowInfo, FlowInfoFlags};
 use std::fmt;
-use std::time::{Duration, Instant};
 
 /// Stub [`FlowInfoItem`] payload: a single `Arc<AtomicU8>` that all flows
 /// share within one scenario. The blanket
@@ -160,7 +160,7 @@ fn insert_flows(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>
     // Far-future expiry so the per-flow timer never fires inside the test
     // window — we race the insert path, not the expiry path. (The timer task
     // is also cfg'd out entirely under shuttle.)
-    let expires_at = Instant::now() + Duration::from_hours(1);
+    let expires_at = clock::now() + Duration::from_hours(1);
     let flows: Vec<Arc<FlowInfo>> = match keys {
         [fwd_key, rev_key] => {
             let (fwd, rev) = FlowInfo::related_pair(

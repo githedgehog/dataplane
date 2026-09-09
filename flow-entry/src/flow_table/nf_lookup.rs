@@ -57,6 +57,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
 
 #[cfg(test)]
 mod test {
+    use clock::Duration;
     use concurrency::sync::Arc;
     use net::FlowKey;
     use net::buffer::PacketBufferMut;
@@ -74,7 +75,6 @@ mod test {
     use pipeline::DynPipeline;
     use pipeline::NetworkFunction;
     use std::net::IpAddr;
-    use std::time::{Duration, Instant};
     use tracing_test::traced_test;
 
     use crate::flow_table::FlowTable;
@@ -101,7 +101,7 @@ mod test {
 
         // Insert matching flow entry
         let flow_key = FlowKey::try_from(&packet).unwrap();
-        let flow_info = FlowInfo::new(flow_key, Instant::now() + Duration::from_secs(10));
+        let flow_info = FlowInfo::new(flow_key, clock::now() + Duration::from_secs(10));
         flow_table.insert(flow_info).unwrap();
 
         // Ensure packet is tagged
@@ -130,7 +130,7 @@ mod test {
         ) -> impl Iterator<Item = Packet<Buf>> + 'a {
             input.filter_map(move |packet| {
                 let flow_key = FlowKey::try_from(&packet).unwrap();
-                let flow_info = FlowInfo::new(flow_key, Instant::now() + self.timeout);
+                let flow_info = FlowInfo::new(flow_key, clock::now() + self.timeout);
                 self.flow_table
                     .insert(flow_info)
                     .expect("insert in FlowInfoCreator should not fail");
@@ -196,7 +196,7 @@ mod test {
             let key_2 = FlowKey::try_from(&packet_2).unwrap();
 
             // create a pair of related flow entries; flow_2 will get a longer timeout
-            let expires_at = tokio::time::Instant::now().into_std() + Duration::from_secs(2);
+            let expires_at = clock::now() + Duration::from_secs(2);
             let (flow_1, flow_2) = FlowInfo::related_pair(
                 expires_at,
                 key_1,
