@@ -165,7 +165,7 @@ pub(crate) struct PacketSummary {
     pub(crate) src_ip: std::net::IpAddr,
     pub(crate) dst_ip: std::net::IpAddr,
     pub(crate) proto: NextHeader,
-    pub(crate) ports: Option<(u16, u16)>,
+    pub(crate) ports: Option<(NonZero<u16>, NonZero<u16>)>,
 }
 
 impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
@@ -187,11 +187,9 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
         let src_ip = net.src_addr();
         let dst_ip = net.dst_addr();
         let proto = net.next_header();
-        let ports = packet.try_transport().and_then(|t| {
-            t.src_port()
-                .map(NonZero::get)
-                .zip(t.dst_port().map(NonZero::get))
-        });
+        let ports = packet
+            .try_transport()
+            .and_then(|t| t.src_port().zip(t.dst_port()));
 
         Ok(Self {
             src_vni,
@@ -211,10 +209,10 @@ impl PacketSummary {
         Some(PacketSummary {
             src_vni: self.dst_vni,
             dst_vni: self.src_vni,
-            src_ip: *flow_key.src_ip(),
-            dst_ip: *flow_key.dst_ip(),
+            src_ip: flow_key.src_ip(),
+            dst_ip: flow_key.dst_ip(),
             proto: flow_key.proto(),
-            ports: flow_key.ports().map(|(src, dst)| (src.get(), dst.get())),
+            ports: flow_key.ports(),
         })
     }
 }
