@@ -30,15 +30,22 @@ use tracing::{Level, debug, error, info, span, warn};
 /// Where the dataplane is installed.
 const DATAPLANE_BINARY: &str = "/bin/dataplane";
 
-/// Hugetlbfs mount points, and how much to back each with.
+/// Hugetlbfs mount points.
 ///
 /// Mounting these is best-effort. The dataplane asks the EAL for `--in-memory`, which backs its
 /// hugepages with memfd rather than files under a mount, so it starts without them; a mount is
 /// what a multi-process DPDK setup would need, and what makes the pages visible to an operator
 /// looking at the filesystem.
+///
+/// **Deliberately no `size=`.** hugetlbfs treats that option as a hard ceiling on the mount, not
+/// as a reservation, so a figure here silently caps what DPDK can take however many pages the
+/// kernel actually has. The 2 MiB mount carried `size=128M`, which is far below what a datapath
+/// asks for -- and the symptom is an allocation failure blamed on the host being short of pages,
+/// on a host with thousands of them free. Left off, the mount is bounded by the pool, which is the
+/// only limit that should apply.
 const HUGETLBFS_MOUNTS: &[(&str, &str)] = &[
-    ("/dev/hugepages/1G", "pagesize=1G,size=20G,rw"),
-    ("/dev/hugepages/2M", "pagesize=2M,size=128M,rw"),
+    ("/dev/hugepages/1G", "pagesize=1G,rw"),
+    ("/dev/hugepages/2M", "pagesize=2M,rw"),
 ];
 
 /// A device named in the configuration, resolved against the hardware actually present.
