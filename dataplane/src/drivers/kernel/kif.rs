@@ -6,7 +6,7 @@ use netdev::Interface;
 use std::io;
 
 use net::interface::InterfaceIndex;
-use rtnetlink::packet_route::link::LinkFlags;
+use rtnetlink::packet_route::link::{LinkAttribute, LinkFlags};
 use rtnetlink::{Handle, LinkUnspec};
 
 use tracing::{debug, error, info};
@@ -43,22 +43,22 @@ impl Kif {
         debug!("Successfully created interface '{name}'");
         Ok(iface)
     }
-    /// Bring the kernel interface represented by a [`Kif`] up and double check it went up.
-    async fn bring_up(&self, handle: &Handle) -> io::Result<()> {
+    /// Apply the requested MTU, bring the interface up, and read back its state.
+    async fn bring_up(&mut self, handle: &Handle, mtu: Option<u16>) -> io::Result<()> {
         info!("Bringing interface {} up ...", self.name);
+        let mut request = LinkUnspec::new_with_index(self.ifindex.to_u32()).up();
+        if let Some(mtu) = mtu {
+            request = request.mtu(u32::from(mtu));
+        }
         handle
             .link()
-            .set(
-                LinkUnspec::new_with_index(self.ifindex.to_u32())
-                    .up()
-                    .build(),
-            )
+            .set(request.build())
             .execute()
             .await
             .map_err(|e| {
                 io::Error::other(format!(
-                    "Failed to bring {} (ifindex {}) up: {e}",
-                    self.name, self.ifindex
+                    "Failed to configure {} (ifindex {}, requested MTU {mtu:?}): {e}",
+                    self.name, self.ifindex,
                 ))
             })?;
 
@@ -79,6 +79,18 @@ impl Kif {
 
         match links {
             Some(msg) => {
+                self.mtu = msg.attributes.iter().find_map(|attribute| match attribute {
+                    LinkAttribute::Mtu(value) => Some(*value),
+                    _ => None,
+                });
+                if let Some(requested) = mtu
+                    && self.mtu != Some(u32::from(requested))
+                {
+                    return Err(io::Error::other(format!(
+                        "Interface {} reports MTU {:?}, requested {requested}",
+                        self.name, self.mtu,
+                    )));
+                }
                 if msg.header.flags.contains(LinkFlags::Up) {
                     info!("Interface {} is up", self.name);
                     Ok(())
@@ -180,14 +192,103 @@ pub fn get_interfaces(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Re
     Ok(kifs)
 }
 
-/// Bring all of the interfaces in the slice of `Kif`s up
-pub async fn bring_kifs_up(kifs: &[Kif]) -> io::Result<()> {
+/// Configure interfaces before workers start and report their observed identity to the bridge.
+pub(super) async fn configure_interfaces(config: &[args::InterfaceArg]) -> io::Result<Vec<Kif>> {
+    let mut kifs = get_interfaces(config.iter().map(|interface| interface.interface.as_ref()))?;
     let (connection, handle, _) = rtnetlink::new_connection()?;
     let h = tokio::spawn(connection);
 
-    for kif in kifs {
-        kif.bring_up(&handle).await?;
+    let result = async {
+        for (kif, interface) in kifs.iter_mut().zip(config) {
+            kif.bring_up(&handle, interface.mtu).await?;
+        }
+        Ok(kifs)
     }
+    .await;
     h.abort();
-    Ok(())
+    result
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use args::{CmdArgs, LaunchConfiguration, Parser};
+    use caps::Capability;
+    use fixin::wrap;
+    use hardware::netns::NetworkNamespace;
+    use rtnetlink::LinkVeth;
+    use test_utils::with_caps;
+
+    #[n_vm::test]
+    #[wrap(with_caps([Capability::CAP_NET_ADMIN, Capability::CAP_SYS_ADMIN]))]
+    fn configured_mtu_reaches_the_kernel_and_reported_identity() {
+        std::thread::spawn(|| {
+            let netns = NetworkNamespace::create().unwrap();
+            netns.enter_with_sysfs().unwrap();
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let (connection, handle, _) = rtnetlink::new_connection().unwrap();
+                    let connection = tokio::spawn(connection);
+                    handle
+                        .link()
+                        .add(LinkVeth::new("mtu0", "mtu1").build())
+                        .execute()
+                        .await
+                        .unwrap();
+                    let launch = LaunchConfiguration::try_from(
+                        CmdArgs::try_parse_from([
+                            "dataplane",
+                            "--driver",
+                            "kernel",
+                            "--interface",
+                            "mtu0=kernel@mtu0/mtu=9000,mtu1=kernel@mtu1",
+                        ])
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    let mut config: Vec<_> = launch.driver.interfaces().cloned().collect();
+                    let kifs = configure_interfaces(&config).await.unwrap();
+                    for (kif, expected) in kifs.iter().zip([9000, 1500]) {
+                        let actual = handle
+                            .link()
+                            .get()
+                            .match_index(kif.ifindex.to_u32())
+                            .execute()
+                            .try_next()
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert!(actual.header.flags.contains(LinkFlags::Up));
+                        assert!(actual.attributes.contains(&LinkAttribute::Mtu(expected)));
+                        assert_eq!(
+                            kif.mtu,
+                            Some(expected),
+                            "MTU reported to the control bridge"
+                        );
+                    }
+
+                    // An omitted value preserves the configured MTU on repeated setup.
+                    config[0].mtu = None;
+                    assert_eq!(
+                        configure_interfaces(&config).await.unwrap()[0].mtu,
+                        Some(9000)
+                    );
+
+                    // A kernel rejection must stop startup, not report the requested value.
+                    config[0].mtu = Some(67);
+                    let error = configure_interfaces(&config).await.unwrap_err();
+                    assert!(
+                        error.to_string().contains("Failed to configure mtu0"),
+                        "{error}"
+                    );
+                    connection.abort();
+                });
+        })
+        .join()
+        .unwrap();
+    }
 }

@@ -403,7 +403,7 @@ fn bring_up_ports<'eal>(
             .claim(index)
             .map_err(|e| DriverError::PortSetup(format!("cannot use port {index}: {e}")))?;
 
-        ports.push(Port::bring_up(eal, port, name, num_workers)?);
+        ports.push(Port::bring_up(eal, port, name, num_workers, interface.mtu)?);
     }
 
     if !probed.is_empty() {
@@ -516,11 +516,7 @@ fn run_kernel_driver(
         if let Err(e) = DriverKernel::start(
             scope,
             workers,
-            config
-                .driver
-                .interfaces()
-                .map(|i| i.interface.to_string())
-                .collect::<Vec<_>>(),
+            config.driver.interfaces().cloned().collect::<Vec<_>>(),
             config.driver.num_workers(),
             &ingredients.factory(),
             status_writer,

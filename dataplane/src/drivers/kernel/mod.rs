@@ -30,7 +30,7 @@ use super::DriverError;
 use super::cpbridge::{DatapathEnds, PortIdentity};
 use super::status::DriverStatusWriter;
 use super::supervisor::{WorkerMonitor, spawn_supervisor};
-use kif::{Kif, bring_kifs_up};
+use kif::Kif;
 use worker::Worker;
 
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
@@ -120,7 +120,7 @@ impl DriverKernel {
     pub fn start<'scope>(
         scope: &'scope thread::Scope<'scope, '_>,
         workers_subsystem: &Subsystem,
-        args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
+        args: impl IntoIterator<Item = args::InterfaceArg>,
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<'static, TestBuffer>>,
         status_writer: DriverStatusWriter,
@@ -136,12 +136,11 @@ impl DriverKernel {
         // This thread is already in the datapath namespace, with a sysfs that reflects it, so
         // discovery and link setup see the interfaces wherever init put them.
         info!("Collecting interfaces from config");
-        let interfaces = kif::get_interfaces(args)?;
-
-        tokio::runtime::Builder::new_current_thread()
+        let config: Vec<_> = args.into_iter().collect();
+        let interfaces = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(bring_kifs_up(interfaces.as_slice()))?;
+            .block_on(kif::configure_interfaces(&config))?;
 
         // Tell the control plane what each interface turned out to be, so its tap can wear the
         // same MAC and MTU. Without the MAC, ARP for this interface resolves to the tap's random
