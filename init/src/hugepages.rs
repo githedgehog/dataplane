@@ -180,6 +180,57 @@ fn compact(node: Option<u32>) {
     }
 }
 
+/// How many pages may honestly be claimed, given how many are free and how many were wanted.
+///
+/// Never more than was asked for. The bug this exists to prevent was real and silent: with more
+/// free pages on the host than the datapath wanted, the whole free pool was claimed and handed to
+/// the EAL as `--numa-mem`. On a node where the pod's cgroup permitted less than the host had
+/// free, DPDK then asked for memory it was never going to be given and failed in
+/// `rte_eal_memory_init` -- reported as an out-of-memory, on a host with pages to spare.
+fn claimable(free_pages: u64, want_pages: u64) -> u64 {
+    free_pages.min(want_pages)
+}
+
+/// The pages this *cgroup* will allow, which inside a container is the limit that actually binds.
+///
+/// `free_hugepages` describes the host. Kubernetes hands a pod a slice of that through the hugetlb
+/// controller, and the pod may not exceed it however much the host has spare -- so a plan built
+/// only from sysfs can be honest about the machine and still wrong about this process.
+///
+/// Returns `None` when there is no limit to read (no controller, cgroup v1 layout absent, or the
+/// limit is literally `max`), in which case the host figures stand on their own.
+fn cgroup_limit_pages(page_size_kb: u64) -> Option<u64> {
+    let suffix = match page_size_kb {
+        ONE_GIB_KB => "1GB",
+        TWO_MIB_KB => "2MB",
+        _ => return None,
+    };
+    // cgroup v2 first; in a container with a cgroup namespace this is the pod's own root.
+    let candidates = [
+        format!("/sys/fs/cgroup/hugetlb.{suffix}.max"),
+        format!("/sys/fs/cgroup/hugetlb/hugetlb.{suffix}.limit_in_bytes"),
+    ];
+    for path in &candidates {
+        let Ok(raw) = fs::read_to_string(path) else {
+            continue;
+        };
+        let raw = raw.trim();
+        if raw == "max" {
+            return None;
+        }
+        if let Ok(bytes) = raw.parse::<u64>() {
+            // v1 reports a sentinel near u64::MAX for "unlimited" rather than the word.
+            if bytes == u64::MAX || bytes > u64::MAX / 2 {
+                return None;
+            }
+            let pages = bytes / (page_size_kb * 1024);
+            debug!("cgroup permits {pages} page(s) of {page_size_kb} kB (from {path})");
+            return Some(pages);
+        }
+    }
+    None
+}
+
 /// Try to make `want_pages` of `page_size_kb` free on `node`, and report how many actually are.
 ///
 /// Grows the pool by the shortfall rather than setting it to `want_pages`: `nr_hugepages` is the
@@ -199,14 +250,17 @@ fn try_reserve(node: Option<u32>, page_size_kb: u64, want_pages: u64) -> u64 {
     };
     if free_now >= want_pages {
         debug!(
-            "{free_now} free {page_size_kb} kB page(s) already available{}",
+            "{free_now} free {page_size_kb} kB page(s) already available{}, taking {want_pages}",
             node.map_or(String::new(), |n| format!(" on node {n}"))
         );
-        return free_now;
+        // `want_pages`, **not** `free_now`. Claiming everything the host happens to have free is
+        // how `--numa-mem=7168` reached an EAL whose cgroup permitted 4096: the figure has to be
+        // what was asked for, not what was lying around. See `claimable`.
+        return want_pages;
     }
 
     let Some(nr_now) = read_count(&nr_path) else {
-        return free_now;
+        return claimable(free_now, want_pages);
     };
     let target = nr_now.saturating_add(want_pages - free_now);
     if let Err(e) = fs::write(&nr_path, target.to_string()) {
@@ -215,12 +269,12 @@ fn try_reserve(node: Option<u32>, page_size_kb: u64, want_pages: u64) -> u64 {
              This usually means the process lacks CAP_SYS_ADMIN or sysfs is mounted read-only.",
             nr_path.display()
         );
-        return free_now;
+        return claimable(free_now, want_pages);
     }
 
     // The kernel silently gives less than asked when it cannot find the contiguous memory, so the
     // write succeeding proves nothing. Only the read-back is evidence.
-    read_count(&free_path).unwrap_or(free_now)
+    claimable(read_count(&free_path).unwrap_or(free_now), want_pages)
 }
 
 /// Reserve hugepages for every NUMA node the configured devices sit on.
@@ -265,7 +319,20 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
             info!("{page_size_kb} kB pages are not usable by this process; trying a smaller size");
             continue;
         }
-        let want_pages = WANT_KB_PER_NODE / page_size_kb;
+        let mut want_pages = WANT_KB_PER_NODE / page_size_kb;
+        if let Some(permitted) = cgroup_limit_pages(page_size_kb)
+            && permitted < want_pages
+        {
+            info!(
+                "this cgroup permits {permitted} page(s) of {page_size_kb} kB, fewer than the \
+                 {want_pages} wanted; asking the EAL only for what it may have"
+            );
+            want_pages = permitted;
+        }
+        if want_pages == 0 {
+            info!("{page_size_kb} kB pages are permitted but capped at zero here; trying smaller");
+            continue;
+        }
         let mut secured: BTreeMap<u32, u64> = BTreeMap::new();
         let mut short = false;
 
@@ -326,7 +393,10 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
 
 #[cfg(test)]
 mod pool_test {
-    use super::{DISABLE_ENV, ONE_GIB_KB, TWO_MIB_KB, page_size_is_usable, reserve_for};
+    use super::{
+        DISABLE_ENV, ONE_GIB_KB, TWO_MIB_KB, WANT_KB_PER_NODE, claimable, page_size_is_usable,
+        reserve_for,
+    };
     use hardware::pci::address::PciAddress;
 
     /// Everything that touches the host hugepage pool lives in **one** test, deliberately.
@@ -378,7 +448,36 @@ mod pool_test {
             assert!(plan.is_none(), "{value} should disable the reservation");
         }
 
-        // 4. The guard that makes step 3 mean something: without the variable, the same call must
+        // 4. Never claim more than was asked for, however much the host has free. This is the
+        //    defect that produced `--numa-mem=7168` against a 4096 MiB grant: the host had 3584
+        //    free 2 MiB pages, the datapath wanted 2048, and the whole pool was claimed.
+        assert_eq!(
+            claimable(3584, 2048),
+            2048,
+            "a large free pool must not inflate the claim"
+        );
+        assert_eq!(
+            claimable(1000, 2048),
+            1000,
+            "a small free pool is reported honestly"
+        );
+        assert_eq!(claimable(2048, 2048), 2048);
+        assert_eq!(claimable(0, 2048), 0);
+
+        // ...and the same property end to end: whatever this host has, the plan never exceeds what
+        // was wanted. On a machine with a large pool this is the assertion that would have caught
+        // the defect above.
+        unsafe { std::env::remove_var(DISABLE_ENV) };
+        if let Some(plan) = reserve_for(&device) {
+            let total: u64 = plan.per_node_mb.iter().map(|(_, mb)| *mb).sum();
+            let wanted_mb = WANT_KB_PER_NODE / 1024;
+            assert!(
+                total <= wanted_mb,
+                "the plan claims {total} MiB but only {wanted_mb} MiB was wanted"
+            );
+        }
+
+        // 5. The guard that makes step 3 mean something: without the variable, the same call must
         //    reach the reservation. If this host has no usable hugepages it says so, rather than
         //    letting step 3 pass for the wrong reason.
         unsafe { std::env::remove_var(DISABLE_ENV) };
