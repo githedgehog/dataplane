@@ -252,7 +252,7 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
-fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
+fn handle_ifevent(ev: &EthEvent, db: &mut RoutingDb) {
     let iftw = &mut db.iftw;
     let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
     let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
@@ -261,6 +261,9 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
         IfState::Down
     };
     let ifindex = ev.ifindex;
+    // Decided inside the read guard, applied outside it: the writer cannot be used while a read
+    // handle is open.
+    let mut mac_change = None;
     if let Some(iftable) = iftw.enter() {
         let Some(iface) = iftable.get_interface(ifindex) else {
             return;
@@ -273,11 +276,37 @@ fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
             ));
         }
         if iface.oper_state != oper_state {
-            revent!(RouterEvent::IfOperChange(ev, iface.oper_state, oper_state));
+            revent!(RouterEvent::IfOperChange(
+                ev.clone(),
+                iface.oper_state,
+                oper_state
+            ));
+        }
+        // A MAC that changed after the configuration was built. The datapath tests every arriving
+        // frame's destination against this address, so until it is applied the interface drops
+        // every unicast frame meant for it as `MacNotForUs` -- which is what a control-plane tap
+        // does between taking its random birth address and being given its port's.
+        //
+        // `None` means the message carried no address attribute, not that the address was removed.
+        if let Some(mac) = ev.mac
+            && iface.get_mac() != Some(mac)
+        {
+            info!(
+                "Interface {} ({}) changed mac {} -> {mac}",
+                ev.name,
+                ifindex,
+                iface
+                    .get_mac()
+                    .map_or_else(|| "none".to_string(), |m| m.to_string())
+            );
+            mac_change = Some(mac);
         }
     }
     iftw.set_iface_admin_state(ifindex, adm_state);
     iftw.set_iface_oper_state(ifindex, oper_state);
+    if let Some(mac) = mac_change {
+        iftw.set_iface_mac(ifindex, mac);
+    }
 }
 
 fn handle_bgp_peer_status_change(bgp_ev: BgpNeighEvent) {
@@ -304,7 +333,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
+            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(&ev, db),
             Ok(RouterCtlMsg::BgpNeighStatus(bgp_ev)) => handle_bgp_peer_status_change(bgp_ev),
             Err(TryRecvError::Empty) => break,
             Err(e) => {
