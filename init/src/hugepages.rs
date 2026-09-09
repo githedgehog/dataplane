@@ -32,11 +32,76 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+
+use nix::sys::memfd::{MFdFlags, memfd_create};
 
 use args::HugepagePlan;
 use hardware::pci::address::PciAddress;
 use tracing::{debug, info, warn};
+
+/// Can this process actually obtain a hugepage of `page_size_kb`, here and now?
+///
+/// **This, and not sysfs, is the oracle.** `free_hugepages` reports the *host's* pool, and inside
+/// a container that is not what binds. Kubernetes treats hugepages as a scheduled resource: a pod
+/// that asked for `hugepages-2Mi` gets `hugetlb.1GB.max = 0` in its cgroup, so the host can show
+/// gigabyte pages sitting free while this process may not touch one. Believing sysfs there means
+/// choosing a page size the EAL cannot use, and DPDK reports that as `Cannot init memory` -- an
+/// out-of-memory story on a machine with thousands of free pages.
+///
+/// So: ask the kernel for one, the same way DPDK does under `--in-memory`. A hugetlb-backed memfd
+/// that can be sized and faulted is proof; anything else is a guess. Costs one page, briefly.
+fn page_size_is_usable(page_size_kb: u64) -> bool {
+    let size_flag = match page_size_kb {
+        ONE_GIB_KB => MFdFlags::MFD_HUGE_1GB,
+        TWO_MIB_KB => MFdFlags::MFD_HUGE_2MB,
+        _ => return false,
+    };
+    let Ok(fd) = memfd_create(
+        c"dataplane-hugepage-probe",
+        MFdFlags::MFD_HUGETLB | size_flag,
+    ) else {
+        debug!("{page_size_kb} kB pages are not available to this process (memfd refused)");
+        return false;
+    };
+    let len = page_size_kb * 1024;
+    #[allow(clippy::cast_possible_wrap)]
+    if nix::unistd::ftruncate(&fd, len as i64).is_err() {
+        debug!("{page_size_kb} kB pages: could not size a hugetlb memfd");
+        return false;
+    }
+    // ftruncate on hugetlbfs does not commit; the fault does. Map and touch one byte, which is
+    // where a cgroup limit or an empty pool actually says no.
+    let Ok(len) = NonZeroUsize::try_from(usize::try_from(len).unwrap_or(0)) else {
+        return false;
+    };
+    let mapped = unsafe {
+        nix::sys::mman::mmap(
+            None,
+            len,
+            nix::sys::mman::ProtFlags::PROT_READ | nix::sys::mman::ProtFlags::PROT_WRITE,
+            nix::sys::mman::MapFlags::MAP_SHARED,
+            &fd,
+            0,
+        )
+    };
+    match mapped {
+        Ok(addr) => {
+            // SAFETY: `addr` is a live mapping of `len` bytes, and one byte is in bounds.
+            unsafe { addr.as_ptr().cast::<u8>().write_volatile(0) };
+            // SAFETY: unmapping exactly what was just mapped.
+            unsafe {
+                let _ = nix::sys::mman::munmap(addr, len.get());
+            }
+            true
+        }
+        Err(e) => {
+            debug!("{page_size_kb} kB pages: could not fault one ({e}); unusable here");
+            false
+        }
+    }
+}
 
 /// Set this to `off` to skip the reservation entirely and omit `--numa-mem`.
 const DISABLE_ENV: &str = "DATAPLANE_HUGEPAGE_RESERVE";
@@ -193,6 +258,13 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
     );
 
     for page_size_kb in [ONE_GIB_KB, TWO_MIB_KB] {
+        // Before believing any counter, prove this process can get one. Skipping straight past an
+        // unusable size is the whole point: the host may have gigabyte pages free while this pod's
+        // cgroup forbids them, and choosing them anyway hands the EAL a figure it cannot honour.
+        if !page_size_is_usable(page_size_kb) {
+            info!("{page_size_kb} kB pages are not usable by this process; trying a smaller size");
+            continue;
+        }
         let want_pages = WANT_KB_PER_NODE / page_size_kb;
         let mut secured: BTreeMap<u32, u64> = BTreeMap::new();
         let mut short = false;
@@ -217,6 +289,17 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
         if total == 0 {
             continue;
         }
+        // A short result at a large page size is a reason to try a smaller one, not to proceed.
+        // Accepting it was the original mistake: the EAL is then told to preallocate an amount
+        // that the pages behind it cannot cover.
+        if short && page_size_kb != TWO_MIB_KB {
+            info!(
+                "only {total} MiB of the {} MiB wanted is available in {page_size_kb} kB pages; \
+                 trying a smaller size",
+                WANT_KB_PER_NODE / 1024
+            );
+            continue;
+        }
         let plan = HugepagePlan {
             page_size_kb,
             per_node_mb: secured.into_iter().collect(),
@@ -239,4 +322,46 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
          `hugepagesz=1G hugepages=N` on the kernel command line."
     );
     None
+}
+
+#[cfg(test)]
+mod usability_test {
+    use super::{ONE_GIB_KB, TWO_MIB_KB, page_size_is_usable};
+
+    /// The probe must answer for a real page size without lying in either direction.
+    ///
+    /// Deliberately not asserting *which* answer: a machine with no 1 GiB pool should say no and a
+    /// machine with one should say yes, and both are correct. What is asserted is that the probe
+    /// leaks nothing and agrees with itself, since a probe that consumed a page per call would
+    /// drain the pool it is measuring.
+    #[test]
+    fn the_probe_is_repeatable_and_leaks_nothing() {
+        let free = |kb: u64| -> Option<u64> {
+            std::fs::read_to_string(format!(
+                "/sys/kernel/mm/hugepages/hugepages-{kb}kB/free_hugepages"
+            ))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+        };
+        for size in [ONE_GIB_KB, TWO_MIB_KB] {
+            let before = free(size);
+            let first = page_size_is_usable(size);
+            let second = page_size_is_usable(size);
+            let after = free(size);
+            assert_eq!(first, second, "{size} kB: the probe disagreed with itself");
+            if let (Some(b), Some(a)) = (before, after) {
+                assert_eq!(b, a, "{size} kB: the probe leaked {} page(s)", b - a);
+            }
+            println!("{size} kB usable = {first} (free before={before:?} after={after:?})");
+        }
+    }
+
+    /// A size the kernel has no pool for must be refused, not guessed at.
+    #[test]
+    fn an_unsupported_page_size_is_refused() {
+        assert!(!page_size_is_usable(4), "4 kB is not a hugepage size");
+        assert!(!page_size_is_usable(0), "0 is not a page size");
+    }
 }
