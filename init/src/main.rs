@@ -228,6 +228,50 @@ fn prepare_devices(devices: &[ResolvedDevice]) -> Result<(), String> {
 /// `init_net` -- and DPDK would then find nothing from inside the namespace. That is a boot-time
 /// setting, `ib_core.netns_mode=0`, and it is checked here so the failure is reported where it can
 /// be understood rather than as an empty device list much later.
+/// Whether the RDMA subsystem will let a network namespace own a device.
+///
+/// `ib_core`'s `netns_mode` is a bool parameter: `Y` is *shared* (the kernel default) and `N` is
+/// *exclusive*. It is settable at boot as `ib_core.netns_mode=0`, and effectively only at boot --
+/// `rdma system set netns exclusive` is permitted only while no network namespace other than the
+/// initial one exists, which on a node running containers is never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RdmaNetnsMode {
+    /// A device can be moved into a namespace and is invisible outside it. What the design needs.
+    Exclusive,
+    /// Devices are visible everywhere and a namespace cannot own one.
+    Shared,
+    /// `ib_core` is not loaded, or the parameter is not where it is expected.
+    Unknown,
+}
+
+/// Where the kernel exposes the RDMA namespace mode.
+const IB_CORE_NETNS_MODE: &str = "/sys/module/ib_core/parameters/netns_mode";
+
+/// Interpret the contents of [`IB_CORE_NETNS_MODE`].
+///
+/// Split from the read so both answers can be tested on a machine that can only be in one of them.
+fn parse_netns_mode(raw: &str) -> RdmaNetnsMode {
+    match raw.trim() {
+        "N" | "0" => RdmaNetnsMode::Exclusive,
+        "Y" | "1" => RdmaNetnsMode::Shared,
+        other => {
+            warn!("{IB_CORE_NETNS_MODE} contained {other:?}, which is neither Y nor N");
+            RdmaNetnsMode::Unknown
+        }
+    }
+}
+
+/// Read the RDMA namespace mode from the `ib_core` module parameter.
+fn rdma_netns_mode() -> RdmaNetnsMode {
+    match std::fs::read_to_string(IB_CORE_NETNS_MODE) {
+        Ok(raw) => parse_netns_mode(&raw),
+        Err(e) => {
+            debug!("could not read {IB_CORE_NETNS_MODE}: {e}");
+            RdmaNetnsMode::Unknown
+        }
+    }
+}
+
 async fn move_devices_to_netns(
     devices: &[ResolvedDevice],
     netns: &NetworkNamespace,
@@ -241,6 +285,37 @@ async fn move_devices_to_netns(
             )
         })
         .collect();
+
+    // Refuse here rather than let this surface as an empty device list.
+    //
+    // In shared mode `_ib_alloc_device` discards the requested net: the devlink instance moves and
+    // the reload *succeeds*, while the RDMA device -- the half the mlx5 PMD attaches through --
+    // stays in `init_net`. The datapath then enumerates nothing, which is indistinguishable from
+    // absent hardware, and the reason is a boot parameter no message in the failure path mentions.
+    if !bifurcated.is_empty() {
+        match rdma_netns_mode() {
+            RdmaNetnsMode::Exclusive => {}
+            RdmaNetnsMode::Shared => {
+                return Err(format!(
+                    "the RDMA subsystem is in shared mode, so a network namespace cannot own {}. \
+                     Boot the host with `ib_core.netns_mode=0` (`rdma system show` should then say \
+                     `netns exclusive`), or run without --datapath-netns. Changing it at runtime \
+                     with `rdma system set netns exclusive` is only permitted while no network \
+                     namespace but the initial one exists, which is not the case on a node running \
+                     containers.",
+                    bifurcated
+                        .iter()
+                        .map(|d| d.address.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            RdmaNetnsMode::Unknown => warn!(
+                "could not determine the RDMA namespace mode; if the datapath finds no device, \
+                 check `rdma system show` for `netns exclusive`"
+            ),
+        }
+    }
 
     for device in devices {
         if matches!(
@@ -948,4 +1023,44 @@ fn main() {
     }
 
     std::process::exit(supervise_gateway(config, netns, host_netns, supervise_frr));
+}
+
+#[cfg(test)]
+mod rdma_netns_mode_test {
+    use super::{IB_CORE_NETNS_MODE, RdmaNetnsMode, parse_netns_mode, rdma_netns_mode};
+
+    /// Both answers, on a machine that can only be in one of them.
+    ///
+    /// The host-reading test below can only exercise whichever mode this machine happens to be in,
+    /// so a mistake in the other arm would go unnoticed -- and the arm that matters is `Y`, the
+    /// kernel default, which is what a misconfigured lab host reports.
+    #[test]
+    fn shared_and_exclusive_are_both_recognised() {
+        assert_eq!(parse_netns_mode("Y"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("1"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("Y\n"), RdmaNetnsMode::Shared);
+        assert_eq!(parse_netns_mode("N"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("0"), RdmaNetnsMode::Exclusive);
+        assert_eq!(parse_netns_mode("N\n"), RdmaNetnsMode::Exclusive);
+        // Anything else is not guessed at: an unrecognised value warns and only warns, which is
+        // the right way round -- refusing to start over a parameter we cannot read would be worse.
+        assert_eq!(parse_netns_mode("maybe"), RdmaNetnsMode::Unknown);
+        assert_eq!(parse_netns_mode(""), RdmaNetnsMode::Unknown);
+    }
+
+    /// And the reader must agree with what this machine actually reports.
+    #[test]
+    fn a_readable_parameter_is_never_reported_unknown() {
+        let Ok(raw) = std::fs::read_to_string(IB_CORE_NETNS_MODE) else {
+            // No ib_core here; Unknown is the honest answer and the guard only warns.
+            assert_eq!(rdma_netns_mode(), RdmaNetnsMode::Unknown);
+            return;
+        };
+        assert_eq!(rdma_netns_mode(), parse_netns_mode(&raw));
+        assert_ne!(
+            rdma_netns_mode(),
+            RdmaNetnsMode::Unknown,
+            "{IB_CORE_NETNS_MODE} is readable ({raw:?}), so the mode must be decided, not guessed"
+        );
+    }
 }
