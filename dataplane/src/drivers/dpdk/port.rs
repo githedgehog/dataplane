@@ -197,6 +197,13 @@ impl<'eal> Port<'eal> {
             ))
         })?;
 
+        // Sized against the MTU the device was just configured with, not against the default.
+        let data_room = dpdk::mem::mbuf_data_room(dev.mtu().unwrap_or(1500));
+        let pool_mbufs = POOL_MBUFS_PER_WORKER * u32::from(num_workers);
+        info!(
+            "port {index} ({name}) receive pool: {pool_mbufs} mbufs of {data_room} B = {} MiB",
+            (u64::from(pool_mbufs) * u64::from(data_room)) / (1024 * 1024)
+        );
         let rx_pool = eal
             .mem
             .new_pkt_pool(
@@ -204,6 +211,7 @@ impl<'eal> Port<'eal> {
                     format!("rx_{index}"),
                     PoolParams {
                         size: POOL_MBUFS_PER_WORKER * u32::from(num_workers),
+                        data_size: data_room,
                         ..Default::default()
                     },
                 )
