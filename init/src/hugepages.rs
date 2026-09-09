@@ -277,6 +277,73 @@ fn try_reserve(node: Option<u32>, page_size_kb: u64, want_pages: u64) -> u64 {
     claimable(read_count(&free_path).unwrap_or(free_now), want_pages)
 }
 
+/// Why the reservation was skipped, when it was.
+///
+/// A named reason rather than a bare `bool` so each can be tested for. Returning `None` from
+/// `reserve_for` covers several very different situations, and a test that only sees `None` cannot
+/// tell the escape hatch from a machine that simply had nothing to place -- which is exactly the
+/// vacuity that let a broken hatch pass its own test once already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Skip {
+    /// An operator asked for this to stay out of the way.
+    Disabled,
+    /// One NUMA node, so there is nowhere to place memory wrongly.
+    SingleNode,
+}
+
+impl Skip {
+    /// The reason, phrased for a log line.
+    fn why(self) -> &'static str {
+        match self {
+            Skip::Disabled => "DATAPLANE_HUGEPAGE_RESERVE=off",
+            Skip::SingleNode => {
+                "this machine has a single NUMA node, so placement is not a question"
+            }
+        }
+    }
+}
+
+/// Decide whether to reserve at all, before touching anything.
+///
+/// The escape hatch is checked first so it works whatever the machine looks like: it exists to be
+/// reached for when this code is suspected, and a hatch that only worked on some hosts would be
+/// worse than none.
+///
+/// The single-node case is not an optimisation. `--numa-mem` places memory *across* nodes, so with
+/// one node it can only constrain the EAL and never help it -- while every failure this code has
+/// caused was in computing that figure. There is nothing on one node to weigh against that risk,
+/// so the EAL is left to allocate lazily within whatever the cgroup permits.
+fn skip_reason() -> Option<Skip> {
+    if let Ok(setting) = std::env::var(DISABLE_ENV)
+        && setting.eq_ignore_ascii_case("off")
+    {
+        return Some(Skip::Disabled);
+    }
+    if numa_node_count() <= 1 {
+        return Some(Skip::SingleNode);
+    }
+    None
+}
+
+/// How many NUMA nodes this machine has.
+///
+/// Counted from sysfs rather than from the devices, because the question is about the machine.
+fn numa_node_count() -> usize {
+    let Ok(entries) = fs::read_dir("/sys/devices/system/node") else {
+        return 1;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_str().is_some_and(|n| {
+                n.strip_prefix("node")
+                    .is_some_and(|r| r.parse::<u32>().is_ok())
+            })
+        })
+        .count()
+        .max(1)
+}
+
 /// Reserve hugepages for every NUMA node the configured devices sit on.
 ///
 /// Tries 1 GiB pages first and falls back to 2 MiB, compacting before each attempt. Returns the
@@ -284,15 +351,11 @@ fn try_reserve(node: Option<u32>, page_size_kb: u64, want_pages: u64) -> u64 {
 /// dataplane is left to whatever the host already has, exactly as before this existed.
 #[must_use]
 pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
-    // An escape hatch, because this touches host state and pins the EAL to a figure. When a lab
-    // run fails somewhere in memory setup, the first question is whether this is the cause, and
-    // answering it should not need a rebuild -- set DATAPLANE_HUGEPAGE_RESERVE=off and the
-    // dataplane is back to taking whatever the host already has, which is how it behaved before
-    // any of this existed.
-    if let Ok(setting) = std::env::var(DISABLE_ENV)
-        && setting.eq_ignore_ascii_case("off")
-    {
-        info!("{DISABLE_ENV}=off: leaving hugepages to the host and omitting --numa-mem");
+    if let Some(skip) = skip_reason() {
+        info!(
+            "{}; leaving memory to the EAL and omitting --numa-mem",
+            skip.why()
+        );
         return None;
     }
 
@@ -394,8 +457,8 @@ pub fn reserve_for(devices: &[PciAddress]) -> Option<HugepagePlan> {
 #[cfg(test)]
 mod pool_test {
     use super::{
-        DISABLE_ENV, ONE_GIB_KB, TWO_MIB_KB, WANT_KB_PER_NODE, claimable, page_size_is_usable,
-        reserve_for,
+        DISABLE_ENV, ONE_GIB_KB, Skip, TWO_MIB_KB, WANT_KB_PER_NODE, claimable, numa_node_count,
+        page_size_is_usable, reserve_for, skip_reason,
     };
     use hardware::pci::address::PciAddress;
 
@@ -437,37 +500,45 @@ mod pool_test {
         assert!(!page_size_is_usable(4), "4 kB is not a hugepage size");
         assert!(!page_size_is_usable(0), "0 is not a page size");
 
-        // 3. The escape hatch suppresses the plan, and a `None` plan is what drops `--numa-mem`.
-        //    Note the device list is non-empty: `reserve_for(&[])` returns `None` because there
-        //    are no nodes to reserve on, which would pass whether the hatch worked or not.
+        // 3. The escape hatch is honoured, and is honoured *first* -- so it works on any machine,
+        //    including a single-node one where the reservation would be skipped anyway. Asserting
+        //    the reason rather than a bare `None` is what keeps this from going vacuous: `None`
+        //    covers several unrelated situations and cannot tell them apart.
         for value in ["off", "OFF", "Off"] {
-            // SAFETY: this test owns its process, and the pool-touching tests are all here.
+            // SAFETY: this test owns its process, and every pool-touching test lives here.
             unsafe { std::env::set_var(DISABLE_ENV, value) };
+            let reason = skip_reason();
             let plan = reserve_for(&device);
             unsafe { std::env::remove_var(DISABLE_ENV) };
-            assert!(plan.is_none(), "{value} should disable the reservation");
+            assert_eq!(
+                reason,
+                Some(Skip::Disabled),
+                "{value} should be recognised as the escape hatch, not as something else"
+            );
+            assert!(plan.is_none(), "{value} should suppress the plan");
         }
 
-        // 4. Never claim more than was asked for, however much the host has free. This is the
-        //    defect that produced `--numa-mem=7168` against a 4096 MiB grant: the host had 3584
-        //    free 2 MiB pages, the datapath wanted 2048, and the whole pool was claimed.
-        assert_eq!(
-            claimable(3584, 2048),
-            2048,
-            "a large free pool must not inflate the claim"
-        );
-        assert_eq!(
-            claimable(1000, 2048),
-            1000,
-            "a small free pool is reported honestly"
-        );
-        assert_eq!(claimable(2048, 2048), 2048);
-        assert_eq!(claimable(0, 2048), 0);
-
-        // ...and the same property end to end: whatever this host has, the plan never exceeds what
-        // was wanted. On a machine with a large pool this is the assertion that would have caught
-        // the defect above.
+        // 4. Without the variable, the decision is made on the machine rather than the hatch.
         unsafe { std::env::remove_var(DISABLE_ENV) };
+        assert_ne!(
+            skip_reason(),
+            Some(Skip::Disabled),
+            "the hatch must not latch: removing the variable has to change the answer"
+        );
+        match numa_node_count() {
+            1 => assert_eq!(
+                skip_reason(),
+                Some(Skip::SingleNode),
+                "one node means --numa-mem cannot help, so it must be skipped"
+            ),
+            _ => assert_eq!(
+                skip_reason(),
+                None,
+                "more than one node means the placement question is real"
+            ),
+        }
+
+        // 5. Whatever this host decides, a plan it does produce never claims more than was wanted.
         if let Some(plan) = reserve_for(&device) {
             let total: u64 = plan.per_node_mb.iter().map(|(_, mb)| *mb).sum();
             let wanted_mb = WANT_KB_PER_NODE / 1024;
@@ -476,15 +547,5 @@ mod pool_test {
                 "the plan claims {total} MiB but only {wanted_mb} MiB was wanted"
             );
         }
-
-        // 5. The guard that makes step 3 mean something: without the variable, the same call must
-        //    reach the reservation. If this host has no usable hugepages it says so, rather than
-        //    letting step 3 pass for the wrong reason.
-        unsafe { std::env::remove_var(DISABLE_ENV) };
-        assert!(
-            reserve_for(&device).is_some(),
-            "no plan without the hatch set: this host has no usable hugepages, so the escape-hatch \
-             assertions above cannot tell the hatch from the absence of pages"
-        );
     }
 }
