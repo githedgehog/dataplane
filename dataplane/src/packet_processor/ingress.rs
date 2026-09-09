@@ -84,6 +84,36 @@ impl Ingress {
         packet.done(DoneReason::MacNotForUs);
     }
 
+    /// A multicast frame: not ours to route, but not nobody's either.
+    ///
+    /// Distinguished from [`interface_ingress_eth_non_local`] because the two mean different
+    /// things and the driver treats them differently. `MacNotForUs` is a drop, full stop;
+    /// `Unhandled` is "the datapath had nothing to do with it", which the control-plane bridge
+    /// punts when the frame was addressed to the port -- and `cpbridge::addressed_to` counts
+    /// multicast as addressed, with the comment that LLDP and IPv6 neighbour discovery "are the
+    /// control plane's business".
+    ///
+    /// They disagreed. Multicast fell to the non-local arm, was marked `MacNotForUs`, and was
+    /// dropped before the bridge ever got to apply that intent -- so every neighbour solicitation
+    /// and every LLDP frame died in the pipeline. IPv6 neighbour discovery is *entirely*
+    /// multicast, so nothing about it could have worked.
+    ///
+    /// `l2bcast` is deliberately not set: this is not a broadcast, and the flag drives replication
+    /// decisions further along.
+    #[tracing::instrument(level = "trace")]
+    fn interface_ingress_eth_mcast<Buf: PacketBufferMut>(
+        &self,
+        interface: &Interface,
+        packet: &mut Packet<Buf>,
+    ) {
+        trace!(
+            "{nfi}: Multicast frame over {ifname}; leaving it to the control plane",
+            nfi = self.name(),
+            ifname = interface.name
+        );
+        packet.done(DoneReason::Unhandled);
+    }
+
     #[tracing::instrument(level = "trace")]
     fn interface_ingress_eth_bcast<Buf: PacketBufferMut>(
         &self,
@@ -119,6 +149,8 @@ impl Ingress {
                         self.interface_ingress_eth_bcast(interface, packet);
                     } else if dmac == if_mac.inner() {
                         self.interface_ingress_eth_ucast_local(interface, packet);
+                    } else if dmac.is_multicast() {
+                        self.interface_ingress_eth_mcast(interface, packet);
                     } else {
                         self.interface_ingress_eth_non_local(interface, dmac, packet);
                     }
@@ -179,5 +211,98 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
             }
             packet.enforce()
         })
+    }
+}
+
+#[cfg(test)]
+mod eth_dispatch_test {
+    use super::Ingress;
+    use net::buffer::TestBuffer;
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceIndex;
+    use net::packet::test_utils::build_test_udp_ipv4_packet;
+    use net::packet::{DoneReason, Packet};
+    use routing::{IfDataEthernet, IfState, IfType, Interface};
+
+    const PORT_MAC: Mac = Mac([0x58, 0xa2, 0xe1, 0xb3, 0x3d, 0x94]);
+
+    fn ingress() -> Ingress {
+        // The ingress dispatch under test reads nothing from the table -- it is handed the
+        // `Interface` directly -- so an empty one is exactly right.
+        let tables = routing::testing::RouterTables::default();
+        Ingress::new("test-ingress", tables.interfaces())
+    }
+
+    fn interface() -> Interface {
+        Interface {
+            name: "enp2s1np0".to_string(),
+            description: None,
+            ifindex: InterfaceIndex::try_new(2).expect("a valid index"),
+            iftype: IfType::Ethernet(IfDataEthernet {
+                mac: SourceMac::new(PORT_MAC).expect("a valid source mac"),
+            }),
+            admin_state: IfState::Up,
+            mtu: None,
+            oper_state: IfState::Up,
+            addresses: std::collections::HashSet::new(),
+            attachment: None,
+        }
+    }
+
+    /// Drive the dispatch with a frame carrying `dst`, and report the verdict.
+    fn verdict_for(dst: Mac) -> Option<DoneReason> {
+        let mut packet: Packet<TestBuffer> =
+            build_test_udp_ipv4_packet("1.2.3.4", "5.6.7.8", 1111, 2222);
+        packet
+            .set_eth_destination(dst)
+            .expect("could not set the destination mac");
+        ingress().interface_ingress_eth(&interface(), &mut packet);
+        packet.get_done()
+    }
+
+    /// Multicast must not be `MacNotForUs`, because that verdict is an unconditional drop.
+    ///
+    /// The bridge's `addressed_to` counts multicast as the control plane's business, but that
+    /// intent is unreachable if ingress marks the frame `MacNotForUs` first. Measured on hardware
+    /// as 767 frames dropped `Eth: not for us` with nothing reaching the control plane -- IPv6
+    /// neighbour discovery is entirely multicast, so none of it could ever have worked.
+    #[test]
+    fn a_multicast_frame_is_not_marked_not_for_us() {
+        // IPv6 all-nodes: what neighbour discovery actually arrives as.
+        let verdict = verdict_for(Mac([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]));
+        assert_ne!(
+            verdict,
+            Some(DoneReason::MacNotForUs),
+            "multicast marked MacNotForUs is dropped before the bridge can punt it"
+        );
+        assert_eq!(
+            verdict,
+            Some(DoneReason::Unhandled),
+            "and it should be Unhandled, which the bridge punts when addressed to the port"
+        );
+    }
+
+    /// The other three arms, so the multicast one cannot be made to pass by weakening them.
+    #[test]
+    fn the_other_destinations_keep_their_verdicts() {
+        assert_eq!(
+            verdict_for(Mac::BROADCAST),
+            Some(DoneReason::Unhandled),
+            "broadcast reaches the control plane"
+        );
+        // Not `None`: a frame for this port is ours, so the dispatch carries on into the
+        // attachment check -- and this fixture is deliberately attached to no VRF. What matters is
+        // that it got *past* the MAC test, which `InterfaceDetached` proves and `MacNotForUs`
+        // would not.
+        assert_eq!(
+            verdict_for(PORT_MAC),
+            Some(DoneReason::InterfaceDetached),
+            "a frame for this port is ours, and reaches the attachment check"
+        );
+        assert_eq!(
+            verdict_for(Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x99])),
+            Some(DoneReason::MacNotForUs),
+            "a unicast frame for somebody else is still not for us"
+        );
     }
 }
