@@ -392,6 +392,202 @@ async fn move_devices_to_netns(
 /// Returns the namespace, which the descriptor alone keeps alive. Nothing is registered under
 /// `/run/netns`, so there is no name for anything to collide with and nothing to clean up: when the
 /// dataplane exits, however it exits, the kernel closes the descriptor and the namespace goes.
+/// Bring every interface in the datapath namespace administratively up.
+///
+/// # Why this is needed at all
+///
+/// Moving an interface between network namespaces brings it **down**: the kernel's
+/// `dev_change_net_namespace` closes the device before it moves. It arrives in the new namespace
+/// with `IFF_UP` clear, and nothing put it back.
+///
+/// For a bifurcated device that is the whole ballgame. `mlx5_core` keeps the netdev while the PMD
+/// attaches through RDMA, and the physical port follows the *netdev's* administrative state -- so
+/// DPDK will configure the port, set up every queue, report "started", and move not one packet.
+/// Nothing in the datapath complains, because from DPDK's side nothing is wrong.
+///
+/// The kernel driver had the same hole and did not show it: an init container ran
+/// `ip l set dev <iface> up` in shell, guarded by `if driver == "kernel"`, so only the DPDK path
+/// ever went without. Doing it here covers both, and puts it next to the move that made it
+/// necessary.
+///
+/// # Why by index rather than by name
+///
+/// A device that came through devlink was torn down and reprobed in the new namespace, and it does
+/// not have to come back under the name it left with. Everything in this namespace was put there
+/// by this process, so bringing up whatever is in it is both sufficient and immune to a rename.
+///
+/// # Loopback included
+///
+/// `lo` is not an exception, though it is easy to assume it is. A fresh network namespace gets a
+/// loopback device but the kernel leaves it **down** -- `<LOOPBACK> state DOWN`, with `IFF_UP`
+/// clear -- so anything in this namespace that binds or connects to `127.0.0.1` fails until
+/// somebody raises it. Every container runtime does this for the same reason.
+async fn bring_up_interfaces_in_netns() -> Result<(), String> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().map_err(|e| format!("could not open a netlink socket: {e}"))?;
+    let connection = tokio::spawn(connection);
+
+    let result = async {
+        let mut links = handle.link().get().execute();
+        let mut problems = Vec::new();
+        let mut brought_up = 0usize;
+        loop {
+            match links.try_next().await {
+                Ok(Some(link)) => {
+                    let index = link.header.index;
+                    let name = link
+                        .attributes
+                        .iter()
+                        .find_map(|a| match a {
+                            rtnetlink::packet_route::link::LinkAttribute::IfName(n) => {
+                                Some(n.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| format!("index {index}"));
+                    match handle
+                        .link()
+                        .set(rtnetlink::LinkUnspec::new_with_index(index).up().build())
+                        .execute()
+                        .await
+                    {
+                        Ok(()) => {
+                            info!("brought {name} up in the datapath network namespace");
+                            if name != "lo" {
+                                brought_up += 1;
+                            }
+                        }
+                        Err(e) => problems.push(format!("could not bring '{name}' up: {e}")),
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    problems.push(format!("could not list interfaces: {e}"));
+                    break;
+                }
+            }
+        }
+        // Counted excluding `lo`, which is always there and says nothing about whether the move
+        // landed. Not an error either way: a vfio-pci device has no netdev to bring up at all.
+        if brought_up == 0 && problems.is_empty() {
+            warn!(
+                "the datapath namespace holds no interface but loopback; expected for a vfio-pci \
+                 device, and a sign the move did not land for a bifurcated one"
+            );
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("; "))
+        }
+    }
+    .await;
+
+    connection.abort();
+    result
+}
+
+/// Run [`bring_up_interfaces_in_netns`] inside `netns`, on a thread that can be spared.
+///
+/// `setns` is per-thread and there is no going back, so this cannot happen on the caller: the rest
+/// of init still has to see the namespace it started in. A scratch thread enters, brings the
+/// interfaces up, and ends there.
+fn bring_up_datapath_interfaces(netns: &NetworkNamespace) -> Result<(), String> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                netns
+                    .enter()
+                    .map_err(|e| format!("could not enter the datapath namespace: {e}"))?;
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("could not build a runtime for netlink: {e}"))?
+                    .block_on(bring_up_interfaces_in_netns())
+            })
+            .join()
+            .map_err(|_| "the thread bringing datapath interfaces up panicked".to_string())?
+    })
+}
+
+/// Where `ip netns` looks for named network namespaces.
+const NETNS_DIR: &str = "/run/netns";
+
+/// Give a namespace a name under `/run/netns`, so `ip netns` can reach it.
+///
+/// # Why, given the design deliberately avoids this
+///
+/// Namespaces here are held by descriptor and nothing else: they need no name, they die with the
+/// process tree, and there is no stale mount to clean up after a crash. That is the right property
+/// for production and it is why there was never a bind mount.
+///
+/// It is the wrong property for debugging. A namespace with no name cannot be entered with
+/// `ip netns exec`, does not appear in `ip netns list`, and leaves an operator holding a log line
+/// like `net:[4026532427]` with no way to look inside it -- which is how "the datapath is up and
+/// carries nothing" took a full lab cycle to become "the netdev is down". Naming them costs a bind
+/// mount and buys `ip netns exec datapath ip link`.
+///
+/// # Best-effort, on purpose
+///
+/// A failure here must not stop the gateway starting. This exists to make a working system easier
+/// to inspect, and refusing to run because an inspection aid could not be set up would be exactly
+/// backwards.
+///
+/// A stale entry from a previous run is unmounted first. The file is left behind on shutdown --
+/// `ip netns delete` clears it, and so does the next start.
+fn pin_netns(name: &str, source: &str) {
+    if let Err(e) = std::fs::DirBuilder::new().recursive(true).create(NETNS_DIR) {
+        warn!("could not create {NETNS_DIR}: {e}; network namespaces will not be named");
+        return;
+    }
+    let target = format!("{NETNS_DIR}/{name}");
+
+    // A previous run's mount would otherwise be silently shadowed, leaving `ip netns exec` running
+    // in a namespace that no longer has anything to do with this process.
+    match nix::mount::umount2(target.as_str(), nix::mount::MntFlags::MNT_DETACH) {
+        Ok(()) => debug!("detached a stale {target}"),
+        Err(nix::errno::Errno::EINVAL | nix::errno::Errno::ENOENT) => {}
+        Err(e) => debug!("could not detach a stale {target}: {e}"),
+    }
+    if let Err(e) = std::fs::File::create(&target) {
+        warn!("could not create {target}: {e}; this namespace will not be named");
+        return;
+    }
+
+    // The datapath and host namespaces are ones no thread here is in, so they have no
+    // `/proc/<pid>/ns/net` path and are bound from the descriptor instead; the control namespace
+    // is the one this thread is in, and names itself.
+    match nix::mount::mount(
+        Some(source),
+        target.as_str(),
+        None::<&str>,
+        nix::mount::MsFlags::MS_BIND,
+        None::<&str>,
+    ) {
+        Ok(()) => info!("network namespace available as `ip netns exec {name}`"),
+        Err(e) => warn!("could not bind {source} to {target}: {e}; {name} will not be named"),
+    }
+}
+
+/// Give all three namespaces names under `/run/netns`.
+fn name_namespaces(netns: Option<&NetworkNamespace>, host_netns: Option<&NetworkNamespace>) {
+    // `thread-self`, not `self`: this thread is the one that entered the control namespace, and
+    // the distinction is the trap `hardware::netns` documents.
+    pin_netns("control", "/proc/thread-self/ns/net");
+    if let Some(netns) = netns {
+        pin_netns(
+            "datapath",
+            &format!("/proc/self/fd/{}", netns.as_raw().as_raw_fd()),
+        );
+    }
+    if let Some(host) = host_netns {
+        pin_netns(
+            "host",
+            &format!("/proc/self/fd/{}", host.as_raw().as_raw_fd()),
+        );
+    }
+}
+
 fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, String> {
     let netns = NetworkNamespace::create()
         .map_err(|e| format!("could not create a network namespace for the datapath: {e}"))?;
@@ -404,6 +600,9 @@ fn isolate_devices(devices: &[ResolvedDevice]) -> Result<NetworkNamespace, Strin
         .map_err(|e| format!("could not build a runtime to talk to devlink: {e}"))?;
 
     runtime.block_on(move_devices_to_netns(devices, &netns))?;
+    // The move left them down; a bifurcated device's port follows its netdev, so without this the
+    // datapath starts cleanly and carries nothing.
+    bring_up_datapath_interfaces(&netns)?;
     Ok(netns)
 }
 
@@ -506,6 +705,9 @@ fn isolate_interfaces(interfaces: &[String]) -> Result<NetworkNamespace, String>
         .map_err(|e| format!("could not build a runtime to talk to netlink: {e}"))?;
 
     runtime.block_on(move_interfaces_to_netns(interfaces, &netns))?;
+    // Same reason as the DPDK path. This one was covered by an init container running
+    // `ip l set dev <iface> up` in shell, which is why only DPDK ever showed the hole.
+    bring_up_datapath_interfaces(&netns)?;
     Ok(netns)
 }
 
@@ -1025,6 +1227,12 @@ fn main() {
             }
         }
     };
+
+    // Named here rather than where each is created: this is the last point where all three are in
+    // hand, and it is after `enter_control_netns` unshared the mount namespace -- so these land in
+    // the namespace a `kubectl exec` into this container will see, which is the only one an
+    // operator can reach.
+    name_namespaces(netns.as_ref(), host_netns.as_ref());
 
     // Recorded before the configuration is sealed. The dataplane turns this into `--numa-mem`,
     // which makes the EAL fail loudly if the memory is not where we said it would be, instead of
