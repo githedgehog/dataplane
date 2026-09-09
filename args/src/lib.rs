@@ -82,6 +82,9 @@ pub struct InterfaceArg {
     pub port: Option<PortArg>,
     /// MTU to configure the port with, when the configuration named one.
     ///
+    /// Spelled `/mtu=N` on the command line rather than `,mtu=N`, because clap splits this
+    /// argument's values on commas before the parser sees them.
+    ///
     /// `None` leaves the driver's default, which for DPDK is 1500 -- and on a fabric running
     /// 9036 that is a path-MTU black hole rather than a slow link: the handshake and every small
     /// packet pass, then the first full-size segment is untransmittable and the connection stops
@@ -135,10 +138,14 @@ impl FromStr for PortArg {
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        // An optional `,mtu=N` suffix, so `name=pci@0000:02:01.0` keeps working untouched and
-        // `name=pci@0000:02:01.0,mtu=9036` sets the port's MTU. Split before the `=` handling
-        // because a PCI address contains no commas and an interface name cannot either.
-        let (input, mtu) = match input.split_once(",mtu=") {
+        // An optional `/mtu=N` suffix, so `name=pci@0000:02:01.0` keeps working untouched and
+        // `name=pci@0000:02:01.0/mtu=9036` sets the port's MTU.
+        //
+        // **Not a comma.** This argument is declared with clap's `value_delimiter = ','`, so a
+        // comma is consumed by clap before this parser is ever called: the value arrives split in
+        // two and the second half fails as an interface name. `/` cannot appear in a PCI address
+        // or a kernel interface name, so it is unambiguous here.
+        let (input, mtu) = match input.split_once("/mtu=") {
             Some((head, value)) => {
                 let mtu = value
                     .parse::<u16>()
@@ -1509,12 +1516,14 @@ pub struct CmdArgs {
         value_name = "interface name",
         value_parser=InterfaceArg::from_str,
         value_delimiter=',',
-        help = "Interface name mapping, with syntax INTERFACE=DISCRIMINANT@{PCI,IFNAME}. Two discriminants are possible: pci and kernel.
+        help = "Interface name mapping, with syntax INTERFACE=DISCRIMINANT@{PCI,IFNAME}[/mtu=N]. Two discriminants are possible: pci and kernel.
 Pci should be followed by a PCI address. Kernel should be followed by a valid kernel interface name.
+An optional /mtu=N sets the port's MTU; without it the driver's default is used, which for DPDK is 1500.
 Examples:
    --interface eth0=pci@0000:02:01.0
+   --interface eth0=pci@0000:02:01.0/mtu=9036
    --interface eth1=kernel@enp2s1
-Note: multiple interfaces can be specified separated by commas and no spaces"
+Note: multiple interfaces can be specified separated by commas and no spaces, which is why the MTU suffix uses a slash"
     )]
     interface: Vec<InterfaceArg>,
 
@@ -2037,7 +2046,7 @@ mod hugepage_plan_test {
 
 #[cfg(test)]
 mod interface_arg_mtu_test {
-    use super::{InterfaceArg, PortArg};
+    use super::{CmdArgs, InterfaceArg, PortArg};
     use std::str::FromStr;
 
     /// The existing syntax must keep working, MTU absent.
@@ -2053,7 +2062,7 @@ mod interface_arg_mtu_test {
     #[test]
     fn an_mtu_suffix_is_parsed_and_the_address_survives() {
         let arg =
-            InterfaceArg::from_str("enp2s1np0=pci@0000:02:01.0,mtu=9036").expect("should parse");
+            InterfaceArg::from_str("enp2s1np0=pci@0000:02:01.0/mtu=9036").expect("should parse");
         assert_eq!(arg.interface.to_string(), "enp2s1np0");
         assert_eq!(arg.mtu, Some(9036));
         match arg.port {
@@ -2065,19 +2074,56 @@ mod interface_arg_mtu_test {
     /// A kernel interface takes one too, since both drivers have the same hole.
     #[test]
     fn a_kernel_interface_takes_an_mtu() {
-        let arg = InterfaceArg::from_str("eth0=kernel@eth0,mtu=1500").expect("should parse");
+        let arg = InterfaceArg::from_str("eth0=kernel@eth0/mtu=1500").expect("should parse");
         assert_eq!(arg.mtu, Some(1500));
+    }
+
+    /// The suffix must survive **clap**, not just this parser.
+    ///
+    /// The first attempt at this used `,mtu=N` and passed every test above, because those call
+    /// `from_str` directly. In the lab it failed instantly: the argument is declared with
+    /// `value_delimiter = \',\'`, so clap split the value in two and handed `mtu=8986` to the
+    /// parser on its own, where it died as an interface name with no `@`. Testing the parser in
+    /// isolation cannot see that -- only going through the real argument definition can.
+    #[test]
+    fn the_suffix_survives_clap_argument_splitting() {
+        use clap::Parser;
+        let args = CmdArgs::try_parse_from([
+            "dataplane",
+            "--driver",
+            "dpdk",
+            "--interface",
+            "enp2s1np0=pci@0000:02:01.0/mtu=9036",
+        ])
+        .expect("the interface argument should parse through clap");
+        let ifaces: Vec<_> = args.interfaces().collect();
+        assert_eq!(ifaces.len(), 1, "clap split one interface into {ifaces:?}");
+        assert_eq!(ifaces[0].mtu, Some(9036));
+
+        // And the delimiter clap *does* claim still separates interfaces, as it always did.
+        let args = CmdArgs::try_parse_from([
+            "dataplane",
+            "--driver",
+            "dpdk",
+            "--interface",
+            "a=pci@0000:02:01.0/mtu=9036,b=pci@0000:02:02.0",
+        ])
+        .expect("a comma-separated list should still parse");
+        let ifaces: Vec<_> = args.interfaces().collect();
+        assert_eq!(ifaces.len(), 2, "the comma still separates interfaces");
+        assert_eq!(ifaces[0].mtu, Some(9036));
+        assert_eq!(ifaces[1].mtu, None);
     }
 
     /// Nonsense is refused rather than silently ignored, which would restore the black hole.
     #[test]
     fn a_bad_mtu_is_an_error() {
-        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=").is_err());
-        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=nine").is_err());
+        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0/mtu=").is_err());
+        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0/mtu=nine").is_err());
         assert!(
-            InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=67").is_err(),
+            InterfaceArg::from_str("a=pci@0000:02:01.0/mtu=67").is_err(),
             "below the IPv4 minimum of 68"
         );
-        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0,mtu=68").is_ok());
+        assert!(InterfaceArg::from_str("a=pci@0000:02:01.0/mtu=68").is_ok());
     }
 }
