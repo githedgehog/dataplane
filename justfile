@@ -205,6 +205,18 @@ fuzz target time="60s" *args="":
     # asan does not need that, and skipping the std rebuild keeps it far quicker.
     # `sanitize=NONE` drops instrumentation altogether, which buys roughly four times
     # the executions per second in exchange for only catching what the test asserts.
+    sysroot="${DATAPLANE_SYSROOT:-}"
+    if [ -n "${sysroot}" ] && [ -r "${sysroot}/.sanitize" ]; then
+      built_with="$(cat "${sysroot}/.sanitize")"
+      if [ "${built_with}" != "{{ sanitize }}" ]; then
+        printf 'refusing to fuzz: sanitize=%s was asked for, but this sysroot was built with sanitize=%s.\n' \
+          "{{ sanitize }}" "${built_with:-<none>}" >&2
+        printf 'the C dependencies would not be instrumented. Re-enter the shell with:\n' >&2
+        printf '  just sanitize=%s setup-roots && nix-shell --argstr sanitize %s\n' \
+          "{{ sanitize }}" "{{ sanitize }}" >&2
+        exit 1
+      fi
+    fi
     corpus_dir="{{ fuzz_corpus_root }}/$(printf '%s' '{{ target }}' | tr -c 'A-Za-z0-9_.-' '_')"
     mkdir -p "${corpus_dir}"
     cargo bolero test '{{ target }}' --rustc-bootstrap -T '{{ time }}' \

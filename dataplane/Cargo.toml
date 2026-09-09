@@ -10,6 +10,8 @@ default = []
 # Bin is gated out under loom (see `src/main.rs`); the feature exists so
 # `--features loom` resolves at workspace level and propagates to libs.
 loom = ["concurrency/loom"]
+shuttle = ["concurrency/shuttle", "nat/shuttle", "flow-entry/shuttle"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 acl-filter = { workspace = true }
@@ -67,6 +69,7 @@ routing = { workspace = true, features = ["testing"] }
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 n-vm = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tracectl = { workspace = true, features = ["evidence"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = [] }
