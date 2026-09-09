@@ -1,0 +1,36 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-4.6"
+
+# ICMP Messages That Can Be Extended
+#
+#    The ICMP Extension Structure MAY be appended to messages of the
+#    following types:
+# 
+#       - ICMPv4 Destination Unreachable
+# 
+#       - ICMPv4 Time Exceeded
+# 
+#       - ICMPv4 Parameter Problem
+# 
+#       - ICMPv6 Destination Unreachable
+# 
+#       - ICMPv6 Time Exceeded
+# 
+#    The ICMP Extension Structure MUST NOT be appended to any of the other
+#    ICMP messages mentioned in Section 4.  Extensions were not defined
+#    for the ICMPv6 "Packet Too Big" and "Parameter Problem" messages
+#    because these messages lack space for a length attribute.
+
+[[spec]]
+level = "MAY"
+quote = '''
+The ICMP Extension Structure MAY be appended to messages of the
+following types:
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The ICMP Extension Structure MUST NOT be appended to any of the other
+ICMP messages mentioned in Section 4.
+'''
+

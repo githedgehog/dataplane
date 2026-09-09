@@ -1,0 +1,28 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-6"
+
+# Application Level Gateways
+#
+#    Application Level Gateways (ALGs) in certain NATs modify IP addresses
+#    and TCP ports embedded inside application protocols.  Such ALGs may
+#    interfere with UNSAF methods or protocols that try to be NAT-aware
+#    and must therefore be used with extreme caution.
+# 
+#    REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
+#       that all of those ALGs (except for FTP [RFC0959]) be disabled by
+#       default.
+# 
+#    Justification:  The intent of this requirement is to prevent ALGs
+#       from interfering with UNSAF methods.  The default state of an FTP
+#       ALG is left unspecified because of legacy concerns: as of writing
+#       this memo, a large fraction of legacy FTP clients do not enable
+#       passive (PASV) mode by default and require an ALG to traverse
+#       NATs.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-6:  If a NAT includes ALGs that affect TCP, it is RECOMMENDED
+that all of those ALGs (except for FTP [RFC0959]) be disabled by
+default.
+'''
+

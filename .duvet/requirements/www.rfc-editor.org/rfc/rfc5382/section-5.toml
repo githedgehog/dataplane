@@ -1,0 +1,147 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-5"
+
+# NAT Session Refresh
+#
+#    A NAT maintains state associated with in-progress and established
+#    connections.  Because of this, a NAT is susceptible to a resource-
+#    exhaustion attack whereby an attacker (or virus) on the internal side
+#    attempts to cause the NAT to create more state than for which it has
+#    resources.  To prevent such an attack, a NAT needs to abandon
+#    sessions in order to free the state resources.
+# 
+#    A common method that is applicable only to TCP is to preferentially
+#    abandon sessions for crashed endpoints, followed by closed TCP
+#    connections and partially open connections.  A NAT can check if an
+#    endpoint for a session has crashed by sending a TCP keep-alive packet
+#    and receiving a TCP RST packet in response.  If the NAT cannot
+#    determine whether the endpoint is active, it should not abandon the
+#    session until the TCP connection has been idle for some time.  Note
+#    that an established TCP connection can stay idle (but live)
+#    indefinitely; hence, there is no fixed value for an idle-timeout that
+#    accommodates all applications.  However, a large idle-timeout
+#    motivated by recommendations in [RFC1122] can reduce the chances of
+#    abandoning a live session.
+# 
+#    A TCP connection passes through three phases: partially open,
+#    established, and closing.  During the partially open phase, endpoints
+#    synchronize initial sequence numbers.  The phase is initiated by the
+#    first SYN for the connection and extends until both endpoints have
+#    sent a packet with the ACK flag set (TCP states: SYN_SENT and
+#    SYN_RCVD).  ACKs in both directions mark the beginning of the
+#    established phase where application data can be exchanged
+#    indefinitely (TCP states: ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, and
+#    CLOSE_WAIT).  The closing phase begins when both endpoints have
+#    terminated their half of the connection by sending a FIN packet.
+#    Once FIN packets are seen in both directions, application data can no
+#    longer be exchanged, but the stacks still need to ensure that the FIN
+#    packets are received (TCP states: CLOSING and LAST_ACK).
+# 
+#    TCP connections can stay in established phase indefinitely without
+#    exchanging any packets.  Some end-hosts can be configured to send
+#    keep-alive packets on such idle connections; by default, such keep-
+#    alive packets are sent every 2 hours if enabled [RFC1122].
+#    Consequently, a NAT that waits for slightly over 2 hours can detect
+#    idle connections with keep-alive packets being sent at the default
+#    rate.  TCP connections in the partially open or closing phases, on
+#    the other hand, can stay idle for at most 4 minutes while waiting for
+#    in-flight packets to be delivered [RFC1122].
+# 
+#    The "established connection idle-timeout" for a NAT is defined as the
+#    minimum time a TCP connection in the established phase must remain
+#    idle before the NAT considers the associated session a candidate for
+#    removal.  The "transitory connection idle-timeout" for a NAT is
+#    defined as the minimum time a TCP connection in the partially open or
+#    closing phases must remain idle before the NAT considers the
+#    associated session a candidate for removal.  TCP connections in the
+#    TIME_WAIT state are not affected by the "transitory connection idle-
+#    timeout".
+# 
+#    REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+#       connection are active, it MAY abandon the session if it has been
+#       idle for some time.  In such cases, the value of the "established
+#       connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+#       The value of the "transitory connection idle-timeout" MUST NOT be
+#       less than 4 minutes.
+#       a) The value of the NAT idle-timeouts MAY be configurable.
+# 
+#    Justification:  The intent of this requirement is to minimize the
+#       cases where a NAT abandons session state for a live connection.
+#       While some NATs may choose to abandon sessions reactively in
+#       response to new connection initiations (allowing idle connections
+#       to stay up indefinitely in the absence of new initiations), other
+#       NATs may choose to proactively reap idle sessions.  In cases where
+#       the NAT cannot actively determine if the connection is alive, this
+#       requirement ensures that applications can send keep-alive packets
+#       at the default rate (every 2 hours) such that the NAT can
+#       passively determine that the connection is alive.  The additional
+#       4 minutes allows time for in-flight packets to cross the NAT.
+# 
+#    NAT behavior for handling RST packets, or connections in TIME_WAIT
+#    state is left unspecified.  A NAT MAY hold state for a connection in
+#    TIME_WAIT state to accommodate retransmissions of the last ACK.
+#    However, since the TIME_WAIT state is commonly encountered by
+#    internal endpoints properly closing the TCP connection, holding state
+#    for a closed connection may limit the throughput of connections
+#    through a NAT with limited resources.  [RFC1337] describes hazards
+#    associated with TIME_WAIT assassination.
+# 
+#    The handling of non-SYN packets for connections for which there is no
+#    active mapping is left unspecified.  Such packets may be received if
+#    the NAT silently abandons a live connection, or abandons a connection
+#    in TIME_WAIT state before the 4 minute TIME_WAIT period expires.  The
+#    decision to either silently drop such packets or to respond with a
+#    TCP RST packet is left up to the implementation.
+# 
+#    NAT behavior for notifying endpoints when abandoning live connections
+#    is left unspecified.  When a NAT abandons a live connection, for
+#    example due to a timeout expiring, the NAT MAY either send TCP RST
+#    packets to the endpoints or MAY silently abandon the connection.
+# 
+#    Sending a RST notification allows endpoint applications to recover
+#    more quickly; however, notifying the endpoints may not always be
+#    possible if, for example, session state is lost due to a power
+#    failure.
+
+[[spec]]
+level = "MAY"
+quote = '''
+REQ-5:  If a NAT cannot determine whether the endpoints of a TCP
+connection are active, it MAY abandon the session if it has been
+idle for some time.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+In such cases, the value of the "established
+connection idle-timeout" MUST NOT be less than 2 hours 4 minutes.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+The value of the "transitory connection idle-timeout" MUST NOT be
+less than 4 minutes.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The value of the NAT idle-timeouts MAY be configurable.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+A NAT MAY hold state for a connection in
+TIME_WAIT state to accommodate retransmissions of the last ACK.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+When a NAT abandons a live connection, for
+example due to a timeout expiring, the NAT MAY either send TCP RST
+packets to the endpoints or MAY silently abandon the connection.
+'''
+

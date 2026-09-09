@@ -6,6 +6,8 @@
 //! for port conservation.
 
 use crate::common::{NatAction, NatFlowStatus};
+use crate::masquerade::contract::Requirement;
+use crate::masquerade::contract::rfc4787::Req12;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryHeaders, TryIp, TryTcp};
 
@@ -14,6 +16,11 @@ use net::packet::Packet;
 use net::tcp::Tcp;
 
 impl NatFlowStatus {
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.3
+    //# a) For specific destination ports in the well-known port range
+    //# (ports 0-1023), a NAT MAY have shorter UDP mapping timers that
+    //# are specific to the IANA-registered application running over
+    //# that specific destination port.
     fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
         match packet.headers().pat().eth().net().udp().done() {
             Some((_, _, udp)) => match udp.source().as_u16() {
@@ -50,9 +57,14 @@ fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStat
     }
 }
 
+// No arm of this machine reaches a terminal state, so an ICMP *query* -- an Echo or its
+// reply -- never ends the flow it belongs to. That is half of RFC 5382 REQ-10 and RFC 4787
+// REQ-12, and it is not the half a reader assumes: an ICMP *error* does not come through
+// here at all. It goes to `IcmpErrorHandler`, which does tear a one-way mapping down on a
+// hard error, so neither requirement is met and neither is recorded here.
 #[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
-    match action {
+    let next = match action {
         NatAction::SrcNat => match status {
             _ => status,
         },
@@ -60,7 +72,17 @@ fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowSta
             NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             _ => status,
         },
+    };
+    if cfg!(debug_assertions)
+        && let Err(violation) = Req12::new(status, next).check()
+    {
+        unreachable!(
+            "{spec} {id}: {violation} ({action})",
+            spec = Req12::SPEC,
+            id = Req12::ID
+        );
     }
+    next
 }
 
 fn next_flow_status_tcp(action: NatAction, status: NatFlowStatus, tcp: &Tcp) -> NatFlowStatus {

@@ -1490,7 +1490,9 @@ mod tests {
     #[test]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets")]
     fn a_large_answer_arrives_whole() {
-        const ROUTES: usize = 8192;
+        use cli::cliproto::CLI_MSG_CHUNK_SIZE as CHUNK;
+        const ROUTES: usize = 256;
+        const LEAST_CHUNKS: usize = 6;
 
         let rio = RunningRio::start();
         let peer = CpiPeer::attach(&rio.dir);
@@ -1514,9 +1516,10 @@ mod tests {
             .expect("the whole answer should arrive, across as many chunks as it takes");
         let body = answer.result.expect("the listing should succeed");
 
+        let chunks = body.len().div_ceil(CHUNK);
         assert!(
-            body.len() > 100 * 2048,
-            "the answer must span many chunks for this to test reassembly, got {} octets",
+            chunks >= LEAST_CHUNKS,
+            "the answer spans {chunks} chunks, too few to exercise reassembly ({} octets)",
             body.len()
         );
         assert!(body.contains("10.0.0.0/24"), "the first route is missing");

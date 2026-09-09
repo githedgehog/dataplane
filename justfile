@@ -729,7 +729,8 @@ lint: \
     (nixfmt) \
     (check-lint-wiring) \
     (check-push-filter) \
-    (license-headers)
+    (license-headers) \
+    (duvet-check)
     {{ _just_debuggable_ }}
 
 # Cargo cannot archive doctests, so run them inside the Nix sandbox.
@@ -768,10 +769,23 @@ duvet-check:
         exit 1
       fi
     done
+    # `duvet report` rewrites the snapshot *and* every requirement TOML in place, so the
+    # committed copies are set aside and put back either way. A check that leaves the
+    # working tree dirty is a trap anywhere; in a repo with worktrees and a shared stash
+    # stack it is a trap that costs someone else's work.
+    committed="$(mktemp -d)"
+    trap 'rm -rf .duvet/requirements .duvet/snapshot.txt; \
+          mv "${committed}/requirements" .duvet/requirements; \
+          mv "${committed}/snapshot.txt" .duvet/snapshot.txt; \
+          rmdir "${committed}"' EXIT
+    cp -r .duvet/requirements "${committed}/requirements"
+    cp .duvet/snapshot.txt "${committed}/snapshot.txt"
     duvet report
-    if ! git diff --quiet -- .duvet/snapshot.txt; then
-      echo "error: .duvet/snapshot.txt is stale; run \`just duvet\` and commit the result" >&2
-      git --no-pager diff -- .duvet/snapshot.txt >&2
+    stale=0
+    diff -u "${committed}/snapshot.txt" .duvet/snapshot.txt || stale=1
+    diff -ru "${committed}/requirements" .duvet/requirements || stale=1
+    if [ "${stale}" != 0 ]; then
+      echo "error: the duvet report is stale; run \`just duvet\` and commit the result" >&2
       exit 1
     fi
 

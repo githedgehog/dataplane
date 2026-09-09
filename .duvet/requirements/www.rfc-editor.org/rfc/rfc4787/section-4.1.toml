@@ -1,0 +1,140 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.1"
+
+# Address and Port Mapping
+#
+#    When an internal endpoint opens an outgoing session through a NAT,
+#    the NAT assigns the session an external IP address and port number so
+#    that subsequent response packets from the external endpoint can be
+#    received by the NAT, translated, and forwarded to the internal
+#    endpoint.  This is a mapping between an internal IP address and port
+#    IP:port and external IP:port tuple.  It establishes the translation
+# 
+#    that will be performed by the NAT for the duration of the session.
+#    For many applications, it is important to distinguish the behavior of
+#    the NAT when there are multiple simultaneous sessions established to
+#    different external endpoints.
+# 
+#    The key behavior to describe is the criteria for reuse of a mapping
+#    for new sessions to external endpoints, after establishing a first
+#    mapping between an internal X:x address and port and an external
+#    Y1:y1 address tuple.  Let's assume that the internal IP address and
+#    port X:x are mapped to X1':x1' for this first session.  The endpoint
+#    then sends from X:x to an external address Y2:y2 and gets a mapping
+#    of X2':x2' on the NAT.  The relationship between X1':x1' and X2':x2'
+#    for various combinations of the relationship between Y1:y1 and Y2:y2
+#    is critical for describing the NAT behavior.  This arrangement is
+#    illustrated in the following diagram:
+# 
+#                                       E
+#    +------+                 +------+  x
+#    |  Y1  |                 |  Y2  |  t
+#    +--+---+                 +---+--+  e
+#       | Y1:y1            Y2:y2  |     r
+#       +----------+   +----------+     n
+#                  |   |                a
+#          X1':x1' |   | X2':x2'        l
+#               +--+---+-+
+#    ...........|   NAT  |...............
+#               +--+---+-+              I
+#                  |   |                n
+#              X:x |   | X:x            t
+#                 ++---++               e
+#                 |  X  |               r
+#                 +-----+               n
+#                                       a
+#                                       l
+# 
+#                          Address and Port Mapping
+# 
+#    The following address and port mapping behavior are defined:
+# 
+#       Endpoint-Independent Mapping:
+# 
+#          The NAT reuses the port mapping for subsequent packets sent
+#          from the same internal IP address and port (X:x) to any
+#          external IP address and port.  Specifically, X1':x1' equals
+#          X2':x2' for all values of Y2:y2.
+# 
+#       Address-Dependent Mapping:
+# 
+#          The NAT reuses the port mapping for subsequent packets sent
+#          from the same internal IP address and port (X:x) to the same
+#          external IP address, regardless of the external port.
+#          Specifically, X1':x1' equals X2':x2' if and only if, Y2 equals
+#          Y1.
+# 
+#       Address and Port-Dependent Mapping:
+# 
+#          The NAT reuses the port mapping for subsequent packets sent
+#          from the same internal IP address and port (X:x) to the same
+#          external IP address and port while the mapping is still active.
+#          Specifically, X1':x1' equals X2':x2' if and only if, Y2:y2
+#          equals Y1:y1.
+# 
+#    It is important to note that these three possible choices make no
+#    difference to the security properties of the NAT.  The security
+#    properties are fully determined by which packets the NAT allows in
+#    and which it does not.  This is determined by the filtering behavior
+#    in the filtering portions of the NAT.
+# 
+#    REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+# 
+#    Justification:  In order for UNSAF methods to work, REQ-1 needs to be
+#       met.  Failure to meet REQ-1 will force the use of a UDP relay,
+#       which is very often impractical.
+# 
+#    Some NATs are capable of assigning IP addresses from a pool of IP
+#    addresses on the external side of the NAT, as opposed to just a
+#    single IP address.  This is especially common with larger NATs.  Some
+#    NATs use the external IP address mapping in an arbitrary fashion
+#    (i.e., randomly): one internal IP address could have multiple
+#    external IP address mappings active at the same time for different
+#    sessions.  These NATs have an "IP address pooling" behavior of
+#    "Arbitrary".  Some large Enterprise NATs use an IP address pooling
+#    behavior of "Arbitrary" as a means of hiding the IP address assigned
+#    to specific endpoints by making their assignment less predictable.
+#    Other NATs use the same external IP address mapping for all sessions
+#    associated with the same internal IP address.  These NATs have an "IP
+#    address pooling" behavior of "Paired".  NATs that use an "IP address
+#    pooling" behavior of "Arbitrary" can cause issues for applications
+#    that use multiple ports from the same endpoint, but that do not
+#    negotiate IP addresses individually (e.g., some applications using
+#    RTP and RTCP).
+# 
+#    REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+#       behavior of "Paired".  Note that this requirement is not
+#       applicable to NATs that do not support IP address pooling.
+# 
+#    Justification:  This will allow applications that use multiple ports
+#       originating from the same internal IP address to also have the
+#       same external IP address.  This is to avoid breaking peer-to-peer
+#       applications that are not capable of negotiating the IP address
+#       for RTP and the IP address for RTCP separately.  As such it is
+#       envisioned that this requirement will become less important as
+#       applications become NAT-friendlier with time.  The main reason why
+#       this requirement is here is that in a peer-to-peer application,
+#       you are subject to the other peer's mistake.  In particular, in
+#       the context of SIP, if my application supports the extensions
+#       defined in [RFC3605] for indicating RTP and RTCP addresses and
+#       ports separately, but the other peer does not, there may still be
+#       breakage in the form of the stream losing RTCP packets.  This
+#       requirement will avoid the loss of RTP in this context, although
+#       the loss of RTCP may be inevitable in this particular example.  It
+#       is also worth noting that RFC 3605 is unfortunately not a
+#       mandatory part of SIP [RFC3261].  Therefore, this requirement will
+#       address a particularly nasty problem that will prevail for a
+#       significant period of time.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-2:  It is RECOMMENDED that a NAT have an "IP address pooling"
+behavior of "Paired".
+'''
+

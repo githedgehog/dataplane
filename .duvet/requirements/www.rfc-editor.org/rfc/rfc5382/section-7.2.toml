@@ -1,0 +1,42 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-7.2"
+
+# Hairpinning Behavior
+#
+#    NATs that forward packets originating from an internal address,
+#    destined for an external address that matches the active mapping for
+#    an internal address, back to that internal address are defined in
+#    [BEHAVE-UDP] as supporting "hairpinning".  If the NAT presents the
+#    hairpinned packet with an external source IP address and port (i.e.,
+#    the mapped source address and port of the originating internal
+#    endpoint), then it is defined to have "External source IP address and
+#    port" for hairpinning.  Hairpinning is necessary to allow two
+#    internal endpoints (known to each other only by their external mapped
+#    addresses) to communicate with each other.  "External source IP
+#    address and port" behavior for hairpinning avoids confusing
+#    implementations that expect the external source IP address and port.
+# 
+#    REQ-8:  A NAT MUST support "hairpinning" for TCP.
+#       a) A NAT's hairpinning behavior MUST be of type "External source
+#          IP address and port".
+# 
+#    Justification:  This requirement allows two applications behind the
+#       same NAT that are trying to communicate with each other using
+#       their external addresses.
+#       a) Using the external source address and port for the hairpinned
+#          packet is necessary for applications that do not expect to
+#          receive a packet from a different address than the external
+#          address they are trying to communicate with.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-8:  A NAT MUST support "hairpinning" for TCP.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+a) A NAT's hairpinning behavior MUST be of type "External source
+IP address and port".
+'''
+

@@ -1,0 +1,104 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-5"
+
+# Filtering Behavior
+#
+#    This section describes various filtering behaviors observed in NATs.
+# 
+#    When an internal endpoint opens an outgoing session through a NAT,
+#    the NAT assigns a filtering rule for the mapping between an internal
+#    IP:port (X:x) and external IP:port (Y:y) tuple.
+# 
+#    The key behavior to describe is what criteria are used by the NAT to
+#    filter packets originating from specific external endpoints.
+# 
+#       Endpoint-Independent Filtering:
+# 
+#          The NAT filters out only packets not destined to the internal
+#          address and port X:x, regardless of the external IP address and
+#          port source (Z:z).  The NAT forwards any packets destined to
+#          X:x.  In other words, sending packets from the internal side of
+#          the NAT to any external IP address is sufficient to allow any
+#          packets back to the internal endpoint.
+# 
+#       Address-Dependent Filtering:
+# 
+#          The NAT filters out packets not destined to the internal
+#          address X:x.  Additionally, the NAT will filter out packets
+#          from Y:y destined for the internal endpoint X:x if X:x has not
+#          sent packets to Y:any previously (independently of the port
+#          used by Y).  In other words, for receiving packets from a
+#          specific external endpoint, it is necessary for the internal
+#          endpoint to send packets first to that specific external
+#          endpoint's IP address.
+# 
+#       Address and Port-Dependent Filtering:
+# 
+#          This is similar to the previous behavior, except that the
+#          external port is also relevant.  The NAT filters out packets
+#          not destined for the internal address X:x.  Additionally, the
+#          NAT will filter out packets from Y:y destined for the internal
+#          endpoint X:x if X:x has not sent packets to Y:y previously.  In
+#          other words, for receiving packets from a specific external
+#          endpoint, it is necessary for the internal endpoint to send
+#          packets first to that external endpoint's IP address and port.
+# 
+#    REQ-8:  If application transparency is most important, it is
+#       RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+#       behavior.  If a more stringent filtering behavior is most
+#       important, it is RECOMMENDED that a NAT have an "Address-Dependent
+#       Filtering" behavior.
+# 
+#       a) The filtering behavior MAY be an option configurable by the
+#          administrator of the NAT.
+# 
+#    Justification:  The recommendation to use Endpoint-Independent
+#       Filtering is aimed at maximizing application transparency; in
+#       particular, for applications that receive media simultaneously
+#       from multiple locations (e.g., gaming), or applications that use
+#       rendezvous techniques.  However, it is also possible that, in some
+#       circumstances, it may be preferable to have a more stringent
+#       filtering behavior.  Filtering independently of the external
+#       endpoint is not as secure: An unauthorized packet could get
+#       through a specific port while the port was kept open if it was
+#       lucky enough to find the port open.  In theory, filtering based on
+#       both IP address and port is more secure than filtering based only
+#       on the IP address (because the external endpoint could, in
+#       reality, be two endpoints behind another NAT, where one of the two
+#       endpoints is an attacker).  However, such a policy could interfere
+#       with applications that expect to receive UDP packets on more than
+#       one UDP port.  Using Endpoint-Independent Filtering or Address-
+#       Dependent Filtering instead of Address and Port-Dependent
+#       Filtering on a NAT (say, NAT-A) also has benefits when the other
+#       endpoint is behind a non-BEHAVE compliant NAT (say, NAT-B) that
+#       does not support REQ-1.  When the endpoints use ICE, if NAT-A uses
+#       Address and Port-Dependent Filtering, connectivity will require a
+#       UDP relay.  However, if NAT-A uses Endpoint-Independent Filtering
+#       or Address-Dependent Filtering, ICE will ultimately find
+#       connectivity without requiring a UDP relay.  Having the filtering
+#       behavior being an option configurable by the administrator of the
+#       NAT ensures that a NAT can be used in the widest variety of
+#       deployment scenarios.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-8:  If application transparency is most important, it is
+RECOMMENDED that a NAT have an "Endpoint-Independent Filtering"
+behavior.
+'''
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+If a more stringent filtering behavior is most
+important, it is RECOMMENDED that a NAT have an "Address-Dependent
+Filtering" behavior.
+'''
+
+[[spec]]
+level = "MAY"
+quote = '''
+a) The filtering behavior MAY be an option configurable by the
+administrator of the NAT.
+'''
+

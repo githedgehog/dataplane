@@ -1,0 +1,34 @@
+'$schema' = "https://awslabs.github.io/duvet/config/v0.4.0.json"
+
+# Citations live next to the code they annotate, so every crate's `src` tree is a source.
+# Both patterns are needed: `**` does not match zero path components here, so the first
+# finds `<crate>/src/<dir>/<file>.rs` and the second finds `<crate>/src/lib.rs`. Getting
+# this wrong is silent in the dangerous direction -- an unmatched file simply contributes
+# no citations, the snapshot does not change, and `duvet-check` passes.
+[[source]]
+pattern = "*/src/**/*.rs"
+
+[[source]]
+pattern = "*/src/*.rs"
+
+# Every RFC tracked here restates its numbered requirements in a summary section (RFC 4787
+# section 12, RFC 5382 section 8, RFC 5508 section 9). duvet keys citations by section
+# anchor and cannot be told that two sections carry the same requirement, so each of those
+# copies reads as uncovered no matter what is annotated. The convention, settled in the
+# RFC 5508 chapter, is to cite the *normative* section -- where the requirement is argued
+# rather than tabulated -- and to read the summary sections as permanently uncited.
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4884"
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc5382"
+
+[report.html]
+enabled = true
+
+[report.snapshot]
+enabled = true
+
+[[specification]]
+source = "https://www.rfc-editor.org/rfc/rfc4787"

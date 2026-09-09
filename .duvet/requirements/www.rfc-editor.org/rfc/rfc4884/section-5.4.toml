@@ -1,0 +1,16 @@
+target = "https://www.rfc-editor.org/rfc/rfc4884#section-5.4"
+
+# Compliant Application Receives ICMP Message with No Extensions
+#
+#    When a compliant application receives an ICMP message, it examines
+#    the length attribute that is associated with the "original datagram"
+#    field.  If the length attribute is zero, the compliant application
+#    MUST determine that the message contains no extensions.
+
+[[spec]]
+level = "MUST"
+quote = '''
+If the length attribute is zero, the compliant application
+MUST determine that the message contains no extensions.
+'''
+

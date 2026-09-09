@@ -99,6 +99,9 @@ mod setup;
 mod test_alloc;
 
 pub use port_alloc::AllocatedPort;
+// `expiry` is `#![cfg(test)]`, so this is dead in a shipping build.
+#[cfg(test)]
+pub(crate) use setup::DEFAULT_MASQUERADE_IDLE_TIMEOUT;
 
 ///////////////////////////////////////////////////////////////////////////////
 // PoolTableKey
@@ -281,6 +284,13 @@ impl NatAllocator {
         self.genid.store(genid, Ordering::Relaxed);
     }
 
+    //= https://www.rfc-editor.org/rfc/rfc5382#section-4.1
+    //= type=todo
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior
+    //# for TCP.
+    //= https://www.rfc-editor.org/rfc/rfc4787#section-4.1
+    //= type=todo
+    //# REQ-1:  A NAT MUST have an "Endpoint-Independent Mapping" behavior.
     fn allocate_v4(
         &self,
         src_vpcd: VpcDiscriminant,

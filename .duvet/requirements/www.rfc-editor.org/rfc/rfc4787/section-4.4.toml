@@ -1,0 +1,93 @@
+target = "https://www.rfc-editor.org/rfc/rfc4787#section-4.4"
+
+# Conflicting Internal and External IP Address Spaces
+#
+#    Many NATs, particularly consumer-level devices designed to be
+#    deployed by nontechnical users, routinely obtain their external IP
+#    address, default router, and other IP configuration information for
+#    their external interface dynamically from an external network, such
+#    as an upstream ISP.  The NAT, in turn, automatically sets up its own
+#    internal subnet in one of the private IP address spaces assigned to
+#    this purpose in [RFC1918], typically providing dynamic IP
+#    configuration services for hosts on this internal network.
+# 
+#    Auto-configuration of NATs and private networks can be problematic,
+#    however, if the NAT's external network is also in RFC 1918 private
+#    address space.  In a common scenario, an ISP places its customers
+#    behind a NAT and hands out private RFC 1918 addresses to them.  Some
+#    of these customers, in turn, deploy consumer-level NATs, which, in
+#    effect, act as "second-level" NATs, multiplexing their own private
+#    RFC 1918 IP subnets onto the single RFC 1918 IP address provided by
+#    the ISP.  There is no inherent guarantee, in this case, that the
+#    ISP's "intermediate" privately-addressed network and the customer's
+#    internal privately-addressed network will not use numerically
+#    identical or overlapping RFC 1918 IP subnets.  Furthermore, customers
+#    of consumer-level NATs cannot be expected to have the technical
+# 
+#    knowledge to prevent this scenario from occurring by manually
+#    configuring their internal network with non-conflicting RFC 1918
+#    subnets.
+# 
+#    NAT vendors need to design their NATs to ensure that they function
+#    correctly and robustly even in such problematic scenarios.  One
+#    possible solution is for the NAT to ensure that whenever its external
+#    link is configured with an RFC 1918 private IP address, the NAT
+#    automatically selects a different, non-conflicting RFC 1918 IP subnet
+#    for its internal network.  A disadvantage of this solution is that,
+#    if the NAT's external interface is dynamically configured or re-
+#    configured after its internal network is already in use, then the NAT
+#    may have to renumber its entire internal network dynamically if it
+#    detects a conflict.
+# 
+#    An alternative solution is for the NAT to be designed so that it can
+#    translate and forward traffic correctly, even when its external and
+#    internal interfaces are configured with numerically overlapping IP
+#    subnets.  In this scenario, for example, if the NAT's external
+#    interface has been assigned an IP address P in RFC 1918 space, then
+#    there might also be an internal node I having the same RFC 1918
+#    private IP address P.  An IP packet with destination address P on the
+#    external network is directed at the NAT, whereas an IP packet with
+#    the same destination address P on the internal network is directed at
+#    node I.  The NAT therefore needs to maintain a clear operational
+#    distinction between "external IP addresses" and "internal IP
+#    addresses" to avoid confusing internal node I with its own external
+#    interface.  In general, the NAT needs to allow all internal nodes
+#    (including I) to communicate with all external nodes having public
+#    (non-RFC 1918) IP addresses, or having private IP addresses that do
+#    not conflict with the addresses used by its internal network.
+# 
+#    REQ-7:  A NAT device whose external IP interface can be configured
+#       dynamically MUST either (1) automatically ensure that its internal
+#       network uses IP addresses that do not conflict with its external
+#       network, or (2) be able to translate and forward traffic between
+#       all internal nodes and all external nodes whose IP addresses
+#       numerically conflict with the internal network.
+# 
+#    Justification:  If a NAT's external and internal interfaces are
+#       configured with overlapping IP subnets, then there is, of course,
+#       no way for an internal host with RFC 1918 IP address Q to initiate
+#       a direct communication session to an external node having the same
+#       RFC 1918 address Q, or to other external nodes with IP addresses
+#       that numerically conflict with the internal subnet.  Such nodes
+#       can still open communication sessions indirectly via NAT traversal
+#       techniques, however, with the help of a third-party server, such
+#       as a STUN server having a public, non-RFC 1918 IP address.  In
+# 
+#       this case, nodes with conflicting private RFC 1918 addresses on
+#       opposite sides of the second-level NAT can communicate with each
+#       other via their respective temporary public endpoints on the main
+#       Internet, as long as their common, first-level NAT (e.g., the
+#       upstream ISP's NAT) supports hairpinning behavior, as described in
+#       Section 6.
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-7:  A NAT device whose external IP interface can be configured
+dynamically MUST either (1) automatically ensure that its internal
+network uses IP addresses that do not conflict with its external
+network, or (2) be able to translate and forward traffic between
+all internal nodes and all external nodes whose IP addresses
+numerically conflict with the internal network.
+'''
+

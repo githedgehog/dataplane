@@ -1,0 +1,44 @@
+target = "https://www.rfc-editor.org/rfc/rfc5382#section-7.3"
+
+# ICMP Responses to TCP Packets
+#
+#    Several TCP mechanisms depend on the reception of ICMP error messages
+#    triggered by the transmission of TCP segments.  One such mechanism is
+#    path MTU discovery [RFC1191], which is required for the correct
+# 
+#    operation of TCP.  The current path MTU discovery mechanism requires
+#    the sender of TCP segments to be notified of ICMP "Datagram Too Big"
+#    responses.
+# 
+#    REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
+#       Unreachable (Type 3) messages.
+# 
+#    Justification:  Translating ICMP Destination Unreachable messages,
+#       particularly the "Fragmentation Needed and Don't Fragment was Set"
+#       (Type 3, Code 4) message avoids communication failures ("black
+#       holes" [RFC2923]).  Furthermore, TCP's connection establishment
+#       and maintenance mechanisms also behave much more efficiently when
+#       ICMP Destination Unreachable messages arrive in response to
+#       outgoing TCP segments.
+# 
+#    REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+#       NAT mapping or TCP connection for which the ICMP was generated.
+# 
+#    Justification:  This is necessary for reliably performing TCP
+#       simultaneous-open where a remote NAT may temporarily signal an
+#       ICMP error.
+
+[[spec]]
+level = "SHOULD"
+quote = '''
+REQ-9:  If a NAT translates TCP, it SHOULD translate ICMP Destination
+Unreachable (Type 3) messages.
+'''
+
+[[spec]]
+level = "MUST"
+quote = '''
+REQ-10:  Receipt of any sort of ICMP message MUST NOT terminate the
+NAT mapping or TCP connection for which the ICMP was generated.
+'''
+
