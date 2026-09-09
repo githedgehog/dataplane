@@ -114,16 +114,60 @@ impl VpcRoutingConfigIpv4 {
             sroutes: vec![],
         }
     }
-    fn build_routing_config_peer(
+
+    /// Compute the networks to be advertised to a vpc for a given peering
+    fn vpc_peering_adv_nets(peering: &ValidatedPeering) -> Vec<Prefix> {
+        /* remote manifest */
+        let rmanifest = peering.remote();
+        let mut nets: Vec<Prefix> = rmanifest
+            .valexp()
+            .iter()
+            .flat_map(|e| e.adv_prefixes())
+            .collect();
+
+        /* sort and remove duplicates */
+        nets.sort_unstable();
+        nets.dedup();
+        nets
+    }
+
+    /// Tell the `IpVer` (ip version) of a manifest (all of its exposes)
+    fn vpc_peering_manifest_ip_ver(peering: &ValidatedPeering) -> IpVer {
+        if peering.is_v4() {
+            IpVer::V4
+        } else {
+            IpVer::V6
+        }
+    }
+
+    /// Build the routing config for a VPC, for a single peering
+    fn build_routing_config_vpc_peering(
         &mut self,
         vpc: &ValidatedVpc,
         peer: &ValidatedPeering,
-        community: Community,
+        gwname: &str,
+        grouptable: &GwGroupTable,
+        commtable: &PriorityCommunityTable,
     ) -> ConfigResult {
+        /* Get this gw's rank in the gw group this peering is mapped to */
+        let Some(rank) = grouptable.get_group_member_rank(peer.gwgroup(), gwname) else {
+            debug!("This GW {gwname} does not handle peering {}", peer.name());
+            return Ok(());
+        };
+
+        /* Get the community to advertise */
+        let Some(community) = commtable
+            .get_community(rank)
+            .map(|c| Community::String(c.clone()))
+        else {
+            error!("No community found for rank {rank}. This is a bug"); // validation should have caught this
+            return Err(ConfigError::NoCommunityAvailable(rank));
+        };
+
         /* remote manifest */
         let rmanifest = peer.remote();
 
-        /* create import route-map entry */
+        /* create import route-map entry (currently DISABLED) */
         if IMPORT_VRFS {
             /* we import from this vrf */
             self.vrf_imports
@@ -146,45 +190,47 @@ impl VpcRoutingConfigIpv4 {
         }
 
         /* remote prefixes on this peering */
-        let mut nets: Vec<Prefix> = rmanifest
-            .valexp()
-            .iter()
-            .flat_map(|e| e.adv_prefixes())
-            .collect();
+        let nets: Vec<Prefix> = Self::vpc_peering_adv_nets(peer);
 
-        /* sort and remove duplicates */
-        nets.sort_unstable();
-        nets.dedup();
+        /* is this Ipv4 or IPv6 peering? */
+        let ipver = Self::vpc_peering_manifest_ip_ver(peer);
 
-        /* list of advertised prefixes */
-        self.adv_nets.extend(nets.clone());
-
-        /* build adv prefix list and route-map */
+        /* build adv prefix list */
         let mut adv_plist = PrefixList::new(
             &vpc.adv_plist(rmanifest.name()),
-            IpVer::V4,
+            ipver,
             Some(vpc.adv_plist_desc(rmanifest.name())),
         );
         let pl_entries = nets.iter().map(|p| {
             PrefixListEntry::new(PrefixListAction::Permit, PrefixListPrefix::Prefix(*p), None)
         });
         adv_plist.add_entries(pl_entries)?;
-        self.adv_plist.push(adv_plist);
 
-        /* create adv route-map entry matching prefixes and adding communities */
+        /* create adv route-map entry matching on prefix list and setting communities */
         let mut adv_rmape = RouteMapEntry::new(MatchingPolicy::Permit);
         adv_rmape = adv_rmape
-            .add_match(RouteMapMatch::Ipv4AddressPrefixList(
-                vpc.adv_plist(rmanifest.name()),
-            ))
+            .add_match(RouteMapMatch::Ipv4AddressPrefixList(adv_plist.name.clone()))
             .add_action(RouteMapSetAction::Community(vec![community], true));
 
-        /* add entry */
+        /* set list of prefixes to advertise to VPC */
+        self.adv_nets.extend(nets);
+
+        /* register prefix list */
+        self.adv_plist.push(adv_plist);
+
+        /* add route-map entry */
         self.adv_rmap.add_entry(None, adv_rmape)?;
+
+        debug!(
+            "Built config for VPC {}, peering {}",
+            vpc.name(),
+            peer.name()
+        );
         Ok(())
     }
 
-    fn build_routing_config(
+    /// Build the routing config for a VPC
+    fn build_routing_config_vpc(
         &mut self,
         gwname: &str,
         vpc: &ValidatedVpc,
@@ -192,11 +238,7 @@ impl VpcRoutingConfigIpv4 {
         commtable: &PriorityCommunityTable,
     ) -> ConfigResult {
         for peer in vpc.peerings().iter() {
-            if let Some(rank) = grouptable.get_group_member_rank(peer.gwgroup(), gwname)
-                && let Some(comm) = commtable.get_community(rank)
-            {
-                self.build_routing_config_peer(vpc, peer, Community::String(comm.clone()))?;
-            }
+            self.build_routing_config_vpc_peering(vpc, peer, gwname, grouptable, commtable)?;
         }
         Ok(())
     }
@@ -268,7 +310,7 @@ fn build_vpc_internal_config(
 
     if vpc.num_peerings() > 0 {
         let mut vpc_rconfig = VpcRoutingConfigIpv4::new(vpc); // fixme build from scratch / no mut
-        vpc_rconfig.build_routing_config(
+        vpc_rconfig.build_routing_config_vpc(
             &internal.gwname,
             vpc,
             &internal.gwgrouptable,
