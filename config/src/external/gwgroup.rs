@@ -4,8 +4,8 @@
 //! Dataplane configuration model: gateway groups
 
 use crate::ConfigError;
+use ordermap::OrderMap;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::IpAddr;
 
@@ -115,7 +115,7 @@ impl GwGroup {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct GwGroupTable(HashMap<String, GwGroup>);
+pub struct GwGroupTable(OrderMap<String, GwGroup>);
 impl GwGroupTable {
     #[must_use]
     pub fn new() -> Self {

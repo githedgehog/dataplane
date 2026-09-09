@@ -3,13 +3,12 @@
 
 //! Dataplane configuration model: preference to community table
 
-use std::collections::HashMap;
+use crate::ConfigError;
+use ordermap::OrderMap;
 use std::fmt::Display;
 
-use crate::ConfigError;
-
 #[derive(Clone, Debug, Default)]
-pub struct PriorityCommunityTable(HashMap<usize, String>);
+pub struct PriorityCommunityTable(OrderMap<usize, String>);
 impl PriorityCommunityTable {
     #[must_use]
     pub fn new() -> Self {
