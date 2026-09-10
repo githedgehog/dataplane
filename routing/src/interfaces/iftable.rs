@@ -14,7 +14,7 @@ use net::interface::InterfaceIndex;
 #[allow(unused)]
 use tracing::{debug, error, info};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// A table of network interface objects, keyed by `InterfaceIndex`
 pub struct IfTable {
     by_index: HashMap<InterfaceIndex, Interface, RandomState>,

@@ -4,7 +4,6 @@
 //! VRF module to store Ipv4 and Ipv6 routing tables
 
 use bitflags::bitflags;
-use std::borrow::Cow;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::{Rc, Weak};
@@ -18,6 +17,7 @@ use crate::evpn::{RmacStore, Vtep};
 use crate::fib::fibtype::FibWriter;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
+use net::interface::InterfaceName;
 use net::route::RouteTableId;
 use net::vxlan::Vni;
 use std::time::Instant;
@@ -30,12 +30,14 @@ pub type VrfId = u32;
 pub struct RouteNhop {
     pub vrfid: VrfId,
     pub key: NhopKey,
+    pub ifname: Option<InterfaceName>,
 }
 impl Default for RouteNhop {
     fn default() -> Self {
         Self {
             vrfid: 0,
             key: NhopKey::with_drop(),
+            ifname: None,
         }
     }
 }
@@ -345,17 +347,25 @@ impl Vrf {
     /// Register a shared next-hop for the route if not there and return a
     /// vector of shared references to the next-hops used by the route.
     /////////////////////////////////////////////////////////////////////////
-    fn register_shared_nhops(&mut self, nhops: &[RouteNhop]) -> Vec<ShimNhop> {
+    fn register_shared_nhops(&mut self, prefix: &Prefix, nhops: &[RouteNhop]) -> Vec<ShimNhop> {
         let mut nhop_refs = Vec::with_capacity(nhops.len());
-        for nhop in nhops {
-            let shared = self.nhstore.add_nhop(&nhop.key);
-            let ext_vrf = if nhop.vrfid == self.vrfid {
-                None
-            } else {
-                Some(nhop.vrfid)
-            };
-            let shim = ShimNhop::new(ext_vrf, shared);
+        if nhops.is_empty() {
+            warn!("Route to {prefix} has no next-hop: will install one with action drop");
+            let shared = self.nhstore.add_nhop(&NhopKey::with_drop());
+            let shim = ShimNhop::new(None, shared);
             nhop_refs.push(shim);
+        } else {
+            for nhop in nhops {
+                let shared = self.nhstore.add_nhop(&nhop.key);
+                let ext_vrf = if nhop.vrfid == self.vrfid {
+                    None
+                } else {
+                    Some(nhop.vrfid)
+                };
+                shared.set_ifname(nhop.ifname.as_ref());
+                let shim = ShimNhop::new(ext_vrf, shared);
+                nhop_refs.push(shim);
+            }
         }
         nhop_refs
     }
@@ -393,15 +403,6 @@ impl Vrf {
         }
     }
 
-    fn nhops_or_drop<'a>(prefix: &Prefix, nhops: &'a [RouteNhop]) -> Cow<'a, [RouteNhop]> {
-        if nhops.is_empty() {
-            warn!("Route to {prefix} has no next-hop: will install it with action drop");
-            Cow::Owned(vec![RouteNhop::default()])
-        } else {
-            Cow::Borrowed(nhops)
-        }
-    }
-
     /////////////////////////////////////////////////////////////////////////
     // Route Insertion
     /////////////////////////////////////////////////////////////////////////
@@ -413,13 +414,13 @@ impl Vrf {
         vrf0: Option<&Vrf>,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(&Self::nhops_or_drop(prefix, nhops));
+        route.s_nhops = self.register_shared_nhops(prefix, nhops);
 
         // resolve the new route next-hops. This is only for testing. In prod code,
         // this method is only used for drop routes which require no resolution.
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
-            shim.rc.lazy_resolve(rvrf);
+            shim.rc.resolve(rvrf);
         }
 
         // store route
@@ -433,8 +434,8 @@ impl Vrf {
     fn refresh_nhops(&self, rstore: &RmacStore, resvrf: Option<&Vrf>) -> Vec<Weak<Nhop>> {
         let resvrf = resvrf.unwrap_or(self);
         self.nhstore.rebuild_nhop_instructions(rstore);
-        self.nhstore.lazy_resolve_all(resvrf);
-        self.nhstore.rebuild_fibgroups(rstore)
+        self.nhstore.resolve_all(resvrf);
+        self.nhstore.rebuild_fibgroups()
     }
 
     /// Apply the given changes to a fib
@@ -474,7 +475,7 @@ impl Vrf {
         rstore: &RmacStore,
     ) {
         // register next-hops and let the route keep references to the shared nexthops created/found
-        route.s_nhops = self.register_shared_nhops(&Self::nhops_or_drop(prefix, nhops));
+        route.s_nhops = self.register_shared_nhops(prefix, nhops);
 
         let rvrf = vrf0.unwrap_or(self);
 
@@ -482,9 +483,11 @@ impl Vrf {
         // call refresh_fib at the end. Leaving it for future optimizations.
         for shim in &route.s_nhops {
             let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
-            shim.rc.build_nhop_instructions(rstore); // not needed, set_fibgroup() calls it
+            if shim.rc.instructions.borrow().is_empty() {
+                shim.rc.build_nhop_instructions(rstore);
+            }
             if refc == 2 {
-                shim.rc.lazy_resolve(rvrf);
+                shim.rc.resolve(rvrf);
             }
         }
 
@@ -493,7 +496,7 @@ impl Vrf {
         if let Some(fibw) = &mut self.fibw {
             let mut nhkeys = Vec::with_capacity(route.s_nhops.len());
             for shim in &route.s_nhops {
-                if shim.rc.as_ref().set_fibgroup(rstore) {
+                if shim.rc.as_ref().set_fibgroup() {
                     let fibgroup = &*shim.rc.as_ref().fibgroup.borrow();
                     fibw.register_fibgroup(&shim.rc.key, fibgroup, false);
                 }
@@ -583,28 +586,6 @@ impl Vrf {
         match prefix {
             Prefix::IPV4(p) => self.get_route_v4(p),
             Prefix::IPV6(p) => self.get_route_v6(p),
-        }
-    }
-
-    /////////////////////////////////////////////////////////////////////////
-    // Route retrieval (mutable): we may not need this and if we do, extra
-    // care should be taken modifying route internals
-    /////////////////////////////////////////////////////////////////////////
-
-    #[cfg(test)]
-    fn get_route_v4_mut(&mut self, prefix: Ipv4Prefix) -> Option<&mut Route> {
-        self.routesv4.get_mut(prefix)
-    }
-    #[cfg(test)]
-    fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
-        self.routesv6.get_mut(prefix)
-    }
-    #[allow(unused)]
-    #[cfg(test)]
-    pub fn get_route_mut(&mut self, prefix: Prefix) -> Option<&mut Route> {
-        match prefix {
-            Prefix::IPV4(p) => self.get_route_v4_mut(p),
-            Prefix::IPV6(p) => self.get_route_v6_mut(p),
         }
     }
 
@@ -803,11 +784,12 @@ pub mod tests {
         let key = NhopKey::new(
             RouteOrigin::default(),
             address.map(mk_addr),
-            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()), encap,FwAction::Forward, None);
+            ifindex.map(|i| InterfaceIndex::try_new(i).unwrap()), encap,FwAction::Forward);
 
         RouteNhop {
             vrfid,
             key,
+            ifname: None,
         }
     }
     pub fn build_test_route(origin: RouteOrigin, distance: u8, metric: u32) -> Route {
@@ -1145,7 +1127,7 @@ pub mod tests {
 
         add_vxlan_routes(&mut vrf, 5);
 
-        vrf.dump(Some("VRF with partially resolved nexthops, lazily resolved on addition"));
+        vrf.dump(Some("VRF with partially resolved nexthops, resolved on addition"));
         vrf
     }
 

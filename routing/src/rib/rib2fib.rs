@@ -4,12 +4,12 @@
 //! Rib to fib route processor
 
 #[allow(unused)]
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::evpn::RmacStore;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
-use crate::rib::nexthop::{FwAction, Nhop, Visited};
+use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
 
 use std::rc::Weak;
@@ -57,8 +57,11 @@ impl Nhop {
             };
             if ok {
                 instructions.push(PktInstruction::Encap(encap_instr));
-                let egress =
-                    EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
+                let egress = EgressObject::new(
+                    self.key.ifindex,
+                    self.key.address,
+                    self.ifname.borrow().clone(),
+                );
                 instructions.push(PktInstruction::Egress(egress));
             } else {
                 // resolution of encap instructions failed. Keep the route with action drop and mark the nhop as invalid
@@ -82,8 +85,11 @@ impl Nhop {
         // never reach the fib and the egress stage would resolve the destination of the packet instead
         // which is only correct if it is directly connected.
         if self.key.ifindex.is_some() || self.key.address.is_some() {
-            let egress =
-                EgressObject::new(self.key.ifindex, self.key.address, self.key.ifname.clone());
+            let egress = EgressObject::new(
+                self.key.ifindex,
+                self.key.address,
+                self.ifname.borrow().clone(),
+            );
             instructions.push(PktInstruction::Egress(egress));
         }
         instructions
@@ -103,35 +109,19 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     /// Recursive helper to build [`FibGroup`] for a next-hop. We accumulate
     /// a next-hop's packet instructions with those of its resolvers.
+    /// N.B. this needs no protection against resolution loops: the resolvers
+    /// of a next-hop never lead back to it (see [`Nhop::resolve`]).
     //////////////////////////////////////////////////////////////////////
-    fn build_nhop_fibgroup_rec(
-        &self,
-        fibgroup: &mut FibGroup,
-        entry: FibEntry,
-        path: &mut Visited,
-    ) {
-        if path.contains(&self.id()) {
-            warn!("Resolution loop at next-hop {self}: will not use this path");
-            return;
-        }
-        path.push(self.id());
-        self.build_nhop_fibgroup_visit(fibgroup, entry, path);
-        path.pop();
-    }
-
-    fn build_nhop_fibgroup_visit(
-        &self,
-        fibgroup: &mut FibGroup,
-        mut entry: FibEntry,
-        path: &mut Visited,
-    ) {
+    fn build_nhop_fibgroup_rec(&self, fibgroup: &mut FibGroup, mut entry: FibEntry) {
         // add the instructions for a next-hop to the entry
         let instructions = self.instructions.borrow().clone();
+        if instructions.is_empty() {
+            error!("Stepped on next-hop without instructions. This is a bug");
+        }
         entry.extend_from_slice(&instructions);
 
         // check the instructions of the resolving next-hops, if any
-        let Ok(resolvers) = self.resolvers.try_borrow() else {
-            warn!("Warning, try-borrow failed!!!");
+        let Some(resolvers) = self.get_resolvers() else {
             return;
         };
 
@@ -156,7 +146,7 @@ impl Nhop {
             }
         } else {
             for resolver in resolvers.iter().filter_map(Weak::upgrade) {
-                resolver.build_nhop_fibgroup_rec(fibgroup, entry.clone(), path);
+                resolver.build_nhop_fibgroup_rec(fibgroup, entry.clone());
             }
         }
     }
@@ -169,7 +159,7 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////
     pub(crate) fn build_nhop_fibgroup(&self) -> FibGroup {
         let mut fibgroup = FibGroup::new();
-        self.build_nhop_fibgroup_rec(&mut fibgroup, FibEntry::new(), &mut Visited::new());
+        self.build_nhop_fibgroup_rec(&mut fibgroup, FibEntry::new());
         if fibgroup.is_empty() {
             warn!("Next-hop {self} has empty fibgroup: will add DROP FibEntry");
             fibgroup.add(FibEntry::drop_fibentry());
@@ -178,15 +168,15 @@ impl Nhop {
     }
 
     //////////////////////////////////////////////////////////////////////
-    /// Determine instructions for a next-hop and build its `FibGroup`.
+    /// Build the `FibGroup` for a next-hop.
     /// Returns true if the `Fibgroup` associated to a next-hop changed.
+    ///
+    /// N.B. this requires:
+    ///   - the next-hop to be resolved and its resolvers too
+    ///   - the next-hop instructions be up-to-date
+    ///     .. since the fibgroup accumulates them.
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_fibgroup(&self, rstore: &RmacStore) -> bool {
-        // determine nhop pkt instructions. This is independent of the routing table
-        self.build_nhop_instructions(rstore);
-
-        // build the fibgroup for a next-hop. This requires the nhop to be resolved
-        // and its resolvers too, and that these have packet instructions up to date
+    pub(crate) fn set_fibgroup(&self) -> bool {
         let fibgroup = self.build_nhop_fibgroup();
         let changed = fibgroup != *(self.fibgroup.borrow());
         if changed {

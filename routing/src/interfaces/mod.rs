@@ -18,27 +18,31 @@ pub mod tests {
     };
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use net::eth::mac::SourceMac;
-    use net::interface::InterfaceIndex;
     use net::interface::address::IfAddr;
+    use net::interface::{InterfaceIndex, InterfaceName};
     use net::ip::UnicastIpAddr;
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;
+
+    pub(crate) fn build_test_interface_cfg(ifname: &str, ifindex: u32) -> RouterInterfaceConfig {
+        let ifindex = InterfaceIndex::try_new(ifindex).expect("bad ifindex");
+        let ifname = InterfaceName::try_from(ifname).expect("Illegal ifname");
+        RouterInterfaceConfig::new(ifname, ifindex)
+    }
 
     // create a test interface table
     fn populate_test_iftable() -> IfTable {
         let mut iftable = IfTable::new();
 
         /* create loopback */
-        let lo_idx = InterfaceIndex::try_new(1).unwrap();
-        let mut lo = RouterInterfaceConfig::new("Loopback", lo_idx);
+        let mut lo = build_test_interface_cfg("Loopback", 1);
         lo.set_admin_state(IfState::Up);
         lo.set_description("Main loopback interface");
         lo.set_iftype(IfType::Loopback);
 
         /* create Eth0 */
-        let eth0_idx = InterfaceIndex::try_new(2).unwrap();
-        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
+        let mut eth0 = build_test_interface_cfg("eth0", 2);
         eth0.set_admin_state(IfState::Up);
         eth0.set_description("Uplink to the Moon");
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -46,8 +50,7 @@ pub mod tests {
         }));
 
         /* create Eth1 */
-        let eth1_idx = InterfaceIndex::try_new(3).unwrap();
-        let mut eth1 = RouterInterfaceConfig::new("eth1", eth1_idx);
+        let mut eth1 = build_test_interface_cfg("eth1", 3);
         eth1.set_admin_state(IfState::Up);
         eth1.set_description("Downlink from Mars");
         eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -55,8 +58,7 @@ pub mod tests {
         }));
 
         /* create Eth2 */
-        let eth2_idx = InterfaceIndex::try_new(4).unwrap();
-        let mut eth2 = RouterInterfaceConfig::new("eth2", eth2_idx);
+        let mut eth2 = build_test_interface_cfg("eth2", 4);
         eth2.set_admin_state(IfState::Up);
         eth2.set_description("Downlink from Sun");
         eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
@@ -64,8 +66,7 @@ pub mod tests {
         }));
 
         /* create vlan.100 */
-        let vlan100_idx = InterfaceIndex::try_new(5).unwrap();
-        let mut vlan100 = RouterInterfaceConfig::new("eth1.100", vlan100_idx);
+        let mut vlan100 = build_test_interface_cfg("eth1.100", 5);
         vlan100.set_admin_state(IfState::Up);
         vlan100.set_description("External customer 1");
         vlan100.set_iftype(IfType::Dot1q(IfDataDot1q {
@@ -74,8 +75,7 @@ pub mod tests {
         }));
 
         /* create vlan.200 */
-        let vlan200_idx = InterfaceIndex::try_new(6).unwrap();
-        let mut vlan200 = RouterInterfaceConfig::new("eth1.200", vlan200_idx);
+        let mut vlan200 = build_test_interface_cfg("eth1.200", 6);
         vlan200.set_admin_state(IfState::Up);
         vlan200.set_description("External customer 2");
         vlan200.set_iftype(IfType::Dot1q(IfDataDot1q {
@@ -132,7 +132,7 @@ pub mod tests {
         let iface = iftable.get_interface_mut(idx2);
         assert!(iface.is_some());
         let eth0 = iface.unwrap();
-        assert_eq!(eth0.name, "eth0", "We should get eth0");
+        assert_eq!(eth0.name.as_ref(), "eth0", "We should get eth0");
         assert_eq!(eth0.ifindex, idx2, "eth0 has ifindex 2");
 
         /* Add an ip address (the interface is in the iftable) */
@@ -148,7 +148,7 @@ pub mod tests {
 
         /* create Eth0 */
         let eth0_idx = InterfaceIndex::try_new(2).unwrap();
-        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
+        let mut eth0 = build_test_interface_cfg("eth0", eth0_idx.to_u32());
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));
@@ -165,7 +165,7 @@ pub mod tests {
         );
 
         /* Add interface again -- idempotence */
-        let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
+        let mut eth0 = build_test_interface_cfg("eth0", eth0_idx.to_u32());
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));

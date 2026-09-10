@@ -770,7 +770,7 @@ mod tests {
         let idx = InterfaceIndex::try_new(2).unwrap();
         if let Some(iftable) = iftr.enter() {
             let iface = iftable.get_interface(idx).expect("Should be there");
-            assert_eq!(iface.name, "eth0");
+            assert_eq!(iface.name.as_ref(), "eth0");
             debug!("\n{}", *iftable);
         }
 
@@ -830,12 +830,12 @@ mod tests {
     fn test_vrf_fibgroup(mut vrf: Vrf) {
         let rstore = build_sample_rmac_store();
 
-        vrf.nhstore.lazy_resolve_all(&vrf);
+        vrf.nhstore.resolve_all(&vrf);
         vrf.nhstore.rebuild_nhop_instructions(&rstore);
-        vrf.nhstore.rebuild_fibgroups(&rstore);
+        vrf.nhstore.rebuild_fibgroups();
+        // calling
         // vrf.refresh_fib(&rstore, None);
-        // refresh_fib() won't work because add_route() does not build the packet instructions
-        // It doesn't because it does not get an rmac store by design
+        // would also do the job
 
         print!("{}", Frame("Initial fibgroups"));
         show_fibgroups(&vrf, "8.0.0.1");
