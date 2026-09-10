@@ -913,6 +913,7 @@ pub struct VpcPeering {
     pub right: VpcManifest, /* manifest for the other side */
     pub gwgroup: String,    /* name of gateway group */
     pub acl: Option<Acl>,   /* optional peering-scoped ACL */
+    pub no_multipath: bool, /* disable multipath if it would be possible (stateless peering) */
 }
 impl VpcPeering {
     #[must_use]
@@ -923,6 +924,7 @@ impl VpcPeering {
             right,
             gwgroup,
             acl: None,
+            no_multipath: false,
         }
     }
 
@@ -936,6 +938,7 @@ impl VpcPeering {
             right,
             gwgroup: "default".to_string(),
             acl: None,
+            no_multipath: false,
         }
     }
 

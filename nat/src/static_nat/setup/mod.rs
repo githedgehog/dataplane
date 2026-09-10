@@ -193,6 +193,7 @@ mod tests {
             remote_vni: dst_vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         };
 
         let mut vpctable = VpcTable::new();

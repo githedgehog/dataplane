@@ -239,6 +239,7 @@ mod tests {
             remote_vni: 100.try_into().unwrap(),
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         };
 
         let expected_expose = VpcExpose::empty()

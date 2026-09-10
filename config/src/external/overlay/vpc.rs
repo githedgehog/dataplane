@@ -35,6 +35,7 @@ pub struct Peering {
     pub remote_vni: Vni,     /* Vni of peer -- should be vpc discriminant in future */
     pub gwgroup: String,     /* gateway group serving this peering */
     pub acl: Option<Acl>,    /* optional ACL for this peering */
+    pub no_multipath: bool,
 }
 
 impl Peering {
@@ -66,6 +67,7 @@ impl Peering {
             remote_vni: self.remote_vni,
             gwgroup: self.gwgroup.clone(),
             acl,
+            no_multipath: self.no_multipath,
         };
         valid_peering_candidate.validate_ip_version()?;
         valid_peering_candidate.validate_nat_combinations()?;
@@ -83,6 +85,7 @@ pub struct ValidatedPeering {
     remote_vni: Vni,           /* Vni of peer -- should be vpc discriminant in future */
     gwgroup: String,           /* gateway group serving this peering */
     acl: Option<ValidatedAcl>, /* optional ACL for this peering */
+    no_multipath: bool,
 }
 
 impl ValidatedPeering {
@@ -197,6 +200,11 @@ impl ValidatedPeering {
             || self.remote().is_stateful()
             || self.acl().as_ref().is_some_and(ValidatedAcl::is_stateful)
     }
+
+    #[must_use]
+    pub fn no_multipath(&self) -> bool {
+        self.no_multipath
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
@@ -277,6 +285,7 @@ impl Vpc {
                     remote_vni: remote_vpc.vni,
                     gwgroup: p.gwgroup.clone(),
                     acl: p.acl.clone(),
+                    no_multipath: p.no_multipath,
                 }
             })
             .collect();

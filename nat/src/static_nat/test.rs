@@ -237,6 +237,7 @@ fn build_context() -> NatTables {
         remote_vni: vpc2.vni,
         gwgroup: "default".into(),
         acl: None,
+        no_multipath: false,
     };
     let peering2 = Peering {
         name: "test_peering2".into(),
@@ -246,6 +247,7 @@ fn build_context() -> NatTables {
         remote_vni: vpc1.vni,
         gwgroup: "default".into(),
         acl: None,
+        no_multipath: false,
     };
 
     // Add peerings to vpcs
