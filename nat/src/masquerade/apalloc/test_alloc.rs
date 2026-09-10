@@ -130,6 +130,7 @@ mod context {
             remote_vni: vpc2.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
@@ -139,6 +140,7 @@ mod context {
             remote_vni: vpc1.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         };
 
         vpc1.peerings.push(peering1.clone());
@@ -193,6 +195,7 @@ mod context {
             remote_vni: vpc2.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
 
         let mut vpctable = VpcTable::new();
@@ -238,6 +241,7 @@ mod context {
             remote_vni: vpc3.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
         vpc2.peerings.push(Peering {
             name: "shared_peering2".into(),
@@ -247,6 +251,7 @@ mod context {
             remote_vni: vpc3.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
 
         let mut vpctable = VpcTable::new();
@@ -299,6 +304,7 @@ mod context {
             remote_vni: vpc3.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
         vpc2.peerings.push(Peering {
             name: "overlapping_peering2".into(),
@@ -308,6 +314,7 @@ mod context {
             remote_vni: vpc3.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
 
         let mut vpctable = VpcTable::new();
@@ -358,6 +365,7 @@ mod context {
             remote_vni: vpc3.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
         vpc2.peerings.push(Peering {
             name: "partial_peering2".into(),
@@ -367,6 +375,7 @@ mod context {
             remote_vni: vpc3.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
 
         let mut vpctable = VpcTable::new();
@@ -407,6 +416,7 @@ mod context {
             remote_vni: vpc2.vni,
             gwgroup: "default".into(),
             acl: None,
+            no_multipath: false,
         });
 
         let mut vpctable = VpcTable::new();
