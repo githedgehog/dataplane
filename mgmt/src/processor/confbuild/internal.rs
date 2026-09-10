@@ -140,6 +140,30 @@ impl VpcRoutingConfigIpv4 {
         }
     }
 
+    /// Determine the community with which all of the prefixes in a peering should be
+    /// advertised with. If a peering is stateless, all gateways in the gateway group
+    /// the peering is mapped to will advertise with the community corresponding to the
+    /// highest preference.
+    fn determine_peering_adv_community(
+        peering: &ValidatedPeering,
+        rank: usize, // the order or rank this gw has in the gw group serving this peering
+        commtable: &PriorityCommunityTable,
+    ) -> Result<Community, ConfigError> {
+        // if a peering is not stateful, use rank 0 to choose the community corresponding
+        // to the highest preference
+        let rank = if peering.is_stateful() {
+            rank
+        } else {
+            0
+        };
+
+        /* Get the community for the rank (should never fail due to validation) */
+        commtable
+            .get_community(rank)
+            .map(|c| Community::String(c.clone()))
+            .ok_or(ConfigError::NoCommunityAvailable(rank))
+    }
+
     /// Build the routing config for a VPC, for a single peering
     fn build_routing_config_vpc_peering(
         &mut self,
@@ -155,14 +179,8 @@ impl VpcRoutingConfigIpv4 {
             return Ok(());
         };
 
-        /* Get the community to advertise */
-        let Some(community) = commtable
-            .get_community(rank)
-            .map(|c| Community::String(c.clone()))
-        else {
-            error!("No community found for rank {rank}. This is a bug"); // validation should have caught this
-            return Err(ConfigError::NoCommunityAvailable(rank));
-        };
+        /* Determine the community with which all of the prefixes in this peering will be advertised to the vpc */
+        let community = Self::determine_peering_adv_community(peer, rank, commtable)?;
 
         /* remote manifest */
         let rmanifest = peer.remote();
