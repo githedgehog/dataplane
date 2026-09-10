@@ -504,6 +504,12 @@ impl ValidatedAcl {
     pub fn default_action(&self) -> AclAction {
         self.default_action
     }
+
+    #[must_use]
+    /// Tell if an ACL is stateful. An ACL is stateful if any of its rules is stateful.
+    pub fn is_stateful(&self) -> bool {
+        self.rules.iter().any(|rule| rule.scope() == AclScope::Flow)
+    }
 }
 
 // =================================================================================================
