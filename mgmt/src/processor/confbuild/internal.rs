@@ -143,7 +143,8 @@ impl VpcRoutingConfigIpv4 {
     /// Determine the community with which all of the prefixes in a peering should be
     /// advertised with. If a peering is stateless, all gateways in the gateway group
     /// the peering is mapped to will advertise with the community corresponding to the
-    /// highest preference.
+    /// highest preference, except if the peering is marked as not multipath, in which
+    /// case the community corresponding to the actual gateway rank will be used.
     fn determine_peering_adv_community(
         peering: &ValidatedPeering,
         rank: usize, // the order or rank this gw has in the gw group serving this peering
@@ -151,7 +152,7 @@ impl VpcRoutingConfigIpv4 {
     ) -> Result<Community, ConfigError> {
         // if a peering is not stateful, use rank 0 to choose the community corresponding
         // to the highest preference
-        let rank = if peering.is_stateful() {
+        let rank = if peering.is_stateful() || peering.no_multipath() {
             rank
         } else {
             0
