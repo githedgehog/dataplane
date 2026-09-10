@@ -188,6 +188,15 @@ impl ValidatedPeering {
         }
         Ok(())
     }
+
+    #[must_use]
+    /// Tell if a peering is stateful. A peering is stateful if either of the manifests on each side
+    /// are stateful (have at least a stateful expose) or it has a stateful ACL.
+    pub fn is_stateful(&self) -> bool {
+        self.local().is_stateful()
+            || self.remote().is_stateful()
+            || self.acl().as_ref().is_some_and(ValidatedAcl::is_stateful)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
