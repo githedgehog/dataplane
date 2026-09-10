@@ -101,6 +101,19 @@ let
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
     "-flto=thin"
+    # Kept so a release build can be profiled. Without it `perf record -g` walks
+    # nothing -- a release binary had 0 of 33481 prologues setting up `%rbp` -- and
+    # the alternative, `--call-graph dwarf`, copies the stack per sample and starts
+    # dropping samples exactly where a busy-poll datapath is hottest.
+    #
+    # Costs a register and a two-instruction prologue. That is a real cost on a
+    # datapath, and it is accepted deliberately: the bottlenecks we are chasing are
+    # contention on shared lines, which spilling does not move.
+    #
+    # As with the `-m` flags below, this only works if both halves agree. The rustc
+    # counterpart is `-Cforce-frame-pointers=yes` in the RUSTFLAGS just below; drop
+    # either one and the stack walk breaks at the first frame from that language.
+    "-fno-omit-frame-pointer"
   ];
   optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
@@ -111,6 +124,8 @@ let
   optimize-for.performance.RUSTFLAGS = [
     "-Clinker-plugin-lto"
     "-Cembed-bitcode=yes"
+    # The counterpart to `-fno-omit-frame-pointer` above. See the note there.
+    "-Cforce-frame-pointers=yes"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
