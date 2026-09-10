@@ -117,6 +117,11 @@ impl VpcExposeNat {
     pub fn is_port_forwarding(&self) -> bool {
         matches!(self.config, VpcExposeNatConfig::PortForwarding(_))
     }
+
+    #[must_use]
+    pub fn is_stateful(&self) -> bool {
+        !self.is_static()
+    }
 }
 
 fn empty_set() -> &'static PrefixPortsSet {
@@ -629,6 +634,13 @@ impl ValidatedExpose {
             VpcExposeNatConfig::Static(_) => None,
         }
     }
+
+    #[must_use]
+    /// Tell if an expose is stateful. An expose is stateful if a gw would create state for it (e.g. flow state)
+    /// Default exposes aren't stateful nor are those statically NAT-ed.
+    pub fn is_stateful(&self) -> bool {
+        !self.default && self.nat().is_some_and(VpcExposeNat::is_stateful)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -775,6 +787,12 @@ impl ValidatedManifest {
     #[must_use]
     pub fn is_default_only(&self) -> bool {
         self.valexp.len() == 1 && self.valexp.first().is_some_and(ValidatedExpose::is_default)
+    }
+
+    #[must_use]
+    /// Tell if a manifest is stateful. A manifest is stateful if any of its exposes is stateful.
+    pub fn is_stateful(&self) -> bool {
+        self.valexp().iter().any(ValidatedExpose::is_stateful)
     }
 
     /// Reject manifests containing both IPv4 and IPv6 exposes.
