@@ -95,6 +95,7 @@ impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
             gateway_group: Some(d.produce::<String>()?),
             peering: Some(peering),
             acl: None, // FIXME: Add a proper implementation when used
+            no_multi_path: Some(false),
         })
     }
 }

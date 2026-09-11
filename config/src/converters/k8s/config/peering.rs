@@ -218,6 +218,7 @@ mod test {
             gateway_group: Some("default".to_string()),
             peering: Some(peerings_map),
             acl: Some(acl),
+            no_multi_path: Some(false),
         };
 
         let vpc_peering = VpcPeering::try_from((&subnets, "test-peering", &k8s_peering)).unwrap();
