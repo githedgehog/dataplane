@@ -8,7 +8,7 @@
 }:
 stdenv.mkDerivation (final: {
   pname = "perftest";
-  version = src.version;
+  version = src.revision;
   src = src.outPath;
   nativeBuildInputs = [
     autoreconfHook
