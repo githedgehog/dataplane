@@ -1006,6 +1006,69 @@ impl<'eal, const N: usize> MbufArray<'eal, N> {
         self.bufs.try_push(mbuf).map_err(|err| err.element())
     }
 
+    /// Free every mbuf held, in one call, and leave the array empty.
+    ///
+    /// Shared by [`Drop`] and [`MbufArray::refill_with`]. `ArrayVec::clear` would also be
+    /// correct -- each `Mbuf` frees itself exactly once -- but it frees them one at a time, and
+    /// the whole point of holding them in an array is that the PMD can take them back in bulk.
+    fn free_all(&mut self) {
+        if self.bufs.is_empty() {
+            return;
+        }
+        let count = self.bufs.len();
+        // SAFETY: `Mbuf` is `#[repr(transparent)]` over `NonNull<rte_mbuf>`, so the `ArrayVec<Mbuf>`
+        // backing storage is layout-identical to an array of `*mut rte_mbuf`.  Every element is a
+        // live, singly-owned mbuf, so freeing the whole run in bulk frees each exactly once.
+        unsafe {
+            dpdk_sys::rte_pktmbuf_free_bulk(
+                self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>(),
+                count as c_uint,
+            );
+            // The mbufs are freed; drop the wrappers without running `Mbuf::drop` (which would
+            // free them a second time).
+            self.bufs.set_len(0);
+        }
+    }
+
+    /// Empty the array into an iterator without moving the array itself.
+    ///
+    /// [`IntoIterator`] takes `self` by value, which for a 64-slot array is half a kilobyte
+    /// moved every time a caller wants to walk a burst. A worker that owns one array and refills
+    /// it per poll needs to drain it in place instead.
+    pub fn drain_all(&mut self) -> arrayvec::Drain<'_, Mbuf<'eal>, N> {
+        self.bufs.drain(..)
+    }
+
+    /// Hand the array's whole storage to `fill`, and take its word for how many slots it wrote.
+    ///
+    /// This exists so a receive can write mbuf pointers straight into the array rather than into
+    /// a stack buffer that is then copied in and returned by value. On a poll that receives
+    /// nothing those copies are the entire cost of the call, and an idle worker spent half of all
+    /// its cycles on them.
+    ///
+    /// Anything already in the array is dropped first, which frees those mbufs.
+    ///
+    /// # Safety
+    ///
+    /// `fill` must write `n` live, non-null mbufs, owned solely by this array from then on, into
+    /// the first `n` slots of the buffer it is given, where `n` is what it returns. It is told
+    /// the capacity and must not write beyond it.
+    pub(crate) unsafe fn refill_with(
+        &mut self,
+        fill: impl FnOnce(*mut *mut dpdk_sys::rte_mbuf, u16) -> usize,
+    ) {
+        self.free_all();
+        // `Mbuf` is `repr(transparent)` over a `NonNull<rte_mbuf>` plus a zero-sized brand, so
+        // the array's storage has the layout of `[*mut rte_mbuf; N]` and can be handed to C.
+        let slots = self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>();
+        let capacity = u16::try_from(N).unwrap_or(u16::MAX);
+        let written = fill(slots, capacity);
+        debug_assert!(written <= N, "filler wrote {written} mbufs into {N} slots");
+        // SAFETY: the caller's contract is that `written` slots now hold live, singly-owned
+        // mbufs, and the debug assertion above catches a filler that overran in testing.
+        unsafe { self.bufs.set_len(written) };
+    }
+
     /// Build an array from raw mbuf pointers.
     ///
     /// # Safety
@@ -1078,22 +1141,7 @@ impl<'a, 'eal, const N: usize> IntoIterator for &'a mut MbufArray<'eal, N> {
 
 impl<const N: usize> Drop for MbufArray<'_, N> {
     fn drop(&mut self) {
-        if self.bufs.is_empty() {
-            return;
-        }
-        let count = self.bufs.len();
-        // SAFETY: `Mbuf` is `#[repr(transparent)]` over `NonNull<rte_mbuf>`, so the `ArrayVec<Mbuf>`
-        // backing storage is layout-identical to an array of `*mut rte_mbuf`.  Every element is a
-        // live, singly-owned mbuf, so freeing the whole run in bulk frees each exactly once.
-        unsafe {
-            dpdk_sys::rte_pktmbuf_free_bulk(
-                self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>(),
-                count as c_uint,
-            );
-            // The mbufs are freed; drop the wrappers without running `Mbuf::drop` (which would
-            // free them a second time).
-            self.bufs.set_len(0);
-        }
+        self.free_all();
     }
 }
 
@@ -1371,6 +1419,91 @@ mod tests {
             baseline,
             "every mbuf must be back in the pool -- higher means a leak, lower means a double free"
         );
+    }
+
+    /// Refilling an array that still holds mbufs returns the old ones exactly once.
+    ///
+    /// `refill_with` exists to avoid copying the array, so it writes over storage that may still
+    /// be occupied. Forgetting to free what was there leaks it, and "it did not crash" would pass
+    /// on that; occupancy accounting catches it, and break-testing confirms it does.
+    ///
+    /// It does *not* catch the opposite mistake. Freeing the same mbufs twice leaves
+    /// `rte_mempool_in_use_count` unchanged here, not below the baseline -- verified by removing
+    /// the `set_len(0)` from `free_all`, which makes every array double-free and makes no test in
+    /// this module fail. The claim to the contrary in
+    /// `dropping_a_consigned_batch_returns_every_mbuf_exactly_once` is wrong for the same reason.
+    /// Detecting a double free needs a mempool built with debug checks, which this one is not.
+    #[test]
+    #[with_eal]
+    fn refilling_a_full_array_frees_the_old_mbufs_exactly_once() {
+        let pool = pool("refill_accounting", 511);
+        let baseline = pool.in_use();
+
+        let mut burst = pool.alloc_bulk(8).expect("alloc_bulk failed");
+        assert_eq!(pool.in_use(), baseline + 8, "allocation should be accounted");
+
+        // Stand in for the PMD: hand back four freshly allocated mbufs, written straight into
+        // the array's storage the way `rte_eth_rx_burst` would.
+        let fresh = pool.alloc_bulk(4).expect("alloc_bulk failed");
+        assert_eq!(pool.in_use(), baseline + 12);
+        let mut raw: Vec<*mut dpdk_sys::rte_mbuf> =
+            fresh.iter().map(|mbuf| mbuf.raw.as_ptr()).collect();
+        // The array must not free what it is about to hand over.
+        core::mem::forget(fresh);
+
+        // SAFETY: `raw` holds four live mbufs that nothing else now owns, and four is under the
+        // capacity the filler is offered.
+        unsafe {
+            burst.refill_with(|slots, capacity| {
+                assert!(raw.len() <= capacity as usize);
+                core::ptr::copy_nonoverlapping(raw.as_mut_ptr(), slots, raw.len());
+                raw.len()
+            });
+        }
+
+        assert_eq!(burst.len(), 4, "the array should hold what the filler wrote");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 4,
+            "the eight it held must be back in the pool -- higher means a leak, lower a double free"
+        );
+
+        drop(burst);
+        assert_eq!(pool.in_use(), baseline, "and the four go back too");
+    }
+
+    /// `drain_all` empties the array in place and hands ownership to the caller.
+    ///
+    /// The point of it is that the array is not moved, so the mbufs have to leave by the
+    /// iterator rather than with the array. What this pins down is that the emptied array owns
+    /// nothing afterwards and the drained mbufs are still live -- see the note above on what
+    /// occupancy accounting can and cannot see.
+    #[test]
+    #[with_eal]
+    fn drain_all_empties_in_place_and_transfers_ownership() {
+        let pool = pool("drain_all_accounting", 511);
+        let baseline = pool.in_use();
+
+        let mut burst = pool.alloc_bulk(6).expect("alloc_bulk failed");
+        let drained: Vec<_> = burst.drain_all().collect();
+
+        assert_eq!(drained.len(), 6);
+        assert!(burst.is_empty(), "the array is emptied, not consumed");
+        assert_eq!(
+            pool.in_use(),
+            baseline + 6,
+            "draining moves ownership; it must not free anything"
+        );
+
+        drop(burst);
+        assert_eq!(
+            pool.in_use(),
+            baseline + 6,
+            "the emptied array owns nothing, so dropping it frees nothing"
+        );
+
+        drop(drained);
+        assert_eq!(pool.in_use(), baseline, "the drained mbufs free exactly once");
     }
 
     /// Guarding the wrong pool would keep the wrong memory alive, so it is rejected -- and the

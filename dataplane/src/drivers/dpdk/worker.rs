@@ -136,6 +136,11 @@ impl<'p> Worker<'p> {
         // moved from stage to stage, and the allocation happens once rather than once per poll.
         let mut burst: Vec<Packet<Mbuf<'p>>> = Vec::with_capacity(dpdk::mem::MBUF_BURST);
 
+        // Likewise for what the PMD hands back. `RxQueue::receive` returns its array by value,
+        // which is 64 slots copied on every poll whether or not anything arrived; owning one here
+        // and refilling it makes an empty poll cost nothing but the poll.
+        let mut rx_mbufs: MbufArray<'p> = MbufArray::new_empty();
+
         loop {
             polls = polls.wrapping_add(1);
             if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
@@ -153,7 +158,14 @@ impl<'p> Worker<'p> {
 
             let mut saw_frames = false;
             for slot in 0..self.queues.len() {
-                if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut burst, &mut counters) {
+                if self.poll_one(
+                    slot,
+                    &tx_by_if,
+                    &mut pipeline,
+                    &mut burst,
+                    &mut rx_mbufs,
+                    &mut counters,
+                ) {
                     saw_frames = true;
                 }
             }
@@ -184,6 +196,7 @@ impl<'p> Worker<'p> {
         tx_by_if: &HashMap<InterfaceIndex, usize>,
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
         burst: &mut Vec<Packet<Mbuf<'p>>>,
+        rx_mbufs: &mut MbufArray<'p>,
         counters: &mut RxCounters,
     ) -> bool {
         // Before the receive, and unconditionally: a port with no incoming traffic still has to
@@ -191,11 +204,11 @@ impl<'p> Worker<'p> {
         // when data happened to arrive would drop on the first quiet hold timer.
         let injected = self.inject(slot, counters);
 
-        let received = self.queues[slot].rx.receive();
-        if received.is_empty() {
+        self.queues[slot].rx.receive_into(rx_mbufs);
+        if rx_mbufs.is_empty() {
             return injected;
         }
-        counters.rx += received.len() as u64;
+        counters.rx += rx_mbufs.len() as u64;
 
         let rx_if = self.queues[slot].if_index;
 
@@ -204,7 +217,7 @@ impl<'p> Worker<'p> {
         // its mbuf is freed by the `Packet::new` error path dropping the buffer.
         let parse_errors = &mut counters.parse_errors;
         burst.clear();
-        burst.extend(received.into_iter().filter_map(|mbuf| match Packet::new(mbuf) {
+        burst.extend(rx_mbufs.drain_all().filter_map(|mbuf| match Packet::new(mbuf) {
             Ok(mut packet) => {
                 packet.meta_mut().iif = Some(rx_if);
                 Some(packet)
