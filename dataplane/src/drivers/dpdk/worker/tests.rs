@@ -45,10 +45,12 @@ fn parse_failures_are_not_pipeline_drops() {
     let rx_if = InterfaceIndex::try_new(1).unwrap();
     let mut counters = RxCounters::default();
     let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered)]));
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         vec![frame(), TestBuffer::from_raw_data(&[0; 3])].into_iter(),
         rx_if,
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(packets.len(), 1);
@@ -57,7 +59,13 @@ fn parse_failures_are_not_pipeline_drops() {
     assert_eq!(counters.parse_errors, 1);
     assert_eq!(drops(&packets), 0);
 
-    let packets = process_burst([frame()].into_iter(), rx_if, &mut pipeline, &mut counters);
+    process_burst(
+        [frame()].into_iter(),
+        rx_if,
+        &mut pipeline,
+        &mut packets,
+        &mut counters,
+    );
     assert_eq!(packets.len(), 1);
     assert_eq!(counters.rx, 3);
     assert_eq!(counters.parse_errors, 1);
@@ -76,10 +84,12 @@ fn drop_verdicts_come_back_to_the_caller() {
         None,
     ]));
     let mut counters = RxCounters::default();
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         (0..5).map(|_| frame()),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(packets.len(), 5);
@@ -99,10 +109,12 @@ fn drop_verdicts_come_back_to_the_caller() {
 fn a_pipeline_that_removes_packets_is_a_bug() {
     let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered)]));
     let mut counters = RxCounters::default();
-    let _ = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         (0..2).map(|_| frame()),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
 }
@@ -118,10 +130,12 @@ fn verdicts_other_than_local_and_delivered_are_dropped() {
         Some(DoneReason::RouteFailure),
     ]));
     let mut counters = RxCounters::default();
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         (0..3).map(|_| frame()),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(drops(&packets), 3);
@@ -132,10 +146,12 @@ fn additional_pipeline_outputs_do_not_count_as_drops() {
     let mut pipeline =
         DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered); 2]));
     let mut counters = RxCounters::default();
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         [frame()].into_iter(),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(packets.len(), 2);
