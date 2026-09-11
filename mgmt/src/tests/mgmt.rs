@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![cfg(test)]
+
 /// How many cases a run needs before a health check may assert on a *rate*.
 ///
 /// The properties below print how much of their input reached the interesting part and
@@ -8,7 +10,6 @@
 /// when there is a sample behind them: under miri and under qemu a property gets a
 /// handful of cases, where a ratio measures nothing and a threshold is pure flake. Below
 /// this many cases the counts are still printed, and coverage data is the thing to watch.
-#[cfg(test)]
 const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) {
     // Coverage is the third case this gate was built for, and the one that
     // slips through a plain count. Emulation buys a handful of cases, well
@@ -36,7 +37,6 @@ const ENOUGH_CASES: usize = if cfg!(instrumented) || cfg!(emulated) {
     500
 };
 
-#[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
     use acl_filter::AclFilterContextWriter;
@@ -544,7 +544,6 @@ pub mod test {
     }
 }
 
-#[cfg(test)]
 mod peering_chain {
     use bolero::{Driver, ValueGenerator};
     use config::ConfigError;
@@ -884,7 +883,6 @@ mod peering_chain {
     }
 }
 
-#[cfg(test)]
 mod dataplane_tables {
     use config::{ExternalConfig, ValidatedGwConfig};
     use flow_entry::flow_table::FlowTable;
@@ -985,8 +983,6 @@ mod dataplane_tables {
     }
 }
 
-#[cfg(test)]
-#[cfg(test)]
 mod enacted {
     use config::{ConfigError, ExternalConfig, ValidatedGwConfig};
     use flow_entry::flow_table::FlowTable;
@@ -1508,7 +1504,6 @@ mod relevance {
     }
 }
 
-#[cfg(test)]
 mod filters {
     //! The rte_acl-backed ACL filter and the flow filter.
     //!
