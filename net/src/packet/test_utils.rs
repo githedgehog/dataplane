@@ -51,6 +51,14 @@ fn make_default_for_transport(transport_type: Option<NextHeader>) -> Option<Tran
             let udp = Udp::new(123.try_into().unwrap(), 456.try_into().unwrap());
             Some(Transport::Udp(udp))
         }
+        // Echo requests, because they are the ICMP traffic NAT actually translates: the identifier
+        // is what stands in for a port, and it is covered by the ICMP checksum.
+        Some(NextHeader::ICMP) => Some(Transport::Icmp4(crate::icmp4::Icmp4::with_type(
+            crate::icmp4::Icmp4Type::EchoRequest(crate::icmp4::Icmp4EchoRequest { id: 18, seq: 2 }),
+        ))),
+        Some(NextHeader::ICMP6) => Some(Transport::Icmp6(crate::icmp6::Icmp6::with_type(
+            crate::icmp6::Icmp6Type::EchoRequest(crate::icmp6::Icmp6EchoRequest { id: 18, seq: 2 }),
+        ))),
         Some(transport_type) => {
             panic!("make_default_for_transport: Unsupported transport type: {transport_type:?}")
         }
