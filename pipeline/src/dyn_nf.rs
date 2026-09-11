@@ -2,47 +2,27 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NetworkFunction;
-use dyn_iter::{DynIter, IntoDynIterator};
 use net::buffer::PacketBufferMut;
-use net::packet::Packet;
-use std::marker::PhantomData;
 
-/// Trait for an object that processes a stream of packets.
+/// A [`NetworkFunction`] held as a trait object.
 ///
-/// Generally, you should not need to implement this trait directly. Instead, use the [`nf_dyn`]
-/// function to create a boxed, dynamic network function.
+/// This exists only to name the object type. [`NetworkFunction`] is object safe on its own --
+/// `process_burst` takes a `&mut Vec<Packet<Buf>>`, which is a concrete type -- so this trait
+/// adds nothing and is blanket implemented for every network function.
+///
+/// It was not always so. While a stage's signature was generic over its input iterator and
+/// returned an opaque `impl Iterator`, neither could appear in a vtable, and a parallel trait
+/// with an erased iterator type (`DynIter`) was the only way to build a pipeline at runtime.
+/// That erasure also stopped the optimiser at every stage boundary. Passing the burst by
+/// reference removed the need for it.
 ///
 /// # See Also
 ///
 /// * [`nf_dyn`]
 /// * [`crate::pipeline::DynPipeline`]
-pub trait DynNetworkFunction<Buf: PacketBufferMut> {
-    /// The `process_dyn` method takes an iterator of [`Packet`] objects,
-    /// However, unlike [`NetworkFunction::process`], this method does not require concrete
-    /// iterator types.
-    ///
-    /// To call this method, import the [`IntoDynIterator`] trait and use the
-    /// `into_dyn_iter` method to get a [`DynIter`] to use with this method.
-    /// Generally, you should not need to call this method directly, instead call
-    /// [`DynPipeline::process`][crate::pipeline::DynPipeline::process] with a concrete iterator
-    /// type.  However, if you only have a dynamic iterator, you can use this method to process the
-    /// packets.
-    fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>>;
-}
+pub trait DynNetworkFunction<Buf: PacketBufferMut>: NetworkFunction<Buf> {}
 
-pub(crate) struct DynNetworkFunctionImpl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> {
-    nf: NF,
-    _marker: PhantomData<Buf>,
-}
-
-impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf, NF> {
-    pub fn new(nf: NF) -> Self {
-        Self {
-            nf,
-            _marker: PhantomData,
-        }
-    }
-}
+impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunction<Buf> for NF {}
 
 /// Creates a boxed, dynamic network function.
 ///
@@ -55,13 +35,5 @@ impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunctionImpl<Buf,
 pub fn nf_dyn<'nf, Buf: PacketBufferMut + 'nf, NF: NetworkFunction<Buf> + 'nf>(
     nf: NF,
 ) -> Box<dyn DynNetworkFunction<Buf> + 'nf> {
-    Box::new(DynNetworkFunctionImpl::new(nf))
-}
-
-impl<Buf: PacketBufferMut, NF: NetworkFunction<Buf>> DynNetworkFunction<Buf>
-    for DynNetworkFunctionImpl<Buf, NF>
-{
-    fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
-        self.nf.process(input).into_dyn_iter()
-    }
+    Box::new(nf)
 }

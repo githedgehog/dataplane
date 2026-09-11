@@ -696,21 +696,17 @@ impl From<&MasqueradeError> for DoneReason {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Masquerade {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(|mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             if !packet.is_done() && packet.meta().requires_masquerade() && !packet.is_icmp_error() {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
                 // Packet should never go through both masquerading and port forwarding
                 debug_assert!(!packet.meta().requires_port_forwarding());
 
-                self.process_packet(&mut packet);
+                self.process_packet(packet);
             }
-            packet.enforce()
-        })
+        }
     }
 
     fn set_data(&mut self, data: Arc<PipelineData>) {

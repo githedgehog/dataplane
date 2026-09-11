@@ -131,6 +131,11 @@ impl<'p> Worker<'p> {
         let mut polls: u32 = 0;
         let mut counters = RxCounters::default();
 
+        // The burst the pipeline works in, owned by this worker and reused for the life of the
+        // thread. Every stage borrows it, so a packet is rewritten where it lies instead of being
+        // moved from stage to stage, and the allocation happens once rather than once per poll.
+        let mut burst: Vec<Packet<Mbuf<'p>>> = Vec::with_capacity(dpdk::mem::MBUF_BURST);
+
         loop {
             polls = polls.wrapping_add(1);
             if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
@@ -148,7 +153,7 @@ impl<'p> Worker<'p> {
 
             let mut saw_frames = false;
             for slot in 0..self.queues.len() {
-                if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut counters) {
+                if self.poll_one(slot, &tx_by_if, &mut pipeline, &mut burst, &mut counters) {
                     saw_frames = true;
                 }
             }
@@ -178,6 +183,7 @@ impl<'p> Worker<'p> {
         slot: usize,
         tx_by_if: &HashMap<InterfaceIndex, usize>,
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
+        burst: &mut Vec<Packet<Mbuf<'p>>>,
         counters: &mut RxCounters,
     ) -> bool {
         // Before the receive, and unconditionally: a port with no incoming traffic still has to
@@ -185,11 +191,11 @@ impl<'p> Worker<'p> {
         // when data happened to arrive would drop on the first quiet hold timer.
         let injected = self.inject(slot, counters);
 
-        let burst = self.queues[slot].rx.receive();
-        if burst.is_empty() {
+        let received = self.queues[slot].rx.receive();
+        if received.is_empty() {
             return injected;
         }
-        counters.rx += burst.len() as u64;
+        counters.rx += received.len() as u64;
 
         let rx_if = self.queues[slot].if_index;
 
@@ -197,24 +203,20 @@ impl<'p> Worker<'p> {
         // stage keys everything off `iif`. A frame that does not parse is dropped here and counted;
         // its mbuf is freed by the `Packet::new` error path dropping the buffer.
         let parse_errors = &mut counters.parse_errors;
-        let packets = burst
-            .into_iter()
-            .filter_map(|mbuf| match Packet::new(mbuf) {
-                Ok(mut packet) => {
-                    packet.meta_mut().iif = Some(rx_if);
-                    Some(packet)
-                }
-                Err(e) => {
-                    *parse_errors += 1;
-                    trace!("failed to parse a received frame: {e:?}");
-                    None
-                }
-            });
+        burst.clear();
+        burst.extend(received.into_iter().filter_map(|mbuf| match Packet::new(mbuf) {
+            Ok(mut packet) => {
+                packet.meta_mut().iif = Some(rx_if);
+                Some(packet)
+            }
+            Err(e) => {
+                *parse_errors += 1;
+                trace!("failed to parse a received frame: {e:?}");
+                None
+            }
+        }));
 
-        // Collected rather than streamed into the transmit step because the pipeline is borrowed
-        // mutably for as long as its output iterator lives, and transmitting needs a `&mut` on a
-        // queue this worker also owns.
-        let processed: Vec<Packet<Mbuf<'p>>> = pipeline.process(packets).collect();
+        pipeline.process_burst(burst);
         // Drops are counted below, by verdict, rather than derived from how many packets the
         // pipeline swallowed. The pipeline no longer swallows any: it hands every packet over with
         // its verdict attached, because only the driver knows whether there is a kernel to punt one
@@ -228,7 +230,7 @@ impl<'p> Worker<'p> {
         // atomic increment, which is not free at burst rates and buys nothing here.
         let port_mac = self.queues[slot].mac;
         let punt = self.queues[slot].punt.as_ref();
-        for packet in processed {
+        for packet in burst.drain(..) {
             // Who the frame was addressed to, read before the pipeline's verdict is acted on. It is
             // only consulted for verdicts that did not rewrite the ethernet header, so this is the
             // destination the frame arrived with.
