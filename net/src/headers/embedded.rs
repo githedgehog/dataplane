@@ -1460,7 +1460,7 @@ mod tests {
         #[test]
         fn a_v6_address_change_matches_a_fresh_udp_checksum() {
             let old = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-            let new = Ipv6Addr::new(0x2001, 0xdb8, 0xdead, 0xbeef, 1, 2, 3, 4);
+            let new: Ipv6Addr = crate::ipv6_doc!(":dead:beef:1:2:3:4").parse().unwrap();
 
             let mut udp = Udp::new(
                 UdpPort::new_checked(123).unwrap(),
@@ -1564,7 +1564,7 @@ mod tests {
             let before = quoted.clone();
             quoted.update_checksum_for_address(
                 IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
-                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                IpAddr::V6(crate::ipv6_doc!("::1").parse().unwrap()),
             );
 
             assert_eq!(quoted, before, "a truncated quote must not be rewritten");

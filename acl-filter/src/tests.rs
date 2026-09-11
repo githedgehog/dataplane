@@ -44,7 +44,7 @@ const VNI1: u32 = 100;
 const VNI2: u32 = 200;
 const V1_IPS: &str = "10.0.0.0/24";
 const V2_IPS: &str = "20.0.0.0/24";
-const V1_IPS_V6: &str = "2001:db8::/64";
+const V1_IPS_V6: &str = net::ipv6_doc!("::/64");
 const V2_IPS_V6: &str = "2001:db9::/64";
 
 // -------------------------------------------------------------------------------------------------
@@ -646,14 +646,14 @@ fn ipv6_allow_and_default_deny() {
     let allowed = packet(
         vpcd(VNI1),
         Some(vpcd(VNI2)),
-        build_tcp_packet_v6(v6("2001:db8::5"), v6("2001:db9::5"), 1234, 80),
+        build_tcp_packet_v6(v6(net::ipv6_doc!("::5")), v6("2001:db9::5"), 1234, 80),
     );
     assert!(is_allowed(&run(&mut filter, allowed)));
 
     let denied = packet(
         vpcd(VNI1),
         Some(vpcd(VNI2)),
-        build_tcp_packet_v6(v6("2001:db8::5"), v6("2001:dbf::5"), 1234, 80),
+        build_tcp_packet_v6(v6(net::ipv6_doc!("::5")), v6("2001:dbf::5"), 1234, 80),
     );
     assert!(is_denied(&run(&mut filter, denied)));
 }

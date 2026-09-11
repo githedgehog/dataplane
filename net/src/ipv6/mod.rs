@@ -23,6 +23,7 @@ use tracing::trace;
 
 pub mod addr;
 pub mod dest_opts;
+pub mod documentation;
 pub(crate) mod ext_parse;
 pub mod flow_label;
 pub mod fragment;
@@ -31,7 +32,9 @@ pub mod hop_by_hop;
 pub(crate) mod raw_ext_gen;
 pub mod routing;
 
+pub use crate::ipv6_doc;
 pub use dest_opts::DestOpts;
+pub use documentation::{DOC_PREFIX, DOC_PREFIX_BITS, DOC_PREFIX_LEN, DOC_PREFIX_NETWORK};
 pub use fragment::Fragment;
 pub use hop_by_hop::HopByHop;
 pub use routing::Routing;

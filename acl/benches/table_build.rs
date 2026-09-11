@@ -72,7 +72,7 @@ mod bench {
     fn rule_v6(i: usize) -> FiveTuple6Rule {
         FiveTuple6Rule {
             proto: ExactSpec::new(6),
-            src: PrefixSpec::new("2001:db8::".parse().expect("v6 literal"), 32),
+            src: PrefixSpec::new(net::ipv6::DOC_PREFIX_NETWORK, net::ipv6::DOC_PREFIX_LEN),
             dst: PrefixSpec::new(Ipv6Addr::UNSPECIFIED, 0),
             sport: RangeSpec::new(0, u16::MAX),
             dport: RangeSpec::exact(u16::try_from(i).unwrap_or(u16::MAX)),

@@ -338,7 +338,7 @@ fn a_freed_port_block_is_reused_while_its_address_is_held() {
 
 #[test]
 fn the_offset_mapping_refuses_an_address_it_cannot_index() {
-    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let start = net::ipv6::DOC_PREFIX_BITS;
     let mapping = BTreeMap::from([(start, 0u32)]);
 
     assert_eq!(map_address(Ipv6Addr::from(start + 1), &mapping), Ok(1));
@@ -361,7 +361,7 @@ fn the_offset_mapping_refuses_an_address_it_cannot_index() {
 #[test]
 #[cfg_attr(miri, ignore = "the 2^32-entry bitmap is too slow under miri")]
 fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
-    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let start = net::ipv6::DOC_PREFIX_BITS;
     // Far wider than the bitmap can index.
     let specs = vec![PoolSpec::new(
         vec![AddrInterval::new(start, start + (1u128 << 40))],
@@ -390,7 +390,7 @@ fn an_address_past_the_indexable_span_is_refused_rather_than_panicking() {
 /// from an IPv6 pool goes through the offset mapping that IPv4 skips entirely, so cover it.
 #[test]
 fn ipv6_pools_allocate_within_their_range() {
-    let start = u128::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0));
+    let start = net::ipv6::DOC_PREFIX_BITS;
     let end = start + 3;
     let specs = vec![PoolSpec::new(
         vec![AddrInterval::new(start, end)],

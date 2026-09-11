@@ -855,7 +855,10 @@ mod tests {
                         proto: any(),
                         src_vpcd: ExactSpec::new(100),
                         dst_vpcd: ExactSpec::new(200),
-                        src_ip: PrefixSpec::new("2001:db8::".parse::<Ipv6Addr>().unwrap(), 32),
+                        src_ip: PrefixSpec::new(
+                            net::ipv6::DOC_PREFIX_NETWORK,
+                            net::ipv6::DOC_PREFIX_LEN,
+                        ),
                         src_port: anyport(),
                     }
                     .into_backend_fields::<Dpdk>(),
@@ -870,7 +873,7 @@ mod tests {
                 proto: 6,
                 src_vpcd: 100,
                 dst_vpcd: 200,
-                src_ip: "2001:db8::5".parse().unwrap(),
+                src_ip: net::ipv6_doc!("::5").parse().unwrap(),
                 src_port: 1234,
             }),
             Some(&0x77),
