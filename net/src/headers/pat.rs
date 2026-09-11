@@ -794,7 +794,7 @@ pub struct Fields<'a> {
     net_ext: Option<&'a mut [NetExt]>,
     transport: Option<&'a mut Option<Transport>>,
     udp_encap: Option<&'a mut Option<UdpEncap>>,
-    embedded: Option<&'a mut Option<EmbeddedHeaders>>,
+    embedded: Option<&'a mut Option<Box<EmbeddedHeaders>>>,
 }
 
 impl Fields<'_> {
@@ -1748,7 +1748,7 @@ where
     /// not -- if the ICMP message is not an error (e.g. echo request),
     /// `embedded_ip` will be `None` and the match simply fails.
     pub fn embedded(mut self) -> EmbeddedMatcherMut<'a, EmbeddedStart, Acc, ()> {
-        let embedded = self.fields.embedded.take().and_then(|opt| opt.as_mut());
+        let embedded = self.fields.embedded.take().and_then(|opt| opt.as_deref_mut());
         match embedded {
             Some(e) => EmbeddedMatcherMut {
                 outer_acc: self.acc,
@@ -2906,7 +2906,7 @@ mod tests {
             .transport(Some(
                 Transport::Tcp(crate::headers::builder::Blank::blank()),
             ))
-            .embedded_ip(Some(crate::headers::EmbeddedHeaders::default()))
+            .embedded_ip(Some(Box::new(crate::headers::EmbeddedHeaders::default())))
             .build()
             .unwrap();
 

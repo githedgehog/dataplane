@@ -72,7 +72,14 @@ pub struct Headers {
     pub(crate) net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
     pub(crate) transport: Option<Transport>,
     pub(crate) udp_encap: Option<UdpEncap>,
-    pub(crate) embedded_ip: Option<EmbeddedHeaders>,
+    /// Boxed because it is cold and large.
+    ///
+    /// `EmbeddedHeaders` is 200 bytes and exists only on ICMP error messages, which quote the
+    /// packet that provoked them. Inline, it was 45% of a `Headers` that every pipeline stage
+    /// moves by value, so ordinary traffic paid for it on every packet. Boxing trades an
+    /// allocation on the ICMP-error path -- rare -- for 192 bytes off every move on the fast path.
+    /// See the `size_budget` test at the bottom of this module.
+    pub(crate) embedded_ip: Option<Box<EmbeddedHeaders>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -663,7 +670,7 @@ impl Parse for Headers {
                         break;
                     }
                 }
-                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(embedded),
+                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
             }
             match header {
                 None => {
@@ -712,7 +719,7 @@ impl DeParse for Headers {
         };
         let embedded_ip = self
             .embedded_ip
-            .as_ref()
+            .as_deref()
             .map_or(0, |embedded_header| embedded_header.size().get());
         NonZero::new(eth + vlan + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
@@ -776,7 +783,7 @@ impl DeParse for Headers {
             }
         }
 
-        if let Some(ref embedded_ip) = self.embedded_ip {
+        if let Some(embedded_ip) = self.embedded_ip.as_deref() {
             if matches!(
                 self.transport,
                 Some(Transport::Icmp4(_) | Transport::Icmp6(_))
@@ -919,13 +926,13 @@ impl Headers {
     /// (potentially truncated) copy of the original offending packet.
     #[must_use]
     pub fn embedded_ip(&self) -> Option<&EmbeddedHeaders> {
-        self.embedded_ip.as_ref()
+        self.embedded_ip.as_deref()
     }
 
     /// Get a mutable reference to the embedded IP headers, if present.
     #[must_use]
     pub fn embedded_ip_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
-        self.embedded_ip.as_mut()
+        self.embedded_ip.as_deref_mut()
     }
 
     /// Push a VLAN header to the top of the stack.
@@ -1042,7 +1049,7 @@ impl Headers {
         // them later would invalidate transport's payload.
         if let Some(inner_ip) = self
             .embedded_ip
-            .as_mut()
+            .as_deref_mut()
             .and_then(|ip| ip.try_inner_ip_mut())
         {
             inner_ip.update_checksum();
@@ -1057,7 +1064,7 @@ impl Headers {
             trace!("no transport header: can't update checksum");
             return;
         };
-        transport.update_checksum(net, self.embedded_ip.as_ref(), payload.as_ref());
+        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
     }
 }
 
@@ -1546,12 +1553,12 @@ mod contract {
                 net_ext: ArrayVec::default(),
                 transport: Some(transport),
                 udp_encap: None,
-                embedded_ip: Some(EmbeddedHeaders::new(
+                embedded_ip: Some(Box::new(EmbeddedHeaders::new(
                     Some(quoted_net),
                     Some(quoted_transport),
                     quoted_ext,
                     None,
-                )),
+                ))),
             })
         }
     }
@@ -1589,7 +1596,7 @@ mod contract {
             };
 
             let embedded_ip = if driver.produce::<bool>()? {
-                Some(quoted_packet(driver, outer_v4)?)
+                Some(Box::new(quoted_packet(driver, outer_v4)?))
             } else {
                 None
             };
@@ -2685,6 +2692,35 @@ mod test {
             headers.size().get(),
             14 + 40 + 8 + 20,
             "size must include extension header"
+        );
+    }
+}
+
+#[cfg(test)]
+mod size_budget {
+    use super::Headers;
+
+    /// `Headers` moves by value through every stage of the packet pipeline, so its size is a
+    /// per-packet cost paid a dozen times over -- not a one-off.
+    ///
+    /// The first on-hardware profile (2026-09-11) found `__memmove_avx512_unaligned_erms` at 31%
+    /// of all cycles, spread across the `filter_map` nest of the network-function chain rather
+    /// than concentrated at any one call site: the signature of moving a large struct repeatedly.
+    /// `Headers` was 440 bytes then, 200 of which were an inline `EmbeddedHeaders` carried on
+    /// every packet to serve the ICMP-error quote path alone. Boxing that field took `Headers` to
+    /// 248 and `Packet<Mbuf>` from 528 to 336.
+    ///
+    /// This bound is a budget, not a law of nature -- raise it deliberately if a field has to
+    /// grow, and prefer boxing a cold field over paying for it on the fast path.
+    #[test]
+    fn headers_stays_small() {
+        const BUDGET: usize = 248;
+        assert!(
+            size_of::<Headers>() <= BUDGET,
+            "Headers is {} bytes, over the {BUDGET}-byte budget; it is moved by value at every \
+             pipeline stage, so growth here is multiplied across the whole chain. Box the cold \
+             field rather than raising this number.",
+            size_of::<Headers>()
         );
     }
 }
