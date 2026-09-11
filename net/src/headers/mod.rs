@@ -71,7 +71,8 @@ pub struct Headers {
     pub(crate) net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
     pub(crate) transport: Option<Transport>,
     pub(crate) udp_encap: Option<UdpEncap>,
-    pub(crate) embedded_ip: Option<EmbeddedHeaders>,
+    /// Boxed to keep packets without ICMP errors small.
+    pub(crate) embedded_ip: Option<Box<EmbeddedHeaders>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -774,7 +775,7 @@ impl Parse for Headers {
                         break;
                     }
                 }
-                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(embedded),
+                Header::EmbeddedIp(embedded) => this.embedded_ip = Some(Box::new(embedded)),
             }
             match header {
                 None => {
@@ -823,7 +824,7 @@ impl DeParse for Headers {
         };
         let embedded_ip = self
             .embedded_ip
-            .as_ref()
+            .as_deref()
             .map_or(0, |embedded_header| embedded_header.size().get());
         NonZero::new(eth + vlan + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
@@ -887,7 +888,7 @@ impl DeParse for Headers {
             }
         }
 
-        if let Some(ref embedded_ip) = self.embedded_ip {
+        if let Some(embedded_ip) = self.embedded_ip.as_deref() {
             if matches!(
                 self.transport,
                 Some(Transport::Icmp4(_) | Transport::Icmp6(_))
@@ -1089,13 +1090,13 @@ impl Headers {
     /// (potentially truncated) copy of the original offending packet.
     #[must_use]
     pub fn embedded_ip(&self) -> Option<&EmbeddedHeaders> {
-        self.embedded_ip.as_ref()
+        self.embedded_ip.as_deref()
     }
 
     /// Get a mutable reference to the embedded IP headers, if present.
     #[must_use]
     pub fn embedded_ip_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
-        self.embedded_ip.as_mut()
+        self.embedded_ip.as_deref_mut()
     }
 
     /// Push a VLAN header to the top of the stack.
@@ -1212,7 +1213,7 @@ impl Headers {
         // them later would invalidate transport's payload.
         if let Some(inner_ip) = self
             .embedded_ip
-            .as_mut()
+            .as_deref_mut()
             .and_then(|ip| ip.try_inner_ip_mut())
         {
             inner_ip.update_checksum();
@@ -1227,7 +1228,7 @@ impl Headers {
             trace!("no transport header: can't update checksum");
             return;
         };
-        transport.update_checksum(net, self.embedded_ip.as_ref(), payload.as_ref());
+        transport.update_checksum(net, self.embedded_ip.as_deref(), payload.as_ref());
     }
 }
 
@@ -1716,12 +1717,12 @@ mod contract {
                 net_ext: ArrayVec::default(),
                 transport: Some(transport),
                 udp_encap: None,
-                embedded_ip: Some(EmbeddedHeaders::new(
+                embedded_ip: Some(Box::new(EmbeddedHeaders::new(
                     Some(quoted_net),
                     Some(quoted_transport),
                     quoted_ext,
                     None,
-                )),
+                ))),
             })
         }
     }
@@ -1759,7 +1760,7 @@ mod contract {
             };
 
             let embedded_ip = if driver.produce::<bool>()? {
-                Some(quoted_packet(driver, outer_v4)?)
+                Some(Box::new(quoted_packet(driver, outer_v4)?))
             } else {
                 None
             };
