@@ -1035,7 +1035,26 @@ let
                     mkdir -p $debug/bin
                     for f in $out/bin/*; do
                       mv "$f" "$debug/bin/$(basename "$f")"
-                      ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+                      # HACK (profiling): keep enough DWARF in the shipped binary for perf to
+                      # report `file:line`, instead of `${strip} --strip-debug`.
+                      #
+                      # Line tables alone do not do it. `.debug_line` holds the line programs but
+                      # not the map from an address to the compilation unit that owns one, so
+                      # addr2line against a binary carrying only `.debug_line` answers `??:0` --
+                      # measured, not assumed. `.debug_info` has to stay, and with it `.debug_str`.
+                      #
+                      # What can go is the part that is not about lines: `.debug_names` is a
+                      # lookup accelerator and `.debug_loclists` describes where variables live,
+                      # which is gdb's business and gdb has the `$debug` output. Dropping those
+                      # two saves 41.5 MB of 109 MB and still resolves.
+                      #
+                      # Note this puts build-time paths (`/build/source/...`, and store paths in
+                      # `.debug_str`) into the shipped binary, so the scanner finds far more
+                      # runtime references than before and `closure-check` has more to say. That
+                      # is part of why this is a hack and not a default.
+                      ${objcopy} --remove-section=.debug_names \
+                                 --remove-section=.debug_loclists \
+                                 "$debug/bin/$(basename "$f")" "$f"
                       ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
                     done
 
