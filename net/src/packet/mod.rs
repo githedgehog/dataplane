@@ -393,13 +393,13 @@ impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
 
 impl<Buf: PacketBufferMut> TryEmbeddedHeaders for Packet<Buf> {
     fn embedded_headers(&self) -> Option<&EmbeddedHeaders> {
-        self.headers.embedded_ip.as_ref()
+        self.headers.embedded_ip.as_deref()
     }
 }
 
 impl<Buf: PacketBufferMut> TryEmbeddedHeadersMut for Packet<Buf> {
     fn embedded_headers_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
-        self.headers.embedded_ip.as_mut()
+        self.headers.embedded_ip.as_deref_mut()
     }
 }
 
@@ -597,7 +597,7 @@ pub mod contract {
                         net_ext: ArrayVec::default(),
                         transport: Some(Transport::Icmp4(icmp4)),
                         udp_encap: None,
-                        embedded_ip: Some(embedded_ip),
+                        embedded_ip: Some(Box::new(embedded_ip)),
                     }
                 }
                 CommonEthType::Ipv6 => {
@@ -615,7 +615,7 @@ pub mod contract {
                         net_ext: ArrayVec::default(),
                         transport: Some(Transport::Icmp6(icmp6)),
                         udp_encap: None,
-                        embedded_ip: Some(embedded_ip),
+                        embedded_ip: Some(Box::new(embedded_ip)),
                     }
                 }
             };
@@ -680,13 +680,13 @@ pub mod contract {
             // Payload size for inner IP header
             let inner_network_header_size = headers
                 .embedded_ip
-                .as_ref()
+                .as_deref()
                 .map_or(0, EmbeddedHeaders::net_headers_len)
                 as usize;
             // Payload size for inner TCP/UDP header
             let inner_transport_header_size = headers
                 .embedded_ip
-                .as_ref()
+                .as_deref()
                 .map_or(0, EmbeddedHeaders::transport_headers_len)
                 as usize;
             // Theoretical payload size for inner TCP/UDP (inner packet may be truncated)
@@ -737,12 +737,12 @@ pub mod contract {
             }
             // Set inner IP payload/total length
             #[allow(clippy::cast_possible_truncation)] // bounded size
-            headers.embedded_ip.as_mut().map(|embedded_ip| {
+            headers.embedded_ip.as_deref_mut().map(|embedded_ip| {
                 embedded_ip.set_network_payload_length(theoretical_inner_net_payload_size as u16)
             });
             // Set inner transport length
             #[allow(clippy::cast_possible_truncation)] // bounded size
-            headers.embedded_ip.as_mut().map(|embedded_ip| {
+            headers.embedded_ip.as_deref_mut().map(|embedded_ip| {
                 embedded_ip.set_transport_payload_length(theoretical_inner_payload_size as u16)
             });
 

@@ -1402,7 +1402,7 @@ mod tests {
         frame.extend_from_slice(&icmp);
 
         let (headers, _) = Headers::parse(&frame).unwrap();
-        headers
+        *headers
             .embedded_ip
             .expect("ICMP error contains a quoted packet")
     }
