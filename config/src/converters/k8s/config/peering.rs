@@ -44,14 +44,14 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
             .clone();
 
         let acl_spec = peering.acl.as_ref();
-        if let Some(peering) = peering.peering.as_ref() {
-            let num_peerings = peering.len();
-            if peering.len() != 2 {
+        if let Some(pentry) = peering.peering.as_ref() {
+            let num_peerings = pentry.len();
+            if pentry.len() != 2 {
                 return Err(FromK8sConversionError::MissingData(format!(
                     "Peering must be between 2 VPCs, found {num_peerings}"
                 )));
             }
-            let mut manifests = peering
+            let mut manifests = pentry
                 .iter()
                 .map(|(vpc_name, peering_side)| {
                     let empty_map = SubnetMap::new();
@@ -73,6 +73,9 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
                     acl,
                 ))?;
                 vpc_peering.acl = Some(acl);
+            }
+            if let Some(no_multipath) = peering.no_multi_path {
+                vpc_peering.no_multipath = no_multipath;
             }
 
             Ok(vpc_peering)
