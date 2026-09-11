@@ -1750,6 +1750,14 @@ let
         paths = [
           pkgs.pkgsBuildHost.gdb
           pkgs.pkgsBuildHost.rr
+          # Profiling, not just debugging. The vendor event tables are compiled in, so this is
+          # where `perf stat -M PipelineL1` and the `ibs_op` filters come from; a distro perf
+          # that predates the target's microarchitecture does not error, it silently reports no
+          # metrics. Pairs with the `.debug` outputs below, which are what let it resolve
+          # symbols in a binary whose DWARF was split out at install time.
+          pkgs.pkgsBuildHost.perf
+          # `pgrep`/`ps`, to find the dataplane to attach to.
+          pkgs.pkgsBuildHost.procps
           pkgs.pkgsBuildHost.coreutils
           pkgs.pkgsBuildHost.bashInteractive
           pkgs.pkgsBuildHost.iproute2
