@@ -32,14 +32,11 @@ impl FlowLookup {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(move |mut packet| {
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             let nfi = &self.name;
             if !packet.is_done() && packet.meta().is_overlay() && packet.meta().dst_vpcd.is_none() {
-                if let Ok(flow_key) = FlowKey::try_from(&packet) {
+                if let Ok(flow_key) = FlowKey::try_from(&*packet) {
                     if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
                         debug!("{nfi}: Tagging packet with flow info for flow key {flow_key}",);
                         packet.meta_mut().flow_info = Some(flow_info);
@@ -50,8 +47,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
                     debug!("{nfi}: can't build flow key for packet");
                 }
             }
-            packet.enforce()
-        })
+        }
     }
 }
 
@@ -124,18 +120,14 @@ mod test {
         }
     }
     impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowInfoCreator {
-        fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-            &'a mut self,
-            input: Input,
-        ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-            input.filter_map(move |packet| {
-                let flow_key = FlowKey::try_from(&packet).unwrap();
+        fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+            for packet in burst.iter() {
+                let flow_key = FlowKey::try_from(packet).unwrap();
                 let flow_info = FlowInfo::new(flow_key, clock::now() + self.timeout);
                 self.flow_table
                     .insert(flow_info)
                     .expect("insert in FlowInfoCreator should not fail");
-                packet.enforce()
-            })
+            }
         }
     }
 
@@ -224,7 +216,7 @@ mod test {
 
             // process the packets and check that related flows are accessible
             let input = vec![packet_1, packet_2];
-            let out: Vec<_> = pipeline.process(input.into_iter()).collect();
+            let out: Vec<_> = pipeline.process(input).collect();
             let packet_1 = &out[0];
             let packet_2 = &out[1];
 
@@ -255,7 +247,7 @@ mod test {
         let key_1 = FlowKey::try_from(&packet_1).unwrap();
         let key_2 = FlowKey::try_from(&packet_2).unwrap();
         let input = vec![packet_1, packet_2];
-        let out: Vec<_> = pipeline.process(input.into_iter()).collect();
+        let out: Vec<_> = pipeline.process(input).collect();
         let packet_1 = &out[0];
         let packet_2 = &out[1];
 
