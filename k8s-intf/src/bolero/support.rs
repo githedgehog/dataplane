@@ -318,7 +318,12 @@ pub mod blocks {
         }
 
         fn sub_bits(self) -> u8 {
-            u8::try_from(self.subs.max(1).next_power_of_two().trailing_zeros()).unwrap_or(0)
+            u8::try_from(
+                u16::from(self.subs.max(1))
+                    .next_power_of_two()
+                    .trailing_zeros(),
+            )
+            .unwrap_or(0)
         }
 
         fn level(self, family: AddressFamily) -> u8 {
