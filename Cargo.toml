@@ -118,7 +118,7 @@ async-trait = { version = "0.1.92", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
 axum = { version = "0.8.9", default-features = false, features = [] }
 axum-server = { version = "0.8.0", default-features = false, features = [] }
-bindgen = { version = "0.72.1", default-features = false, features = [] }
+bindgen = { version = "0.73.1", default-features = false, features = [] }
 bitflags = { version = "2.13.1", default-features = false, features = [] }
 bnum = { version = "0.14.4", default-features = false, features = [] }
 # The fork treats an unresolvable optional corpus as absent, allowing remapped
@@ -132,7 +132,7 @@ clap = { version = "4.6.6", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.1.1", default-features = false, features = [] }
 criterion = { version = "0.8.2", default-features = false, features = [] }
-crossbeam-utils = { version = "0.8.22", default-features = false, features = [] }
+crossbeam-utils = { version = "0.8.23", default-features = false, features = [] }
 dashmap = { version = "6.2.1", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = [] }
 dotenvy = { version = "0.15.7", default-features = false, features = [] }
@@ -149,7 +149,7 @@ hyper = { version = "1.11.1", default-features = false, features = [] }
 hyper-util = { version = "0.1.20", default-features = false, features = [] }
 indenter = { version = "0.3.4", default-features = false, features = [] }
 inotify = { version = "0.11.5", default-features = false, features = [] }
-ipnet = { version = "2.12.1", default-features = false, features = [] }
+ipnet = { version = "2.12.2", default-features = false, features = [] }
 k8s-openapi = { version = "0.28.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
 kube = { version = "4.2.0", default-features = false, features = [] }
@@ -164,7 +164,7 @@ memmap2 = { version = "0.9.11", default-features = false, features = [] }
 metrics = { version = "0.24.6", default-features = false, features = [] }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = [] }
 miette = { version = "7.6.0", default-features = false, features = [] }
-mio = { version = "1.2.2", default-features = false, features = [] }
+mio = { version = "1.2.3", default-features = false, features = [] }
 multi_index_map = { version = "0.15.1", default-features = false, features = [] }
 n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.10", default-features = false, features = [], package = "n-vm" }
 netdev = { version = "0.46.2", default-features = false, features = [] }
@@ -174,7 +174,7 @@ nix = { version = "0.31.3", default-features = false, features = [] }
 num-derive = { version = "0.5.1", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.4", default-features = false, features = [] }
-ordermap = { version = "1.2.1", default-features = false, features = [] }
+ordermap = { version = "1.2.2", default-features = false, features = [] }
 parking_lot = { version = "0.12.5", default-features = false, features = [] }
 pci-ids = { version = "0.2.6", default-features = false, features = [] }
 prefix-trie = { version = "0.10.1", default-features = false, features = [] }
@@ -204,7 +204,7 @@ small-map = { version = "0.1.5", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.28.0", default-features = false, features = [] }
 strum_macros = { version = "0.28.0", default-features = false, features = [] }
-syn = { version = "3.0.4", default-features = false, features = [] }
+syn = { version = "3.0.5", default-features = false, features = [] }
 thiserror = { version = "2.0.20", default-features = false, features = [] }
 thread_local = { version = "1.1.10", default-features = false, features = [] }
 # Exception to the "no workspace-wide features" rule above.  `tokio/parking_lot` is
@@ -220,7 +220,7 @@ tracing = { version = "0.1.44", default-features = false, features = ["release_m
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
-ureq = { version = "3.4.0", default-features = false, features = [] }
+ureq = { version = "3.4.1", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.26.0", default-features = false, features = [] }
 
