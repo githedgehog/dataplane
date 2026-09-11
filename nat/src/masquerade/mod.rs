@@ -3,8 +3,8 @@
 
 pub(crate) mod allocation;
 mod allocator_writer;
-pub mod apalloc;
-pub(crate) mod flows;
+pub(crate) mod apalloc;
+mod flows;
 mod fuzz;
 pub(crate) mod icmp_handling;
 mod nf;
