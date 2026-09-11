@@ -4,8 +4,8 @@
 //! Display implementations for allocator types
 
 use super::alloc::{AllocatedIp, IpAllocator, PoolSet};
-use super::port_alloc::PortAllocator;
-use super::{IpAddress, NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
+use super::port_alloc::{AllocatedPort, PortAllocator};
+use super::{Allocation, IpAddress, NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
 use std::fmt::{Display, Error, Formatter, Result, Write};
@@ -125,17 +125,6 @@ where
     }
 }
 
-impl<I> Display for AllocatedIp<I>
-where
-    I: NatIpWithBitmap + Display,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        writeln!(f, "{}:", self.ip())?;
-        write!(with_indent!(f), "{}", self.port_allocator())?;
-        Ok(())
-    }
-}
-
 impl<I> Display for PortAllocator<I>
 where
     I: NatIpWithBitmap + Display,
@@ -165,5 +154,31 @@ where
         }
         writeln!(f)?;
         Ok(())
+    }
+}
+
+impl Display for Allocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            Allocation::V4(a) => write!(f, "{a}"),
+            Allocation::V6(a) => write!(f, "{a}"),
+        }
+    }
+}
+
+impl<I> Display for AllocatedIp<I>
+where
+    I: NatIpWithBitmap + Display,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        writeln!(f, "{}:", self.ip())?;
+        write!(with_indent!(f), "{}", self.port_allocator())?;
+        Ok(())
+    }
+}
+
+impl<I: NatIpWithBitmap> Display for AllocatedPort<I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}:{}", self.ip(), self.port())
     }
 }

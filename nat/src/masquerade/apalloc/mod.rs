@@ -79,7 +79,7 @@ use config::GenId;
 use net::ip::{IpAddress, NextHeader, Unicast};
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error, warn};
 
@@ -227,15 +227,6 @@ impl Allocation {
         match self {
             Self::V4(a) => a.port(),
             Self::V6(a) => a.port(),
-        }
-    }
-}
-
-impl Display for Allocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Allocation::V4(a) => write!(f, "{a}"),
-            Allocation::V6(a) => write!(f, "{a}"),
         }
     }
 }
