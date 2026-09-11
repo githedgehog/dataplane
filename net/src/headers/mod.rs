@@ -1962,12 +1962,9 @@ mod test {
                 let old_value = transport.source().into();
                 let new_value = 235;
                 transport.set_source(UdpPort::new_checked(new_value).unwrap());
-                let new_checksum = transport.increment_update_checksum(
-                    transport.checksum().unwrap(),
-                    old_value,
-                    new_value,
-                );
-                transport.set_checksum(new_checksum).unwrap();
+                transport
+                    .increment_update_checksum(transport.checksum().unwrap(), old_value, new_value)
+                    .unwrap();
 
                 transport
                     .validate_checksum(&UdpChecksumPayload::new(&net, &[]))
@@ -1978,12 +1975,9 @@ mod test {
                 let old_value = transport.destination().into();
                 let new_value = 116;
                 transport.set_destination(TcpPort::new_checked(new_value).unwrap());
-                let new_checksum = transport.increment_update_checksum(
-                    transport.checksum().unwrap(),
-                    old_value,
-                    new_value,
-                );
-                transport.set_checksum(new_checksum).unwrap();
+                transport
+                    .increment_update_checksum(transport.checksum().unwrap(), old_value, new_value)
+                    .unwrap();
 
                 transport
                     .validate_checksum(&TcpChecksumPayload::new(&net, &[]))
@@ -1997,12 +1991,12 @@ mod test {
                         let new_value = 0x10_20_30_40; // 16.32.48.64
                         let new_ip = UnicastIpv4Addr::try_from(Ipv4Addr::from(new_value)).unwrap();
                         ipv4.set_source(new_ip);
-                        let new_checksum = ipv4.increment_update_checksum_32bit(
+                        ipv4.increment_update_checksum_32bit(
                             ipv4.checksum().unwrap(),
                             old_value,
                             new_value,
-                        );
-                        ipv4.set_checksum(new_checksum).unwrap();
+                        )
+                        .unwrap();
                         ipv4.validate_checksum(&())
                             .expect("expected valid checksum");
                     }

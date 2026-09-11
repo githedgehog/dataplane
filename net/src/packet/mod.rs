@@ -661,12 +661,17 @@ pub mod contract {
             // Compute sizes
 
             let extensions_size = extensions.as_ref().map_or(0, IcmpExtensionStructures::size);
+            let quoted_packet_size = headers
+                .embedded_ip
+                .as_ref()
+                .map_or(0, |ip| ip.size().get() as usize)
+                + payload_size;
             let padding_size = match extensions {
                 Some(IcmpExtensionStructures::V4(_)) => {
-                    Icmp4ExtensionStructures::padding_size(payload_size)
+                    Icmp4ExtensionStructures::padding_size(quoted_packet_size)
                 }
                 Some(IcmpExtensionStructures::V6(_)) => {
-                    Icmp6ExtensionStructures::padding_size(payload_size)
+                    Icmp6ExtensionStructures::padding_size(quoted_packet_size)
                 }
                 None => 0,
             };
@@ -703,12 +708,11 @@ pub mod contract {
             let theoretical_inner_net_payload_size =
                 theoretical_inner_payload_size + inner_transport_header_size;
             // Offset of ICMP header in packet
-            let icmp_header_offset = headers_size
-                - headers
-                    .eth
-                    .as_ref()
-                    .map_or(0, |eth| eth.size().get() as usize)
-                - headers
+            let icmp_header_offset = headers
+                .eth
+                .as_ref()
+                .map_or(0, |eth| eth.size().get() as usize)
+                + headers
                     .net
                     .as_ref()
                     .map_or(0, |net| net.size().get() as usize);
