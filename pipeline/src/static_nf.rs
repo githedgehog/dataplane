@@ -8,24 +8,28 @@ use std::marker::PhantomData;
 
 use crate::PipelineData;
 
-/// Trait for an object that processes a stream of packets.
+/// Trait for an object that processes a burst of packets.
 pub trait NetworkFunction<Buf: PacketBufferMut> {
-    /// The `process` method takes an iterator of [`Packet`] objects,
-    /// applies the appropriate transformations (or drops) and returns an iterator of
-    /// modified packets.
+    /// Process a burst in place.
     ///
-    /// Note that a concrete iterator type is required to call this function and
-    /// a concrete iterator type must be returned from this function (i.e., `impl Iterator`).
-    /// If you don't have a concrete iterator type, use the
-    /// [`DynNetworkFunction`][crate::pipeline::DynPipeline] trait instead.
+    /// Stages should skip packets marked [`Packet::is_done`] and leave verdicts for the
+    /// driver to handle. Stages may also remove packets, as in [`crate::sample_nfs::DecrementTtl`].
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>);
+
+    /// Collect packets into a burst and process them.
     ///
-    /// # See Also
-    ///
-    /// [`DynNetworkFunction`][crate::pipeline::DynPipeline]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a;
+    /// This may allocate; use [`Self::process_burst`] to reuse an existing buffer.
+    fn process<I: IntoIterator<Item = Packet<Buf>>>(
+        &mut self,
+        input: I,
+    ) -> std::vec::IntoIter<Packet<Buf>>
+    where
+        Self: Sized,
+    {
+        let mut burst: Vec<Packet<Buf>> = input.into_iter().collect();
+        self.process_burst(&mut burst);
+        burst.into_iter()
+    }
 
     /// Let NFs access some `PipelineData` if they wish on their creation
     fn set_data(&mut self, _data: Arc<PipelineData>) {}
@@ -40,11 +44,9 @@ struct StaticChainImpl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: Net
 impl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>>
     NetworkFunction<Buf> for StaticChainImpl<Buf, NF1, NF2>
 {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        self.nf2.process(self.nf1.process(input))
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        self.nf1.process_burst(burst);
+        self.nf2.process_burst(burst);
     }
 }
 
@@ -102,7 +104,7 @@ mod test {
             .chain(DecrementTtl)
             .chain(DecrementTtl);
 
-        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+        let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()];
         let packets_out: Vec<_> = chain.process(packets).collect();
 
         assert_eq!(packets_out.len(), 1);

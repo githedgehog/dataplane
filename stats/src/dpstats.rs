@@ -853,11 +853,8 @@ impl Stats {
 
 // TODO: compute drop stats
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
-    #[tracing::instrument(level = "trace", skip(self, input))]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+    #[tracing::instrument(level = "trace", skip(self, burst))]
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         // amount of spare room in hash table.  Padding a little bit will hopefully save us some
         // reallocations
         const CAPACITY_PAD: usize = 16;
@@ -885,7 +882,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                 }
             }
         }
-        input.map(|mut packet| {
+        for packet in burst.iter_mut() {
             let sdisc = packet.meta().src_vpcd;
             let ddisc = packet.meta().dst_vpcd;
             // A packet must always carry a verdict by the time it reaches this stage. If it does
@@ -953,8 +950,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             }
             // Leave every packet for the driver to transmit, punt, or drop.
             // Enforcing verdicts here would discard control-plane traffic such as ARP.
-            packet
-        })
+        }
     }
 }
 
@@ -1155,10 +1151,9 @@ mod drop_stats_tests {
         Stats::with_delivery_schedule("test", PacketStatsWriter(s), Duration::from_secs(3600))
     }
 
-    /// Drive packets through the NF and drop the (lazy) output so accumulation runs and the
-    /// mutable borrow of `stats` ends.
+    /// Process packets and discard the output.
     fn run(stats: &mut Stats, packets: Vec<Packet<TestBuffer>>) {
-        let _drained: Vec<_> = stats.process(packets.into_iter()).collect();
+        let _drained: Vec<_> = stats.process(packets).collect();
     }
 
     #[test]
@@ -1178,7 +1173,7 @@ mod drop_stats_tests {
         for verdict in verdicts {
             let mut stats = new_stats();
             let out: Vec<_> = stats
-                .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), Some(verdict))].into_iter())
+                .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), Some(verdict))])
                 .collect();
             assert_eq!(
                 out.len(),
@@ -1198,7 +1193,7 @@ mod drop_stats_tests {
     fn a_packet_with_no_verdict_is_marked_and_still_emitted() {
         let mut stats = new_stats();
         let out: Vec<_> = stats
-            .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), None)].into_iter())
+            .process(vec![mk_packet(Some(vpcd(1)), Some(vpcd(2)), None)])
             .collect();
         assert_eq!(out.len(), 1, "a verdict-less packet was swallowed");
         assert_eq!(out[0].get_done(), Some(DoneReason::InternalFailure));

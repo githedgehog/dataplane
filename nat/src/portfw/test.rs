@@ -180,19 +180,15 @@ mod nf_test {
     // Fake flow filter that routes between vpc1 and vpc2
     struct TestFlowFilter;
     impl NetworkFunction<TestBuffer> for TestFlowFilter {
-        fn process<'a, Input: Iterator<Item = Packet<TestBuffer>> + 'a>(
-            &'a mut self,
-            input: Input,
-        ) -> impl Iterator<Item = Packet<TestBuffer>> + 'a {
-            input.map(|mut packet| {
+        fn process_burst(&mut self, burst: &mut Vec<Packet<TestBuffer>>) {
+            for packet in burst.iter_mut() {
                 let dst_vpcd = if packet.meta().src_vpcd == Some(vpcd1()) {
                     vpcd2()
                 } else {
                     vpcd1()
                 };
                 packet.meta_mut().dst_vpcd = Some(dst_vpcd);
-                packet
-            })
+            }
         }
     }
 
