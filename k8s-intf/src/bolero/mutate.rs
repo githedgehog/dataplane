@@ -456,13 +456,29 @@ pub fn apply<D: Driver>(d: &mut D, agent: &mut GatewayAgent, mutation: Mutation)
         | Mutation::ExcludeFromPortForwarding
         | Mutation::MixAddressFamilies => mutate_expose_shape(agent, mutation),
         Mutation::UseReservedPrefix => {
-            let reserved = ["127.0.0.0/8", "224.0.0.0/4", "0.0.0.0/8", "ff00::/8"];
-            let choice = crate::bolero::support::choose(d, &reserved)?;
+            let reserved4 = ["127.0.0.0/8", "224.0.0.0/4", "0.0.0.0/8"];
+            let reserved6 = ["ff00::/8", "::1/128"];
             let mut done = false;
             for expose in exposes_mut(agent) {
                 if let Some(entry) = expose.ips.iter_mut().flatten().next()
                     && entry.cidr.is_some()
                 {
+                    let choice = if let Some(raw_cidr) = entry.cidr.as_ref() {
+                        let cidr = raw_cidr.parse::<lpm::prefix::Prefix>().ok()?;
+                        match cidr.as_address() {
+                            std::net::IpAddr::V4(_) => {
+                                crate::bolero::support::choose(d, &reserved4)?
+                            }
+                            std::net::IpAddr::V6(_) => {
+                                crate::bolero::support::choose(d, &reserved6)?
+                            }
+                        }
+                    } else {
+                        crate::bolero::support::choose(
+                            d,
+                            &([&reserved4[..], &reserved6[..]].concat()),
+                        )?
+                    };
                     entry.cidr = Some(choice.to_string());
                     done = true;
                     break;
