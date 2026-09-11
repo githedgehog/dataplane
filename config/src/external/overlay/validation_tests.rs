@@ -752,7 +752,7 @@ mod test {
     fn test_manifest_mixing_ip_versions_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/24".into()));
-        manifest.add_expose(VpcExpose::empty().ip("2001:db8::/32".into()));
+        manifest.add_expose(VpcExpose::empty().ip(net::ipv6_doc!().into()));
         let result = manifest.validate();
         assert!(
             matches!(result, Err(ConfigError::Forbidden(_))),
@@ -764,7 +764,7 @@ mod test {
     #[test]
     fn test_manifest_mixing_ip_versions_rejected_either_order() {
         let mut manifest = VpcManifest::new("VPC-1");
-        manifest.add_expose(VpcExpose::empty().ip("2001:db8::/32".into()));
+        manifest.add_expose(VpcExpose::empty().ip(net::ipv6_doc!().into()));
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/24".into()));
         assert!(matches!(
             manifest.validate(),
@@ -775,7 +775,7 @@ mod test {
     // Default exposes do not constrain the manifest's IP version.
     #[test]
     fn test_manifest_default_expose_does_not_constrain_ip_version() {
-        for ip in ["10.0.0.0/24", "2001:db8::/32"] {
+        for ip in ["10.0.0.0/24", net::ipv6_doc!()] {
             let mut manifest = VpcManifest::new("VPC-1");
             manifest.add_expose(VpcExpose::empty().set_default());
             manifest.add_expose(VpcExpose::empty().ip(ip.into()));
@@ -791,7 +791,7 @@ mod test {
     #[test]
     fn test_manifest_single_ip_version_accepted() {
         let mut v6 = VpcManifest::new("VPC-1");
-        v6.add_expose(VpcExpose::empty().ip("2001:db8::/32".into()));
+        v6.add_expose(VpcExpose::empty().ip(net::ipv6_doc!().into()));
         v6.add_expose(VpcExpose::empty().ip("2001:db9::/32".into()));
         assert!(v6.validate().is_ok());
     }

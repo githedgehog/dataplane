@@ -43,7 +43,7 @@ pub(crate) fn vni(id: u32) -> Vni {
 
 fn private_block(n: u8, v6: bool) -> String {
     if v6 {
-        format!("2001:db8:0:{n:x}::/120")
+        format!(net::ipv6_doc!(":0:{:x}::/120"), n)
     } else {
         format!("10.{n}.0.0/24")
     }

@@ -328,6 +328,13 @@ mod tests {
     use crate::dpdk::layout::plan_layout;
     use match_action::{FieldKind, FieldSpec};
 
+    /// The first of the four 32-bit chunks an address lowers to, for any address in the IPv6
+    /// documentation block: the block is a /32, so its network bits fill that chunk exactly.
+    const DOC_CHUNK: u32 = {
+        let [a, b, c, d, ..] = net::ipv6::DOC_PREFIX_NETWORK.octets();
+        u32::from_be_bytes([a, b, c, d])
+    };
+
     fn spec(name: &'static str, kind: FieldKind, size: usize) -> FieldSpec {
         FieldSpec {
             name,
@@ -515,11 +522,11 @@ mod tests {
 
     #[test]
     fn ipv6_prefix_lowers_to_four_chunks_with_distributed_length() {
-        let addr: Ipv6Addr = "2001:db8::".parse().unwrap();
+        let addr: Ipv6Addr = net::ipv6::DOC_PREFIX_NETWORK;
         let chunks = lower(PrefixSpec::new(addr, 48));
 
         assert_eq!(chunks.len(), 4);
-        assert_field_eq(&chunks[0], &AclField::from_u32(0x2001_0db8, 32));
+        assert_field_eq(&chunks[0], &AclField::from_u32(DOC_CHUNK, 32));
         assert_field_eq(&chunks[1], &AclField::from_u32(0x0000_0000, 16));
         assert_field_eq(&chunks[2], &AclField::from_u32(0x0000_0000, 0));
         assert_field_eq(&chunks[3], &AclField::from_u32(0x0000_0000, 0));
@@ -536,10 +543,12 @@ mod tests {
 
     #[test]
     fn ipv6_full_prefix_keeps_every_chunk_at_full_length() {
-        let addr: Ipv6Addr = "2001:db8:abcd:1234:5678:9abc:def0:1111".parse().unwrap();
+        let addr: Ipv6Addr = net::ipv6_doc!(":abcd:1234:5678:9abc:def0:1111")
+            .parse()
+            .unwrap();
         let chunks = lower(PrefixSpec::new(addr, 128));
         assert_eq!(chunks.len(), 4);
-        assert_field_eq(&chunks[0], &AclField::from_u32(0x2001_0db8, 32));
+        assert_field_eq(&chunks[0], &AclField::from_u32(DOC_CHUNK, 32));
         assert_field_eq(&chunks[1], &AclField::from_u32(0xabcd_1234, 32));
         assert_field_eq(&chunks[2], &AclField::from_u32(0x5678_9abc, 32));
         assert_field_eq(&chunks[3], &AclField::from_u32(0xdef0_1111, 32));
@@ -558,11 +567,11 @@ mod tests {
 
     #[test]
     fn ipv6_mask_lowers_per_chunk() {
-        let value: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let value: Ipv6Addr = net::ipv6_doc!("::1").parse().unwrap();
         let mask: Ipv6Addr = "ffff:ffff::ffff".parse().unwrap();
         let chunks = lower(MaskSpec::new(value, mask));
         assert_eq!(chunks.len(), 4);
-        assert_field_eq(&chunks[0], &AclField::from_u32(0x2001_0db8, 0xffff_ffff));
+        assert_field_eq(&chunks[0], &AclField::from_u32(DOC_CHUNK, 0xffff_ffff));
         assert_field_eq(&chunks[1], &AclField::from_u32(0, 0));
         assert_field_eq(&chunks[2], &AclField::from_u32(0, 0));
         assert_field_eq(&chunks[3], &AclField::from_u32(1, 0x0000_ffff));
@@ -590,7 +599,7 @@ mod tests {
         let layout = plan_layout(&specs).expect("plan");
         assert_eq!(layout.field_defs.len(), 11);
 
-        let src: Ipv6Addr = "2001:db8::".parse().unwrap();
+        let src: Ipv6Addr = net::ipv6::DOC_PREFIX_NETWORK;
         let user = vec![
             lower(ExactSpec::new(6u8)),
             lower(PrefixSpec::new(src, 48)),
@@ -601,7 +610,7 @@ mod tests {
         let dpdk: [AclField; 11] = splice_user_fields_to_dpdk(&layout, &user).expect("splice");
 
         assert_field_eq(&dpdk[0], &AclField::from_u8(6, u8::MAX));
-        assert_field_eq(&dpdk[1], &AclField::from_u32(0x2001_0db8, 32));
+        assert_field_eq(&dpdk[1], &AclField::from_u32(DOC_CHUNK, 32));
         assert_field_eq(&dpdk[2], &AclField::from_u32(0, 16));
         assert_field_eq(&dpdk[3], &AclField::from_u32(0, 0));
         assert_field_eq(&dpdk[4], &AclField::from_u32(0, 0));

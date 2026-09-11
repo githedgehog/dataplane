@@ -16,6 +16,9 @@ match-action-derive = { workspace = true, optional = true }
 # `generator` module and is a separate concern: this dev-dep only makes the harness available to
 # `cfg(test)` builds, so property tests here run under a plain `cargo nextest run`.
 bolero = { workspace = true, features = ["std"] }
+# Test-only: the RFC 3849 IPv6 documentation block lives in `net`.
+# `net` does not depend on this crate, so this edge introduces no cycle.
+net = { workspace = true }
 
 [features]
 default = ["derive"]

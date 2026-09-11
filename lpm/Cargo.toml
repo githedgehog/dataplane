@@ -22,4 +22,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
+# Test-only: the RFC 3849 IPv6 documentation block lives in `net`.
+# `net` does not depend on this crate, so this edge introduces no cycle.
+net = { workspace = true }
 serde_yaml_ng = { workspace = true }

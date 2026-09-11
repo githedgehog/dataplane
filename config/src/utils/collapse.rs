@@ -431,11 +431,11 @@ mod tests {
         assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // IPv6 with ports
-        let prefixes = set_from_ports(vec![("2001:db8::/32", Some((4000, 5000)))]);
-        let excludes = set_from_ports(vec![("2001:db8::/33", Some((4000, 4500)))]);
+        let prefixes = set_from_ports(vec![(net::ipv6_doc!(), Some((4000, 5000)))]);
+        let excludes = set_from_ports(vec![(net::ipv6_doc!("::/33"), Some((4000, 4500)))]);
         let expected = set_from_ports(vec![
-            ("2001:db8::/32", Some((4501, 5000))),
-            ("2001:db8:8000::/33", Some((4000, 4500))),
+            (net::ipv6_doc!(), Some((4501, 5000))),
+            (net::ipv6_doc!(":8000::/33"), Some((4000, 4500))),
         ]);
         assert!(no_overlap(&expected));
         assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);

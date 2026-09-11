@@ -677,7 +677,7 @@ mod peering_chain {
     #[test]
     fn only_an_ipv6_peering_this_gateway_renders_is_refused() {
         fn config_with_ipv6_peering_in(group: &str) -> ExternalConfig {
-            let expose = VpcExpose::empty().ip("2001:db8:1::/64"
+            let expose = VpcExpose::empty().ip(net::ipv6_doc!(":1::/64")
                 .parse::<lpm::prefix::Prefix>()
                 .unwrap_or_else(|e| unreachable!("{e}"))
                 .into());

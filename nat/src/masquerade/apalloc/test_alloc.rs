@@ -398,12 +398,12 @@ mod context {
         let masquerade = VpcExpose::empty()
             .make_masquerade(None)
             .unwrap()
-            .ip("2001:db8:1::/64".into())
-            .as_range("2001:db8:ffff::/112".into())
+            .ip(net::ipv6_doc!(":1::/64").into())
+            .as_range(net::ipv6_doc!(":ffff::/112").into())
             .unwrap();
         let remote = VpcManifest::with_exposes(
             "VPC-2",
-            vec![VpcExpose::empty().ip("2001:db8:2::/64".into())],
+            vec![VpcExpose::empty().ip(net::ipv6_doc!(":2::/64").into())],
         );
 
         let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
@@ -934,7 +934,7 @@ mod std_tests {
                 .allocate(
                     vpcd1(),
                     vpcd2(),
-                    IpAddr::V6(addr_v6("2001:db8:1::1")),
+                    IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))),
                     NextHeader::TCP,
                 )
                 .expect("the v6 pool has room");
@@ -945,10 +945,10 @@ mod std_tests {
 
             assert_eq!(
                 ip.segments()[0..7],
-                addr_v6("2001:db8:ffff::").segments()[0..7]
+                addr_v6(net::ipv6_doc!(":ffff::")).segments()[0..7]
             );
             if step == 0 {
-                assert_eq!(ip, addr_v6("2001:db8:ffff::"));
+                assert_eq!(ip, addr_v6(net::ipv6_doc!(":ffff::")));
             }
             assert!(port >= 1024);
             assert!(seen.insert((ip, port)), "{ip}:{port} was handed out twice");
@@ -963,7 +963,7 @@ mod std_tests {
             .allocate(
                 vpcd1(),
                 vpcd2(),
-                IpAddr::V6(addr_v6("2001:db8:1::1")),
+                IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))),
                 NextHeader::TCP,
             )
             .expect("the v6 pool has room");
@@ -976,7 +976,7 @@ mod std_tests {
                 NextHeader::TCP,
                 vpcd1(),
                 vpcd2(),
-                IpAddr::V6(addr_v6("2001:db8:1::1")),
+                IpAddr::V6(addr_v6(net::ipv6_doc!(":1::1"))),
                 held,
                 port,
             )
@@ -987,7 +987,7 @@ mod std_tests {
             .allocate(
                 vpcd1(),
                 vpcd2(),
-                IpAddr::V6(addr_v6("2001:db8:1::2")),
+                IpAddr::V6(addr_v6(net::ipv6_doc!(":1::2"))),
                 NextHeader::TCP,
             )
             .expect("the v6 pool has room");
@@ -1040,12 +1040,7 @@ mod std_tests {
 
     #[test]
     fn a_v6_subnet_sized_pool_can_be_printed() {
-        let base = u128::from_be_bytes(
-            "2001:db8::"
-                .parse::<std::net::Ipv6Addr>()
-                .unwrap_or_else(|_| unreachable!())
-                .octets(),
-        );
+        let base = net::ipv6::DOC_PREFIX_BITS;
         let pool = NatPool::<std::net::Ipv6Addr>::for_range(
             AddrInterval::new(base, base + u128::from(u64::MAX)),
             ReservedPorts::default(),
@@ -1065,7 +1060,13 @@ mod std_tests {
             "a pool with nothing allocated should print exactly one range: {shown}"
         );
         assert!(
-            ranges[0].contains("[2001:db8:: .. 2001:db8::ffff:ffff]"),
+            ranges[0].contains(concat!(
+                "[",
+                net::ipv6_doc!("::"),
+                " .. ",
+                net::ipv6_doc!("::ffff:ffff"),
+                "]"
+            )),
             "the range should span the bitmap's 2^32 offsets: {shown}"
         );
     }

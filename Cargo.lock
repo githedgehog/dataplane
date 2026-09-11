@@ -1601,6 +1601,7 @@ dependencies = [
  "bnum",
  "bolero",
  "dataplane-match-action",
+ "dataplane-net",
  "ipnet",
  "num-traits",
  "prefix-trie",
@@ -1618,6 +1619,7 @@ dependencies = [
  "bolero",
  "dataplane-fixed-size",
  "dataplane-match-action-derive",
+ "dataplane-net",
 ]
 
 [[package]]

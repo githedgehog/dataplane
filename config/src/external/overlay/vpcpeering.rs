@@ -1184,7 +1184,7 @@ pub mod contract {
                 Side::Private => 0u128,
                 Side::Public => 1,
             };
-            let bits = (0x2001_0db8u128 << 96) | (selector << 80) | (u128::from(index) << 64);
+            let bits = net::ipv6::DOC_PREFIX_BITS | (selector << 80) | (u128::from(index) << 64);
             prefix_v6(bits, 64)
         }
     }
@@ -1254,7 +1254,7 @@ pub mod contract {
                 Side::Private => 0u128,
                 Side::Public => 1,
             };
-            (0x2001_0db8u128 << 96) | (selector << 80)
+            net::ipv6::DOC_PREFIX_BITS | (selector << 80)
         };
 
         let mut out = Vec::with_capacity(parts.len());
@@ -1321,7 +1321,7 @@ pub mod contract {
             .first()
             .and_then(|expose| expose.ips.first().map(PrefixWithOptionalPorts::prefix))
         {
-            Some(Prefix::IPV6(_)) => "2001:db8:ffff::/64",
+            Some(Prefix::IPV6(_)) => net::ipv6_doc!(":ffff::/64"),
             _ => "3.3.3.0/24",
         };
 
@@ -1362,8 +1362,9 @@ pub mod contract {
         Some((prefix_v4(internal, len)?, prefix_v4(external, len)?))
     }
 
-    const INTERNAL_BASE: u128 = 0x2001_0db8_0000_0000_0000_0000_0000_0000;
-    const EXTERNAL_BASE: u128 = 0x2001_0db8_0001_0000_0000_0000_0000_0000;
+    /// Internal and external ranges are told apart by the same selector bit `block` uses.
+    const INTERNAL_BASE: u128 = net::ipv6::DOC_PREFIX_BITS;
+    const EXTERNAL_BASE: u128 = net::ipv6::DOC_PREFIX_BITS | (1 << 80);
 
     fn v6_pair<D: Driver>(driver: &mut D, host_bits: u8) -> Option<(Prefix, Prefix)> {
         let len = 128 - host_bits;

@@ -831,9 +831,10 @@ mod qos_roundtrip_tests {
     fn make_vxlan_encap_headers_ipv6() -> VxlanEncap {
         let mut ip = crate::ipv6::Ipv6::default();
         ip.set_source(
-            crate::ipv6::addr::UnicastIpv6Addr::new("2001:db8::1".parse().unwrap()).unwrap(),
+            crate::ipv6::addr::UnicastIpv6Addr::new(crate::ipv6_doc!("::1").parse().unwrap())
+                .unwrap(),
         );
-        ip.set_destination("2001:db8::2".parse().unwrap());
+        ip.set_destination(crate::ipv6_doc!("::2").parse().unwrap());
         ip.set_hop_limit(64);
         ip.set_next_header(crate::ip::NextHeader::UDP);
 

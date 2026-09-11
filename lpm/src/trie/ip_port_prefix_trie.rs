@@ -293,10 +293,10 @@ mod tests {
     #[test]
     fn test_ipv6_lookup() {
         let mut trie = IpPortPrefixTrie::new();
-        let prefix = Prefix::from("2001:db8::/32");
+        let prefix = Prefix::from(net::ipv6_doc!());
         trie.insert(prefix, TestValue::AnyPort);
 
-        let result = trie.lookup(&"2001:db8::1".parse().unwrap(), None);
+        let result = trie.lookup(&net::ipv6_doc!("::1").parse().unwrap(), None);
         assert!(result.is_some());
         let (matched_prefix, _) = result.unwrap();
         assert_eq!(matched_prefix, prefix);

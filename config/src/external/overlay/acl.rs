@@ -862,7 +862,7 @@ mod validation_tests {
     #[test]
     fn test_acl_mixed_src_ip_versions_rejected() {
         let p = pattern(
-            prefixes(&["10.0.0.0/24", "2001:db8::/64"]),
+            prefixes(&["10.0.0.0/24", net::ipv6_doc!("::/64")]),
             prefixes(&["10.1.0.0/24"]),
             AclProtoMatch::Any,
         );
@@ -879,7 +879,7 @@ mod validation_tests {
     fn test_acl_mixed_dst_ip_versions_rejected() {
         let p = pattern(
             prefixes(&["10.0.0.0/24"]),
-            prefixes(&["10.1.0.0/24", "2001:db8::/64"]),
+            prefixes(&["10.1.0.0/24", net::ipv6_doc!("::/64")]),
             AclProtoMatch::Any,
         );
         let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
@@ -895,7 +895,7 @@ mod validation_tests {
     fn test_acl_mixed_src_dst_ip_versions_rejected() {
         let p = pattern(
             prefixes(&["10.0.0.0/24"]),
-            prefixes(&["2001:db8::/64"]),
+            prefixes(&[net::ipv6_doc!("::/64")]),
             AclProtoMatch::Any,
         );
         let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);

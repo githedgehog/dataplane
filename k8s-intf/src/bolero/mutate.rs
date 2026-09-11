@@ -389,7 +389,7 @@ fn mutate_expose_shape(agent: &mut GatewayAgent, mutation: Mutation) -> bool {
                 let other = if cidr.contains(':') {
                     "10.99.0.0/16"
                 } else {
-                    "2001:db8:9999::/48"
+                    net::ipv6_doc!(":9999::/48")
                 };
                 expose.ips.get_or_insert_with(Vec::new).push(
                     GatewayAgentPeeringsPeeringExposeIps {

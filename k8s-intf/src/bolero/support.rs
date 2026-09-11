@@ -260,6 +260,12 @@ pub mod blocks {
     use bolero::Driver;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    /// Private v6 blocks come out of the lower half of the documentation block and public ones
+    /// out of the upper half, so the two can never name the same prefix.
+    const PRIVATE_V6_BASE: u128 = net::ipv6::DOC_PREFIX_BITS;
+    const PUBLIC_V6_BASE: u128 =
+        net::ipv6::DOC_PREFIX_BITS | (1 << (127 - net::ipv6::DOC_PREFIX_LEN));
+
     pub const SLOT_V4_LEN: u8 = 20;
     pub const SLOT_V6_LEN: u8 = 48;
     pub const MIN_V4_LEN: u8 = SLOT_V4_LEN;
@@ -422,7 +428,7 @@ pub mod blocks {
             let (base, level) = at.place(family, 0x0A00_0000, slot);
             v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
         } else {
-            let (base, level) = at.place(family, 0x2001_0db8_0000_0000_0000_0000_0000_0000, slot);
+            let (base, level) = at.place(family, PRIVATE_V6_BASE, slot);
             v6(base, level, d.produce::<u128>()?, len)
         })
     }
@@ -433,7 +439,7 @@ pub mod blocks {
             let (base, level) = at.place(family, 0xAC10_0000, slot);
             v4(u32::try_from(base).ok()?, level, d.produce::<u32>()?, len)
         } else {
-            let (base, level) = at.place(family, 0x2001_0db8_8000_0000_0000_0000_0000_0000, slot);
+            let (base, level) = at.place(family, PUBLIC_V6_BASE, slot);
             v6(base, level, d.produce::<u128>()?, len)
         })
     }
@@ -477,8 +483,7 @@ pub mod blocks {
                 out.push(format!("{}/{len}", Ipv4Addr::from(addr)));
             }
         } else {
-            let base =
-                0x2001_0db8_0000_0000_0000_0000_0000_0000 | (u128::from(vpc) << (128 - slot_len));
+            let base = PRIVATE_V6_BASE | (u128::from(vpc) << (128 - slot_len));
             let slots = 1u128
                 .checked_shl(u32::from(len) - slot_len)
                 .unwrap_or(u128::MAX);

@@ -453,33 +453,22 @@ mod tests {
 
     #[test]
     fn test_ipv6_prefix_from_str() {
-        let prefix = "2001:db8::/32".parse::<Ipv6Prefix>().unwrap();
-        assert_eq!(
-            prefix.network(),
-            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0)
-        );
+        let prefix = net::ipv6_doc!().parse::<Ipv6Prefix>().unwrap();
+        assert_eq!(prefix.network(), net::ipv6::DOC_PREFIX_NETWORK);
     }
 
     #[test]
     fn test_ipv6_covers() {
         // IP Address is covered by prefix
-        let prefix = "2001:db8::/32".parse::<Ipv6Prefix>().unwrap();
-        assert!(prefix.covers_addr(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)));
-        assert!(prefix.covers_addr(&Ipv6Addr::new(0x2001, 0xdb8, 0xabcd, 0, 0, 0, 0, 0)));
+        let prefix = net::ipv6_doc!().parse::<Ipv6Prefix>().unwrap();
+        assert!(prefix.covers_addr(&net::ipv6_doc!("::1").parse::<Ipv6Addr>().unwrap()));
+        assert!(prefix.covers_addr(&net::ipv6_doc!(":abcd::").parse::<Ipv6Addr>().unwrap()));
         assert!(!prefix.covers_addr(&Ipv6Addr::new(0x2001, 0xdb9, 0, 0, 0, 0, 0, 0)));
 
         // Prefix is covered by prefix
         assert!(prefix.covers(&prefix));
-        assert!(
-            prefix.covers(
-                &Ipv6Prefix::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 48).unwrap()
-            )
-        );
-        assert!(
-            !prefix.covers(
-                &Ipv6Prefix::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 31).unwrap()
-            )
-        );
+        assert!(prefix.covers(&Ipv6Prefix::new(net::ipv6::DOC_PREFIX_NETWORK, 48).unwrap()));
+        assert!(!prefix.covers(&Ipv6Prefix::new(net::ipv6::DOC_PREFIX_NETWORK, 31).unwrap()));
 
         // Big prefix covers small prefix
         let big_prefix = "::/2".parse::<Ipv6Prefix>().unwrap();
@@ -487,7 +476,7 @@ mod tests {
         assert!(!prefix.covers(&big_prefix));
 
         // Prefixes with same length but different network are not covered
-        let p1 = "2001:db8::/32".parse::<Ipv6Prefix>().unwrap();
+        let p1 = net::ipv6_doc!().parse::<Ipv6Prefix>().unwrap();
         let p2 = "2001:db9::/32".parse::<Ipv6Prefix>().unwrap();
         assert!(!p1.covers(&p2));
         assert!(!p2.covers(&p1));

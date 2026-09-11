@@ -823,8 +823,8 @@ mod tests {
 
     #[test]
     fn test_prefix_with_ports_intersection_ipv6() {
-        let prefix1 = prefix_v6("2001:db8::/32");
-        let prefix2 = prefix_v6("2001:db8::/48");
+        let prefix1 = prefix_v6(net::ipv6_doc!());
+        let prefix2 = prefix_v6(net::ipv6_doc!("::/48"));
         let ports = PortRange::new(443, 8443).unwrap();
 
         let pwp1 = PrefixWithPorts::new(prefix1, ports);
@@ -1167,8 +1167,8 @@ mod tests {
 
     #[test]
     fn test_prefix_with_optional_ports_subtract_ipv6() {
-        let prefix1 = prefix_v6("2001:db8::/32");
-        let prefix2 = prefix_v6("2001:db8::/33");
+        let prefix1 = prefix_v6(net::ipv6_doc!());
+        let prefix2 = prefix_v6(net::ipv6_doc!("::/33"));
         let ports = PortRange::new(443, 8443).unwrap();
 
         let pwop1 = PrefixWithOptionalPorts::new(prefix1, Some(ports));
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(
             result[0],
-            PrefixWithOptionalPorts::new(prefix_v6("2001:db8:8000::/33"), Some(ports))
+            PrefixWithOptionalPorts::new(prefix_v6(net::ipv6_doc!(":8000::/33")), Some(ports))
         );
     }
 
@@ -1315,11 +1315,11 @@ mod tests {
     #[test]
     fn test_prefix_with_optional_ports_merge_ipv6() {
         // Test merging with IPv6 prefixes
-        let pwop1 = PrefixWithOptionalPorts::new(prefix_v6("2001:db8::/33"), None);
-        let pwop2 = PrefixWithOptionalPorts::new(prefix_v6("2001:db8:8000::/33"), None);
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v6(net::ipv6_doc!("::/33")), None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix_v6(net::ipv6_doc!(":8000::/33")), None);
 
         let merged = pwop1.merge(&pwop2).expect("Should merge");
-        assert_eq!(merged.prefix(), prefix_v6("2001:db8::/32"));
+        assert_eq!(merged.prefix(), prefix_v6(net::ipv6_doc!()));
         assert_eq!(merged.ports(), None);
     }
 

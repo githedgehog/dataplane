@@ -426,7 +426,7 @@ mod test {
 
     #[test]
     fn test_map_ports_ipv6_prefix() {
-        let prefix = "2001:db8::/32".parse::<Prefix>().unwrap();
+        let prefix = net::ipv6_doc!().parse::<Prefix>().unwrap();
         let result = map_ports(prefix, Some("80,443,8000-8080")).unwrap();
 
         assert_eq!(result.len(), 3);

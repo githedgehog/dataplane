@@ -241,10 +241,11 @@ mod tests {
 
     #[test]
     fn ipv6_prefix_hits_on_high_chunk() {
-        let spec = PrefixSpec::new("2001:db8::".parse::<Ipv6Addr>().unwrap(), 32);
+        let spec = PrefixSpec::new(net::ipv6::DOC_PREFIX_NETWORK, net::ipv6::DOC_PREFIX_LEN);
+        let network = net::ipv6::DOC_PREFIX_NETWORK.octets();
         bolero::check!()
             .with_generator(spec.hits())
-            .for_each(|v| assert_eq!(&v.octets()[0..4], &[0x20, 0x01, 0x0d, 0xb8], "got {v}"));
+            .for_each(|v| assert_eq!(&v.octets()[0..4], &network[0..4], "got {v}"));
     }
 }
 
