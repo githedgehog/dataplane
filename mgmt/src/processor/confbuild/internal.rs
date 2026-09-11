@@ -150,19 +150,29 @@ impl VpcRoutingConfigIpv4 {
         rank: usize, // the order or rank this gw has in the gw group serving this peering
         commtable: &PriorityCommunityTable,
     ) -> Result<Community, ConfigError> {
-        // if a peering is not stateful, use rank 0 to choose the community corresponding
-        // to the highest preference
-        let rank = if peering.is_stateful() || peering.no_multipath() {
-            rank
-        } else {
-            0
-        };
+        let is_stateful = peering.is_stateful();
+        let no_multipath = peering.no_multipath();
+        let name = peering.name();
+        debug!(
+            "Peering {name} is {}",
+            if is_stateful { "stateful" } else { "stateless" }
+        );
+
+        // get the rank of the gw to select the community. If peering is stateful or
+        // multipath has been disabled, use the natural rank. Else, use rank 0.
+        let use_rank = if is_stateful || no_multipath { rank } else { 0 };
+        if use_rank != rank {
+            debug!("Using rank {use_rank} instead of {rank} to promote multipath");
+            debug_assert!(use_rank == 0);
+        }
 
         /* Get the community for the rank (should never fail due to validation) */
-        commtable
-            .get_community(rank)
-            .map(|c| Community::String(c.clone()))
-            .ok_or(ConfigError::NoCommunityAvailable(rank))
+        let community = commtable
+            .get_community(use_rank)
+            .ok_or(ConfigError::NoCommunityAvailable(use_rank))?;
+
+        debug!("Will map prefixes of peering {name} to community {community} (rank {use_rank})");
+        Ok(Community::String(community.clone()))
     }
 
     /// Build the routing config for a VPC, for a single peering
@@ -174,6 +184,12 @@ impl VpcRoutingConfigIpv4 {
         grouptable: &GwGroupTable,
         commtable: &PriorityCommunityTable,
     ) -> ConfigResult {
+        debug!(
+            "Building routing config for VPC {} for peering {}...",
+            vpc.name(),
+            peer.name()
+        );
+
         /* Get this gw's rank in the gw group this peering is mapped to */
         let Some(rank) = grouptable.get_group_member_rank(peer.gwgroup(), gwname) else {
             debug!("This GW {gwname} does not handle peering {}", peer.name());
