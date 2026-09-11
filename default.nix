@@ -1590,6 +1590,18 @@ let
           # python interpreter, which nothing links against and which `frr-reload.py` reaches only
           # through its `#!` line.
           frr-closure = pkgs.closureInfo { rootPaths = [ frr-env ]; };
+          # HACK (profiling): perf in the shipped image, so `dataplane-init` can wrap the
+          # dataplane in `perf record` -- see `DATAPLANE_DEV_PERF` in `init/src/main.rs`.
+          # Attaching from a sidecar needs `hostPID` and a pid search; being the parent needs
+          # perf here. Its closure is large and drags an interpreter in behind it, so this is
+          # not something to leave switched on: `closure-check` is expected to fail while it is,
+          # and that failure is the reminder to take it out again.
+          # `withPython = false` halves it: perf links libpython only for `perf script`'s
+          # scripting bindings, and that pulled a whole 209 MiB interpreter into the image for
+          # a feature none of record/report/stat/c2c uses. The AMD metric groups and the IBS
+          # events are compiled into the tool either way -- checked, not assumed.
+          perf-hack = pkgs.pkgsHostHost.perf.override { withPython = false; };
+          perf-closure = pkgs.closureInfo { rootPaths = [ perf-hack ]; };
         in
         ''
           tmp="$(mktemp -d)"
@@ -1601,6 +1613,8 @@ let
           cd "$tmp"
           ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
           ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
+          # HACK (profiling): `DEV_PERF_BINARY` in `init/src/main.rs` looks here.
+          ln -s "${perf-hack}/bin/perf" "$tmp/bin/perf"
           ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
           for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
               ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
@@ -1642,6 +1656,7 @@ let
               ${workspace.cli} \
               ${pkgs.pkgsHostHost.busybox}
             cat "${frr-closure}/store-paths"
+            cat "${perf-closure}/store-paths"
           } | sed '/^$/d' | sort -u > "$inputs"
 
           # we take some care to make the tar file reproducible here

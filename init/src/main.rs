@@ -30,6 +30,26 @@ use tracing::{Level, debug, error, info, span, warn};
 /// Where the dataplane is installed.
 const DATAPLANE_BINARY: &str = "/bin/dataplane";
 
+/// Wrap the dataplane in `perf record`, for development.
+///
+/// An environment variable rather than a flag for the same reason `DATAPLANE_PYROSCOPE_URL` is
+/// one: a controller owns the dataplane's argv in a fabric, so a flag is a thing nobody can set.
+/// Its value is passed to `perf` verbatim, e.g.
+/// `DATAPLANE_DEV_PERF="record -F 99 --call-graph fp -o /var/log/dataplane/perf.data"`.
+///
+/// Unset in every shipped image, and `perf` is not in one -- this does nothing unless someone has
+/// deliberately built an image that carries it.
+const DEV_PERF_ENV: &str = "DATAPLANE_DEV_PERF";
+
+/// Where `perf` is expected to be, when [`DEV_PERF_ENV`] asks for it.
+const DEV_PERF_BINARY: &str = "/bin/perf";
+
+/// Where a profile is written when [`DEV_PERF_ENV`] does not say.
+///
+/// This survives the container being restarted and the rest of its filesystem does not, which is
+/// the whole point: the restart that ends a run is often the thing you wanted the profile of.
+const DEV_PERF_DIR: &str = "/var/run/dataplane";
+
 /// Hugetlbfs mount points.
 ///
 /// Mounting these is best-effort. The dataplane asks the EAL for `--in-memory`, which backs its
@@ -966,7 +986,53 @@ fn dataplane_process(
         });
     }
 
-    let mut command = std::process::Command::new(DATAPLANE_BINARY);
+    let mut command = match std::env::var(DEV_PERF_ENV) {
+        Ok(args) if !args.trim().is_empty() => {
+            // Development only. `perf record -- dataplane ...` rather than attaching from a
+            // sidecar: the dataplane's pid is not knowable from outside without `hostPID` and a
+            // search, and being its parent is the one way to have it from the start. It also
+            // means the very first packets are sampled, which attaching never manages.
+            //
+            // The descriptors below survive this. They are placed at 30/40/50, well clear of
+            // anything perf allocates for itself, and `perf record` execs the target rather than
+            // closing what it inherited -- which matters, because the dataplane decides it was
+            // launched by an init at all by checking that they are present.
+            //
+            // Split on whitespace: these are perf's own arguments, written by whoever set the
+            // variable, and perf's flags do not contain spaces. A shell would be the alternative
+            // and is a worse one in a pid-1 supervisor.
+            let mut perf = std::process::Command::new(DEV_PERF_BINARY);
+            let given: Vec<&str> = args.split_whitespace().collect();
+            perf.args(&given);
+
+            // Defaulted, not forced: an explicit `-o` in the variable wins. Absent one, the
+            // profile goes somewhere that outlives the container. Everything else a container
+            // writes is on its own filesystem and goes away with it, which for a profile means
+            // the restart that ended the run also destroys the evidence about it.
+            if !given.iter().any(|a| *a == "-o" || *a == "--output") {
+                if let Err(e) = std::fs::create_dir_all(DEV_PERF_DIR) {
+                    warn!("could not create {DEV_PERF_DIR} for a perf profile: {e}");
+                }
+                perf.arg("-o").arg(format!("{DEV_PERF_DIR}/perf.data"));
+            }
+            // perf appends `.<YYYYMMDDHHMMSSmm>` itself, so successive runs do not overwrite one
+            // another in a directory that persists across restarts. Left to perf rather than
+            // composed here because perf also renames on `--switch-output`, and two things
+            // naming the same file differently is how you lose one of them.
+            if !given.iter().any(|a| *a == "--timestamp-filename") {
+                perf.arg("--timestamp-filename");
+            }
+
+            perf.arg("--").arg(DATAPLANE_BINARY);
+            warn!(
+                "{DEV_PERF_ENV} is set: running the dataplane under `{DEV_PERF_BINARY} {args}`. \
+                 This is a development aid, it costs performance, and the profile is only written \
+                 if the process is allowed to shut down cleanly."
+            );
+            perf
+        }
+        _ => std::process::Command::new(DATAPLANE_BINARY),
+    };
     command
         .fd_mappings(mappings)
         .map_err(HandoffError::PlaceDescriptors)?;
