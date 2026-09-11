@@ -37,6 +37,7 @@ use net::tcp::TcpPort;
 use net::udp::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
+use std::assert_matches;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use tracing_test::traced_test;
@@ -304,7 +305,7 @@ fn test_dst_nat_static_44() {
     // Check request. We expect:
     //
     // {orig_src_ip, orig_dst_ip} -> {orig_src_ip, TARGET_DST_IP}
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let packets_out: Vec<_> = nat.process(vec![packet]).collect();
     assert_eq!(packets_out.len(), 1);
     assert_eq!(packets_out[0].get_done(), None);
 
@@ -320,7 +321,7 @@ fn test_dst_nat_static_44() {
     // {TARGET_DST_IP, orig_src_ip} -> {orig_dst_ip, orig_src_ip}
     set_addresses_v4(&mut packet_reply, TARGET_DST_IP, TARGET_SRC_IP);
 
-    let packets_out_reply: Vec<_> = nat.process(vec![packet_reply].into_iter()).collect();
+    let packets_out_reply: Vec<_> = nat.process(vec![packet_reply]).collect();
     assert_eq!(packets_out_reply.len(), 1);
     assert_eq!(packets_out_reply[0].get_done(), None);
 
@@ -363,7 +364,7 @@ fn test_nat_icmp_error_msg_static_44() {
     packet.meta_mut().set_static_nat_src(true);
     packet.meta_mut().set_static_nat_dst(true);
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let packets_out: Vec<_> = nat.process(vec![packet]).collect();
     assert_eq!(packets_out.len(), 1);
     assert_eq!(packets_out[0].get_done(), None);
 
@@ -618,7 +619,7 @@ fn check_packet(
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
-    let packets_out: Vec<_> = nat.process([packet].into_iter()).collect();
+    let packets_out: Vec<_> = nat.process([packet]).collect();
     let hdr_out = packets_out[0]
         .try_ipv4()
         .expect("Failed to get IPv4 header");
@@ -837,7 +838,7 @@ fn check_packet_with_ports(
     set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
     set_ports(&mut packet, orig_src_port, orig_dst_port);
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let packets_out: Vec<_> = nat.process(vec![packet]).collect();
     let pkt_out = &packets_out[0];
 
     (
@@ -1303,8 +1304,9 @@ fn static_nat_leaves_a_checksum_a_full_recompute_would_agree_with() {
     // Incremental updates require a valid starting checksum.
     packet.update_checksums();
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
-    let mut pkt_out = packets_out.into_iter().next().expect("one packet out");
+    let mut out = nat.process([packet]);
+    let mut pkt_out = out.next().expect("one packet out");
+    assert_matches!(out.next(), None, "expected only one packet");
 
     // Require a translation so the checksum check is meaningful.
     assert_ne!(
@@ -1378,8 +1380,9 @@ fn a_zero_ipv6_udp_checksum_asks_for_a_recompute() {
         _ => unreachable!(),
     }
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
-    let pkt_out = packets_out.into_iter().next().expect("one packet out");
+    let mut out = nat.process([packet]);
+    let pkt_out = out.next().expect("one packet out");
+    assert_matches!(out.next(), None, "expected only one packet");
 
     assert_ne!(
         pkt_out.ip_source(),
