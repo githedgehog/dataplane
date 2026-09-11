@@ -37,10 +37,12 @@ fn parse_failures_are_not_pipeline_drops() {
     let rx_if = InterfaceIndex::try_new(1).unwrap();
     let mut counters = RxCounters::default();
     let mut pipeline = DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered)]));
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         vec![frame(), TestBuffer::from_raw_data(&[0; 3])].into_iter(),
         rx_if,
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(packets.len(), 1);
@@ -49,7 +51,13 @@ fn parse_failures_are_not_pipeline_drops() {
     assert_eq!(counters.parse_errors, 1);
     assert_eq!(counters.ppline_drops, 0);
 
-    let packets = process_burst([frame()].into_iter(), rx_if, &mut pipeline, &mut counters);
+    process_burst(
+        [frame()].into_iter(),
+        rx_if,
+        &mut pipeline,
+        &mut packets,
+        &mut counters,
+    );
     assert_eq!(packets.len(), 1);
     assert_eq!(counters.rx, 3);
     assert_eq!(counters.parse_errors, 1);
@@ -66,10 +74,12 @@ fn drop_verdicts_and_removed_packets_are_counted_once() {
         None,
     ]));
     let mut counters = RxCounters::default();
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         (0..6).map(|_| frame()),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(packets.len(), 2);
@@ -92,10 +102,12 @@ fn verdicts_other_than_local_and_delivered_are_dropped() {
         Some(DoneReason::RouteFailure),
     ]));
     let mut counters = RxCounters::default();
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         (0..3).map(|_| frame()),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert!(packets.is_empty());
@@ -107,10 +119,12 @@ fn additional_pipeline_outputs_do_not_count_as_drops() {
     let mut pipeline =
         DynPipeline::new().add_stage(ReturnVerdicts(&[Some(DoneReason::Delivered); 2]));
     let mut counters = RxCounters::default();
-    let packets = process_burst(
+    let mut packets = Vec::new();
+    process_burst(
         [frame()].into_iter(),
         InterfaceIndex::try_new(1).unwrap(),
         &mut pipeline,
+        &mut packets,
         &mut counters,
     );
     assert_eq!(packets.len(), 2);

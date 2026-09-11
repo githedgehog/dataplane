@@ -106,6 +106,21 @@ impl<'p> Worker<'p> {
         // Counters per port, flushed to that port's watchdog.
         let mut counters = vec![RxCounters::default(); self.ports.len()];
 
+        // The burst the pipeline works in, owned by this worker and reused for the life of the
+        // thread. Every stage borrows it, so a packet is rewritten where it lies instead of being
+        // moved from stage to stage, and the allocation happens once rather than once per poll.
+        let mut burst: Vec<Packet<Mbuf<'p>>> = Vec::with_capacity(dpdk::mem::MBUF_BURST);
+
+        // Likewise for what the PMD hands back. `RxQueue::receive` returns its array by value,
+        // which is 64 slots copied on every poll whether or not anything arrived; owning one here
+        // and refilling it makes an empty poll cost nothing but the poll.
+        let mut rx_mbufs: MbufArray<'p> = MbufArray::new_empty();
+
+        // One transmit batch per port slot, indexed like `self.ports`.
+        let mut tx_batches: Vec<MbufArray<'p>> = (0..self.ports.len())
+            .map(|_| MbufArray::new_empty())
+            .collect();
+
         loop {
             polls = polls.wrapping_add(1);
             if polls.is_multiple_of(CANCEL_CHECK_INTERVAL) {
@@ -117,7 +132,15 @@ impl<'p> Worker<'p> {
 
             let mut saw_frames = false;
             for (slot, counters) in counters.iter_mut().enumerate() {
-                if self.poll_one(slot, &tx_by_if, &mut pipeline, counters) {
+                if self.poll_one(
+                    slot,
+                    &tx_by_if,
+                    &mut pipeline,
+                    &mut burst,
+                    &mut rx_mbufs,
+                    &mut tx_batches,
+                    counters,
+                ) {
                     saw_frames = true;
                 }
             }
@@ -152,11 +175,15 @@ impl<'p> Worker<'p> {
     ///
     /// Transmit outcomes are counted against the receiving port, as the kernel driver does.
     /// Returns whether there was anything to do, which is what paces the idle backoff.
+    #[allow(clippy::too_many_arguments)] // the reused burst storage is threaded through, not owned
     fn poll_one(
         &mut self,
         slot: usize,
         tx_by_if: &HashMap<InterfaceIndex, usize>,
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
+        burst: &mut Vec<Packet<Mbuf<'p>>>,
+        rx_mbufs: &mut MbufArray<'p>,
+        tx_batches: &mut [MbufArray<'p>],
         counters: &mut RxCounters,
     ) -> bool {
         // Before the receive, and unconditionally: a port with no incoming traffic still has to
@@ -164,19 +191,17 @@ impl<'p> Worker<'p> {
         // when data happened to arrive would drop on the first quiet hold timer.
         let injected = self.inject(slot, counters);
 
-        let burst = self.ports[slot].queues.rx.receive();
-        if burst.is_empty() {
+        self.ports[slot].queues.rx.receive_into(rx_mbufs);
+        if rx_mbufs.is_empty() {
             return injected;
         }
         let rx_if = self.ports[slot].queues.if_index;
-        let processed = process_burst(burst.into_iter(), rx_if, pipeline, counters);
+        process_burst(rx_mbufs.drain_all(), rx_if, pipeline, burst, counters);
 
-        // Batch transmission by output port.
-        let mut batches: HashMap<usize, MbufArray<'p>> = HashMap::new();
         // Borrowed for the packet loop rather than cloned per poll: an `mpsc::Sender` clone is an
         // atomic increment, which is not free at burst rates and buys nothing here.
         let punt = self.ports[slot].queues.punt.as_ref();
-        for packet in processed {
+        for packet in burst.drain(..) {
             match Disposition::of(&packet) {
                 Disposition::Transmit => {}
                 Disposition::Punt => {
@@ -219,8 +244,7 @@ impl<'p> Worker<'p> {
             // Serialize rewritten headers into the original mbuf.
             match packet.serialize() {
                 Ok(mbuf) => {
-                    let batch = batches.entry(out_slot).or_insert_with(MbufArray::new_empty);
-                    if batch.try_push(mbuf).is_err() {
+                    if tx_batches[out_slot].try_push(mbuf).is_err() {
                         // A pipeline that duplicates packets can exceed one transmit burst.
                         error!(
                             worker = self.id,
@@ -236,7 +260,11 @@ impl<'p> Worker<'p> {
             }
         }
 
-        for (out_slot, batch) in batches {
+        for (out_slot, batch) in tx_batches.iter_mut().enumerate() {
+            if batch.is_empty() {
+                continue;
+            }
+            let batch = core::mem::replace(batch, MbufArray::new_empty());
             let attempted = batch.len() as u64;
             let unsent = self.ports[out_slot].queues.tx.transmit(batch);
             let refused = unsent.len() as u64;
@@ -396,25 +424,25 @@ fn process_burst<Buf: PacketBufferMut>(
     burst: impl ExactSizeIterator<Item = Buf>,
     rx_if: InterfaceIndex,
     pipeline: &mut impl NetworkFunction<Buf>,
+    packets: &mut Vec<Packet<Buf>>,
     counters: &mut RxCounters,
-) -> Vec<Packet<Buf>> {
+) {
     counters.rx += burst.len() as u64;
-    let mut packets: Vec<_> = burst
-        .filter_map(|buffer| match Packet::new(buffer) {
-            Ok(mut packet) => {
-                packet.meta_mut().iif = Some(rx_if);
-                Some(packet)
-            }
-            Err(e) => {
-                counters.parse_errors += 1;
-                trace!("failed to parse a received frame: {e:?}");
-                None
-            }
-        })
-        .collect();
+    packets.clear();
+    packets.extend(burst.filter_map(|buffer| match Packet::new(buffer) {
+        Ok(mut packet) => {
+            packet.meta_mut().iif = Some(rx_if);
+            Some(packet)
+        }
+        Err(e) => {
+            counters.parse_errors += 1;
+            trace!("failed to parse a received frame: {e:?}");
+            None
+        }
+    }));
 
     let parsed = packets.len();
-    pipeline.process_burst(&mut packets);
+    pipeline.process_burst(packets);
     // Some stages remove packets instead of returning a drop verdict.
     counters.ppline_drops += parsed.saturating_sub(packets.len()) as u64;
     packets.retain(|packet| {
@@ -425,5 +453,4 @@ fn process_burst<Buf: PacketBufferMut>(
             true
         }
     });
-    packets
 }
