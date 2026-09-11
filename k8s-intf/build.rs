@@ -94,6 +94,7 @@ fn code_needs_regen(new_code: &str) -> bool {
 
 fn main() {
     let version = get_gateway_version();
+    println!("cargo:rerun-if-env-changed=RUSTFLAGS");
 
     let agent_crd_path =
         PathBuf::from(std::env::var("GW_CRD_PATH").expect("GW_CRD_PATH var unset"))
