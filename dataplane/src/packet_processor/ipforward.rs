@@ -20,11 +20,12 @@ use net::vxlan::{Vxlan, VxlanEncap};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
+use std::rc::Rc;
 use tracing::{debug, error, warn};
 
 use routing::{
-    EgressObject, FibEntry, FibKey, FibTableReader, PktInstruction, ResolvedEncapsulation,
-    ResolvedVxlan, Vtep,
+    EgressObject, FibEntry, FibKey, FibReader, FibTableReader, PktInstruction,
+    ResolvedEncapsulation, ResolvedVxlan, Vtep,
 };
 
 use tracectl::{custom_target, tdebug, trace_target};
@@ -40,6 +41,29 @@ pub struct IpForwarder {
     fibtr: FibTableReader,
 }
 
+/// Cache up to two FIB readers per burst to avoid repeated table lookups.
+///
+/// Two slots cover the routing FIB and the VNI FIB used after VXLAN decapsulation.
+/// FIB replacements are picked up on eviction or at the next burst.
+#[derive(Default)]
+struct FibMemo {
+    slots: [Option<(FibKey, Rc<FibReader>)>; 2],
+}
+
+impl FibMemo {
+    /// Return an owned reader so the memo remains usable while a read guard is held.
+    fn reader(&mut self, key: FibKey, fibtr: &FibTableReader) -> Option<Rc<FibReader>> {
+        if self.slots[1].as_ref().is_some_and(|(k, _)| *k == key) {
+            self.slots.swap(0, 1);
+        } else if self.slots[0].as_ref().is_none_or(|(k, _)| *k != key) {
+            let reader = fibtr.get_fib_reader(key).ok()?;
+            self.slots[1] = self.slots[0].take();
+            self.slots[0] = Some((key, reader));
+        }
+        self.slots[0].as_ref().map(|(_, reader)| Rc::clone(reader))
+    }
+}
+
 impl IpForwarder {
     /// Build a new IP forwarding stage to use the indicated [`FibTableReader`]
     #[must_use]
@@ -52,7 +76,7 @@ impl IpForwarder {
 
     /// Forward a [`Packet`]
     #[allow(clippy::collapsible_else_if)]
-    fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+    fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, memo: &mut FibMemo) {
         let nfi = &self.name;
         let vrfid = packet.meta().vrf;
 
@@ -86,8 +110,8 @@ impl IpForwarder {
         };
         debug!("{nfi}: processing packet to {dst} with FIB {fibkey}");
 
-        /* access fib, by fetching FibReader from cache */
-        let Ok(fibr) = &self.fibtr.get_fib_reader(fibkey) else {
+        /* access fib, by fetching FibReader from the burst memo (falling back to the cache) */
+        let Some(fibr) = memo.reader(fibkey, &self.fibtr) else {
             warn!("{nfi}: Unable to read fib. Key={fibkey}");
             packet.done(DoneReason::InternalFailure);
             return;
@@ -113,7 +137,7 @@ impl IpForwarder {
         }
 
         /* execute instructions according to FIB */
-        self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
+        self.packet_exec_instructions(packet, fibentry, fib.get_vtep(), memo);
 
         /* strip vrfid */
         if packet.meta().vrf == vrfid {
@@ -126,6 +150,7 @@ impl IpForwarder {
         &self,
         packet: &mut Packet<Buf>,
         _ifindex: InterfaceIndex, /* we get it from metadata */
+        memo: &mut FibMemo,
     ) {
         let nfi = &self.name;
 
@@ -140,7 +165,7 @@ impl IpForwarder {
 
                 // access fib for Vni vni
                 let fibkey = FibKey::from_vni(vni);
-                let Ok(fibr) = self.fibtr.get_fib_reader(fibkey) else {
+                let Some(fibr) = memo.reader(fibkey, &self.fibtr) else {
                     error!("{nfi}: Failed to find fib associated to vni {vni}. Fib key = {fibkey}");
                     packet.done(DoneReason::Unroutable);
                     return;
@@ -339,11 +364,12 @@ impl IpForwarder {
         vtep: Option<&Vtep>,
         packet: &mut Packet<Buf>,
         instruction: &PktInstruction,
+        memo: &mut FibMemo,
     ) {
         match instruction {
             PktInstruction::Drop => self.packet_exec_instruction_drop(packet),
             PktInstruction::Local(ifindex) => {
-                self.packet_exec_instruction_local(packet, *ifindex);
+                self.packet_exec_instruction_local(packet, *ifindex, memo);
             }
             PktInstruction::Encap(encap) => self.packet_exec_instruction_encap(packet, encap, vtep),
             PktInstruction::Egress(egress) => self.packet_exec_instruction_egress(packet, egress),
@@ -356,9 +382,10 @@ impl IpForwarder {
         packet: &mut Packet<Buf>,
         fibentry: &FibEntry,
         vtep: Option<&Vtep>,
+        memo: &mut FibMemo,
     ) {
         for inst in fibentry.iter() {
-            self.packet_exec_instruction(vtep, packet, inst);
+            self.packet_exec_instruction(vtep, packet, inst, memo);
             if packet.is_done() {
                 return;
             }
@@ -393,9 +420,10 @@ impl IpForwarder {
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
     #[tracing::instrument(level = "trace", skip(self, burst))]
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        let mut memo = FibMemo::default();
         for packet in burst.iter_mut() {
             if !packet.is_done() {
-                self.forward_packet(packet);
+                self.forward_packet(packet, &mut memo);
             }
         }
     }
@@ -437,5 +465,41 @@ mod test {
             packet.meta().dst_vpcd.is_some(),
             "the packet was not encapsulated"
         );
+    }
+}
+
+#[cfg(test)]
+mod fib_memo_test {
+    use super::{FibKey, FibMemo};
+    use routing::testing::RouterTables;
+
+    #[test]
+    fn memo_answers_as_the_table_would() {
+        let mut tables = RouterTables::default();
+        tables.vrf(1, None).vrf(2, None);
+        let fibtr = tables.fibs();
+
+        let (k1, k2) = (FibKey::from_vrfid(1), FibKey::from_vrfid(2));
+        let absent = FibKey::from_vrfid(99);
+
+        let id = |memo: &mut FibMemo, key| {
+            memo.reader(key, &fibtr)
+                .and_then(|reader| reader.get_id().map(|id| id.as_u32()))
+        };
+
+        let mut memo = FibMemo::default();
+        assert_eq!(id(&mut memo, k1), Some(1), "first lookup");
+        assert_eq!(id(&mut memo, k1), Some(1), "repeat hits slot 0");
+        assert_eq!(id(&mut memo, k2), Some(2), "new key evicts into slot 1");
+        assert_eq!(
+            id(&mut memo, k1),
+            Some(1),
+            "old key still served, from slot 1"
+        );
+        assert_eq!(id(&mut memo, k2), Some(2), "and back again");
+
+        assert_eq!(id(&mut memo, absent), None, "a key the table lacks");
+        assert_eq!(id(&mut memo, k2), Some(2), "miss left the memo intact");
+        assert_eq!(id(&mut memo, k1), Some(1), "for both slots");
     }
 }
