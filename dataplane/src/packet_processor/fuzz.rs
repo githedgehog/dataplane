@@ -212,7 +212,7 @@ impl Fabric {
         }
         self.translations.lock().clear();
 
-        let out: Vec<_> = self.pipeline.process(packets.into_iter()).collect();
+        let out: Vec<_> = self.pipeline.process(packets).collect();
         assert_eq!(out.len(), sent, "the pipeline did not return every packet");
         out
     }
@@ -641,11 +641,10 @@ impl<F> Checkpoint<F> {
 impl<Buf: PacketBufferMut, F: Fn(&str, &Packet<Buf>) + 'static> NetworkFunction<Buf>
     for Checkpoint<F>
 {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.inspect(move |packet| (self.check)(self.at, packet))
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter() {
+            (self.check)(self.at, packet);
+        }
     }
 }
 

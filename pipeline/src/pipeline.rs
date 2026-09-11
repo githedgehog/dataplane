@@ -3,11 +3,9 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use crate::dyn_nf::DynNetworkFunctionImpl;
 use crate::{DynNetworkFunction, NetworkFunction, nf_dyn};
 use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicI64, Ordering};
-use dyn_iter::{DynIter, IntoDynIterator};
 use id::Id;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
@@ -172,32 +170,35 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
         }
     }
 
-    /// Get a static network function from the pipeline by stage id.
-    /// Get a dynamic network function from the pipeline by stage id.
+    /// Get a network function from the pipeline by stage id.
     ///
-    /// This method takes a stage id and returns the [`DynNetworkFunction`] associated with that stage.
+    /// This method takes a stage id and returns the [`NetworkFunction`] associated with that
+    /// stage.
+    ///
+    /// A stage is stored as itself rather than wrapped, so this is a direct downcast to the
+    /// concrete network function type. It used to unwrap a `DynNetworkFunctionImpl`, which
+    /// existed only because a stage's signature could not appear in a vtable.
     ///
     /// # See Also
     ///
-    ///
-    /// This method takes a stage id and returns the [`NetworkFunction`] associated with that stage.
-    ///
-    /// # See Also
-    ///
+    /// * [`DynPipeline::get_stage_dyn_by_id`]
+    #[must_use]
     pub fn get_stage_by_id<T: NetworkFunction<Buf> + 'static>(
         &self,
         id: &StageId<Buf>,
     ) -> Option<&T> {
-        self.get_stage_dyn_by_id::<DynNetworkFunctionImpl<Buf, T>>(id)
-            .map(DynNetworkFunctionImpl::get_nf)
+        self.get_stage_dyn_by_id::<T>(id)
     }
 
-    /// Get a dynamic network function from the pipeline by stage id.
+    /// Get a network function from the pipeline by stage id, named as a [`DynNetworkFunction`].
     ///
-    /// This method takes a stage id and returns the [`DynNetworkFunction`] associated with that stage.
+    /// Equivalent to [`DynPipeline::get_stage_by_id`] -- [`DynNetworkFunction`] is blanket
+    /// implemented for every network function -- and kept as a separate name because callers
+    /// spell the bound either way.
     ///
     /// # See Also
     ///
+    /// * [`DynPipeline::get_stage_by_id`]
     #[must_use]
     pub fn get_stage_dyn_by_id<T: DynNetworkFunction<Buf>>(&self, id: &StageId<Buf>) -> Option<&T> {
         self.nfs
@@ -206,35 +207,23 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     }
 }
 
-impl<Buf: PacketBufferMut> DynNetworkFunction<Buf> for DynPipeline<Buf> {
-    fn process_dyn<'a>(&'a mut self, input: DynIter<'a, Packet<Buf>>) -> DynIter<'a, Packet<Buf>> {
-        self.nfs
-            .values_mut()
-            .fold(input, move |input, nf| nf.process_dyn(input))
-            .into_dyn_iter()
-    }
-}
-
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DynPipeline<Buf> {
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> {
-        self.process_dyn(input.into_dyn_iter())
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for nf in self.nfs.values_mut() {
+            nf.process_burst(burst);
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use dyn_iter::IntoDynIterator;
     use net::buffer::TestBuffer;
     use net::eth::mac::{DestinationMac, Mac};
     use net::headers::{Net, TryEth, TryIp, TryIpv4};
 
-    use crate::dyn_nf::DynNetworkFunctionImpl;
     use crate::sample_nfs::DecrementTtl;
     use crate::test_utils::DynStageGenerator;
-    use crate::{DynNetworkFunction, DynPipeline, NetworkFunction, StageId};
+    use crate::{DynPipeline, NetworkFunction, StageId};
     use net::packet::test_utils::build_test_ipv4_packet;
 
     type TestStageId = StageId<TestBuffer>;
@@ -268,7 +257,7 @@ mod test {
                     pipeline = pipeline.add_stage_dyn(stages.next().unwrap());
                 }
 
-                let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()].into_iter();
+                let packets = vec![build_test_ipv4_packet(u8::MAX).unwrap()];
                 let packets_out: Vec<_> = pipeline.process(packets).collect();
 
                 assert_eq!(packets_out.len(), 1);
@@ -296,7 +285,7 @@ mod test {
     // See https://github.com/rust-lang/rust-clippy/issues/9514
     #[allow(clippy::similar_names)]
     #[test]
-    fn process_dyn() {
+    fn process_burst_over_a_dyn_pipeline() {
         let mut pipeline = DynPipeline::new();
         let mut stages = DynStageGenerator::new();
         let num_stages = 10;
@@ -312,8 +301,7 @@ mod test {
         let packet_vec = vec![packet1, packet2];
         let num_packets = packet_vec.len();
 
-        let packets = packet_vec.into_iter().into_dyn_iter();
-        let packets_out: Vec<_> = pipeline.process_dyn(packets).collect();
+        let packets_out: Vec<_> = pipeline.process(packet_vec).collect();
 
         assert_eq!(num_packets, packets_out.len());
 
@@ -384,10 +372,7 @@ mod test {
             }
         }
 
-        let stage = pipeline
-            .get_stage_dyn_by_id::<DynNetworkFunctionImpl<TestBuffer, DecrementTtl>>(
-                &test_stage_id,
-            );
+        let stage = pipeline.get_stage_dyn_by_id::<DecrementTtl>(&test_stage_id);
         assert!(stage.is_some());
     }
 }

@@ -62,7 +62,7 @@ impl ValueGenerator for Scenario {
 }
 
 fn run(nf: &mut StaticNat, packets: Vec<Packet<TestBuffer>>) -> Vec<Packet<TestBuffer>> {
-    nf.process(packets.into_iter()).collect()
+    nf.process(packets).collect()
 }
 
 fn fabric(exposes: &[VpcExpose]) -> Option<Fabric> {

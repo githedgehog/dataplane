@@ -399,16 +399,12 @@ impl IpForwarder {
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
-    #[tracing::instrument(level = "trace", skip(self, input))]
-    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
-        &'a mut self,
-        input: Input,
-    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.filter_map(move |mut packet| {
+    #[tracing::instrument(level = "trace", skip(self, burst))]
+    fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
+        for packet in burst.iter_mut() {
             if !packet.is_done() {
-                self.forward_packet(&mut packet);
+                self.forward_packet(packet);
             }
-            packet.enforce()
-        })
+        }
     }
 }
